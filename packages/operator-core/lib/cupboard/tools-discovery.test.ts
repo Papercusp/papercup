@@ -20,6 +20,7 @@ import {
   resolveToolEntries,
   schemaToText,
   type ToolMetaIndex,
+  unionConditionalHint,
 } from './tools-discovery';
 
 function makeInputs(over: Partial<PackCatalogInputs> = {}): PackCatalogInputs {
@@ -303,6 +304,32 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(txt).toContain('stallReds?:integer');
     expect(txt).toContain('enabled?:boolean');
     expect(txt).toContain('reason?:string');
+  });
+
+  it('preserves explicit discriminator-dependent required and forbidden fields', () => {
+    const branches = [
+      {
+        required: ['kind', 'settledBy'],
+        properties: {
+          kind: { const: 'undecidable' },
+          settledBy: { type: 'string' },
+        },
+      },
+      {
+        required: ['kind'],
+        properties: {
+          kind: { enum: ['conclusion', 'assumption', 'convention'] },
+          settledBy: { not: {} },
+        },
+      },
+    ];
+
+    expect(unionConditionalHint(branches)).toBe(
+      'when kind=undecidable => settledBy required; when kind!=undecidable => settledBy forbidden',
+    );
+    expect(schemaToText({ anyOf: branches })).toContain(
+      'when kind=undecidable => settledBy required; when kind!=undecidable => settledBy forbidden',
+    );
   });
 
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {

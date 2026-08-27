@@ -11512,3 +11512,182 @@ describe("EI-20014356905761236: the verdict log records whether its verdict prom
     expect(t).not.toContain("decision-pending");
   });
 });
+
+describe("WI-42350: a sha that already reached a RED verdict is not re-judged", () => {
+  const readyAndCandidate = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("skips materialization AND the suite when the candidate equals the last judged-red sha", async () => {
+    const { ready, candidate } = await readyAndCandidate();
+    const { deps, calls } = stubDeps(false);
+    deps.lastJudgedRed = async () => candidate;
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      from: ready,
+      reason: "unchanged-since-verdict",
+    });
+    // The whole point of the item: the tree is byte-identical by definition of the
+    // sha, so re-running cannot produce new information. Nothing may be materialized
+    // and no suite may run.
+    expect(calls).not.toContain("runGreen");
+    expect(calls.some((call) => call.startsWith("setup:"))).toBe(false);
+    expect(calls).not.toContain("advance");
+  });
+
+  it("reports green:null and NOT false — a run that declined to judge must not inflate the red streak", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps } = stubDeps(false);
+    deps.lastJudgedRed = async () => candidate;
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    // `green:false` asserts THIS RUN judged the candidate and found it red. This run
+    // judged nothing. consecutiveReds counts `false`, so emitting it here would inflate
+    // the streak with runs that executed zero tests — the exact false signal WI-42350
+    // exists to stop. `toBeNull` alone would also pass for `false` under a loose read,
+    // so the negative assertion is deliberate.
+    expect(result.green).toBeNull();
+    expect(result.green).not.toBe(false);
+  });
+
+  it("is sha-EXACT: a marker naming a different sha judges normally", async () => {
+    const { ready, candidate } = await readyAndCandidate();
+    const { deps, calls } = stubDeps(true);
+    deps.lastJudgedRed = async () => ready; // some OTHER sha
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result.reason).not.toBe("unchanged-since-verdict");
+    expect(calls).toContain("runGreen");
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+  });
+
+  it("fails OPEN — an unreadable marker costs one redundant run and can never become a verdict", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps, calls } = stubDeps(true);
+    deps.lastJudgedRed = async () => {
+      throw new Error("not a git repository");
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(calls).toContain("runGreen");
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+  });
+
+  it("degrades to always-re-judge for a dep that predates the marker", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps, calls } = stubDeps(true);
+
+    // The optionality is the back-compat contract: every fake dep in this suite
+    // predates the marker and must keep judging rather than throwing.
+    expect(deps.lastJudgedRed).toBeUndefined();
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(calls).toContain("runGreen");
+    expect(result).toMatchObject({ green: true, reason: "advanced" });
+  });
+});
+
+describe("WI-42350: the judged-red marker is stamped ONLY by a verdict that actually judged the code", () => {
+  const stampingDeps = (green: boolean) => {
+    const { deps, calls } = stubDeps(green);
+    const stamped: string[] = [];
+    deps.recordJudgedRed = async (_repo, sha) => {
+      stamped.push(sha);
+    };
+    return { deps, calls, stamped };
+  };
+
+  const readyAndCandidate = async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "2", "candidate");
+    return { ready, candidate };
+  };
+
+  it("DOES stamp on a genuine terminal red (the positive control)", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps, stamped } = stampingDeps(false);
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({ green: false, reason: "not-green" });
+    // Without this control the two negative tests below would pass vacuously — a
+    // marker write that never fires at all satisfies "does not stamp" perfectly.
+    expect(stamped).toEqual([candidate]);
+  });
+
+  it("does NOT stamp when the red is an INFRA fault — the code was never judged", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps, calls, stamped } = stampingDeps(false);
+    deps.runGreen = async () => {
+      calls.push("runGreen");
+      return {
+        green: false,
+        summary: "3 failed",
+        infraFault: {
+          kind: "vite-node-cache-vanished" as const,
+          occurrences: 7,
+          note: "the gate's own vite-node module cache was deleted mid-suite",
+        },
+      };
+    };
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      noPush: true,
+    });
+
+    expect(result).toMatchObject({ green: null, reason: "infra-inconclusive" });
+    expect(calls).toContain("runGreen");
+    // THE GUARD THIS ITEM TURNS ON. An infra-fault red means the code was never
+    // actually judged. Stamping here would make the next tick skip a candidate nobody
+    // ever tested, converting a transient host fault into a permanently unexamined
+    // sha — the one way this optimization could hide a real regression.
+    expect(stamped).toEqual([]);
+  });
+
+  it("does NOT stamp on a pinned diagnostic run", async () => {
+    const { candidate } = await readyAndCandidate();
+    const { deps, stamped } = stampingDeps(false);
+
+    const result = await runGreenCheckpoint(cfg(), deps, {
+      candidate,
+      candidateSource: "pinned",
+      noPush: true,
+    });
+
+    // A diagnostic run is an investigation, not a verdict: it must not be able to
+    // suppress a future real judgement of this sha.
+    expect(result.green).toBe(false);
+    expect(stamped).toEqual([]);
+  });
+});

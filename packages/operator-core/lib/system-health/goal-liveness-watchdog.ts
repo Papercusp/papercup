@@ -78,8 +78,10 @@ import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import {
+  GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
   GOAL_LIVENESS_SWEEP_STATUSES,
   resolveGoalActivity,
+  resolveGoalHolderWedge,
 } from '../goals/activity';
 import {
   parseGoalLaunchSettings,
@@ -355,6 +357,17 @@ export interface GoalLivenessSweepDeps {
   readReadiness: (goals: readonly GoalRowLike[]) => Promise<Map<string, GoalReadiness>>;
   escalateReadiness: (alert: GoalReadinessAlert) => Promise<void>;
   /**
+   * The wedge leg's measurement: agent-origin tool calls made by each goal's
+   * LIVE holders since they picked it up, keyed `workspaceId:goalId`.
+   *
+   * A goal ABSENT from the returned map is `not-measured` and is suppressed —
+   * so a degraded read costs silence, never a wave of false wedge alarms.
+   */
+  readHolderProductivity: (holds: readonly GoalLiveHold[]) => Promise<Map<string, number>>;
+  escalateWedge: (alert: GoalWedgeAlert) => Promise<void>;
+  /** Grace before a held-but-silent holder is reportable. */
+  wedgeGraceMs: number;
+  /**
    * P-020: the goal-activation primitive, dispatched for a `became-ready` goal
    * that opted in via `launch_settings.autoStart` (D-006 — every trigger leg
    * converges on the ONE primitive; this leg never spawns by hand). Bound over
@@ -373,6 +386,99 @@ export interface GoalLivenessSweepDeps {
 /** The `readReadiness` map key. Colon-composite, same convention as `blockerStatusKey`. */
 export function goalReadinessKey(g: Pick<GoalRowLike, 'workspaceId' | 'goalId'>): string {
   return `${g.workspaceId}:${g.goalId}`;
+}
+
+/* ── the WEDGE leg — held, alive, and producing nothing ───────────────────── */
+
+/**
+ * One live hold, as the productivity read needs it: who, on which goal, since
+ * when. `since` is the clock the call count is measured from — a holder is only
+ * answerable for calls made after it picked the goal up.
+ */
+export interface GoalLiveHold {
+  workspaceId: string;
+  goalId: string;
+  ownerId: string;
+  setAtMs: number;
+}
+
+export interface GoalWedgeAlert {
+  goalId: string;
+  workspaceId: string;
+  title: string;
+  /** The LIVE holders the verdict was measured across. */
+  holders: { ownerId: string; sessionState: string }[];
+  /** Agent-origin calls summed across those holders since the earliest hold. */
+  agentOriginCalls: number;
+  /** Grace clock: elapsed since the MOST RECENT hold began. */
+  heldForMs: number;
+}
+
+/**
+ * PURE: is this HELD goal's holder alive-but-not-working?
+ *
+ * The gap this closes: `classifyGoalLiveness` returns null the moment a goal
+ * resolves `held`, so a holder that booted, failed its first turn, and has sat
+ * there ever since is indistinguishable from one doing the work. Both are
+ * "held", and held was the end of the enquiry. That is how a goal spent hours
+ * reporting healthy while producing nothing (EI-21578742955425881).
+ *
+ * TWO CONSERVATIVE CHOICES, both of which suppress rather than alarm:
+ *
+ *  1. `agentOriginCalls` is summed since the EARLIEST hold, while the grace runs
+ *     from the MOST RECENT one. Maximum opportunity to have produced a call,
+ *     minimum elapsed grace — so a freshly-added holder re-arms the window and a
+ *     goal is never called wedged on the strength of a predecessor's silence.
+ *  2. An ABSENT measurement is `not-measured`, never zero. A degraded
+ *     productivity read must report nothing rather than report everyone wedged;
+ *     collapsing those two is the failure the verdict's `reason` exists to keep
+ *     apart.
+ */
+export function classifyGoalWedge(
+  goal: GoalRowLike,
+  holders: readonly GoalHolderLike[],
+  verdicts: ReadonlyMap<string, LivenessVerdict>,
+  agentOriginCallsByGoal: ReadonlyMap<string, number>,
+  nowMs: number,
+  graceMs: number = GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
+): GoalWedgeAlert | null {
+  // Same administrative short-circuit as the liveness leg: a deliberately
+  // paused goal is not producing work BY DESIGN.
+  const activity = resolveGoalActivity({ status: goal.status });
+  if (activity.deliberatelyPaused || activity.terminal) return null;
+
+  const resolved = resolveGoalHoldersFromRows(
+    goal.goalId,
+    goal.workspaceId,
+    holders,
+    verdicts,
+  );
+  // A wedge is by definition something that happens to somebody who IS there;
+  // every other fold is already described correctly by the liveness leg.
+  if (resolved.liveness !== 'held' || resolved.live.length === 0) return null;
+
+  const measured = agentOriginCallsByGoal.get(goalReadinessKey(goal));
+  const heldForMs = nowMs - Math.max(...resolved.live.map((h) => h.setAtMs));
+
+  const verdict = resolveGoalHolderWedge({
+    liveness: resolved.liveness,
+    productivity:
+      measured === undefined ? null : { agentOriginCalls: measured, heldForMs },
+    graceMs,
+  });
+  if (!verdict.wedged) return null;
+
+  return {
+    goalId: goal.goalId,
+    workspaceId: goal.workspaceId,
+    title: goal.title,
+    holders: resolved.live.map((h) => ({
+      ownerId: h.ownerId,
+      sessionState: h.sessionState ?? 'unknown',
+    })),
+    agentOriginCalls: measured ?? 0,
+    heldForMs,
+  };
 }
 
 async function defaultFlagEnabled(): Promise<boolean> {
@@ -583,6 +689,100 @@ async function defaultEscalateReadiness(alert: GoalReadinessAlert): Promise<void
   });
 }
 
+/**
+ * The wedge leg's measurement, from the invocation ledger.
+ *
+ * ⚠ `call_origin IS DISTINCT FROM 'hook'`, NOT `<> 'hook'`. The exclusion of
+ * hook-origin calls is the entire signal — a session that boots and immediately
+ * dies still emits hook-fired calls, so a raw count is non-zero for a holder
+ * that never ran an instruction of its own (measured: raw 3, agent-origin 0).
+ * But `<> 'hook'` is FALSE for a NULL origin, which would silently drop those
+ * rows and undercount toward a FALSE WEDGE — the one direction this leg must
+ * never err in. `IS DISTINCT FROM` counts a NULL (and the `unknown`/`ui`
+ * origins the column actually carries) as work, which errs toward silence.
+ */
+export function makeReadHolderProductivity(
+  sql: Sql,
+): GoalLivenessSweepDeps['readHolderProductivity'] {
+  return async (holds) => {
+    const out = new Map<string, number>();
+    if (holds.length === 0) return out;
+
+    // One hold per (goal, owner); an owner is answerable only for calls made
+    // after IT picked the goal up, so `since` travels per-row, not as a floor.
+    const ownerIds = holds.map((h) => h.ownerId);
+    const workspaceIds = holds.map((h) => h.workspaceId);
+    const goalIds = holds.map((h) => h.goalId);
+    const sinceIso = holds.map((h) => new Date(h.setAtMs).toISOString());
+
+    const rows = await sql<{ goal_key: string; n: string }[]>`
+      WITH holds AS (
+        SELECT * FROM unnest(
+          ${ownerIds}::text[],
+          ${workspaceIds}::text[],
+          ${goalIds}::text[],
+          ${sinceIso}::timestamptz[]
+        ) AS t(owner_id, workspace_id, goal_id, since)
+      )
+      SELECT h.workspace_id || ':' || h.goal_id AS goal_key,
+             count(ti.id) AS n
+        FROM holds h
+        LEFT JOIN harness_shared.tool_invocations ti
+               ON ti.coord_owner_id = h.owner_id
+              AND ti.workspace_id   = h.workspace_id
+              AND ti.invoked_at    >= h.since
+              AND ti.call_origin IS DISTINCT FROM 'hook'
+       GROUP BY 1`;
+
+    for (const r of rows) out.set(r.goal_key, Number(r.n));
+    return out;
+  };
+}
+
+/**
+ * Report-only. NEVER auto-respawns, and that is a decision, not an omission:
+ * wedge causes are CORRELATED (one throttled account pool wedges every holder
+ * launched against it at once), so a detector wired to relaunch would fire N
+ * respawns straight back into the same wall. Recovery stays behind the separate
+ * owner-authority GOAL_HOLDER_RESPAWN flag, which is default-OFF on purpose.
+ */
+async function defaultEscalateWedge(alert: GoalWedgeAlert): Promise<void> {
+  const held = formatDark(alert.heldForMs);
+  await openEscalation(WATCHDOG_IDENTITY, {
+    severity: 'advisory',
+    summary:
+      `Goal '${alert.goalId}' is HELD but its holder has produced nothing in ${held}`,
+    body:
+      `The goal "${alert.title}" (${alert.goalId}, workspace ${alert.workspaceId}) has a ` +
+      `LIVE holder — ${alert.holders.map((h) => `${h.ownerId} [${h.sessionState}]`).join(', ')} — ` +
+      `and ${alert.agentOriginCalls} agent-origin tool calls since it picked the goal up ` +
+      `${held} ago.\n\n` +
+      `Present-but-unproductive is the gap between the two things every count-based ` +
+      `surface already reports: the goal is not unheld and its holder is not dead, so no ` +
+      `existing check fires. Hook-origin calls are excluded deliberately — a session that ` +
+      `boots and fails its first turn still emits those, which is why a raw invocation ` +
+      `count reads healthy for a holder that never ran an instruction of its own.\n\n` +
+      `Triage — the cause is usually upstream of the agent, so read the error before ` +
+      `relaunching anything:\n` +
+      `  • Check the holder's first turn for a hard refusal (a rate-limited or credit-capped ` +
+      `account pool, an invalid model spec). Three separate wedges of this shape had three ` +
+      `DIFFERENT causes, and none was fixed by respawning.\n` +
+      `  • Capacity walled? Fix the routing; a relaunch onto the same pool wedges again.\n` +
+      `  • Genuinely stuck agent? Restart the holder deliberately.\n\n` +
+      `Reported, never auto-relaunched: wedge causes are correlated, so an automatic ` +
+      `respawn would relaunch every wedged holder into the same wall at once.`,
+    meta: {
+      dedupKind: 'goal-holder-wedge',
+      subjectSignature: `${alert.workspaceId}:${alert.goalId}:wedged`,
+      goalId: alert.goalId,
+      goalWorkspaceId: alert.workspaceId,
+      agentOriginCalls: alert.agentOriginCalls,
+      heldForMs: alert.heldForMs,
+      holders: alert.holders,
+    },
+  });
+}
+
 function sweepDeps(
   sql: Sql,
   overrides: Partial<GoalLivenessSweepDeps>,
@@ -593,6 +793,9 @@ function sweepDeps(
     escalate: defaultEscalate,
     readReadiness: makeReadReadiness(sql),
     escalateReadiness: defaultEscalateReadiness,
+    readHolderProductivity: makeReadHolderProductivity(sql),
+    escalateWedge: defaultEscalateWedge,
+    wedgeGraceMs: GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
     startGoal: (input) => startGoalById(sql, input),
     flagEnabled: defaultFlagEnabled,
     now: Date.now,
@@ -691,7 +894,68 @@ export async function runGoalLivenessSweepOnce(
       );
     }
   }
-  return { scanned: goals.length, escalated, readinessEscalated, autoStarted, skipped: false };
+  // ── the wedge leg — HELD goals whose holders produce nothing, report-only ──
+  // Runs where the liveness leg stops: `classifyGoalLiveness` returns null the
+  // instant a goal resolves `held`, so without this leg "somebody is on it" is
+  // the end of the enquiry and a holder that never worked reads as healthy.
+  let wedgeEscalated = 0;
+  const holds: GoalLiveHold[] = [];
+  for (const g of goals) {
+    const fold = resolveGoalHoldersFromRows(g.goalId, g.workspaceId, relevant, verdicts);
+    if (fold.liveness !== 'held') continue;
+    for (const h of fold.live) {
+      holds.push({
+        workspaceId: g.workspaceId,
+        goalId: g.goalId,
+        ownerId: h.ownerId,
+        setAtMs: h.setAtMs,
+      });
+    }
+  }
+
+  if (holds.length > 0) {
+    // A degraded measurement must cost SILENCE, not a wave of false wedges: an
+    // empty map makes every goal `not-measured`, which suppresses. Same rule as
+    // the readiness leg's non-fatal skip.
+    let productivity = new Map<string, number>();
+    try {
+      productivity = await deps.readHolderProductivity(holds);
+    } catch (e) {
+      console.warn(
+        `[goal-liveness-watchdog] holder-productivity read failed (non-fatal, wedge leg skipped): ${e instanceof Error ? e.message : String(e)}`,
+      );
+      productivity = new Map();
+    }
+
+    for (const g of goals) {
+      const alert = classifyGoalWedge(
+        g,
+        relevant,
+        verdicts,
+        productivity,
+        deps.now(),
+        deps.wedgeGraceMs,
+      );
+      if (!alert) continue;
+      try {
+        await deps.escalateWedge(alert);
+        wedgeEscalated += 1;
+      } catch (e) {
+        console.warn(
+          `[goal-liveness-watchdog] wedge escalate failed for ${alert.goalId} (non-fatal): ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  }
+
+  return {
+    scanned: goals.length,
+    escalated,
+    readinessEscalated,
+    autoStarted,
+    wedgeEscalated,
+    skipped: false,
+  };
 }
 
 /* ── P-009: opt-in holder recovery ───────────────────────────────────────── */

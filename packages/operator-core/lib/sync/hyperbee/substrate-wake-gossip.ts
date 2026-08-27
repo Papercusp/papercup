@@ -9,12 +9,13 @@
  * hearing that a REMOTE member has something for us — did not exist, so the
  * boot layer fail-closed everywhere it mattered:
  *
- *   · gatherBootedHarnessFacts pins `hasSwarm` ⇒ a federating harness is never
- *     an eviction candidate;
- *   · evictBootedHarnessEngine refuses any handle with `swarm != null`;
- *   · planSubstrateActivation's `deferFederating` defaults FALSE, with the
- *     explicit note that it stays false "until P-012's always-on remote wake
- *     signal lands".
+ *   · gatherBootedHarnessFacts used to pin every `hasSwarm` handle;
+ *   · evictBootedHarnessEngine used to refuse every swarmed handle;
+ *   · boot-all used to pass `deferFederating:false` by default.
+ *
+ * Now boot-all defaults federating deferral ON and idle in-process swarmed
+ * handles enter the eviction candidate set. Both paths still fail closed per
+ * harness unless this keepalive actually covers the federation topic.
  *
  * The net effect: EVERY shared-hive harness is permanently resident, so the
  * plan's O(active hives) goal is unreachable no matter how good the LRU is.

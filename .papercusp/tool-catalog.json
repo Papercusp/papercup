@@ -5594,7 +5594,7 @@
           "POST"
         ]
       },
-      "description": "Annotate your idle state at end-of-turn: refresh the \"why I am idle\" note on your inbox-wake watch (and optionally its wake floor), then end your turn. You are ALREADY always-armed at session start (turn-lifecycle-control), so a later coord:send {wake:true} re-invokes you whether or not you call this — this just records why you are idle for the wake turn. Returns the watch id + your inbox-wake key.",
+      "description": "Annotate your idle state at end-of-turn: refresh the \"why I am idle\" note on your inbox-wake watch (and optionally its wake floor), report live reachability before and after the refresh, then end your turn. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed; use the returned before/after verdict and advice rather than assuming it is armed. Returns the watch id, inbox-wake key, and reachability evidence.",
       "capabilities": [
         "coord:write"
       ],
@@ -5616,7 +5616,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides your wake turn) and tune your wake floor. You are wakeable regardless; arming is automatic at session start. Then END YOUR TURN.",
+        "when": "Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice, then END YOUR TURN.",
         "notWhen": "You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer's artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.",
         "chaining": "coord:await-inbox → end your turn. On wake the turn text carries the message that woke you (read coord:inbox for the full set). To stop watching: events:cancel."
       }

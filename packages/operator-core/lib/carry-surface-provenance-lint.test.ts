@@ -255,6 +255,27 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe('manual-owner-tag');
     });
 
+    it('does not flag an execution command that references a recorded owner order', () => {
+      expect(lintCarrySurfaceProvenance('Execute owner directive order 10')).toEqual({
+        flagged: false,
+        matches: [],
+      });
+    });
+
+    it('keeps the exemption structural while accepting common order-reference spellings', () => {
+      expect(lintCarrySurfaceProvenance('Follow the owner mandate #10')).toEqual({
+        flagged: false,
+        matches: [],
+      });
+      expect(lintCarrySurfaceProvenance('Apply owner directive 10')).toEqual({
+        flagged: false,
+        matches: [],
+      });
+      expect(lintCarrySurfaceProvenance('owner directive order 10: hold the deploy').matches[0]?.kind).toBe(
+        'manual-owner-tag',
+      );
+    });
+
     it('EI-20234090473445932: does not flag a factual status report for a recorded directive', () => {
       expect(
         lintCarrySurfaceProvenance(

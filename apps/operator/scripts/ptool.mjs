@@ -1131,6 +1131,12 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // structured verdict instead of cutting the request off at 30s. The
   // foreground budget is the smallest existing client deadline that does so.
   ['db:migrate', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21574172453638335: locks:acquire permits a bounded blocking wait up to
+  // MAX_LOCK_WAIT_SEC (45s) plus its final-busy/cleanup tail. Keep the direct
+  // and deferred tools:invoke paths outside the MCP transport cap so a queued
+  // acquire returns its typed busy result instead of an outcome-unknown 30s
+  // client timeout.
+  ['locks:acquire', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   ['locks:heartbeat_resource', PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS],
 ]);
 

@@ -53,11 +53,11 @@
  * dominant "never evict a harness with an active peer" constraint exists to
  * prevent — so this policy honours the same constraint at boot.
  *
- * Hence `deferFederating` defaults to FALSE: v1 defers only NON-federating
- * (private, machine-local) harnesses, which is already the bulk of the eager
- * boot on a workstation and is safe because a private harness has no remote
- * writer by definition. P-012 landing is what makes `true` correct, and it is
- * the single flip that extends this same policy to shared hives — no rewrite.
+ * P-012 has now landed. The production boot-all caller explicitly passes
+ * `deferFederating:true` by default, then requires a successful per-harness
+ * keepalive verdict before it actually leaves a federating harness dark. The
+ * pure policy retains its false-by-omission fail-safe for direct callers: a
+ * caller that does not attest remote-wake coverage still boots shared hives.
  *
  * This is a deliberate under-claim: it is better for P-010 to bound the footprint
  * it can bound SAFELY than to hit the headline number by darkening hives whose
@@ -88,9 +88,9 @@ export interface ActivationPolicyClock {
   /** A presence row newer than this counts as live activity. */
   presenceActiveMs: number;
   /**
-   * Allow DEFERRING harnesses that federate. Only correct once P-012's always-on
-   * remote wake signal exists — see the safety-interlock note in the module
-   * header. Defaults to false (federating harnesses always activate).
+   * Allow DEFERRING harnesses that federate. The production caller passes true
+   * now that P-012 exists, but omission remains fail-safe false for direct
+   * policy callers that cannot attest remote-wake coverage.
    */
   deferFederating?: boolean;
 }

@@ -288,6 +288,22 @@ describe('ptool call deadlines', () => {
       name: 'scheduler:get_next',
       args: { harness: 'papercusp' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21574172453638335: locks:acquire's bounded blocking wait must not
+    // fall through to the flat 30s client deadline, including via tools:invoke.
+    expect(timeoutForTool('locks:acquire', {
+      paths: ['packages/example.ts'],
+      intent: 'test lock timeout mapping',
+      wait: { max_sec: 45 },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'locks:acquire',
+      args: {
+        paths: ['packages/example.ts'],
+        intent: 'test deferred lock timeout mapping',
+        wait: { max_sec: 300 },
+      },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('locks:acquire')).toBeGreaterThan(PTOOL_CALL_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'plans:set-plan-status',
       args: { slug: 'some-plan', status: 'shipped', expectedCurrent: 'ready' },

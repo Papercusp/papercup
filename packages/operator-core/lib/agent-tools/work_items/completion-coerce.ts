@@ -295,6 +295,25 @@ export function coerceCompletionShape(raw: unknown): unknown {
     out.verification = verification;
   }
 
+  // The optional self-review record has the same array-of-prose contract as the
+  // top-level `whatLanded`/`migrations`/`deferred` fields. LLM callers commonly
+  // provide one finding or one yielded change as a scalar; leave genuine arrays
+  // untouched and wrap only the lossless scalar form before Zod validates it.
+  if (isPlainObject(out.selfReview)) {
+    const selfReview: Record<string, unknown> = { ...out.selfReview };
+    for (const f of ['findings', 'changedAsResult'] as const) {
+      const value = selfReview[f];
+      if (value == null || Array.isArray(value)) continue;
+      if (typeof value === 'string') {
+        const s = value.trim();
+        selfReview[f] = s ? [s] : undefined;
+      } else {
+        selfReview[f] = [value];
+      }
+    }
+    out.selfReview = selfReview;
+  }
+
   // array-typed fields: a lone scalar becomes a 1-element array (lossless, no splitting).
   for (const f of ARRAY_FIELDS) {
     const val = out[f];

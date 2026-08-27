@@ -50,6 +50,7 @@ import {
   renderSchemaBounds,
   schemaToText,
   type ToolDiscoveryEntry,
+  unionConditionalHint,
   unionRequiredKeyHint,
 } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
@@ -266,6 +267,8 @@ type TopLevelSchemaProjection = {
   required: Set<string>;
   /** Required keys that distinguish the root union's branches, if any. */
   unionHint: string;
+  /** Explicit discriminator-dependent required/forbidden relationships. */
+  conditionalHint: string;
 };
 
 function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjection | null {
@@ -277,6 +280,7 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
         Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : [],
       ),
       unionHint: '',
+      conditionalHint: '',
     };
   }
 
@@ -312,11 +316,12 @@ function topLevelSchemaProjection(root: JsonSchemaNode): TopLevelSchemaProjectio
   if (merged.size === 0) return null;
 
   const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
+  const conditionalHint = branches.length > 1 ? unionConditionalHint(branches) : '';
   const required = new Set<string>();
   for (const [name, entry] of merged) {
     if (entry.presentIn === branches.length && entry.requiredInAll) required.add(name);
   }
-  return { entries: [...merged].map(([name, entry]) => [name, entry.raw]), required, unionHint };
+  return { entries: [...merged].map(([name, entry]) => [name, entry.raw]), required, unionHint, conditionalHint };
 }
 
 /**
@@ -339,7 +344,7 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
     return `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
   });
   if (parts.length === 0) return null;
-  const text = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${parts.join('; ')}`;
+  const text = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${parts.join('; ')}`;
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
 }
 

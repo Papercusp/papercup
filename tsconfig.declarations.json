@@ -115,6 +115,11 @@
     "scripts/check-migration-forward-compat.mjs",
     "scripts/check-green-checkpoint-tag.mjs",
     "scripts/check-js-syntax.mjs",
+    // EI-21082046676950143 — the declared-vs-consumed sweep. Imported by
+    // affected-tests-declared-consumed-selection.test.ts, which asserts that
+    // scripts/affected-tests.mjs DERIVES the guard's selection key from these
+    // registries (both halves) rather than restating any path.
+    "scripts/check-declared-consumed.mjs",
     // work-queue-admission-and-bulk-dedup-2026-08-24 P-002 (item e) — the born-pending
     // admission-writer sweep. Registered for the FIRST reason this list exists: it is
     // imported directly by work-item-admission-writers-guard.test.ts, which is BOTH the

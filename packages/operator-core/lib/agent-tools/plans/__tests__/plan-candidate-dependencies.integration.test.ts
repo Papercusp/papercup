@@ -7,6 +7,7 @@
 
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
+import { parsePlan } from '@papercusp/plan-parser';
 import setItemBlockedByTool from '../set-item-blocked-by';
 import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 
@@ -117,6 +118,16 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
       ],
     });
     expect((await livePlan()).content).toContain('P-001** `todo` first blocked-by: P-099');
+
+    // The same invalid draft remains editable: removing the unresolved forward
+    // ref is a normal valid transition and preserves its draft lifecycle.
+    const repaired = await runSetBlockedBy('P-001', []);
+    expect(repaired.counts).toEqual({ ok: 1, failed: 0 });
+    expect(repaired.result).toMatchObject({ ok: true, itemId: 'P-001', from: ['P-099'], to: [] });
+    expect(repaired.result).not.toHaveProperty('dependencyDiagnostics');
+    const repairedPlan = parsePlan((await livePlan()).content);
+    expect(repairedPlan.frontmatter.status).toBe('draft');
+    expect(repairedPlan.items.find((item) => item.id === 'P-001')?.blockedBy).toEqual([]);
   }, 60_000);
 
   it.each(['ready', 'active'] as const)(
@@ -242,6 +253,14 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
     expect(after.version).toBe(before.version + 1);
     expect(after.content).toContain('first blocked-by: P-002');
     expect(after.content).not.toContain('second blocked-by:');
+    const parsed = parsePlan(after.content);
+    expect(parsed.frontmatter.status).toBe('ready');
+    expect(
+      parsed.items.map((item) => ({ id: item.id, status: item.storedStatus, phase: item.phase })),
+    ).toEqual([
+      { id: 'P-001', status: 'todo', phase: 'Phase 1' },
+      { id: 'P-002', status: 'todo', phase: 'Phase 1' },
+    ]);
   }, 60_000);
 
   it('aborts every same-plan edit when one item is missing', async () => {
@@ -315,5 +334,38 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
     const otherAfter = await livePlan(otherSlug);
     expect(otherAfter.version).toBe(otherBefore.version + 1);
     expect(otherAfter.content).toContain('first blocked-by: P-002');
+  }, 60_000);
+
+  it('serializes concurrent reciprocal additions so exactly one edge lands and the cycle is refused', async () => {
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('ready'));
+    const before = await livePlan();
+
+    const [left, right] = await Promise.all([
+      runSetBlockedBy('P-001', ['P-002']),
+      runSetBlockedBy('P-002', ['P-001']),
+    ]);
+
+    const outcomes = [left.result, right.result];
+    expect(outcomes.filter((result) => result.ok)).toHaveLength(1);
+    const refused = outcomes.find((result) => !result.ok);
+    expect(refused).toMatchObject({
+      ok: false,
+      error: 'invalid_plan_dependencies',
+      dependencyDiagnostics: [
+        {
+          code: 'dependency_cycle',
+          members: ['P-001', 'P-002'],
+          path: ['P-001', 'P-002', 'P-001'],
+        },
+      ],
+    });
+
+    const after = await livePlan();
+    expect(after.version).toBe(before.version + 1);
+    const edges = parsePlan(after.content).items.flatMap((item) =>
+      item.blockedBy.map((blocker) => `${item.id}->${blocker}`),
+    );
+    expect(edges).toHaveLength(1);
+    expect(['P-001->P-002', 'P-002->P-001']).toContain(edges[0]);
   }, 60_000);
 });

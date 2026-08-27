@@ -1,5 +1,6 @@
 /** Dedicated, frozen acceptance-grader launch for the plan completion gate. */
 import { createHash } from 'node:crypto';
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs';
 import launchAgentTool from './agent-tools/capability/launch-agent';
 import { readPlanBySlug } from './agent-tools/plans/source';
 import { getLatestPlanAudit, summarizeCoverage } from './plan-audits';
@@ -37,10 +38,76 @@ export type AcceptanceGraderLifecycle = {
    * represented. When that receipt pointed at an ended/over-age task, these
    * are the stale task ids bypassed before a fresh deterministic retry. */
   staleRecovery?: { retiredTaskIds: string[]; attempts: number };
+  /** A judge can complete its first turn without grading at all (the live case
+   * is the model's quota-limit response). The launcher retires that failed
+   * mission and makes one cross-backend retry on the same system-account route. */
+  terminalRecovery?: {
+    retiredTaskIds: string[];
+    attempts: number;
+    codes: AcceptanceGraderTerminalFailureCode[];
+    fallback: { agent: 'codex'; model: 'gpt-5.6-sol'; effort: 'high'; account: 'default' };
+  };
 };
 
 export const ACCEPTANCE_GRADER_STALE_AFTER_MS = 2 * 60 * 60_000;
 const ACCEPTANCE_GRADER_MAX_STALE_RETRIES = 4;
+const ACCEPTANCE_GRADER_LOG_TAIL_BYTES = 16_000;
+const ACCEPTANCE_GRADER_MAX_TERMINAL_FALLBACKS = 1;
+const ACCEPTANCE_GRADER_FALLBACK = {
+  agent: 'codex' as const,
+  model: 'gpt-5.6-sol' as const,
+  effort: 'high' as const,
+  account: 'default' as const,
+};
+
+export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted';
+
+export interface AcceptanceGraderTerminalFailure {
+  code: AcceptanceGraderTerminalFailureCode;
+  evidence: string;
+}
+
+/**
+ * A bounded, exact detector for a terminal first turn that can never satisfy the
+ * acceptance mission. Keep this narrower than a generic "error" scan: the frozen
+ * plan evidence is rendered in the same log, so broad words would create false
+ * positives from the material the judge was asked to inspect.
+ */
+export function classifyAcceptanceGraderTerminalFailure(
+  rawLog: string,
+): AcceptanceGraderTerminalFailure | null {
+  const normalized = rawLog
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n');
+  const quota = normalized.match(
+    /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
+  );
+  if (!quota) return null;
+  return {
+    code: 'model_quota_exhausted',
+    evidence: quota[0].replace(/\s+/g, ' ').trim().slice(0, 400),
+  };
+}
+
+function readAcceptanceGraderLogTail(path: string): string {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, ACCEPTANCE_GRADER_LOG_TAIL_BYTES);
+    if (length <= 0) return '';
+    const buffer = Buffer.allocUnsafe(length);
+    const read = readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    return buffer.toString('utf8', 0, read);
+  } catch {
+    return '';
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* already closed */ }
+    }
+  }
+}
 
 const trim = (value: unknown, max: number): string | null =>
   typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : null;
@@ -359,6 +426,7 @@ export async function launchAcceptanceGrader(
     launch?: typeof launchAgentTool.handler;
     listTasks?: typeof listTasks;
     killTask?: typeof killTask;
+    readLogTail?: (path: string) => string;
     nowMs?: () => number;
     staleAfterMs?: number;
   } = {},
@@ -396,20 +464,52 @@ export async function launchAcceptanceGrader(
     const launch = deps.launch ?? launchAgentTool.handler;
     const readTasks = deps.listTasks ?? listTasks;
     const terminateTask = deps.killTask ?? killTask;
+    const readLogTail = deps.readLogTail ?? readAcceptanceGraderLogTail;
     const nowMs = deps.nowMs ?? Date.now;
     const staleAfterMs = deps.staleAfterMs ?? ACCEPTANCE_GRADER_STALE_AFTER_MS;
-    const retiredTaskIds: string[] = [];
+    const staleTaskIds: string[] = [];
+    const terminalTaskIds: string[] = [];
+    const terminalCodes: AcceptanceGraderTerminalFailureCode[] = [];
     let currentIdempotencyKey = idempotencyKey;
+    let launchBackend: 'claude' | 'codex' = 'claude';
+    let terminalFallbacks = 0;
+
+    const recoveryFields = (attempts: number) => ({
+      ...(staleTaskIds.length
+        ? { staleRecovery: { retiredTaskIds: staleTaskIds, attempts } }
+        : {}),
+      ...(terminalTaskIds.length
+        ? {
+            terminalRecovery: {
+              retiredTaskIds: terminalTaskIds,
+              attempts,
+              codes: terminalCodes,
+              fallback: ACCEPTANCE_GRADER_FALLBACK,
+            },
+          }
+        : {}),
+    });
 
     for (let attempt = 0; attempt <= ACCEPTANCE_GRADER_MAX_STALE_RETRIES; attempt += 1) {
+      const useFallback = launchBackend === ACCEPTANCE_GRADER_FALLBACK.agent;
       const result = (await launch(
         {
           brief,
           harness: plan.row.harnessSlug,
           headless: true,
-          agent: 'claude',
+          account: 'default',
+          agent: launchBackend,
           count: 1,
-          members: [{ role: 'judge' }],
+          members: [
+            useFallback
+              ? {
+                  role: 'judge',
+                  agent: ACCEPTANCE_GRADER_FALLBACK.agent,
+                  model: ACCEPTANCE_GRADER_FALLBACK.model,
+                  effort: ACCEPTANCE_GRADER_FALLBACK.effort,
+                }
+              : { role: 'judge' },
+          ],
           label,
           idempotencyKey: currentIdempotencyKey,
         } as never,
@@ -419,6 +519,66 @@ export async function launchAcceptanceGrader(
         content?: Array<{ text?: string }>;
         data?: { deduped?: boolean; launch?: unknown };
       };
+      const launchData = result.data?.launch as {
+        tasks?: Array<{ taskId?: unknown; logPath?: unknown }>;
+      } | undefined;
+      const launchedTask = launchData?.tasks?.[0];
+      const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
+      const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
+      const terminalFailure = logPath
+        ? classifyAcceptanceGraderTerminalFailure(readLogTail(logPath))
+        : null;
+
+      if (terminalFailure) {
+        if (!taskId) {
+          return {
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            label,
+            launch: result.data?.launch,
+            error:
+              `acceptance grader ended on ${terminalFailure.code}, but its launch receipt carried no task id; ` +
+              'refusing an untracked fallback',
+            ...recoveryFields(attempt + 1),
+          };
+        }
+        const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
+        if (!killed.ok && killed.error !== 'not_live' && killed.error !== 'task_not_found') {
+          return {
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            label,
+            launch: result.data?.launch,
+            error:
+              `acceptance grader '${taskId}' ended on ${terminalFailure.code}, but its failed mission ` +
+              `could not be retired: ${killed.error}`,
+            ...recoveryFields(attempt + 1),
+          };
+        }
+        terminalTaskIds.push(taskId);
+        terminalCodes.push(terminalFailure.code);
+        if (terminalFallbacks >= ACCEPTANCE_GRADER_MAX_TERMINAL_FALLBACKS) {
+          return {
+            state: 'failed',
+            idempotencyKey: currentIdempotencyKey,
+            label,
+            launch: result.data?.launch,
+            error:
+              `acceptance grader fallback also ended on ${terminalFailure.code}; ` +
+              'the one-retry ceiling stopped another launch',
+            ...recoveryFields(attempt + 1),
+          };
+        }
+        terminalFallbacks += 1;
+        launchBackend = ACCEPTANCE_GRADER_FALLBACK.agent;
+        const retryIdentity = createHash('sha256')
+          .update(`${currentIdempotencyKey}\0${taskId}\0${terminalFailure.code}\0${launchBackend}`)
+          .digest('hex')
+          .slice(0, 16);
+        currentIdempotencyKey = `${idempotencyKey}:recovery:${retryIdentity}`;
+        continue;
+      }
+
       if (result.isError) {
         return {
           state: 'failed',
@@ -426,39 +586,52 @@ export async function launchAcceptanceGrader(
           label,
           launch: result.data?.launch,
           error: result.content?.[0]?.text ?? 'acceptance grader launch failed',
-          ...(retiredTaskIds.length
-            ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
-            : {}),
+          ...recoveryFields(attempt + 1),
         };
       }
+
       if (!result.data?.deduped) {
         return {
           state: 'launched',
           idempotencyKey: currentIdempotencyKey,
           label,
           launch: result.data?.launch,
-          ...(retiredTaskIds.length
-            ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
-            : {}),
+          ...recoveryFields(attempt + 1),
         };
       }
 
-      const launchData = result.data.launch as { tasks?: Array<{ taskId?: unknown }> } | undefined;
-      const taskId = typeof launchData?.tasks?.[0]?.taskId === 'string' ? launchData.tasks[0].taskId : null;
       if (!taskId) {
-        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+        return {
+          state: 'deduped',
+          idempotencyKey: currentIdempotencyKey,
+          label,
+          launch: result.data.launch,
+          ...recoveryFields(attempt + 1),
+        };
       }
       const task = (await readTasks({ rootTaskId: taskId, includeEnded: true, limit: 50 })).find(
         (row) => row.taskId === taskId,
       );
       if (!task) {
-        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+        return {
+          state: 'deduped',
+          idempotencyKey: currentIdempotencyKey,
+          label,
+          launch: result.data.launch,
+          ...recoveryFields(attempt + 1),
+        };
       }
       const live = task.endedAt == null && (task.state === 'pending' || task.state === 'running');
       const startedAtMs = Date.parse(task.startedAt);
       const overAge = Number.isFinite(startedAtMs) && nowMs() - startedAtMs >= staleAfterMs;
       if (live && !overAge) {
-        return { state: 'deduped', idempotencyKey: currentIdempotencyKey, label, launch: result.data.launch };
+        return {
+          state: 'deduped',
+          idempotencyKey: currentIdempotencyKey,
+          label,
+          launch: result.data.launch,
+          ...recoveryFields(attempt + 1),
+        };
       }
       if (live) {
         const killed = await terminateTask(taskId, { includeSubtree: true, escalateAfterMs: 5_000 });
@@ -469,13 +642,11 @@ export async function launchAcceptanceGrader(
             label,
             launch: result.data.launch,
             error: `stale acceptance grader '${taskId}' could not be retired: ${killed.error}`,
-            ...(retiredTaskIds.length
-              ? { staleRecovery: { retiredTaskIds, attempts: attempt + 1 } }
-              : {}),
+            ...recoveryFields(attempt + 1),
           };
         }
       }
-      retiredTaskIds.push(taskId);
+      staleTaskIds.push(taskId);
       const retryIdentity = createHash('sha256')
         .update(`${currentIdempotencyKey}\0${taskId}`)
         .digest('hex')
@@ -488,7 +659,17 @@ export async function launchAcceptanceGrader(
       idempotencyKey: currentIdempotencyKey,
       label,
       error: `acceptance grader stale-dedupe recovery exceeded ${ACCEPTANCE_GRADER_MAX_STALE_RETRIES} retries`,
-      staleRecovery: { retiredTaskIds, attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1 },
+      staleRecovery: { retiredTaskIds: staleTaskIds, attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1 },
+      ...(terminalTaskIds.length
+        ? {
+            terminalRecovery: {
+              retiredTaskIds: terminalTaskIds,
+              attempts: ACCEPTANCE_GRADER_MAX_STALE_RETRIES + 1,
+              codes: terminalCodes,
+              fallback: ACCEPTANCE_GRADER_FALLBACK,
+            },
+          }
+        : {}),
     };
   } catch (error) {
     return { state: 'failed', idempotencyKey, label, error: error instanceof Error ? error.message : String(error) };

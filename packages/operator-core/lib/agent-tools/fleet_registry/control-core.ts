@@ -108,7 +108,7 @@ export function fleetControlCueText(
         'Finish only the atomic step in hand, then: work_items:checkpoint + release your claims ' +
         `(or complete with evidence), release your file locks, and end any armed loop with loop:end. ` +
         'If an autonomy-implying mode remains active without a deliberate independent event await, ' +
-        'retry with loop:end { acknowledgeWakeLessAutonomy:true }; alternatively register an events:await ' +
+        'retry with loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }; alternatively register an events:await ' +
         'wake or exit the mode before ending the loop, then ' +
         `${ackInstruction}. ` +
         'That ack is a LIFECYCLE RECEIPT: it takes only msg_id and carries no free text, so do not ' +

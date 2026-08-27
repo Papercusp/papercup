@@ -273,6 +273,140 @@ export function unionRequiredKeyHint(branches: readonly { required?: unknown }[]
     .join('|');
 }
 
+/** Keep conditional root-union guidance useful without allowing one schema to
+ * consume the discovery response. A skipped hint is safer than a partial
+ * condition that could teach an invalid value. */
+export const UNION_CONDITIONAL_HINT_MAX_CHARS = 320;
+const UNION_CONDITIONAL_HINT_MAX_VALUES = 8;
+const UNION_CONDITIONAL_HINT_MAX_RELATIONS = 4;
+
+type UnionSchemaBranch = { properties?: unknown; required?: unknown };
+type UnionScalarValue = string | number | boolean | null;
+
+function explicitlyForbiddenSchema(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+  const not = (raw as { not?: unknown }).not;
+  return !!not && typeof not === 'object' && !Array.isArray(not) && Object.keys(not).length === 0;
+}
+
+function unionValueKey(value: UnionScalarValue): string {
+  return `${typeof value}:${String(value)}`;
+}
+
+function unionValueText(value: UnionScalarValue): string {
+  if (typeof value === 'string' && /^[A-Za-z0-9_.:-]+$/.test(value)) return value;
+  return JSON.stringify(value);
+}
+
+function unionConditionText(name: string, values: UnionScalarValue[], negate = false): string | null {
+  if (values.length === 0) return null;
+  if (values.length === 1) return `${name}${negate ? '!=' : '='}${unionValueText(values[0])}`;
+  if (values.length > UNION_CONDITIONAL_HINT_MAX_VALUES) return null;
+  return `${name}${negate ? ' not-in ' : ' in '}(${values.map(unionValueText).join('|')})`;
+}
+
+/**
+ * Render explicit required/forbidden relationships in a root union.
+ *
+ * This deliberately needs a scalar discriminator in every branch and an
+ * explicit target classification in every branch (`required` or `not:{}`).
+ * Missing JSON-schema properties are not treated as forbidden: omission may
+ * still be allowed by an open object schema. The result is bounded and emits
+ * whole relations only, so a verbose or ambiguous union fails open.
+ */
+export function unionConditionalHint(branches: readonly UnionSchemaBranch[]): string {
+  if (branches.length < 2) return '';
+  const branchData = branches.map((branch) => {
+    const properties =
+      branch.properties && typeof branch.properties === 'object' && !Array.isArray(branch.properties)
+        ? (branch.properties as Record<string, unknown>)
+        : null;
+    const required = new Set<string>(
+      Array.isArray(branch.required) ? branch.required.filter((value): value is string => typeof value === 'string') : [],
+    );
+    return { properties, required };
+  });
+  if (branchData.some((branch) => !branch.properties)) return '';
+
+  const firstProperties = branchData[0].properties as Record<string, unknown>;
+  const discriminatorNames = Object.keys(firstProperties).filter((name) =>
+    branchData.every((branch) => {
+      const values = scalarSchemaValues((branch.properties as Record<string, unknown>)[name]);
+      return !!values && values.length > 0;
+    }),
+  );
+  const targetNames = [...new Set(branchData.flatMap((branch) => Object.keys(branch.properties as Record<string, unknown>)))];
+  const relations: string[] = [];
+
+  for (const discriminator of discriminatorNames) {
+    const discriminatorValues = branchData.map((branch) =>
+      scalarSchemaValues((branch.properties as Record<string, unknown>)[discriminator])!,
+    );
+    const allValues = new Map<string, UnionScalarValue>();
+    for (const values of discriminatorValues) {
+      for (const value of values) allValues.set(unionValueKey(value), value);
+    }
+    if (allValues.size < 2) continue;
+
+    for (const target of targetNames) {
+      if (target === discriminator) continue;
+      const statuses = new Map<string, 'required' | 'forbidden'>();
+      const requiredValues = new Map<string, UnionScalarValue>();
+      const forbiddenValues = new Map<string, UnionScalarValue>();
+      let valid = true;
+
+      branchData.forEach((branch, index) => {
+        const properties = branch.properties as Record<string, unknown>;
+        const status = branch.required.has(target)
+          ? 'required'
+          : explicitlyForbiddenSchema(properties[target])
+            ? 'forbidden'
+            : null;
+        if (!status) {
+          valid = false;
+          return;
+        }
+        for (const value of discriminatorValues[index]) {
+          const key = unionValueKey(value);
+          const prior = statuses.get(key);
+          if (prior && prior !== status) {
+            valid = false;
+            return;
+          }
+          statuses.set(key, status);
+          (status === 'required' ? requiredValues : forbiddenValues).set(key, value);
+        }
+      });
+
+      if (!valid || requiredValues.size === 0 || forbiddenValues.size === 0 || statuses.size !== allValues.size)
+        continue;
+
+      const requiredList = [...requiredValues.values()];
+      const forbiddenList = [...forbiddenValues.values()];
+      const requiredCondition =
+        requiredList.length === 1 && forbiddenList.length > 0
+          ? unionConditionText(discriminator, requiredList)
+          : forbiddenList.length === 1 && requiredList.length > 0
+            ? unionConditionText(discriminator, forbiddenList, true)
+            : unionConditionText(discriminator, requiredList);
+      const forbiddenCondition =
+        requiredList.length === 1 && forbiddenList.length > 0
+          ? unionConditionText(discriminator, requiredList, true)
+          : forbiddenList.length === 1 && requiredList.length > 0
+            ? unionConditionText(discriminator, forbiddenList)
+            : unionConditionText(discriminator, forbiddenList);
+      if (!requiredCondition || !forbiddenCondition) continue;
+
+      const relation = `when ${requiredCondition} => ${target} required; when ${forbiddenCondition} => ${target} forbidden`;
+      const candidate = relations.length > 0 ? `${relations.join('; ')}; ${relation}` : relation;
+      if (candidate.length > UNION_CONDITIONAL_HINT_MAX_CHARS) continue;
+      relations.push(relation);
+      if (relations.length >= UNION_CONDITIONAL_HINT_MAX_RELATIONS) return relations.join('; ');
+    }
+  }
+  return relations.join('; ');
+}
+
 /**
  * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
  * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
@@ -331,6 +465,7 @@ export function schemaToText(inputSchema: unknown): string | null {
   if (merged.size === 0) return null;
 
   const unionHint = branches.length > 1 ? unionRequiredKeyHint(branches) : '';
+  const conditionalHint = branches.length > 1 ? unionConditionalHint(branches) : '';
   const parts: string[] = [];
   for (const [name, entry] of merged) {
     const raw = entry.raw;
@@ -416,7 +551,9 @@ export function schemaToText(inputSchema: unknown): string | null {
     const rendered = `${head}${itemText}`;
     parts.push(desc ? `${rendered} ${desc}` : rendered);
   }
-  return parts.length > 0 ? `${unionHint ? `one-of:${unionHint}; ` : ''}${parts.join('; ')}` : null;
+  return parts.length > 0
+    ? `${unionHint ? `one-of:${unionHint}; ` : ''}${conditionalHint ? `${conditionalHint}; ` : ''}${parts.join('; ')}`
+    : null;
 }
 
 function unitOf(pack: PackDescriptor): ToolDiscoveryEntry['unit'] {

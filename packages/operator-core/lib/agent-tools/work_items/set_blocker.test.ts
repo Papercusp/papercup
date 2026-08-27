@@ -116,6 +116,81 @@ describe('work_items:set_blocker', () => {
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
+  it('accepts a clear-only request and infers the sole active blocker kind', async () => {
+    const blocker = {
+      kind: 'runtime',
+      ref: 'dolphin:dbus',
+      summary: 'runtime unavailable',
+      status: 'active',
+      createdAt: '2026-07-13T08:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-07-13T08:00:00.000Z',
+    };
+    const item = {
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      harness: 'papercup',
+      payload: { externalBlockers: [blocker] },
+    };
+    getWorkItem.mockResolvedValue(item);
+    mergeWorkItemPayload.mockImplementation(async (_id, patch) => ({
+      ...item,
+      payload: { ...item.payload, ...patch },
+    }));
+
+    const out = await one({
+      id: 'WI-1',
+      ref: 'dolphin:dbus',
+      clear: true,
+      evidence: 'DBus responsive',
+    });
+
+    expect(out.ok).toBe(true);
+    expect(out.changed).toBe(true);
+    expect(out.activeBlockers).toEqual([]);
+    expect(out.blockerHistory[0]).toMatchObject({ status: 'cleared', evidence: 'DBus responsive' });
+    expect(setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-1',
+      false,
+      expect.objectContaining({ reason: expect.stringContaining('runtime:dolphin:dbus cleared') }),
+    );
+  });
+
+  it('requires kind for a set request but accepts kind-less clear-only bulk entries', () => {
+    expect(() => parse({ id: 'WI-1', ref: 'dolphin:dbus' })).toThrow(/kind is required/);
+    expect(() => parse({ items: [{ id: 'WI-1', ref: 'dolphin:dbus' }] })).toThrow(/kind is required/);
+    expect(() => parse({ id: 'WI-1', ref: 'dolphin:dbus', clear: true })).not.toThrow();
+    expect(() => parse({ items: [{ id: 'WI-1', ref: 'dolphin:dbus', clear: true }] })).not.toThrow();
+  });
+
+  it('refuses a clear-only request when the ref is active under multiple kinds', async () => {
+    const blocker = (kind: 'runtime' | 'event') => ({
+      kind,
+      ref: 'shared-ref',
+      summary: `${kind} blocker`,
+      status: 'active',
+      createdAt: '2026-07-13T08:00:00.000Z',
+      createdBy: 'su-a',
+      updatedAt: '2026-07-13T08:00:00.000Z',
+    });
+    getWorkItem.mockResolvedValue({
+      id: 'WI-1',
+      family: 'issue',
+      kind: 'bug',
+      state: 'open',
+      payload: { externalBlockers: [blocker('runtime'), blocker('event')] },
+    });
+
+    const out = await one({ id: 'WI-1', ref: 'shared-ref', clear: true });
+
+    expect(out).toMatchObject({ ok: false, id: 'WI-1' });
+    expect(out.error).toMatch(/ambiguous.*runtime.*event.*pass kind explicitly/);
+    expect(mergeWorkItemPayload).not.toHaveBeenCalled();
+    expect(setWorkItemClaimHold).not.toHaveBeenCalled();
+  });
+
   it('rejects a plan contradiction before writing any blocker payload', async () => {
     const item = {
       id: 'WI-1', family: 'issue', kind: 'bug', state: 'open', harness: 'papercup',

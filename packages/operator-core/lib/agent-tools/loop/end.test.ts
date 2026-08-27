@@ -78,6 +78,7 @@ import { deactivateLoop, getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNote } from '../../carry-note';
 import { listActiveAwaits, listParkedAwaitsForSubscribers } from '../../events/await/store';
 import { getModes } from '../../modes/store';
+import { checkOpenDirectivesGuard } from '../orders/open-directives-guard';
 import {
   GOAL_DISPOSITIONS,
   activeGoalForOwner,
@@ -99,6 +100,7 @@ const acceptanceGateMock = evaluateGoalAcceptanceGate as unknown as ReturnType<t
 const listActiveAwaitsMock = listActiveAwaits as unknown as ReturnType<typeof vi.fn>;
 const listParkedAwaitsMock = listParkedAwaitsForSubscribers as unknown as ReturnType<typeof vi.fn>;
 const getModesMock = getModes as unknown as ReturnType<typeof vi.fn>;
+const checkOpenDirectivesGuardMock = checkOpenDirectivesGuard as unknown as ReturnType<typeof vi.fn>;
 
 const ACTIVE_GOAL = {
   goalId: 'ship-paid-app-3f9a1c',
@@ -143,6 +145,8 @@ beforeEach(() => {
   listParkedAwaitsMock.mockResolvedValue([]);
   getModesMock.mockReset();
   getModesMock.mockResolvedValue([]);
+  checkOpenDirectivesGuardMock.mockReset();
+  checkOpenDirectivesGuardMock.mockResolvedValue(null);
 });
 
 describe('the P-012 wake-less autonomy guard', () => {
@@ -248,6 +252,77 @@ describe('the P-012 wake-less autonomy guard', () => {
     expect(got.ended).toBe(false);
     expect(String(got.note)).toMatch(/No active loop found/);
     expect(getModesMock).not.toHaveBeenCalled();
+  });
+
+  it('does not apply the open-directives guard to a confirmed inactive no-op', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      ownerId: 'su-caller-own-id',
+      active: false,
+    });
+    deactivateLoopMock.mockResolvedValue(false);
+    checkOpenDirectivesGuardMock.mockResolvedValue({
+      ok: false,
+      error: 'open_owner_directives',
+      openCount: 1,
+      directives: ['#10 open'],
+      note: 'acknowledgement required',
+    });
+
+    const got = await run({});
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(false);
+    expect(String(got.note)).toMatch(/No active loop found/);
+    expect(checkOpenDirectivesGuardMock).not.toHaveBeenCalled();
+  });
+
+  it('still applies the open-directives guard while an active loop would be stopped', async () => {
+    checkOpenDirectivesGuardMock.mockResolvedValue({
+      ok: false,
+      error: 'open_owner_directives',
+      openCount: 1,
+      directives: ['#10 open'],
+      note: 'acknowledgement required',
+    });
+
+    const got = await run({});
+
+    expect(got).toMatchObject({ isError: true, ok: false, error: 'open_owner_directives' });
+    expect(checkOpenDirectivesGuardMock).toHaveBeenCalledTimes(1);
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
+  it('does not let an unrelated directive block successor cleanup of a predecessor handoff loop', async () => {
+    getLoopStatusMock.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      ownerId: 'su-predecessor',
+      active: true,
+    });
+    activeGoalForOwnerMock.mockResolvedValue(ACTIVE_GOAL);
+    checkOpenDirectivesGuardMock.mockResolvedValue({
+      ok: false,
+      error: 'open_owner_directives',
+      openCount: 1,
+      directives: ['#10 open'],
+      note: 'acknowledgement required',
+    });
+
+    const got = await run({
+      ownerId: 'su-predecessor',
+      disposition: 'handoff',
+      handoffTo: 'su-successor',
+      reason: 'demoted after leadership transfer',
+    });
+
+    expect(got).toMatchObject({ ok: true, ended: true, disposition: 'handoff', dispositionApplied: true });
+    expect(checkOpenDirectivesGuardMock).not.toHaveBeenCalled();
+    expect(deactivateLoopMock).toHaveBeenCalledWith('su-predecessor', {
+      reason: 'demoted after leadership transfer',
+    });
+    expect(applyGoalDispositionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ disposition: 'handoff', handoffTo: 'su-successor' }),
+    );
   });
 
   it('fails open when the classification read is unavailable, preserving the always-stoppable contract', async () => {

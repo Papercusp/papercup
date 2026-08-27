@@ -133,11 +133,25 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const ownerId = args.ownerId ?? identity.ownerId;
+    // Read first so a no-op end on an already-inactive loop stays a no-op: it
+    // cannot CREATE the unsafe state the open-directives guard exists to
+    // prevent. This also remains the carry-note/report lookup for goal
+    // disposition below.
+    const statusBefore = await getLoopStatus(ownerId).catch(() => null);
     // EI-11484 P4: while OPEN owner directives exist, ending the loop silently
     // removes the surface that re-renders them every wake — warn first;
     // acknowledgeOpenDirectives:true proceeds. Fail-open on read errors (you
-    // must always be able to stop a loop you armed).
-    {
+    // must always be able to stop a loop you armed). A confirmed inactive loop
+    // is already stopped, so there is no surface to remove and this guard is
+    // intentionally skipped for that ordinary no-op.
+    // A successor cleaning up a demoted predecessor's duplicate loop is a
+    // cross-owner lifecycle handoff. Its explicit successor keeps this narrow:
+    // the workspace-level directive guard must not couple that single-leader
+    // cleanup to an unrelated directive belonging to the active successor.
+    // Same-owner and all non-handoff cross-owner ends retain the guard.
+    const explicitCrossOwnerHandoff =
+      ownerId !== identity.ownerId && args.disposition === 'handoff' && Boolean(args.handoffTo);
+    if (statusBefore?.active !== false && !explicitCrossOwnerHandoff) {
       const { checkOpenDirectivesGuard } = await import('../orders/open-directives-guard');
       const guard = await checkOpenDirectivesGuard({
         workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId,
@@ -232,10 +246,6 @@ export default defineTool({
       }
       windDownOutputs = ov.outputs;
     }
-    // Read first so a no-op end on an already-inactive loop stays a no-op: it
-    // cannot CREATE the unsafe state this guard exists to prevent. This also
-    // remains the carry-note/report lookup for goal disposition below.
-    const statusBefore = await getLoopStatus(ownerId).catch(() => null);
     // P-012 (loop-wake-reliability-2026-08-24 D-004): an autonomy posture is
     // authorization to keep moving, while the loop is its recurring wake source.
     // Ending the latter while the former remains registered — with no deliberate

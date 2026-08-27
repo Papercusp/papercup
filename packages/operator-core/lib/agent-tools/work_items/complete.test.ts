@@ -2640,6 +2640,22 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.deferred).toEqual(['timeout follow-up']);
     });
 
+    it('coerces scalar self-review findings and yielded changes losslessly', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        selfReview: {
+          lookedAt: 'the diff',
+          findings: 'the test missed a nested scalar',
+          changedAsResult: 'added the regression guard',
+        },
+      }) as { selfReview: Record<string, unknown> };
+      expect(out.selfReview).toEqual({
+        lookedAt: 'the diff',
+        findings: ['the test missed a nested scalar'],
+        changedAsResult: ['added the regression guard'],
+      });
+    });
+
     it('coerces structured verification aliases', () => {
       const out = coerceCompletionShape({
         summary: 's',
@@ -2741,6 +2757,35 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         completion: {
           addedTests: true,
           testsRun: 'focused completion test; green',
+        },
+      });
+    });
+
+    it('wires nested self-review scalar-to-array recovery through the published args schema', () => {
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any };
+        }
+      ).safeParse({
+        id: 'EI-21578247892962931',
+        completion: {
+          workItem: 'EI-21578247892962931',
+          summary: 'nested self-review shape recovery',
+          selfReview: {
+            lookedAt: 'completion-coerce.ts',
+            findings: 'scalar finding',
+            changedAsResult: 'scalar change',
+          },
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toMatchObject({
+        completion: {
+          selfReview: {
+            findings: ['scalar finding'],
+            changedAsResult: ['scalar change'],
+          },
         },
       });
     });

@@ -105,15 +105,21 @@ vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
 }));
 const getLoopStatus = vi.fn();
+const readActiveLoopFacts = vi.fn();
+const materializeLoop = vi.fn();
 vi.mock('../../harness/routines/loop', () => ({
   getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+  readActiveLoopFacts: (...a: unknown[]) => readActiveLoopFacts(...a),
+  materializeLoop: (...a: unknown[]) => materializeLoop(...a),
 }));
 const getLoopCarryNoteWithMeta = vi.fn();
+const setLoopCarryNoteWithPrior = vi.fn();
 vi.mock('../../carry-note', async () => {
   const actual = await vi.importActual<typeof import('../../carry-note')>('../../carry-note');
   return {
     ...actual,
     getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
+    setLoopCarryNoteWithPrior: (...a: unknown[]) => setLoopCarryNoteWithPrior(...a),
   };
 });
 // EI-8987: buildCarryBrief drives both the default focus AND the stale-checkpoint
@@ -202,6 +208,32 @@ beforeEach(async () => {
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
   contextWindowForOwner.mockResolvedValue(null);
   getLoopStatus.mockResolvedValue(null);
+  readActiveLoopFacts.mockResolvedValue({
+    active: true,
+    intervalSec: 60,
+    harnessSlug: 'papercusp',
+    goal: 'drain the active lane',
+    kickoff: 'CUSTOM OR DEFAULT LOOP KICKOFF',
+    customWakePrompt: false,
+    fireCount: 0,
+    carry: 'warm',
+    continuation: 'settle',
+    mode: 'work',
+    monitor: null,
+    armedAt: null,
+  });
+  materializeLoop.mockResolvedValue({
+    id: 'loop-id',
+    name: 'loop-su-caller',
+    nextFireAt: null,
+    targetRole: 'loop-wake',
+    intervalSec: 60,
+    changed: true,
+  });
+  setLoopCarryNoteWithPrior.mockImplementation(async (_ref: unknown, note: unknown) => ({
+    stored: typeof note === 'string' ? note : null,
+    priorLength: 0,
+  }));
   getLoopCarryNoteWithMeta.mockResolvedValue({ note: null, updatedAtMs: null });
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
@@ -430,30 +462,103 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
-  it('an active warm loop without a host receives the deterministic cold-retune recovery', async () => {
+  it('an active warm loop without a host is retuned and settled in one request', async () => {
     findLiveHost.mockReturnValue(null);
     getLoopStatus.mockResolvedValue({
       active: true,
       carry: 'warm',
       harnessSlug: 'papercusp',
     });
+    readActiveLoopFacts.mockResolvedValue({
+      active: true,
+      intervalSec: 135,
+      harnessSlug: 'papercusp',
+      goal: 'drain the active lane',
+      kickoff: 'CUSTOM KICKOFF — preserve this exact text',
+      customWakePrompt: true,
+      fireCount: 7,
+      carry: 'warm',
+      continuation: 'gated',
+      mode: 'monitor',
+      monitor: { authority: { kind: 'owner-turn' } },
+      armedAt: '2026-08-27T05:00:00.000Z',
+    });
+    const seeded = '## Did\nPrepared this active warm loop for a no-PTY deterministic compaction boundary.';
+    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: `${seeded}\n\n## Left\ncontinue the fleet lane`, priorLength: 0 });
+    getLoopCarryNoteWithMeta.mockImplementation(async () => ({
+      note: setLoopCarryNoteWithPrior.mock.results[0]?.value
+        ? (await setLoopCarryNoteWithPrior.mock.results[0].value).stored
+        : null,
+      updatedAtMs: Date.now(),
+    }));
 
     const out = await call({ focus: 'continue the fleet lane' });
     const b = body(out);
 
-    expect(out.isError).toBe(true);
+    expect(out.isError).toBeUndefined();
     expect(b).toMatchObject({
-      ok: false,
-      error: 'cold_loop_retune_required',
-      recovery: {
-        retune: { tool: 'loop:arm', args: { carry: 'cold' } },
-        checkpoint: {
-          tool: 'loop:checkpoint',
-          requiredFields: ['did', 'left', 'insight', 'next'],
-        },
-        retry: { tool: 'session:request-compaction', args: { focus: 'continue the fleet lane' } },
+      ok: true,
+      requested: true,
+      respawn: 'cold-loop-settle',
+      carry: 'cold',
+      retuned: true,
+      carryNote: { verified: true },
+      loop: {
+        harness: 'papercusp',
+        intervalSec: 135,
+        goal: 'drain the active lane',
+        mode: 'monitor',
+        customWakePrompt: true,
       },
     });
+    expect(setLoopCarryNoteWithPrior).toHaveBeenCalledWith(
+      { harness: 'papercusp', ownerId: 'su-caller', workspaceId: undefined },
+      expect.stringContaining('continue the fleet lane'),
+      expect.objectContaining({ transform: expect.any(Function) }),
+    );
+    expect(materializeLoop).toHaveBeenCalledWith(
+      expect.objectContaining({
+        harnessSlug: 'papercusp',
+        ownerId: 'su-caller',
+        intervalSec: 135,
+        kickoff: 'CUSTOM KICKOFF — preserve this exact text',
+        customWakePrompt: true,
+        goal: 'drain the active lane',
+        carry: 'cold',
+        continuation: 'gated',
+        mode: 'monitor',
+        monitor: { authority: { kind: 'owner-turn' } },
+      }),
+    );
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('does not retune when the seed cannot be verified through the cold-wake reader', async () => {
+    findLiveHost.mockReturnValue(null);
+    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
+    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'seeded note', priorLength: 0 });
+    getLoopCarryNoteWithMeta.mockResolvedValue({ note: null, updatedAtMs: null });
+
+    const out = await call({ focus: 'continue the fleet lane' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'verify-carry' });
+    expect(materializeLoop).not.toHaveBeenCalled();
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('leaves the loop warm when the verified seed is followed by a failed retune', async () => {
+    findLiveHost.mockReturnValue(null);
+    getLoopStatus.mockResolvedValue({ active: true, carry: 'warm', harnessSlug: 'papercusp' });
+    setLoopCarryNoteWithPrior.mockResolvedValue({ stored: 'verified seed', priorLength: 0 });
+    getLoopCarryNoteWithMeta.mockResolvedValue({ note: 'verified seed', updatedAtMs: Date.now() });
+    materializeLoop.mockRejectedValue(new Error('database unavailable'));
+
+    const out = await call({ focus: 'continue the fleet lane' });
+
+    expect(out.isError).toBe(true);
+    expect(body(out)).toMatchObject({ ok: false, error: 'cold_loop_recovery_failed', phase: 'retune-loop' });
+    expect(body(out).note).toContain('loop remains warm');
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 

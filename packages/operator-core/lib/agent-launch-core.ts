@@ -805,7 +805,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
     // EI-8393: kept tight — this rule is the single biggest driver of the P-013
     // prompt-bloat budget; trim further before adding anything to it.
     head: 'STAY ALIVE across turns — loop:arm at spawn, not park',
-    body: 'You have no human at your keyboard: as your FIRST action, call `loop:arm { intervalSec, goal }` to drain your lane. Each wake: pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat — the armed loop re-wakes you automatically. `loop:end` ONLY when nothing is claimable for your spec, or you are genuinely blocked. Ending a turn with no armed loop IS parking (EI-8318): you go silent until the leader manually re-wakes you, capping the WHOLE fleet at their wake cadence.',
+    body: 'No human is at your keyboard: FIRST call `loop:arm { intervalSec, goal }` to drain it. Each wake, pull via `scheduler:get_next` → work to terminal (`work_items:complete`) → repeat; the loop re-wakes you. Call `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` only when your spec has no claimable work or you are blocked. No armed loop at turn end parks you (EI-8318) until the leader re-wakes you, capping fleet throughput.',
   },
   {
     head: 'Flag to your LEADER; keep status in your FLEET, not the whole hive',

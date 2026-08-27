@@ -29,7 +29,8 @@ const DDL = `
     admitted_at timestamptz,
     admitted_by text,
     condition_key text,
-    lane text,
+    payload jsonb,
+    lane text GENERATED ALWAYS AS (payload ->> 'lane') STORED,
     PRIMARY KEY (workspace_id, harness_slug, feature_id)
   );
   CREATE TABLE harness_shared.admission_runs (
@@ -97,7 +98,7 @@ async function seedItem(input: { id: string; title: string; summary: string; adm
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
-       admission, admitted_at, admitted_by, condition_key, lane)
+       admission, admitted_at, admitted_by, condition_key, payload)
     VALUES (${WS}, ${HARNESS}, ${input.id}, ${input.title}, ${input.summary}, 'open', 'bug',
             'admitted', ${input.admittedAt}::timestamptz, 'system:promoter', NULL, NULL)`;
 }
@@ -158,7 +159,7 @@ describe('work-item admission hourly delta sweep (real PostgreSQL)', () => {
     const fileUmbrella = vi.fn(async (input: { proposal: { title: string; body: string } }) => {
       await db.sql`
         INSERT INTO harness_shared.work_items
-          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, admission, lane)
+          (workspace_id, harness_slug, feature_id, title, summary, status, item_kind, admission, payload)
         VALUES (${WS}, ${HARNESS}, 'EI-umbrella', ${input.proposal.title}, ${input.proposal.body},
                 'open', 'bug', 'pending', NULL)
         ON CONFLICT DO NOTHING`;

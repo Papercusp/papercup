@@ -43,8 +43,14 @@ import { markRespawnExpected } from '../../carry-respawn-marker';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
-import { getLoopStatus } from '../../harness/routines/loop';
-import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import {
+  getLoopStatus,
+  materializeLoop,
+  readActiveLoopFacts,
+  type LoopStatus,
+  type PriorLoopFacts,
+} from '../../harness/routines/loop';
+import { getLoopCarryNoteWithMeta, setLoopCarryNoteWithPrior, shortCarryHash } from '../../carry-note';
 import { MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION } from '../coordination/compaction-recovery';
 import {
   readLiveNativeBgTasks,
@@ -127,6 +133,164 @@ async function carryBriefFocus(brief: import('../../carry-brief').CarryBrief | n
     /* fall through to the static floor */
   }
   return DEFAULT_FOCUS;
+}
+
+/**
+ * A no-PTY loop cannot be cut through a host socket. An ACTIVE WARM loop can,
+ * however, make the same boundary through its next COLD wake — provided the
+ * carry anchor exists before the loop is retuned. Keep this recovery here,
+ * beside the host-gated path, so callers do not have to spend a second model
+ * turn discovering the loop:arm + loop:checkpoint recipe.
+ *
+ * The note write deliberately precedes the retune. If either write fails, the
+ * session remains warm and therefore retains its live context; a verified note
+ * left on a still-warm loop is harmless and makes the next retry idempotent.
+ */
+async function retuneWarmLoopForColdSettle(
+  ownerId: string,
+  workspaceId: string | null | undefined,
+  loop: LoopStatus,
+  focus: string,
+): Promise<
+  | {
+      ok: true;
+      carryNote: { seeded: boolean; verified: true; contentHash: string };
+      loop: { harness: string; intervalSec: number | null; goal: string | null; mode: string; customWakePrompt: boolean };
+    }
+  | { ok: false; phase: 'read-loop' | 'write-carry' | 'verify-carry' | 'retune-loop'; message: string }
+> {
+  let facts: PriorLoopFacts | null;
+  try {
+    facts = await readActiveLoopFacts(ownerId);
+  } catch (error) {
+    return {
+      ok: false,
+      phase: 'read-loop',
+      message: `Could not read the active loop configuration before the no-PTY recovery: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+  if (!facts?.active || !loop.active || loop.carry === 'cold') {
+    return {
+      ok: false,
+      phase: 'read-loop',
+      message: 'The active warm loop changed while compaction recovery was being prepared; re-read loop:status and retry.',
+    };
+  }
+
+  const harness = facts.harnessSlug ?? loop.harnessSlug;
+  const intervalSec = facts.intervalSec ?? loop.intervalSec;
+  if (!harness || intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) {
+    return {
+      ok: false,
+      phase: 'read-loop',
+      message: 'The active loop has no stable harness or cadence to preserve; it was left warm and unmodified.',
+    };
+  }
+
+  const seededNote = [
+    '## Did',
+    'Prepared this active warm loop for a no-PTY deterministic compaction boundary.',
+    '',
+    '## Left',
+    focus,
+    '',
+    '## Key insight',
+    'A no-PTY session cannot receive an in-place carry-respawn; the active loop configuration is preserved while its next wake changes to cold carry.',
+    '',
+    '## Next action',
+    'Resume the loop mission from this verified carry-note on the next cold wake.',
+  ].join('\n');
+
+  let stored: string | null = null;
+  try {
+    const write = await setLoopCarryNoteWithPrior(
+      { harness, ownerId, workspaceId: workspaceId ?? undefined },
+      seededNote,
+      {
+        // Preserve an existing, richer checkpoint. This makes the automatic
+        // seed additive and avoids replacing a note the agent already wrote.
+        transform: (priorNote, incomingNote) => priorNote?.trim() || incomingNote,
+      },
+    );
+    if (write.blockedReason && !write.stored) {
+      return {
+        ok: false,
+        phase: 'write-carry',
+        message: `Could not seed the cold-loop carry-note (${write.blockedReason}); the loop was left warm and unmodified.`,
+      };
+    }
+    stored = write.stored?.trim() || null;
+  } catch (error) {
+    return {
+      ok: false,
+      phase: 'write-carry',
+      message: `Could not seed the cold-loop carry-note: ${error instanceof Error ? error.message : String(error)}. The loop was left warm and unmodified.`,
+    };
+  }
+
+  if (!stored) {
+    return {
+      ok: false,
+      phase: 'write-carry',
+      message: 'The carry-note write returned no durable note; the loop was left warm and unmodified.',
+    };
+  }
+  const verified = await getLoopCarryNoteWithMeta({
+    harness,
+    ownerId,
+    workspaceId: workspaceId ?? undefined,
+  }).catch(() => ({ note: null, updatedAtMs: null }));
+  if (verified.note !== stored) {
+    return {
+      ok: false,
+      phase: 'verify-carry',
+      message:
+        `The cold-loop carry-note could not be verified through the wake-reader path (stored ${stored.length} chars, read back ${verified.note === null ? 'null' : `${verified.note.length} chars`}); ` +
+        'the loop was left warm and unmodified.',
+    };
+  }
+
+  try {
+    await materializeLoop({
+      workspaceId: workspaceId ?? undefined,
+      harnessSlug: harness,
+      ownerId,
+      intervalSec,
+      // Keep the exact kickoff, including an explicit custom wake prompt. The
+      // successor may not see a loop-fire kickoff during this boundary.
+      kickoff: facts.kickoff,
+      customWakePrompt: facts.customWakePrompt === true,
+      goal: facts.goal ?? loop.goal,
+      costCapCents: loop.costCapCents,
+      maxFires: loop.maxFires,
+      maxDurationSec: loop.maxDurationSec,
+      carry: 'cold',
+      continuation: facts.continuation,
+      mode: facts.mode,
+      ...(facts.monitor ? { monitor: facts.monitor } : {}),
+      active: true,
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      phase: 'retune-loop',
+      message:
+        `The carry-note is verified, but retuning the active loop to cold failed: ${error instanceof Error ? error.message : String(error)}. ` +
+        'The loop remains warm; retry session:request-compaction at the next clean boundary.',
+    };
+  }
+
+  return {
+    ok: true,
+    carryNote: { seeded: stored === seededNote, verified: true, contentHash: shortCarryHash(stored) },
+    loop: {
+      harness,
+      intervalSec,
+      goal: facts.goal ?? loop.goal,
+      mode: facts.mode,
+      customWakePrompt: facts.customWakePrompt === true,
+    },
+  };
 }
 
 /**
@@ -278,29 +442,46 @@ export default defineTool({
         }
       }
       if (loop?.active && loop.carry !== 'cold') {
+        const recovery = await retuneWarmLoopForColdSettle(
+          identity.ownerId,
+          identity.workspaceId,
+          loop,
+          (args.focus ?? '').trim() || DEFAULT_FOCUS,
+        );
+        if (!recovery.ok) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  requested: false,
+                  error: 'cold_loop_recovery_failed',
+                  phase: recovery.phase,
+                  note: recovery.message,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
         return {
           content: [
             {
               type: 'text' as const,
               text: JSON.stringify({
-                ok: false,
-                error: 'cold_loop_retune_required',
+                ok: true,
+                requested: true,
+                respawn: 'cold-loop-settle',
+                carry: 'cold',
+                retuned: true,
+                carryNote: recovery.carryNote,
+                loop: recovery.loop,
                 note:
-                  'This loop-driven session has no live psu-pty host, so an in-place carry-respawn is unavailable. ' +
-                  'Retune the ACTIVE loop to cold carry, write its durable carry-note, then call session:request-compaction again. ' +
-                  'The second call will return respawn:"cold-loop-settle"; end that turn and the next loop wake starts in fresh context.',
-                recovery: {
-                  retune: { tool: 'loop:arm', args: { carry: 'cold' } },
-                  checkpoint: {
-                    tool: 'loop:checkpoint',
-                    requiredFields: ['did', 'left', 'insight', 'next'],
-                  },
-                  retry: { tool: 'session:request-compaction', args: { focus: args.focus } },
-                },
+                  'No live psu-pty host is available for an in-place carry-respawn. The active warm loop was retuned to cold with its mission, cadence, mode, and kickoff preserved, and its carry-note was written and verified through the cold-wake reader. End this turn; the next loop wake starts in fresh context from that note.',
               }),
             },
           ],
-          isError: true,
         };
       }
       return {

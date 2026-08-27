@@ -328,7 +328,7 @@ describe('fleet scope assignment admission (P-016)', () => {
     }, ['WI-out']);
     expect(miss).toMatchObject({ windDown: true, quarantinedIds: ['WI-out'], fleetScope: { fleet: 'bugs' } });
     expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
-    expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+    expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
   });
 
   it('releases every incompatible pre-existing claim in one reconciliation sweep and alerts once', async () => {
@@ -848,7 +848,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.excludedBreakdownSummary).not.toMatch(/taken=0/);
       expect(miss.advice).toMatch(/FLOOR-GATED miss \(WI-5561/);
       expect(miss.advice).toMatch(/not a scope\/spec mismatch/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
     // EI-18741523426513509: `spec_matches_nothing` asserts a CAUSE (the spec's filter is wrong);
@@ -996,7 +996,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
       expect(miss.advice).toMatch(/ESCALATE to your fleet leader NOW/);
       expect(miss.advice).toMatch(/spec_matches_nothing/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       expect(miss.excludedBreakdown).toEqual(zeroMatchBreakdown);
       // The old (pre-fix) summary text actively said the OPPOSITE of the truth for this case
       // ("not a scope/spec bug — re-authoring the claim spec will not help"); assert it is gone.
@@ -1018,7 +1018,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).not.toMatch(/ESCALATE/);
       expect(miss.advice).toMatch(/LANE COMPLETE/);
       expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       expect(miss.excludedBreakdownSummary).toMatch(/all 2 are terminal/);
       expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual({
         matchedByFilter: 2,
@@ -1058,7 +1058,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).not.toMatch(/ESCALATE/);
       expect(miss.advice).toMatch(/successful completed-plan wind-down/);
       expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       expect((miss as { planTerminality?: unknown }).planTerminality).toEqual(planTerminality);
     });
 
@@ -1076,7 +1076,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).toMatch(/fleet launcher\/owner/);
       expect(miss.advice).toMatch(/do not route this miss to a dead leader/);
       expect(miss.advice).toMatch(/take leadership as the sole live member/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       expect((miss as { leaderLiveness?: unknown }).leaderLiveness).toBe(false);
     });
 
@@ -1107,7 +1107,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.paused).toBe(true);
       expect(miss.reason).toBeUndefined();
       expect(miss.excludedBreakdown).toBeUndefined();
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
     it('cooldown never masks specEmpty — a truly empty spec takes precedence in the error/advice', () => {
@@ -1206,7 +1206,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).toMatch(/genuinely empty right now/);
       expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBe(0);
       expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
     it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched is unavailable (null/undefined)', () => {
@@ -1220,7 +1220,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         expect(miss.error).toMatch(/ORDINARY DRAIN/);
         expect(miss.error).toMatch(/could not be confirmed/);
         expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
-        expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+        expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
       }
     });
 
@@ -1887,7 +1887,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.payloadFilter).toEqual({
         all: [{ harness: { equals: 'papercusp' } }, { kind: { in: ['bug'] } }],
       });
-      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
     });
 
     it('falls back to a harness-only filter when the spec narrows on nothing payload-filterable', () => {

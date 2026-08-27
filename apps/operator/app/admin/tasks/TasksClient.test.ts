@@ -146,10 +146,10 @@ describe('process provenance', () => {
 
   it('counts each public classification without flattening every non-owned row into a gap', () => {
     const rows = [
-      { pid: 1, cmdline: 'a', cgroupPath: '/a', owned: true, scope: 'owned', exemptReason: null },
-      { pid: 2, cmdline: 'b', cgroupPath: '/b', owned: false, scope: 'unaccounted', exemptReason: null },
-      { pid: 3, cmdline: 'c', cgroupPath: '/c', owned: false, scope: 'abandoned-window', exemptReason: null },
-      { pid: 4, cmdline: 'd', cgroupPath: '/d', owned: false, scope: 'exempt', exemptReason: 'human-terminal' },
+      { pid: 1, startedAt: null, executable: null, role: null, build: null, cgroupPath: '/a', owned: true, scope: 'owned', exemptReason: null },
+      { pid: 2, startedAt: null, executable: null, role: null, build: null, cgroupPath: '/b', owned: false, scope: 'unaccounted', exemptReason: null },
+      { pid: 3, startedAt: null, executable: null, role: null, build: null, cgroupPath: '/c', owned: false, scope: 'abandoned-window', exemptReason: null },
+      { pid: 4, startedAt: null, executable: null, role: null, build: null, cgroupPath: '/d', owned: false, scope: 'exempt', exemptReason: 'human-terminal' },
     ] as const;
 
     expect(countProcessBuckets(rows)).toEqual({

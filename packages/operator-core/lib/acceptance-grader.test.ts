@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acceptanceGraderLabelPrefix,
   buildAssignedAcceptanceGraderBrief,
+  classifyAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
   resolveAcceptanceGrader,
 } from './acceptance-grader';
@@ -80,6 +81,7 @@ describe('launchAcceptanceGrader', () => {
     expect(args).toMatchObject({
       harness: 'papercusp',
       headless: true,
+      account: 'default',
       agent: 'claude',
       count: 1,
       members: [{ role: 'judge' }],
@@ -143,8 +145,107 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
+  it('retires a quota-blocked Claude judge and performs one deterministic Codex fallback', async () => {
+    const quotaLog =
+      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    const launch = vi.fn(async (args: Record<string, unknown>) =>
+      args.agent === 'codex'
+        ? {
+            content: [{ type: 'text', text: 'launched fallback' }],
+            data: {
+              deduped: false,
+              launch: { tasks: [{ taskId: 'task-fallback', logPath: '/tmp/fallback.log' }] },
+            },
+          }
+        : {
+            isError: true,
+            content: [{ type: 'text', text: 'launched primary' }],
+            data: {
+              deduped: false,
+              launch: { tasks: [{ taskId: 'task-quota', logPath: '/tmp/quota.log' }] },
+            },
+          },
+    );
+    const kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      readLogTail: (path) => (path === '/tmp/quota.log' ? quotaLog : ''),
+    });
+
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith('task-quota', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({
+      account: 'default',
+      agent: 'codex',
+      members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
+      idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
+    });
+    expect(result).toMatchObject({
+      state: 'launched',
+      launch: { tasks: [{ taskId: 'task-fallback' }] },
+      terminalRecovery: {
+        retiredTaskIds: ['task-quota'],
+        attempts: 2,
+        codes: ['model_quota_exhausted'],
+        fallback: { agent: 'codex', model: 'gpt-5.6-sol', effort: 'high', account: 'default' },
+      },
+    });
+  });
+
+  it('stops after the single terminal fallback when its model is quota-blocked too', async () => {
+    const quotaLog =
+      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    const launch = vi.fn(async (args: Record<string, unknown>) => ({
+      content: [{ type: 'text', text: 'launched' }],
+      data: {
+        deduped: false,
+        launch: {
+          tasks: [{
+            taskId: args.agent === 'codex' ? 'task-fallback-quota' : 'task-primary-quota',
+            logPath: args.agent === 'codex' ? '/tmp/fallback-quota.log' : '/tmp/primary-quota.log',
+          }],
+        },
+      },
+    }));
+    const kill = vi.fn(async () => ({ ok: true }));
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      readLogTail: () => quotaLog,
+    });
+
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(kill).toHaveBeenCalledTimes(2);
+    expect(result.state).toBe('failed');
+    expect(result.error).toContain('one-retry ceiling');
+    expect(result.terminalRecovery?.retiredTaskIds).toEqual([
+      'task-primary-quota',
+      'task-fallback-quota',
+    ]);
+  });
+
   it('uses the same label prefix algebra that cleanup matches', () => {
     expect(acceptanceGraderLabelPrefix('Acceptance / Weird Name')).toBe('acceptance-grader:acceptance-weird-name:');
+  });
+});
+
+describe('classifyAcceptanceGraderTerminalFailure', () => {
+  it('matches the exact terminal model-limit response through terminal control bytes', () => {
+    const raw =
+      "\u001b[31mYou've reached your Fable 5 limit.\u001b[0m\r\n" +
+      'Run /usage-credits to continue or switch models with /model.';
+    expect(classifyAcceptanceGraderTerminalFailure(raw)).toEqual({
+      code: 'model_quota_exhausted',
+      evidence:
+        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+    });
+  });
+
+  it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
+    expect(classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.')).toBeNull();
+    expect(classifyAcceptanceGraderTerminalFailure("You've reached your test limit.")).toBeNull();
   });
 });
 

@@ -28,9 +28,25 @@ export type KillableKind = 'run.sh' | 'omp' | 'claude' | 'codex';
  */
 export const KILLABLE: Set<string> = new Set(['run.sh', 'omp', 'claude', 'codex']);
 
-type KillTarget = Pick<ProcessEntry, 'pid' | 'cmdline' | 'cwd' | 'harness_slug'> & {
+type KillTarget = Pick<
+  ProcessEntry,
+  'pid' | 'executable' | 'role' | 'build' | 'started_at' | 'cwd' | 'harness_slug' | 'workspace_id'
+> & {
   kind: ProcessEntry['kind'] | 'codex';
 };
+
+function targetAuditDetails(target: KillTarget): Record<string, unknown> {
+  return {
+    kind: target.kind,
+    executable: target.executable,
+    role: target.role,
+    build: target.build,
+    started_at: target.started_at,
+    cwd: target.cwd,
+    harness_slug: target.harness_slug,
+    workspace_id: target.workspace_id,
+  };
+}
 
 /**
  * Codex is intentionally not added to dev:processes' frozen six-kind inventory.
@@ -106,9 +122,13 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
       target = {
         pid: input.pid,
         kind: codexKind,
-        cmdline: probe.cmdline,
+        executable: 'codex',
+        role: null,
+        build: null,
+        started_at: null,
         cwd: null,
         harness_slug: null,
+        workspace_id: null,
       };
     } else if (probe.exists) {
       await writeAudit(input.workspaceId, input.actorSlug, {
@@ -117,7 +137,6 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
         details: {
           reason: 'unsupported_kind',
           kind: probe.kind,
-          cmdline_prefix: probe.cmdline.slice(0, 80),
         },
       });
       return {
@@ -143,8 +162,7 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
       subject: String(input.pid),
       details: {
         reason: 'protected_kind',
-        kind: target.kind,
-        cmdline_prefix: target.cmdline.slice(0, 80),
+        ...targetAuditDetails(target),
       },
     });
     return {
@@ -163,10 +181,7 @@ export async function killProcess(input: KillProcessInput): Promise<KillProcessR
     subject: String(input.pid),
     details: {
       signal,
-      kind: target.kind,
-      cmdline_prefix: target.cmdline.slice(0, 120),
-      cwd: target.cwd,
-      harness_slug: target.harness_slug,
+      ...targetAuditDetails(target),
     },
   });
 

@@ -254,7 +254,8 @@ const expectNoOpStatusWrite = (): void => {
 };
 
 describe('plans:start terminal guard', () => {
-  it('rejects an invalid executable dependency candidate before any gate, row write, or promotion', async () => {
+  it('rejects a draft forward ref at activation before any gate, row write, or promotion', async () => {
+    H.state.frontmatterStatus = 'draft';
     H.state.parsedItems = [
       {
         id: 'P-001',

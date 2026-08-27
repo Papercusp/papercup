@@ -304,6 +304,21 @@ function isPassiveOwnerAttribution(line: string): boolean {
 const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 
 /**
+ * A loop goal can refer to an already-recorded owner order as an object to execute,
+ * rather than attributing the goal's own prose to the owner. Keep this exemption
+ * deliberately structural: it requires an execution verb and a numeric order id, so
+ * an unanchored assertion such as "owner directive 1: hold the deploy" still trips the
+ * noun-phrase guard above. The durable order id is the provenance-bearing reference;
+ * the goal is only saying which recorded order to run (EI-21580390681737108).
+ */
+const RECORDED_OWNER_DIRECTIVE_EXECUTION_RE =
+  /\b(?:execute|follow|carry\s+out|apply)\s+(?:the\s+)?owner\s+(?:directive|mandate)\s+(?:(?:order)\s+)?#?\d+\b/i;
+
+function isRecordedOwnerDirectiveExecution(line: string): boolean {
+  return RECORDED_OWNER_DIRECTIVE_EXECUTION_RE.test(line);
+}
+
+/**
  * EI-20234090473445932: a status/evidence sentence can mention a recorded owner
  * directive without asserting that the current writer received owner authority.
  * Keep this exclusion narrow: a numbered directive whose state is being reported,
@@ -570,6 +585,10 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       continue;
     }
     if (OWNER_DIRECTIVE_NOUN_RE.test(line)) {
+      // EI-21580390681737108: `Execute owner directive order 10` names a recorded
+      // directive as the object of an execution command. It is not an owner-attributed
+      // assertion, so do not reject a loop goal that uses this durable reference.
+      if (isRecordedOwnerDirectiveExecution(line)) continue;
       // EI-20234090473445932: factual status/runtime evidence about a recorded
       // directive is not an assertion of owner authority by the current writer.
       if (isOwnerDirectiveStatusReference(line)) continue;

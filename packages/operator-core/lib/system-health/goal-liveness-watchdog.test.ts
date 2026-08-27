@@ -3,22 +3,27 @@ import { DARK_FLAGS, FLAGS, FLAG_DEFAULTS } from '@papercusp/flags';
 
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import type { SessionState } from '../agent-tools/coordination/presence-wakeability';
+import { GOAL_HOLDER_PRODUCTIVITY_GRACE_MS } from '../goals/activity';
 import {
   GOAL_LIVENESS_GRACE_MS,
   classifyGoalLiveness,
   classifyGoalReadiness,
+  classifyGoalWedge,
   goalEligibleForHolderRespawn,
   goalHolderRespawnKey,
   goalReadinessKey,
   holderCountsAsAlive,
+  makeReadHolderProductivity,
   runGoalHolderRespawnOnce,
   runGoalLivenessSweepOnce,
   scanGoalLiveness,
   type GoalHolderRespawnDeps,
   type GoalHolderLike,
+  type GoalLiveHold,
   type GoalLivenessAlert,
   type GoalReadinessAlert,
   type GoalRowLike,
+  type GoalWedgeAlert,
 } from './goal-liveness-watchdog';
 import type { GoalReadiness } from '@papercusp/agent-mcp/goal-deps';
 
@@ -958,5 +963,257 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     nowMs += 1;
     expect(await runGoalHolderRespawnOnce(sql, deps)).toMatchObject({ attempted: 1, respawned: 1 });
     expect(launch).toHaveBeenCalledOnce();
+  });
+});
+
+/* ── the wedge leg: held, alive, and producing nothing ────────────────────── */
+
+describe('classifyGoalWedge', () => {
+  const GOAL_ID = 'make-sidestage-web-ios-and-android-ready-for-pub-dd62af';
+  const KEY = `papercusp-workspace:${GOAL_ID}`;
+  const HELD_LONG_ENOUGH = NOW - (GOAL_HOLDER_PRODUCTIVITY_GRACE_MS + 60_000);
+  const live = vmap(verdict('su-2c130be1', 'live'));
+
+  it('reports a live holder that has produced nothing past the grace', () => {
+    const alert = classifyGoalWedge(
+      goal(),
+      [holder({ setAtMs: HELD_LONG_ENOUGH })],
+      live,
+      new Map([[KEY, 0]]),
+      NOW,
+    );
+    expect(alert).toMatchObject({
+      goalId: GOAL_ID,
+      agentOriginCalls: 0,
+      holders: [{ ownerId: 'su-2c130be1', sessionState: 'live' }],
+    });
+  });
+
+  it('stays silent when the holder HAS produced agent-origin work', () => {
+    const alert = classifyGoalWedge(
+      goal(),
+      [holder({ setAtMs: HELD_LONG_ENOUGH })],
+      live,
+      new Map([[KEY, 1]]),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  it('stays silent inside the grace window', () => {
+    const alert = classifyGoalWedge(
+      goal(),
+      [holder({ setAtMs: NOW - 60_000 })],
+      live,
+      new Map([[KEY, 0]]),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  // The distinction the whole leg turns on: an ABSENT measurement is not a
+  // passing one. A degraded read must report nothing, not everyone wedged.
+  it('stays silent when productivity was NOT MEASURED (absent key, not zero)', () => {
+    const alert = classifyGoalWedge(
+      goal(),
+      [holder({ setAtMs: HELD_LONG_ENOUGH })],
+      live,
+      new Map(),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  it('only asks the question of a HELD goal — a dead or absent holder is the liveness leg', () => {
+    const dead = vmap(verdict('su-2c130be1', 'ended'));
+    expect(
+      classifyGoalWedge(
+        goal(),
+        [holder({ setAtMs: HELD_LONG_ENOUGH })],
+        dead,
+        new Map([[KEY, 0]]),
+        NOW,
+      ),
+    ).toBeNull();
+    // unheld: no holder rows at all
+    expect(classifyGoalWedge(goal(), [], live, new Map([[KEY, 0]]), NOW)).toBeNull();
+    // unknown: the oracle returned no verdict, which is not evidence of anything
+    expect(
+      classifyGoalWedge(
+        goal(),
+        [holder({ setAtMs: HELD_LONG_ENOUGH })],
+        new Map(),
+        new Map([[KEY, 0]]),
+        NOW,
+      ),
+    ).toBeNull();
+  });
+
+  it('exempts a deliberately paused goal — it produces nothing BY DESIGN', () => {
+    const alert = classifyGoalWedge(
+      goal({ status: 'paused' }),
+      [holder({ setAtMs: HELD_LONG_ENOUGH })],
+      live,
+      new Map([[KEY, 0]]),
+      NOW,
+    );
+    expect(alert).toBeNull();
+  });
+
+  // Conservative pairing: calls counted since the EARLIEST hold, grace measured
+  // from the MOST RECENT one — so a fresh holder re-arms the window rather than
+  // inheriting a predecessor's silence.
+  it('re-arms the grace from the MOST RECENT hold when a second holder joins', () => {
+    const holders = [
+      holder({ ownerId: 'su-old', setAtMs: HELD_LONG_ENOUGH }),
+      holder({ ownerId: 'su-new', setAtMs: NOW - 60_000 }),
+    ];
+    const verdicts = vmap(verdict('su-old', 'live'), verdict('su-new', 'live'));
+    expect(classifyGoalWedge(goal(), holders, verdicts, new Map([[KEY, 0]]), NOW)).toBeNull();
+  });
+});
+
+describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
+  const GOAL_ID = 'make-sidestage-web-ios-and-android-ready-for-pub-dd62af';
+  const KEY = `papercusp-workspace:${GOAL_ID}`;
+  const HELD_LONG_ENOUGH = NOW - (GOAL_HOLDER_PRODUCTIVITY_GRACE_MS + 60_000);
+  const sql = {} as never;
+
+  const wedgeDeps = (over: Record<string, unknown> = {}) => ({
+    readGoals: async () => ({
+      goals: [goal()],
+      holders: [holder({ setAtMs: HELD_LONG_ENOUGH })],
+    }),
+    resolveLiveness: async () => vmap(verdict('su-2c130be1', 'live')),
+    escalate: async () => {},
+    readReadiness: async () => new Map<string, GoalReadiness>(),
+    escalateReadiness: async () => {},
+    flagEnabled: async () => true,
+    now: () => NOW,
+    graceMs: GOAL_LIVENESS_GRACE_MS,
+    ...over,
+  });
+
+  it('escalates a wedged holder and counts it', async () => {
+    const seen: GoalWedgeAlert[] = [];
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      wedgeDeps({
+        readHolderProductivity: async () => new Map([[KEY, 0]]),
+        escalateWedge: async (a: GoalWedgeAlert) => {
+          seen.push(a);
+        },
+      }),
+    );
+    expect(r.wedgeEscalated).toBe(1);
+    expect(seen[0]).toMatchObject({ goalId: GOAL_ID, agentOriginCalls: 0 });
+  });
+
+  it("passes the live holds to the measurement, with each holder's own since-clock", async () => {
+    let got: readonly GoalLiveHold[] = [];
+    await runGoalLivenessSweepOnce(
+      sql,
+      wedgeDeps({
+        readHolderProductivity: async (holds: readonly GoalLiveHold[]) => {
+          got = holds;
+          return new Map([[KEY, 5]]);
+        },
+        escalateWedge: async () => {},
+      }),
+    );
+    expect(got).toEqual([
+      {
+        workspaceId: 'papercusp-workspace',
+        goalId: GOAL_ID,
+        ownerId: 'su-2c130be1',
+        setAtMs: HELD_LONG_ENOUGH,
+      },
+    ]);
+  });
+
+  // A degraded measurement costs SILENCE, never a wave of false wedges.
+  it('survives a throwing productivity read and escalates nothing', async () => {
+    const escalateWedge = vi.fn();
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      wedgeDeps({
+        readHolderProductivity: async () => {
+          throw new Error('pg down');
+        },
+        escalateWedge,
+      }),
+    );
+    expect(r.wedgeEscalated).toBe(0);
+    expect(escalateWedge).not.toHaveBeenCalled();
+    expect(r.skipped).toBe(false);
+  });
+
+  it('never measures when no goal is held — the ledger read is skipped entirely', async () => {
+    const readHolderProductivity = vi.fn(async () => new Map<string, number>());
+    await runGoalLivenessSweepOnce(
+      sql,
+      wedgeDeps({
+        resolveLiveness: async () => vmap(verdict('su-2c130be1', 'ended')),
+        readHolderProductivity,
+        escalateWedge: async () => {},
+      }),
+    );
+    expect(readHolderProductivity).not.toHaveBeenCalled();
+  });
+
+  it('a failing wedge escalation does not cost the sweep', async () => {
+    const r = await runGoalLivenessSweepOnce(
+      sql,
+      wedgeDeps({
+        readHolderProductivity: async () => new Map([[KEY, 0]]),
+        escalateWedge: async () => {
+          throw new Error('escalation store down');
+        },
+      }),
+    );
+    expect(r.wedgeEscalated).toBe(0);
+    expect(r.scanned).toBe(1);
+  });
+});
+
+describe('makeReadHolderProductivity', () => {
+  function captureSql() {
+    const queries: string[] = [];
+    const tag = ((strings: TemplateStringsArray, ...vals: unknown[]) => {
+      queries.push(strings.join(' ? '));
+      void vals;
+      return Promise.resolve([] as unknown[]);
+    }) as unknown as Parameters<typeof makeReadHolderProductivity>[0];
+    return { tag, queries };
+  }
+
+  const hold: GoalLiveHold = {
+    workspaceId: 'papercusp-workspace',
+    goalId: 'g1',
+    ownerId: 'su-1',
+    setAtMs: NOW - 60_000,
+  };
+
+  it('short-circuits on zero holds without touching the ledger', async () => {
+    const { tag, queries } = captureSql();
+    expect(await makeReadHolderProductivity(tag)([])).toEqual(new Map());
+    expect(queries).toEqual([]);
+  });
+
+  // The load-bearing predicate. `<> 'hook'` is FALSE for a NULL origin, which
+  // would drop those rows, undercount, and manufacture a FALSE WEDGE — the one
+  // direction this leg must never err in.
+  it('excludes hook-origin calls with IS DISTINCT FROM, never `<>`', async () => {
+    const { tag, queries } = captureSql();
+    await makeReadHolderProductivity(tag)([hold]);
+    expect(queries).toHaveLength(1);
+    expect(queries[0]).toMatch(/call_origin\s+IS DISTINCT FROM\s+\?/);
+    expect(queries[0]).not.toMatch(/call_origin\s*<>/);
+  });
+
+  it('measures each hold from its own set-at clock, not a shared floor', async () => {
+    const { tag, queries } = captureSql();
+    await makeReadHolderProductivity(tag)([hold]);
+    expect(queries[0]).toMatch(/ti\.invoked_at\s*>=\s*h\.since/);
   });
 });

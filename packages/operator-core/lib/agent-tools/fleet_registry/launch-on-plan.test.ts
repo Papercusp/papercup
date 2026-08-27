@@ -228,6 +228,7 @@ describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () =
   it('WARM (default): arms an explicit warm loop:arm and never mentions cold carry', () => {
     const warm = renderMemberBaseline(opts);
     expect(warm).toContain("`loop:arm { intervalSec, goal, carry: 'warm' }`");
+    expect(warm).toContain('`loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }`');
     expect(warm).not.toContain('`loop:arm { intervalSec, goal }`');
     expect(warm).not.toContain("carry: 'cold'");
     expect(warm).not.toContain('COLD');

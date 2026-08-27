@@ -91,18 +91,22 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('gatherBootedHarnessFacts (v1 boundary)', () => {
-  it('reports a swarmed harness as pinned (never evicted)', () => {
+describe('gatherBootedHarnessFacts (v2 shared-harness boundary)', () => {
+  it('reports an idle in-process swarmed harness as an eviction candidate', () => {
     _setHandleForTests('ws', 'shared', fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle }));
     const facts = gatherBootedHarnessFacts(123);
     expect(facts).toHaveLength(1);
-    expect(facts[0]).toMatchObject({ key: 'ws::shared', pinned: true });
+    expect(facts[0]).toMatchObject({ key: 'ws::shared', pinned: false, hasActivePeer: false });
   });
 
-  it('reports a harness with admitted remote peers as hasActivePeer', () => {
-    _setHandleForTests('ws', 'peered', fakeHandle('ws', 'peered', { extraPeer: true }));
+  it('reports a swarmed harness with admitted remote peers as hasActivePeer', () => {
+    _setHandleForTests(
+      'ws',
+      'peered',
+      fakeHandle('ws', 'peered', { swarm: {} as SwarmHandle, extraPeer: true }),
+    );
     const facts = gatherBootedHarnessFacts(123);
-    expect(facts[0]).toMatchObject({ key: 'ws::peered', hasActivePeer: true });
+    expect(facts[0]).toMatchObject({ key: 'ws::peered', pinned: false, hasActivePeer: true });
   });
 
   it('a private (swarm-less, peerless) harness is an eviction candidate (not pinned, no peer)', () => {

@@ -229,6 +229,27 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(compact).toContain('reason?:string');
   });
 
+  it('preserves explicit discriminator-dependent required and forbidden fields in compact results', () => {
+    const compact = compactSchemaForResult({
+      anyOf: [
+        {
+          required: ['kind', 'settledBy'],
+          properties: { kind: { const: 'undecidable' }, settledBy: { type: 'string' } },
+        },
+        {
+          required: ['kind'],
+          properties: {
+            kind: { enum: ['conclusion', 'assumption', 'convention'] },
+            settledBy: { not: {} },
+          },
+        },
+      ],
+    });
+
+    expect(compact).toContain('when kind=undecidable => settledBy required');
+    expect(compact).toContain('when kind!=undecidable => settledBy forbidden');
+  });
+
   it('keeps work_items:complete assumptions visible in the bounded discovery schema', () => {
     expect(complete.name).toBe('work_items:complete');
     const { corpus, schemaByTool } = buildCorpus();

@@ -634,10 +634,11 @@ export interface BootAllOpts {
   /** P-010: presence newer than this counts as live activity. Default 15m. */
   activationPresenceWindowMs?: number;
   /**
-   * P-010 SAFETY INTERLOCK — allow deferring harnesses that FEDERATE (Hive home
-   * or member). Correct ONLY once P-012's always-on remote wake signal exists:
-   * a deferred harness is not joined to its topic, so a remote peer's push is
-   * unheard until something LOCAL wakes it. Default false.
+   * P-010/P-012 SAFETY INTERLOCK — allow deferring harnesses that FEDERATE
+   * (Hive home or member). P-012's always-on remote wake keepalive now covers
+   * each dark federation topic before deferral, so production defaults this to
+   * true. Pass false only as a fail-safe rollback to keep every federating
+   * harness eager.
    */
   deferFederatingHarnesses?: boolean;
   /**
@@ -1183,18 +1184,24 @@ async function resolveActivationDeferrals(
       }
     }
 
-    const { sql } = (await import('@papercusp/db-org')).getOrgPg();
-    const facts = await gatherActivationFacts(
-      entries,
+    // Keep the documented test/caller injection genuinely PG-free. Resolving
+    // getOrgPg() before the nullish choice made an injected dependency useless:
+    // request-only hosts threw here, the outer fail-open catch eagerly booted
+    // everything, and the production composition could not be verified.
+    const activationFactDeps =
       opts.activationFactDeps ??
-        createPgActivationFactDeps(sql as unknown as Parameters<typeof createPgActivationFactDeps>[0]),
-    );
+      createPgActivationFactDeps(
+        (await import('@papercusp/db-org')).getOrgPg()
+          .sql as unknown as Parameters<typeof createPgActivationFactDeps>[0],
+      );
+    const facts = await gatherActivationFacts(entries, activationFactDeps);
     const decision = planSubstrateActivation(facts, {
       now: Date.now(),
       presenceActiveMs: opts.activationPresenceWindowMs ?? 15 * 60 * 1000,
-      // Stays FALSE until P-012's always-on remote wake signal lands — see the
-      // safety-interlock note in substrate-active-set-policy.
-      deferFederating: opts.deferFederatingHarnesses === true,
+      // P-012's always-on remote wake signal is live. Default ON so the
+      // production boot sweep can actually bound shared-hive footprint; callers
+      // may still force eager federation with an explicit false rollback.
+      deferFederating: opts.deferFederatingHarnesses !== false,
     });
     return new Set(decision.defer);
   } catch (e) {
@@ -1266,8 +1273,8 @@ export async function bootAllHarnessesForActiveWorkspace(opts: BootAllOpts = {})
     enableSubstrateEvictionTracking();
     toBoot = [];
     // P-012 slice B: a harness may only be left dark if SOMETHING can wake it.
-    // Local access + captured local writes were always covered; a REMOTE push
-    // was not, which is why `deferFederatingHarnesses` had to default false.
+    // Local access + captured local writes were always covered; P-012 added the
+    // REMOTE push wake that makes the production default safe for shared hives.
     // Arm the swarm-presence keepalive FIRST and read its verdict per harness:
     //   'not-needed' — private/local-only: no topic, no peers, nothing to miss;
     //   'covered'    — joined its topic, a peer's frame will wake it;
@@ -1799,13 +1806,12 @@ export function listRelocatedBootedHandles(): BootedHandleSummary[] {
  * Gather each booted harness's eviction-relevant liveness facts for the
  * LAZY_SUBSTRATE_BOOT reaper (P-008). Pure read over the live handle map.
  *
- * ── v1 SAFETY BOUNDARY ── A harness with a LIVE SWARM (`handle.swarm != null`)
- * or any admitted remote peer is reported `pinned`/`hasActivePeer`, so
- * `planSubstrateEviction` NEVER evicts it. Tearing down a shared engine would
- * leave its swarm topic → a later peer couldn't connect → silent divergence (the
- * EI-126 class). The swarm-presence keepalive that makes idle-SHARED eviction
- * safe is the documented v2; v1 evicts ONLY inert private (swarm-less, peerless)
- * engines, which merge nothing and whose local writes are PG-direct.
+ * ── v2 SAFETY BOUNDARY ── A harness with an admitted remote peer is reported
+ * `hasActivePeer`, so `planSubstrateEviction` NEVER evicts it. An idle swarmed
+ * in-process harness is now a candidate: the race-guarded eviction path first
+ * transfers its topic to P-012's lightweight wake keepalive and refuses to
+ * close when that coverage cannot be established. Relocated handles remain
+ * pinned because their real peer/swarm facts live in the sidecar process.
  *
  * `lastAccessMs` defaults to `now` for a handle with no recorded access (treated
  * HOT — never evicted on a missing signal). The own log seeds `admitted` to size
@@ -1825,15 +1831,16 @@ export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
     // engines whose liveness we can actually observe are eviction candidates;
     // every remote handle is pinned until facts come from sidecar status (v2).
     const remote = handle instanceof RemoteBootedHarnessHandle;
-    const hasSwarm = handle.swarm != null;
     const hasRemotePeers = !remote && handle.admitted.size > 1;
     facts.push({
       key: k,
       lastAccessMs: lastAccess.get(k) ?? now,
       hasActivePeer: hasRemotePeers,
-      // v1: a swarmed harness is pinned (never evicted). Private in-process
-      // harnesses fall through to the idle/LRU eviction candidates.
-      pinned: hasSwarm || remote,
+      // v2: in-process swarmed and private handles both enter the idle/LRU
+      // candidate set. evictBootedHarnessEngine owns the load-bearing second
+      // check: active peers dominate, and a swarmed engine closes only after
+      // its wake keepalive reports coverage. Sidecar proxies stay pinned.
+      pinned: remote,
     });
   }
   return facts;
@@ -1935,9 +1942,9 @@ export function isHarnessEngineResident(workspaceId: string, harnessSlug: string
  * This closes the half of the eviction keepalive that was documented in
  * substrate-eviction-policy's header but never built: the LISTEN outbox watch
  * covers LOCAL writes, this covers REMOTE ones. Without it, every wake trigger
- * was local-side, so a remote push to a dark harness was simply unheard — which
- * is exactly why `deferFederatingHarnesses` had to default false and why a
- * swarmed harness could never be evicted at all.
+ * was local-side, so a remote push to a dark harness was simply unheard. P-012
+ * supplies that third trigger; boot-all now enables federating deferral by
+ * default and the reaper can evict a swarmed engine after coverage is armed.
  *
  * Same no-op conditions and same wake path as the outbox-NOTIFY dual, so the
  * two cannot drift:

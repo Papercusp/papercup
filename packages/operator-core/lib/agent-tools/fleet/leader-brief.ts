@@ -3113,25 +3113,132 @@ export async function buildLeaderBrief(
   }
   const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
   await decorateParkedOn(grouped).catch(() => {});
-  // EI-18732218464905145: collapse a composed-await park (root + leaf sentinels)
-  // into ONE structured entry before projection — best-effort, never blocks.
-  await decorateComposedParkedOn(grouped).catch(() => {});
+  // Keep the parked-on → loop → member-verdict dependency chain intact. The
+  // remaining decorations are independent read-only overlays and are batched
+  // below rather than paying their database latency serially.
   await decorateLoopMonitorStates(grouped).catch(() => {});
   await decorateMemberVerdicts(grouped).catch(() => {});
-  // EI-19307414464301772: the productive-only sibling of lastToolCallAt, feeding
-  // computeSpinningAlert below — best-effort, never blocks the rest of the brief.
-  await decorateProductiveToolCalls(grouped).catch(() => {});
-  await decorateContextPressure(grouped).catch(() => {});
-  await decorateUnansweredDirected(grouped).catch(() => {});
-  // P-013: what the LEDGER says happened, beside what the member said. Scoped to
-  // the caller's own directives — you are accountable for what you instructed.
-  await decorateDirectiveActuation(grouped, ownerId).catch(() => {});
-  await decorateCoordDeafness(grouped).catch(() => {});
+  await runLeaderBriefReads(
+    [
+      // EI-18732218464905145: collapse a composed-await park (root + leaf
+      // sentinels) into ONE structured entry before projection — best-effort,
+      // never blocks.
+      () => decorateComposedParkedOn(grouped).catch(() => grouped),
+      // EI-19307414464301772: the productive-only sibling of lastToolCallAt,
+      // feeding computeSpinningAlert below — best-effort, never blocks.
+      () => decorateProductiveToolCalls(grouped).catch(() => grouped),
+      () => decorateContextPressure(grouped).catch(() => grouped),
+      () => decorateUnansweredDirected(grouped).catch(() => grouped),
+      // P-013: what the LEDGER says happened, beside what the member said.
+      // Scoped to the caller's own directives — you are accountable for what
+      // you instructed.
+      () => decorateDirectiveActuation(grouped, ownerId).catch(() => grouped),
+      () => decorateCoordDeafness(grouped).catch(() => grouped),
+    ] as const,
+  );
   // P-005: a fired one-shot wait disappears from parkedOn, but its
   // authoritative stalled/absent verdict is durable. Surface that evidence
   // beside the member that must own the wake/takeover remedy.
-  const verifiedWaitTakeovers = await listVerifiedWaitTakeoversForSubscribers(grouped.map((a) => a.agentId)).catch(
-    () => [],
+  const [
+    verifiedWaitTakeovers,
+    unownedCriticalsAll,
+    admissionBlocked,
+    orphanedInFlight,
+    fleetLaneHealth,
+    fleetPause,
+    concurrencyByOwner,
+    poolCapacity,
+  ] = await runLeaderBriefReads(
+    [
+      () => listVerifiedWaitTakeoversForSubscribers(grouped.map((a) => a.agentId)).catch(() => []),
+      // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
+      // failures already fail soft to [] inside readUnownedCriticalsForFleet.
+      () =>
+        readUnownedCriticalsForFleet({
+          fleet,
+          harness: args.harness,
+          workspaceId,
+          ageHours: args.unowned_critical_age_hours,
+        }),
+      // EI-18680302159738037: this fleet's refused member/item pairs. The
+      // member verdict barrier above makes the live-id filter stable before
+      // this independent read begins.
+      () =>
+        fetchFleetAdmissionBlocks(fleet, {
+          harness: args.harness,
+          liveMemberIds: grouped
+            .filter((member) => member.alive !== false && member.verdict !== 'dead')
+            .map((member) => member.agentId),
+        }),
+      () =>
+        readOrphanedInFlightForFleet({
+          fleet,
+          harness: args.harness,
+          workspaceId,
+          minAgeMinutes: args.orphan_min_age_minutes,
+        }),
+      // EI-18681259560385029: read the fleet's LIVE claimable count before
+      // projecting members; failures are UNKNOWN, never zero.
+      () =>
+        readFleetLaneHealth({
+          fleet,
+          harness: args.harness,
+          workspaceId: actorWorkspace,
+        }),
+      // EI-18703234178947959: the fleet's own durable pause state. Fail-soft
+      // to not-paused so a registry hiccup never silences a genuine alert.
+      () =>
+        (async (): Promise<{ paused: boolean; reason: string | null }> => {
+          try {
+            const { getFleet } = await import('../../agent-fleets-store');
+            const rec = await getFleet(workspaceId, fleet);
+            return rec?.controlState === 'winding-down'
+              ? { paused: true, reason: rec.controlReason ?? null }
+              : { paused: false, reason: null };
+          } catch {
+            return { paused: false, reason: null };
+          }
+        })(),
+      // EI-19313376980892266: authoritative per-member concurrency, resolved
+      // against this fleet's own spec limit and fail-soft to an empty map.
+      () =>
+        (async (): Promise<Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>> => {
+          try {
+            const { readClaimConcurrencyBatch, getClaimSpecRecord, fleetSpecBeeKey } =
+              await import('../../scheduler/claim-spec-store');
+            const rec = await getClaimSpecRecord({
+              cupId: fleetSpecBeeKey(fleet),
+              workspaceId,
+            }).catch(() => null);
+            return await readClaimConcurrencyBatch({
+              cupIds: grouped.map((a) => a.agentId),
+              // actorWorkspace is string|null; the reader falls back to the
+              // same default workspace when null.
+              workspaceId: actorWorkspace ?? undefined,
+              maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
+            });
+          } catch {
+            return new Map();
+          }
+        })(),
+      // WI-37161 / EI-20243921934115652: resolve the shared inference pool for
+      // this fleet's observed provider. The account/session read and pool
+      // probe stay ordered internally, but are independent of other reads.
+      () =>
+        (async (): Promise<PoolDegradedState | null> => {
+          try {
+            const { advSessionsByCoordOwner } = await import('../../adv-sessions');
+            const sessions = await advSessionsByCoordOwner();
+            const capacityAgentByOwner = new Map(
+              [...sessions].map(([ownerId, session]) => [ownerId, session.agent] as const),
+            );
+            const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
+            return capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
+          } catch {
+            return null;
+          }
+        })(),
+    ] as const,
   );
   const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
   for (const alert of verifiedWaitTakeovers) {
@@ -3142,14 +3249,6 @@ export async function buildLeaderBrief(
   for (const agent of grouped) {
     agent.verifiedWaitTakeovers = takeoversBySubscriber.get(agent.agentId) ?? [];
   }
-  // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
-  // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
-  const unownedCriticalsAll: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
-    fleet,
-    harness: args.harness,
-    workspaceId,
-    ageHours: args.unowned_critical_age_hours,
-  });
   // WI-6846: a majority-remote-origin backlog reads as urgent unowned work a
   // leader is expected to act on, when in fact `origin:'remote'` rows are
   // structurally un-actionable here (cannot claim — the claimable pre-filter
@@ -3159,38 +3258,7 @@ export async function buildLeaderBrief(
   // separately rather than dropping it.
   const { actionable: unownedCriticals, federatedUnresolvable: unownedCriticalsFederated } =
     partitionUnownedCriticalsByOrigin(unownedCriticalsAll);
-  // EI-18680302159738037: members refused by THIS fleet's claim spec. The remedy is
-  // a spec write only the leader can make, so the block is leader-actionable by
-  // construction — yet it was delivered as ordinary inbox mail, where one
-  // action-required row does not survive a 5-figure inbox. Read failures already
-  // fail soft to `[]` inside fetchFleetAdmissionBlocks.
-  const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet, {
-    harness: args.harness,
-    liveMemberIds: grouped
-      .filter((member) => member.alive !== false && member.verdict !== 'dead')
-      .map((member) => member.agentId),
-  });
   const admissionDependencyEscapes = admissionBlocked.filter((block) => block.dependencyEscape != null);
-  // EI-18693470222331709: items released mid-flight (progress recorded, now
-  // unassigned) — read failures already fail soft to `[]`.
-  const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
-    fleet,
-    harness: args.harness,
-    workspaceId,
-    minAgeMinutes: args.orphan_min_age_minutes,
-  });
-  // EI-18681259560385029: read the fleet's LIVE claimable count before projecting members
-  // — the per-member bench suggestion must not assert "drained or scoped-out" without it.
-  // Fails soft to null (UNKNOWN), never 0.
-  const fleetLaneHealth = await readFleetLaneHealth({
-    fleet,
-    harness: args.harness,
-    workspaceId: actorWorkspace,
-    // WI-41163 / P-001 / D-003: this is a FLEET population count, not the
-    // reading leader's private claim verdict. Omitting assignee prevents the
-    // leader's own cooldown/grace floors from rendering its private zero as
-    // `summary.claimable_now` for the whole fleet.
-  });
   const claimableNow = buildClaimableNowAggregate({
     fleet,
     requestedHarness: args.harness,
@@ -3205,70 +3273,6 @@ export async function buildLeaderBrief(
           matchedByFilter: fleetLaneEffective.matchedByFilter,
           ...(fleetLaneEffective.excluded ? { excluded: fleetLaneEffective.excluded } : {}),
         };
-  // EI-18703234178947959: the fleet's OWN durable control state (mig 575) — the same
-  // `winding-down` bit `fleetControlWindDownRefusal` floors every member's claim on.
-  // Read it BEFORE projecting members so a paused fleet never emits a wake-me/bench-me
-  // suggestion for a member that is correctly standing down. Fail-soft to NOT-paused:
-  // a registry hiccup must never silence a genuine starvation alert.
-  const fleetPause = await (async (): Promise<{ paused: boolean; reason: string | null }> => {
-    try {
-      const { getFleet } = await import('../../agent-fleets-store');
-      const rec = await getFleet(workspaceId, fleet);
-      return rec?.controlState === 'winding-down'
-        ? { paused: true, reason: rec.controlReason ?? null }
-        : { paused: false, reason: null };
-    } catch {
-      return { paused: false, reason: null };
-    }
-  })();
-  // EI-19313376980892266: the AUTHORITATIVE per-member concurrency verdict — read from
-  // `work_items.taken_by` in ONE batched query and decided by the same
-  // `evaluateClaimConcurrency` the scheduler refuses on. Without it the bench suggestion
-  // branches on the presence layer's `load`, which omits parked-but-held rows and so
-  // reports AT-CAPACITY members as `idle-with-claimable`.
-  //
-  // The fleet's OWN spec limit is resolved first, deliberately: defaulting to 1 when a
-  // leader authored concurrency > 1 would mark a legitimately-free member blocked and
-  // SUPPRESS a real starvation signal — a false negative on the exact alert this brief
-  // exists to raise. Fails soft to an EMPTY map (which suppresses nothing anywhere),
-  // never to a fabricated verdict.
-  const concurrencyByOwner = await (async (): Promise<
-    Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>
-  > => {
-    try {
-      const { readClaimConcurrencyBatch, getClaimSpecRecord, fleetSpecBeeKey } =
-        await import('../../scheduler/claim-spec-store');
-      const rec = await getClaimSpecRecord({
-        cupId: fleetSpecBeeKey(fleet),
-        workspaceId,
-      }).catch(() => null);
-      return await readClaimConcurrencyBatch({
-        cupIds: grouped.map((a) => a.agentId),
-        // `actorWorkspace` is string|null; the reader takes an optional string and
-        // falls back to DEFAULT_COORD_WORKSPACE, which is what null means here too.
-        workspaceId: actorWorkspace ?? undefined,
-        maxConcurrentClaims: rec?.spec.limits?.maxConcurrentClaims,
-      });
-    } catch {
-      return new Map();
-    }
-  })();
-  // WI-37161 / EI-20243921934115652: read the live shared-inference-pool verdict BEFORE
-  // projecting members, scoped to THIS fleet's observed model provider. The old no-arg
-  // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
-  // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
-  // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
-  const capacityAgentByOwner = await (async (): Promise<Map<string, 'claude' | 'omp' | 'codex' | null>> => {
-    try {
-      const { advSessionsByCoordOwner } = await import('../../adv-sessions');
-      const sessions = await advSessionsByCoordOwner();
-      return new Map([...sessions].map(([ownerId, session]) => [ownerId, session.agent] as const));
-    } catch {
-      return new Map();
-    }
-  })();
-  const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
-  const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
   const nowMs = Date.now();
   // EI-21548894457555139: one in-process read (no DB round-trip) of the calls currently
   // executing, so a member sitting inside a long call is not reported as idle/dormant.
