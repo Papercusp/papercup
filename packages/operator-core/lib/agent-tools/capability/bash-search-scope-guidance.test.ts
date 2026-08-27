@@ -1,10 +1,11 @@
 /**
  * capability:bash search guidance regression for EI-21133502363929449.
  *
- * A repository-root `rg --hidden` search traverses generated public docs in
- * this checkout; the rendered snapshots can overwhelm the caller before the
- * source matches are useful. Keep the actionable source-root/exclusion rule
- * in the tool guidance, backed by the shared code-intelligence contract.
+ * A repository-root `rg --hidden` search traverses generated public docs and
+ * per-checkout `.papercusp/` artifacts; the rendered snapshots can overwhelm
+ * the caller before the source matches are useful. Keep the actionable
+ * source-root/exclusion rule in the tool guidance, backed by the shared
+ * code-intelligence contract.
  */
 import { describe, expect, it } from 'vitest';
 import bashTool from './bash';
@@ -17,7 +18,7 @@ type GuidanceTool = {
 };
 
 describe('capability:bash — repository search scope guidance', () => {
-  it('warns against generated public snapshots and names bounded source roots', () => {
+  it('warns against generated snapshots and names bounded source roots', () => {
     const guidance = (bashTool as unknown as GuidanceTool).guidance?.when ?? '';
 
     expect(guidance).toContain(RIPGREP_SCOPE_GUIDANCE);
@@ -29,6 +30,7 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('fall back to `grep -F`');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
+    expect(guidance).toContain('.papercusp');
     expect(guidance).toContain('apps/operator/public/internal/docs');
     expect(guidance).toContain('Do not run an unbounded search from the repository root');
     expect(guidance).toContain('--max-columns 256 --max-columns-preview');
