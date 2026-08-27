@@ -597,6 +597,29 @@ export function resolvePinnedTscCommand(root: string, tscCommand: string): strin
 export function tscChildEnv(extra?: Record<string, string>): Record<string, string | undefined>;
 export function projectPrefixFromTscCommand(tscCommand: any): string | null;
 /**
+ * Canonicalize an explicit `--files=` set to repository-relative paths while accepting paths
+ * relative to the workspace that launched the gate.
+ *
+ * The operator-core gate is exposed both from the repository root and as the package's own npm
+ * script. npm runs a workspace script with that workspace as `cwd`, so `--files=lib/foo.ts`
+ * means `packages/operator-core/lib/foo.ts` in the latter form. Existing callers also pass
+ * repository-relative paths, including from a workspace cwd. Prefer a direct repository spelling
+ * whenever it is already covered (or names an existing repository path), then resolve the entry
+ * from `cwd` only when that candidate lands under a covered gate prefix. An unresolved direct
+ * path is preserved when neither interpretation is covered, so the caller still receives the
+ * normal out-of-scope diagnostic instead of a guessed green verdict.
+ *
+ * @param {{files: Iterable<string>, root: string, coveredPrefixes: Iterable<string>, cwd?: string, pathExists?: (path: string) => boolean}} opts
+ * @returns {Set<string>}
+ */
+export function normalizeExplicitFilesForProject({ files, root, coveredPrefixes, cwd, pathExists, }: {
+    files: Iterable<string>;
+    root: string;
+    coveredPrefixes: Iterable<string>;
+    cwd?: string;
+    pathExists?: (path: string) => boolean;
+}): Set<string>;
+/**
  * Split the caller's `--files=` set into the files this invocation can actually judge and the
  * ones it cannot.
  *
