@@ -78,6 +78,7 @@ describe('resource governor enforcement lint', () => {
     const output = execFileSync(process.execPath, ['scripts/check-resource-governor-enforcement.mjs'], {
       cwd: ROOT,
       encoding: 'utf8',
+      timeout: 120_000,
     });
     expect(output).toContain('[resource-governor-enforcement] OK');
   });
