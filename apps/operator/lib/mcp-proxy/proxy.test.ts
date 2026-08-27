@@ -3503,6 +3503,100 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["critical-first", "critical-second"]);
   });
 
+  it("EI-21558462806716442: queues a concurrent work_items:complete instead of shedding it", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "complete-first") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"first":true}}'));
+          return;
+        }
+        res.end('{"result":{"second":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 50,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const completionBody = (id: number) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: {
+          name: "work_items:complete",
+          arguments: {
+            id: `EI-test-${id}`,
+            state: "done",
+            assumptions: "none",
+            completion: {
+              summary: "proxy completion regression",
+              testsRun: ["focused proxy test"],
+              testResult: "passed",
+              verifiedHow: "in-process upstream fixture",
+              filesChanged: [],
+            },
+          },
+        },
+      });
+    const first = request(
+      port(proxy),
+      completionBody(1),
+      "/api/mcp?client=complete-first",
+    );
+    await firstStarted;
+
+    let secondSettled = false;
+    const second = request(
+      port(proxy),
+      completionBody(2),
+      "/api/mcp?client=complete-second",
+    ).then((result) => {
+      secondSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+    expect(secondSettled).toBe(false);
+    expect(hits).toEqual(["complete-first"]);
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await second).status).toBe(200);
+    expect(hits).toEqual(["complete-first", "complete-second"]);
+  });
+
   it("EI-21395173692390816: admits a bounded FIFO handshake queue and sheds only once it is full", async () => {
     const handshakeLimit = 2;
     const queueLimit = 2;
