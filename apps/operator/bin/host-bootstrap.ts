@@ -17,6 +17,7 @@
  */
 import { mountPluginApiRoutes } from '@papercusp/operator-core/lib/plugin-api-mount';
 import { spawn, type ChildProcess } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import cluster from 'node:cluster';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -62,6 +63,11 @@ import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/
 // proxy import below, which defers a heavy module used only in a fallback branch): this one
 // is dependency-free and side-effect-free apart from reading env.
 import { MCP_PROXY_RETRY_WINDOW_MS } from '../lib/mcp-proxy/budgets.mjs';
+import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
+import {
+  beginGovernedExecution,
+  governedExecutionRuntime,
+} from '@papercusp/operator-core/lib/resource-governor/execution';
 
 const GUARD_KEY = '__papercuspBootstrapRan__';
 const PACKAGED_MCP_PROXY_SHUTDOWN_TIMEOUT_MS = 5_000;
@@ -106,7 +112,20 @@ function startPackagedMcpProxy(): void {
     if (packagedMcpProxyShutdownRequested) return;
     const sidecarDir = dirname(process.argv[1] || '');
     const proxyEntry = join(sidecarDir, 'mcp-proxy.mjs');
-    if (!existsSync(proxyEntry)) {
+    const hasPackagedEntry = existsSync(proxyEntry);
+    const workspaceId = activeWorkspaceId();
+    const execution = await beginGovernedExecution(
+      {
+        idempotencyKey: `packaged-mcp-proxy:${process.pid}:${randomUUID()}`,
+        admissionClass: 'mcp',
+        demand: { cpuWeight: 0.25, memoryBytes: 128 * 1024 * 1024, fileDescriptors: 1 },
+        payloadRef: `packaged-mcp-proxy:${port}`,
+        metadata: { port, mode: hasPackagedEntry ? 'packaged-child' : 'in-process-fallback' },
+      },
+      { owner: `operator-host:${process.pid}` },
+      governedExecutionRuntime(workspaceId, 'packaged-mcp-proxy'),
+    );
+    if (!hasPackagedEntry) {
       // A hot-patched serve.mjs on a pre-WI-3247 install has no mcp-proxy.mjs
       // beside it — but ~/.claude.json's desktop registration already bakes the
       // ${PAPERCUSP_OPERATOR_URL:-http://127.0.0.1:<port>} fallback, so leaving
@@ -116,10 +135,16 @@ function startPackagedMcpProxy(): void {
       // operator.json target. It dies with this operator (unlike the detached
       // packaged child), but the next boot re-arms it and the sticky operator
       // port keeps direct pins valid across the gap.
-      if (packagedMcpProxyShutdownRequested) return;
+      if (packagedMcpProxyShutdownRequested) {
+        await execution.cancel('operator shutdown won before fallback import');
+        return;
+      }
       try {
         const { startMcpProxy, readOperatorJsonTarget } = await import('../lib/mcp-proxy/proxy');
-        if (packagedMcpProxyShutdownRequested) return;
+        if (packagedMcpProxyShutdownRequested) {
+          await execution.cancel('operator shutdown won before fallback listen');
+          return;
+        }
         const staticPort = Number(
           process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || 3070,
         );
@@ -133,12 +158,15 @@ function startPackagedMcpProxy(): void {
         // (non-proxy squatter that failed the health probe above) would be an
         // uncaught 'error' event and kill the whole operator.
         server.on('error', (e) => {
+          void execution.cancel((e as Error)?.message ?? String(e));
           console.warn(`[mcp-proxy] in-process fallback proxy failed on :${port}:`, (e as Error)?.message ?? e);
         });
+        server.once('close', () => void execution.finish());
         console.log(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} — serving the MCP proxy IN-PROCESS on 127.0.0.1:${port} (stale-bundle fallback)`,
         );
       } catch (e) {
+        await execution.cancel((e as Error)?.message ?? String(e));
         console.warn(
           `[mcp-proxy] packaged proxy entry missing at ${proxyEntry} and the in-process fallback failed; psu sessions will use direct discovery:`,
           (e as Error)?.message ?? e,
@@ -146,7 +174,9 @@ function startPackagedMcpProxy(): void {
       }
       return;
     }
-    const child = spawn(process.execPath, [proxyEntry], {
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, [proxyEntry], {
       // Keep the packaged child in this process's lifecycle. The shutdown hook
       // below drains it and force-kills it after a bounded grace period.
       detached: false,
@@ -159,14 +189,21 @@ function startPackagedMcpProxy(): void {
         PAPERCUSP_MCP_PROXY_TARGET_PORT: process.env.PAPERCUSP_MCP_PROXY_TARGET_PORT || process.env.PAPERCUSP_HONO_PORT || '3070',
         PAPERCUSP_MCP_PROXY_RETRY_MS: String(MCP_PROXY_RETRY_WINDOW_MS),
         PAPERCUSP_MCP_PROXY_BASE: process.env.PAPERCUSP_MCP_PROXY_BASE || `http://127.0.0.1:${port}`,
+        PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
       },
-    });
+      });
+    } catch (error) {
+      await execution.cancel(error instanceof Error ? error.message : String(error));
+      throw error;
+    }
     packagedMcpProxyProcess = child;
     child.once('exit', () => {
       if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+      void execution.finish();
     });
     child.once('error', (e) => {
       if (packagedMcpProxyProcess === child) packagedMcpProxyProcess = null;
+      void execution.cancel(e.message);
       console.warn('[mcp-proxy] packaged proxy child failed:', (e as Error)?.message ?? e);
     });
     console.log(`[mcp-proxy] packaged proxy spawned on 127.0.0.1:${port} (dynamic operator.json target)`);

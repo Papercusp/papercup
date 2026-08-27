@@ -291,12 +291,20 @@ describe('host-bootstrap owns the packaged MCP proxy child lifecycle (EI-2110630
     expect(lifecycleSrc).toContain('detached: false');
     expect(lifecycleSrc).toContain('packagedMcpProxyProcess = child');
     expect(lifecycleSrc).toContain("child.once('exit'");
+    expect(lifecycleSrc).toContain('await beginGovernedExecution(');
+    expect(lifecycleSrc).toContain("admissionClass: 'mcp'");
+    expect(lifecycleSrc).toContain('PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context)');
+    expect(lifecycleSrc).toContain('void execution.finish()');
+    expect(lifecycleSrc).toContain('void execution.cancel(e.message)');
+    expect(lifecycleSrc).toContain("mode: hasPackagedEntry ? 'packaged-child' : 'in-process-fallback'");
+    expect(lifecycleSrc).toContain("server.once('close', () => void execution.finish())");
+    expect(lifecycleSrc).toContain('await execution.cancel((e as Error)?.message ?? String(e))');
     expect(lifecycleSrc).not.toContain('child.unref()');
   });
 
   it('does not spawn after shutdown wins the asynchronous health-probe race', () => {
     expect(lifecycleSrc).toContain('packagedMcpProxyShutdownRequested = true');
-    expect(lifecycleSrc.match(/if \(packagedMcpProxyShutdownRequested\) return;/g) ?? []).toHaveLength(4);
+    expect(lifecycleSrc.match(/if\s*\(\s*packagedMcpProxyShutdownRequested\s*\)/g) ?? []).toHaveLength(4);
   });
 });
 
