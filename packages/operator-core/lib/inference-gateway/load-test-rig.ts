@@ -521,16 +521,8 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     reconciled,
     'all snapshots active=0 with exact request and outcome accounting',
   );
-  const unclassifiedOutcomes = snapshots.reduce(
-    (sum, snapshot) => sum + (snapshot?.outcomes.unclassified ?? 0),
-    0,
-  );
-  add(
-    'zero-unclassified-requests',
-    unclassifiedOutcomes === 0,
-    unclassifiedOutcomes,
-    '=0',
-  );
+  const unclassifiedOutcomes = snapshots.reduce((sum, snapshot) => sum + (snapshot?.outcomes.unclassified ?? 0), 0);
+  add('zero-unclassified-requests', unclassifiedOutcomes === 0, unclassifiedOutcomes, '=0');
   add('queued-with-idle', input.queuedWithIdleViolations === 0, input.queuedWithIdleViolations, '=0');
 
   for (const concurrency of GATEWAY_LATENCY_CERT_CONCURRENCIES) {
