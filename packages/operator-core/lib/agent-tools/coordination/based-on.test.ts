@@ -61,6 +61,18 @@ describe('the mapping table — which reads produce which ref', () => {
     ]);
   });
 
+  it('maps accepted rubrics:get aliases and keeps canonical precedence', () => {
+    expect(READ_REF_MAPPERS['rubrics:get']!({ ref: 'generic-ref' })).toEqual(['plan:generic-ref']);
+    expect(READ_REF_MAPPERS['rubrics:get']!({ slug: 'caller-slug' })).toEqual(['plan:caller-slug']);
+    expect(
+      READ_REF_MAPPERS['rubrics:get']!({ rubricRef: 'canonical', ref: 'generic-ref', slug: 'caller-slug' }),
+    ).toEqual(['plan:canonical']);
+    expect(READ_REF_MAPPERS['rubrics:get']!({ slug: 'caller-slug', rubricRefs: ['bulk-a'] })).toEqual([
+      'plan:caller-slug',
+      'plan:bulk-a',
+    ]);
+  });
+
   it('maps a repo-relative file read, and REFUSES an absolute one', () => {
     // `file:` refs are repo-root-relative by contract. An absolute path names a
     // file in SOME tree — a tag that can never resolve is worse than no tag,

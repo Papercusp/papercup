@@ -135,7 +135,16 @@ export const READ_REF_MAPPERS: Readonly<
   // Rubrics are persisted as rubric-template plans. Keep the canonical
   // `plan:` dependency kind so the existing plan freshness resolver can
   // version the read without adding a parallel rubric resolver.
-  'rubrics:get': (a) => scalarsAt(a, ['rubricRef', 'rubricRefs']).map((s) => `plan:${s}`),
+  'rubrics:get': (a) => {
+    // Mirror rubrics:get's boundary precedence: canonical rubricRef first,
+    // then the existing generic ref alias, then caller-natural slug. Keep the
+    // plural form alongside whichever single key won, so every accepted read
+    // remains represented without recording a losing alias as a second basis.
+    const single = str(a.rubricRef) ?? str(a.ref) ?? str(a.slug);
+    return (single ? [single, ...scalarsAt(a, ['rubricRefs'])] : scalarsAt(a, ['rubricRefs'])).map(
+      (s) => `plan:${s}`,
+    );
+  },
   // A repo-relative path only. An absolute path names a file in SOME tree, and
   // `file:` refs are repo-root-relative by contract — stamping one would produce
   // a ref that can never resolve, which is worse than no ref (it looks declared).
