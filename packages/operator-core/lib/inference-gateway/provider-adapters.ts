@@ -12,6 +12,15 @@ export type GatewayWireProtocol = 'anthropic-messages' | 'openai-responses' | 'o
 export type GatewayUpstreamRoute = 'anthropic-api' | 'openai-api' | 'chatgpt-codex' | 'local-registry';
 /** Credential + I/O mechanism for one attempt. */
 export type GatewayTransportId = 'bearer-http' | 'oauth-http' | 'cli-exec' | 'local-http';
+/** Existing gateway handlers used as the first strangler executors. These are
+ * static, compiled bindings — never runtime plugin names. */
+export type GatewayLegacyExecutorId =
+  | 'proxy'
+  | 'proxyOpenAi'
+  | 'serveCodexOAuthProxy'
+  | 'serveCodexCliBridge'
+  | 'proxyLocal';
+export type GatewayLegacyEntryExecutorId = Extract<GatewayLegacyExecutorId, 'proxy' | 'proxyOpenAi' | 'proxyLocal'>;
 export type GatewayRateLimitDialect = 'anthropic-unified' | 'codex-windows' | 'none';
 export type GatewayCachePolicyId = 'anthropic-cache-control' | 'openai-prompt-cache' | 'none';
 export type GatewayModelCatalogPolicy = 'upstream' | 'gateway-static' | 'local-registry';
@@ -22,6 +31,9 @@ export interface GatewayTransportDescriptor {
   auth: 'bearer' | 'oauth' | 'cli-home' | 'none';
   streaming: boolean;
   nonStreaming: boolean;
+  /** Legacy handler that currently realizes this strategy while P-010 moves
+   * shared invariants into the request kernel one at a time. */
+  legacyExecutor: GatewayLegacyExecutorId;
   /** A degraded compatibility/rollback transport, never the preferred happy path. */
   degraded?: boolean;
 }
@@ -36,6 +48,9 @@ export interface GatewayLaneCapabilities {
 export interface GatewayLaneDescriptor {
   id: 'anthropic-messages' | 'openai-responses' | 'local-openai-chat';
   label: string;
+  /** Top-level handler admitted for this lane. Transport-specific executors may
+   * be selected inside it (for example OAuth HTTP versus CLI rollback). */
+  legacyEntryExecutor: GatewayLegacyEntryExecutorId;
   clients: readonly GatewayClientBackend[];
   protocol: GatewayWireProtocol;
   upstreams: readonly GatewayUpstreamRoute[];
@@ -64,6 +79,11 @@ export interface GatewayLaneRegistry {
   anthropicMessages: GatewayLaneDescriptor;
   openaiResponses: GatewayLaneDescriptor;
   localOpenAiChat: GatewayLaneDescriptor;
+}
+
+export interface GatewayLegacyEntryRoute {
+  executor: GatewayLegacyEntryExecutorId;
+  transport: GatewayTransportId;
 }
 
 export interface GatewayProviderAdapter {
@@ -116,10 +136,19 @@ export function makeGatewayLaneRegistry(opts: {
     anthropicMessages: {
       id: 'anthropic-messages',
       label: 'Anthropic Messages',
+      legacyEntryExecutor: 'proxy',
       clients: ['claude', 'omp'],
       protocol: 'anthropic-messages',
       upstreams: ['anthropic-api'],
-      transports: [{ id: 'oauth-http', auth: 'oauth', streaming: true, nonStreaming: true }],
+      transports: [
+        {
+          id: 'oauth-http',
+          auth: 'oauth',
+          streaming: true,
+          nonStreaming: true,
+          legacyExecutor: 'proxy',
+        },
+      ],
       capabilities: {
         streaming: true,
         nonStreaming: true,
@@ -139,13 +168,33 @@ export function makeGatewayLaneRegistry(opts: {
     openaiResponses: {
       id: 'openai-responses',
       label: 'OpenAI Responses',
+      legacyEntryExecutor: 'proxyOpenAi',
       clients: ['codex', 'omp'],
       protocol: 'openai-responses',
       upstreams: ['openai-api', 'chatgpt-codex'],
       transports: [
-        { id: 'bearer-http', auth: 'bearer', streaming: true, nonStreaming: true },
-        { id: 'oauth-http', auth: 'oauth', streaming: true, nonStreaming: true },
-        { id: 'cli-exec', auth: 'cli-home', streaming: false, nonStreaming: true, degraded: true },
+        {
+          id: 'bearer-http',
+          auth: 'bearer',
+          streaming: true,
+          nonStreaming: true,
+          legacyExecutor: 'proxyOpenAi',
+        },
+        {
+          id: 'oauth-http',
+          auth: 'oauth',
+          streaming: true,
+          nonStreaming: true,
+          legacyExecutor: 'serveCodexOAuthProxy',
+        },
+        {
+          id: 'cli-exec',
+          auth: 'cli-home',
+          streaming: false,
+          nonStreaming: true,
+          legacyExecutor: 'serveCodexCliBridge',
+          degraded: true,
+        },
       ],
       capabilities: {
         streaming: true,
@@ -167,10 +216,19 @@ export function makeGatewayLaneRegistry(opts: {
     localOpenAiChat: {
       id: 'local-openai-chat',
       label: 'Local OpenAI-compatible chat/completions',
+      legacyEntryExecutor: 'proxyLocal',
       clients: ['omp'],
       protocol: 'openai-chat',
       upstreams: ['local-registry'],
-      transports: [{ id: 'local-http', auth: 'none', streaming: true, nonStreaming: true }],
+      transports: [
+        {
+          id: 'local-http',
+          auth: 'none',
+          streaming: true,
+          nonStreaming: true,
+          legacyExecutor: 'proxyLocal',
+        },
+      ],
       capabilities: {
         streaming: true,
         nonStreaming: true,
@@ -188,6 +246,31 @@ export function makeGatewayLaneRegistry(opts: {
       unavailableMessage: 'inference-gateway: no reachable local backend',
     },
   };
+}
+
+/** Resolve the top-level strangler entry and prove that it is backed by one of
+ * the lane's declared transport strategies. A malformed static descriptor fails
+ * closed instead of falling back to a provider default. */
+export function legacyEntryRouteForGatewayLane(lane: GatewayLaneDescriptor): GatewayLegacyEntryRoute {
+  const strategy = lane.transports.find((candidate) => candidate.legacyExecutor === lane.legacyEntryExecutor);
+  if (!strategy) {
+    throw new Error(
+      `inference-gateway: lane '${lane.id}' entry executor '${lane.legacyEntryExecutor}' has no declared transport`,
+    );
+  }
+  return { executor: lane.legacyEntryExecutor, transport: strategy.id };
+}
+
+/** Resolve a concrete transport/auth strategy to its existing handler. */
+export function legacyExecutorForGatewayTransport(
+  lane: GatewayLaneDescriptor,
+  transport: GatewayTransportId,
+): GatewayLegacyExecutorId {
+  const strategy = lane.transports.find((candidate) => candidate.id === transport);
+  if (!strategy) {
+    throw new Error(`inference-gateway: lane '${lane.id}' does not support transport '${transport}'`);
+  }
+  return strategy.legacyExecutor;
 }
 
 export function makeGatewayProviderAdapters(opts: {

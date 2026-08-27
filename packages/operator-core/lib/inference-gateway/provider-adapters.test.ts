@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { gatewayProviderStatuses, makeGatewayLaneRegistry, makeGatewayProviderAdapters, providerForGatewayPath, providerForGatewayRequest, type GatewayProviderId } from './provider-adapters';
+import {
+  gatewayProviderStatuses,
+  legacyEntryRouteForGatewayLane,
+  legacyExecutorForGatewayTransport,
+  makeGatewayLaneRegistry,
+  makeGatewayProviderAdapters,
+  providerForGatewayPath,
+  providerForGatewayRequest,
+  type GatewayProviderId,
+} from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 
 const account = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-token` });
@@ -25,6 +34,7 @@ describe('gateway provider adapters', () => {
     expect(Object.keys(lanes)).toEqual(['anthropicMessages', 'openaiResponses', 'localOpenAiChat']);
     expect(lanes.anthropicMessages).toMatchObject({
       protocol: 'anthropic-messages',
+      legacyEntryExecutor: 'proxy',
       clients: ['claude', 'omp'],
       upstreams: ['anthropic-api'],
       admissionProfile: 'claude',
@@ -32,23 +42,78 @@ describe('gateway provider adapters', () => {
     });
     expect(lanes.openaiResponses).toMatchObject({
       protocol: 'openai-responses',
+      legacyEntryExecutor: 'proxyOpenAi',
       clients: ['codex', 'omp'],
       upstreams: ['openai-api', 'chatgpt-codex'],
       admissionProfile: 'codex',
       rateLimitDialect: 'codex-windows',
     });
     expect(lanes.openaiResponses.transports).toEqual([
-      expect.objectContaining({ id: 'bearer-http', streaming: true, nonStreaming: true }),
-      expect.objectContaining({ id: 'oauth-http', streaming: true, nonStreaming: true }),
-      expect.objectContaining({ id: 'cli-exec', streaming: false, nonStreaming: true, degraded: true }),
+      expect.objectContaining({
+        id: 'bearer-http',
+        streaming: true,
+        nonStreaming: true,
+        legacyExecutor: 'proxyOpenAi',
+      }),
+      expect.objectContaining({
+        id: 'oauth-http',
+        streaming: true,
+        nonStreaming: true,
+        legacyExecutor: 'serveCodexOAuthProxy',
+      }),
+      expect.objectContaining({
+        id: 'cli-exec',
+        streaming: false,
+        nonStreaming: true,
+        legacyExecutor: 'serveCodexCliBridge',
+        degraded: true,
+      }),
     ]);
     expect(lanes.localOpenAiChat).toMatchObject({
       protocol: 'openai-chat',
+      legacyEntryExecutor: 'proxyLocal',
       upstreams: ['local-registry'],
       admissionProfile: 'local',
       retryPolicy: 'local-backend-failover',
       accountPool: null,
     });
+  });
+
+  it('binds every legacy handler to a static lane or transport strategy and fails closed', () => {
+    const lanes = makeGatewayLaneRegistry({
+      claudePool: pool('claude-a'),
+      codexPool: pool('codex-a'),
+      anthropicUpstreamBase: 'https://anthropic.test',
+      openaiUpstreamBase: 'https://openai.test',
+    });
+
+    expect(legacyEntryRouteForGatewayLane(lanes.anthropicMessages)).toEqual({
+      executor: 'proxy',
+      transport: 'oauth-http',
+    });
+    expect(legacyEntryRouteForGatewayLane(lanes.openaiResponses)).toEqual({
+      executor: 'proxyOpenAi',
+      transport: 'bearer-http',
+    });
+    expect(legacyEntryRouteForGatewayLane(lanes.localOpenAiChat)).toEqual({
+      executor: 'proxyLocal',
+      transport: 'local-http',
+    });
+    expect(legacyExecutorForGatewayTransport(lanes.openaiResponses, 'oauth-http')).toBe(
+      'serveCodexOAuthProxy',
+    );
+    expect(legacyExecutorForGatewayTransport(lanes.openaiResponses, 'cli-exec')).toBe(
+      'serveCodexCliBridge',
+    );
+    expect(() => legacyExecutorForGatewayTransport(lanes.anthropicMessages, 'cli-exec')).toThrow(
+      /does not support transport 'cli-exec'/,
+    );
+
+    const malformed = {
+      ...lanes.localOpenAiChat,
+      transports: [],
+    };
+    expect(() => legacyEntryRouteForGatewayLane(malformed)).toThrow(/has no declared transport/);
   });
 
   it('declares Claude, Codex, and OMP provider contracts explicitly', () => {
