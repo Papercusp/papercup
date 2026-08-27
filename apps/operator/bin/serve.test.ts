@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import {
+  existsSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -22,6 +23,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 let tmpHome: string;
 let origHome: string | undefined;
@@ -33,6 +35,8 @@ const operatorJson = () => join(pcDir(), "operator.json");
 const tokenFile = () => join(pcDir(), "superuser-token");
 const lockFile = () => join(pcDir(), "operator.lock");
 const serveSrc = readFileSync(join(__dirname, "serve.ts"), "utf8");
+const repoRoot = join(__dirname, "../../..");
+const tsx = join(repoRoot, "node_modules/.bin/tsx");
 
 beforeAll(async () => {
   origHome = process.env.HOME;
@@ -63,6 +67,60 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
     expect(ensureReuse).toBeGreaterThan(policy);
     expect(sticky).toBeGreaterThan(ensureReuse);
     expect(effectivePort).toBeGreaterThan(sticky);
+  });
+});
+
+describe("side-effect-free help (EI-21546899007927487)", () => {
+  it.each(["--help", "-h"])(
+    "%s exits successfully without touching runtime state",
+    (flag) => {
+      const isolatedRoot = mkdtempSync(join(tmpdir(), "serve-help-"));
+      const isolatedPapercuspHome = join(isolatedRoot, "papercusp-home");
+      const env = {
+        ...process.env,
+        PAPERCUSP_HOME: isolatedPapercuspHome,
+        // If help ever falls through, fail before a database can start. The
+        // expected exit-0 + usage assertions below prove the early return won.
+        PAPERCUSP_USE_EMBEDDED_PG: "0",
+        HARNESS_ADMIN_DATABASE_URL: "",
+        HARNESS_DATABASE_URL: "",
+      };
+
+      try {
+        const result = spawnSync(tsx, [join(__dirname, "serve.ts"), flag], {
+          cwd: repoRoot,
+          env,
+          encoding: "utf8",
+          timeout: 60_000,
+        });
+
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).toContain("Usage: papercusp serve [--ensure] [--ui]");
+        expect(result.stderr).not.toContain(
+          "PAPERCUSP_USE_EMBEDDED_PG=0 requires HARNESS_ADMIN_DATABASE_URL",
+        );
+        expect(existsSync(isolatedPapercuspHome)).toBe(false);
+      } finally {
+        rmSync(isolatedRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("returns before every packaged sidecar, lock, database, migration, and bootstrap path", () => {
+    const main = serveSrc.indexOf("async function main(): Promise<void>");
+    const help = serveSrc.indexOf("if (isServeHelpRequest(argv))", main);
+    const parentWatch = serveSrc.indexOf("startSidecarParentDeathWatch();", main);
+    const substrate = serveSrc.indexOf("runSubstrateSidecarServer();", main);
+    const lock = serveSrc.indexOf("if (!acquireColdStartLock())", main);
+    const postgres = serveSrc.indexOf("pg = await ensurePostgres();", main);
+    const bootstrap = serveSrc.indexOf("runBootstrap();", main);
+
+    expect(main).toBeGreaterThan(-1);
+    expect(help).toBeGreaterThan(main);
+    for (const bootSideEffect of [parentWatch, substrate, lock, postgres, bootstrap]) {
+      expect(bootSideEffect).toBeGreaterThan(help);
+    }
   });
 });
 

@@ -1422,7 +1422,32 @@ export function _shouldPublishGlobalPgDiscovery(args: {
   return { publish: false, reason: `foreign endpoint :${existingPort} is live` };
 }
 
+export const SERVE_HELP_TEXT = `Usage: papercusp serve [--ensure] [--ui]
+
+Start the headless Papercusp operator.
+
+Options:
+  --ensure     Reuse a healthy operator from the same build when one is running.
+  --ui         Serve the packaged UI as well as the operator API.
+  -h, --help   Show this help and exit without starting runtime services.
+`;
+
+export function isServeHelpRequest(argv: readonly string[]): boolean {
+  return argv.includes("--help") || argv.includes("-h");
+}
+
 async function main(): Promise<void> {
+  // EI-21546899007927487: argv help is a read-only introspection contract. This
+  // MUST remain the first branch in main(): the packaged sidecar dispatches
+  // below start child servers, while the normal path acquires the cold-start
+  // lock and boots embedded Postgres + migrations. A conventional `--help`
+  // probe must reach none of them.
+  const argv = process.argv.slice(2);
+  if (isServeHelpRequest(argv)) {
+    process.stdout.write(SERVE_HELP_TEXT);
+    return;
+  }
+
   // The packaged sidecar branches below return before the normal operator
   // shutdown handlers are installed. Arm the shared parent-death watch first;
   // once the sidecar entrypoint is running, its SIGTERM handler receives this
@@ -1483,7 +1508,7 @@ async function main(): Promise<void> {
     });
     return;
   }
-  const args = new Set(process.argv.slice(2));
+  const args = new Set(argv);
   const ensure = args.has("--ensure");
   // Headless by default; --ui (or a pre-set PAPERCUSP_SERVE_UI) keeps the SPA.
   if (!args.has("--ui") && process.env.PAPERCUSP_SERVE_UI == null) {
