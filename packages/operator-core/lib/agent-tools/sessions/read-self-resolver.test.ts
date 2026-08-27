@@ -1,0 +1,244 @@
+/**
+ * `sessions:read { session: 'self' }` through the real resolver chain.
+ *
+ * The filesystem fixture models a Codex carry-respawn: an ended predecessor
+ * adv-session row sits beside the active row, whose managed CODEX_HOME holds
+ * both the stale predecessor rollout and the live successor rollout. The
+ * read must resolve the live successor for its response anchor while retaining
+ * owner scope so indexed turns from both native sessions remain readable.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { mkdtemp, mkdir, rm, utimes, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+const fixture = vi.hoisted(() => {
+  const state = {
+    home: '',
+    advRows: [] as Array<{
+      id: number;
+      agent: string | null;
+      session_id: string | null;
+      omp_thread_id: string | null;
+      ended_at: string | null;
+    }>,
+    advQueries: [] as string[],
+  };
+
+  const sql = vi.fn(async (...args: unknown[]) => {
+    const [strings] = args;
+    const text = Array.isArray(strings) ? (strings as string[]).join(' ') : String(strings);
+    state.advQueries.push(text);
+    if (!text.includes('FROM harness_shared.adv_sessions')) return [];
+
+    // Model the production query rather than handing every row to the
+    // resolver. If the active-row predicate regresses, the ended row below
+    // becomes visible and the decoy rollout makes that mistake observable.
+    const rows = text.includes('ended_at IS NULL')
+      ? state.advRows.filter((row) => row.ended_at === null)
+      : state.advRows;
+    return rows.map((row) => ({
+      id: row.id,
+      agent: row.agent,
+      session_id: row.session_id,
+      omp_thread_id: row.omp_thread_id,
+    }));
+  });
+
+  return { state, sql };
+});
+
+vi.mock('node:os', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:os')>();
+  return { ...actual, homedir: () => fixture.state.home || actual.homedir() };
+});
+
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: fixture.sql }),
+}));
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-read-self-resolver', ownerLabel: 'su · resolver' })),
+}));
+
+vi.mock('./_shared', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  sessionSearchEnabled: vi.fn(async () => true),
+}));
+
+// The real filter resolver force-tails the resolved transcript after resolving
+// it. Keep that separate write-side operation out of this read-path fixture;
+// the sessions:read → resolveSearchFilters → resolveSelfSession chain remains
+// real, and the indexed rows below are the read surface under test.
+vi.mock('../../search/session-ingest', () => ({
+  ingestFileNow: vi.fn(async () => ({ inserted: 0 })),
+}));
+
+const readModule = await import('./read');
+const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
+const projected = lookupByMcpName('sessions:read')!;
+
+const OWNER = 'su-read-self-resolver';
+const PREDECESSOR = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+const SUCCESSOR = '119f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+const ENDED_ADV_ID = 41001;
+const ACTIVE_ADV_ID = 41002;
+
+const indexedTurns = [
+  {
+    source_kind: 'codex',
+    session_id: PREDECESSOR,
+    turn_idx: 8,
+    speaker: 'assistant',
+    owner: OWNER,
+    ts: null,
+    text: 'before deterministic carry-respawn',
+  },
+  {
+    source_kind: 'codex',
+    session_id: SUCCESSOR,
+    turn_idx: 0,
+    speaker: 'user',
+    owner: OWNER,
+    ts: null,
+    text: 'after deterministic carry-respawn',
+  },
+];
+
+afterEach(async () => {
+  if (fixture.state.home) await rm(fixture.state.home, { recursive: true, force: true });
+  fixture.state.home = '';
+  fixture.state.advRows = [];
+  fixture.state.advQueries.length = 0;
+});
+
+async function seedFixture() {
+  const home = await mkdtemp(join(tmpdir(), 'read-self-resolver-'));
+  fixture.state.home = home;
+  fixture.state.advRows = [
+    {
+      id: ENDED_ADV_ID,
+      agent: 'codex',
+      session_id: PREDECESSOR,
+      omp_thread_id: null,
+      ended_at: '2026-08-27T08:00:00.000Z',
+    },
+    {
+      id: ACTIVE_ADV_ID,
+      agent: 'codex',
+      // A cold carry can leave the recorded native id stale while the managed
+      // home receives the successor rollout.
+      session_id: PREDECESSOR,
+      omp_thread_id: null,
+      ended_at: null,
+    },
+  ];
+
+  const endedHome = join(home, '.papercusp', 'su-codex-homes', `session-${ENDED_ADV_ID}`);
+  const activeHome = join(home, '.papercusp', 'su-codex-homes', `session-${ACTIVE_ADV_ID}`);
+  const endedDay = join(endedHome, 'sessions', '2026', '08', '27');
+  const activeDay = join(activeHome, 'sessions', '2026', '08', '27');
+  await mkdir(endedDay, { recursive: true });
+  await mkdir(activeDay, { recursive: true });
+
+  const endedDecoy = join(endedDay, `rollout-2026-08-27T07-00-00-${PREDECESSOR}.jsonl`);
+  const predecessorPath = join(activeDay, `rollout-2026-08-27T07-30-00-${PREDECESSOR}.jsonl`);
+  const successorPath = join(activeDay, `rollout-2026-08-27T08-30-00-${SUCCESSOR}.jsonl`);
+  await writeFile(endedDecoy, '{}\n');
+  await writeFile(predecessorPath, '{}\n');
+  await writeFile(successorPath, '{}\n');
+  await utimes(endedDecoy, new Date(1_700_000_200_000), new Date(1_700_000_200_000));
+  await utimes(predecessorPath, new Date(1_700_000_000_000), new Date(1_700_000_000_000));
+  await utimes(successorPath, new Date(1_700_000_100_000), new Date(1_700_000_100_000));
+
+  // The discovery pin intentionally names the predecessor; the resolver must
+  // follow the newest rollout in the active managed home instead.
+  const ptyDir = join(home, '.papercusp', 'psu-pty');
+  await mkdir(ptyDir, { recursive: true });
+  await writeFile(
+    join(ptyDir, `${OWNER}.json`),
+    JSON.stringify({ command: 'codex', args: ['--session-id', PREDECESSOR] }),
+  );
+}
+
+function makeTx() {
+  return vi.fn(async (...args: unknown[]) => {
+    const [strings, ...values] = args;
+    const text = Array.isArray(strings) ? (strings as string[]).join(' ? ') : String(strings);
+    if (!text.includes('FROM harness_shared.session_turns')) return [];
+
+    const querySessionId = (values[2] ?? null) as string | null;
+    const owners = (values[4] ?? null) as string[] | null;
+    const sourceKind = (values[6] ?? null) as string | null;
+    const limit = Number(values[values.length - 1]);
+    return indexedTurns
+      .filter((row) => (!querySessionId || row.session_id === querySessionId))
+      .filter((row) => (!owners || owners.includes(row.owner)))
+      .filter((row) => (!sourceKind || row.source_kind === sourceKind))
+      .slice(0, limit);
+  });
+}
+
+describe("sessions:read session:'self' resolver integration (EI-21592931181974970)", () => {
+  it('resolves the active successor while reading indexed predecessor and successor turns', async () => {
+    await seedFixture();
+    const tx = makeTx();
+
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'sessions:read',
+      { session: 'self', limit: 2, order: 'asc' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'read-self-resolver-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx,
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const structured = dispatched.result?.structuredContent as {
+      ok: boolean;
+      session_id: string;
+      note?: string;
+      turn_count: number;
+      turns: Array<{ ref: string; session_id?: string; text: string }>;
+    };
+    expect(structured).toMatchObject({
+      ok: true,
+      session_id: SUCCESSOR,
+      note: `resolved self → codex:${SUCCESSOR}`,
+      turn_count: 2,
+    });
+    expect(structured.turns).toEqual([
+      {
+        ref: `session_turn:codex:${PREDECESSOR}:8`,
+        turn_idx: 8,
+        speaker: 'assistant',
+        owner: OWNER,
+        text: 'before deterministic carry-respawn',
+      },
+      {
+        ref: `session_turn:codex:${SUCCESSOR}:0`,
+        turn_idx: 0,
+        speaker: 'user',
+        owner: OWNER,
+        text: 'after deterministic carry-respawn',
+      },
+    ]);
+
+    const advQuery = fixture.state.advQueries.find((query) => query.includes('FROM harness_shared.adv_sessions'));
+    expect(advQuery).toContain('ended_at IS NULL');
+    expect(tx.mock.calls.some(([strings]) => String(strings).includes('owner = ANY'))).toBe(true);
+  });
+});
