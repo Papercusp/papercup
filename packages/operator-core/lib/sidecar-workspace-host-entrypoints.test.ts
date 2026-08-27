@@ -96,7 +96,7 @@ function makeFixture(): string {
 }
 
 function run(path: string, args: readonly string[], env: NodeJS.ProcessEnv = process.env) {
-  return spawnSync(path, [...args], { encoding: 'utf8', env });
+  return spawnSync(path, [...args], { encoding: 'utf8', env, timeout: 120_000, killSignal: 'SIGKILL' });
 }
 
 function install(root: string) {
