@@ -1022,6 +1022,24 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(r.stderr).not.toContain('PREEMPTING');
   });
 
+  it('emits an undetermined marker when the outer supervisor fails before the monitor starts', () => {
+    const fakeBin = join(dir, 'outer-start-fails');
+    mkdirSync(fakeBin);
+    // Model setsid returning EAGAIN before it can launch the internal monitor.
+    writeFileSync(join(fakeBin, 'setsid'), '#!/bin/sh\nexit 11\n', { mode: 0o755 });
+
+    const r = runSync(['bash', '-c', 'exit 0'], {
+      PATH: `${fakeBin}:${process.env.PATH ?? ''}`,
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_PREEMPTIBLE: '1',
+    });
+
+    expect(r.status).toBe(11);
+    expect(r.stderr).toContain(
+      'PC_HEAVY_RESULT status=undetermined reason=outer-child-start-failed exit=11',
+    );
+  });
+
   // EI-21357082020097858 — every abort before the workload can produce a
   // verdict must leave the same machine-readable undetermined marker as the
   // already-covered outer-wrapper abort. These tests call the internal monitor
@@ -2123,6 +2141,8 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
         admissionState('ordinary-new').includes('state=active'));
       expect(Number(readFileSync(oldPidFile, 'utf8').trim())).toBe(oldPid);
       expect(Number(readFileSync(newPidFile, 'utf8').trim())).toBe(newPid);
+      await waitFor('the elected root publishing its structured thaw event', () =>
+        newErr.peek().includes('PC_HEAVY_ADMISSION status=thawed'));
       expect(newErr.peek()).toContain(
         'PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered priority=10 psiFullAvg10=0 admittedCgroupMiB=128 admissionId=ordinary-new retryHandle=psi-recovery:ordinary-new',
       );
