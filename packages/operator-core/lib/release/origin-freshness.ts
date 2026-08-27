@@ -400,6 +400,49 @@ export interface OriginFreshnessAlertFraming {
  * direct self-report AND the actionable one: while the publish leg refuses, origin
  * falls behind as a CONSEQUENCE, so reporting the consequence buries the cause.
  */
+/** Sub-hour ages rendered as minutes — `hrs()` alone prints a 3-minute-old tip as "0h",
+ *  which reads as "unknown/zero" exactly where the freshest evidence lives. */
+function ageLabel(ms: number): string {
+  return ms < 3_600_000 ? `${Math.round(ms / 60_000)}m` : `${hrs(ms)}h`;
+}
+
+/**
+ * EI-21517899493871930 — the origin blast radius of a p2p-publish signal, MEASURED.
+ *
+ * The p2p publish leg and `git push origin` are SEPARATE egress paths: a bridged install can
+ * be refusing every publish while origin advances on its ordinary git-sync cadence. Measured
+ * 2026-08-26T12:16:38Z on `papercusp` (hiveGit.mode = 'bridged'), within a minute of the alarm
+ * firing and immediately after an explicit `git fetch origin staging`: origin was ONE commit and
+ * ~3 minutes behind local — i.e. healthy — while the alarm asserted "nothing this device commits
+ * reaches peers or origin". That overstatement induced two CRITICAL filings (WI-40760,
+ * EI-21201399884691584) that were retracted after 114s and 63s respectively.
+ *
+ * The correction is not softer wording — it is a different DERIVATION. The watchdog computes
+ * `aheadCount` and `originTipAgeMs` a few lines before it builds this framing, so the alarm
+ * reports the origin leg it already measured instead of inferring it from the p2p refusal.
+ *
+ * The UNMEASURED branch deliberately does NOT fall back to "affected". An alarm that guesses
+ * wide gets discounted wholesale, and the half that is genuinely broken — the p2p half — stops
+ * being believed along with it.
+ */
+function describeMeasuredOriginLeg(
+  verdict: Pick<OriginFreshnessVerdict, 'aheadCountStale' | 'tipAgeStale'>,
+  ctx: { aheadCount?: number | null; originTipAgeMs?: number | null },
+): string {
+  const ahead = ctx.aheadCount ?? null;
+  const ageMs = ctx.originTipAgeMs ?? null;
+  if (ahead == null && ageMs == null) {
+    return 'Origin egress is NOT measured by this signal — do not infer that it is affected.';
+  }
+  const parts: string[] = [];
+  if (ahead != null) parts.push(`local is ${ahead} commit(s) ahead of the tracked origin tip`);
+  if (ageMs != null) parts.push(`that tip last moved ${ageLabel(ageMs)} ago`);
+  const measured = parts.join('; ');
+  return verdict.aheadCountStale || verdict.tipAgeStale
+    ? `Origin is ALSO measurably behind (${measured}).`
+    : `Origin egress is measured separately and is UNAFFECTED (${measured}).`;
+}
+
 export function describeOriginFreshnessAlert(
   verdict: OriginFreshnessVerdict,
   ctx: {
@@ -437,15 +480,18 @@ export function describeOriginFreshnessAlert(
           `git-sync journal for the guard's own log line naming the offending commit.`;
     return {
       cause: 'publish-refused',
-      title: `p2p publish REFUSED (${code}) — this device's commits are reaching nobody`,
+      // EI-21517899493871930: the title and summary state the PEER leg only — that is all the
+      // publish guard observed. The origin leg is appended from `originLeg`, which reports the
+      // measurement or says plainly that there is none.
+      title: `p2p publish REFUSED (${code}) — this device's commits are reaching no peers`,
       summary:
         `p2p publish REFUSED on ${ctx.slug} (${code}) — the publish guard is refusing every tick, so nothing this ` +
-        `device commits reaches peers or origin. This is NOT a bridge/egress fault.`,
+        `device commits is reaching PEERS. ${originLeg} This is NOT a bridge/egress fault.`,
       whyItMatters:
         `Why it matters: the publish guard's baseline only advances through an ADMITTED publish, so a hard refusal ` +
         `re-judges the SAME range on every tick and stays refused until the finding is resolved — it does not ` +
-        `self-heal. Origin falling behind is a downstream SYMPTOM here; the bridge and its divergence classifier ` +
-        `are working correctly and are not where to look.\n\n${lever}`,
+        `self-heal. If origin is ALSO behind, that is a downstream SYMPTOM here; the bridge and its divergence ` +
+        `classifier are working correctly and are not where to look.\n\n${lever}`,
     };
   }
 

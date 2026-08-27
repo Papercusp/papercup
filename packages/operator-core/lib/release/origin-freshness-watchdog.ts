@@ -581,6 +581,12 @@ export async function checkOriginFreshness(
         publishRefusalCode,
         publishBacklogCommits,
         integratorBacklogCommits,
+        // EI-21517899493871930: hand the framing the origin numbers this sweep ALREADY
+        // measured (same two values `evaluateOriginFreshness` was called with, above), so a
+        // p2p-publish alarm reports origin's actual state instead of asserting one. Without
+        // them the alarm claimed origin was dead while it was ~1 commit behind and advancing.
+        aheadCount,
+        originTipAgeMs,
       });
 
       if (verdict.state === 'stale') {
@@ -781,6 +787,11 @@ export async function checkOriginFreshness(
         publishRefusalCode,
         publishBacklogCommits: null,
         integratorBacklogCommits: null,
+        // EI-21517899493871930: explicitly UNMEASURED, for the same reason the snapshot above
+        // passes nulls — this pot has no origin, so there is nothing to measure. The framing
+        // then says so outright rather than inferring impact from the publish refusal.
+        aheadCount: null,
+        originTipAgeMs: null,
       });
 
       const alerted = row.of_alerted ?? false;

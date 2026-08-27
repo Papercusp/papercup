@@ -498,3 +498,159 @@ describe('EI-19442274898324113 — isIntegratorStalledThisSweep: backlog alone i
     ).toBe(false);
   });
 });
+
+/**
+ * EI-21517899493871930 — the alarm must not claim ORIGIN impact from a p2p-publish signal.
+ *
+ * The p2p publish leg and `git push origin` are separate egress paths, so a refusal is
+ * evidence about PEERS and nothing else. The live broadcast asserted both:
+ *
+ *   "p2p publish REFUSED on papercusp (secrets) — the publish guard is refusing every tick,
+ *    so nothing this device commits reaches peers or origin."
+ *
+ * Measured on `papercusp` (hiveGit.mode = 'bridged') at 2026-08-26T12:16:38Z, within a minute
+ * of that alarm and right after an explicit fetch: origin was ONE commit / ~3 minutes behind
+ * local — ordinary git-sync cadence. The overstatement induced two CRITICAL filings that were
+ * retracted after 114s (WI-40760, whose title carries the same conflation verbatim) and 63s
+ * (EI-21201399884691584).
+ *
+ * The cost runs BOTH ways, which is why softer wording would not have been enough: an agent
+ * who trusts it escalates an egress emergency that is not happening, and an agent who has once
+ * falsified it starts discounting the alarm wholesale — including the p2p half that is really
+ * broken. So the origin clause is MEASURED from the numbers the watchdog already holds, and
+ * when there is no measurement the alarm says exactly that instead of guessing wide.
+ */
+describe('EI-21517899493871930 — a p2p-publish alarm reports the origin leg it measured, never one it inferred', () => {
+  const refusalOriginHealthy = evaluateOriginFreshness({
+    // The incident shape: guard refusing, origin one commit behind and freshly advanced.
+    aheadCount: 1,
+    originTipAgeMs: 3 * 60_000,
+    publishRefusedSweeps: 4,
+    publishRefusalCode: 'secrets',
+  });
+
+  it('never claims origin is affected — not in the summary, the title, or the verdict reason', () => {
+    const f = describeOriginFreshnessAlert(refusalOriginHealthy, {
+      slug: 'papercusp',
+      publishRefusalCode: 'secrets',
+      aheadCount: 1,
+      originTipAgeMs: 3 * 60_000,
+    });
+    // The exact retracted claim, in the two shapes it was written.
+    expect(f.summary).not.toMatch(/reach(es)? peers or origin/);
+    expect(f.summary).not.toMatch(/reaching peers or origin/);
+    // The title said "reaching nobody", which reads as origin too.
+    expect(f.title).not.toMatch(/reaching nobody/);
+    // …and the verdict `reason` fed the body of the same broadcast.
+    expect(refusalOriginHealthy.reason ?? '').not.toMatch(/peers or origin/);
+    // Positive control: it still reports the peer leg, or this test would pass on an empty string.
+    expect(f.summary).toMatch(/PEERS/);
+    expect(f.cause).toBe('publish-refused');
+  });
+
+  it('reports origin as UNAFFECTED, with the measurement, when origin is measurably fine', () => {
+    const f = describeOriginFreshnessAlert(refusalOriginHealthy, {
+      slug: 'papercusp',
+      publishRefusalCode: 'secrets',
+      aheadCount: 1,
+      originTipAgeMs: 3 * 60_000,
+    });
+    expect(f.summary).toMatch(/UNAFFECTED/);
+    // The numbers, not an adjective — a reader must be able to check the claim.
+    expect(f.summary).toMatch(/1 commit\(s\) ahead/);
+    // Sub-hour ages render as minutes: `hrs()` alone would print "0h", which reads as unknown.
+    expect(f.summary).toMatch(/3m ago/);
+  });
+
+  it('reports origin as ALSO behind, with the measurement, when it genuinely is', () => {
+    const both = evaluateOriginFreshness({
+      aheadCount: 80,
+      originTipAgeMs: 5 * 60 * 60_000,
+      publishRefusedSweeps: 4,
+      publishRefusalCode: 'secrets',
+    });
+    const f = describeOriginFreshnessAlert(both, {
+      slug: 'papercusp',
+      publishRefusalCode: 'secrets',
+      aheadCount: 80,
+      originTipAgeMs: 5 * 60 * 60_000,
+    });
+    // Still named after the CAUSE (WI-6643), while stating the wider radius honestly.
+    expect(f.cause).toBe('publish-refused');
+    expect(f.summary).toMatch(/ALSO measurably behind/);
+    expect(f.summary).toMatch(/80 commit\(s\) ahead/);
+    expect(f.summary).toMatch(/5h ago/);
+    expect(f.summary).not.toMatch(/UNAFFECTED/);
+  });
+
+  it('says the origin leg is UNMEASURED rather than falling back to "affected"', () => {
+    // The p2p-only pot path: the watchdog passes nulls because there is no origin to read.
+    const v = evaluateOriginFreshness({
+      aheadCount: null,
+      originTipAgeMs: null,
+      publishRefusedSweeps: 5,
+      publishRefusalCode: 'secrets',
+    });
+    const f = describeOriginFreshnessAlert(v, {
+      slug: 'somepot',
+      publishRefusalCode: 'secrets',
+      aheadCount: null,
+      originTipAgeMs: null,
+    });
+    expect(f.summary).toMatch(/NOT measured/);
+    expect(f.summary).not.toMatch(/UNAFFECTED/);
+    expect(f.summary).not.toMatch(/ALSO measurably behind/);
+    // Guessing wide is the failure mode this branch exists to prevent.
+    expect(f.summary).not.toMatch(/peers or origin/);
+  });
+
+  it('CONTROL: the same assertions FAIL the pre-fix broadcast, so a green here is not vacuous', () => {
+    // The deliberately-wrong "implementation", kept permanently as a control (the repo's
+    // prescribed falsifiability tier for a module you import — mutating the shared tree to
+    // prove a guard bites is unsafe here, because git-sync sweeps the whole checkout).
+    //
+    // These two strings are the VERBATIM live output of the code this test guards against —
+    // the 2026-08-26 broadcast summary and the 2026-07-28 body. If the regexes above were
+    // no-ops (a typo, a pattern that can never match), they would pass on the broken text too
+    // and the suite would report a fix that never landed. That is the exact failure shape this
+    // whole plan keeps meeting: a confirmation signal reporting success for a condition it
+    // cannot observe.
+    const PRE_FIX_SUMMARY =
+      'p2p publish REFUSED on papercusp (secrets) — the publish guard is refusing every tick, so nothing this ' +
+      'device commits reaches peers or origin. This is NOT a bridge/egress fault.';
+    const PRE_FIX_TITLE = "p2p publish REFUSED (secrets) — this device's commits are reaching nobody";
+    const PRE_FIX_REASON =
+      'the p2p publish leg has REFUSED to publish for 4 consecutive sweeps (secrets)' +
+      ' — nothing this device commits is reaching peers or origin';
+
+    expect(PRE_FIX_SUMMARY).toMatch(/reaches peers or origin/);
+    expect(PRE_FIX_TITLE).toMatch(/reaching nobody/);
+    expect(PRE_FIX_REASON).toMatch(/peers or origin/);
+    // The pre-fix text carried no measurement at all — neither branch of the new clause.
+    expect(PRE_FIX_SUMMARY).not.toMatch(/UNAFFECTED|ALSO measurably behind|NOT measured/);
+
+    // Calibration: the SAME patterns, run against what the fixed code actually emits today,
+    // must come out the other way — otherwise the control proves nothing about the subject.
+    const live = describeOriginFreshnessAlert(refusalOriginHealthy, {
+      slug: 'papercusp',
+      publishRefusalCode: 'secrets',
+      aheadCount: 1,
+      originTipAgeMs: 3 * 60_000,
+    });
+    expect(live.summary).not.toMatch(/reaches peers or origin/);
+    expect(live.title).not.toMatch(/reaching nobody/);
+    expect(refusalOriginHealthy.reason ?? '').not.toMatch(/peers or origin/);
+    expect(live.summary).toMatch(/UNAFFECTED/);
+  });
+
+  it('omitting the origin fields entirely is UNMEASURED, not silently "unaffected"', () => {
+    // Fail-safe for any caller that has not been taught to pass the measurement:
+    // absence of evidence must never render as evidence of absence.
+    const f = describeOriginFreshnessAlert(refusalOriginHealthy, {
+      slug: 'papercusp',
+      publishRefusalCode: 'secrets',
+    });
+    expect(f.summary).toMatch(/NOT measured/);
+    expect(f.summary).not.toMatch(/UNAFFECTED/);
+  });
+});
