@@ -1995,6 +1995,148 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   });
 });
 
+describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
+  const admissionState = (id: string): string =>
+    readFileSync(join(dir, 'psi-admissions', `${id}.state`), 'utf8');
+
+  const processState = (pid: number): string => {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat.slice(stat.lastIndexOf(') ') + 2).split(/\s+/, 1)[0] ?? '';
+  };
+
+  it('freezes lower-priority roots deterministically, preserves the release gate, and thaws one per quiet window', async () => {
+    const psiFile = join(dir, 'psi-full-avg10');
+    const gateRelease = join(dir, 'release-gate-continue');
+    const gateDone = join(dir, 'release-gate-done');
+    const oldPidFile = join(dir, 'ordinary-old.pid');
+    const newPidFile = join(dir, 'ordinary-new.pid');
+    const admissionDir = join(dir, 'psi-admissions');
+    writeFileSync(psiFile, '0\n');
+
+    const ordinaryCommand = (pidFile: string) =>
+      `echo $$ > "${pidFile}"; trap 'exit 0' TERM INT HUP; while :; do sleep 0.05; done`;
+    const shared = {
+      PC_HEAVY_SLOTS: '3',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_GATE_RESERVE: '0',
+      PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+      PC_HEAVY_MEM_PSI_RECOVERY_SEC: '1',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '128',
+    };
+
+    // The authoritative gate bypasses both the slot domain and the admission
+    // candidate ledger. Hold it open until both ordinary roots are proven
+    // frozen; if PSI control accidentally targets it, gateDone never appears.
+    const gate = spawn(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', `while [ ! -f "${gateRelease}" ]; do sleep 0.05; done; echo done > "${gateDone}"`],
+      {
+        env: baseEnv({ ...shared, PC_HEAVY_RELEASE_GATE: '1' }),
+        cwd: dir,
+        detached: true,
+      },
+    );
+    const gateErr = createTextCollector(gate.stderr);
+
+    const old = spawn('bash', [PC_HEAVY, 'bash', '-c', ordinaryCommand(oldPidFile)], {
+      env: baseEnv({
+        ...shared,
+        PC_HEAVY_ADMISSION_ID: 'ordinary-old',
+        PC_HEAVY_MEM_PSI_SAMPLE_SEC: '1',
+      }),
+      cwd: dir,
+      detached: true,
+    });
+    const oldErr = createTextCollector(old.stderr);
+    let newer: ReturnType<typeof spawn> | undefined;
+    try {
+      await waitFor('the older ordinary root publishing its admission record', () =>
+        existsSync(join(admissionDir, 'ordinary-old.state')) && admissionState('ordinary-old').includes('state=active'));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      newer = spawn('bash', [PC_HEAVY, 'bash', '-c', ordinaryCommand(newPidFile)], {
+        env: baseEnv({
+          ...shared,
+          PC_HEAVY_ADMISSION_ID: 'ordinary-new',
+          PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+        }),
+        cwd: dir,
+        detached: true,
+      });
+      const newErr = createTextCollector(newer.stderr);
+      await waitFor('the newer ordinary root publishing its admission record', () =>
+        existsSync(join(admissionDir, 'ordinary-new.state')) && admissionState('ordinary-new').includes('state=active'));
+      await waitFor('both isolated child identities being published', () =>
+        existsSync(oldPidFile) && existsSync(newPidFile));
+      const oldPid = Number(readFileSync(oldPidFile, 'utf8').trim());
+      const newPid = Number(readFileSync(newPidFile, 'utf8').trim());
+
+      // A stale record has a lower priority and a newer timestamp, so it wins
+      // unless pid+start-tick validation removes it before election.
+      writeFileSync(join(admissionDir, 'stale.state'), [
+        'version=1',
+        'admission_id=stale',
+        'pid=99999999',
+        'start_ticks=1',
+        'priority=0',
+        'admitted_at=999999999999999999',
+        'state=active',
+        'cgroup_path=/stale',
+        'memory_current_mib=999',
+        'retry_handle=psi-recovery:stale',
+        'updated_at=1',
+        '',
+      ].join('\n'));
+
+      writeFileSync(psiFile, '9\n');
+      await waitFor('the deterministic newest ordinary root freezing first', () =>
+        admissionState('ordinary-new').includes('state=frozen'));
+      expect(admissionState('ordinary-old')).toContain('state=active');
+      expect(existsSync(join(admissionDir, 'stale.state'))).toBe(false);
+      await waitFor('the second ordinary root yielding under sustained pressure', () =>
+        admissionState('ordinary-old').includes('state=frozen'));
+      await waitFor('both child process groups reaching the stopped state', () =>
+        ['T', 't'].includes(processState(oldPid)) && ['T', 't'].includes(processState(newPid)));
+
+      // The gate completes while both ordinary roots remain stopped. It never
+      // published an admission record and cannot receive STOP from this policy.
+      writeFileSync(gateRelease, 'go\n');
+      await waitFor('the protected release gate completing', () => existsSync(gateDone));
+      expect(gateErr.peek()).not.toContain('PC_HEAVY_ADMISSION');
+      expect(readdirSync(admissionDir).some((name) => name.includes('release'))).toBe(false);
+
+      expect(newErr.peek()).toContain(
+        'PC_HEAVY_ADMISSION status=frozen reason=memory-psi-high priority=10 psiFullAvg10=9 admittedCgroupMiB=128 admissionId=ordinary-new retryHandle=psi-recovery:ordinary-new',
+      );
+
+      writeFileSync(psiFile, '0\n');
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(admissionState('ordinary-old')).toContain('state=frozen');
+      expect(admissionState('ordinary-new')).toContain('state=frozen');
+
+      // Recovery order is highest-priority then oldest. Both roots share one
+      // cgroup in this fixture; the event's 128 MiB total proves deduplication.
+      await waitFor('only the older root thawing after the first quiet window', () =>
+        admissionState('ordinary-old').includes('state=active') &&
+        admissionState('ordinary-new').includes('state=frozen'));
+      expect(Number(readFileSync(oldPidFile, 'utf8').trim())).toBe(oldPid);
+      expect(oldErr.peek()).toContain(
+        'PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered priority=10 psiFullAvg10=0 admittedCgroupMiB=128 admissionId=ordinary-old retryHandle=psi-recovery:ordinary-old',
+      );
+      await waitFor('the second quiet window thawing the remaining root', () =>
+        admissionState('ordinary-new').includes('state=active'));
+      expect(Number(readFileSync(newPidFile, 'utf8').trim())).toBe(newPid);
+      expect(newErr.peek()).toContain('PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered');
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(old);
+      if (newer) killGroup(newer);
+      killGroup(gate);
+    }
+  }, 30_000);
+});
+
 describe('pc-heavy.sh — finite-cgroup typecheck admission (EI-21206772578500745)', () => {
   const typecheckFixture = (): string => {
     const file = join(dir, 'lint-tsc-fixture.mjs');
