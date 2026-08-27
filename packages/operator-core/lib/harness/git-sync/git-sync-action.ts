@@ -502,11 +502,12 @@ interface AcquireOutcome {
 
 /**
  * A git-sync fire never waits for an exclusive FIFO ticket: a refused acquire
- * is a terminal skipped fire. The generic resource store cannot know that and
- * correctly enqueues every refused exclusive, so git-sync must remove its own
- * abandoned request before returning. Otherwise resource_grant_cascade later
- * grants the ticket to a fire that no longer exists, creating a self-relaying
- * 600s lease with nobody left to heartbeat or release it (WI-209800 / D-104).
+ * is a terminal skipped fire. The resource store defaults to a terminal refusal
+ * with no FIFO ticket; this path still removes any stale ticket left by an
+ * older caller or an explicitly queued request before returning. Otherwise
+ * resource_grant_cascade could grant a ticket to a fire that no longer exists,
+ * creating a self-relaying 600s lease with nobody left to heartbeat or release
+ * it (WI-209800 / D-104).
  *
  * Clear every queued git-sync owner, not only the current UUID. Historical
  * skipped fires may already have returned, and no live consumer can ever use
@@ -727,10 +728,10 @@ async function acquireLocks(
     }
     if (!r.ok) {
       // A peer holds it (or an extra name is unregistered) — skip this tick,
-      // retry next. tryAcquireResource queues refused exclusives by design, but
-      // this fire has no wait loop and is terminal now. Cancel every abandoned
-      // git-sync ticket and release a possible late cascade grant atomically
-      // before returning; releasing by THIS owner cannot touch the peer row.
+      // retry next. This fire has no wait loop and is terminal now. Cancel any
+      // stale/explicitly queued git-sync ticket and release a possible late
+      // cascade grant atomically before returning; releasing by THIS owner
+      // cannot touch the peer row.
       try {
         await acquireWithContentionRetry(() =>
           inWorkspaceTxn(cd, owner, async (tx) => {
