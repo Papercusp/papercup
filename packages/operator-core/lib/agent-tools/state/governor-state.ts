@@ -70,6 +70,11 @@ export default defineTool({
     notWhen: 'To mutate governor state or inspect individual queue rows.',
     chaining: 'state:read { cell:"governor.health" } is the ordinary entry point.',
   },
+  // @cell-lens governor.health
+  // This tool IS the registered resolver behind governor.health/admission/queue/
+  // resources/recovery — its own description says so. One marker names the family
+  // (CELL_LENS_RE captures a single id), matching how dev/pipeline_position.ts
+  // declares git.pipelinePosition for the five cells it resolves.
   capability: 'intel:read',
   requirePrincipal: false,
   skipWorkspaceTx: true,
