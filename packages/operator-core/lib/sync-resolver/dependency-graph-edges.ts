@@ -80,6 +80,7 @@ export interface DependencyGraphEdge {
   blockerKind: string | null;
   /** Blocker lifecycle status — lets the UI grey out an edge whose blocker is already terminal. */
   blockerStatus: string | null;
+  satisfaction: 'settled' | 'success';
 
   // ── ENDPOINT HYDRATION (WI-36045) ──────────────────────────────────────────────────────
   // The minimum a graph NODE needs, carried on the edge so an endpoint outside the list's
@@ -125,6 +126,7 @@ export async function resolveDependencyGraphEdges(
       blocked_kind: string;
       blocker_kind: string | null;
       blocker_status: string | null;
+      satisfaction: 'settled' | 'success';
       blocked_title: string | null;
       blocked_status: string | null;
       blocked_plan_slug: string | null;
@@ -138,6 +140,7 @@ export async function resolveDependencyGraphEdges(
            bd.item_kind   AS blocked_kind,
            bk.item_kind   AS blocker_kind,
            bk.status      AS blocker_status,
+           d.satisfaction AS satisfaction,
            -- Endpoint hydration (WI-36045). Free: both rows are already joined below, so
            -- this adds columns to an existing scan rather than a second query.
            bd.title            AS blocked_title,
@@ -198,6 +201,7 @@ export async function resolveDependencyGraphEdges(
     blockedKind: r.blocked_kind,
     blockerKind: r.blocker_kind,
     blockerStatus: r.blocker_status,
+    satisfaction: r.satisfaction,
     blockedTitle: r.blocked_title,
     blockedStatus: r.blocked_status,
     blockedPlanSlug: r.blocked_plan_slug,

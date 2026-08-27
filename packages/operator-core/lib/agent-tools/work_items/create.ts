@@ -84,6 +84,7 @@ const linkSpec = z.object({
   target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item, event) — use with target_ref'),
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
+  satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
 });
 
 function rejectMissingScheduleCadence(

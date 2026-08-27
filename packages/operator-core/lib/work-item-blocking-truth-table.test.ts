@@ -51,6 +51,17 @@ describe('P-019 readiness truth-table — terminal-set membership', () => {
 });
 
 describe('P-019 readiness truth-table — single blocker, every status', () => {
+  for (const [status, successful] of [
+    ['passed', true], ['done', true], ['resolved', true],
+    ['deprecated', false], ['dropped', false], ['closed', false],
+  ] as const) {
+    it(`success requirement with ${status} blocker -> ${successful ? 'ready' : 'blocked'}`, () => {
+      const items: BlockingNode[] = [{ id: 'D', status: 'todo' }, { id: 'B', status }];
+      const blockers = new Map([['D', [{ id: 'B', satisfaction: 'success' as const }]]]);
+      expect(isReady('D', items, blockers, DISPATCHABLE)).toBe(successful);
+    });
+  }
+
   // A dependent `D` (todo, dispatchable) blocked by exactly one blocker `B` of each status.
   // D is ready iff B is terminal (satisfied).
   for (const [status, terminal] of ALL_BLOCKER_STATUSES) {

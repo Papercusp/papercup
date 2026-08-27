@@ -50,6 +50,7 @@ describe('workItemBlockingEdge (coord_links → scheduler mirror)', () => {
       blocker_kind: 'issue',
       blocker_ref: 'EI-blocker',
       dep_type: 'blocks',
+      satisfaction: 'settled',
     });
   });
 

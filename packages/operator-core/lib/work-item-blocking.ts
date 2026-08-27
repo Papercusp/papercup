@@ -17,7 +17,7 @@ import { PgLinkStore, type LinkRow, type ObjectRef } from '@papercusp/coordinati
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFeatureBlockers } from './dbos/feature-blockers-edges';
-import { getWorkItemDepBlockers, workItemDepEdgeReader } from './dbos/work-item-deps-store';
+import { getWorkItemDepBlockers, workItemDepEdgeReader, type WorkItemBlockerRequirement } from './dbos/work-item-deps-store';
 import { selectReady, TERMINAL_STATUSES, type ReadinessNode } from './dbos/frontier-readiness';
 
 /** Issue-family terminal statuses (work-items.ts ISSUE_FAMILY_STATES: open/resolved/closed).
@@ -56,6 +56,7 @@ export const ALL_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
   ...TERMINAL_STATUSES,
   ...ISSUE_TERMINAL_STATUSES,
 ]);
+export const ALL_SUCCESSFUL_STATUSES: ReadonlySet<string> = new Set(['passed', 'resolved', 'done']);
 
 /** A work-item's minimal identity for readiness (canonical, prefix-stripped id + its status). */
 export interface BlockingNode {
@@ -71,7 +72,7 @@ export interface BlockingNode {
  */
 export interface BlockingStore {
   /** blocked id → its blocker ids, within `harnessSlug` (within-harness, prefix-stripped). */
-  blockersFor(harnessSlug: string): Promise<Map<string, string[]>>;
+  blockersFor(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>>;
 }
 
 /**
@@ -79,7 +80,8 @@ export interface BlockingStore {
  * `work_item_deps` table, so this is no longer a distinct coord_links backend.
  */
 export const coordLinksBlockingStore: BlockingStore = {
-  blockersFor: (harnessSlug: string) => getFeatureBlockers(harnessSlug),
+  blockersFor: async (harnessSlug: string) =>
+    new Map([...(await getFeatureBlockers(harnessSlug))].map(([id, blockers]) => [id, blockers.map((blocker) => ({ id: blocker, satisfaction: 'settled' as const }))])),
 };
 
 /**
@@ -177,7 +179,7 @@ export const blockingEdgeReader: BlockingEdgeReader = createBlockingEdgeReader(e
 /** Build readiness nodes from items + a blocker map (pure). */
 export function toReadinessNodes(
   items: readonly BlockingNode[],
-  blockers: ReadonlyMap<string, readonly string[]>,
+  blockers: ReadonlyMap<string, readonly (string | WorkItemBlockerRequirement)[]>,
 ): ReadinessNode[] {
   return items.map((it) => ({
     id: it.id,
@@ -194,18 +196,18 @@ export function toReadinessNodes(
  */
 export function partitionReady(
   items: readonly BlockingNode[],
-  blockers: ReadonlyMap<string, readonly string[]>,
+  blockers: ReadonlyMap<string, readonly (string | WorkItemBlockerRequirement)[]>,
   dispatchable: ReadonlySet<string>,
   owned: ReadonlySet<string> = new Set<string>(),
 ): { ready: ReadinessNode[]; blocked: ReadinessNode[] } {
-  return selectReady(toReadinessNodes(items, blockers), owned, dispatchable, ALL_TERMINAL_STATUSES);
+  return selectReady(toReadinessNodes(items, blockers), owned, dispatchable, ALL_TERMINAL_STATUSES, ALL_SUCCESSFUL_STATUSES);
 }
 
 /** Is one item ready right now, given the full node set + the blocker map? (Convenience over partitionReady.) */
 export function isReady(
   itemId: string,
   items: readonly BlockingNode[],
-  blockers: ReadonlyMap<string, readonly string[]>,
+  blockers: ReadonlyMap<string, readonly (string | WorkItemBlockerRequirement)[]>,
   dispatchable: ReadonlySet<string>,
   owned: ReadonlySet<string> = new Set<string>(),
 ): boolean {

@@ -28,11 +28,15 @@ export interface WorkItemLink {
   rel: string;
   src?: ObjectRef;
   dst?: ObjectRef;
+  satisfaction?: 'settled' | 'success';
 }
 
 /** Keep the endpoint relevant to the requested direction, matching get(detail:true)'s compact shape. */
 export function projectWorkItemLink(row: LinkRow, direction: 'out' | 'in'): WorkItemLink {
-  return direction === 'out' ? { rel: row.rel, dst: row.dst } : { rel: row.rel, src: row.src };
+  const satisfaction = 'satisfaction' in row ? (row.satisfaction as 'settled' | 'success') : undefined;
+  return direction === 'out'
+    ? { rel: row.rel, dst: row.dst, ...(satisfaction ? { satisfaction } : {}) }
+    : { rel: row.rel, src: row.src, ...(satisfaction ? { satisfaction } : {}) };
 }
 
 /**
