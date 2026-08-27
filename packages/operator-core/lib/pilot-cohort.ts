@@ -11,7 +11,6 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   asPilotArm,
   assignCohort,
-  assignmentPayloadPatch,
   type AssignmentPlan,
   type PilotArm,
   type PilotCandidate,
@@ -20,30 +19,55 @@ import {
 } from './pilot-arm-assignment.js';
 import { buildPilotReport, type ArmObservation, type PilotReport } from './pilot-metrics.js';
 import { listScorecards, type ListScorecardsFilter, type ScorecardRow } from './scorecards.js';
-import { getWorkItem, mergeWorkItemPayload, TERMINAL_WORK_ITEM_STATES, type WorkItem } from './work-items.js';
+import { getWorkItem, TERMINAL_WORK_ITEM_STATES, type WorkItem } from './work-items.js';
+import {
+  materializePilotCohort as materializePilotCohortAtomic,
+  createPgPilotMaterializationStore,
+  type FrozenPilotCandidate,
+  type MaterializePilotCohortResult as AtomicMaterializePilotCohortResult,
+  type PilotMaterializationDependencies,
+} from './pilot-materialization-core.js';
+import {
+  readPilotParticipantReceiptStore,
+  validatePilotParticipantReceiptCohort,
+  type CanonicalPilotParticipant,
+  type PilotParticipantRole,
+} from './pilot-participant-receipts.js';
+import {
+  derivePilotReceiptCostWindows,
+  validatePilotGradeBindings,
+  validatePilotGradeReceipt,
+  type PilotCollectionGuardGapCode,
+  type PilotGradeBinding,
+} from './pilot-collection-guards.js';
+import {
+  buildPilotFanInPlan,
+  validatePilotComposedFanInReceipts,
+  validatePilotExactCompletionReceipts,
+  type PilotComposedAwaitReceipt,
+  type PilotExactCompletionAwaitReceipt,
+  type PilotFanInPlan,
+  type PilotFanInReceiptGapCode,
+} from './pilot-fan-in-guards.js';
 
 export const DEFAULT_PILOT_RUBRIC = 'directed-pair-pilot-item-quality';
 export const DEFAULT_ARM_B_PROBE_ITEM = 'WI-41764';
 
-export type PilotParticipantRole = 'solo' | 'director' | 'implementer';
+export type { PilotParticipantRole } from './pilot-participant-receipts.js';
 
-/**
- * Attribution is explicit rather than inferred. A coord owner can have several
- * sessions, and a session can perform several work items; the session + item window
- * is the smallest stable key the existing usage ledger can answer exactly.
- */
-export interface PilotParticipantBinding {
-  ownerId: string;
-  sessionId: string;
-  role: PilotParticipantRole;
-  windowStartMs: number;
-}
+/** Canonical P-017 identity stored in the pilot stamp; callers never author it. */
+export type PilotParticipantBinding = CanonicalPilotParticipant;
 
 export interface PilotAssignmentCandidate {
   id: string;
   tier: PilotTier;
   stratum?: string;
-  participants?: readonly PilotParticipantBinding[];
+  /** Required only at confirm: exact frozen work-item row version (updated_ts). */
+  expectedUpdatedTs?: number;
+  /** Required only at confirm: exact run-owned claim holder. */
+  expectedAssignee?: string;
+  /** Required only at confirm: exact taken_at ISO / P-017 claimVersion. */
+  expectedTakenAt?: string;
 }
 
 export interface PilotStamp {
@@ -86,7 +110,13 @@ export interface PilotGap {
     | 'incomplete-scorecard'
     | 'missing-cost'
     | 'mixed-seed'
-    | 'assignment-mismatch';
+    | 'assignment-mismatch'
+    | 'missing-grade-card-receipt'
+    | 'duplicate-grade-card-receipt'
+    | 'participant-stamp-mismatch'
+    | 'invalid-fan-in-route'
+    | PilotCollectionGuardGapCode
+    | PilotFanInReceiptGapCode;
   detail: string;
 }
 
@@ -121,23 +151,20 @@ export interface PilotCollectionResult {
   items: PilotCollectedItem[];
   observations: ArmObservation[];
   gaps: PilotGap[];
+  fanInPlan: PilotFanInPlan | null;
   report: PilotReport;
 }
 
 export type PilotCohortDeps = {
   getWorkItem: typeof getWorkItem;
-  mergeWorkItemPayload: typeof mergeWorkItemPayload;
   listScorecards: (filter: ListScorecardsFilter) => Promise<ScorecardRow[]>;
   readUsageCosts: (workspaceId: string, windows: readonly UsageWindow[]) => Promise<Map<string, ParticipantCost>>;
-  nowMs: () => number;
 };
 
 const DEFAULT_DEPS: PilotCohortDeps = {
   getWorkItem,
-  mergeWorkItemPayload,
   listScorecards,
   readUsageCosts: readPilotUsageCosts,
-  nowMs: Date.now,
 };
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -157,17 +184,18 @@ function readParticipants(value: unknown): PilotParticipantBinding[] | null {
     const ownerId = typeof row?.ownerId === 'string' ? row.ownerId.trim() : '';
     const sessionId = typeof row?.sessionId === 'string' ? row.sessionId.trim() : '';
     const role = row?.role;
-    const windowStartMs = finiteNumber(row?.windowStartMs);
+    const bindingReceiptId = typeof row?.bindingReceiptId === 'string' ? row.bindingReceiptId.trim() : '';
+    const dispatchReceiptId = typeof row?.dispatchReceiptId === 'string' ? row.dispatchReceiptId.trim() : '';
     if (
       !ownerId ||
       !sessionId ||
       (role !== 'solo' && role !== 'director' && role !== 'implementer') ||
-      windowStartMs === null ||
-      windowStartMs <= 0
+      !bindingReceiptId ||
+      !dispatchReceiptId
     ) {
       return null;
     }
-    out.push({ ownerId, sessionId, role, windowStartMs });
+    out.push({ ownerId, sessionId, role, bindingReceiptId, dispatchReceiptId });
   }
   return out;
 }
@@ -236,10 +264,13 @@ function participantsFitArm(arm: PilotArm, participants: readonly PilotParticipa
 }
 
 export interface MaterializePilotInput {
+  workspaceId: string;
+  harnessSlug: string;
+  actor: string;
   seed: string;
   candidates: readonly PilotAssignmentCandidate[];
-  harness?: string;
   probeItemId?: string;
+  rubricRef?: string;
   confirm?: boolean;
 }
 
@@ -247,9 +278,10 @@ export interface MaterializePilotResult {
   ok: boolean;
   committed: boolean;
   plan: AssignmentPlan;
+  fanInPlan: PilotFanInPlan;
   applied: string[];
   rolledBack: string[];
-  proof?: ArmBGateProbeProof;
+  receipt?: AtomicMaterializePilotCohortResult['receipt'];
   error?: string;
 }
 
@@ -261,162 +293,72 @@ export interface MaterializePilotResult {
  */
 export async function materializePilotCohort(
   input: MaterializePilotInput,
-  deps: PilotCohortDeps = DEFAULT_DEPS,
+  deps?: PilotMaterializationDependencies,
 ): Promise<MaterializePilotResult> {
   const seed = input.seed.trim();
   if (!seed) throw new Error('pilot seed must be non-empty');
   const ids = input.candidates.map((c) => c.id);
   if (new Set(ids).size !== ids.length) throw new Error('pilot candidates contain duplicate ids');
-
-  const rows = await Promise.all(ids.map((id) => deps.getWorkItem(id, input.harness)));
-  const missing = ids.filter((_, i) => !rows[i]);
-  if (missing.length) throw new Error(`pilot candidates not found: ${missing.join(', ')}`);
-
-  const candidates: PilotCandidate[] = input.candidates.map((candidate, i) => ({
+  const candidates: PilotCandidate[] = input.candidates.map((candidate) => ({
     id: candidate.id,
     tier: candidate.tier,
     ...(candidate.stratum ? { stratum: candidate.stratum } : {}),
-    payload: rows[i]!.payload,
   }));
   const plan = assignCohort(candidates, seed);
-  if (!input.confirm) return { ok: true, committed: false, plan, applied: [], rolledBack: [] };
+  const fanInPlan = buildPilotFanInPlan({ itemIds: ids, rubricRef: input.rubricRef ?? DEFAULT_PILOT_RUBRIC });
+  if (!input.confirm) return { ok: true, committed: false, plan, fanInPlan, applied: [], rolledBack: [] };
 
-  const rowById = new Map(ids.map((id, index) => [id, rows[index]!]));
-  const terminalAssignments = plan.assignments.flatMap((assignment) => {
-    const item = rowById.get(assignment.id)!;
-    return terminal(item) ? [`${assignment.id}:${item.state}`] : [];
+  const frozen: FrozenPilotCandidate[] = input.candidates.map((candidate) => {
+    if (
+      candidate.expectedUpdatedTs === undefined ||
+      candidate.expectedAssignee === undefined ||
+      candidate.expectedTakenAt === undefined
+    ) {
+      throw new Error(`${candidate.id} confirm requires expectedUpdatedTs, expectedAssignee, and expectedTakenAt`);
+    }
+    return {
+      id: candidate.id,
+      tier: candidate.tier,
+      ...(candidate.stratum ? { stratum: candidate.stratum } : {}),
+      expectedUpdatedTs: candidate.expectedUpdatedTs,
+      expectedAssignee: candidate.expectedAssignee,
+      expectedTakenAt: candidate.expectedTakenAt,
+    };
   });
-  if (terminalAssignments.length) {
-    return {
-      ok: false,
-      committed: false,
-      plan,
-      applied: [],
-      rolledBack: [],
-      error:
-        'refusing materialization: terminal candidates cannot enter a prospective cohort: ' +
-        terminalAssignments.join(', '),
-    };
-  }
-
-  const invalidSkips = plan.skipped.filter((s) => s.reason !== 'already-assigned');
-  if (invalidSkips.length) {
-    return {
-      ok: false,
-      committed: false,
-      plan,
-      applied: [],
-      rolledBack: [],
-      error: `refusing materialization: ${invalidSkips.map((s) => `${s.id}:${s.reason}`).join(', ')}`,
-    };
-  }
-
-  let proof: ArmBGateProbeProof | undefined;
-  if (plan.assignments.some((a) => a.arm === 'B')) {
-    const probe = await deps.getWorkItem(input.probeItemId ?? DEFAULT_ARM_B_PROBE_ITEM, input.harness);
-    proof = readArmBGateProbeProof(probe) ?? undefined;
-    if (!proof) {
-      return {
-        ok: false,
-        committed: false,
-        plan,
-        applied: [],
-        rolledBack: [],
-        error:
-          `arm B is present but ${input.probeItemId ?? DEFAULT_ARM_B_PROBE_ITEM} lacks a terminal ` +
-          `payload.out.pilotArmBGateProbe pass with testedSha=deployedSha and judgementPersisted=true`,
-      };
-    }
-  }
-
-  const candidateById = new Map(input.candidates.map((c) => [c.id, c]));
-  for (const assignment of plan.assignments) {
-    const participants = candidateById.get(assignment.id)?.participants ?? [];
-    if (!participantsFitArm(assignment.arm, participants)) {
-      return {
-        ok: false,
-        committed: false,
-        plan,
-        applied: [],
-        rolledBack: [],
-        ...(proof ? { proof } : {}),
-        error:
-          `${assignment.id} arm ${assignment.arm} has invalid participant bindings; ` +
-          `A/B require one solo session, C requires one director plus one implementer`,
-      };
-    }
-  }
-
-  const assignedAtMs = deps.nowMs();
-  const applied: string[] = [];
-  const rolledBack: string[] = [];
-  try {
-    for (const assignment of plan.assignments) {
-      const spec = candidateById.get(assignment.id)!;
-      const participants = spec.participants!.map((participant) => ({ ...participant }));
-      const patch = {
-        ...assignmentPayloadPatch(assignment, seed),
-        pilotPartialBlock: assignment.partialBlock,
-        pilotAssignedAtMs: assignedAtMs,
-        pilotParticipants: participants,
-      };
-      const updated = await deps.mergeWorkItemPayload(assignment.id, patch, { harness: input.harness });
-      if (!updated) throw new Error(`work item ${assignment.id} disappeared during materialization`);
-      applied.push(assignment.id);
-    }
-
-    const persisted = await Promise.all(ids.map((id) => deps.getWorkItem(id, input.harness)));
-    const verification = verifyAssignments(
-      input.candidates.map((candidate, i) => ({
-        id: candidate.id,
-        tier: candidate.tier,
-        ...(candidate.stratum ? { stratum: candidate.stratum } : {}),
-        payload: persisted[i]?.payload,
-      })),
+  const result = await materializePilotCohortAtomic(
+    {
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      actor: input.actor,
       seed,
-    );
-    if (!verification.ok || verification.unverifiable.length) {
-      throw new Error(
-        `persisted assignment verification failed: mismatches=${verification.mismatches.length}, ` +
-          `unverifiable=${verification.unverifiable.join(',') || 'none'}`,
-      );
-    }
-    return {
-      ok: true,
-      committed: true,
-      plan,
-      applied,
-      rolledBack,
-      ...(proof ? { proof } : {}),
-    };
-  } catch (error) {
-    for (const id of applied) {
-      try {
-        const reverted = await deps.mergeWorkItemPayload(
-          id,
-          {},
-          {
-            harness: input.harness,
-            unset: PILOT_STAMP_KEYS,
-          },
-        );
-        if (reverted) rolledBack.push(id);
-      } catch {
-        // Report the incomplete rollback below; never hide the original failure.
+      armBProbeItemId: input.probeItemId ?? DEFAULT_ARM_B_PROBE_ITEM,
+      candidates: frozen,
+    },
+    deps ?? {
+      store: createPgPilotMaterializationStore(),
+      receiptAuthority: { validate: validatePilotParticipantReceiptCohort },
+    },
+  );
+  return result.ok
+    ? {
+        ok: true,
+        committed: true,
+        plan,
+        fanInPlan,
+        applied: result.receipt.applied.map((entry) => entry.id),
+        rolledBack: [],
+        receipt: result.receipt,
       }
-    }
-    return {
-      ok: false,
-      committed: false,
-      plan,
-      applied,
-      rolledBack,
-      ...(proof ? { proof } : {}),
-      error:
-        `${error instanceof Error ? error.message : String(error)}; ` +
-        `rollback ${rolledBack.length === applied.length ? 'complete' : `INCOMPLETE (${rolledBack.length}/${applied.length})`}`,
-    };
-  }
+    : {
+        ok: false,
+        committed: false,
+        plan,
+        fanInPlan,
+        applied: [...result.receipt.touchedIds],
+        rolledBack: result.receipt.rollbackVerified ? [...result.receipt.touchedIds] : [],
+        receipt: result.receipt,
+        error: result.receipt.reason,
+      };
 }
 
 export interface UsageWindow {
@@ -494,32 +436,83 @@ function reopenAfter(payload: unknown, startMs: number): boolean {
   });
 }
 
-function scorecardIssue(card: ScorecardRow, participantOwners: ReadonlySet<string>): string | null {
-  if (!card.rubricResolved || card.missingKeys.length || card.extraKeys.length || card.score10 === null) {
-    return 'scorecard is incomplete, unresolved, or has no numeric projection';
-  }
-  if (card.provisional) return 'scorecard is provisional';
-  const auditState = (card.gradingAudit as { state?: unknown } | undefined)?.state;
-  if (auditState === 'pending' || auditState === 'failed') return `scorecard grading audit is ${auditState}`;
-  if (!card.createdBy) return 'scorecard has no recorded grader identity';
-  if (participantOwners.has(card.createdBy)) return 'scorecard grader participated in the item';
-  return null;
+export interface PilotGradeCardReceiptInput {
+  itemId: string;
+  cardId: string;
+}
+
+export interface CollectPilotCohortInput {
+  workspaceId: string;
+  itemIds: readonly string[];
+  harness?: string;
+  rubricRef?: string;
+  operatorOwnerId: string;
+  runbookAuthorOwnerId: string;
+  gradeBindings: readonly PilotGradeBinding[];
+  gradeCardReceipts: readonly PilotGradeCardReceiptInput[];
+  completionExactReceipts?: readonly PilotExactCompletionAwaitReceipt[];
+  completionComposedReceipts?: readonly PilotComposedAwaitReceipt[];
+  gradingComposedReceipts: readonly PilotComposedAwaitReceipt[];
+}
+
+function canonicalParticipants(value: readonly PilotParticipantBinding[]): string {
+  return JSON.stringify(
+    [...value]
+      .map((participant) => ({ ...participant }))
+      .sort((a, b) => a.bindingReceiptId.localeCompare(b.bindingReceiptId)),
+  );
+}
+
+function guardGap(itemId: string, code: PilotGap['code'], detail: string): PilotGap {
+  return { itemId, code, detail };
 }
 
 export async function collectPilotCohort(
-  input: {
-    workspaceId: string;
-    itemIds: readonly string[];
-    harness?: string;
-    rubricRef?: string;
-  },
+  input: CollectPilotCohortInput,
   deps: PilotCohortDeps = DEFAULT_DEPS,
 ): Promise<PilotCollectionResult> {
   const rubricRef = input.rubricRef ?? DEFAULT_PILOT_RUBRIC;
   const ids = [...new Set(input.itemIds)];
-  const rows = await Promise.all(ids.map((id) => deps.getWorkItem(id, input.harness)));
   const gaps: PilotGap[] = [];
-  const valid: Array<{ item: WorkItem; stamp: PilotStamp; closedAtMs: number }> = [];
+  let fanInPlan: PilotFanInPlan | null = null;
+  try {
+    fanInPlan = buildPilotFanInPlan({ itemIds: ids, rubricRef });
+  } catch (error) {
+    gaps.push(guardGap('*', 'invalid-cohort', error instanceof Error ? error.message : String(error)));
+  }
+
+  if (fanInPlan) {
+    const hasExact = (input.completionExactReceipts?.length ?? 0) > 0;
+    const hasComposed = (input.completionComposedReceipts?.length ?? 0) > 0;
+    if (hasExact === hasComposed) {
+      gaps.push(
+        guardGap(
+          '*',
+          'invalid-fan-in-route',
+          'supply exactly one completion registration route: 21 exact receipts OR composed 20+1 receipts',
+        ),
+      );
+    } else {
+      const completionValidation = hasExact
+        ? validatePilotExactCompletionReceipts(fanInPlan, input.completionExactReceipts ?? [])
+        : validatePilotComposedFanInReceipts(fanInPlan.completionRoots, input.completionComposedReceipts ?? []);
+      for (const gap of completionValidation.gaps) {
+        gaps.push(guardGap(gap.itemId ?? '*', gap.code, gap.detail));
+      }
+    }
+    const gradingValidation = validatePilotComposedFanInReceipts(fanInPlan.gradingRoots, input.gradingComposedReceipts);
+    for (const gap of gradingValidation.gaps) {
+      gaps.push(guardGap(gap.itemId ?? '*', gap.code, gap.detail));
+    }
+  }
+
+  const rows = await Promise.all(ids.map((id) => deps.getWorkItem(id, input.harness)));
+  const valid: Array<{
+    item: WorkItem;
+    stamp: PilotStamp;
+    closedAtMs: number;
+    receiptStore: ReturnType<typeof readPilotParticipantReceiptStore>;
+  }> = [];
 
   for (let i = 0; i < ids.length; i++) {
     const item = rows[i];
@@ -549,18 +542,60 @@ export async function collectPilotCohort(
       continue;
     }
     const closedAtMs = Date.parse(item.closedAt);
-    if (!Number.isFinite(closedAtMs) || stamp.participants.some((p) => p.windowStartMs >= closedAtMs)) {
+    if (!Number.isFinite(closedAtMs) || closedAtMs <= 0) {
       gaps.push({
         itemId: item.id,
         code: 'invalid-window',
-        detail: 'participant claim window does not end after it starts',
+        detail: 'canonical closedAt is absent or invalid',
       });
       continue;
     }
-    valid.push({ item, stamp, closedAtMs });
+    valid.push({ item, stamp, closedAtMs, receiptStore: readPilotParticipantReceiptStore(item.payload) });
   }
 
-  const sinceMs = valid.length ? Math.min(...valid.map((v) => v.stamp.assignedAtMs)) : null;
+  const receiptCandidates = valid.map(({ item, stamp, receiptStore }) => {
+    const expectedOwnerId = item.assignee ?? stamp.participants[0]?.ownerId ?? '';
+    const expectedBinding = receiptStore.pilotBindingReceipts.find(
+      (binding) => binding.itemId === item.id && binding.ownerId === expectedOwnerId,
+    );
+    return {
+      id: item.id,
+      expectedOwnerId,
+      expectedClaimVersion: item.takenAt ?? expectedBinding?.claimVersion ?? '',
+      payload: item.payload,
+    };
+  });
+  const receiptCohort = validatePilotParticipantReceiptCohort(receiptCandidates);
+  for (const error of receiptCohort.errors) {
+    const [possibleItemId] = error.split(':', 1);
+    gaps.push(guardGap(ids.includes(possibleItemId ?? '') ? possibleItemId! : '*', 'invalid-participants', error));
+  }
+  for (const { item, stamp } of valid) {
+    const canonical = receiptCohort.participantsByItem[item.id] ?? [];
+    if (canonicalParticipants(stamp.participants) !== canonicalParticipants(canonical)) {
+      gaps.push(
+        guardGap(
+          item.id,
+          'participant-stamp-mismatch',
+          'pilotParticipants does not exactly match the canonical binding/dispatch receipt projection',
+        ),
+      );
+    }
+  }
+
+  const participantOwnerIds = valid.flatMap(({ stamp }) =>
+    stamp.participants.map((participant) => participant.ownerId),
+  );
+  const gradeBindingValidation = validatePilotGradeBindings({
+    itemIds: ids,
+    bindings: input.gradeBindings,
+    participantOwnerIds,
+    operatorOwnerId: input.operatorOwnerId,
+    runbookAuthorOwnerId: input.runbookAuthorOwnerId,
+  });
+  for (const gap of gradeBindingValidation.gaps) gaps.push(guardGap(gap.itemId, gap.code, gap.detail));
+
+  const sinceMs = valid.length ? Math.min(...valid.map((v) => v.closedAtMs)) : null;
   const cards = await deps.listScorecards({
     rubricRef,
     ...(sinceMs !== null ? { since: new Date(sinceMs).toISOString() } : {}),
@@ -575,48 +610,61 @@ export async function collectPilotCohort(
     else cardsByItem.set(ref, [card]);
   }
 
+  const receiptWindowsByItem = new Map<string, ReturnType<typeof derivePilotReceiptCostWindows>['windows']>();
   const windows: UsageWindow[] = [];
-  for (const { item, stamp, closedAtMs } of valid) {
-    stamp.participants.forEach((participant, index) => {
-      windows.push({
-        key: `${item.id}:${index}:${participant.sessionId}`,
-        sessionId: participant.sessionId,
-        startMs: participant.windowStartMs,
-        endMs: closedAtMs,
-      });
+  for (const { item, stamp, closedAtMs, receiptStore } of valid) {
+    const derived = derivePilotReceiptCostWindows({
+      itemId: item.id,
+      arm: stamp.arm,
+      closedAtMs,
+      bindings: receiptStore.pilotBindingReceipts,
+      dispatches: receiptStore.pilotDispatchReceipts,
     });
+    for (const gap of derived.gaps) gaps.push(guardGap(gap.itemId, gap.code, gap.detail));
+    receiptWindowsByItem.set(item.id, derived.windows);
+    windows.push(
+      ...derived.windows.map((window) => ({
+        key: window.key,
+        sessionId: window.sessionId,
+        startMs: window.startMs,
+        endMs: window.endMs,
+      })),
+    );
   }
   const costs = await deps.readUsageCosts(input.workspaceId, windows);
   const items: PilotCollectedItem[] = [];
 
   for (const { item, stamp, closedAtMs } of valid) {
-    const owners = new Set(stamp.participants.map((p) => p.ownerId));
-    const candidates = (cardsByItem.get(item.id) ?? []).filter(
-      (card) => Date.parse(card.createdAt) >= stamp.assignedAtMs,
-    );
-    const card = candidates.find((candidate) => scorecardIssue(candidate, owners) === null);
-    if (!card) {
-      const participantCard = candidates.find((candidate) =>
-        candidate.createdBy ? owners.has(candidate.createdBy) : false,
-      );
-      gaps.push({
-        itemId: item.id,
-        code: participantCard
-          ? 'non-independent-scorecard'
-          : candidates.length
-            ? 'incomplete-scorecard'
-            : 'missing-scorecard',
-        detail: participantCard
-          ? `scorecard ${participantCard.issueId} was emitted by participant ${participantCard.createdBy}`
-          : candidates.length
-            ? candidates.map((candidate) => `${candidate.issueId}: ${scorecardIssue(candidate, owners)}`).join('; ')
-            : `no ${rubricRef} scorecard with subject.ref=${item.id} exists after assignment`,
-      });
+    const binding = gradeBindingValidation.accepted.find((candidate) => candidate.itemId === item.id);
+    if (!binding) continue;
+    const cardReceipts = input.gradeCardReceipts.filter((receipt) => receipt.itemId === item.id);
+    if (cardReceipts.length === 0) {
+      gaps.push(guardGap(item.id, 'missing-grade-card-receipt', 'no exact scorecard writer receipt was supplied'));
       continue;
     }
+    if (cardReceipts.length !== 1) {
+      gaps.push(
+        guardGap(item.id, 'duplicate-grade-card-receipt', `expected one writer receipt; found ${cardReceipts.length}`),
+      );
+      continue;
+    }
+    const gradeValidation = validatePilotGradeReceipt({
+      binding,
+      returnedCardId: cardReceipts[0]!.cardId,
+      rubricRef,
+      closedAtMs,
+      cards: cardsByItem.get(item.id) ?? [],
+    });
+    for (const gap of gradeValidation.gaps) gaps.push(guardGap(gap.itemId, gap.code, gap.detail));
+    if (!gradeValidation.receipt) continue;
+    const card = (cardsByItem.get(item.id) ?? []).find(
+      (candidate) => candidate.issueId === gradeValidation.receipt!.cardId,
+    );
+    if (!card || card.score10 === null) continue;
 
-    const participantCosts = stamp.participants.map((participant, index) => {
-      const key = `${item.id}:${index}:${participant.sessionId}`;
+    const receiptWindows = receiptWindowsByItem.get(item.id) ?? [];
+    const participantCosts = receiptWindows.map((window) => {
+      const key = window.key;
       return costs.get(key) ?? { key, sampleCount: 0, unpricedCount: 0, costUsd: null };
     });
     if (participantCosts.some((cost) => cost.costUsd === null)) {
@@ -631,7 +679,7 @@ export async function collectPilotCohort(
       continue;
     }
 
-    const startMs = Math.min(...stamp.participants.map((participant) => participant.windowStartMs));
+    const startMs = Math.min(...receiptWindows.map((window) => window.startMs));
     const observation: ArmObservation = {
       itemId: item.id,
       arm: stamp.arm,
@@ -645,7 +693,7 @@ export async function collectPilotCohort(
       itemId: item.id,
       arm: stamp.arm,
       scorecardId: card.issueId,
-      grader: card.createdBy!,
+      grader: gradeValidation.receipt.graderOwnerId,
       participantCosts,
       observation,
     });
@@ -696,6 +744,7 @@ export async function collectPilotCohort(
     items,
     observations,
     gaps,
+    fanInPlan,
     report: buildPilotReport(observations),
   };
 }
