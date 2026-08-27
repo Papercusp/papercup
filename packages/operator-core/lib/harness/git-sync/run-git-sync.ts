@@ -480,6 +480,8 @@ export type RunGeneratedDeclarationsGenerator = (repoPath: string) => Promise<Ge
 export type GeneratedDeclarationsRepairResult =
   | { status: 'not-needed'; atomicPaths: string[] }
   | { status: 'regenerated'; atomicPaths: string[] }
+  /** The status census was unavailable, so only declaration-related paths are deferred. */
+  | { status: 'deferred'; atomicPaths: string[]; detail: string }
   | { status: 'blocked'; atomicPaths: string[]; detail: string };
 
 export type GeneratedDeclarationsRegenerator = (
@@ -528,6 +530,66 @@ const defaultRunGeneratedDeclarationsGenerator: RunGeneratedDeclarationsGenerato
     child.on('close', (code) => finish(timedOut ? -1 : (code ?? -1)));
   });
 
+/** A status read is a cheap census, but it can still lose a race with the
+ * sidecar/admission layer. Retry that read briefly before deciding whether the
+ * declaration repair is blocked; a one-off infrastructure miss must not turn
+ * into a whole-tree commit wedge. */
+export const DECLARATION_STATUS_MAX_RETRIES = 3;
+export const DECLARATION_STATUS_RETRY_BASE_DELAY_MS = 100;
+
+type DeclarationStatusRead = { paths: string[] } | { detail: string };
+
+async function readDeclarationStatus(
+  runGit: RunGit,
+  repoPath: string,
+  log: (message: string) => void,
+  phase: 'before' | 'after',
+): Promise<DeclarationStatusRead> {
+  let detail = 'unknown git status failure';
+  for (let attempt = 0; attempt <= DECLARATION_STATUS_MAX_RETRIES; attempt++) {
+    try {
+      const result = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
+      if (result.code === 0) return { paths: parseDirtyPaths(result.stdout) };
+      detail = (result.stderr || result.stdout || `exit ${result.code}`).trim().slice(0, 300);
+    } catch (error) {
+      detail = String(error).slice(0, 300);
+    }
+    if (attempt === DECLARATION_STATUS_MAX_RETRIES) break;
+    const retry = attempt + 1;
+    const delayMs = DECLARATION_STATUS_RETRY_BASE_DELAY_MS * 2 ** attempt;
+    log(
+      `[git-sync] ${repoPath}: declaration ${phase}-status read failed (${detail}) — ` +
+        `retrying after ${delayMs}ms (attempt ${retry}/${DECLARATION_STATUS_MAX_RETRIES})`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return { detail: `could not inspect dirty paths ${phase} declaration regeneration: ${detail}` };
+}
+
+const declarationTrackedInventoryArgs = [
+  'ls-files',
+  '--',
+  ...DECLARATIONS_TRACKED_PATHS,
+  ...DECLARATIONS_PACKAGE_INPUTS,
+  '*.mjs',
+  '*.d.mts',
+];
+
+function declarationAtomicPathsFromTrackedPaths(trackedPaths: ReadonlySet<string>): string[] {
+  const atomicPaths = new Set<string>();
+  for (const path of [...DECLARATIONS_TRACKED_PATHS, ...DECLARATIONS_PACKAGE_INPUTS]) {
+    if (trackedPaths.has(path)) atomicPaths.add(path);
+  }
+  for (const path of trackedPaths) {
+    const pair = generatedDeclarationPair(path);
+    if (pair && trackedPaths.has(pair.source) && trackedPaths.has(pair.artifact)) {
+      atomicPaths.add(pair.source);
+      atomicPaths.add(pair.artifact);
+    }
+  }
+  return [...atomicPaths].sort();
+}
+
 /**
  * Regenerate tracked declaration pairs before git-sync snapshots the tree.
  *
@@ -544,23 +606,39 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
 ): Promise<GeneratedDeclarationsRepairResult> {
   const { runGit, repoPath, log } = context;
   try {
-    const status = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
-    if (status.code !== 0) {
-      return {
-        status: 'blocked',
-        atomicPaths: [],
-        detail: 'could not inspect dirty paths before declaration regeneration',
-      };
+    const status = await readDeclarationStatus(runGit, repoPath, log, 'before');
+    if ('detail' in status) {
+      // We cannot safely infer which pair is dirty, but we can still inventory
+      // the enrolled declaration surface. Defer those paths only and let the
+      // rest of the tree commit; if even the inventory is unavailable, retain
+      // the old fail-closed behavior because there is no safe exclusion set.
+      let tracked: GeneratedDeclarationsGeneratorResult;
+      try {
+        tracked = await runGit(declarationTrackedInventoryArgs, repoPath);
+      } catch (error) {
+        return { status: 'blocked', atomicPaths: [], detail: `${status.detail}; ${String(error).slice(0, 300)}` };
+      }
+      if (tracked.code !== 0) {
+        const inventoryDetail = (tracked.stderr || tracked.stdout || `exit ${tracked.code}`).trim().slice(0, 300);
+        return { status: 'blocked', atomicPaths: [], detail: `${status.detail}; declaration inventory failed: ${inventoryDetail}` };
+      }
+      const trackedPaths = new Set(tracked.stdout.split('\n').map((path) => path.trim()).filter(Boolean));
+      if (!DECLARATIONS_TRACKED_PATHS.every((path) => trackedPaths.has(path))) {
+        return { status: 'not-needed', atomicPaths: [] };
+      }
+      const atomicPaths = declarationAtomicPathsFromTrackedPaths(trackedPaths);
+      log(
+        `[git-sync] ${repoPath}: declaration ${status.detail} — deferring ${atomicPaths.length} ` +
+          'declaration-related path(s) while continuing with the unlocked tree',
+      );
+      return { status: 'deferred', atomicPaths, detail: status.detail };
     }
-    const dirtyBefore = parseDirtyPaths(status.stdout);
+    const dirtyBefore = status.paths;
     if (!dirtyBefore.some(affectsGeneratedDeclarations)) return { status: 'not-needed', atomicPaths: [] };
 
     // One bounded inventory read gives us both canonical-surface proof and the
     // enrolled source/artifact pairs. Git's `*.mjs` pathspec recurses here.
-    const tracked = await runGit(
-      ['ls-files', '--', ...DECLARATIONS_TRACKED_PATHS, ...DECLARATIONS_PACKAGE_INPUTS, '*.mjs', '*.d.mts'],
-      repoPath,
-    );
+    const tracked = await runGit(declarationTrackedInventoryArgs, repoPath);
     const trackedPaths = new Set(
       tracked.stdout
         .split('\n')
@@ -604,15 +682,16 @@ export async function regenerateGeneratedDeclarationsBeforeCommit(
 
     // The writer may dirty several outputs after a config/compiler-input change.
     // Re-read status and expand every enrolled dirty half back to its complete pair.
-    const after = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
-    if (after.code !== 0) {
-      return {
-        status: 'blocked',
-        atomicPaths: [],
-        detail: 'could not verify dirty paths after declaration regeneration',
-      };
+    const after = await readDeclarationStatus(runGit, repoPath, log, 'after');
+    if ('detail' in after) {
+      const atomicPaths = declarationAtomicPathsFromTrackedPaths(trackedPaths);
+      log(
+        `[git-sync] ${repoPath}: ${after.detail} — deferring ${atomicPaths.length} ` +
+          'declaration-related path(s) while continuing with the unlocked tree',
+      );
+      return { status: 'deferred', atomicPaths, detail: after.detail };
     }
-    const dirtyAfter = parseDirtyPaths(after.stdout);
+    const dirtyAfter = after.paths;
     const atomicPaths = new Set<string>();
     for (const path of dirtyAfter) {
       const pair = generatedDeclarationPair(path);
@@ -1476,8 +1555,20 @@ export function addFailureIgnoredPaths(output: string): string[] {
   ];
 }
 
+/** The stable fatal emitted when a pathspec tries to traverse a symlink.
+ * Exported so a Git wording change fails a focused test instead of silently
+ * disabling the protected-path preflight. */
+export function isPathspecBeyondSymbolicLinkFailure(output: string): boolean {
+  return /fatal:\s+pathspec .* is beyond a symbolic link/i.test(output);
+}
+
+export type ProtectedPathExclusionPreflight = {
+  ignoredUntracked: Set<string>;
+  beyondSymlink: Set<string>;
+};
+
 /**
- * Return the protected paths that are currently ignored and UNTRACKED.
+ * Classify protected paths that cannot safely appear as negative pathspecs.
  *
  * `git check-ignore` intentionally does not report tracked paths unless
  * `--no-index` is supplied. That default is load-bearing here: a tracked file
@@ -1489,22 +1580,28 @@ export function addFailureIgnoredPaths(output: string): string[] {
  * with `--stdin`, while this injected RunGit seam has no stdin channel, and
  * parsing line-delimited output would be unsafe for legal filenames containing
  * newlines. With one path, the exit status is the answer and `--` keeps leading
- * dashes literal. Exit code 1 means "not ignored"; any other non-zero result
- * fails open by returning no matches and preserving all exclusions for the
- * existing add-failure recovery path.
+ * dashes literal. Exit code 1 means "not ignored". Git exits 128 when the
+ * protected path is a descendant of a symlink; `git add -A` does not traverse
+ * that symlink, but the explicit negative pathspec makes the entire add fatal,
+ * so classify that population separately and omit only those impossible
+ * pathspecs. Any other non-zero result fails open by returning no matches and
+ * preserving all exclusions for the existing add-failure recovery path.
  */
-export async function ignoredUntrackedSubset(
+export async function classifyProtectedPathExclusions(
   runGit: RunGit,
   repoPath: string,
   paths: readonly string[],
-): Promise<Set<string>> {
-  const ignored = new Set<string>();
+): Promise<ProtectedPathExclusionPreflight> {
+  const ignoredUntracked = new Set<string>();
+  const beyondSymlink = new Set<string>();
   for (const path of paths) {
     const result = await runGit(['check-ignore', '--', path], repoPath);
-    if (result.code === 0) ignored.add(path);
-    else if (result.code !== 1) return new Set<string>();
+    if (result.code === 0) ignoredUntracked.add(path);
+    else if (result.code === 1) continue;
+    else if (isPathspecBeyondSymbolicLinkFailure(`${result.stdout}\n${result.stderr}`)) beyondSymlink.add(path);
+    else return { ignoredUntracked: new Set<string>(), beyondSymlink: new Set<string>() };
   }
-  return ignored;
+  return { ignoredUntracked, beyondSymlink };
 }
 
 /** The `git add`/`git commit` fatal for a held index lock ("Unable to create
@@ -2651,12 +2748,21 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     // negative pathspec. Filter only that population before either the
     // attribution path-specific adds or the catch-all stage; tracked ignored
     // paths remain protected by their exclusion pathspec.
-    const ignoredUntrackedExcludes = await ignoredUntrackedSubset(runGit, repoPath, excludePaths);
-    const stagingExcludePaths = excludePaths.filter((path) => !ignoredUntrackedExcludes.has(path));
+    const protectedPathPreflight = await classifyProtectedPathExclusions(runGit, repoPath, excludePaths);
+    const ignoredUntrackedExcludes = protectedPathPreflight.ignoredUntracked;
+    const beyondSymlinkExcludes = protectedPathPreflight.beyondSymlink;
+    const omittedPreflightExcludes = new Set([...ignoredUntrackedExcludes, ...beyondSymlinkExcludes]);
+    const stagingExcludePaths = excludePaths.filter((path) => !omittedPreflightExcludes.has(path));
     if (ignoredUntrackedExcludes.size > 0) {
       o.log(
         `[git-sync] ${repoPath}: pre-filtering ignored untracked protected path(s) ` +
           `[${[...ignoredUntrackedExcludes].join(', ')}] from staging pathspecs — Git already excludes them`,
+      );
+    }
+    if (beyondSymlinkExcludes.size > 0) {
+      o.log(
+        `[git-sync] ${repoPath}: pre-filtering protected path(s) beyond a symbolic link ` +
+          `[${[...beyondSymlinkExcludes].join(', ')}] from staging pathspecs — Git cannot traverse the symlink in a pathspec and add -A does not traverse its target`,
       );
     }
     let committedAny = false;
@@ -3556,13 +3662,26 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
         skippedPaths: [],
       };
     }
+    // A failed status census is different from a failed declaration emit: the
+    // latter has a known incoherent projection and must stop the whole commit,
+    // while the former can safely defer the enrolled declaration surface once
+    // its tracked paths have been inventoried. Keep those paths out of both
+    // attribution and catch-all staging so unrelated work still lands.
+    const deferredDeclarationPaths =
+      declarationRepair.status === 'deferred' ? declarationRepair.atomicPaths : [];
+    if (declarationRepair.status === 'deferred') {
+      log(
+        `[git-sync] ${repo}: declaration status census unavailable — deferring ${deferredDeclarationPaths.length} ` +
+          'declaration-related path(s) while committing the unlocked remainder',
+      );
+    }
     return commitOneRepo(runGit, repo, {
       ...repoO,
       scope: 'superproject',
-      excludePaths: superprojectExcludePaths,
+      excludePaths: [...superprojectExcludePaths, ...deferredDeclarationPaths],
       protectedHoldings: superprojectProtectedHoldings,
       attribution: attributionMapForRepo(roster, '', repo),
-      forceCatchAllPaths: declarationRepair.atomicPaths,
+      forceCatchAllPaths: declarationRepair.status === 'regenerated' ? declarationRepair.atomicPaths : [],
     });
   });
   const commitMetrics = {

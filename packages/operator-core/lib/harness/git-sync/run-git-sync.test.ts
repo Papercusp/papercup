@@ -14,7 +14,16 @@ afterEach(() => {
   gitSyncWarnSpy = undefined;
 });
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, utimesSync, existsSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  rmSync,
+  writeFileSync,
+  readFileSync,
+  symlinkSync,
+  utimesSync,
+  existsSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
@@ -24,6 +33,7 @@ import {
   discoverSubmodulesRecursive,
   isIndexLockFailure,
   isConfigLockFailure,
+  isPathspecBeyondSymbolicLinkFailure,
   isTransientStatFailure,
   clearStaleIndexLock,
   clearStaleConfigLock,
@@ -35,6 +45,7 @@ import {
   affectsGeneratedDeclarations,
   checkToolRoutingBeforeCommit,
   generatedDeclarationPair,
+  DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
   type RunGit,
@@ -196,6 +207,37 @@ describe('EI-21444216858331991 generated declarations pre-commit regeneration', 
     expect(runGenerator).toHaveBeenCalledOnce();
     expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
     expect(logs.join('\n')).toMatch(/regenerated tracked declarations before commit/);
+  });
+
+  it('retries a transient status-read failure before running declaration repair', async () => {
+    const source = 'apps/operator/scripts/psu-launcher.mjs';
+    const artifact = 'apps/operator/scripts/psu-launcher.d.mts';
+    let statusReads = 0;
+    const runGit: RunGit = async (args) => {
+      if (args[0] === 'status') {
+        statusReads += 1;
+        if (statusReads === 1) return { code: 128, stdout: '', stderr: 'temporary admission failure' };
+        return { code: 0, stdout: ` M ${source}\0`, stderr: '' };
+      }
+      if (args[0] === 'ls-files') {
+        return {
+          code: 0,
+          stdout: `scripts/gen-declarations.ts\ntsconfig.declarations.json\n${source}\n${artifact}\n`,
+          stderr: '',
+        };
+      }
+      throw new Error(`unexpected git call: ${args.join(' ')}`);
+    };
+    const runGenerator = vi.fn(async () => ({ code: 0, stdout: 'emitted declaration', stderr: '' }));
+
+    const result = await regenerateGeneratedDeclarationsBeforeCommit(
+      { runGit, repoPath: '/fake', log: () => {} },
+      runGenerator,
+    );
+
+    expect(statusReads).toBe(3); // initial failed read + successful retry + post-emit census
+    expect(runGenerator).toHaveBeenCalledOnce();
+    expect(result).toEqual({ status: 'regenerated', atomicPaths: [source, artifact] });
   });
 
   it('fails closed when the writer cannot produce a coherent projection', async () => {
@@ -524,6 +566,47 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs.join('\n')).toContain('pre-filtering ignored untracked protected path');
   });
 
+  it('EI-21635845150755039: a protected symlink descendant does not strand stageable work', async () => {
+    const protectedPath = 'src-tauri/target/release/bundle/deb/Papercusp Server_0.0.18_amd64.deb';
+    const relocatedTarget = join(root, 'relocated-builds', 'papercusp-desktop-src-tauri-target');
+    const relocatedArtifact = join(
+      relocatedTarget,
+      'release',
+      'bundle',
+      'deb',
+      'Papercusp Server_0.0.18_amd64.deb',
+    );
+    mkdirSync(join(relocatedTarget, 'release', 'bundle', 'deb'), { recursive: true });
+    writeFileSync(relocatedArtifact, 'relocated build artifact — never stage this\n');
+    mkdirSync(join(repo, 'src-tauri'), { recursive: true });
+    symlinkSync(relocatedTarget, join(repo, 'src-tauri', 'target'));
+    writeFileSync(join(repo, '.gitignore'), 'src-tauri/target\n');
+    writeFileSync(join(repo, 'file.txt'), 'deliberately-protected mutation\n');
+    writeFileSync(join(repo, 'normal.txt'), 'ordinary work\n');
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      excludePaths: [protectedPath, 'file.txt'],
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('synced');
+    expect(git(originDir, 'show', 'main:file.txt')).toBe('line1');
+    expect(git(originDir, 'show', 'main:normal.txt')).toBe('ordinary work');
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).not.toContain(protectedPath);
+    expect(readFileSync(relocatedArtifact, 'utf8')).toBe('relocated build artifact — never stage this\n');
+    expect(git(repo, 'ls-files', '--', 'src-tauri/target')).toBe('');
+    expect(git(repo, 'status', '--porcelain', '--', 'file.txt')).toMatch(/file\.txt/);
+    expect(logs.join('\n')).toContain('pre-filtering protected path(s) beyond a symbolic link');
+    expect(
+      isPathspecBeyondSymbolicLinkFailure(
+        `fatal: pathspec '${protectedPath}' is beyond a symbolic link`,
+      ),
+    ).toBe(true);
+  });
+
   it('EI-21371380265465702: git-sync ignores in-progress dependency-generation build markers', async () => {
     // The production integration tree uses the canonical root policy. Copy it
     // into the throwaway clone so this test fails if the policy ever stops
@@ -548,7 +631,7 @@ describe('runGitSync (real git, no submodule)', () => {
     for (const markerPath of markerPaths) {
       expect(originFiles).not.toContain(markerPath);
       expect(git(repo, 'check-ignore', '-v', '--no-index', markerPath)).toContain(
-        '.build-pending-*/',
+        '.papercusp/dependency-generations/',
       );
     }
     expect(git(repo, 'status', '--porcelain', '--', 'normal.txt')).toBe('');
