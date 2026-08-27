@@ -1358,21 +1358,20 @@ describe('WI-1405 — genuine-completions metric (getCompletionIntegrityStats)',
 // store must tolerate: a mutual blocks pair, a feature→issue blocks direction, and a repeated
 // identical edge (must not multiply).
 describe('C3 — linkWorkItem cycles / cross-kind direction / duplicate idempotency', () => {
-  it('a mutual blocks CYCLE (F-1 blocks F-2 AND F-2 blocks F-1) is permitted as two distinct edges', async () => {
-    // The link store records edges; it does not (and need not) run cycle detection — a cycle is
-    // two independent directed edges. We assert it is accepted cleanly (no throw) and BOTH edges exist.
+  it('a mutual blocks CYCLE (F-1 blocks F-2 AND F-2 blocks F-1) rejects the cycle-closing edge', async () => {
+    // The canonical dependency writer rejects a cycle-closing edge and leaves the existing DAG intact.
     const f1 = await wi.createWorkItem({ kind: 'feature', title: 'f1', harness: 'papercup', createdBy: 'agA' });
     const f2 = await wi.createWorkItem({ kind: 'feature', title: 'f2', harness: 'papercup', createdBy: 'agA' });
     const r1 = (await wi.resolveWorkItemRef(f1.id, 'papercup'))!;
     const r2 = (await wi.resolveWorkItemRef(f2.id, 'papercup'))!;
 
     expect(await wi.linkWorkItem(f1.id, r2, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
-    expect(await wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).toEqual({ ok: true });
+    await expect(wi.linkWorkItem(f2.id, r1, 'blocks', { by: 'agA', harness: 'papercup' })).rejects.toThrow(/dependency cycle/);
 
     const out1 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f1.id}` });
     const out2 = await blockingLinks.listOut({ kind: 'feature', ref: `papercup#${f2.id}` });
     expect(out1.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f2.id}` });
-    expect(out2.find((l) => l.rel === 'blocks')?.dst).toEqual({ kind: 'feature', ref: `papercup#${f1.id}` });
+    expect(out2.find((l) => l.rel === 'blocks')).toBeUndefined();
   });
 
   it('cross-kind direction: a FEATURE blocks an ISSUE (feature→issue) is supported', async () => {
