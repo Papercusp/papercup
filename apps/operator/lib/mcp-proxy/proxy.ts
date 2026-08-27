@@ -1164,13 +1164,22 @@ export const DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS =
     : 5_000;
 const configuredCriticalContinuationQueueWaitMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_MAX_CRITICAL_CONTINUATION_QUEUE_WAIT_MS ??
-    30_000,
+    0,
 );
+/**
+ * Continuation writes are the recovery boundary for the overload they may be waiting behind.
+ * Keep the FIFO length bounded, but do not expire an admitted waiter by default: a legitimate
+ * work_items:complete can occupy the single continuation socket longer than the ordinary 30s
+ * queue dwell (measured at 61.8s), and shedding a queued checkpoint leaves its mutation outcome
+ * unknown at exactly the point where it is needed for compaction recovery. Client disconnects
+ * still cancel queued waiters, while operators may opt into a finite dwell with the env/option.
+ * Zero means expiry disabled, matching the explicit option contract below.
+ */
 export const DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS =
   Number.isFinite(configuredCriticalContinuationQueueWaitMs) &&
   configuredCriticalContinuationQueueWaitMs >= 0
     ? Math.floor(configuredCriticalContinuationQueueWaitMs)
-    : 30_000;
+    : 0;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -1742,6 +1751,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
       0,
     );
+  const hasQueuedCompaction = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.includes("session:request-compaction"),
+    );
 
   const canGrantHandshake = (): boolean => {
     if (
@@ -2203,8 +2219,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // concurrent burst in FIFO order. A waiter owns no socket or in-flight slot until granted.
         if (criticalContinuation && !canGrantCriticalContinuation()) {
           pumpCriticalContinuationQueue();
+          // EI-21568137857973279 — the bounded continuation FIFO is itself a
+          // recovery dependency: when all ordinary waiter slots are occupied, a
+          // session already at its context wall must still be able to enqueue ONE
+          // compaction. Keep that reservation bounded (one queued compaction) and
+          // put it at the head of the waiter list so ordinary durability traffic
+          // cannot consume or indefinitely sit ahead of the recovery slot.
+          const compactionPriority =
+            criticalContinuationTools.includes("session:request-compaction") &&
+            !hasQueuedCompaction();
           if (
-            maxCriticalContinuationQueue <= criticalContinuationQueueLength()
+            maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
+            !compactionPriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
@@ -2256,7 +2282,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               traceId: requestTraceId,
               tools: criticalContinuationTools,
             };
-            criticalContinuationQueue.push(queuedCriticalContinuation);
+            if (compactionPriority) {
+              criticalContinuationQueue.unshift(queuedCriticalContinuation);
+            } else {
+              criticalContinuationQueue.push(queuedCriticalContinuation);
+            }
             cancelQueuedAdmission = (): void => {
               clearQueuedWaitTimer(queuedCriticalContinuation);
               cancelQueuedCriticalContinuation(queuedCriticalContinuation);
