@@ -89,6 +89,11 @@ const LINK_INSERT = /INSERT INTO\s+harness_shared\.coord_links/i;
  * `shadow-variant-origin.ts` exists to prevent, so it should NOT satisfy this.
  */
 const EXCLUSION_CONJUNCT = /origin\s*<>\s*\$\{SHADOW_VARIANT_ORIGIN\}/;
+// WI-42483: the sibling conjunct in countStalePendingIdeas. Deliberately a
+// SEPARATE pattern rather than an alternation on the one above — an alternation
+// would let either conjunct satisfy both assertions, which is precisely the
+// coverage gap that let the agent-review case ship missing.
+const AGENT_REVIEW_EXCLUSION_CONJUNCT = /origin\s*<>\s*\$\{AGENT_REVIEW_LEDGER_ORIGIN\}/;
 
 afterEach(() => {
   h.queries = [];
@@ -285,6 +290,48 @@ describe('ordinary-quota exclusion is enforced in the shipped SQL (D-001)', () =
     expect(start).toBeGreaterThan(-1);
     const body = src.slice(start, src.indexOf('\nexport ', start + 1));
     expect(body).toMatch(EXCLUSION_CONJUNCT);
+  });
+
+  /**
+   * WI-42483 — the SAME defect as the test above, at the SAME call site, for the
+   * other non-learning origin. agent-review enrollment rows share every property
+   * that motivated the shadow-variant conjunct: originClause's docstring excludes
+   * both from the 'all' origin because neither feeds production learning, and
+   * neither has a rail artifact that can reach a terminal state, so their
+   * outcome/outcome_checked_at stay NULL forever and they match the stale-pending
+   * predicate permanently.
+   *
+   * The shadow-variant conjunct shipped 2026-08-13 and this one did not, which is
+   * why it is worth pinning rather than trusting the pair to stay in step: the
+   * asymmetry survived because the alert is LATENT (the sweep's verification phase
+   * is preempted while the ungraded frontier is undrained), so nothing fired to
+   * reveal it. Measured 2026-08-27 on papercusp-workspace: 745 agent-review rows,
+   * every one never outcome-checked, against shadow-variant's 20 — the uncovered
+   * case was 37x the covered one.
+   *
+   * Asserted on the function body, not the file, for the same reason as above:
+   * deleting THIS conjunct must fail even while the shadow-variant one stands.
+   */
+  it('countStalePendingIdeas excludes agent-review rows (stale-pending forever, same as shadow variants)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./routed-ledger.ts', import.meta.url), 'utf8');
+    const start = src.indexOf('export async function countStalePendingIdeas');
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf('\nexport ', start + 1));
+    expect(body).toMatch(AGENT_REVIEW_EXCLUSION_CONJUNCT);
+  });
+
+  /**
+   * CALIBRATION CONTROL for the assertion directly above, mirroring the one that
+   * guards the shadow-variant greps. Without it, a loosened pattern (or a path
+   * that silently reads the wrong file) would keep "passing" forever. The
+   * shadow-variant conjunct is the ideal negative case: it is a real, adjacent,
+   * nearly-identical line in the SAME function, so a pattern sloppy enough to
+   * match it is exactly the pattern that would stop discriminating.
+   */
+  it('the agent-review exclusion pattern is falsifiable — it does NOT match the shadow-variant conjunct', () => {
+    expect('AND origin <> ${SHADOW_VARIANT_ORIGIN}').not.toMatch(AGENT_REVIEW_EXCLUSION_CONJUNCT);
+    expect('AND origin <> ${AGENT_REVIEW_LEDGER_ORIGIN}').toMatch(AGENT_REVIEW_EXCLUSION_CONJUNCT);
   });
 
   // CALIBRATION CONTROL. The three assertions above are source greps, and a
