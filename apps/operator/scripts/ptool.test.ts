@@ -30,6 +30,7 @@ import {
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
+  PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
@@ -200,6 +201,12 @@ describe('ptool call deadlines', () => {
     // server-side-successful respawns into -32001 outcome-unknown.
     expect(timeoutForTool('fleet:respawn-member')).toBe(675_000);
     expect(timeoutForTool('tools:invoke', { name: 'fleet:respawn-member' })).toBe(675_000);
+    expect(timeoutForTool('fleet:require-checkpoint')).toBe(PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'fleet:require-checkpoint',
+      args: { member: 'su-member', itemId: 'WI-123', waitSec: 300 },
+    })).toBe(PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS);
+    expect(PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS).toBeGreaterThan(335_000);
     expect(timeoutForTool('git-sync:run')).toBe(PTOOL_GIT_SYNC_RUN_TIMEOUT_MS);
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);

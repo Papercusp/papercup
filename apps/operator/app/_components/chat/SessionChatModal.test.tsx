@@ -503,6 +503,84 @@ describe('SessionChatModal', () => {
     });
   });
 
+  describe('EI-21590502169409362 roster-derived pills distinguish loading from missing', () => {
+    const loadingRoster = () => {
+      H.results['advRoster.list'] = {
+        data: [],
+        loading: true,
+        fetching: true,
+        error: null,
+        invalidate: vi.fn(),
+      };
+    };
+
+    it('shows disabled loading placeholders, then removes them for a resolved-missing target', async () => {
+      loadingRoster();
+      mockFetchOnce(200, { sessions: [] });
+      const { rerender } = render(
+        <SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />,
+      );
+
+      const account = await screen.findByTestId('chat-mode-mode-account');
+      const model = await screen.findByTestId('chat-mode-mode-model');
+      expect((account as HTMLButtonElement).disabled).toBe(true);
+      expect((model as HTMLButtonElement).disabled).toBe(true);
+      expect(account.textContent).toMatch(/loading/i);
+      expect(model.textContent).toMatch(/loading/i);
+
+      H.results['advRoster.list'] = {
+        data: [{ active: [], pending: [] }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('chat-mode-mode-account')).toBeNull();
+        expect(screen.queryByTestId('chat-mode-mode-model')).toBeNull();
+      });
+    });
+
+    it('replaces the loading placeholders with enabled controls when the target row arrives', async () => {
+      loadingRoster();
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      const { rerender } = render(
+        <SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />,
+      );
+
+      await screen.findByTestId('chat-mode-mode-account');
+      await screen.findByTestId('chat-mode-mode-model');
+      H.results['advRoster.list'] = {
+        data: [{
+          active: [{
+            ownerId: 'su-live-1',
+            agent: 'claude',
+            sessionId: 'claude-abc',
+            accountPin: { account: 'max-3', hard: false },
+            launchArgv: ['psu', '--model=sonnet[1m]:high'],
+          }],
+          pending: [],
+        }],
+        loading: false,
+        fetching: false,
+        error: null,
+        invalidate: vi.fn(),
+      };
+      rerender(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+      await waitFor(() => {
+        const account = screen.getByTestId('chat-mode-mode-account') as HTMLButtonElement;
+        const model = screen.getByTestId('chat-mode-mode-model') as HTMLButtonElement;
+        expect(account.disabled).toBe(false);
+        expect(model.disabled).toBe(false);
+        expect(account.textContent).toContain('max-3');
+        expect(model.textContent).toContain('sonnet[1m]:high');
+      });
+    });
+  });
+
   it('maps the live backfill through the tool-noise-filtering layer and renders it as chat', async () => {
     mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);

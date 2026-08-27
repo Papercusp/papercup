@@ -908,6 +908,15 @@ export const PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS = 300_000;
 // success / verified-failure / timeout is always the first outcome observed.
 export const PTOOL_RESPAWN_MEMBER_TIMEOUT_MS = 675_000;
 
+// EI-21569203429658749: `fleet:require-checkpoint` may intentionally block for
+// MAX_WAIT_SEC=300 while re-probing the checkpoint ledger, and its tool
+// definition therefore declares timeoutSec=330. The MCP transport adds a 5s
+// backstop buffer, so ptool's ordinary 30s client deadline abandoned the
+// write-side call first and surfaced MCP -32001 with an unknown outcome.
+// Keep the client beyond the effective 335s transport deadline so the tool's
+// structured safe/unsafe verdict always wins the race.
+export const PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS = 345_000;
+
 // `git-sync:run` is an acknowledged long-running call: its server handler
 // bounds the sync fire at 45s and may spend up to 5s each reading HEAD before
 // and after that fire. Keep the normal ptool liveness ceiling for ordinary
@@ -1010,6 +1019,7 @@ export const PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS = 60_000;
 const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['fleet:launch-on-plan', PTOOL_FLEET_LAUNCH_ON_PLAN_TIMEOUT_MS],
   ['fleet:respawn-member', PTOOL_RESPAWN_MEMBER_TIMEOUT_MS],
+  ['fleet:require-checkpoint', PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS],
   ['git-sync:run', PTOOL_GIT_SYNC_RUN_TIMEOUT_MS],
   ['backup:snapshot_create', PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS],
   ['templates:new-app', PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS],
