@@ -75,12 +75,18 @@ test(
   },
 );
 
-
 test('ON (smoothRpm) — smoothing ELIMINATES the sub-minute burst and is throughput-neutral', async () => {
   // Same burst, smoothing on: each account paces at 60_000/45 ≈ 1334ms > the 1s burst window, so at most
   // ONE request lands per window per account → zero bursts, and every request still completes (the count
   // gate caps the rate, smoothing only spreads it).
-  const r = await runGatewayBurstRig({ accounts: 4, n: 12, burstCap: 2, burstWindowMs: 1000, smoothRpm: true, maxQueueWaitMs: 12_000 });
+  const r = await runGatewayBurstRig({
+    accounts: 4,
+    n: 12,
+    burstCap: 2,
+    burstWindowMs: 1000,
+    smoothRpm: true,
+    maxQueueWaitMs: 12_000,
+  });
   expect(r.upstream429).toBe(0); // the burst-dodge fully prevents the sub-minute storm
   expect(r.ok).toBe(12); // throughput-neutral: all delivered
   expect(r.beeFacing429).toBe(0);
@@ -91,7 +97,15 @@ test('the rig surfaces BEE-FACING failures too — a harsh storm under a tight a
   // burstCap 1 + a 2s window, but only a 250ms absorb budget: the gateway can't outlast the window by
   // retrying, so the storm leaks past absorb to the bee as a final 503 / forwarded 429 — the symptom the
   // upstream-429 count alone would hide. This is the rig measuring the OTHER layer P-001 asks for.
-  const r = await runGatewayBurstRig({ accounts: 2, n: 10, burstCap: 1, burstWindowMs: 2000, smoothRpm: false, maxQueueWaitMs: 250, requestAbsorbMs: 250 });
+  const r = await runGatewayBurstRig({
+    accounts: 2,
+    n: 10,
+    burstCap: 1,
+    burstWindowMs: 2000,
+    smoothRpm: false,
+    maxQueueWaitMs: 250,
+    requestAbsorbMs: 250,
+  });
   expect(r.upstream429).toBeGreaterThan(0); // storm at the upstream
   expect(r.beeFacing429 + r.beeFacing503).toBeGreaterThan(0); // and it reached the bee (absorb couldn't hide it)
 }, 45_000);

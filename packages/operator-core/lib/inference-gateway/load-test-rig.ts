@@ -28,6 +28,7 @@
  */
 import { createInferenceGateway } from './gateway';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import type {
@@ -86,10 +87,13 @@ export function mockBurstUpstream(opts: MockUpstreamOptions): MockUpstream {
       // BARE-burst 429: x-should-retry:true, NO retry-after, NO unified util headers → classify429Shape
       // returns 'bare-burst' (a 429 with no window headers + x-should-retry). The body names a generic
       // rate_limit_error, NOT a usage/session cap, so it is never misread as a hard per-account wall.
-      return new Response(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'bare burst (sub-minute)' } }), {
-        status: 429,
-        headers: { 'content-type': 'application/json', 'x-should-retry': 'true' },
-      });
+      return new Response(
+        JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'bare burst (sub-minute)' } }),
+        {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'x-should-retry': 'true' },
+        },
+      );
     }
     recent.push(now);
     hist.set(tok, recent);
@@ -106,7 +110,13 @@ export function mockBurstUpstream(opts: MockUpstreamOptions): MockUpstream {
       });
     }
     return new Response(
-      JSON.stringify({ id: 'msg_rig', type: 'message', role: 'assistant', content: [{ type: 'text', text: 'ok' }], usage: { input_tokens: 1, output_tokens: 1 } }),
+      JSON.stringify({
+        id: 'msg_rig',
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'text', text: 'ok' }],
+        usage: { input_tokens: 1, output_tokens: 1 },
+      }),
       { status: 200, headers: { 'content-type': 'application/json' } },
     );
   }) as unknown as typeof fetch;
@@ -417,8 +427,18 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
       d.protocolSignature === g.protocolSignature;
     ttftDeltas.push(g.ttftMs - d.ttftMs);
   }
-  add('matched-identity', identityParity && matchedPairs === standard.length / 2, matchedPairs, 'one same-model/account/protocol direct+gateway pair per sample id');
-  add('nonstream-protocol-parity', protocolParity && matchedPairs === standard.length / 2, protocolParity, 'exact status/outcome/shape parity for every non-stream pair');
+  add(
+    'matched-identity',
+    identityParity && matchedPairs === standard.length / 2,
+    matchedPairs,
+    'one same-model/account/protocol direct+gateway pair per sample id',
+  );
+  add(
+    'nonstream-protocol-parity',
+    protocolParity && matchedPairs === standard.length / 2,
+    protocolParity,
+    'exact status/outcome/shape parity for every non-stream pair',
+  );
 
   const cancellations = input.samples.filter((sample) => sample.cancelled);
   const cancellationGroups = new Map<string, GatewayLatencyCertSample[]>();
@@ -430,18 +450,31 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
   }
   const cancellationParity = GATEWAY_LATENCY_CERT_CONCURRENCIES.every((concurrency) => {
     const groups = [...cancellationGroups.entries()].filter(([key]) => key.startsWith(`${concurrency}:`));
-    return groups.length > 0 && groups.every(([, samples]) => {
-      const routes = new Set(samples.map((sample) => sample.route));
-      return samples.length === 2 && routes.size === 2 && samples.every((sample) => sample.outcome === 'cancelled');
-    });
+    return (
+      groups.length > 0 &&
+      groups.every(([, samples]) => {
+        const routes = new Set(samples.map((sample) => sample.route));
+        return samples.length === 2 && routes.size === 2 && samples.every((sample) => sample.outcome === 'cancelled');
+      })
+    );
   });
-  add('cancellation-parity', cancellationParity, cancellationGroups.size, 'at least one direct+gateway cancelled pair at c1/c3/c5');
+  add(
+    'cancellation-parity',
+    cancellationParity,
+    cancellationGroups.size,
+    'at least one direct+gateway cancelled pair at c1/c3/c5',
+  );
 
   const snapshots = GATEWAY_LATENCY_CERT_CONCURRENCIES.map((concurrency) => input.telemetryByConcurrency[concurrency]);
   const finalized = snapshots.reduce((sum, snapshot) => sum + (snapshot?.requests.finalized ?? 0), 0);
   const missing = snapshots.reduce((sum, snapshot) => sum + (snapshot?.requests.missingStageTimelines ?? 0), 0);
   const stageCoverage = finalized > 0 ? (finalized - missing) / finalized : 0;
-  add('stage-coverage', stageCoverage >= GATEWAY_LATENCY_CERT_THRESHOLDS.stageCoverageMin, stageCoverage, `>=${GATEWAY_LATENCY_CERT_THRESHOLDS.stageCoverageMin}`);
+  add(
+    'stage-coverage',
+    stageCoverage >= GATEWAY_LATENCY_CERT_THRESHOLDS.stageCoverageMin,
+    stageCoverage,
+    `>=${GATEWAY_LATENCY_CERT_THRESHOLDS.stageCoverageMin}`,
+  );
   const reconciled = snapshots.every((snapshot) =>
     Boolean(
       snapshot &&
@@ -451,26 +484,62 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
       snapshot.requests.finalized === countOutcome(snapshot),
     ),
   );
-  add('request-outcome-reconciliation', reconciled, reconciled, 'all snapshots active=0 with exact request and outcome accounting');
+  add(
+    'request-outcome-reconciliation',
+    reconciled,
+    reconciled,
+    'all snapshots active=0 with exact request and outcome accounting',
+  );
   add('queued-with-idle', input.queuedWithIdleViolations === 0, input.queuedWithIdleViolations, '=0');
 
   for (const concurrency of GATEWAY_LATENCY_CERT_CONCURRENCIES) {
     const samples = gateway.filter((sample) => sample.concurrency === concurrency);
-    const overhead = percentile(samples.flatMap((sample) => sample.timeline?.durationsMs.gatewayOverhead ?? []), 0.95);
+    const overhead = percentile(
+      samples.flatMap((sample) => sample.timeline?.durationsMs.gatewayOverhead ?? []),
+      0.95,
+    );
     const overheadLimit = GATEWAY_LATENCY_CERT_THRESHOLDS.gatewayOverheadP95Ms[concurrency];
-    add(`gateway-overhead-p95-c${concurrency}`, overhead !== null && overhead <= overheadLimit, overhead ?? 'missing', `<=${overheadLimit}ms`);
-    const queueWait = percentile(samples.flatMap((sample) => sample.timeline?.durationsMs.queueWait ?? []), 0.95);
-    add(`queue-wait-p95-c${concurrency}`, queueWait !== null && queueWait <= GATEWAY_LATENCY_CERT_THRESHOLDS.queueWaitP95Ms, queueWait ?? 'missing', `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.queueWaitP95Ms}ms while capacity exists`);
+    add(
+      `gateway-overhead-p95-c${concurrency}`,
+      overhead !== null && overhead <= overheadLimit,
+      overhead ?? 'missing',
+      `<=${overheadLimit}ms`,
+    );
+    const queueWait = percentile(
+      samples.flatMap((sample) => sample.timeline?.durationsMs.queueWait ?? []),
+      0.95,
+    );
+    add(
+      `queue-wait-p95-c${concurrency}`,
+      queueWait !== null && queueWait <= GATEWAY_LATENCY_CERT_THRESHOLDS.queueWaitP95Ms,
+      queueWait ?? 'missing',
+      `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.queueWaitP95Ms}ms while capacity exists`,
+    );
   }
 
   const attempts = gateway.reduce((sum, sample) => sum + (sample.timeline?.attempts ?? 0), 0);
   const healthyAttemptsPerRequest = gateway.length ? attempts / gateway.length : Number.POSITIVE_INFINITY;
   const failoverRequests = gateway.filter((sample) => (sample.timeline?.failovers ?? 0) > 0).length;
   const failoverRequestRate = gateway.length ? failoverRequests / gateway.length : Number.POSITIVE_INFINITY;
-  add('healthy-attempts-per-request', healthyAttemptsPerRequest <= GATEWAY_LATENCY_CERT_THRESHOLDS.healthyAttemptsPerRequestMax, healthyAttemptsPerRequest, `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.healthyAttemptsPerRequestMax}`);
-  add('failover-request-rate', failoverRequestRate <= GATEWAY_LATENCY_CERT_THRESHOLDS.failoverRequestRateMax, failoverRequestRate, `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.failoverRequestRateMax}`);
+  add(
+    'healthy-attempts-per-request',
+    healthyAttemptsPerRequest <= GATEWAY_LATENCY_CERT_THRESHOLDS.healthyAttemptsPerRequestMax,
+    healthyAttemptsPerRequest,
+    `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.healthyAttemptsPerRequestMax}`,
+  );
+  add(
+    'failover-request-rate',
+    failoverRequestRate <= GATEWAY_LATENCY_CERT_THRESHOLDS.failoverRequestRateMax,
+    failoverRequestRate,
+    `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.failoverRequestRateMax}`,
+  );
   const gatewayAddedTtftP95Ms = percentile(ttftDeltas, 0.95);
-  add('gateway-added-ttft-p95', gatewayAddedTtftP95Ms !== null && gatewayAddedTtftP95Ms <= GATEWAY_LATENCY_CERT_THRESHOLDS.gatewayAddedTtftP95Ms, gatewayAddedTtftP95Ms ?? 'missing', `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.gatewayAddedTtftP95Ms}ms`);
+  add(
+    'gateway-added-ttft-p95',
+    gatewayAddedTtftP95Ms !== null && gatewayAddedTtftP95Ms <= GATEWAY_LATENCY_CERT_THRESHOLDS.gatewayAddedTtftP95Ms,
+    gatewayAddedTtftP95Ms ?? 'missing',
+    `<=${GATEWAY_LATENCY_CERT_THRESHOLDS.gatewayAddedTtftP95Ms}ms`,
+  );
 
   const measurementGateIds = new Set(gates.map((gate) => gate.id));
   const measurementVerdict = gates.every((gate) => gate.passed) ? 'passed' : 'failed';
@@ -479,11 +548,29 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     const isolatedAt = parsedTime(input.rollout.isolatedOwnerCompletedAt);
     const fleetAt = parsedTime(input.rollout.smallFleetCompletedAt);
     const defaultAt = parsedTime(input.rollout.fixedPathDefaultedOnAt);
-    add('rollout-order', Number.isFinite(isolatedAt) && isolatedAt <= fleetAt && fleetAt <= defaultAt, `${input.rollout.isolatedOwnerCompletedAt} -> ${input.rollout.smallFleetCompletedAt} -> ${input.rollout.fixedPathDefaultedOnAt}`, 'isolated owner <= small fleet <= default-on');
-    add('rollout-kill-switch', Boolean(input.rollout.killSwitch.trim()) && input.rollout.killSwitchRetained, input.rollout.killSwitch || 'missing', 'named kill switch retained through observation');
-    const deprecationOk = !input.rollout.legacyFallbackRemoved || Boolean(input.rollout.legacyFallbackDeprecationCriterionRef?.trim());
-    add('legacy-fallback-deprecation', deprecationOk, input.rollout.legacyFallbackRemoved, 'removal requires a separately recorded deprecation criterion');
-    rolloutVerdict = gates.filter((gate) => !measurementGateIds.has(gate.id)).every((gate) => gate.passed) ? 'passed' : 'failed';
+    add(
+      'rollout-order',
+      Number.isFinite(isolatedAt) && isolatedAt <= fleetAt && fleetAt <= defaultAt,
+      `${input.rollout.isolatedOwnerCompletedAt} -> ${input.rollout.smallFleetCompletedAt} -> ${input.rollout.fixedPathDefaultedOnAt}`,
+      'isolated owner <= small fleet <= default-on',
+    );
+    add(
+      'rollout-kill-switch',
+      Boolean(input.rollout.killSwitch.trim()) && input.rollout.killSwitchRetained,
+      input.rollout.killSwitch || 'missing',
+      'named kill switch retained through observation',
+    );
+    const deprecationOk =
+      !input.rollout.legacyFallbackRemoved || Boolean(input.rollout.legacyFallbackDeprecationCriterionRef?.trim());
+    add(
+      'legacy-fallback-deprecation',
+      deprecationOk,
+      input.rollout.legacyFallbackRemoved,
+      'removal requires a separately recorded deprecation criterion',
+    );
+    rolloutVerdict = gates.filter((gate) => !measurementGateIds.has(gate.id)).every((gate) => gate.passed)
+      ? 'passed'
+      : 'failed';
   }
 
   return {
@@ -509,7 +596,11 @@ export interface GatewayLatencyCertRigOptions {
   rollout?: GatewayLatencyRolloutEvidence;
 }
 
-async function mapWithConcurrency<T>(count: number, concurrency: number, run: (index: number) => Promise<T>): Promise<T[]> {
+async function mapWithConcurrency<T>(
+  count: number,
+  concurrency: number,
+  run: (index: number) => Promise<T>,
+): Promise<T[]> {
   const results = new Array<T>(count);
   let cursor = 0;
   await Promise.all(
@@ -544,7 +635,9 @@ async function waitForNoActiveRequests(gateway: ReturnType<typeof createInferenc
  * model, request body, and upstream for both routes. Operational canaries feed their live samples into
  * `certifyGatewayLatency`; this runner keeps the full acceptance logic permanently executable in CI.
  */
-export async function runGatewayLatencyCertRig(opts: GatewayLatencyCertRigOptions = {}): Promise<GatewayLatencyCertificationReport> {
+export async function runGatewayLatencyCertRig(
+  opts: GatewayLatencyCertRigOptions = {},
+): Promise<GatewayLatencyCertificationReport> {
   const count = opts.samplesPerRouteAndConcurrency ?? GATEWAY_LATENCY_CERT_THRESHOLDS.samplesPerRouteAndConcurrency;
   const model = opts.model ?? 'claude-opus-4';
   const samples: GatewayLatencyCertSample[] = [];
@@ -574,28 +667,38 @@ export async function runGatewayLatencyCertRig(opts: GatewayLatencyCertRigOption
       log: () => {},
     });
     const port = await gw.listen(0);
-    const body = JSON.stringify({ model, max_tokens: 4, stream: false, messages: [{ role: 'user', content: 'latency certification ping' }] });
+    const body = JSON.stringify({
+      model,
+      max_tokens: 4,
+      stream: false,
+      messages: [{ role: 'user', content: 'latency certification ping' }],
+    });
 
-    const fire = async (route: GatewayLatencyCertRoute, index: number, cancelled = false): Promise<GatewayLatencyCertSample> => {
+    const fire = async (
+      route: GatewayLatencyCertRoute,
+      index: number,
+      cancelled = false,
+    ): Promise<GatewayLatencyCertSample> => {
       const pairId = cancelled ? `latency-cert-c${concurrency}-cancel` : `latency-cert-c${concurrency}-${index}`;
       const controller = new AbortController();
       let abortTimer: ReturnType<typeof setTimeout> | undefined;
       if (cancelled) abortTimer = setTimeout(() => controller.abort(), 1);
       const started = performance.now();
       try {
-        const response = route === 'direct'
-          ? await upstream.fetchImpl('http://upstream.invalid/v1/messages', {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-              body,
-              signal: controller.signal,
-            })
-          : await fetch(`http://127.0.0.1:${port}/v1/messages`, {
-              method: 'POST',
-              headers: { 'content-type': 'application/json', 'x-papercusp-owner': pairId },
-              body,
-              signal: controller.signal,
-            });
+        const response =
+          route === 'direct'
+            ? await upstream.fetchImpl('http://upstream.invalid/v1/messages', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
+                body,
+                signal: controller.signal,
+              })
+            : await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json', 'x-papercusp-owner': pairId },
+                body,
+                signal: controller.signal,
+              });
         const ttftMs = performance.now() - started;
         const responseBody = await response.text();
         return {
@@ -634,20 +737,26 @@ export async function runGatewayLatencyCertRig(opts: GatewayLatencyCertRigOption
 
     try {
       const direct = await mapWithConcurrency(count, concurrency, (index) => fire('direct', index));
-      const monitor = setInterval(() => {
-        const admission = gw.stats().admission;
-        if (admission.queued > 0 && admission.running < admission.maxConcurrent) queuedWithIdleViolations++;
-      }, 1);
+      const monitor = managedSetInterval(
+        'inference-gateway-latency-cert-queue-sampler',
+        1,
+        () => {
+          const admission = gw.stats().admission;
+          if (admission.queued > 0 && admission.running < admission.maxConcurrent) queuedWithIdleViolations++;
+        },
+        { category: 'external-process', classification: 'must-sample', allowInTest: true, instanced: true },
+      );
       let viaGateway: GatewayLatencyCertSample[];
       try {
         viaGateway = await mapWithConcurrency(count, concurrency, (index) => fire('gateway', index));
       } finally {
-        clearInterval(monitor);
+        monitor.stop();
       }
       const cancelled = await Promise.all([fire('direct', count, true), fire('gateway', count, true)]);
       await waitForNoActiveRequests(gw);
       const snapshot = gw.stats().requestStages;
-      if (!snapshot) throw new Error(`latency certification c${concurrency}: gateway emitted no request-stage telemetry`);
+      if (!snapshot)
+        throw new Error(`latency certification c${concurrency}: gateway emitted no request-stage telemetry`);
       telemetryByConcurrency[concurrency] = snapshot;
       const timelines = new Map(snapshot.recent.map((timeline) => [timeline.ownerId, timeline]));
       for (const sample of viaGateway) sample.timeline = timelines.get(sample.pairId);
