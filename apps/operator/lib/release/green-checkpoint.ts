@@ -41,6 +41,8 @@ import {
   refExists,
   isAncestor,
   advanceReady,
+  lastJudgedRed,
+  recordJudgedRed,
   revListBefore,
   commitUnixTime,
   changedFilesRecursive,
@@ -317,6 +319,13 @@ export interface CheckpointDeps {
   }>;
   /** Fast-forward `ready` to `candidate` (advanceReady). */
   advance(candidate: string): Promise<AdvanceResult>;
+  /** WI-42350 — sha this repo last reached a RED verdict on, or null. OPTIONAL on purpose: every
+   *  existing fake dep predates it, and a dep that omits it must degrade to "always re-judge"
+   *  (the historical behaviour) rather than throw. Callers use `deps.lastJudgedRed?.(...)`. */
+  lastJudgedRed?(repo: string): Promise<string | null>;
+  /** WI-42350 — stamp `sha` as the last RED-judged candidate. Fail-open: a throw costs one
+   *  redundant run and must never influence a verdict. */
+  recordJudgedRed?(repo: string, sha: string): Promise<void>;
   /** Publish a green candidate to `ref` on origin. `baseSha` (WI-7013) is the sha
    *  `ref` will advance FROM and is threaded through to the CI dispatch as the
    *  affected-test diff base. `candidateSha` is pushed directly before the local green
@@ -758,6 +767,11 @@ export interface CheckpointResult {
   diagnostic?: CheckpointDiagnostic;
   reason:
     | "up-to-date"
+    /** WI-42350 — this exact sha already reached a RED verdict, so the run declined to re-judge
+     *  it and skipped materialization. Distinct from "not-green": that means THIS run judged and
+     *  found red; this means no judging happened at all, so it must not count toward a red
+     *  streak. */
+    | "unchanged-since-verdict"
     | "not-fast-forward"
     | "not-green"
     | "advanced"
@@ -8059,6 +8073,47 @@ async function runGreenCheckpointInner(
     };
   }
 
+  // WI-42350 — verdict-anchored short-circuit.
+  //
+  // The check above only fires when the candidate equals the last GREEN pin. A pot pinned RED —
+  // which is most dormant pots — therefore re-runs the ENTIRE pipeline every hour to rediscover
+  // the same red on the same sha, and pays the whole cost in checkpoint-tree materialization
+  // BEFORE affected-test selection ever gets a chance to narrow anything. Measured on
+  // hello-world-3: three consecutive runs of error / infra-inconclusive / skipped-locked, zero
+  // meaningful test executions, all cost paid in setup.
+  //
+  // If this exact sha already reached a red verdict, re-running cannot produce new information:
+  // the tree is byte-identical by definition of the sha. Skip BEFORE materialization.
+  //
+  // Deliberately fail-open — a marker that is missing, unreadable, or from another repo costs one
+  // redundant run, which is the status quo. A marker write must never be able to produce a
+  // verdict, so every failure here falls through to the normal path.
+  try {
+    const judgedRed = await deps.lastJudgedRed?.(cfg.integrationRoot);
+    if (judgedRed && judgedRed === candidate) {
+      deps.log(
+        `unchanged-since-verdict: ${candidate.slice(0, 8)} already reached a RED verdict and the tree is ` +
+          `byte-identical — skipping materialization and the suite (WI-42350). This is NOT a new red: it is ` +
+          `the same one, so it does not count toward the red streak.`,
+      );
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        // `null`, NOT `false` (EI-20702428259478130): `green:false` asserts THIS RUN judged the
+        // candidate and found it red. This run judged nothing — it declined to re-judge. Emitting
+        // false here would inflate consecutiveReds with runs that executed no tests, which is
+        // precisely the false signal WI-42350 exists to stop.
+        green: null,
+        reason: "unchanged-since-verdict",
+      };
+    }
+  } catch (e) {
+    deps.log(
+      `unchanged-since-verdict: marker unreadable (${e instanceof Error ? e.message : e}) — judging normally`,
+    );
+  }
+
   // The green pin only ever fast-forwards — refuse a candidate that isn't a descendant.
   if (
     lastReady &&
@@ -13804,6 +13859,15 @@ export function realCheckpointDeps(
     },
     advance: (candidate) =>
       advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
+    // WI-42350 — both fail-open by contract, so a marker problem can never become a verdict.
+    lastJudgedRed: (repo) => lastJudgedRed(repo).catch(() => null),
+    recordJudgedRed: (repo, sha) =>
+      recordJudgedRed(repo, sha).catch((e) => {
+        log(
+          `judged-red marker write failed (${e instanceof Error ? e.message : e}) — the verdict stands; ` +
+            `the only cost is one redundant run next tick`,
+        );
+      }),
     // Stale-candidate re-triage seams (P-004). The quiet-cut judges a commit that is
     // minutes-to-hours old; these let the gate ask "is this red still real at tip?".
     async resolveTip() {
