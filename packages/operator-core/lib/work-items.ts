@@ -2312,7 +2312,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       : false;
     if (!registered) throw new Error(`unknown work_item kind '${input.kind}'`);
   }
-  const id = await nextWorkItemId();
+  let id = await nextWorkItemId();
 
   // ATOMIC create+claim (loop-routines P-007 / D-008, B-LOOP-4): a non-empty
   // `assignee` makes the row land already-claimed by that agent — no separate
@@ -2529,12 +2529,27 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
   params.push(resolvedWs);
   cols.push('workspace_id');
   vals.push(`$${params.length}::text`);
-  await sql.unsafe(
-    `INSERT INTO harness_shared.work_items (${cols.join(', ')})
+  // The sequence-floor trigger normally keeps the allocator above imported WI-N
+  // rows, but a stale sequence can still occur on an older database or after an
+  // administrative repair. `ON CONFLICT DO NOTHING` must not be treated as a
+  // successful create: returning the allocated id after a suppressed insert lets
+  // the caller's goal-provenance stamp (and every later side effect) target the
+  // incumbent row. Retry with the next allocated id until this create actually
+  // inserts and return the database-confirmed identity.
+  const insertSql = `INSERT INTO harness_shared.work_items (${cols.join(', ')})
      VALUES (${vals.join(', ')})
-     ON CONFLICT (harness_slug, feature_id) DO NOTHING`,
-    params,
-  );
+     ON CONFLICT (harness_slug, feature_id) DO NOTHING
+     RETURNING feature_id`;
+  let inserted: Array<{ feature_id: string }> = [];
+  do {
+    params[1] = id;
+    inserted = await sql.unsafe<Array<{ feature_id: string }>>(insertSql, params);
+    if (inserted.length > 0) {
+      id = inserted[0].feature_id;
+      break;
+    }
+    id = await nextWorkItemId();
+  } while (true);
   const wi: WorkItem = {
     id,
     kind: input.kind,
