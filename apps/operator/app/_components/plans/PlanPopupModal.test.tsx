@@ -4,9 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
 
-const { planRows, usePlanList } = vi.hoisted(() => ({
+const { planRows, planListState, usePlanList } = vi.hoisted(() => ({
   planRows: {
     value: [] as Array<{ slug: string; harness: string; origin?: "scout" }>,
+  },
+  planListState: {
+    loading: false,
+    error: null as Error | null,
   },
   usePlanList: vi.fn(),
 }));
@@ -16,8 +20,8 @@ vi.mock("@/app/admin/plans/plans-api", () => ({
     usePlanList(args);
     return {
       data: { plans: planRows.value },
-      loading: false,
-      error: null,
+      loading: planListState.loading,
+      error: planListState.error,
       refresh: vi.fn(),
     };
   },
@@ -47,6 +51,8 @@ import PlanPopupModal from "./PlanPopupModal";
 
 afterEach(() => {
   planRows.value = [];
+  planListState.loading = false;
+  planListState.error = null;
   usePlanList.mockClear();
   cleanup();
 });
@@ -90,6 +96,38 @@ describe("PlanPopupModal provenance", () => {
     const badge = screen.getByTestId("plan-popup-provenance-badge");
     expect(badge.textContent).toBe("Blender");
     expect(badge.getAttribute("data-plan-provenance")).toBe("blender");
+    expect(usePlanList).toHaveBeenCalledWith({
+      includeArchived: true,
+      includeLegacy: true,
+      harness_slugs: ["papercusp"],
+      enabled: true,
+    });
+  });
+
+  it.each([
+    ["loading", true, null],
+    ["missing", false, null],
+    ["error", false, new Error("plans.list failed")],
+  ] as const)(
+    "does not misclassify unresolved omitted provenance while the lookup is %s",
+    (_state, loading, error) => {
+      planListState.loading = loading;
+      planListState.error = error;
+
+      renderPopup(undefined);
+
+      expect(screen.queryByTestId("plan-popup-provenance-badge")).toBeNull();
+    },
+  );
+
+  it("does not borrow provenance from a same-slug row in the wrong harness", () => {
+    planRows.value = [
+      { slug: "provenance-plan", harness: "other", origin: "scout" },
+    ];
+
+    renderPopup(undefined);
+
+    expect(screen.queryByTestId("plan-popup-provenance-badge")).toBeNull();
     expect(usePlanList).toHaveBeenCalledWith({
       includeArchived: true,
       includeLegacy: true,

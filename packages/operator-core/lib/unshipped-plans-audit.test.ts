@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import type { PlanIndexRow } from './agent-tools/plans/source';
 import {
@@ -88,14 +89,18 @@ describe('classifier revision 3', () => {
     expect(hasExplicitPlanLevelSupersession('D-004 superseded the old approach.')).toBe(false);
     expect(hasExplicitPlanLevelSupersession('The superseded decision is retained for history.')).toBe(false);
 
-    const explicit = classifyUnshippedPlan(input({
-      plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
-    }));
+    const explicit = classifyUnshippedPlan(
+      input({
+        plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
+      }),
+    );
     expect(explicit.category).toBe('supersede-documented');
 
-    const decisionOnly = classifyUnshippedPlan(input({
-      plan: plan({ nowState: 'D-004 superseded the old approach.' }),
-    }));
+    const decisionOnly = classifyUnshippedPlan(
+      input({
+        plan: plan({ nowState: 'D-004 superseded the old approach.' }),
+      }),
+    );
     expect(decisionOnly.category).not.toBe('supersede-documented');
   });
 
@@ -109,36 +114,47 @@ describe('classifier revision 3', () => {
         source: 'work-item-hold',
       },
     ];
-    const row = classifyUnshippedPlan(input({
-      plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
-      registeredHarness: false,
-      owners,
-    }));
+    const row = classifyUnshippedPlan(
+      input({
+        plan: plan({ nowState: 'This plan is superseded by plan-b.' }),
+        registeredHarness: false,
+        owners,
+      }),
+    );
 
     expect(row.category).toBe('ongoing-protected');
     expect(row.owners).toEqual(owners);
   });
 
   it('separates stale typed blockers, current human blockers, and ledger contradictions', () => {
-    expect(classifyUnshippedPlan(input({
-      blocker: { typedBlocked: true, typedHuman: true, refs: ['P-000'], staleHints: ['P-000 is done'] },
-    })).category).toBe('typed-blocker-stale-hint');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          blocker: { typedBlocked: true, typedHuman: true, refs: ['P-000'], staleHints: ['P-000 is done'] },
+        }),
+      ).category,
+    ).toBe('typed-blocker-stale-hint');
 
-    expect(classifyUnshippedPlan(input({
-      blocker: { typedBlocked: true, typedHuman: true, refs: ['human:owner'], staleHints: [] },
-    })).category).toBe('typed-human-blocker');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          blocker: { typedBlocked: true, typedHuman: true, refs: ['human:owner'], staleHints: [] },
+        }),
+      ).category,
+    ).toBe('typed-human-blocker');
 
-    expect(classifyUnshippedPlan(input({
-      itemCounts: { done: 1 },
-      workItems: [{ sourcePlanSlug: 'plan-a', status: 'open', holder: null }],
-    })).category).toBe('ledger-contradiction');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          itemCounts: { done: 1 },
+          workItems: [{ sourcePlanSlug: 'plan-a', status: 'open', holder: null }],
+        }),
+      ).category,
+    ).toBe('ledger-contradiction');
   });
 
   it('derives typed issue blockers from the canonical plan-item overlay', () => {
-    const evidence = blockerEvidenceForPlan(
-      plan(),
-      new Map([['plan-a#P-001', ['EI-123']]]),
-    );
+    const evidence = blockerEvidenceForPlan(plan(), new Map([['plan-a#P-001', ['EI-123']]]));
 
     expect(evidence.itemCounts).toMatchObject({ blocked: 1 });
     expect(evidence.blocker).toMatchObject({
@@ -182,15 +198,27 @@ describe('classifier revision 3', () => {
       expect(category).not.toBe('text-only-external-blocker');
     }
 
-    expect(classifyUnshippedPlan(input({
-      plan: plan({ nowNext: 'P-009 needs an OWNER decision: provide an alternate egress path.' }),
-    })).category).toBe('text-only-human-blocker');
-    expect(classifyUnshippedPlan(input({
-      plan: plan({ nowNext: 'P-009 is BLOCKED ON THE PIPELINE until the green candidate ships.' }),
-    })).category).toBe('text-only-external-blocker');
-    expect(classifyUnshippedPlan(input({
-      plan: plan({ nowNext: 'OWNER action: provide the missing signing credential.' }),
-    })).category).toBe('text-only-human-blocker');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          plan: plan({ nowNext: 'P-009 needs an OWNER decision: provide an alternate egress path.' }),
+        }),
+      ).category,
+    ).toBe('text-only-human-blocker');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          plan: plan({ nowNext: 'P-009 is BLOCKED ON THE PIPELINE until the green candidate ships.' }),
+        }),
+      ).category,
+    ).toBe('text-only-external-blocker');
+    expect(
+      classifyUnshippedPlan(
+        input({
+          plan: plan({ nowNext: 'OWNER action: provide the missing signing credential.' }),
+        }),
+      ).category,
+    ).toBe('text-only-human-blocker');
   });
 });
 
@@ -253,11 +281,125 @@ describe('manifest and evidence rendering', () => {
     expect(html).toContain('Outside Blender');
   });
 
+  it('preserves the plan identity set and composes provenance, search, and harness filters', () => {
+    const allPlans = [
+      plan({ planSlug: 'blender-alpha', title: 'Alpha Blender', isBlenderOrigin: true }),
+      plan({ planSlug: 'outside-alpha', title: 'Alpha Outside', isBlenderOrigin: false }),
+      plan({
+        harnessSlug: 'other',
+        planSlug: 'blender-beta',
+        title: 'Beta Blender',
+        isBlenderOrigin: true,
+      }),
+      plan({
+        harnessSlug: 'other',
+        planSlug: 'outside-beta',
+        title: 'Beta Outside',
+        isBlenderOrigin: false,
+      }),
+    ];
+    const result = buildUnshippedPlansAuditManifest({
+      workspaceId: 'ws-test',
+      snapshotStartedAt: '2026-08-20T12:00:00.000Z',
+      snapshotFinishedAt: '2026-08-20T12:00:01.000Z',
+      liveOwnershipMeasuredAt: '2026-08-20T12:00:00.500Z',
+      allPlans,
+      registeredHarnesses: new Set(['papercusp', 'other']),
+      ownersByPlan: new Map(),
+      workItemsByPlan: new Map(),
+      blockedItems: new Map(),
+      auditsByPlan: new Map(),
+      rubricsByPlan: new Map(),
+      gateVerdictsByPlan: new Map(),
+    });
+    const identity = (row: { harness: string; slug: string }) => `${row.harness}::${row.slug}`;
+    const baseline = allPlans.map((candidate) => `${candidate.harnessSlug}::${candidate.planSlug}`).sort();
+    const rendered = result.rows.map(identity).sort();
+    const blender = new Set(result.rows.filter((row) => row.provenance === 'blender').map(identity));
+    const outside = new Set(result.rows.filter((row) => row.provenance === 'outside-blender').map(identity));
+
+    expect(rendered).toEqual(baseline);
+    expect([...blender].filter((id) => outside.has(id))).toEqual([]);
+    expect(new Set([...blender, ...outside])).toEqual(new Set(baseline));
+
+    type FakeNode = {
+      value: string;
+      textContent: string;
+      innerHTML: string;
+      insertAdjacentHTML: (_position: string, html: string) => void;
+      addEventListener: (event: string, listener: () => void) => void;
+      dispatch: (event: string) => void;
+    };
+    const fakeNode = (value = ''): FakeNode => {
+      const listeners = new Map<string, Array<() => void>>();
+      return {
+        value,
+        textContent: '',
+        innerHTML: '',
+        insertAdjacentHTML(_position, html) {
+          this.innerHTML += html;
+        },
+        addEventListener(event, listener) {
+          const current = listeners.get(event) ?? [];
+          current.push(listener);
+          listeners.set(event, current);
+        },
+        dispatch(event) {
+          for (const listener of listeners.get(event) ?? []) listener();
+        },
+      };
+    };
+    const html = renderUnshippedPlansAuditHtml(result);
+    const scripts = [...html.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+    expect(scripts).toHaveLength(2);
+    const nodes = {
+      manifest: fakeNode(),
+      q: fakeNode(),
+      provenance: fakeNode(),
+      cat: fakeNode(),
+      status: fakeNode(),
+      harness: fakeNode(),
+      shown: fakeNode(),
+      rows: fakeNode(),
+    };
+    nodes.manifest.textContent = scripts[0];
+    const controls = [nodes.q, nodes.provenance, nodes.cat, nodes.status, nodes.harness];
+    const document = {
+      querySelector(selector: string) {
+        return nodes[selector.slice(1) as keyof typeof nodes];
+      },
+      querySelectorAll(selector: string) {
+        return selector === '#q,#provenance,#cat,#status,#harness' ? controls : [];
+      },
+    };
+
+    runInNewContext(scripts[1], { document });
+    expect(nodes.shown.textContent).toBe('4 of 4 rows');
+
+    nodes.provenance.value = 'outside-blender';
+    nodes.provenance.dispatch('change');
+    expect(nodes.shown.textContent).toBe('2 of 4 rows');
+
+    nodes.q.value = 'alpha';
+    nodes.q.dispatch('input');
+    expect(nodes.shown.textContent).toBe('1 of 4 rows');
+
+    nodes.harness.value = 'other';
+    nodes.harness.dispatch('change');
+    expect(nodes.shown.textContent).toBe('0 of 4 rows');
+
+    nodes.q.value = '';
+    nodes.q.dispatch('input');
+    expect(nodes.shown.textContent).toBe('1 of 4 rows');
+  });
+
   it('keeps the implementation manual-only and free of direct lifecycle SQL/writer seams', () => {
     const source = readFileSync(new URL('./unshipped-plans-audit.ts', import.meta.url), 'utf8');
 
     expect(source).not.toMatch(/\b(?:INSERT\s+INTO|UPDATE\s+harness_shared|DELETE\s+FROM|MERGE\s+INTO)\b/i);
-    expect(source).not.toMatch(/registerRoutine|setPlanStatus|setPlanItemStatus|setWorkItemState|armSchedule|setSchedule/);
+    expect(source).not.toMatch(
+      /registerRoutine|setPlanStatus|setPlanItemStatus|setWorkItemState|armSchedule|setSchedule/,
+    );
     expect(source.match(/saveTextArtifact\(/g)).toHaveLength(2);
   });
 });
