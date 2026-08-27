@@ -109,6 +109,19 @@ export interface DependencyPolicyRule {
   readonly provenance: readonly string[];
 }
 
+/** Concrete classifier result shared by lint, admission, tools, monitors, and UI. */
+export interface DependencyPolicyFinding {
+  code: string;
+  classification: DependencyPolicyClassification;
+  confidence: DependencyPolicyConfidence;
+  nodes: string[];
+  edges: Array<{ subject: string; dependency: string }>;
+  evidence: Record<string, unknown>;
+  provenance: string[];
+  suggestedAction: string | null;
+  suppressedBy?: { kind: 'structured-rationale'; refs: string[] };
+}
+
 /**
  * The invariants.
  *
