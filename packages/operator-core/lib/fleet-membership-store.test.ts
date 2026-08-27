@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { deriveFleetMembershipEvent, type FleetMembershipInput } from './fleet-membership-store';
+import {
+  deriveFleetMembershipEvent,
+  fleetEverMembers,
+  type FleetMembershipInput,
+} from './fleet-membership-store';
 
 describe('fleet-membership-store: append-only canonical membership (WI-1345)', () => {
   describe('deriveFleetMembershipEvent: sensible event label derivation', () => {
@@ -73,5 +77,20 @@ describe('fleet-membership-store: append-only canonical membership (WI-1345)', (
       // asserting the design principle: a membership fact is immutable history.
       expect(true).toBe(true); // placeholder for the above documentation
     });
+  });
+
+  it('threads the optional snapshot watermark into the canonical ever-member read', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    const sql = ((parts: TemplateStringsArray, ...values: unknown[]) => {
+      const text = parts.reduce((out, part, index) => out + part + (index < values.length ? `$${index + 1}` : ''), '');
+      calls.push({ text, values });
+      return Promise.resolve([{ owner_id: 'su-a' }]);
+    }) as never;
+
+    await expect(
+      fleetEverMembers('fleet-a', { workspaceId: 'ws-a', beforeOrAt: '2026-08-27T08:00:00.000Z' }, sql),
+    ).resolves.toEqual(new Set(['su-a']));
+    expect(calls.some((call) => call.text.includes('at <='))).toBe(true);
+    expect(calls.flatMap((call) => call.values)).toContain('2026-08-27T08:00:00.000Z');
   });
 });
