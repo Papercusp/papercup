@@ -125,16 +125,19 @@ function finish(
 function zeroClaimableLaneMessage(planSlug: string, lane: FleetLaneHealth): string {
   const { matchedByFilter, excluded } = lane.effective;
   const filter = `plan = '${planSlug}'`;
+  const scope = lane.spec.assigneeScoped
+    ? `claimant scope '${lane.spec.assigneeScoped}'`
+    : 'the caller-neutral fleet population';
   if (matchedByFilter === 0) {
-    return `The exact-plan filter (${filter}) matches no rows; no row reached the claim floors.`;
+    return `Under ${scope}, the exact-plan filter (${filter}) matches no rows; no row reached the claim floors.`;
   }
   if (matchedByFilter != null && !Object.values(excluded ?? {}).some((count) => count > 0)) {
     return (
-      `INTERNAL INCONSISTENCY: the exact-plan filter (${filter}) matched ${matchedByFilter} row(s) ` +
+      `INTERNAL INCONSISTENCY: under ${scope}, the exact-plan filter (${filter}) matched ${matchedByFilter} row(s) ` +
       'and claimable=0, but every reported exclusion bucket is zero; these counters do not support a floor-gated diagnosis.'
     );
   }
-  return 'The exact-plan lane is structurally reachable but every matched row is excluded by claim floors.';
+  return `Under ${scope}, the exact-plan lane is structurally reachable but every matched row is excluded by claim floors.`;
 }
 
 /** PURE verdict over one exact plan snapshot, its promoted rows, and lane oracle. */
@@ -346,7 +349,14 @@ export async function preflightExactPlanAdmission(args: {
   workspaceId: string;
   harnessSlug: string;
   planSlug: string;
-  assignee: string;
+  /** Audit actor that authored this ephemeral admission spec. */
+  actor: string;
+  /**
+   * Optional claimant whose caller-relative floors should be evaluated. Omit for
+   * a fleet population/handoff read: a leader's release cooldown must not make a
+   * ready row look unavailable to the different member that will claim it.
+   */
+  claimant?: string;
   specId: string;
   fleetSlug?: string;
   claimKinds?: readonly string[];
@@ -362,7 +372,7 @@ export async function preflightExactPlanAdmission(args: {
       workItems: [],
       laneHealth: null,
       requestedSeats: args.requestedSeats,
-      assignee: args.assignee,
+      assignee: args.claimant,
       allowCallerHeld: args.allowCallerHeld,
     });
     return { ...empty, reason: 'plan-not-found', status: 'refused', message: `Plan '${args.planSlug}' was not found.` };
@@ -376,7 +386,7 @@ export async function preflightExactPlanAdmission(args: {
     source: 'fleet',
     spec,
     revision: spec.revision,
-    updatedBy: args.assignee,
+    updatedBy: args.actor,
     updatedAt: null,
     harnessSlug: args.harnessSlug,
     fleetSlug: args.fleetSlug ?? `exact-plan:${args.planSlug}`,
@@ -393,7 +403,7 @@ export async function preflightExactPlanAdmission(args: {
     fleet: record.fleetSlug!,
     harness: args.harnessSlug,
     workspaceId: args.workspaceId,
-    assignee: args.assignee,
+    assignee: args.claimant,
     matchedBy: 'exact-plan-preflight',
   });
   return evaluateExactPlanAdmission({
@@ -403,7 +413,7 @@ export async function preflightExactPlanAdmission(args: {
     laneHealth,
     sourceCapExhausted: workItems.length >= WORK_ITEMS_MAX_LIMIT,
     requestedSeats: args.requestedSeats,
-    assignee: args.assignee,
+    assignee: args.claimant,
     allowCallerHeld: args.allowCallerHeld,
   });
 }

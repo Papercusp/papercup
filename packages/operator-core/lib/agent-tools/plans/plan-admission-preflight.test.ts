@@ -51,6 +51,7 @@ const lane = (args: {
   feature?: number | null;
   issueReachable?: boolean;
   featureReachable?: boolean;
+  assigneeScoped?: string | null;
 }): FleetLaneHealth => {
   const issueReachable = args.issueReachable ?? true;
   const featureReachable = args.featureReachable ?? true;
@@ -89,7 +90,7 @@ const lane = (args: {
       revision: 1,
       matchedBy: 'test',
       harness: 'papercusp',
-      assigneeScoped: 'su-test',
+      assigneeScoped: args.assigneeScoped === undefined ? 'su-test' : args.assigneeScoped,
     },
   };
 };
@@ -278,8 +279,28 @@ describe('evaluateExactPlanAdmission', () => {
     });
 
     expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain("claimant scope 'su-test'");
     expect(verdict.message).toContain('every matched row is excluded by claim floors');
     expect(verdict.message).not.toContain('INTERNAL INCONSISTENCY');
+  });
+
+  it('names the caller-neutral population when fleet-wide floors exclude every row', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({
+        issue: 0,
+        issueMatchedByFilter: 1,
+        issueExcluded: { claimHold: 1 },
+        featureReachable: false,
+        assigneeScoped: null,
+      }),
+    });
+
+    expect(verdict).toMatchObject({ ready: false, status: 'refused', reason: 'floor-gated' });
+    expect(verdict.message).toContain('the caller-neutral fleet population');
+    expect(verdict.message).toContain('every matched row is excluded by claim floors');
   });
 
   it('refuses when one actionable promoted family is zero while the other is claimable', () => {
@@ -493,7 +514,8 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       workspaceId: 'ws-1',
       harnessSlug: 'papercusp',
       planSlug: 'plan-a',
-      assignee: 'su-test',
+      actor: 'su-test',
+      claimant: 'su-test',
       specId: 'plans-start-plan-a',
       fleetSlug: 'fleet-a',
       claimKinds: ['bug'],
@@ -524,6 +546,32 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       }),
     );
     expect(verdict.requestedSeats).toBe(1);
+  });
+
+  it('keeps a released ready row launchable by omitting the leader from the fleet population read', async () => {
+    mocks.readClaimSpecLaneHealth.mockImplementationOnce(async (args: { assignee?: string }) =>
+      args.assignee
+        ? lane({ issue: 0, issueMatchedByFilter: 1, issueExcluded: { cooldown: 1 }, featureReachable: false })
+        : lane({ issue: 1, issueMatchedByFilter: 1, featureReachable: false, assigneeScoped: null }),
+    );
+
+    const verdict = await preflightExactPlanAdmission({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      actor: 'su-leader',
+      specId: 'fleet-launch-fleet-a-plan',
+      fleetSlug: 'fleet-a',
+      requestedSeats: 1,
+    });
+
+    expect(verdict).toMatchObject({ ready: true, reason: 'ready', executableWidth: 1 });
+    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledWith(
+      expect.objectContaining({ assignee: undefined, fleet: 'fleet-a' }),
+    );
+    expect(mocks.readClaimSpecLaneHealth.mock.calls[0][0].record).toEqual(
+      expect.objectContaining({ updatedBy: 'su-leader' }),
+    );
   });
 
   it('builds a validator-clean plan-only claim spec', () => {
