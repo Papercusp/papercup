@@ -305,6 +305,20 @@ export default defineTool({
       return err('read_failed', msg);
     }
 
+    const credentialBearingConfig = isCredentialBearingConfigPath(abs);
+    const exactReadRequested =
+      args.raw === true ||
+      args.byte_offset !== undefined ||
+      args.byte_limit !== undefined ||
+      args.content_indexes !== undefined ||
+      args.evidence_class !== undefined;
+    if (credentialBearingConfig && exactReadRequested) {
+      return err(
+        'sensitive_file',
+        'exact, raw, byte, and structured reads are refused for credential-bearing config files; use an ordinary line read, which redacts secret values.',
+      );
+    }
+
     let reference: ScratchReferenceManifest | undefined;
     try {
       const parsed = parseScratchReference(bytes);
@@ -394,20 +408,6 @@ export default defineTool({
           ...(row.isError !== undefined ? { isError: row.isError } : {}),
         }) }],
       };
-    }
-
-    const credentialBearingConfig = isCredentialBearingConfigPath(abs);
-    const exactReadRequested =
-      args.raw === true ||
-      args.byte_offset !== undefined ||
-      args.byte_limit !== undefined ||
-      args.content_indexes !== undefined ||
-      args.evidence_class !== undefined;
-    if (credentialBearingConfig && exactReadRequested) {
-      return err(
-        'sensitive_file',
-        'exact, raw, byte, and structured reads are refused for credential-bearing config files; use an ordinary line read, which redacts secret values.',
-      );
     }
 
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
