@@ -81,6 +81,23 @@ describe('pilot cohort materialization', () => {
     expect(deps.mergeWorkItemPayload).not.toHaveBeenCalled();
   });
 
+  it('previews terminal candidates read-only but refuses to materialize them', async () => {
+    const rows = new Map(['WI-1', 'WI-2', 'WI-3'].map((id) => [id, item(id)]));
+    rows.set('WI-2', item('WI-2', { state: 'done', closedAt: new Date(900).toISOString() }));
+    const deps = baseDeps(rows);
+    const candidates = [...rows.keys()].map((id) => ({ id, tier: 'substantive' as const }));
+
+    const preview = await materializePilotCohort({ seed: 'seed', candidates }, deps);
+    const result = await materializePilotCohort({ seed: 'seed', candidates, confirm: true }, deps);
+
+    expect(preview).toMatchObject({ ok: true, committed: false, applied: [], rolledBack: [] });
+    expect(preview.plan.assignments).toHaveLength(3);
+    expect(result).toMatchObject({ ok: false, committed: false, applied: [], rolledBack: [] });
+    expect(result.error).toContain('terminal candidates cannot enter a prospective cohort');
+    expect(result.error).toContain('WI-2:done');
+    expect(deps.mergeWorkItemPayload).not.toHaveBeenCalled();
+  });
+
   it('refuses every write when arm B lacks a live tested=deployed proof', async () => {
     const rows = new Map(['WI-1', 'WI-2', 'WI-3'].map((id) => [id, item(id)]));
     const deps = baseDeps(rows);

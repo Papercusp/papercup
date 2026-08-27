@@ -281,6 +281,24 @@ export async function materializePilotCohort(
   const plan = assignCohort(candidates, seed);
   if (!input.confirm) return { ok: true, committed: false, plan, applied: [], rolledBack: [] };
 
+  const rowById = new Map(ids.map((id, index) => [id, rows[index]!]));
+  const terminalAssignments = plan.assignments.flatMap((assignment) => {
+    const item = rowById.get(assignment.id)!;
+    return terminal(item) ? [`${assignment.id}:${item.state}`] : [];
+  });
+  if (terminalAssignments.length) {
+    return {
+      ok: false,
+      committed: false,
+      plan,
+      applied: [],
+      rolledBack: [],
+      error:
+        'refusing materialization: terminal candidates cannot enter a prospective cohort: ' +
+        terminalAssignments.join(', '),
+    };
+  }
+
   const invalidSkips = plan.skipped.filter((s) => s.reason !== 'already-assigned');
   if (invalidSkips.length) {
     return {
