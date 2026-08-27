@@ -22,10 +22,13 @@ export default function InboxBulkReportHost() {
   const enabled = useFlag(FLAGS.INBOX_BULK_RESOLVE);
   const report = useReportTakeoverParam(INBOX_BULK_RUN_PARAM);
   const bulk = useInboxBulkRun(report.value, {
-    enabled: enabled && Boolean(report.value),
+    enabled: enabled && report.foreground,
   });
   const reviewing =
-    enabled && Boolean(report.value) && bulk.run?.phase === "review";
+    enabled &&
+    report.foreground &&
+    Boolean(report.value) &&
+    bulk.run?.phase === "review";
   const [, setInboxTarget] = useQueryStates({
     opci: parseAsString,
     opcis: parseAsString,

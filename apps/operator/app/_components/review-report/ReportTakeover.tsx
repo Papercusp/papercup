@@ -16,8 +16,36 @@
  * consumers.
  */
 import { useEffect, useRef, type ReactNode } from "react";
-import { parseAsString, useQueryState } from "nuqs";
+import { parseAsString, useQueryStates } from "nuqs";
 import "./review-report.css";
+
+/**
+ * One URL marker arbitrates the heavyweight report foreground. The run params
+ * remain independently deep-linkable; this marker only says which one may
+ * hydrate and render its report tree.
+ */
+export const REPORT_TAKEOVER_OWNER_PARAM = "oprpt";
+
+/**
+ * Existing links predate the owner marker. Preserve their former paint-order
+ * behavior deterministically: the later entry wins when several legacy run
+ * params coexist. New report owners must register here before using the hook.
+ */
+export const REPORT_TAKEOVER_PARAM_PRIORITY = ["opcln", "opcbr"] as const;
+export type ReportTakeoverParamKey =
+  (typeof REPORT_TAKEOVER_PARAM_PRIORITY)[number];
+
+const reportTakeoverParsers = {
+  opcln: parseAsString,
+  opcbr: parseAsString,
+  [REPORT_TAKEOVER_OWNER_PARAM]: parseAsString,
+};
+
+function isReportTakeoverParamKey(
+  value: string | null,
+): value is ReportTakeoverParamKey {
+  return REPORT_TAKEOVER_PARAM_PRIORITY.some((key) => key === value);
+}
 
 interface IsolatedSiblingState {
   count: number;
@@ -66,6 +94,8 @@ export interface ReportTakeoverParam {
   /** The raw param value (consumer-defined grammar), null when closed. */
   value: string | null;
   open: boolean;
+  /** True only when this param owns the heavyweight report foreground. */
+  foreground: boolean;
   /** Open the takeover with a value (a run ref, a phase, …). */
   show: (value: string) => void;
   /** Clear the param — the routed page underneath resumes untouched. */
@@ -75,13 +105,46 @@ export interface ReportTakeoverParam {
 /** nuqs wiring for a report-takeover param. URL-owned on purpose: the takeover
  *  open/closed state is user-meaningful (deep-linkable, agent-visible via
  *  ui:get_state), unlike the in-review checkbox drafts which stay useState. */
-export function useReportTakeoverParam(paramKey: string): ReportTakeoverParam {
-  const [value, setValue] = useQueryState(paramKey, parseAsString);
+export function useReportTakeoverParam(
+  paramKey: ReportTakeoverParamKey,
+): ReportTakeoverParam {
+  const [params, setParams] = useQueryStates(reportTakeoverParsers);
+  const value = params[paramKey];
+  const markedOwner =
+    isReportTakeoverParamKey(params[REPORT_TAKEOVER_OWNER_PARAM]) &&
+    params[params[REPORT_TAKEOVER_OWNER_PARAM]] !== null
+      ? params[REPORT_TAKEOVER_OWNER_PARAM]
+      : null;
+  const legacyOwner = [...REPORT_TAKEOVER_PARAM_PRIORITY]
+    .reverse()
+    .find((key) => params[key] !== null);
+  const owner = markedOwner ?? legacyOwner ?? null;
+
+  const ownerAfterClose =
+    [...REPORT_TAKEOVER_PARAM_PRIORITY]
+      .reverse()
+      .find((key) => key !== paramKey && params[key] !== null) ?? null;
+  const ownerPatch =
+    owner === paramKey
+      ? { [REPORT_TAKEOVER_OWNER_PARAM]: ownerAfterClose }
+      : {};
+
   return {
     value,
     open: value !== null,
-    show: (v: string) => void setValue(v),
-    close: () => void setValue(null),
+    foreground: value !== null && owner === paramKey,
+    show: (nextValue: string) =>
+      void setParams(
+        paramKey === "opcln"
+          ? { opcln: nextValue, [REPORT_TAKEOVER_OWNER_PARAM]: paramKey }
+          : { opcbr: nextValue, [REPORT_TAKEOVER_OWNER_PARAM]: paramKey },
+      ),
+    close: () =>
+      void setParams(
+        paramKey === "opcln"
+          ? { opcln: null, ...ownerPatch }
+          : { opcbr: null, ...ownerPatch },
+      ),
   };
 }
 

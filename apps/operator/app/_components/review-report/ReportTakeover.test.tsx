@@ -7,39 +7,56 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 
-const { nuqs, setters } = vi.hoisted(() => ({
+const { nuqs, setQueryStates } = vi.hoisted(() => ({
   nuqs: {} as Record<string, unknown>,
-  setters: {} as Record<string, ReturnType<typeof vi.fn>>,
+  setQueryStates: vi.fn(async (patch: Record<string, unknown>) => {
+    Object.assign(nuqs, patch);
+  }),
 }));
-function mkSetter(key: string) {
-  if (!setters[key])
-    setters[key] = vi.fn(async (v: unknown) => {
-      nuqs[key] = v;
-    });
-  return setters[key];
-}
 
 import { nuqsParsers } from "@papercusp/test-config/nuqs-mock";
 vi.mock("nuqs", () => ({
   ...nuqsParsers,
-  useQueryState: (key: string, parser?: { _d?: unknown }) => [
-    nuqs[key] !== undefined ? nuqs[key] : (parser?._d ?? null),
-    mkSetter(key),
+  useQueryStates: (parsers: Record<string, { _d?: unknown }>) => [
+    Object.fromEntries(
+      Object.entries(parsers).map(([key, parser]) => [
+        key,
+        nuqs[key] !== undefined ? nuqs[key] : (parser?._d ?? null),
+      ]),
+    ),
+    setQueryStates,
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
 
-import { ReportTakeoverLayer, useReportTakeoverParam } from "./ReportTakeover";
+import {
+  REPORT_TAKEOVER_OWNER_PARAM,
+  ReportTakeoverLayer,
+  useReportTakeoverParam,
+  type ReportTakeoverParamKey,
+} from "./ReportTakeover";
 
 afterEach(() => {
   cleanup();
   for (const k of Object.keys(nuqs)) delete nuqs[k];
+  setQueryStates.mockClear();
 });
 
-function Probe({ paramKey }: { paramKey: string }) {
+function Probe({
+  paramKey,
+  testId = "probe",
+}: {
+  paramKey: ReportTakeoverParamKey;
+  testId?: string;
+}) {
   const p = useReportTakeoverParam(paramKey);
   return (
-    <div data-testid="probe" data-open={p.open} data-value={p.value ?? ""}>
+    <div
+      data-testid={testId}
+      data-open={p.open}
+      data-foreground={p.foreground}
+      data-value={p.value ?? ""}
+    >
       <button
         type="button"
         data-testid="probe-show"
@@ -60,23 +77,70 @@ describe("useReportTakeoverParam", () => {
     expect(screen.getByTestId("probe").dataset.open).toBe("false");
 
     fireEvent.click(screen.getByTestId("probe-show"));
-    expect(setters["opcln"]).toHaveBeenCalledWith("run-7");
+    expect(setQueryStates).toHaveBeenCalledWith({
+      opcln: "run-7",
+      [REPORT_TAKEOVER_OWNER_PARAM]: "opcln",
+    });
 
     nuqs["opcln"] = "run-7";
     cleanup();
     render(<Probe paramKey="opcln" />);
     const probe = screen.getByTestId("probe");
     expect(probe.dataset.open).toBe("true");
+    expect(probe.dataset.foreground).toBe("true");
     expect(probe.dataset.value).toBe("run-7");
 
     fireEvent.click(screen.getByTestId("probe-close"));
-    expect(setters["opcln"]).toHaveBeenLastCalledWith(null);
+    expect(setQueryStates).toHaveBeenLastCalledWith({
+      opcln: null,
+      [REPORT_TAKEOVER_OWNER_PARAM]: null,
+    });
   });
 
   it("keys are independent — one renderer per param, as with pdash/pplan", () => {
     nuqs["opcln"] = "run-7";
-    render(<Probe paramKey="inbox-review" />);
+    render(<Probe paramKey="opcbr" />);
     expect(screen.getByTestId("probe").dataset.open).toBe("false");
+    expect(screen.getByTestId("probe").dataset.foreground).toBe("false");
+  });
+
+  it("uses deterministic legacy priority when both pre-marker params remain", () => {
+    nuqs.opcln = "run-7";
+    nuqs.opcbr = "run-8";
+    render(
+      <>
+        <Probe paramKey="opcln" testId="plans-probe" />
+        <Probe paramKey="opcbr" testId="inbox-probe" />
+      </>,
+    );
+
+    expect(screen.getByTestId("plans-probe").dataset.foreground).toBe("false");
+    expect(screen.getByTestId("inbox-probe").dataset.foreground).toBe("true");
+  });
+
+  it("honors a valid owner marker and falls back when the marker is stale", () => {
+    nuqs.opcln = "run-7";
+    nuqs.opcbr = "run-8";
+    nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "opcln";
+    const { rerender } = render(<Probe paramKey="opcln" />);
+    expect(screen.getByTestId("probe").dataset.foreground).toBe("true");
+
+    nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "missing-owner";
+    rerender(<Probe paramKey="opcln" />);
+    expect(screen.getByTestId("probe").dataset.foreground).toBe("false");
+  });
+
+  it("atomically hands foreground back to the remaining report on close", () => {
+    nuqs.opcln = "run-7";
+    nuqs.opcbr = "run-8";
+    nuqs[REPORT_TAKEOVER_OWNER_PARAM] = "opcln";
+    render(<Probe paramKey="opcln" />);
+
+    fireEvent.click(screen.getByTestId("probe-close"));
+    expect(setQueryStates).toHaveBeenLastCalledWith({
+      opcln: null,
+      [REPORT_TAKEOVER_OWNER_PARAM]: "opcbr",
+    });
   });
 });
 

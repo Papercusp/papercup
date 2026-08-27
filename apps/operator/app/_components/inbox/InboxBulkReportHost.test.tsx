@@ -6,8 +6,13 @@ import type { ReactNode } from "react";
 
 const H = vi.hoisted(() => ({
   enabled: { value: true },
-  param: { value: "run-8" as string | null, close: vi.fn() },
+  param: {
+    value: "run-8" as string | null,
+    foreground: true,
+    close: vi.fn(),
+  },
   attentionReads: { value: 0 },
+  queryOptions: { value: null as null | { enabled: boolean } },
   reportProps: { value: null as Record<string, unknown> | null },
   state: {
     value: {
@@ -22,6 +27,7 @@ vi.mock("../review-report/ReportTakeover", () => ({
   useReportTakeoverParam: () => ({
     value: H.param.value,
     open: H.param.value !== null,
+    foreground: H.param.foreground,
     show: vi.fn(),
     close: H.param.close,
   }),
@@ -35,7 +41,16 @@ vi.mock("../review-report/ReportTakeover", () => ({
 }));
 vi.mock("./use-inbox-bulk-run", async (importOriginal) => {
   const real = await importOriginal<typeof import("./use-inbox-bulk-run")>();
-  return { ...real, useInboxBulkRun: () => H.state.value };
+  return {
+    ...real,
+    useInboxBulkRun: (
+      _runRef: string | null,
+      options: { enabled: boolean },
+    ) => {
+      H.queryOptions.value = options;
+      return H.state.value;
+    },
+  };
 });
 vi.mock("./use-inbox-pending", () => ({
   useInboxAttention: () => {
@@ -61,8 +76,10 @@ afterEach(() => {
   cleanup();
   H.enabled.value = true;
   H.param.value = "run-8";
+  H.param.foreground = true;
   H.state.value = { run: null, items: [] };
   H.attentionReads.value = 0;
+  H.queryOptions.value = null;
   H.reportProps.value = null;
   H.param.close.mockClear();
 });
@@ -91,6 +108,16 @@ describe("InboxBulkReportHost", () => {
     expect(H.attentionReads.value).toBe(0);
     expect(H.reportProps.value?.runItems).toBe(items);
     expect("attentionItems" in (H.reportProps.value ?? {})).toBe(false);
+    expect(H.queryOptions.value).toEqual({ enabled: true });
+  });
+
+  it("does not hydrate or mount while another report owns foreground", () => {
+    H.param.foreground = false;
+    H.state.value = { run: { runId: "run-8", phase: "review" }, items: [] };
+    render(<InboxBulkReportHost />);
+
+    expect(H.queryOptions.value).toEqual({ enabled: false });
+    expect(screen.queryByTestId("inbox-bulk-report-takeover")).toBeNull();
   });
 
   it("stays absent when the kill switch is off even for a review run", () => {
