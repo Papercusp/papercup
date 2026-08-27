@@ -471,6 +471,15 @@ describe('applyFleetControl', () => {
           cooldown: 0,
           remoteOrigin: 0,
         },
+        queueControl: {
+          activeClaims: 0,
+          rawClaimHolds: 0,
+          holdOpenLeases: 0,
+          durableParks: 0,
+          unattributedClaimHolds: 0,
+          pendingAgentReview: 0,
+          revisionRequestedAgentReview: 0,
+        },
       },
       spec: { specId: 'bug-drain', revision: 4, source: 'cup' as const },
       summary:
