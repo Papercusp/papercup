@@ -40,6 +40,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
 const HARNESS = 'papercusp';
 const CHAT_ID = 'chat-e2e';
+const HUD_HARNESS = 'papercup';
 
 // ─── binary resolution ────────────────────────────────────────────────────────
 
@@ -181,6 +182,15 @@ function makeProjection(opts: {
 
 type RecordedQuery = { name: string; args: Record<string, unknown> };
 type RecordedTaskOp = { path: string; body: Record<string, unknown> };
+type RecordedRequest = { method: string; path: string; body?: Record<string, unknown> };
+
+function mcpEnvelope(value: unknown) {
+  return { content: [{ type: 'text', text: JSON.stringify(value) }] };
+}
+
+function runToolEnvelope(value: unknown) {
+  return { ok: true, result: mcpEnvelope(value) };
+}
 
 class FakeOperator {
   server: Server;
@@ -189,8 +199,11 @@ class FakeOperator {
   projections = new Map<string, unknown>();
   /** projection returned inside the NEXT task-op mutation response */
   mutationProjection: unknown = null;
+  jsonRoutes = new Map<string, unknown>();
+  runToolResponses = new Map<string, unknown>();
   queries: RecordedQuery[] = [];
   taskOps: RecordedTaskOp[] = [];
+  requests: RecordedRequest[] = [];
   private sockets = new Set<Socket>();
 
   constructor() {
@@ -209,6 +222,28 @@ class FakeOperator {
           build: { version: '0.0.0-e2e', sha: null },
           agentChat: { scope: 'workspace:ws-e2e', route: '/api/harness' },
         });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/agent-mcp/run-tool') {
+        let raw = '';
+        req.on('data', (chunk) => (raw += chunk));
+        req.on('end', () => {
+          let body: Record<string, unknown> = {};
+          try {
+            body = JSON.parse(raw || '{}');
+          } catch {
+            /* keep {} */
+          }
+          this.requests.push({ method: 'POST', path: url.pathname, body });
+          const name = String(body.name ?? '');
+          send(runToolEnvelope(this.runToolResponses.get(name) ?? { ok: true }));
+        });
+        return;
+      }
+      const routeKey = `${req.method ?? 'GET'} ${url.pathname}`;
+      if (this.jsonRoutes.has(routeKey)) {
+        this.requests.push({ method: req.method ?? 'GET', path: url.pathname });
+        send(this.jsonRoutes.get(routeKey));
         return;
       }
       if (url.pathname === '/api/zero-harness/rest-query') {
@@ -281,6 +316,16 @@ class FakeOperator {
   close(): Promise<void> {
     for (const socket of this.sockets) socket.destroy();
     return new Promise((resolve) => this.server.close(() => resolve()));
+  }
+
+  async waitForTool(name: string, timeoutMs = 15_000): Promise<RecordedRequest> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const request = this.requests.find((candidate) => candidate.body?.name === name);
+      if (request) return request;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`timed out waiting for run-tool request ${name}`);
   }
 }
 
@@ -526,6 +571,260 @@ function paneEnv(operatorPort: number, home: string): Record<string, string> {
     // Deliberately NOT inheriting PAPERCUSP_OPERATOR_URL / ZELLIJ etc. — a
     // conflicting operator selector makes the binary bail out at startup.
   };
+}
+
+function configureHudCockpitFixture(fake: FakeOperator): void {
+  const plan = 'hud-cockpit-e2e';
+  const leader = {
+    ownerId: 'su-hud-leader',
+    label: 'HUD Leader',
+    source: 'codex',
+    agent: 'codex',
+    role: 'su',
+    intent: 'Drive the HUD acceptance lane',
+    liveness: 'live',
+    sessionState: 'live',
+    heartbeatFresh: true,
+    heartbeatAt: '2026-08-27T03:40:00Z',
+    fleetSlug: 'hud-fleet',
+    fleetRole: 'leader',
+    currentPlanSlug: plan,
+    agentPaneKind: 'sentinel',
+  };
+  const endedWithFreshHeartbeat = {
+    ownerId: 'su-ended-fresh',
+    label: 'Ended Fresh',
+    source: 'codex',
+    agent: 'codex',
+    role: 'worker',
+    intent: 'Finished the prior lane',
+    liveness: 'live',
+    sessionState: 'ended',
+    heartbeatFresh: true,
+    heartbeatAt: '2026-08-27T03:59:59Z',
+    fleetSlug: 'hud-fleet',
+    fleetRole: 'member',
+    currentPlanSlug: plan,
+    advSessionId: 4242,
+    hasLaunchRecord: true,
+    cwd: REPO_ROOT,
+    mode: 'console',
+    transcriptRef: 'codex:hud-ended:4242',
+    transcriptExcerpt: 'Durable ended-session transcript',
+    transcriptAt: '2026-08-27T03:59:58Z',
+  };
+
+  fake.jsonRoutes.set('GET /api/adv/roster', {
+    active: [leader, endedWithFreshHeartbeat],
+    pending: [],
+    ended: [endedWithFreshHeartbeat],
+  });
+  fake.jsonRoutes.set('GET /api/operator/conversations', {
+    conversation: { id: 'conv-hud-e2e' },
+    turns: [
+      { seq: 1, role: 'user', text: 'Ship the cockpit acceptance gate.' },
+      {
+        seq: 2,
+        role: 'assistant',
+        text: 'The work item is complete.',
+        tools: [{ name: 'mcp__papercusp-su__work_items_complete' }],
+      },
+    ],
+    hasMoreEarlier: false,
+  });
+  fake.jsonRoutes.set(`GET /api/harness/${HUD_HARNESS}/agent-chats`, {
+    chats: [
+      {
+        id: 'chat-hud-e2e',
+        role: 'operator',
+        title: 'HUD acceptance chat',
+        turn_count: 2,
+        created_at: '2026-08-27T03:20:00Z',
+        updated_at: '2026-08-27T03:59:00Z',
+      },
+    ],
+  });
+  fake.jsonRoutes.set(`GET /api/harness/${HUD_HARNESS}/agent-chats/chat-hud-e2e`, {
+    id: 'chat-hud-e2e',
+    role: 'operator',
+    title: 'HUD acceptance chat',
+    transcript: [
+      { role: 'user', content: 'Ship the cockpit acceptance gate.', ts: '2026-08-27T03:58:00Z' },
+      {
+        role: 'assistant',
+        content: 'The work item is complete.',
+        ts: '2026-08-27T03:59:00Z',
+        tools: [{ name: 'mcp__papercusp-su__work_items_complete' }],
+      },
+    ],
+  });
+  fake.jsonRoutes.set(`GET /api/harness/${HUD_HARNESS}/agent-chats/chat-hud-e2e/approvals`, {
+    approvals: [],
+  });
+  fake.jsonRoutes.set('GET /api/admin/plans/list', {
+    plans: [
+      {
+        slug: plan,
+        title: 'HUD cockpit installed-binary gate',
+        status: 'active',
+        updated: '2026-08-27T03:30:00Z',
+        harness: HUD_HARNESS,
+        owner: 'avi@storewolf.com',
+        next: 'Run the acceptance gate',
+        itemCounts: { todo: 2, wip: 1, done: 1 },
+      },
+    ],
+  });
+  fake.jsonRoutes.set('GET /api/tui/goals', { goals: [], totalGoals: 0, truncatedByLimit: false });
+  fake.jsonRoutes.set('GET /api/tui/plan-item-states', {
+    harness: HUD_HARNESS,
+    plan,
+    harnessLivenessMode: 'activity',
+    items: [
+      {
+        itemId: 'P-HUD-ROOT',
+        itemStatus: 'wip',
+        blockedBy: [],
+        inPlan: true,
+        disposition: 'active',
+        claimOwner: 'HUD Leader',
+        claimOwnerId: 'su-hud-leader',
+        claimOwnerName: 'hud-leader',
+        claimIntent: 'Drive the HUD acceptance lane',
+        claimLivenessMode: 'activity',
+      },
+      {
+        itemId: 'P-HUD-NEXT',
+        itemStatus: 'todo',
+        blockedBy: ['P-HUD-ROOT'],
+        inPlan: true,
+        disposition: 'pooled',
+      },
+    ],
+  });
+  fake.jsonRoutes.set(
+    'POST /api/agent-tools/fleet/assignments',
+    mcpEnvelope({
+      agents: [
+        {
+          agentId: 'su-hud-leader',
+          label: 'HUD Leader',
+          alive: true,
+          sessionState: 'live',
+          contextPressure: 'critical',
+          lastToolCallAt: '2026-08-27T03:59:00Z',
+          verdict: 'speaking',
+          intent: 'Drive the HUD acceptance lane',
+          load: 1,
+          queued: [{ id: 'WI-HUD-FLIGHT', title: 'Implement HUD gate', status: 'wip' }],
+          claims: [{ planSlug: plan }],
+        },
+        {
+          agentId: 'su-ended-fresh',
+          label: 'Ended Fresh Heartbeat',
+          alive: false,
+          sessionState: 'ended',
+          contextPressure: 'ok',
+          lastToolCallAt: null,
+          verdict: 'dead',
+          intent: 'Finished the prior lane',
+          load: 0,
+          queued: [],
+          claims: [],
+        },
+      ],
+    }),
+  );
+  fake.jsonRoutes.set(
+    'POST /api/agent-tools/activity/recent',
+    mcpEnvelope({
+      activity: [
+        {
+          id: 'activity-hud-complete',
+          owner_id: 'su-hud-leader',
+          kind: 'tool',
+          tool_name: 'fleet:event',
+          summary: 'HUD work item completed',
+          detail: {
+            transition: 'item-completed',
+            fleetSlug: 'hud-fleet',
+            payload: { id: 'WI-HUD-DONE', state: 'done', agentId: 'su-hud-leader' },
+          },
+          created_at: '2026-08-27T03:58:00Z',
+        },
+      ],
+    }),
+  );
+
+  fake.runToolResponses.set('work_items:burn_down', {
+    harness: HUD_HARNESS,
+    generatedAt: '2026-08-27T04:00:00Z',
+    terminal: { total: 7 },
+    inFlight: [
+      { id: 'WI-HUD-FLIGHT', kind: 'change', title: 'Implement HUD gate', state: 'wip', assignee: 'su-hud-leader' },
+    ],
+    parked: [
+      {
+        id: 'WI-HUD-NEEDS-YOU',
+        kind: 'change',
+        title: 'Approve the visible acceptance result',
+        state: 'needs_human',
+        reason: 'owner verdict',
+        mechanism: 'needs-human',
+      },
+    ],
+    unclaimed: [
+      { id: 'WI-HUD-READY', kind: 'change', title: 'Take the next cockpit lane', state: 'open' },
+    ],
+    counts: { total: 10, terminal: 7, inFlight: 1, parked: 1, unclaimed: 1 },
+  });
+  fake.runToolResponses.set('work_items:get', { ok: true, results: [] });
+  fake.runToolResponses.set('fleet:leader-brief', {
+    ok: true,
+    summary: {
+      fleet: 'hud-fleet',
+      members: 2,
+      speaking: 1,
+      stalled: 0,
+      dead: 1,
+      highContext: 0,
+      criticalContext: 1,
+      claimableNow: { value: 1 },
+    },
+    members: [
+      {
+        agentId: 'su-hud-leader',
+        label: 'HUD Leader',
+        sessionState: 'live',
+        contextPressure: 'critical',
+        lastToolCallAgeMs: 5000,
+        workItemIds: ['WI-HUD-FLIGHT'],
+        queuedCount: 1,
+        load: 1,
+      },
+    ],
+    announcedGates: [{ event: 'fleet:hud-fleet:ship', fired: false, awaiters: 1 }],
+    customInvariants: [],
+    admissionBlocked: [],
+    specRevision: 3,
+    specMatched: 1,
+    harnessWidePool: 2,
+  });
+  fake.runToolResponses.set('sessions:search', { ok: true, results: [] });
+  fake.runToolResponses.set('sessions:read', {
+    ok: true,
+    turns: [{ speaker: 'assistant', ts: '2026-08-27T03:59:58Z', text: 'Durable ended-session transcript' }],
+  });
+  fake.runToolResponses.set('scheduler:preview_spec_delta', {
+    counts: { proposedClaimable: 1, retained: 0, newlyAdmitted: 1, newlyExcluded: 0 },
+    newlyAdmitted: [{ id: 'WI-HUD-READY' }],
+    newlyExcluded: [],
+  });
+  fake.runToolResponses.set('fleet:launch-on-plan', {
+    ok: true,
+    fleet: 'pui-hud-cockpit-e2e',
+    launched: 1,
+  });
 }
 
 // ─── the suite ────────────────────────────────────────────────────────────────
@@ -791,5 +1090,108 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       }
     },
     120_000,
+  );
+
+  test(
+    'HUD cockpit: semantic cards, actionable frontier, lifecycle oracle, launcher door, ended sessions, leader tape and critical path',
+    async () => {
+      operator.queries = [];
+      operator.taskOps = [];
+      operator.requests = [];
+      operator.jsonRoutes.clear();
+      operator.runToolResponses.clear();
+      configureHudCockpitFixture(operator);
+
+      const pane = new PuiPane(bin, ['hud'], paneEnv(operator.port, tempHome));
+      try {
+        // Persisted cross-model tool aliases must reach the semantic registry in
+        // the real HUD transcript, not fall back to the raw MCP identifier.
+        pane.write('1');
+        await pane.waitFor('Completing work item', { timeoutMs: 40_000 });
+        expect(pane.contains('mcp__papercusp-su__work_items_complete')).toBe(false);
+
+        // Plans owns both dependency truth and the one fleet-launch seam.
+        pane.write('3');
+        await pane.waitFor('HUD cockpit installed-binary gate');
+        pane.write('K');
+        await pane.waitFor('Critical path');
+        await pane.waitFor('P-HUD-ROOT [wip]');
+        await pane.waitFor('P-HUD-NEXT [todo]');
+        await pane.waitFor('critical');
+        pane.write('K');
+
+        pane.write('L');
+        await pane.waitFor('Fleet launcher');
+        await pane.waitFor('preview proposed 1');
+        await pane.waitFor('y CONFIRM LAUNCH');
+        pane.write('y');
+        const launch = await operator.waitForTool('fleet:launch-on-plan');
+        expect(launch.body).toMatchObject({
+          name: 'fleet:launch-on-plan',
+          confirmed: false,
+          args: {
+            name: 'pui-hud-cockpit-e2e',
+            plan: 'hud-cockpit-e2e',
+            harness: HUD_HARNESS,
+            count: 1,
+            agent: 'codex',
+            account: 'default',
+            carry: 'warm',
+            headless: false,
+          },
+        });
+        pane.write('L');
+
+        // The fleet surface is driven by burn_down (not a hand-built queue),
+        // and sessionState=ended wins even when heartbeatFresh=true.
+        pane.write('4');
+        await pane.waitFor('Agents (2)');
+        await pane.waitFor('leader members');
+        await pane.waitFor('hud-fleet');
+        await pane.waitFor('Finished the prior lane');
+        expect(pane.contains('ended')).toBe(true);
+
+        // The leader cockpit intentionally owns the right column while its
+        // brief is available. A failed refresh must fall back to the canonical
+        // whole-fleet frontier instead of leaving that work surface unreachable.
+        operator.runToolResponses.set('fleet:leader-brief', 'invalid');
+        pane.write('3');
+        await pane.waitFor('HUD cockpit installed-binary gate');
+        pane.write('4');
+        await pane.waitFor('Agents (2)');
+        pane.write('l');
+        await pane.waitFor('WORK FRONTIER');
+        await pane.waitFor('READY NOW');
+        await pane.waitFor('WI-HUD-READY');
+
+        // Curated → Mirror → Tape. The lossless ledger must retain the semantic
+        // item-completed transition rather than collapsing it into roster state.
+        pane.write('\t\t');
+        await pane.waitFor('Transition tape');
+        await pane.waitFor('item-completed');
+        await pane.waitFor('WI-HUD-DONE');
+
+        // Both the durable Sessions destination and Ctrl-S switcher keep ended
+        // sessions browseable/resumable. The fixture's fresh heartbeat is a
+        // positive control that the lifecycle verdict, not heartbeat age, wins.
+        pane.write('s');
+        await pane.waitFor('Ended Fresh');
+        await pane.waitFor('ended');
+        pane.write('\x13');
+        await pane.waitFor('fuzzy live + parked + ended + recorded');
+        await pane.waitFor('Ended Fresh');
+
+        expect(operator.requests.some((request) => request.path === '/api/adv/roster')).toBe(true);
+        expect(
+          operator.requests.some(
+            (request) => request.body?.name === 'work_items:burn_down' &&
+              (request.body.args as Record<string, unknown> | undefined)?.harness === HUD_HARNESS,
+          ),
+        ).toBe(true);
+      } finally {
+        pane.kill();
+      }
+    },
+    300_000,
   );
 });
