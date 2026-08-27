@@ -188,6 +188,13 @@ trap 'rm -f "$TMPFILE" "$METAFILE"; [[ -n "$NEW_BLUEPRINTS_DIR" ]] && rm -rf "$N
 # esbuild writes $TMPFILE and we rename it into place, so a FAILED build leaves
 # the last-known-good $OUTFILE byte-intact on disk. We just boot it.
 #
+# SCOPE (EI-19457229906581679): "must not take the service down" binds the
+# SUPERVISOR caller, which is the only caller that starts a service. A release
+# caller (deploy-cli, check-host-bundle-builds.mjs) still FAILS on a bad build —
+# see the two-callers block at the fallback exit below for how each declares
+# which of the two questions it is asking. This paragraph described the only
+# caller that existed when it was written; it is no longer the only one.
+#
 # Deliberately LOUD, never silent. Serving a stale bundle is its own hazard —
 # an agent can verify against code that is not what is on disk — so we write
 # $STALE_MARKER and /api/health surfaces it (see
@@ -251,18 +258,60 @@ if [[ $bundle_rc -ne 0 ]]; then
     echo "🚨   bundled CLI-entry guard check, ascii-escape, or the atomic swap); full log: $BUILD_LOG"
     echo "🚨 FALLING BACK to the last-known-good bundle already on disk:"
     echo "🚨   $OUTFILE (built $(date -r "$OUTFILE" -Iseconds 2>/dev/null || echo unknown))"
-    echo "🚨 The service STARTS, but on STALE CODE. /api/health reports bundleStale."
+    # UNCONDITIONAL, and deliberately stated before the caller branch below.
+    # Staleness is a fact about what is on disk, not about what this particular
+    # caller does with the exit code: dist-host/ now holds the last-known-good
+    # bundle rather than the current tree either way, and anything already
+    # serving it keeps serving stale code. Gating this warning on the branch
+    # (as the first cut of EI-19457229906581679 did) silently dropped it from
+    # the release path — an agent verifies a fix against pre-fix code and
+    # believes it. A SILENTLY stale service is worse than a down one.
+    echo "🚨 dist-host/ is STALE CODE: the bundle on disk is last-known-good, NOT the"
+    echo "🚨   current tree. /api/health reports bundleStale."
     echo "🚨 Marker: $STALE_MARKER — fix the source error and restart to clear it."
     # NOTHING else on disk is touched. The blueprints/, sql/ and worker-script
     # publishes below are SKIPPED so dist-host/ stays exactly as the last
     # SUCCESSFUL build left it — a coherent bundle+assets set, rather than a
     # stale bundle sitting beside assets freshly published from a newer tree.
     #
-    # WI-41242: the fallback is a SERVICE-AVAILABILITY mitigation, not a
-    # successful build. Returning 0 let deploy-cli report a green deploy while
-    # the operator continued serving the previous bundle. Keep the coherent
-    # last-known-good bytes + marker, but fail the caller loudly so deploy and
-    # systemd cannot mistake stale code for the requested release.
+    # ── TWO CALLERS, OPPOSITE CORRECT ANSWERS ────────────────────────────────
+    # EI-19457229906581679. This one script is invoked by callers that want
+    # contradictory things on a failed build, and until this block existed it
+    # could only satisfy one of them:
+    #
+    #   RELEASE callers (deploy-cli, scripts/check-host-bundle-builds.mjs) ask
+    #   "did the requested code build?" — the honest answer is NO, and WI-41242
+    #   is right that returning 0 let deploy-cli report a green deploy while the
+    #   operator kept serving the previous bundle. They must FAIL. Default.
+    #
+    #   SUPERVISOR callers (systemd ExecStartPre) ask "may the unit start?" —
+    #   a non-zero exit there does NOT mean "don't report a release", it means
+    #   the unit never starts AT ALL. With Restart=always + RestartSec=5 the
+    #   same broken tree is then re-bundled every 5s until a human fixes it.
+    #
+    # WI-41242 hardened the release answer and, without noticing, reverted the
+    # supervisor guarantee this file's own header states at the top of this
+    # block ("A BUNDLE FAILURE MUST NOT TAKE THE SERVICE DOWN",
+    # EI-20093985382484201). The tell it was unnoticed rather than intended:
+    # the banner above kept promising "The service STARTS", which had become
+    # false for the only caller that starts anything. Measured 2026-08-27: a
+    # syntax error in the shared tree failed the bundle at 10:47:11Z with a
+    # good $OUTFILE on disk and the marker written, and :3170 still died into
+    # its start-limit — down fleet-wide, exactly the outage the header forbids.
+    #
+    # So the caller declares which question it is asking. Opt-IN, defaulting to
+    # the strict release answer, so no existing caller changes behavior and a
+    # caller that forgets fails CLOSED (a down unit is loud) rather than open
+    # (a green deploy on stale code is invisible — the WI-41242 regression).
+    if [[ "${PAPERCUSP_BUNDLE_ALLOW_STALE_START:-0}" == "1" ]]; then
+      echo "🚨 The service STARTS on that stale bundle, by request"
+      echo "🚨   (PAPERCUSP_BUNDLE_ALLOW_STALE_START=1 — availability over freshness)."
+      exit 0
+    fi
+    echo "🚨 The CALLER FAILS (exit 1): stale bytes must not be reported as a release."
+    echo "🚨   A systemd ExecStartPre reaching this line will NOT start the unit. If this"
+    echo "🚨   is a supervisor that should boot on last-known-good, set"
+    echo "🚨   PAPERCUSP_BUNDLE_ALLOW_STALE_START=1 in its drop-in."
     exit 1
   fi
   echo "ERROR: bundling $ENTRY failed and there is NO previous bundle at $OUTFILE"

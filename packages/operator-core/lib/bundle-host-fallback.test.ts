@@ -6,8 +6,14 @@
  * against the LIVE shared working tree. Many agents edit that tree
  * continuously, so it is INVALID for the seconds between two keystrokes of any
  * multi-part edit. The fallback keeps the prior bytes intact, while WI-41242
- * makes the caller fail loudly so deploy/systemd cannot report stale code as a
- * successful release.
+ * makes the caller fail loudly so a release is not reported on stale code.
+ *
+ * EI-19457229906581679: "deploy/systemd" in the line above used to be one
+ * clause, and that conflation was the defect. A non-zero exit stops deploy-cli
+ * from REPORTING a release (correct) but stops systemd from STARTING THE UNIT
+ * (an outage) — opposite meanings for the same exit code. The caller now
+ * declares which question it is asking via PAPERCUSP_BUNDLE_ALLOW_STALE_START;
+ * the default is unchanged, so release callers are unaffected.
  *
  * Measured 2026-08-10: ONE unescaped apostrophe inside a tool `description:`
  * string took :3170 down fleet-wide for ~52s over 4 restarts — the SECOND such
@@ -29,7 +35,13 @@ import { join, resolve } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
-const SCRIPT = join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
+// PROBE_SCRIPT makes the subject path overridable, which is what makes a TIER-2
+// mutation probe (mutate a COPY outside the tree) possible at all. Without it the
+// only way to prove these assertions falsifiable is to mutate the shared checkout
+// — where the git-sync sweep can commit the mutant mid-probe even when nothing
+// goes wrong and no handler fails. Defaults to the real script, so every normal
+// run is unaffected.
+const SCRIPT = process.env.PROBE_SCRIPT || join(REPO_ROOT, 'apps/operator/bin/bundle-host.sh');
 
 /** The last-known-good bundle's exact bytes — the thing that must survive. */
 const GOOD_BUNDLE = 'console.log("last known good");\n';
@@ -39,12 +51,13 @@ let outfile: string;
 let marker: string;
 
 /** Run bundle-host.sh, returning its exit code and combined output. */
-function runBundler(entry: string): { code: number; output: string } {
+function runBundler(entry: string, extraEnv?: Record<string, string>): { code: number; output: string } {
   try {
     const output = execFileSync('bash', [SCRIPT, entry, outfile], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 240_000,
+      env: { ...process.env, ...extraEnv },
     });
     return { code: 0, output };
   } catch (err) {
@@ -124,6 +137,55 @@ describe('bundle-host.sh last-known-good fallback', () => {
       // Nothing to serve: exec'ing a missing entrypoint would crash-loop anyway,
       // and a fallback is only correct when something exists to fall back to.
       const { code, output } = runBundler(writeBrokenEntry());
+
+      expect(code).not.toBe(0);
+      expect(output).toMatch(/NO previous bundle/);
+      expect(existsSync(outfile)).toBe(false);
+    },
+    260_000,
+  );
+
+  // ── EI-19457229906581679: the SUPERVISOR caller ──────────────────────────
+  // A systemd ExecStartPre asks "may the unit start?", not "did the requested
+  // code build?". The two tests above pin the RELEASE answer (the default, and
+  // unchanged). These pin the supervisor answer, which the same exit code had
+  // been silently denying: measured 2026-08-27, a bundle failed at 10:47:11Z
+  // with a good bundle on disk and :3170 still died into its start-limit.
+  it(
+    'lets a SUPERVISOR boot on the last-known-good bundle when it opts in',
+    () => {
+      execFileSync('mkdir', ['-p', join(dir, 'dist-host')], { timeout: 10_000, killSignal: 'SIGKILL' });
+      writeFileSync(outfile, GOOD_BUNDLE);
+
+      const { code, output } = runBundler(writeBrokenEntry(), {
+        PAPERCUSP_BUNDLE_ALLOW_STALE_START: '1',
+      });
+
+      // THE POINT: the unit starts instead of crash-looping every RestartSec=5.
+      expect(code).toBe(0);
+
+      // Availability is bought WITHOUT giving up any of the loudness. Silence
+      // here would be the worse failure: an agent verifying a fix against
+      // pre-fix code and believing it.
+      expect(readFileSync(outfile, 'utf8')).toBe(GOOD_BUNDLE);
+      expect(output).toMatch(/FALLING BACK/);
+      expect(output).toMatch(/STALE CODE/);
+      expect(existsSync(marker)).toBe(true);
+    },
+    260_000,
+  );
+
+  it(
+    'REFUSES to start even for an opted-in supervisor when no bundle exists',
+    () => {
+      // The opt-in trades freshness for availability; it must never license
+      // exec'ing an entrypoint that is not there. This is exactly why the fix
+      // is an env var and not `ExecStartPre=-` in the drop-in: the `-` prefix
+      // ignores ALL failures, so this branch would proceed to a MODULE_NOT_FOUND
+      // crash-loop instead of refusing cleanly with a diagnosis.
+      const { code, output } = runBundler(writeBrokenEntry(), {
+        PAPERCUSP_BUNDLE_ALLOW_STALE_START: '1',
+      });
 
       expect(code).not.toBe(0);
       expect(output).toMatch(/NO previous bundle/);
