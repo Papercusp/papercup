@@ -316,22 +316,30 @@ async function applyStoredEdgeDiff(
   const removed = [...beforeByKey.entries()].filter(([key]) => !afterByKey.has(key)).map(([, edge]) => edge);
   const inserted = [...afterByKey.entries()].filter(([key]) => !beforeByKey.has(key)).map(([, edge]) => edge);
 
+  let removedCount = 0;
   for (const edge of removed) {
-    await tx`
+    const rows = await tx<Array<{ id: string | number }>>`
       DELETE FROM harness_shared.work_item_deps
        WHERE workspace_id = ${workspaceId} AND dep_type = 'blocks'
          AND blocked_kind = ${edge.blocked.kind} AND blocked_ref = ${edge.blocked.ref}
-         AND blocker_kind = ${edge.blocker.kind} AND blocker_ref = ${edge.blocker.ref}`;
+         AND blocker_kind = ${edge.blocker.kind} AND blocker_ref = ${edge.blocker.ref}
+      RETURNING id`;
+    removedCount += rows.length;
   }
+  let insertedCount = 0;
   for (const edge of inserted) {
-    await tx`
+    const rows = await tx<Array<{ id: string | number }>>`
       INSERT INTO harness_shared.work_item_deps
         (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
       VALUES
         (${workspaceId}, ${edge.blocked.kind}, ${edge.blocked.ref},
-         ${edge.blocker.kind}, ${edge.blocker.ref}, 'blocks', ${edge.createdBy})`;
+         ${edge.blocker.kind}, ${edge.blocker.ref}, 'blocks', ${edge.createdBy})
+      ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      DO NOTHING
+      RETURNING id`;
+    insertedCount += rows.length;
   }
-  return { inserted: inserted.length, removed: removed.length };
+  return { inserted: insertedCount, removed: removedCount };
 }
 
 /**
