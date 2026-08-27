@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { lstat, mkdir, readdir, realpath, rename, unlink } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type postgres from 'postgres';
+import type { TransactionSql } from 'postgres';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 import {
   streamPersonalArchiveFile,
@@ -373,7 +374,7 @@ function storageUsageScope(
 
 /** Owner-facing forecast and the admission authority share this exact accounting query. */
 export async function personalVaultImportStorageUsage(
-  sql: postgres.Sql,
+  sql: postgres.Sql | TransactionSql,
   workspaceId: string,
   userId: string,
 ): Promise<PersonalVaultImportStorageUsage> {
