@@ -1049,6 +1049,60 @@ export function buildBurnDownResult(
   };
 }
 
+const auditAgeSchema = z.object({
+  status: z.enum(['known', 'missing', 'invalid']),
+  ageMs: z.number().nullable(),
+  bucket: z.enum(['under-1d', '1-7d', '7-30d', '30d-plus', 'unknown']),
+});
+
+const releaseLivenessSchema = z.object({
+  status: z.enum(['tracked', 'unverified', 'unreachable', 'satisfied-still-parked']),
+  contractPresent: z.boolean(),
+  condition: z.string().nullable(),
+  owner: z.string().nullable(),
+  trigger: z.string().nullable(),
+  reachability: z.enum(['reachable', 'blocked', 'unreachable', 'satisfied']).nullable(),
+  evidence: z.string().nullable(),
+  findings: z.array(z.enum([
+    'condition-missing',
+    'condition-ambiguous',
+    'owner-missing',
+    'trigger-missing',
+    'reachability-unverified',
+    'evidence-missing',
+    'condition-unreachable',
+    'condition-satisfied-still-parked',
+  ])),
+});
+
+const queueControlSchema = z.object({
+  activeClaim: z.object({ owner: z.string(), claimedAt: z.string().nullable() }).nullable(),
+  holdOpenLease: z.object({
+    holder: z.string(),
+    reason: z.string().nullable(),
+    heldAt: z.string().nullable(),
+    age: auditAgeSchema,
+  }).nullable(),
+  durablePark: z.object({
+    parker: z.string().nullable(),
+    reason: z.string().nullable(),
+    parkedAt: z.string().nullable(),
+    age: auditAgeSchema,
+    unparkCondition: z.object({
+      status: z.enum(['stated', 'missing', 'unresolved']),
+      text: z.string().nullable(),
+    }),
+    releaseLiveness: releaseLivenessSchema,
+  }).nullable(),
+  agentReview: z.object({
+    status: z.enum(['pending', 'revision-requested', 'approved']),
+    submittedBy: z.string(),
+    ledgerIdeaId: z.string(),
+    round: z.number().int().positive(),
+  }).nullable(),
+  unattributedClaimHold: z.boolean(),
+});
+
 const rowSchema = z.object({
   id: z.string(),
   kind: z.string(),
@@ -1063,6 +1117,7 @@ const rowSchema = z.object({
   updatedAt: z.string(),
   severity: z.string().nullable(),
   priority: z.number().nullable(),
+  queueControl: queueControlSchema.optional(),
 });
 
 const drainFlowCountSchema = z.object({

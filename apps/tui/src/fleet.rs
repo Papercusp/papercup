@@ -1028,24 +1028,29 @@ fn frontier_detail_lines(row: FrontierRow<'_>) -> Vec<Line<'static>> {
     if let Some(control) = item.queue_control.as_ref() {
         if let Some(lease) = control.hold_open_lease.as_ref() {
             lines.push(Line::from(format!(
-                "lease    {} · since {} · {}",
+                "lease    {} · since {} · age {} · {}",
                 lease.holder,
                 lease.held_at.as_deref().unwrap_or("unknown"),
+                frontier_control_age(&lease.age),
                 lease.reason.as_deref().unwrap_or("no reason")
             )));
         }
         if let Some(park) = control.durable_park.as_ref() {
             lines.push(Line::from(format!(
-                "park     {} · at {} · {}",
+                "park     {} · at {} · age {} · {}",
                 park.parker.as_deref().unwrap_or("unattributed"),
                 park.parked_at.as_deref().unwrap_or("unknown"),
+                frontier_control_age(&park.age),
                 park.reason.as_deref().unwrap_or("no reason")
             )));
             lines.push(Line::from(format!(
                 "UNPARK   {} · {} · {}",
                 park.unpark_condition.status,
                 park.release_liveness.status,
-                park.unpark_condition.text.as_deref().unwrap_or("condition not stated")
+                park.unpark_condition
+                    .text
+                    .as_deref()
+                    .unwrap_or("condition not stated")
             )));
         }
         if let Some(review) = control.agent_review.as_ref() {
@@ -1058,13 +1063,27 @@ fn frontier_detail_lines(row: FrontierRow<'_>) -> Vec<Line<'static>> {
     lines
 }
 
+fn frontier_control_age(age: &crate::models::QueueControlAge) -> &str {
+    if age.bucket.is_empty() {
+        if age.status.is_empty() {
+            "unknown"
+        } else {
+            age.status.as_str()
+        }
+    } else {
+        age.bucket.as_str()
+    }
+}
+
 fn frontier_control_bucket(row: &crate::models::WorkFrontierParkedRow) -> &'static str {
     let control = row.item.queue_control.as_ref();
     if control.and_then(|c| c.durable_park.as_ref()).is_some() {
         "DURABLE PARK"
     } else if control.and_then(|c| c.hold_open_lease.as_ref()).is_some() {
         "HOLD-OPEN LEASE"
-    } else if control.and_then(|c| c.agent_review.as_ref()).is_some() || row.mechanism == "agent-review" {
+    } else if control.and_then(|c| c.agent_review.as_ref()).is_some()
+        || row.mechanism == "agent-review"
+    {
         "AGENT REVIEW"
     } else {
         "BLOCKED"
@@ -1129,7 +1148,11 @@ fn frontier_row_line(row: FrontierRow<'_>) -> Line<'static> {
         ),
         FrontierRow::Controlled(parked) => (
             &parked.item,
-            format!(" · {} · {}", frontier_control_bucket(parked), trunc(&parked.reason, 28)),
+            format!(
+                " · {} · {}",
+                frontier_control_bucket(parked),
+                trunc(&parked.reason, 28)
+            ),
             Theme::warn(),
         ),
         FrontierRow::InFlight(item, assignment) | FrontierRow::Stuck(item, assignment) => {
@@ -2462,15 +2485,35 @@ mod tests {
                     ..Default::default()
                 },
             ],
-            parked: vec![crate::models::WorkFrontierParkedRow {
-                item: crate::models::WorkFrontierRow {
-                    id: "WI-human".into(),
-                    title: "credential required".into(),
-                    ..Default::default()
+            parked: vec![
+                crate::models::WorkFrontierParkedRow {
+                    item: crate::models::WorkFrontierRow {
+                        id: "WI-human".into(),
+                        title: "credential required".into(),
+                        ..Default::default()
+                    },
+                    reason: "needs operator credential".into(),
+                    mechanism: "needs-human".into(),
                 },
-                reason: "needs operator credential".into(),
-                mechanism: "needs-human".into(),
-            }],
+                serde_json::from_value(json!({
+                    "id": "WI-park",
+                    "kind": "feature",
+                    "title": "wait for the migration",
+                    "state": "open",
+                    "reason": "durably parked by su-park: release once P-003 lands",
+                    "mechanism": "claimHold",
+                    "queueControl": {
+                        "durablePark": {
+                            "parker": "su-park",
+                            "reason": "release once P-003 lands",
+                            "parkedAt": "2026-08-25T12:00:00.000Z",
+                            "age": { "status": "known", "ageMs": 172800000, "bucket": "1-7d" },
+                            "unparkCondition": { "status": "stated", "text": "release once P-003 lands" },
+                            "releaseLiveness": { "status": "tracked", "owner": "su-owner", "trigger": "plan-item:done:P-003" }
+                        }
+                    }
+                })).unwrap(),
+            ],
             ..Default::default()
         });
         app.fleet.all_assignments = vec![
@@ -2500,12 +2543,36 @@ mod tests {
             .into_iter()
             .map(frontier_bucket)
             .collect();
-        assert_eq!(buckets, ["READY NOW", "IN FLIGHT", "NEEDS YOU", "STUCK"]);
+        assert_eq!(
+            buckets,
+            [
+                "READY NOW",
+                "IN FLIGHT",
+                "NEEDS YOU",
+                "DURABLE PARK",
+                "STUCK"
+            ]
+        );
         let text = render_fleet(&app, 160, 32);
         assert!(text.contains("READY NOW"));
         assert!(text.contains("blocks 3"));
         assert!(text.contains("STUCK"));
+        assert!(text.contains("DURABLE PARK"));
         assert!(text.contains("/ archive 91"));
+
+        app.fleet.dossier_sel = 3;
+        let detail = dossier_detail_lines(&app)
+            .into_iter()
+            .map(|line| {
+                line.spans
+                    .into_iter()
+                    .map(|span| span.content.into_owned())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(detail.contains("park     su-park · at 2026-08-25T12:00:00.000Z · age 1-7d"));
+        assert!(detail.contains("UNPARK   stated · tracked · release once P-003 lands"));
 
         app.fleet.work_items = vec![WorkItem {
             id: "WI-done".into(),

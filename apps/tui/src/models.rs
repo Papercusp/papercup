@@ -2096,52 +2096,88 @@ pub struct WorkQueueControl {
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlClaim {
-    #[serde(default)] pub owner: String,
-    #[serde(default)] pub claimed_at: Option<String>,
+    #[serde(default)]
+    pub owner: String,
+    #[serde(default)]
+    pub claimed_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlLease {
-    #[serde(default)] pub holder: String,
-    #[serde(default)] pub reason: Option<String>,
-    #[serde(default)] pub held_at: Option<String>,
-    #[serde(default)] pub age: serde_json::Value,
+    #[serde(default)]
+    pub holder: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub held_at: Option<String>,
+    #[serde(default)]
+    pub age: QueueControlAge,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlAge {
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub age_ms: Option<u64>,
+    #[serde(default)]
+    pub bucket: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlCondition {
-    #[serde(default)] pub status: String,
-    #[serde(default)] pub text: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlReleaseLiveness {
-    #[serde(default)] pub status: String,
-    #[serde(default)] pub owner: Option<String>,
-    #[serde(default)] pub trigger: Option<String>,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub trigger: Option<String>,
+    #[serde(default)]
+    pub reachability: Option<String>,
+    #[serde(default)]
+    pub findings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlPark {
-    #[serde(default)] pub parker: Option<String>,
-    #[serde(default)] pub reason: Option<String>,
-    #[serde(default)] pub parked_at: Option<String>,
-    #[serde(default)] pub age: serde_json::Value,
-    #[serde(default)] pub unpark_condition: QueueControlCondition,
-    #[serde(default)] pub release_liveness: QueueControlReleaseLiveness,
+    #[serde(default)]
+    pub parker: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub parked_at: Option<String>,
+    #[serde(default)]
+    pub age: QueueControlAge,
+    #[serde(default)]
+    pub unpark_condition: QueueControlCondition,
+    #[serde(default)]
+    pub release_liveness: QueueControlReleaseLiveness,
 }
 
 #[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct QueueControlReview {
-    #[serde(default)] pub status: String,
-    #[serde(default)] pub submitted_by: String,
-    #[serde(default)] pub ledger_idea_id: String,
-    #[serde(default)] pub round: usize,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub submitted_by: String,
+    #[serde(default)]
+    pub ledger_idea_id: String,
+    #[serde(default)]
+    pub round: usize,
 }
 
 /// A parked frontier row. `mechanism == "needs-human"` is the NEEDS YOU
@@ -3110,7 +3146,10 @@ mod tests {
                 "counts":{"total":50,"terminal":41,"inFlight":2,"parked":3,"unclaimed":4},
                 "unclaimed":[{"id":"WI-ready","kind":"feature","title":"Ready","state":"open"}],
                 "inFlight":[{"id":"WI-live","kind":"feature","title":"Live","state":"open","assignee":"su-a"}],
-                "parked":[{"id":"WI-human","kind":"bug","title":"Human","state":"needs-human","reason":"credential","mechanism":"needs-human"}]
+                "parked":[
+                    {"id":"WI-human","kind":"bug","title":"Human","state":"needs-human","reason":"credential","mechanism":"needs-human"},
+                    {"id":"WI-park","kind":"feature","title":"Parked","state":"open","reason":"release once P-003 lands","mechanism":"claimHold","queueControl":{"durablePark":{"parker":"su-park","reason":"release once P-003 lands","parkedAt":null,"age":{"status":"missing","ageMs":null,"bucket":"unknown"},"unparkCondition":{"status":"stated","text":"release once P-003 lands"},"releaseLiveness":{"status":"unverified","owner":null,"trigger":null,"reachability":null,"findings":["owner-missing"]}}}}
+                ]
             }"#,
         )
         .unwrap();
@@ -3118,6 +3157,17 @@ mod tests {
         assert_eq!(frontier.terminal.total, 41);
         assert_eq!(frontier.unclaimed[0].id, "WI-ready");
         assert_eq!(frontier.parked[0].mechanism, "needs-human");
+        let park = frontier.parked[1]
+            .item
+            .queue_control
+            .as_ref()
+            .and_then(|control| control.durable_park.as_ref())
+            .unwrap();
+        assert_eq!(park.parker.as_deref(), Some("su-park"));
+        assert_eq!(park.age.status, "missing");
+        assert_eq!(park.age.bucket, "unknown");
+        assert_eq!(park.unpark_condition.status, "stated");
+        assert_eq!(park.release_liveness.findings, vec!["owner-missing"]);
 
         let assignment: BeeAssignment = serde_json::from_str(
             r#"{"agentId":"su-a","verdict":"suspect","stalled":true,"orphaned":false}"#,

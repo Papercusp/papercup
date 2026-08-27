@@ -382,6 +382,91 @@ describe('work_items:burn_down', () => {
     expect(byId.get('WI-unattributed')).toMatch(/UNATTRIBUTED/);
   });
 
+  it('P-018: projects overlapping queue controls, fail-loud ages/UNPARK state, review-only parks, and retains them through shaping', () => {
+    const result = buildBurnDownResult(
+      [
+        item({
+          id: 'WI-overlap',
+          assignee: 'su-active',
+          takenAt: '2026-08-26T11:00:00.000Z',
+          payload: {
+            _claimHold: true,
+            held_open_by: 'su-lease',
+            held_open_reason: 'verifying evidence',
+            held_open_at: '2026-08-26T12:00:00.000Z',
+            claim_hold_by: 'su-park',
+            claim_hold_reason: 'release once P-003 lands',
+            claim_hold_at: 'not-a-timestamp',
+            claim_hold_release: {
+              condition: 'P-003 lands',
+              owner: 'su-owner',
+              trigger: 'plan-item:done:P-003',
+              reachability: 'reachable',
+              evidence: 'work-queue-admission-and-bulk-dedup#P-003',
+            },
+            agentReview: { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-idea', round: 2 },
+          },
+        }),
+        item({
+          id: 'WI-review-only',
+          payload: {
+            agentReview: { status: 'revision-requested', submittedBy: 'su-author', ledgerIdeaId: 'WI-revise', round: 1 },
+          },
+        }),
+        item({ id: 'WI-unattributed', payload: { _claimHold: true } }),
+      ],
+      new Set(['su-active']),
+      { harness: 'papercusp', generatedAt: '2026-08-27T12:00:00.000Z' },
+    );
+
+    const overlap = result.parked.find((row) => row.id === 'WI-overlap');
+    expect(overlap).toMatchObject({ mechanism: 'claimHold' });
+    expect(overlap?.queueControl).toMatchObject({
+      activeClaim: { owner: 'su-active', claimedAt: '2026-08-26T11:00:00.000Z' },
+      holdOpenLease: {
+        holder: 'su-lease',
+        age: { status: 'known', bucket: '1-7d' },
+      },
+      durablePark: {
+        parker: 'su-park',
+        age: { status: 'invalid', ageMs: null, bucket: 'unknown' },
+        unparkCondition: { status: 'stated', text: 'release once P-003 lands' },
+        releaseLiveness: { status: 'tracked', findings: [] },
+      },
+      agentReview: { status: 'pending', submittedBy: 'su-filer', round: 2 },
+      unattributedClaimHold: false,
+    });
+
+    expect(result.parked.find((row) => row.id === 'WI-review-only')).toMatchObject({
+      mechanism: 'agent-review',
+      queueControl: { agentReview: { status: 'revision-requested', submittedBy: 'su-author' } },
+    });
+    expect(result.parked.find((row) => row.id === 'WI-unattributed')).toMatchObject({
+      queueControl: {
+        durablePark: {
+          parker: null,
+          age: { status: 'missing', ageMs: null, bucket: 'unknown' },
+          unparkCondition: { status: 'missing', text: null },
+          releaseLiveness: { status: 'unverified' },
+        },
+        unattributedClaimHold: true,
+      },
+    });
+
+    const shaped = shapeBurnDown(result, 'trimmed') as { parked: Array<Record<string, unknown>> };
+    expect(shaped.parked.find((row) => row.id === 'WI-overlap')).toMatchObject({
+      queueControl: {
+        durablePark: {
+          age: { status: 'invalid', bucket: 'unknown' },
+          unparkCondition: { status: 'stated' },
+          releaseLiveness: { status: 'tracked', findings: [] },
+        },
+      },
+    });
+    expect((tool as unknown as { result: { safeParse: (value: unknown) => { success: boolean } } })
+      .result.safeParse(result).success).toBe(true);
+  });
+
   it('parks needs-human and actively blocked rows instead of counting them unclaimed (WI-4759)', () => {
     const result = buildBurnDownResult(
       [

@@ -61,6 +61,15 @@ const BREAKDOWN = {
     cooldown: 0,
     remoteOrigin: 0,
   },
+  queueControl: {
+    activeClaims: 2,
+    rawClaimHolds: 1,
+    holdOpenLeases: 1,
+    durableParks: 1,
+    unattributedClaimHolds: 0,
+    pendingAgentReview: 1,
+    revisionRequestedAgentReview: 0,
+  },
 };
 const ROWS = [
   { id: 'WI-A', kind: 'bug', title: 'a', status: 'open', severity: 'minor', plan: null, featureOrder: null, createdTs: 1 },
@@ -75,6 +84,12 @@ const run = async (args: unknown) => {
   return JSON.parse(res.content[0]!.text);
 };
 
+const EMPTY_QUEUE_CONTROL_SAMPLE = {
+  activeClaims: [],
+  holdOpenLeases: [],
+  durableParks: [],
+  agentReview: [],
+};
 const EMPTY_SAMPLE = {
   taken: [],
   claimHold: [],
@@ -88,9 +103,10 @@ const EMPTY_SAMPLE = {
   crossMachineRig: [],
   blockedDep: [],
   cooldown: [],
+  queueControl: EMPTY_QUEUE_CONTROL_SAMPLE,
 };
 /** What the mocked snapshot read reports as its per-floor sample (a test may override). */
-let sampleValue: Record<string, string[]> = EMPTY_SAMPLE;
+let sampleValue: Record<string, unknown> = EMPTY_SAMPLE;
 
 /**
  * A HEALTHY admitted composition (WI-6673) — the default, so the composition warning is
@@ -167,6 +183,7 @@ describe('work_items:claimable handler', () => {
     expect(out.returned).toBe(3);
     expect(out.claimable.map((r: { id: string }) => r.id)).toEqual(['WI-A', 'WI-B', 'WI-C']);
     expect(out.excludedBreakdown.taken).toBe(2);
+    expect(out.queueControl).toEqual(BREAKDOWN.queueControl);
     expect(out.spec).toEqual({ specId: 'default-fixed-ordering', revision: 0, source: 'default' });
     // NEVER claims — no spec record was resolved and no claim mock exists.
     expect(recM).not.toHaveBeenCalled();
@@ -400,7 +417,23 @@ describe('work_items:claimable handler', () => {
   });
 
   it('sampleExcluded rides through as sampleLimit on the SAME snapshot read + surfaces excludedSample', async () => {
-    sampleValue = { ...EMPTY_SAMPLE, taken: ['WI-1', 'WI-2'], claimHold: ['WI-3'] };
+    sampleValue = {
+      ...EMPTY_SAMPLE,
+      taken: ['WI-1', 'WI-2'],
+      claimHold: ['WI-3'],
+      queueControl: {
+        ...EMPTY_QUEUE_CONTROL_SAMPLE,
+        durableParks: [{
+          id: 'WI-3',
+          parker: 'su-park',
+          reason: 'release once P-003 lands',
+          parkedAt: null,
+          age: { status: 'missing', ageMs: null, bucket: 'unknown' },
+          unparkCondition: { status: 'stated', text: 'release once P-003 lands' },
+          releaseLiveness: { status: 'unverified' },
+        }],
+      },
+    };
     const out = await run({ harness: 'papercup', kind: 'bug', sampleExcluded: 5 });
     expect(readM).toHaveBeenCalledWith(
       { field: 'kind', op: '=', value: 'bug' },
@@ -409,6 +442,12 @@ describe('work_items:claimable handler', () => {
     );
     expect(out.excludedSample.taken).toEqual(['WI-1', 'WI-2']);
     expect(out.excludedSample.claimHold).toEqual(['WI-3']);
+    expect(out.excludedSample.queueControl.durableParks[0]).toMatchObject({
+      id: 'WI-3',
+      parker: 'su-park',
+      age: { status: 'missing', bucket: 'unknown' },
+      unparkCondition: { status: 'stated' },
+    });
   });
 
   it('WI-5947: the counts, the rows and the sample come from ONE read — the handler never issues them separately', async () => {
