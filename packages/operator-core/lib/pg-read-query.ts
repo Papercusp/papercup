@@ -731,6 +731,12 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'the public work-item id maps to the canonical `feature_id` column; include `workspace_id` in the predicate',
   },
   {
+    relation: 'work_items',
+    missing: 'checkpoint',
+    message:
+      'checkpoint text is not stored on this work-item relation; it lives in `harness_shared.carry_notes.note` under the `workitem:<harness>:<work-item-id>` scope. Use `work_items:get { id, harness }`, which joins that store and returns the checkpoint, instead of querying a nonexistent work_items column',
+  },
+  {
     relation: 'routines',
     missing: 'harness_slug',
     actual: 'install_slug',

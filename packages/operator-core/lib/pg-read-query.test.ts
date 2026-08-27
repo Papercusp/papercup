@@ -1544,6 +1544,17 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.work_items');
   });
 
+  it('redirects the derived checkpoint field to the canonical carry-note reader', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT checkpoint FROM harness_shared.work_items WHERE workspace_id = 'ws' AND feature_id = 'WI-1'",
+      'column "checkpoint" does not exist',
+    );
+    expect(out).toContain('harness_shared.carry_notes.note');
+    expect(out).toContain('workitem:<harness>:<work-item-id>');
+    expect(out).toContain('work_items:get');
+    expect(out).toContain('checkpoint');
+  });
+
   it('names install_slug for the routines table when harness_slug is guessed', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",

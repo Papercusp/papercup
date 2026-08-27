@@ -24,6 +24,7 @@ import { PgPlanPartsStore, type PlanPartsStore } from '../../../plan-parts/store
 import { ensurePlanPartsBaseline } from '../../../plan-parts/federation';
 import { canonicalHarnessSlug } from '../../../harness/operator-home-harness';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 
 /** The federated subset of a harness_plan_parts row (the wire shape). */
 export interface PlanPartWireRow {
@@ -127,26 +128,44 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
     const { frontmatter: fm, isLegacy } = parsePlan(content);
     const forcedPast = summarizeForcedPast(content);
     const forcedPastJson = forcedPast === null ? null : JSON.stringify(forcedPast);
-    await sql`
-      UPDATE harness_shared.harness_plans
-         SET content       = ${content},
-             content_hash  = ${contentHash},
-             version       = version + 1,
-             title         = ${fm.title ?? null},
-             status        = ${fm.status ?? null},
-             created       = ${fm.created ?? null},
-             updated       = ${fm.updated ?? null},
-             owner         = ${fm.owner ?? null},
-             initiative    = ${fm.initiative ?? null},
-             supersedes    = ${fm.supersedes ?? []},
-             superseded_by = ${fm.supersededBy ?? null},
-             is_legacy     = ${isLegacy},
-             forced_past   = ${forcedPastJson}::text::jsonb,
-             origin        = 'remote',
-             fed_ts        = ${fedTs}
-       WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
-         AND content_hash IS DISTINCT FROM ${contentHash}
-    `;
+    const admission = await withPlanDependencyAdmissionTransaction(
+      {
+        sql,
+        workspaceId: opts.workspaceId,
+        harnessSlug: opts.harnessSlug,
+        planSlug,
+        candidateContent: content,
+        candidateStatus: fm.status ?? null,
+      },
+      async (tx) => {
+        await tx`
+          UPDATE harness_shared.harness_plans
+             SET content       = ${content},
+                 content_hash  = ${contentHash},
+                 version       = version + 1,
+                 title         = ${fm.title ?? null},
+                 status        = ${fm.status ?? null},
+                 created       = ${fm.created ?? null},
+                 updated       = ${fm.updated ?? null},
+                 owner         = ${fm.owner ?? null},
+                 initiative    = ${fm.initiative ?? null},
+                 supersedes    = ${fm.supersedes ?? []},
+                 superseded_by = ${fm.supersededBy ?? null},
+                 is_legacy     = ${isLegacy},
+                 forced_past   = ${forcedPastJson}::text::jsonb,
+                 origin        = 'remote',
+                 fed_ts        = ${fedTs}
+           WHERE workspace_id = ${opts.workspaceId} AND harness_slug = ${opts.harnessSlug} AND plan_slug = ${planSlug}
+             AND content_hash IS DISTINCT FROM ${contentHash}
+        `;
+      },
+    );
+    if (!admission.admitted) {
+      console.warn(
+        `[plan-dependency-admission] rejected federated part recompose for '${planSlug}': ` +
+          admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; '),
+      );
+    }
   };
 }
 
