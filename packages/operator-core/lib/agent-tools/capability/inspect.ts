@@ -602,7 +602,10 @@ export default defineTool({
     run_in_background: z
       .boolean()
       .optional()
-      .describe('Run detached; returns a bash_id immediately. Poll with capability:bash_output, stop with capability:bash_kill.'),
+      // WI-42443: `processes:kill { taskId }`, not capability:bash_kill — that verb is absent
+      // from trimmed surfaces (su) and refused for some principals, so naming it here routes
+      // the caller to something it cannot invoke (the EI-21543657511391052 defect, third site).
+      .describe('Run detached; returns a bash_id immediately. Poll with capability:bash_output, stop with processes:kill { taskId }.'),
     runInBackground: z
       .boolean()
       .optional()
@@ -697,7 +700,13 @@ export default defineTool({
               command,
               cwd,
               log_path: job.logPath,
-              advice: `${cwdCorrectionNote}Verification started. Read output: capability:bash_output { bash_id: "${job.id}" }. Stop: capability:bash_kill { bash_id: "${job.id}" }.`,
+              // WI-42443: the STOP route must name processes:kill { taskId } — capability:bash_kill
+              // is absent from trimmed surfaces (su) and refused for some principals. This is
+              // runtime advice handed over at the moment a background job is running, so a route
+              // the caller cannot invoke is worse here than in a static seeAlso. Note the
+              // identifier changes with the verb: processes:kill takes the durable taskId, not
+              // the bash_id. Matches capability:bash's own advice string (bash.ts:462).
+              advice: `${cwdCorrectionNote}Verification started. Read output: capability:bash_output { bash_id: "${job.id}" }. Stop: processes:kill { taskId: "${job.taskId}" }.`,
             }),
           },
         ],
