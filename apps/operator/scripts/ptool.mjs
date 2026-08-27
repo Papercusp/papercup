@@ -971,6 +971,16 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// WI-2944 / EI-21637077415806005: capability:launch-agent uses the tooldef
+// default 60s handler budget. The MCP transport deliberately waits another 5s
+// so the handler can settle, commit, and persist mcp_tool_results. A 60s ptool
+// deadline therefore disconnects before the server's truthful result/receipt
+// window closes — exactly the observed 59.904s refusal with no replay row.
+// Keep the client outside 60s + the 5s transport buffer with real delivery
+// margin. This is separate from the generic foreground cap: widening every
+// foreground tool would spend latency where no longer server contract exists.
+export const PTOOL_AGENT_LAUNCH_TIMEOUT_MS = 75_000;
+
 // EI-21305071238818431: coord:orient declares a 120s server-side dispatch budget.
 // Its handler-local 50s aggregate fence does not cover time spent before/after the
 // composition body (dispatch contention and result shaping/serialization); the
@@ -1034,7 +1044,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // server-side work is still running, especially through tools:invoke. Keep
   // the client outside the MCP transport cap so it observes the typed result
   // instead of returning an ambiguous may-have-executed timeout.
-  ['capability:launch-agent', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['capability:launch-agent', PTOOL_AGENT_LAUNCH_TIMEOUT_MS],
   ['code:run', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // Provisioning starts Xvfb, waits for the display, and may launch a window
   // manager plus apps. The ordinary 30s client deadline can return an

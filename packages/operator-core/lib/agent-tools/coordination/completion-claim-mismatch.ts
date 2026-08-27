@@ -38,6 +38,9 @@ const RUBRIC_QUOTED = /\brubric\b[^`'\"\n]{0,24}[`'\"]([a-z0-9][a-z0-9-]*)[`'\"]
 const COMPLETION_WORD =
   /\b(?:completed?|finished|shipped|verified?|accepted?|graded?|passed|resolved|closed|delivered)\b/gi;
 const NEGATION_TAIL = /\b(?:not|never|no|without|didn['’]t|doesn['’]t|isn['’t|wasn['’t|weren['’t|cannot|can['’]t)\s*$/i;
+const FUTURE_MARKER =
+  /\b(?:will|shall|would|could|should|may|might|can|going\s+to|planning\s+to|plan(?:s|ned|ning)?\s+to|intend(?:s|ed|ing)?\s+to|next|up\s+next|later|after\s+this|then\s+(?:i\s+)?(?:will|shall|read|reconcile|inspect|review|checkpoint|investigate|verify|check|examine|validate|run|fix|update|write|record))\b/i;
+const PROSPECTIVE_INTENT = /\b(?:read-only|this\s+unit|this\s+pass|upcoming|follow-up|future|reconciliation|checkpointing)\b/i;
 
 function slug(value: string): string | null {
   const normalized = value
@@ -59,9 +62,11 @@ function collectMatches(
   map: (match: RegExpExecArray) => string | null,
   out: string[],
   seen: Set<string>,
+  skip?: (match: RegExpExecArray) => boolean,
 ): void {
   re.lastIndex = 0;
   for (let match = re.exec(text); match; match = re.exec(text)) {
+    if (skip?.(match)) continue;
     const ref = map(match);
     if (ref) addRef(out, seen, ref);
   }
@@ -70,11 +75,12 @@ function collectMatches(
 function textOf(input: CompletionClaimInput): string {
   const body = Array.isArray(input.body)
     ? input.body
-        .flatMap((section) => [section.text, ...(section.premises ?? [])])
-        .filter((value): value is string => typeof value === 'string')
-        .join(' ')
+        .map((section) => [section.text, ...(section.premises ?? [])]
+          .filter((value): value is string => typeof value === 'string')
+          .join(' '))
+        .join('\n')
     : (input.body ?? '');
-  return [input.summary ?? '', body].filter(Boolean).join(' ');
+  return [input.summary ?? '', body].filter(Boolean).join('\n');
 }
 
 function hasPositiveCompletionClaim(text: string): boolean {
@@ -113,6 +119,20 @@ function collectExplicitPremises(input: CompletionClaimInput, out: string[], see
   }
 }
 
+function isFutureIntentReference(text: string, index: number): boolean {
+  let clauseStart = index;
+  while (clauseStart > 0 && !/[.!?;\n]/.test(text[clauseStart - 1]!)) clauseStart -= 1;
+
+  const beforeReference = text.slice(clauseStart, index);
+  if (FUTURE_MARKER.test(beforeReference)) return true;
+
+  // A present-tense hand-off such as "I am limiting this unit to fresh
+  // read-only reconciliation of WI-…" is prospective even without a modal
+  // verb. Keep an explicit completion verb as the stronger, past-tense signal
+  // so "completed read-only reconciliation of WI-…" remains a claim.
+  return PROSPECTIVE_INTENT.test(beforeReference) && !hasPositiveCompletionClaim(beforeReference);
+}
+
 function comparisonRef(ref: string): string {
   const trimmed = ref.trim().toLowerCase();
   // Rubrics are stored as rubric-template plans. `rubrics:get` therefore
@@ -131,12 +151,13 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
 
   const declaredRefs: string[] = [];
   const seen = new Set<string>();
+  const skipFutureIntent = (match: RegExpExecArray): boolean => isFutureIntentReference(text, match.index);
   if (input.planSlug) {
     const plan = slug(input.planSlug);
     if (plan) addRef(declaredRefs, seen, `plan:${plan}`);
   }
-  collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen);
-  collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen);
+  collectMatches(text, WORK_ITEM_REF, (match) => `work-item:${match[1]!.toUpperCase()}`, declaredRefs, seen, skipFutureIntent);
+  collectMatches(text, PLAN_TOKEN, (match) => `plan:${match[1]!.toLowerCase()}`, declaredRefs, seen, skipFutureIntent);
   collectMatches(
     text,
     PLAN_LABEL,
@@ -146,6 +167,7 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
     },
     declaredRefs,
     seen,
+    skipFutureIntent,
   );
   collectMatches(
     text,
@@ -156,6 +178,7 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
     },
     declaredRefs,
     seen,
+    skipFutureIntent,
   );
   collectMatches(
     text,
@@ -166,6 +189,7 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
     },
     declaredRefs,
     seen,
+    skipFutureIntent,
   );
   collectMatches(
     text,
@@ -176,6 +200,7 @@ export function completionClaimMismatch(input: CompletionClaimInput): Completion
     },
     declaredRefs,
     seen,
+    skipFutureIntent,
   );
   collectExplicitPremises(input, declaredRefs, seen);
 

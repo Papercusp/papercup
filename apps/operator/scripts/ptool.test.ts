@@ -27,6 +27,7 @@ import {
   PTOOL_COORD_ORIENT_TIMEOUT_MS,
   PTOOL_EVENTS_AWAIT_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   PTOOL_PLANS_GET_TIMEOUT_MS,
   PTOOL_PLANS_NEW_TIMEOUT_MS,
@@ -216,11 +217,12 @@ describe('ptool call deadlines', () => {
     // Windows ptool replayed the mutation on a fresh MCP session. Pin both
     // direct and deferred routes above the transport cap; the replay guard
     // below independently proves mutations cannot reconnect and re-dispatch.
-    expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
+    expect(PTOOL_AGENT_LAUNCH_TIMEOUT_MS).toBeGreaterThan(65_000);
     expect(timeoutForTool('tools:invoke', {
       name: 'capability:launch-agent',
       args: { agent: 'claude', headless: false },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);

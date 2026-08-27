@@ -1456,6 +1456,59 @@ export function projectPrefixFromTscCommand(tscCommand) {
 }
 
 /**
+ * Canonicalize an explicit `--files=` set to repository-relative paths while accepting paths
+ * relative to the workspace that launched the gate.
+ *
+ * The operator-core gate is exposed both from the repository root and as the package's own npm
+ * script. npm runs a workspace script with that workspace as `cwd`, so `--files=lib/foo.ts`
+ * means `packages/operator-core/lib/foo.ts` in the latter form. Existing callers also pass
+ * repository-relative paths, including from a workspace cwd. Prefer a direct repository spelling
+ * whenever it is already covered (or names an existing repository path), then resolve the entry
+ * from `cwd` only when that candidate lands under a covered gate prefix. An unresolved direct
+ * path is preserved when neither interpretation is covered, so the caller still receives the
+ * normal out-of-scope diagnostic instead of a guessed green verdict.
+ *
+ * @param {{files: Iterable<string>, root: string, coveredPrefixes: Iterable<string>, cwd?: string, pathExists?: (path: string) => boolean}} opts
+ * @returns {Set<string>}
+ */
+export function normalizeExplicitFilesForProject({
+  files,
+  root,
+  coveredPrefixes,
+  cwd = process.cwd(),
+  pathExists = (path) => existsSync(resolve(root, path)),
+}) {
+  const prefixes = [...coveredPrefixes]
+    .filter((prefix) => typeof prefix === 'string')
+    .map((prefix) => (prefix === '' || prefix.endsWith('/') ? prefix : `${prefix}/`));
+  const isCovered = (path) => prefixes.some((prefix) => prefix === '' || path.startsWith(prefix));
+  const normalizePath = (path) => String(path).replace(/\\/g, '/').replace(/^\.\//, '');
+  const toRepoRelative = (raw) => {
+    const absolute = isAbsolute(raw) ? resolve(raw) : resolve(cwd, raw);
+    const relativePath = relative(root, absolute);
+    if (relativePath === '' || relativePath.startsWith('..') || isAbsolute(relativePath)) return null;
+    return normalizePath(relativePath);
+  };
+
+  const normalized = new Set();
+  for (const rawValue of files) {
+    const raw = String(rawValue);
+    const direct = normalizePath(raw);
+    const directIsCovered = isCovered(direct);
+    const directExists = !isAbsolute(raw) && direct !== '' && pathExists(direct);
+    if (directIsCovered || directExists) {
+      normalized.add(direct);
+      continue;
+    }
+
+    const fromCwd = toRepoRelative(raw);
+    if (fromCwd !== null && isCovered(fromCwd)) normalized.add(fromCwd);
+    else normalized.add(direct);
+  }
+  return normalized;
+}
+
+/**
  * Split the caller's `--files=` set into the files this invocation can actually judge and the
  * ones it cannot.
  *
@@ -2268,7 +2321,17 @@ export async function runTscBaselineGate({
   });
 
   const updateFlag = argv.includes('--update');
-  const explicitFiles = parseExplicitFiles(argv);
+  const projectPrefix = projectPrefixFromTscCommand(tscCommand);
+  const parsedExplicitFiles = parseExplicitFiles(argv);
+  const explicitFiles =
+    parsedExplicitFiles !== null && projectPrefix !== null
+      ? normalizeExplicitFilesForProject({
+          files: parsedExplicitFiles,
+          root,
+          cwd: process.cwd(),
+          coveredPrefixes: [projectPrefix, ...foreignBaselines.map((baseline) => baseline.prefix)],
+        })
+      : parsedExplicitFiles;
   const mineFlag = argv.includes('--mine') || explicitFiles !== null;
 
   // EI-19341572300046923 — REFUSE to report a verdict about files this project never compiles.
@@ -2289,7 +2352,6 @@ export async function runTscBaselineGate({
   // Fail-open on an unparseable `-p` operand: not knowing the project's prefix is not evidence
   // that a file lies outside it, and a lint gate must never invent a red it cannot substantiate.
   if (explicitFiles !== null && explicitFiles.size > 0) {
-    const projectPrefix = projectPrefixFromTscCommand(tscCommand);
     if (projectPrefix !== null) {
       const { covered, uncovered } = partitionFilesByCoverage({
         files: explicitFiles,

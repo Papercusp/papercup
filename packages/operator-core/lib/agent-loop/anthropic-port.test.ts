@@ -231,6 +231,39 @@ describe('createAnthropicPort + runAgentLoop end-to-end (fake wire)', () => {
     expect(wireToolName).not.toBe(canonicalToolName);
     expect(sentParams[0].tools).toEqual([{ name: wireToolName, input_schema: { type: 'object' } }]);
   });
+
+  it('carries the gateway response account onto the terminal stop event', async () => {
+    const raw = Object.assign(
+      (async function* () {
+        yield { type: 'message_start', message: { usage: { input_tokens: 1 } } };
+        yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'ok' } };
+        yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+        yield { type: 'message_stop' };
+      })(),
+      {
+        response: {
+          headers: {
+            forEach: (visit: (value: string, key: string) => void) => {
+              visit('acct-actual', 'x-papercusp-routed-account');
+            },
+          },
+        },
+      },
+    );
+    const port = createAnthropicPort({ rawStream: () => raw });
+    const events: ModelStreamEvent[] = [];
+    for await (const ev of port.stream({
+      model: 'claude-sonnet-4-6',
+      messages: [textMessage('user', 'hi')],
+      ownerId: 'agent-loop-account-test',
+    })) {
+      events.push(ev);
+    }
+    expect(events.at(-1)).toMatchObject({
+      type: 'stop',
+      servedAccount: 'acct-actual',
+    });
+  });
 });
 
 // ── P-009: usage → cost stamping ───────────────────────────────────────────

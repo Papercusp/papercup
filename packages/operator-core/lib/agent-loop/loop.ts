@@ -88,6 +88,9 @@ export interface LoopStepInfo {
   toolCalls: ToolCallRecord[];
   stopReason: ModelStopReason;
   usage: ModelUsage | null;
+  /** Account that actually served this model request, when the provider
+   * returned authoritative routing provenance. */
+  servedAccount?: string;
 }
 
 export interface StopState {
@@ -157,6 +160,8 @@ export type LoopEvent =
       messages: ModelMessage[];
       steps: LoopStepInfo[];
       usage: ModelUsage;
+      /** Account that actually served the most recent model request. */
+      servedAccount?: string;
     }
   | { type: 'error'; message: string; raw?: unknown };
 
@@ -182,6 +187,9 @@ export interface RunAgentLoopOptions {
   priority?: string;
   /** Optional inference-gateway account route, forwarded to every model call. */
   account?: string;
+  /** Stable caller identity forwarded to every model call for gateway
+   * attribution (for example an owned chat loop id). */
+  ownerId?: string;
 }
 
 function addUsage(total: ModelUsage, u: ModelUsage | null | undefined): ModelUsage {
@@ -236,6 +244,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
   const messages: ModelMessage[] = [...opts.messages];
   const steps: LoopStepInfo[] = [];
   let usage: ModelUsage = { inputTokens: 0, outputTokens: 0 };
+  let servedAccount: string | undefined;
   const stopConditions: StopCondition[] = opts.stopWhen
     ? Array.isArray(opts.stopWhen)
       ? opts.stopWhen
@@ -255,6 +264,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     messages,
     steps,
     usage,
+    ...(servedAccount ? { servedAccount } : {}),
   });
 
   for (let stepIndex = 0; ; stepIndex++) {
@@ -283,6 +293,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     const toolCalls: ToolCallRecord[] = [];
     let stopReason: ModelStopReason = 'other';
     let stepUsage: ModelUsage | null = null;
+    let stepServedAccount: string | undefined;
     let streamErrored = false;
 
     let stream: AsyncIterable<import('./model-port').ModelStreamEvent>;
@@ -308,6 +319,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
         ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
         ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
         ...(opts.account !== undefined ? { account: opts.account } : {}),
+        ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
       });
     } catch (e) {
       yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
@@ -390,6 +402,10 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             sawStop = true;
             stopReason = ev.reason;
             stepUsage = ev.usage ?? null;
+            if (ev.servedAccount) {
+              stepServedAccount = ev.servedAccount;
+              servedAccount = ev.servedAccount;
+            }
             break;
           case 'error':
             streamErrored = true;
@@ -440,7 +456,14 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
     }
     if (assistantParts.length) messages.push({ role: 'assistant', content: assistantParts });
 
-    const step: LoopStepInfo = { stepIndex, text, toolCalls, stopReason, usage: stepUsage };
+    const step: LoopStepInfo = {
+      stepIndex,
+      text,
+      toolCalls,
+      stopReason,
+      usage: stepUsage,
+      ...(stepServedAccount ? { servedAccount: stepServedAccount } : {}),
+    };
     steps.push(step);
 
     if (toolCalls.length === 0) {

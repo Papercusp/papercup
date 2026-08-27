@@ -35,6 +35,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
       "apps/operator/bin/",
     ],
     ["cpu", "memory", "socket", "process"],
+    "active",
   ),
   inventory(
     "inference-embedding-provider-batching",
@@ -202,11 +203,17 @@ function registryKey(path, code) {
   return `${path}::${code}`;
 }
 
-function inventory(id, migration, paths, resourceDimensions) {
+function inventory(
+  id,
+  migration,
+  paths,
+  resourceDimensions,
+  enforcement = `pending-${migration}`,
+) {
   return Object.freeze({
     id,
     disposition: "govern",
-    enforcement: `pending-${migration}`,
+    enforcement,
     paths,
     resourceDimensions,
     fanOut: "measured at each migrated writer; no configured ceiling",

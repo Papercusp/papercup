@@ -44,6 +44,7 @@ import {
   type ToolDispatcher,
 } from '../../../agent-loop/capability-toolset';
 import { resolveLoopChatModel, runLoopChatTurn } from '../../../agent-loop/chat-engine';
+import { classifyLoopModelSpec } from '../../../agent-loop/model-selection';
 import { pgLoopSessionStore } from '../../../agent-loop/session-store';
 import type { LoopTool } from '../../../agent-loop/loop';
 import { MODEL_EFFORT_LEVELS } from '../../../agent-config-constants';
@@ -295,6 +296,25 @@ const messagesRoute = defineTool({
     // P-008: `engine:'loop'` selects the OWNED in-process loop (native session
     // protocol lane); anything else keeps the legacy CLI-spawn engine.
     const useLoopEngine = body.engine === 'loop';
+    // Tier menus are shared with the legacy OMP lane, so an explicit picker
+    // value may be valid there but unavailable to the in-process loop. Reject
+    // that mismatch before acquiring the lock or persisting the user turn.
+    const resolvedLoopModel = useLoopEngine
+      ? resolveLoopChatModel({
+          ...(body.model ? { model: body.model } : {}),
+          ...(effort ? { effort } : {}),
+        })
+      : undefined;
+    if (resolvedLoopModel) {
+      const capability = classifyLoopModelSpec(resolvedLoopModel);
+      if (!capability.executable) {
+        return Response.json({
+          error: `model ${JSON.stringify(resolvedLoopModel)} cannot run on engine=loop: ${capability.reason}`,
+          engine: 'loop',
+          model: resolvedLoopModel,
+        }, { status: 400 });
+      }
+    }
 
     // Acquire the lock HERE (atomic, cross-worker) rather than only checking —
     // acquiring at the point of the check, not later right before spawn, also
@@ -599,10 +619,7 @@ const messagesRoute = defineTool({
     // store.
     if (useLoopEngine) {
       const workspaceId = activeWorkspaceId();
-      const effectiveModel = resolveLoopChatModel({
-        ...(body.model ? { model: body.model } : {}),
-        ...(effort ? { effort } : {}),
-      });
+      const effectiveModel = resolvedLoopModel!;
       const accountRoute = account ?? 'auto';
       const dispatchCtx = {
         workspaceId,
@@ -672,6 +689,7 @@ const messagesRoute = defineTool({
               model: effectiveModel,
               ...(effort ? { effort } : {}),
               ...(account ? { account } : {}),
+              ownerId: dispatchCtx.spawnId,
               signal: req.signal,
               // This route is the interactive PUI chat surface. Untiered
               // inference is starved behind fleet work, so keep the admission
@@ -704,6 +722,7 @@ const messagesRoute = defineTool({
               tokens_in: result.tokensIn,
               tokens_out: result.tokensOut,
               cost_cents: Math.round(result.costUsd * 100),
+              ...(result.servedAccount ? { account_served: result.servedAccount } : {}),
               error: true,
             };
             try {
@@ -726,6 +745,7 @@ const messagesRoute = defineTool({
             tokens_in: result.tokensIn,
             tokens_out: result.tokensOut,
             cost_cents: Math.round(result.costUsd * 100),
+            ...(result.servedAccount ? { account_served: result.servedAccount } : {}),
           };
           try {
             const db = dbForSlug(slug);
@@ -762,6 +782,7 @@ const messagesRoute = defineTool({
               costUsd: result.costUsd,
             },
             stepCount: result.stepCount,
+            ...(result.servedAccount ? { servedAccount: result.servedAccount } : {}),
           });
           sink.close();
         },

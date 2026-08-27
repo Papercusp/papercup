@@ -133,9 +133,12 @@ describe('runLoopChatTurn', () => {
   });
 
   it('replaces the model effort suffix and forwards the selected account', async () => {
-    const { port, requests } = scriptedPort([textStop('routed')]);
-    const { sink } = recordingSink();
-    await runLoopChatTurn({
+    const { port, requests } = scriptedPort([[
+      { type: 'text_delta', text: 'routed' },
+      { type: 'stop', reason: 'end_turn', servedAccount: 'acct-served' },
+    ]]);
+    const { sink, events } = recordingSink();
+    const result = await runLoopChatTurn({
       chatId: 'c-selection',
       workspaceId: 'ws',
       system: 's',
@@ -145,10 +148,16 @@ describe('runLoopChatTurn', () => {
       model: 'sonnet:low',
       effort: 'xhigh',
       account: 'acct-7',
+      ownerId: 'agent-loop-c-selection',
     });
     expect(requests[0]).toMatchObject({
       model: 'sonnet:xhigh',
       account: 'acct-7',
+      ownerId: 'agent-loop-c-selection',
+    });
+    expect(result.servedAccount).toBe('acct-served');
+    expect(events.find((event) => event.name === 'done')?.data).toMatchObject({
+      servedAccount: 'acct-served',
     });
   });
 

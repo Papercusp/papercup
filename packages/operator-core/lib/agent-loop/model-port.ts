@@ -83,7 +83,7 @@ export type ModelStreamEvent =
   | { type: 'text_delta'; text: string }
   | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; id: string; name: string; input: unknown }
-  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage }
+  | { type: 'stop'; reason: ModelStopReason; usage?: ModelUsage; servedAccount?: string }
   | { type: 'error'; message: string; raw?: unknown };
 
 export interface ModelRequest {
@@ -103,6 +103,9 @@ export interface ModelRequest {
   /** Optional per-request inference-gateway account route. Undefined means
    * gateway auto-routing; direct API-key providers ignore this axis. */
   account?: string;
+  /** Stable caller identity forwarded to the inference gateway for routing
+   * attribution (owned loop/chat id, not a user-provided label). */
+  ownerId?: string;
 }
 
 /** The one seam. Implementations: the gateway-native anthropic-messages

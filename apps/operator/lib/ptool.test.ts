@@ -31,6 +31,7 @@ import {
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_FOREGROUND_TOOL_TIMEOUT_MS,
+  PTOOL_AGENT_LAUNCH_TIMEOUT_MS,
   PTOOL_HEARTBEAT_RESOURCE_TIMEOUT_MS,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   timeoutForTool,
@@ -802,8 +803,9 @@ describe('ptool timeoutForTool — capability:launch-agent resumes outlive the d
       resume: { agentId: 'su-example' },
       headless: true,
     });
-    expect(timeout).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    expect(timeout).toBeGreaterThan(MCP_TRANSPORT_CAP_MS);
+    expect(timeout).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
+    // tooldef default (60s) + MCP settlement buffer (5s), with delivery margin.
+    expect(timeout).toBeGreaterThan(65_000);
     expect(timeout).not.toBe(PTOOL_CALL_TOOL_TIMEOUT_MS);
   });
 
@@ -811,7 +813,7 @@ describe('ptool timeoutForTool — capability:launch-agent resumes outlive the d
     expect(timeoutForTool('tools:invoke', {
       name: 'capability:launch-agent',
       args: { resume: { agentId: 'su-example' }, headless: true },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_AGENT_LAUNCH_TIMEOUT_MS);
   });
 });
 

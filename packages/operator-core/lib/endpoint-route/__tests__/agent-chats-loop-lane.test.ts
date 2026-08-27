@@ -161,6 +161,7 @@ async function loopLaneRoutes(
       costUsd: 0.05,
       errorMessage: null,
       stepCount: 1,
+      servedAccount: 'gateway-acct-9',
       ...engineResult,
     };
   });
@@ -261,7 +262,7 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       postReq({
         content: 'hello loop',
         engine: 'loop',
-        model: 'm-override',
+        model: 'sonnet',
         effort: 'high',
         account: 'acct-7',
       }),
@@ -273,8 +274,9 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(text).toContain('text_delta');
     expect(text).toContain('loop says hi');
     expect(text).toContain('event: provenance');
-    expect(text).toContain('\"model\":\"m-override:high\"');
+    expect(text).toContain('\"model\":\"sonnet:high\"');
     expect(text).toContain('\"accountRoute\":\"acct-7\"');
+    expect(text).toContain('\"servedAccount\":\"gateway-acct-9\"');
 
     expect(mocks.runLoopChatTurn).toHaveBeenCalledTimes(1);
     const opts = mocks.runLoopChatTurn.mock.calls[0][0] as {
@@ -285,17 +287,19 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       account?: string;
       chatId: string;
       priority?: string;
+      ownerId?: string;
     };
     // systemText = persona + context sections, NO history block, NO user turn.
     expect(opts.system).toContain('ROLE PROMPT');
     expect(opts.system).not.toContain('## User');
     // The transcript handed to the engine ends with the just-appended user turn.
     expect(opts.transcript.at(-1)).toMatchObject({ role: 'user', content: 'hello loop' });
-    expect(opts.model).toBe('m-override:high');
+    expect(opts.model).toBe('sonnet:high');
     expect(opts.effort).toBe('high');
     expect(opts.account).toBe('acct-7');
     expect(opts.chatId).toBe(CHAT);
     expect(opts.priority).toBe('interactive');
+    expect(opts.ownerId).toBe(`agent-loop-${CHAT}`);
     expect((mocks.runLoopChatTurn.mock.calls[0][0] as { deferTerminalEvent?: boolean }).deferTerminalEvent).toBe(true);
     expect((mocks.runLoopChatTurn.mock.calls[0][0] as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort()).toEqual([
       'capability:bash',
@@ -313,14 +317,30 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
       role: 'assistant',
       content: 'loop says hi',
       engine: 'loop',
-      model: 'm-override:high',
+      model: 'sonnet:high',
       account_route: 'acct-7',
+      account_served: 'gateway-acct-9',
       tokens_in: 12,
       tokens_out: 7,
     });
     expect(finalUpdate[1]).toBe(12); // total_input_tokens increment
     expect(finalUpdate[2]).toBe(7); // total_output_tokens increment
     expect(finalUpdate[3]).toBe(5); // cost cents (0.05 USD)
+  });
+
+  it('rejects an unsupported loop model before user-turn persistence or streaming', async () => {
+    const { routes, mocks } = await loopLaneRoutes({ ...baseRow });
+    const messages = findRoute(routes, 'POST', '/harness/:slug/agent-chats/:chatId/messages');
+    const model = 'openrouter/stealth/ox-alpha:max';
+    const res = (await messages.handler(
+      postReq({ content: 'must not run', engine: 'loop', model }),
+      ctxFor(CHAT),
+    )) as Response;
+
+    expect(res.status).toBe(400);
+    await expect(res.json()).resolves.toMatchObject({ engine: 'loop', model });
+    expect(mocks.runLoopChatTurn).not.toHaveBeenCalled();
+    expect(mocks.updates).toHaveLength(0);
   });
 
   it('assembles an operator chat from the operator prompt stack, not the blueprint stack', async () => {

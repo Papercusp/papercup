@@ -38,6 +38,9 @@ export interface TranscriptTurn {
   model?: string;
   /** Gateway route used for the turn: `auto`, `default`, or a pinned account. */
   account_route?: string;
+  /** Account that actually served the turn, from the gateway response header.
+   * Distinct from account_route, which records only the requested route. */
+  account_served?: string;
   tokens_in?: number;
   tokens_out?: number;
   cost_cents?: number;

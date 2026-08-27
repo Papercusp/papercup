@@ -60,6 +60,39 @@ describe('completionClaimMismatch', () => {
     ).toBeUndefined();
   });
 
+  it('ignores future and modal intent refs while retaining past completion refs', () => {
+    expect(
+      completionClaimMismatch({
+        summary: 'completed WI-2045; will read WI-2046, will reconcile WI-2047, and next I will inspect WI-2048',
+        basedOn: read('work-item:WI-2045'),
+      }),
+    ).toBeUndefined();
+
+    expect(
+      completionClaimMismatch({
+        summary: 'completed WI-2045; next I will inspect WI-2046; have verified WI-2047',
+        basedOn: read('work-item:WI-2045'),
+      }),
+    ).toMatchObject({
+      declaredRefs: ['work-item:WI-2045', 'work-item:WI-2047'],
+      missingFromBasedOn: ['work-item:WI-2047'],
+    });
+  });
+
+  it('ignores read-only reconciliation refs in a prospective unit hand-off', () => {
+    expect(
+      completionClaimMismatch({
+        summary: 'Accepted WI-42228 investigate-only gate',
+        body: [
+          {
+            text: 'I am limiting this unit to fresh read-only reconciliation of WI-212675, then checkpointing WI-42228.',
+          },
+        ],
+        basedOn: read('work-item:WI-42228'),
+      }),
+    ).toBeUndefined();
+  });
+
   it('exports the stable envelope field name used by the send seam', () => {
     expect(COMPLETION_CLAIM_MISMATCH_FIELD).toBe('completionClaimMismatch');
   });

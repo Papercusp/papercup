@@ -30,6 +30,8 @@
 import { costFromTokens } from '@papercusp/model-pricing';
 import {
   buildSystemParam,
+  headersToRecord,
+  ownerHeaders,
   priorityTierHeaders,
   resolveStatelessTransport,
 } from '../agent-chat-stream';
@@ -275,15 +277,23 @@ export interface AnthropicPortOpts {
   rawStream?: (
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<AsyncIterable<unknown>> | AsyncIterable<unknown>;
+  ) => Promise<AnthropicMessageStream> | AnthropicMessageStream;
 }
+
+/** The SDK's MessageStream is async-iterable and exposes its connected
+ * response. Keep that metadata on the raw-stream seam so the adapter can
+ * capture gateway routing headers without constraining test fakes. */
+type AnthropicMessageStream = AsyncIterable<unknown> & {
+  response?: { headers?: unknown };
+};
 
 async function defaultRawStream(
   params: Record<string, unknown>,
   priority: string | undefined,
   account: string | undefined,
+  ownerId: string | undefined,
   signal?: AbortSignal,
-): Promise<AsyncIterable<unknown>> {
+): Promise<AnthropicMessageStream> {
   const transport = resolveStatelessTransport(account);
   const sdkMod = await import('@anthropic-ai/sdk');
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -291,14 +301,26 @@ async function defaultRawStream(
   const client = new Anthropic({
     baseURL: transport.baseURL,
     authToken: transport.token,
-    defaultHeaders: { ...transport.headers, ...priorityTierHeaders(priority) },
+    defaultHeaders: {
+      ...transport.headers,
+      ...priorityTierHeaders(priority),
+      ...ownerHeaders(ownerId),
+    },
     maxRetries: 2,
   });
   // The SDK's MessageStream is async-iterable over the raw SSE frames —
   // exactly what parseAnthropicStream consumes. `stream: true` is implied by
   // .stream(); strip it from params to keep the SDK's typed surface happy.
   const { stream: _stream, ...rest } = params;
-  return client.messages.stream(rest, signal ? { signal } : {}) as AsyncIterable<unknown>;
+  return client.messages.stream(rest, signal ? { signal } : {}) as AnthropicMessageStream;
+}
+
+const ROUTED_ACCOUNT_HEADER = 'x-papercusp-routed-account';
+
+function servedAccountFromStream(stream: AnthropicMessageStream): string | undefined {
+  const value = headersToRecord(stream.response?.headers)?.[ROUTED_ACCOUNT_HEADER];
+  const account = value?.trim();
+  return account || undefined;
 }
 
 /** Stamp costUsd onto a stop event's usage from the canonical price table
@@ -322,18 +344,28 @@ export function createAnthropicPort(opts: AnthropicPortOpts = {}): ModelPort {
     async *stream(req: ModelRequest): AsyncIterable<ModelStreamEvent> {
       const codec = modelToolNameCodec(req.tools);
       const params = buildAnthropicParams(req, codec);
-      let raw: AsyncIterable<unknown>;
+      let raw: AnthropicMessageStream;
       try {
         raw = opts.rawStream
           ? await opts.rawStream(params, req.signal)
-          : await defaultRawStream(params, req.priority, req.account, req.signal);
+          : await defaultRawStream(params, req.priority, req.account, req.ownerId, req.signal);
       } catch (e) {
         yield { type: 'error', message: e instanceof Error ? e.message : String(e) };
         return;
       }
       try {
+        let servedAccount: string | undefined;
         for await (const ev of parseAnthropicStream(raw, codec.decode)) {
-          yield ev.type === 'stop' ? withCost(req.model, ev) : ev;
+          // MessageStream.response is populated only after the native stream
+          // connects. Re-read it as frames arrive and immediately before
+          // forwarding the terminal stop event.
+          servedAccount = servedAccountFromStream(raw) ?? servedAccount;
+          if (ev.type === 'stop') {
+            const withAccount = servedAccount ? { ...ev, servedAccount } : ev;
+            yield withCost(req.model, withAccount);
+          } else {
+            yield ev;
+          }
         }
       } catch (e) {
         if (req.signal?.aborted) {

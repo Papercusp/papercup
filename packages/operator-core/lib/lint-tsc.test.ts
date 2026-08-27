@@ -51,6 +51,7 @@ import {
   TSC_COMMAND,
   TSC_PREFLIGHT_COMMAND,
   projectPrefixFromTscCommand,
+  normalizeExplicitFilesForProject,
   partitionFilesByCoverage,
   suggestTypecheckGate,
   formatUncoveredFilesBanner,
@@ -2504,6 +2505,50 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
         coveredPrefixes: ['packages/operator-core/'],
       });
       expect(covered).toEqual(['packages/operator-core/lib/a.ts']);
+    });
+  });
+
+  describe('normalizeExplicitFilesForProject (EI-21648762323304317)', () => {
+    const coveredPrefixes = ['packages/operator-core/', 'apps/operator/'];
+    const existing = new Set([
+      'packages/operator-core/lib/goals/spend-rollup.ts',
+      'packages/operator-core/lib/goals/spend-rollup.integration.test.ts',
+      'apps/operator/lib/release/green-checkpoint.ts',
+    ]);
+
+    it('maps package-relative paths from a workspace cwd and preserves repo-relative paths', () => {
+      expect(
+        normalizeExplicitFilesForProject({
+          files: [
+            'lib/goals/spend-rollup.ts',
+            'lib/goals/spend-rollup.integration.test.ts',
+            'packages/operator-core/lib/goals/spend-rollup.ts',
+            'apps/operator/lib/release/green-checkpoint.ts',
+          ],
+          root: '/repo',
+          cwd: '/repo/packages/operator-core',
+          coveredPrefixes,
+          pathExists: (path: string) => existing.has(path),
+        }),
+      ).toEqual(
+        new Set([
+          'packages/operator-core/lib/goals/spend-rollup.ts',
+          'packages/operator-core/lib/goals/spend-rollup.integration.test.ts',
+          'apps/operator/lib/release/green-checkpoint.ts',
+        ]),
+      );
+    });
+
+    it('does not reinterpret a package-relative path when invoked from the repository root', () => {
+      expect(
+        normalizeExplicitFilesForProject({
+          files: ['lib/goals/spend-rollup.ts'],
+          root: '/repo',
+          cwd: '/repo',
+          coveredPrefixes,
+          pathExists: () => false,
+        }),
+      ).toEqual(new Set(['lib/goals/spend-rollup.ts']));
     });
   });
 

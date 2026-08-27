@@ -358,22 +358,32 @@ describe('runAgentLoop', () => {
     expect(done.steps.length).toBeLessThanOrEqual(24);
   });
 
-  it('model requests carry system, priority and tool defs (not executors)', async () => {
-    const { port, requests } = scriptedPort([textStop('ok')]);
-    await collect({
+  it('model requests carry system, priority, account, owner and tool defs (not executors)', async () => {
+    const { port, requests } = scriptedPort([
+      [
+        { type: 'text_delta', text: 'ok' },
+        { type: 'stop', reason: 'end_turn', servedAccount: 'acct-served' },
+      ],
+    ]);
+    const events = await collect({
       port,
       model: 'm1',
       system: 'be terse',
       priority: 'interactive',
+      account: 'auto',
+      ownerId: 'agent-loop-c1',
       messages: [textMessage('user', 'hi')],
       tools: [echoTool],
     });
     expect(requests[0].system).toBe('be terse');
     expect(requests[0].priority).toBe('interactive');
+    expect(requests[0].account).toBe('auto');
+    expect(requests[0].ownerId).toBe('agent-loop-c1');
     expect(requests[0].tools).toEqual([
       { name: 'echo', description: 'echoes its input', inputSchema: echoTool.inputSchema },
     ]);
     // the wire def must NOT leak the execute function
     expect((requests[0].tools![0] as unknown as Record<string, unknown>).execute).toBeUndefined();
+    expect(doneEvent(events).servedAccount).toBe('acct-served');
   });
 });

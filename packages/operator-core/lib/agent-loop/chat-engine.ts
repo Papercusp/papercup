@@ -80,6 +80,9 @@ export interface LoopChatTurnOpts {
   effort?: string;
   /** Explicit gateway account selection. Undefined means auto routing. */
   account?: string;
+  /** Stable caller identity forwarded to the inference gateway for routing
+   * attribution (the owned chat loop id). */
+  ownerId?: string;
   maxSteps?: number;
   maxTokens?: number;
   signal?: AbortSignal;
@@ -109,6 +112,9 @@ export interface LoopChatTurnResult {
    *  failure marker, exactly like the legacy lane's error path). */
   errorMessage: string | null;
   stepCount: number;
+  /** Account that actually served the most recent model request, when the
+   * gateway returned authoritative routing provenance. */
+  servedAccount?: string;
 }
 
 /** Map the PG transcript (text turns) onto the loop's ModelMessage shape.
@@ -246,6 +252,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
     ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
     ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
     ...(opts.account !== undefined ? { account: opts.account } : {}),
+    ...(opts.ownerId !== undefined ? { ownerId: opts.ownerId } : {}),
   });
 
   try {
@@ -288,6 +295,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
           result.tokensOut = ev.usage.outputTokens;
           result.costUsd = ev.usage.costUsd ?? 0;
           result.stepCount = ev.steps.length;
+          if (ev.servedAccount) result.servedAccount = ev.servedAccount;
           doneMessages = ev.messages;
           doneUsage = ev.usage;
           // Wire `done` = totals + finalText; the full messages snapshot is
@@ -299,6 +307,7 @@ export async function runLoopChatTurn(opts: LoopChatTurnOpts): Promise<LoopChatT
               finalText: ev.finalText,
               usage: ev.usage,
               stepCount: ev.steps.length,
+              ...(ev.servedAccount ? { servedAccount: ev.servedAccount } : {}),
             });
           }
           break;
