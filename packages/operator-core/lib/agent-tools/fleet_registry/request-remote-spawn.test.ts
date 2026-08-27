@@ -15,7 +15,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/fleet_registry/request-remote-spawn.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { byHostThenOffer, pickPotSeatOffer } from './request-remote-spawn';
+import tool, { byHostThenOffer, pickPotSeatOffer } from './request-remote-spawn';
 import type { StoredWorkOffer } from '../../p2p/offer-store';
 import type { WorkOfferStoreRecord } from '../../p2p/offer-store-schema';
 
@@ -55,6 +55,10 @@ function potOffer(offerId: string, host: string | null, count: number): StoredWo
 }
 
 describe('pickPotSeatOffer (P-004 pot-scoped auto-pick)', () => {
+  it('accepts a remote request above the retired local 12-member ceiling', () => {
+    expect(tool.args.safeParse({ fleet: 'wide-fleet', plan: 'wide-plan', count: 64 }).success).toBe(true);
+  });
+
   it('picks the sole qualifying offer', () => {
     const picked = pickPotSeatOffer([potOffer('seat-a', 'box-a', 3)], 2);
     expect(picked?.offerId).toBe('seat-a');

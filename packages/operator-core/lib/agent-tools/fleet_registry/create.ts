@@ -22,37 +22,30 @@ import { ensureFleetLeaderControl } from './leader-control';
 export default defineTool({
   name: 'fleet:create',
   description:
-    'Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet\'s leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal). Pass `count` when you want a non-blocking sizing advisory for a planned multi-member launch.',
+    "Create a NEW named, persistent fleet (or get an existing one by name) and become its leader. The fleet is a durable registry row that survives all members being killed, so it stays selectable in psu. You are recorded as owner + leader and your presence is labeled this fleet's leader. Use this to stand up a fresh fleet before launching member terminals (capability:terminal). Pass `count` when you want a non-blocking sizing advisory for a planned multi-member launch.",
   guidance: {
     when: 'Standing up a NEW named fleet — e.g. routing option (3), a new desktop fleet: fleet:create then capability:terminal { terminals: [...] } to launch the member windows.',
     notWhen:
       'Joining a fleet that already has members → fleet:join. Taking over an existing fleet to drive a plan → fleet:take-leadership (create does NOT seize an existing fleet from its leader).',
     chaining:
       ROUTING_LADDER +
-      " Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — " +
+      ' Donate/spend/debug prose set (D-004): the fleet must EXIST before it can receive seats — ' +
       "'launch on remote seats' with no fleet yet → fleet:create first, then resource:delegate (donate " +
-      "seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it).",
+      'seats to it) or fleet:request_remote_spawn (spend a seat-offer already made to it).',
   },
   capability: 'fleet:create',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
-    name: z
-      .string()
-      .min(1)
-      .describe('Human name for the fleet (kept as the title; slugified to the durable handle).'),
-    description: z
-      .string()
-      .optional()
-      .describe('Optional one-line description of what this fleet is for.'),
+    name: z.string().min(1).describe('Human name for the fleet (kept as the title; slugified to the durable handle).'),
+    description: z.string().optional().describe('Optional one-line description of what this fleet is for.'),
     count: z
       .number()
       .int()
       .min(1)
-      .max(12)
       .optional()
       .describe(
-        'Optional planned member count for the FOLLOW-ON desktop launch. `fleet:create` itself does not open terminals; this only returns a non-blocking sizing advisory when the requested member count exceeds healthy account-pool headroom.',
+        'Optional planned member count for the FOLLOW-ON governed desktop launch. `fleet:create` itself does not open terminals; this only returns a non-blocking sizing advisory when the requested member count exceeds healthy account-pool headroom.',
       ),
     type: z
       .enum(['single', 'paired'])
@@ -79,8 +72,7 @@ export default defineTool({
     // fleet does not apply. Say so out loud rather than returning a record whose
     // type silently contradicts what the caller asked for — the launch surface
     // branches on this value (D-009), so a wrong belief about it is expensive.
-    const typeRequestIgnored =
-      !created && args.type != null && args.type !== record.fleetType;
+    const typeRequestIgnored = !created && args.type != null && args.type !== record.fleetType;
 
     // Mirror the AUTHORITATIVE registry leader onto the caller's presence label. On a
     // fresh create that's `leader` (record.leaderOwnerId === caller). If the slug already
@@ -89,10 +81,7 @@ export default defineTool({
     const role = fleetRoleFor(record.leaderOwnerId, ownerId);
     await heartbeatPresence(identity); // guarantee a presence row to label
     await setPresenceFleet(workspaceId, ownerId, fleetSlug, role);
-    const control =
-      role === 'leader'
-        ? await ensureFleetLeaderControl({ workspaceId, ownerId, fleetSlug })
-        : null;
+    const control = role === 'leader' ? await ensureFleetLeaderControl({ workspaceId, ownerId, fleetSlug }) : null;
     // Recolor the caller's live window to the new fleet's bound scheme — no second
     // call (fleet-color-schemes). Best-effort: a no-op for non-psu-hosted callers.
     await recolorCallerTerminal(ownerId, record);

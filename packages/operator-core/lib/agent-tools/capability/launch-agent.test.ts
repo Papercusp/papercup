@@ -33,9 +33,7 @@ vi.mock('../../psu-launch-log.mjs', async (orig) => ({
   readPsuLaunchLogTail: (...args: unknown[]) => readPsuLaunchLogTailMock(...args),
 }));
 
-const shutdownViaPtyMock = vi.hoisted(() =>
-  vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'),
-);
+const shutdownViaPtyMock = vi.hoisted(() => vi.fn(async (_ownerId: string, _opts?: unknown) => 'sent'));
 const findLiveHostMock = vi.hoisted(() => vi.fn((_ownerId: string): unknown => null));
 vi.mock('../../events/await/psu-pty-discovery', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -130,8 +128,7 @@ vi.mock('../../resource-governor/spawn-execution', () => ({
 
 const latestFleetMembershipMock = vi.hoisted(() => vi.fn());
 vi.mock('../../fleet-membership-store', () => ({
-  latestFleetMembership: (workspaceId: string, ownerId: string) =>
-    latestFleetMembershipMock(workspaceId, ownerId),
+  latestFleetMembership: (workspaceId: string, ownerId: string) => latestFleetMembershipMock(workspaceId, ownerId),
 }));
 
 vi.mock('../../agent-fleets-store', () => ({
@@ -149,9 +146,7 @@ vi.mock('../coordination/presence-fleet', () => ({
   fetchPresenceFleet: (ids: string[]) => fetchPresenceFleetMock(ids),
 }));
 
-const fetchContextPressureMock = vi.fn(
-  async (_ids: string[]) => new Map<string, 'ok' | 'high' | 'critical'>(),
-);
+const fetchContextPressureMock = vi.fn(async (_ids: string[]) => new Map<string, 'ok' | 'high' | 'critical'>());
 vi.mock('../coordination/context-pressure', () => ({
   fetchContextPressure: (ids: string[]) => fetchContextPressureMock(ids),
 }));
@@ -282,26 +277,30 @@ describe('launch-tool routing guidance', () => {
   // guidance, not just fleet:launch-on-plan's — a recurrence guard so the
   // cross-link can't silently drop on a future guidance edit.
   it('cross-links the canonical four-door routing table', () => {
-    expect(launchAgent.guidance?.notWhen).toContain(
-      'launching-agents-which-tool-for-which-door',
-    );
+    expect(launchAgent.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
   });
 });
 
 describe('published launch args schema', () => {
   it('rejects plan with resume or successor before handler dispatch', () => {
-    expect(
-      launchAgent.args.safeParse({ plan: 'p', resume: { agentId: 'su-a1a71' } }).success,
-    ).toBe(false);
-    expect(
-      launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success,
-    ).toBe(false);
+    expect(launchAgent.args.safeParse({ plan: 'p', resume: { agentId: 'su-a1a71' } }).success).toBe(false);
+    expect(launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success).toBe(false);
   });
 
   it('keeps the individual fresh and source shapes valid', () => {
     expect(launchAgent.args.safeParse({ plan: 'p' }).success).toBe(true);
     expect(launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' } }).success).toBe(true);
     expect(launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' } }).success).toBe(true);
+  });
+
+  it('does not impose a local agent-count ceiling before governed admission', () => {
+    expect(launchAgent.args.safeParse({ brief: 'wide governed fan-out', count: 64 }).success).toBe(true);
+    expect(
+      launchAgent.args.safeParse({
+        brief: 'member-specific governed fan-out',
+        members: Array.from({ length: 64 }, (_, i) => ({ brief: `member-${i}` })),
+      }).success,
+    ).toBe(true);
   });
 });
 
@@ -320,14 +319,17 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toBe('audit the release script');
     expect(spawnedCommand()).not.toContain('--kickoff');
     expect(textOf(res)).toContain('(no fleet)');
-    expect(textOf(res)).toContain("first turn");
+    expect(textOf(res)).toContain('first turn');
   });
 
   it('honors the internal fresh owner pin used to correlate concurrent respawns', async () => {
-    await launchAgent.handler({
-      brief: 'replace one fleet member',
-      __respawnOwnerId: 'su-respawn-test-owner',
-    } as never, ctx);
+    await launchAgent.handler(
+      {
+        brief: 'replace one fleet member',
+        __respawnOwnerId: 'su-respawn-test-owner',
+      } as never,
+      ctx,
+    );
 
     expect(spawnedCommand()).toContain('--owner-id=su-respawn-test-owner');
   });
@@ -376,12 +378,8 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
   });
 
   it('propagates the caller DRAIN overlay to a fresh launch', async () => {
-    getModesMock.mockResolvedValue([
-      { mode: 'drain', subject: 'bug-drain', ownerDirected: true },
-    ]);
-    listFactsMock.mockResolvedValue([
-      { key: 'mode-instructions:drain', body: 'Do not file incidental defects.' },
-    ]);
+    getModesMock.mockResolvedValue([{ mode: 'drain', subject: 'bug-drain', ownerDirected: true }]);
+    listFactsMock.mockResolvedValue([{ key: 'mode-instructions:drain', body: 'Do not file incidental defects.' }]);
 
     await launchAgent.handler({ brief: 'drain the admitted bugs' }, ctx);
 
@@ -426,7 +424,12 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
       .mockResolvedValueOnce({ verdict: 'ok', status: 200, detail: 'supported' });
 
     const first = await launchAgent.handler(
-      { agent: 'codex', model: 'gpt-5.6:xhigh', brief: 'run the check', idempotencyKey: 'wi-42381-independent-grade-v1' },
+      {
+        agent: 'codex',
+        model: 'gpt-5.6:xhigh',
+        brief: 'run the check',
+        idempotencyKey: 'wi-42381-independent-grade-v1',
+      },
       ctx,
     );
 
@@ -435,7 +438,12 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnConsoleMock).not.toHaveBeenCalled();
 
     const corrected = await launchAgent.handler(
-      { agent: 'codex', model: 'gpt-5.6-sol:high', brief: 'run the check', idempotencyKey: 'wi-42381-independent-grade-v1' },
+      {
+        agent: 'codex',
+        model: 'gpt-5.6-sol:high',
+        brief: 'run the check',
+        idempotencyKey: 'wi-42381-independent-grade-v1',
+      },
       ctx,
     );
 
@@ -566,10 +574,13 @@ describe('resume + fork (D-004/D-007)', () => {
       note: 'successor verified',
     });
 
-    const res = await launchAgent.handler({
-      successor: { agentId: 'su-a1a71' },
-      brief: 'continue the recovery',
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        successor: { agentId: 'su-a1a71' },
+        brief: 'continue the recovery',
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
@@ -604,10 +615,13 @@ describe('resume + fork (D-004/D-007)', () => {
       note: 'automatic successor verified',
     });
 
-    const res = await launchAgent.handler({
-      resume: { agentId: 'su-a1a71' },
-      brief: 'continue the recovery',
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        resume: { agentId: 'su-a1a71' },
+        brief: 'continue the recovery',
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
@@ -643,7 +657,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(buildCarryBriefMock).not.toHaveBeenCalled();
   });
 
-  it('EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal\'s VTE pty', async () => {
+  it("EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal's VTE pty", async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
@@ -748,10 +762,7 @@ describe('resume + fork (D-004/D-007)', () => {
       lastError: null,
     });
 
-    const res = await launchAgent.handler(
-      { resume: { agentId: 'su-a1a71' }, headless: false },
-      ctx,
-    );
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, headless: false }, ctx);
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('Saved launch spec conflict');
@@ -763,12 +774,8 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('propagates the caller DRAIN overlay to a resume/fork command', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    getModesMock.mockResolvedValue([
-      { mode: 'drain', subject: 'bug-drain', ownerDirected: true },
-    ]);
-    listFactsMock.mockResolvedValue([
-      { key: 'mode-instructions:drain', body: 'Checkpoint incidental defects.' },
-    ]);
+    getModesMock.mockResolvedValue([{ mode: 'drain', subject: 'bug-drain', ownerDirected: true }]);
+    listFactsMock.mockResolvedValue([{ key: 'mode-instructions:drain', body: 'Checkpoint incidental defects.' }]);
 
     await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, fork: true }, ctx);
 
@@ -778,7 +785,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--mode-owner-directed');
   });
 
-  it('delivers a brief with a resume as the session\'s NEXT turn (via the pty inject)', async () => {
+  it("delivers a brief with a resume as the session's NEXT turn (via the pty inject)", async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'the plan changed' }, ctx);
     expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toBe('the plan changed');
@@ -840,10 +847,13 @@ describe('resume + fork (D-004/D-007)', () => {
   it('falls through to an ordinary exact resume when restoreVisible is requested after the host already ended', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
 
-    const res = await launchAgent.handler({
-      resume: { sessionId: 'sid-dead' },
-      restoreVisible: true,
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        restoreVisible: true,
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(false);
     expect(shutdownViaPtyMock).not.toHaveBeenCalled();
@@ -857,10 +867,13 @@ describe('resume + fork (D-004/D-007)', () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
     windowScopeVerdictMock.mockReturnValue('alive');
 
-    const res = await launchAgent.handler({
-      resume: { sessionId: 'sid-dead' },
-      restoreVisible: true,
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        restoreVisible: true,
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('verdict for su-a1a71 is alive');
@@ -868,35 +881,38 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
-  it.each(['unknown', 'not-a-window'] as const)(
-    'fails closed on a %s desktop-window verdict',
-    async (verdict) => {
-      resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
-      windowScopeVerdictMock.mockReturnValue(verdict);
+  it.each(['unknown', 'not-a-window'] as const)('fails closed on a %s desktop-window verdict', async (verdict) => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
+    windowScopeVerdictMock.mockReturnValue(verdict);
 
-      const res = await launchAgent.handler({
+    const res = await launchAgent.handler(
+      {
         resume: { sessionId: 'sid-dead' },
         restoreVisible: true,
-      }, ctx);
+      },
+      ctx,
+    );
 
-      expect(isError(res)).toBe(true);
-      expect(textOf(res)).toContain(`is ${verdict}`);
-      expect(shutdownViaPtyMock).not.toHaveBeenCalled();
-      expect(spawnConsoleMock).not.toHaveBeenCalled();
-      if (verdict === 'not-a-window') {
-        expect(textOf(res)).toContain('omit `restoreVisible`');
-        expect(textOf(res)).toContain('ordinary exact resume');
-      }
-    },
-  );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain(`is ${verdict}`);
+    expect(shutdownViaPtyMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    if (verdict === 'not-a-window') {
+      expect(textOf(res)).toContain('omit `restoreVisible`');
+      expect(textOf(res)).toContain('ordinary exact resume');
+    }
+  });
 
   it('gracefully closes only a proven-windowless host, waits for it, then exact-resumes visibly', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
 
-    const res = await launchAgent.handler({
-      resume: { sessionId: 'sid-dead' },
-      restoreVisible: true,
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        restoreVisible: true,
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(false);
     expect(shutdownViaPtyMock).toHaveBeenCalledWith(
@@ -917,10 +933,13 @@ describe('resume + fork (D-004/D-007)', () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
     shutdownViaPtyMock.mockResolvedValue('refused-human-attended');
 
-    const res = await launchAgent.handler({
-      resume: { sessionId: 'sid-dead' },
-      restoreVisible: true,
-    }, ctx);
+    const res = await launchAgent.handler(
+      {
+        resume: { sessionId: 'sid-dead' },
+        restoreVisible: true,
+      },
+      ctx,
+    );
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('refused-human-attended');
@@ -931,10 +950,7 @@ describe('resume + fork (D-004/D-007)', () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
     fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
 
-    const res = await launchAgent.handler(
-      { resume: { agentId: 'su-a1a71' }, brief: 'take the routed consult' },
-      ctx,
-    );
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'take the routed consult' }, ctx);
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('current context is CRITICAL');
@@ -1012,10 +1028,7 @@ describe('resume + fork (D-004/D-007)', () => {
 
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
 
-    expect(readPsuLaunchLogTailMock).toHaveBeenCalledWith(
-      'su-a1a71',
-      { chars: PSU_LAUNCH_LOG_TAIL_CHARS },
-    );
+    expect(readPsuLaunchLogTailMock).toHaveBeenCalledWith('su-a1a71', { chars: PSU_LAUNCH_LOG_TAIL_CHARS });
     expect(textOf(res)).toContain('Per-owner psu boot log tail');
     expect(textOf(res)).toContain('psu: resume transcript was not found');
     expect(dataOf(res)?.launch).toMatchObject({
@@ -1041,10 +1054,7 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain('RESUME UUID MISMATCH');
     expect(textOf(res)).toContain('requested later-rollout-uuid');
     expect(textOf(res)).toContain('actually resumed older-root-uuid');
-    expect(shutdownViaPtyMock).toHaveBeenCalledWith(
-      'su-a1a71',
-      expect.objectContaining({ force: true }),
-    );
+    expect(shutdownViaPtyMock).toHaveBeenCalledWith('su-a1a71', expect.objectContaining({ force: true }));
     expect(dataOf(res)?.launch).toMatchObject({
       resumeVerified: false,
       resumeVerification: {

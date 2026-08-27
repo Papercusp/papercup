@@ -59,6 +59,10 @@ describe('fleet:create', () => {
     });
   });
 
+  it('accepts planned fleet sizes above the retired local 12-member ceiling', () => {
+    expect(tool.args.safeParse({ name: 'Wide Fleet', count: 64 }).success).toBe(true);
+  });
+
   it('surfaces a sizing advisory only when planned members exceed healthy account headroom', async () => {
     fetchGatewayHeadroomMock.mockResolvedValue({
       reachable: true,

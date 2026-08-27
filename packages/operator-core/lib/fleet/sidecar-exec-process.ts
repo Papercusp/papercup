@@ -25,8 +25,18 @@
  * rather than promised.
  */
 import * as fsp from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 import { spawn, type StdioOptions } from 'node:child_process';
+
+import type { AdmissionContext } from '../resource-governor/admission';
+import {
+  admissionContextFromEnvironment,
+  beginGovernedExecution,
+  governedExecutionRuntime,
+  type GovernedExecution,
+} from '../resource-governor/execution';
+import { activeWorkspaceId } from '../workspace-registry';
 
 export interface ExecParams {
   command: string;
@@ -49,6 +59,14 @@ export interface ExecParams {
    * accumulated into `stdout`, exactly as before.
    */
   stdoutPath?: string;
+  /** Explicit scope for the durable admission receipt. */
+  workspaceId?: string;
+  /** Stable caller identity for receipt ownership and operator visibility. */
+  ownerId?: string;
+  /** Optional retry key. Omitted calls are unique process starts. */
+  idempotencyKey?: string;
+  /** Typed nested lineage. When absent, the propagated process env is decoded. */
+  admissionContext?: AdmissionContext;
 }
 
 export interface ExecResult {
@@ -60,7 +78,36 @@ export interface ExecResult {
   stdoutBytes?: number;
 }
 
-export async function execProcess(params: ExecParams): Promise<ExecResult> {
+export interface ExecProcessDeps {
+  beginExecution?: (params: ExecParams) => Promise<GovernedExecution>;
+}
+
+async function beginSidecarProcessExecution(params: ExecParams): Promise<GovernedExecution> {
+  const workspaceId =
+    params.workspaceId?.trim() ||
+    params.env?.PAPERCUSP_WORKSPACE_ID?.trim() ||
+    params.env?.PAPERCUSP_WORKSPACE?.trim() ||
+    activeWorkspaceId();
+  const parent =
+    params.admissionContext ??
+    admissionContextFromEnvironment(params.env?.PAPERCUSP_ADMISSION_CONTEXT) ??
+    admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
+  const idempotencyKey = params.idempotencyKey?.trim() || `sidecar-process:${process.pid}:${randomUUID()}`;
+  return beginGovernedExecution(
+    {
+      idempotencyKey,
+      admissionClass: 'process',
+      demand: { cpuWeight: 1 },
+      payloadRef: `process:${params.command}`,
+      parent,
+      metadata: { processKind: 'sidecar-exec', command: params.command },
+    },
+    { owner: params.ownerId?.trim() || params.env?.PAPERCUSP_SID?.trim() || `spawner-sidecar:${process.pid}` },
+    governedExecutionRuntime(workspaceId, 'agent-process'),
+  );
+}
+
+export async function execProcess(params: ExecParams, deps: ExecProcessDeps = {}): Promise<ExecResult> {
   // Open the handoff files BEFORE spawning: a bad path must come back as a
   // normal non-zero result the caller can fall back from, never a thrown RPC
   // error (every caller's contract is degrade-to-local, not fail).
@@ -75,82 +122,101 @@ export async function execProcess(params: ExecParams): Promise<ExecResult> {
     return { code: -1, stdout: '', stderr: `spawner sidecar could not open a handoff file: ${String(e)}` };
   }
 
-  const result = await new Promise<ExecResult>((resolve) => {
-    const stdio: StdioOptions = [
-      stdinHandle ? stdinHandle.fd : 'ignore',
-      stdoutHandle ? stdoutHandle.fd : 'pipe',
-      'pipe',
-    ];
-    const child = spawn(params.command, params.args ?? [], {
-      cwd: params.cwd,
-      env: { ...process.env, ...(params.env ?? {}) },
-      stdio,
-    });
-    // Decode across chunk boundaries: a multi-byte UTF-8 character split between
-    // two `data` events decodes to replacement chars under a plain
-    // `String(chunk)`, silently corrupting output (e.g. a non-ASCII author or
-    // subject in `git log`). StringDecoder holds the partial sequence back.
-    const outDecoder = new StringDecoder('utf8');
-    const errDecoder = new StringDecoder('utf8');
-    let stdout = '';
-    let stderr = '';
-    let settled = false;
-    let terminating = false;
-    let hardTimer: ReturnType<typeof setTimeout> | null = null;
-    let idleTimer: ReturnType<typeof setTimeout> | null = null;
-    const clearTimers = (): void => {
-      if (hardTimer) clearTimeout(hardTimer);
-      if (idleTimer) clearTimeout(idleTimer);
-    };
-    const finish = (code: number): void => {
-      if (settled) return;
-      settled = true;
-      clearTimers();
-      resolve({ code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
-    };
-    const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
-    const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
-    const terminate = (reason: string): void => {
-      if (settled || terminating) return;
-      terminating = true;
-      clearTimers();
-      stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
-      setTimeout(() => finish(-1), 20_000).unref?.();
-    };
-    const armIdleTimer = (): void => {
-      if (idleTimeoutMs <= 0 || settled || terminating) return;
-      if (idleTimer) clearTimeout(idleTimer);
-      idleTimer = setTimeout(
-        () => terminate(`made no output progress for ${idleTimeoutMs}ms`),
-        idleTimeoutMs,
-      );
-      idleTimer.unref?.();
-    };
-    if (timeoutMs > 0) {
-      hardTimer = setTimeout(
-        () => terminate(`timed out after ${timeoutMs}ms`),
-        timeoutMs,
-      );
-      hardTimer.unref?.();
-    }
-    armIdleTimer();
-    // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
-    child.stdout?.on('data', (d: Buffer) => {
-      stdout += outDecoder.write(d);
+  let execution: GovernedExecution;
+  try {
+    execution = await (deps.beginExecution ?? beginSidecarProcessExecution)(params);
+  } catch (e) {
+    await stdinHandle?.close().catch(() => {});
+    await stdoutHandle?.close().catch(() => {});
+    return { code: -1, stdout: '', stderr: `spawner sidecar admission failed: ${String(e)}` };
+  }
+
+  let result: ExecResult;
+  try {
+    result = await new Promise<ExecResult>((resolve) => {
+      const stdio: StdioOptions = [
+        stdinHandle ? stdinHandle.fd : 'ignore',
+        stdoutHandle ? stdoutHandle.fd : 'pipe',
+        'pipe',
+      ];
+      const child = spawn(params.command, params.args ?? [], {
+        cwd: params.cwd,
+        env: {
+          ...process.env,
+          ...(params.env ?? {}),
+          PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
+        },
+        stdio,
+      });
+      // Decode across chunk boundaries: a multi-byte UTF-8 character split between
+      // two `data` events decodes to replacement chars under a plain
+      // `String(chunk)`, silently corrupting output (e.g. a non-ASCII author or
+      // subject in `git log`). StringDecoder holds the partial sequence back.
+      const outDecoder = new StringDecoder('utf8');
+      const errDecoder = new StringDecoder('utf8');
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
+      let terminating = false;
+      let spawnFailed = false;
+      let hardTimer: ReturnType<typeof setTimeout> | null = null;
+      let idleTimer: ReturnType<typeof setTimeout> | null = null;
+      const clearTimers = (): void => {
+        if (hardTimer) clearTimeout(hardTimer);
+        if (idleTimer) clearTimeout(idleTimer);
+      };
+      const finish = (code: number): void => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        resolve({ code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
+      };
+      const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
+      const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
+      const terminate = (reason: string): void => {
+        if (settled || terminating) return;
+        terminating = true;
+        clearTimers();
+        stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+        child.kill('SIGTERM');
+        setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
+        setTimeout(() => finish(-1), 20_000).unref?.();
+      };
+      const armIdleTimer = (): void => {
+        if (idleTimeoutMs <= 0 || settled || terminating) return;
+        if (idleTimer) clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => terminate(`made no output progress for ${idleTimeoutMs}ms`), idleTimeoutMs);
+        idleTimer.unref?.();
+      };
+      if (timeoutMs > 0) {
+        hardTimer = setTimeout(() => terminate(`timed out after ${timeoutMs}ms`), timeoutMs);
+        hardTimer.unref?.();
+      }
       armIdleTimer();
+      // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
+      child.stdout?.on('data', (d: Buffer) => {
+        stdout += outDecoder.write(d);
+        armIdleTimer();
+      });
+      child.stderr?.on('data', (d: Buffer) => {
+        stderr += errDecoder.write(d);
+        armIdleTimer();
+      });
+      child.on('error', async (e) => {
+        spawnFailed = true;
+        stderr += String(e);
+        await execution.cancel(`sidecar process spawn error: ${String(e)}`);
+        finish(-1);
+      });
+      child.on('close', async (code) => {
+        if (!spawnFailed) await execution.finish({ cpuWeight: 1 });
+        finish(code ?? -1);
+      });
     });
-    child.stderr?.on('data', (d: Buffer) => {
-      stderr += errDecoder.write(d);
-      armIdleTimer();
-    });
-    child.on('error', (e) => {
-      stderr += String(e);
-      finish(-1);
-    });
-    child.on('close', (code) => finish(code ?? -1));
-  });
+  } catch (e) {
+    await execution.cancel(`sidecar process spawn threw: ${String(e)}`);
+    result = { code: -1, stdout: '', stderr: `spawner sidecar could not spawn process: ${String(e)}` };
+  }
 
   // Size the output BEFORE closing, so the caller can detect a short read.
   let stdoutBytes: number | undefined;

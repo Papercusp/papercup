@@ -45,10 +45,7 @@ export function byHostThenOffer(a: StoredWorkOffer, b: StoredWorkOffer): number 
  * the first candidate whose delegated seat count covers `count`. Null when
  * none qualifies (caller refuses, listing candidates).
  */
-export function pickPotSeatOffer(
-  offers: readonly StoredWorkOffer[],
-  count: number,
-): StoredWorkOffer | null {
+export function pickPotSeatOffer(offers: readonly StoredWorkOffer[], count: number): StoredWorkOffer | null {
   const sorted = [...offers].sort(byHostThenOffer);
   return sorted.find((o) => (o.record?.seat?.count ?? 0) >= count) ?? null;
 }
@@ -58,8 +55,7 @@ export default defineTool({
   description:
     'Cross-machine launch: ask the machine that delegated seats to your fleet (its federated seat-offer) to spawn N members from those seats, joined to your fleet and working your plan. Async: returns once the SIGNED request is stored (it federates on the next sync tick); the target host honors it only if its owner enabled accept-delegated-seats. Watch arrivals via fleet:status / federated presence; refusals come back as p2p receipts (p2p:trace).',
   guidance: {
-    when:
-      "Your fleet holds a REMOTE seat-offer (another machine ran resource:delegate kind:'agent_slot' for your fleet) and you want those seats actually running members. Pick the target from the fleet's open seat-offers (auto-picked when there is exactly one).",
+    when: "Your fleet holds a REMOTE seat-offer (another machine ran resource:delegate kind:'agent_slot' for your fleet) and you want those seats actually running members. Pick the target from the fleet's open seat-offers (auto-picked when there is exactly one).",
     notWhen:
       "Spawning from seats delegated on THIS machine → fleet:launch-on-plan (it consumes local seats directly). Spreading members across SEVERAL machines' seat-offers in one call → fleet:launch-on-plan placement:'remote' (it composes this request per target). Delegating seats in the first place → resource:delegate on the contributing machine.",
     chaining: ROUTING_LADDER,
@@ -74,15 +70,18 @@ export default defineTool({
       .number()
       .int()
       .min(1)
-      .max(12)
       .default(1)
-      .describe('Members to spawn (1..the seat-offer\'s delegated count; ≤12 per request).'),
+      .describe(
+        "Members to spawn (1..the seat-offer's delegated count). The contributing host independently admits each actual start through its durable governor.",
+      ),
     publisher: z
       .number()
       .int()
       .positive()
       .optional()
-      .describe('Target seat-offer publisher (numeric GitHub user id). Optional when the fleet has exactly one open seat-offer.'),
+      .describe(
+        'Target seat-offer publisher (numeric GitHub user id). Optional when the fleet has exactly one open seat-offer.',
+      ),
     offer: z
       .string()
       .min(1)
@@ -108,7 +107,10 @@ export default defineTool({
     const fleet = await getFleet(workspaceId, args.fleet);
     if (!fleet) {
       return json(
-        { ok: false, error: `no fleet '${args.fleet}' in this workspace — create it (fleet:create) before requesting remote members` },
+        {
+          ok: false,
+          error: `no fleet '${args.fleet}' in this workspace — create it (fleet:create) before requesting remote members`,
+        },
         true,
       );
     }
@@ -133,7 +135,10 @@ export default defineTool({
     let targetPublisher = args.publisher ?? null;
     let targetOffer = args.offer ?? null;
     if ((targetPublisher == null) !== (targetOffer == null)) {
-      return json({ ok: false, error: 'pass BOTH publisher + offer to pick a target seat-offer, or NEITHER to auto-pick' }, true);
+      return json(
+        { ok: false, error: 'pass BOTH publisher + offer to pick a target seat-offer, or NEITHER to auto-pick' },
+        true,
+      );
     }
     // P-004: resolve "the pot" (the plan's owning harness) up front — needed both
     // for the pot-scoped auto-pick fallback below AND to thread requesterPotSlug
@@ -219,8 +224,7 @@ export default defineTool({
       target: { publisher: targetPublisher, offer: targetOffer, host: seat?.hostLabel ?? null },
       count: args.count,
       plan: args.plan,
-      next:
-        'The signed request federates on the next sync tick. The target host spawns ONLY if its owner enabled accept-delegated-seats (/res) — otherwise the request expires after 60 min. Watch members arrive via fleet:status / coord:presence; a refusal federates back as a p2p receipt (p2p:trace with this requestOfferId).',
+      next: 'The signed request federates on the next sync tick. The target host spawns ONLY if its owner enabled accept-delegated-seats (/res) — otherwise the request expires after 60 min. Watch members arrive via fleet:status / coord:presence; a refusal federates back as a p2p receipt (p2p:trace with this requestOfferId).',
     });
   },
 });

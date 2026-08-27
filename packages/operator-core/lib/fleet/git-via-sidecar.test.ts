@@ -1,6 +1,31 @@
 import { describe, it, expect } from 'vitest';
 import { gitSidecarEnabled } from './git-via-sidecar';
-import { execProcess } from './sidecar-exec-process';
+import { execProcess, type ExecProcessDeps } from './sidecar-exec-process';
+import type { GovernedExecution } from '../resource-governor/execution';
+
+function testExecution(): GovernedExecution {
+  return {
+    receiptId: 'test-receipt',
+    context: {
+      contractVersion: 1,
+      requestId: 'test-request',
+      rootRequestId: 'test-request',
+      parentRequestId: null,
+      idempotencyKey: 'test-sidecar-process',
+      admissionClass: 'process',
+      priority: 0,
+      demand: { cpuWeight: 1 },
+      depth: 0,
+      createdAtMs: 1,
+      decisionGeneration: 1,
+    },
+    lease: { leaseId: 'test-lease', generation: 1, admissionClass: 'process', expiresAtMs: 2, owner: 'test' },
+    finish: async () => true,
+    cancel: async () => true,
+  };
+}
+
+const executionDeps: ExecProcessDeps = { beginExecution: async () => testExecution() };
 
 /**
  * These guard the ENABLE DECISION for routing `git` through the spawner sidecar
@@ -31,9 +56,7 @@ describe('gitSidecarEnabled', () => {
   });
 
   it("the caller's explicit var can force it ON while the shared var is unset", () => {
-    expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', { PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '1' })).toBe(
-      true,
-    );
+    expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', { PAPERCUSP_POT_GIT_SPAWN_SIDECAR: '1' })).toBe(true);
   });
 
   it("the caller's explicit var can force it OFF while the shared var is ON (per-subsystem bisect)", () => {
@@ -69,24 +92,30 @@ describe('spawner-sidecar process progress guard', () => {
     const script =
       "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === 8) clearInterval(t); }, 100);";
     const started = Date.now();
-    const res = await execProcess({
-      command: process.execPath,
-      args: ['-e', script],
-      idleTimeoutMs: 500,
-      timeoutMs: 2_000,
-    });
+    const res = await execProcess(
+      {
+        command: process.execPath,
+        args: ['-e', script],
+        idleTimeoutMs: 500,
+        timeoutMs: 2_000,
+      },
+      executionDeps,
+    );
     expect(Date.now() - started).toBeGreaterThanOrEqual(700);
     expect(res.code).toBe(0);
     expect(res.stderr).toContain('progress');
   });
 
   it('kills a silent child at the idle deadline instead of waiting for the hard ceiling', async () => {
-    const res = await execProcess({
-      command: process.execPath,
-      args: ['-e', 'setTimeout(() => {}, 60_000)'],
-      idleTimeoutMs: 120,
-      timeoutMs: 2_000,
-    });
+    const res = await execProcess(
+      {
+        command: process.execPath,
+        args: ['-e', 'setTimeout(() => {}, 60_000)'],
+        idleTimeoutMs: 120,
+        timeoutMs: 2_000,
+      },
+      executionDeps,
+    );
     expect(res.code).toBe(-1);
     expect(res.stderr).toMatch(/made no output progress for 120ms/);
   });

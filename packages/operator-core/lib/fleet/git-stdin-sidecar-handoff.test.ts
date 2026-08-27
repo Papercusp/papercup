@@ -3,6 +3,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ExecProcessDeps } from './sidecar-exec-process';
+import type { GovernedExecution } from '../resource-governor/execution';
 
 /**
  * ACCEPTANCE for WI-6404 — the `git cat-file --batch` stdin seam routed through
@@ -38,6 +40,30 @@ import { join } from 'node:path';
 // (tmpfile → fd → git → fd → readback → size cross-check) is exercised.
 let rpcOverride: ((params: unknown) => Promise<unknown>) | null = null;
 
+function testExecution(): GovernedExecution {
+  return {
+    receiptId: 'test-receipt',
+    context: {
+      contractVersion: 1,
+      requestId: 'test-request',
+      rootRequestId: 'test-request',
+      parentRequestId: null,
+      idempotencyKey: 'test-sidecar-process',
+      admissionClass: 'process',
+      priority: 0,
+      demand: { cpuWeight: 1 },
+      depth: 0,
+      createdAtMs: 1,
+      decisionGeneration: 1,
+    },
+    lease: { leaseId: 'test-lease', generation: 1, admissionClass: 'process', expiresAtMs: 2, owner: 'test' },
+    finish: vi.fn(async () => true),
+    cancel: vi.fn(async () => true),
+  };
+}
+
+const executionDeps: ExecProcessDeps = { beginExecution: async () => testExecution() };
+
 vi.mock('./spawner-sidecar-spawn', () => ({
   spawnSpawnerSidecar: async () => {},
 }));
@@ -47,7 +73,7 @@ vi.mock('./spawner-ipc-client', () => ({
     call: async (_method: string, params: unknown) => {
       if (rpcOverride) return rpcOverride(params);
       const { execProcess } = await import('./sidecar-exec-process');
-      return execProcess(params as Parameters<typeof execProcess>[0]);
+      return execProcess(params as Parameters<typeof execProcess>[0], executionDeps);
     },
   }),
 }));
@@ -183,18 +209,12 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     // a plausible-looking short buffer.
     rpcOverride = async (params) => {
       const { execProcess } = await import('./sidecar-exec-process');
-      const real = await execProcess(params as Parameters<typeof execProcess>[0]);
+      const real = await execProcess(params as Parameters<typeof execProcess>[0], executionDeps);
       return { ...real, stdoutBytes: (real.stdoutBytes ?? 0) + 1 };
     };
     try {
       await expect(
-        runGitStdinViaSpawnerSidecar(
-          ['cat-file', '--batch', '--buffer'],
-          repo,
-          unicodeOid + '\n',
-          60_000,
-          process.env,
-        ),
+        runGitStdinViaSpawnerSidecar(['cat-file', '--batch', '--buffer'], repo, unicodeOid + '\n', 60_000, process.env),
       ).rejects.toThrow(/size mismatch/);
     } finally {
       rpcOverride = null;
@@ -241,7 +261,7 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
     // `cat` echoes stdin byte-for-byte, isolating the INPUT leg of the handoff.
     await writeFile(inPath, BINARY_CONTENT);
     await writeFile(outPath, '');
-    const res = await execProcess({ command: 'cat', stdinPath: inPath, stdoutPath: outPath });
+    const res = await execProcess({ command: 'cat', stdinPath: inPath, stdoutPath: outPath }, executionDeps);
     expect(res.code).toBe(0);
     expect(res.stdoutBytes).toBe(BINARY_CONTENT.length);
     expect((await readFile(outPath)).equals(BINARY_CONTENT)).toBe(true);
@@ -264,8 +284,55 @@ describe('WI-6404 — cat-file --batch through the sidecar fd handoff', () => {
 
   it('without handoff paths, process:exec still pipes stdout as a string (existing callers untouched)', async () => {
     const { execProcess } = await import('./sidecar-exec-process');
-    const res = await execProcess({ command: 'git', args: ['rev-parse', '--is-bare-repository'], cwd: repo });
+    const res = await execProcess(
+      { command: 'git', args: ['rev-parse', '--is-bare-repository'], cwd: repo },
+      executionDeps,
+    );
     expect(res.code).toBe(0);
     expect(res.stdout.trim()).toBe('false');
+  });
+
+  it('propagates the governed child context and exact-releases on close', async () => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const finish = vi.fn(async () => true);
+    const cancel = vi.fn(async (_reason: string) => true);
+    const beginExecution = vi.fn(async (params: Parameters<NonNullable<ExecProcessDeps['beginExecution']>>[0]) => ({
+      ...(await executionDeps.beginExecution!(params)),
+      finish,
+      cancel,
+    }));
+    const res = await execProcess(
+      {
+        command: process.execPath,
+        args: ['-e', 'process.stdout.write(process.env.PAPERCUSP_ADMISSION_CONTEXT || "")'],
+      },
+      { beginExecution },
+    );
+
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({ requestId: 'test-request', admissionClass: 'process' });
+    expect(beginExecution).toHaveBeenCalledOnce();
+    expect(finish).toHaveBeenCalledWith({ cpuWeight: 1 });
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
+  it('cancels the durable receipt when the child cannot spawn', async () => {
+    const { execProcess } = await import('./sidecar-exec-process');
+    const finish = vi.fn(async () => true);
+    const cancel = vi.fn(async (_reason: string) => true);
+    const res = await execProcess(
+      { command: '/definitely-not-a-real-wi42343-binary' },
+      {
+        beginExecution: async (params) => ({
+          ...(await executionDeps.beginExecution!(params)),
+          finish,
+          cancel,
+        }),
+      },
+    );
+
+    expect(res.code).toBe(-1);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(String(cancel.mock.calls[0]?.[0])).toContain('spawn error');
   });
 });

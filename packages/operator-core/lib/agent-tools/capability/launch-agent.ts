@@ -88,10 +88,6 @@ import {
   type SavedFleetLaunchSpecProvenance,
 } from '../fleet_registry/saved-launch-spec';
 
-/** Launching more than this many agents in one call is almost certainly a mistake
- *  (and is heavy — each is a real CLI process). Mirrors capability:terminal's cap. */
-const MAX_AGENTS = 12;
-
 /** How long to wait for a resumed session's live psu-pty host to appear before
  *  returning an honest UNCONFIRMED verdict. Most healthy resumes register within
  *  a few seconds, but EI-21476169071856015 measured a healthy exact Codex resume
@@ -180,10 +176,7 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string | null)
   try {
     const modeRows = await getModes(workspaceId, ownerId);
     if (!modeRows.some((row) => row.mode === 'drain')) return null;
-    const facts = await listFacts(
-      { scope: 'owner', scopeRef: ownerId },
-      { workspaceId, limit: 50 },
-    );
+    const facts = await listFacts({ scope: 'owner', scopeRef: ownerId }, { workspaceId, limit: 50 });
     const instructions = facts.find((fact) => fact.key === modeInstructionsFactKey('drain'));
     return resolveLaunchMode({ modeRows, instructionsFact: instructions?.body });
   } catch {
@@ -194,17 +187,17 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string | null)
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    'Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent\'s FIRST TURN, so it starts working immediately instead of parking idle.',
+    "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
   guidance: {
     when: 'GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.',
     notWhen:
       'To run a COMMAND (dev server, build, REPL): capability:terminal / capability:bash. For N members on a plan: fleet:launch-on-plan. Doors: /internal/docs/agent-insights/launching-agents-which-tool-for-which-door.',
     chaining:
-      'A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent\'s latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.',
+      "A fresh/fork/headless launch returns once spawned; a visible in-place resume uses a three-state verifier: matching host = verified, observed UUID mismatch = isError, deadline with no host = RESUME UNCONFIRMED (not an invented failure). `resume: { agentId }` resolves that agent's latest session; a LIVE source is auto-FORKED (two CLIs on one transcript collide), minting a NEW identity — find it in coord:presence. Pass `idempotencyKey` if a retry might re-fire the call (a replay reports deduped:true instead of opening a second set of windows). EI-9748: a `:3170` restart reaps HEADLESS children.",
     seeAlso: [
       'fleet:launch-on-plan (N members on a plan, with seats + capacity advice)',
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
-      'coord:presence (a launched/forked agent\'s identity + liveness)',
+      "coord:presence (a launched/forked agent's identity + liveness)",
     ],
   },
   capability: 'capability:terminal',
@@ -212,117 +205,149 @@ export default defineTool({
   agentRoles: [...SU_ROLES],
   args: (() => {
     const base = z.object({
-    brief: z
-      .string()
-      .min(1)
-      .max(8000)
-      .optional()
-      .describe(
-        "The agent's FIRST TURN — a free-form task/brief it starts working immediately (no plan required). Also allowed with `resume`/`fork`, where it becomes the resumed session's next turn (\"here's what changed, carry on\"). Omit for a launch that should open idle.",
-      ),
-    plan: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('Plan slug to bind the agent to — it launches on the plan and auto-kicks-off against it (the fleet:launch-on-plan behavior, without needing a fleet).'),
-    harness: z
-      .string()
-      .max(120)
-      .optional()
-      .describe('Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.'),
-    resume: z
-      .object({
-        agentId: z
-          .string()
-          .max(120)
-          .optional()
-          .describe("The agent's coord id (e.g. 'su-a1a71' — a prefix is fine). Resolves its MOST-RECENT session automatically."),
-        sessionId: z
-          .string()
-          .max(200)
-          .optional()
-          .describe('An exact native CLI session uuid, when you want to pin one specific session rather than the agent\'s latest.'),
-      })
-      .optional()
-      .describe('Resume an existing session mid-thread — its full context comes back. Pass EITHER agentId (usual) or sessionId (exact pin).'),
-    successor: z
-      .object({
-        agentId: z
-          .string()
-          .max(120)
-          .optional()
-          .describe("The ended predecessor's coord id (e.g. 'su-a1a71' — a prefix is fine)."),
-        sessionId: z
-          .string()
-          .max(200)
-          .optional()
-          .describe('The ended predecessor\'s exact native CLI session uuid.'),
-      })
-      .optional()
-      .describe(
-        'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
-      ),
-    fork: z
-      .boolean()
-      .optional()
-      .describe('Branch off the resumed session instead of continuing it in place: the fork gets a FRESH identity + its own transcript, and the original is untouched. Forced automatically when the source session is still LIVE (a second CLI on one transcript collides — WI-3882).'),
-    restoreVisible: z
-      .boolean()
-      .optional()
-      .describe(
-        'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. For a stale headless host (`not-a-window`), omit `restoreVisible` and use ordinary exact resume, which performs guarded stale-headless recovery. The old agent-launched host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
-      ),
-    agent: z
-      .enum(['claude', 'codex', 'omp'])
-      .optional()
-      .describe('Which agent CLI backs a FRESH launch (default: the psu default). Ignored for resume/fork — a session resumes under the CLI it was recorded on.'),
-    fleet: z
-      .string()
-      .max(120)
-      .optional()
-      .describe("Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet."),
-    headless: z
-      .boolean()
-      .optional()
-      .describe('Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty), but note EI-9748: a `:3170` restart reaps them.'),
-    count: z
-      .number()
-      .int()
-      .min(1)
-      .max(MAX_AGENTS)
-      .optional()
-      .describe(`How many agents to launch with this brief/plan (default 1 — or the length of \`members\` when that is given; max ${MAX_AGENTS}). Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).`),
-    members: z
-      .array(memberSpecSchema)
-      .max(MAX_AGENTS)
-      .optional()
-      .describe(
-        'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA selector, never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
-      ),
-    cwd: z.string().max(500).optional().describe('Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session\'s own recorded cwd.'),
-    label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
-    display: z
-      .string()
-      .max(40)
-      .optional()
-      .describe("WI-4272 (demo/recording): open the window(s) on this X display (e.g. ':110') instead of the owner's desktop seat. Linux + visible only."),
-    account: z
-      .string()
-      .max(120)
-      .optional()
-      .describe("Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. Always resolved — a scripted launch must never block on the interactive account picker."),
-    model: z.string().max(80).optional().describe('Model override for the launched agent (e.g. an opus/sonnet spec).'),
-    extraArgs: z
-      .array(z.string().max(200))
-      .max(20)
-      .optional()
-      .describe("Extra psu flags passed through verbatim (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag needs no tool change. Shell metacharacters are refused."),
-    idempotencyKey: z
-      .string()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe('Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.'),
+      brief: z
+        .string()
+        .min(1)
+        .max(8000)
+        .optional()
+        .describe(
+          "The agent's FIRST TURN — a free-form task/brief it starts working immediately (no plan required). Also allowed with `resume`/`fork`, where it becomes the resumed session's next turn (\"here's what changed, carry on\"). Omit for a launch that should open idle.",
+        ),
+      plan: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'Plan slug to bind the agent to — it launches on the plan and auto-kicks-off against it (the fleet:launch-on-plan behavior, without needing a fleet).',
+        ),
+      harness: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'Harness slug to bootstrap for an operator-scope launch. Required when the caller context is wildcard/unset; otherwise the caller harness is used.',
+        ),
+      resume: z
+        .object({
+          agentId: z
+            .string()
+            .max(120)
+            .optional()
+            .describe(
+              "The agent's coord id (e.g. 'su-a1a71' — a prefix is fine). Resolves its MOST-RECENT session automatically.",
+            ),
+          sessionId: z
+            .string()
+            .max(200)
+            .optional()
+            .describe(
+              "An exact native CLI session uuid, when you want to pin one specific session rather than the agent's latest.",
+            ),
+        })
+        .optional()
+        .describe(
+          'Resume an existing session mid-thread — its full context comes back. Pass EITHER agentId (usual) or sessionId (exact pin).',
+        ),
+      successor: z
+        .object({
+          agentId: z
+            .string()
+            .max(120)
+            .optional()
+            .describe("The ended predecessor's coord id (e.g. 'su-a1a71' — a prefix is fine)."),
+          sessionId: z.string().max(200).optional().describe("The ended predecessor's exact native CLI session uuid."),
+        })
+        .optional()
+        .describe(
+          'Start a FRESH context as an explicit successor of an ended session. The predecessor owner id is pre-pinned so its coord-keyed carry/claims survive; its durable carry/recovery brief is seeded into the first turn. A live source is refused — use ordinary resume, which auto-forks live sources, when you need a parallel branch.',
+        ),
+      fork: z
+        .boolean()
+        .optional()
+        .describe(
+          'Branch off the resumed session instead of continuing it in place: the fork gets a FRESH identity + its own transcript, and the original is untouched. Forced automatically when the source session is still LIVE (a second CLI on one transcript collides — WI-3882).',
+        ),
+      restoreVisible: z
+        .boolean()
+        .optional()
+        .describe(
+          'Guarded recovery for an EXACT `resume.sessionId` whose managed host survived after its desktop window disappeared. If the target is already ended or no managed host remains, the tool safely falls through to an ordinary exact resume without terminating anything. When a host is present, refuses unless kernel cgroup evidence positively says that exact host window is dead; alive/unknown/non-window states are never terminated. For a stale headless host (`not-a-window`), omit `restoreVisible` and use ordinary exact resume, which performs guarded stale-headless recovery. The old agent-launched host must accept graceful shutdown before the exact UUID is resumed into a verified visible terminal.',
+        ),
+      agent: z
+        .enum(['claude', 'codex', 'omp'])
+        .optional()
+        .describe(
+          'Which agent CLI backs a FRESH launch (default: the psu default). Ignored for resume/fork — a session resumes under the CLI it was recorded on.',
+        ),
+      fleet: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          "Fleet name or slug to JOIN (membership + the fleet's bound window colour). Optional: omit it and a FRESH launch falls back to YOUR OWN presence-fleet (WI-4234); a RESUME/FORK preserves the target session's latest durable fleet membership instead of inheriting the caller's fleet.",
+        ),
+      headless: z
+        .boolean()
+        .optional()
+        .describe(
+          'Launch with no window (logs to a file under the workspace fleet-logs dir) instead of a visible desktop terminal. Default false = visible. Headless sessions stay injectable (managed pty), but note EI-9748: a `:3170` restart reaps them.',
+        ),
+      count: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .describe(
+          'How many agents to launch with this brief/plan (default 1 — or the length of `members` when that is given). Every actual start is independently admitted by the durable resource governor. Not allowed with an in-place resume — one session cannot be resumed N times (fork it instead).',
+        ),
+      members: z
+        .array(memberSpecSchema)
+        .optional()
+        .describe(
+          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA selector, never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+        ),
+      cwd: z
+        .string()
+        .max(500)
+        .optional()
+        .describe(
+          "Working dir for a FRESH launch (absolute, or relative to the harness project dir). A resume always lands in the session's own recorded cwd.",
+        ),
+      label: z.string().max(120).optional().describe('Display label (shown in /adv/sessions + the window title).'),
+      display: z
+        .string()
+        .max(40)
+        .optional()
+        .describe(
+          "WI-4272 (demo/recording): open the window(s) on this X display (e.g. ':110') instead of the owner's desktop seat. Linux + visible only.",
+        ),
+      account: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          "Account routing: 'default' (the system login), 'auto' (gateway-routed), or a pool account id. Defaults to 'default' on every platform; the gateway is never selected implicitly. Always resolved — a scripted launch must never block on the interactive account picker.",
+        ),
+      model: z
+        .string()
+        .max(80)
+        .optional()
+        .describe('Model override for the launched agent (e.g. an opus/sonnet spec).'),
+      extraArgs: z
+        .array(z.string().max(200))
+        .max(20)
+        .optional()
+        .describe(
+          "Extra psu flags passed through verbatim (e.g. ['--brain', '--context-size=trimmed']) — the capability:terminal pass-through model, so a NEW psu flag needs no tool change. Shell metacharacters are refused.",
+        ),
+      idempotencyKey: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          'Dedupe key for retries: pass the SAME key when re-firing a call that may have already landed — a replay reports deduped:true (with what the original launched) instead of opening a SECOND set of agent windows.',
+        ),
     });
     // Keep the fresh/source distinction in the published schema. The handler
     // already rejects `plan` with a resume or successor, but leaving all three
@@ -351,13 +376,11 @@ export default defineTool({
     // canonical saved profile has been resolved. It is deliberately absent
     // from the public zod schema, so ordinary fresh-launch behavior does not
     // change and callers cannot smuggle an unaudited recovery carry.
-    let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' })
-      .__savedLaunchCarry;
+    let savedLaunchCarry = (args as typeof args & { __savedLaunchCarry?: 'warm' | 'cold' }).__savedLaunchCarry;
     // Internal seam used by fleet:respawn-member: a replacement must be
     // identity-correlated before it is spawned, because concurrent respawns
     // cannot safely identify one another by roster ordering after launch.
-    const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string })
-      .__respawnOwnerId?.trim() || null;
+    const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string }).__respawnOwnerId?.trim() || null;
     let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
     let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
     const sourceAction = isResume || isSuccessor;
@@ -365,7 +388,9 @@ export default defineTool({
       return err('`successor` needs `agentId` or `sessionId` — pass the ended predecessor reference to recover.');
     }
     if (isSuccessor && (isResume || args.fork || args.restoreVisible)) {
-      return err('`successor` is an explicit fresh recovery mode and cannot be combined with `resume`, `fork`, or `restoreVisible`.');
+      return err(
+        '`successor` is an explicit fresh recovery mode and cannot be combined with `resume`, `fork`, or `restoreVisible`.',
+      );
     }
     if (!sourceAction && args.fork) {
       return err('`fork: true` needs a source session — pass `resume: { agentId }` (or `sessionId`) to fork from.');
@@ -374,18 +399,26 @@ export default defineTool({
       return err('`restoreVisible:true` requires `resume: { sessionId }` — it restores one exact existing transcript.');
     }
     if (args.restoreVisible && !args.resume?.sessionId) {
-      return err('`restoreVisible:true` requires an exact `resume.sessionId`; an agentId/latest lookup is not a safe destructive target.');
+      return err(
+        '`restoreVisible:true` requires an exact `resume.sessionId`; an agentId/latest lookup is not a safe destructive target.',
+      );
     }
     if (args.restoreVisible && args.fork) {
-      return err('`restoreVisible:true` and `fork:true` conflict: restoration continues the exact transcript in place; fork leaves the source untouched.');
+      return err(
+        '`restoreVisible:true` and `fork:true` conflict: restoration continues the exact transcript in place; fork leaves the source untouched.',
+      );
     }
     if (sourceAction && args.plan) {
-      return err('`plan` is for a FRESH launch. A resumed session keeps its own context — put any new direction in `brief`, which becomes its next turn.');
+      return err(
+        '`plan` is for a FRESH launch. A resumed session keeps its own context — put any new direction in `brief`, which becomes its next turn.',
+      );
     }
     // P-002: `members` is a FRESH per-member spec array — one session can't be
     // resumed N different ways, so it never rides a resume/fork.
     if (sourceAction && args.members?.length) {
-      return err('`members` configures a FRESH per-member multi-launch; a resume/fork is a single session — put any new direction in `brief`.');
+      return err(
+        '`members` configures a FRESH per-member multi-launch; a resume/fork is a single session — put any new direction in `brief`.',
+      );
     }
     // `count` defaults to the number of member specs when omitted, so `members: [a,b,c]`
     // opens 3 without a redundant `count: 3`.
@@ -396,7 +429,9 @@ export default defineTool({
       );
     }
     if (isSuccessor && count > 1) {
-      return err('A fresh successor is one identity-preserving session. Use a separate fresh brief for parallel work; do not launch N successors onto one predecessor owner.');
+      return err(
+        'A fresh successor is one identity-preserving session. Use a separate fresh brief for parallel work; do not launch N successors onto one predecessor owner.',
+      );
     }
     if (isResume && count > 1 && !args.fork) {
       return err(
@@ -405,7 +440,9 @@ export default defineTool({
     }
     const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
     if (!sourceAction && !args.brief && !args.plan && !anyMemberBrief) {
-      return err('Give the agent something to do: a `brief` (free-form first turn), a per-member `members[i].brief`, or a `plan` slug — otherwise it launches and sits idle.');
+      return err(
+        'Give the agent something to do: a `brief` (free-form first turn), a per-member `members[i].brief`, or a `plan` slug — otherwise it launches and sits idle.',
+      );
     }
 
     const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
@@ -462,9 +499,8 @@ export default defineTool({
         // A successor must run the same backend as its predecessor. An explicit
         // mismatch would create a new process that can no longer interpret the
         // predecessor's transcript/carry contract, so refuse before spawning.
-        const sourceAgent = target.agent === 'claude' || target.agent === 'codex' || target.agent === 'omp'
-          ? target.agent
-          : null;
+        const sourceAgent =
+          target.agent === 'claude' || target.agent === 'codex' || target.agent === 'omp' ? target.agent : null;
         if (target.agent && !sourceAgent) {
           return (
             `Cannot start successor for ${target.ownerId}: the ended source recorded unsupported agent ${target.agent}. ` +
@@ -492,7 +528,9 @@ export default defineTool({
             `Fresh successor recovery for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId}.`,
             `This is a NEW context retaining predecessor identity ${target.ownerId}; re-orient and verify live state before acting.`,
             args.brief?.trim() ? `Current recovery direction:\n${args.brief.trim()}` : null,
-            renderedCarry ? `Predecessor carry/recovery brief:\n${renderedCarry}` : 'No carry brief was available; recover durable state with coord:orient { afterCompaction: true } and work_items:get before editing.',
+            renderedCarry
+              ? `Predecessor carry/recovery brief:\n${renderedCarry}`
+              : 'No carry brief was available; recover durable state with coord:orient { afterCompaction: true } and work_items:get before editing.',
           ]
             .filter((part): part is string => Boolean(part))
             .join('\n\n');
@@ -503,7 +541,7 @@ export default defineTool({
         } catch (e) {
           return (
             `Cannot start successor for ${target.ownerId}: failed to assemble its durable carry/recovery brief ` +
-              `(${(e as Error)?.message ?? e}). No process was opened.`
+            `(${(e as Error)?.message ?? e}). No process was opened.`
           );
         }
         return null;
@@ -590,10 +628,9 @@ export default defineTool({
         // Otherwise a sweeper stamped it on noticing the process was already gone, so
         // stating it as "ended <ts>" asserts something we do not know (WI-7126).
         const endedPhrase = describeSessionEndTime(target);
-        const sourceActionNote =
-          fork
-            ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
-            : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`;
+        const sourceActionNote = fork
+          ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
+          : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`;
         let promotedToSuccessor = false;
 
         // EI-21007744826020808: a live source at the context cliff can technically
@@ -716,10 +753,9 @@ export default defineTool({
     // its transcript/backend identity, but omitted placement/routing flags still
     // come from the fleet profile so a dead visible member returns headlessly
     // when that is the fleet's recorded shape.
-    type AppliedHeadcountProfile = Omit<
-      NonNullable<Awaited<ReturnType<typeof getFleetHeadcountTarget>>>,
-      'config'
-    > & { config: SavedFleetLaunchConfig };
+    type AppliedHeadcountProfile = Omit<NonNullable<Awaited<ReturnType<typeof getFleetHeadcountTarget>>>, 'config'> & {
+      config: SavedFleetLaunchConfig;
+    };
     let persistedHeadcountProfile: AppliedHeadcountProfile | null = null;
     let savedLaunchSpecMeta: {
       provenance: SavedFleetLaunchSpecProvenance;
@@ -808,11 +844,7 @@ export default defineTool({
       return err(`Failed to prepare the launch: ${(e as Error)?.message ?? e}`);
     }
 
-    const cwd = args.cwd
-      ? isAbsolute(args.cwd)
-        ? args.cwd
-        : resolvePath(base.cwd, args.cwd)
-      : base.cwd;
+    const cwd = args.cwd ? (isAbsolute(args.cwd) ? args.cwd : resolvePath(base.cwd, args.cwd)) : base.cwd;
 
     // ── Per-member launch composition (P-002) ──────────────────────────────────
     // A FRESH multi-launch folds `members[i]` over the flat top-level args, so agent i
@@ -848,9 +880,7 @@ export default defineTool({
       // still wins via foldMemberSpec below, which is the intended order —
       // settings are the goal's standing policy, not an override of a choice the
       // caller just made for one member.
-      agent: isSuccessor && resumeAgent
-        ? resumeAgent
-        : goalLaunch.effective.agent ?? args.agent ?? 'claude',
+      agent: isSuccessor && resumeAgent ? resumeAgent : (goalLaunch.effective.agent ?? args.agent ?? 'claude'),
       account: goalLaunch.effective.account ?? args.account ?? undefined,
       model: goalLaunch.effective.model ?? args.model ?? undefined,
       effort: goalLaunch.effective.effort ?? undefined,
@@ -1029,9 +1059,10 @@ export default defineTool({
     });
     if (!claim.won) {
       const prior = claim.priorSummary && Object.keys(claim.priorSummary).length ? claim.priorSummary : null;
-      const priorLaunch = prior && typeof prior.launch === 'object' && prior.launch !== null
-        ? prior.launch as Record<string, unknown>
-        : prior;
+      const priorLaunch =
+        prior && typeof prior.launch === 'object' && prior.launch !== null
+          ? (prior.launch as Record<string, unknown>)
+          : prior;
       const when = claim.priorLaunchedAt ? new Date(claim.priorLaunchedAt).toISOString() : 'earlier';
       return {
         content: [
@@ -1040,7 +1071,9 @@ export default defineTool({
             text:
               `Already launched (deduped) — idempotencyKey ${JSON.stringify(args.idempotencyKey)} was claimed at ${when}` +
               `${claim.priorLaunchedBy ? ` by ${claim.priorLaunchedBy}` : ''}. Nothing new was spawned.\n` +
-              (prior ? `That call reported: ${JSON.stringify(prior)}` : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
+              (prior
+                ? `That call reported: ${JSON.stringify(prior)}`
+                : 'No summary was recorded for that call — check /adv/sessions for what it opened.'),
           },
         ],
         data: {
@@ -1083,7 +1116,7 @@ export default defineTool({
     const results = await Promise.all(
       memberCommands.map((cmd, i) => {
         const memberBrief = isSuccessor
-          ? successorBrief ?? undefined
+          ? (successorBrief ?? undefined)
           : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined);
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
@@ -1252,7 +1285,11 @@ export default defineTool({
       const headlessLogSizes = new Map(
         opened.flatMap((result) => {
           if (result.status !== 'ok' || !result.logPath) return [];
-          try { return [[result.logPath, statSync(result.logPath).size] as const]; } catch { return []; }
+          try {
+            return [[result.logPath, statSync(result.logPath).size] as const];
+          } catch {
+            return [];
+          }
         }),
       );
       try {
@@ -1265,14 +1302,24 @@ export default defineTool({
             ...(isSuccessor && resumeOwnerId ? { expectedOwnerIds: [resumeOwnerId] } : {}),
           },
           {
-            probeProcessEvidence: () => opened.flatMap((result) => {
-              if (result.status !== 'ok' || result.pid == null || !result.logPath) return [];
-              let pidAlive = false;
-              let logGrowing = false;
-              try { process.kill(result.pid, 0); pidAlive = true; } catch { pidAlive = false; }
-              try { logGrowing = statSync(result.logPath).size > (headlessLogSizes.get(result.logPath) ?? 0); } catch { logGrowing = false; }
-              return [{ pidAlive, logGrowing }];
-            }),
+            probeProcessEvidence: () =>
+              opened.flatMap((result) => {
+                if (result.status !== 'ok' || result.pid == null || !result.logPath) return [];
+                let pidAlive = false;
+                let logGrowing = false;
+                try {
+                  process.kill(result.pid, 0);
+                  pidAlive = true;
+                } catch {
+                  pidAlive = false;
+                }
+                try {
+                  logGrowing = statSync(result.logPath).size > (headlessLogSizes.get(result.logPath) ?? 0);
+                } catch {
+                  logGrowing = false;
+                }
+                return [{ pidAlive, logGrowing }];
+              }),
           },
         );
         notes.push(freshVerdict.note);
@@ -1304,16 +1351,14 @@ export default defineTool({
       }
       for (const o of opened) {
         if (o.status !== 'ok') continue;
-        lines.push(
-          `  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${cwd}${o.display ? ` [DISPLAY=${o.display}]` : ''}`,
-        );
+        lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${cwd}${o.display ? ` [DISPLAY=${o.display}]` : ''}`);
       }
       const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
       if (hasLaunchBrief) {
         lines.push(
           isResume
-            ? '  ↪ the brief is QUEUED as the resumed session\'s next turn (psu\'s managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below.'
-            : '  ↪ the brief is the agent\'s first turn — it starts working on boot, it does not park idle.',
+            ? "  ↪ the brief is QUEUED as the resumed session's next turn (psu's managed pty injects it once the agent reaches its prompt). Delivery alone is not proof the turn began; read the verification verdict below."
+            : "  ↪ the brief is the agent's first turn — it starts working on boot, it does not park idle.",
         );
       } else {
         lines.push('  ⚠ no `brief` — the agent opens IDLE. It will not do anything until someone gives it a turn.');
@@ -1349,13 +1394,15 @@ export default defineTool({
       resumedOwnerId: resumeOwnerId,
       tasks: results.flatMap((result, i) =>
         result.status === 'ok'
-          ? [{
-              taskId: result.taskId ?? null,
-              logPath: result.logPath ?? null,
-              pid: result.pid,
-              label: memberLabels[i],
-              headless: !!foldedConfigs[i].headless,
-            }]
+          ? [
+              {
+                taskId: result.taskId ?? null,
+                logPath: result.logPath ?? null,
+                pid: result.pid,
+                label: memberLabels[i],
+                headless: !!foldedConfigs[i].headless,
+              },
+            ]
           : [],
       ),
       ...(resumeVerified !== undefined ? { resumeVerified } : {}),
@@ -1367,8 +1414,7 @@ export default defineTool({
               agentStarted: freshVerdict.agentStarted,
               sessions: freshVerdict.sessions.map((session) => ({
                 ownerId: session.ownerId,
-                sessionId:
-                  session.sessionId,
+                sessionId: session.sessionId,
               })),
             },
           }
