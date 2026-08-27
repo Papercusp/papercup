@@ -34,6 +34,7 @@ import {
   resolveTerminalPlanItemResidue,
   stalledClaims,
   summarizeOrphan,
+  shouldRecoverClaimFromHealth,
   upgradeRecordedLiveHolders,
   type FleetAssignmentRow,
   type HolderActivity,
@@ -1118,6 +1119,16 @@ describe('reconcileOrphanedWithVerdicts — the EI-18698865231464142 blind spot'
     }
     // The live holder's claim is untouched and correctly NOT reclaimable.
     expect(orphanedClaims(fixed).some((r) => r.agentId === 'su-live')).toBe(false);
+  });
+});
+
+
+describe('shouldRecoverClaimFromHealth (P-006)', () => {
+  it('allows automated recovery only for suspect claim-health verdicts', () => {
+    expect(shouldRecoverClaimFromHealth({ status: 'suspect' })).toBe(true);
+    for (const status of ['healthy', 'waiting', 'recoverable', 'contested'] as const) {
+      expect(shouldRecoverClaimFromHealth({ status })).toBe(false);
+    }
   });
 });
 

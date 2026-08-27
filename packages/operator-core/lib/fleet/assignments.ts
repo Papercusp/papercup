@@ -1144,6 +1144,16 @@ export function deriveClaimHealth(
 }
 
 /**
+ * P-006: only a suspect claim-health verdict is eligible for automated recovery
+ * surfaces (reclaim/bench/re-place). Healthy, waiting, recoverable, and contested
+ * each require preserving the holder/checkpoint until a leader verifies or wakes
+ * the owner; they are not safe takeover predicates.
+ */
+export function shouldRecoverClaimFromHealth(health: Pick<ClaimHealth, 'status'>): boolean {
+  return health.status === 'suspect';
+}
+
+/**
  * Summarize one reclaim-candidate claim for a leader surface.
  *
  * WI-5975: `holder` carries the authoritative liveness. Unless the oracle
