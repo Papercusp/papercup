@@ -221,6 +221,9 @@ describe('exact spec evidence bindings', () => {
 
     expect(first).toMatchObject({ status: 'created', specId: 'SPEC-003-01' });
     expect(second).toMatchObject({ status: 'created', specId: 'SPEC-004-01' });
+    if (!('id' in first) || !('id' in second)) {
+      throw new Error('expected successful spec evidence bindings to include ids');
+    }
     expect(second).not.toMatchObject({ id: first.id });
 
     const rows = await evidenceStore.listSpecEvidence({
