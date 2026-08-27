@@ -51,6 +51,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 const { recordTurnJournal } = await import('./turn-journal-store');
 const { buildAndPersistCursor } = await import('./session-cursor-io');
 const { runCollisionTick } = await import('./collision-matcher-io');
+const { DEFAULT_COLLISION_HYSTERESIS_PARAMS } = await import('./collision-hysteresis');
 const { runDeadEndTick } = await import('./dead-end-matcher-io');
 const { assertFact } = await import('./agent-facts/store');
 const { prepareAmbientPushBlock } = await import('./ambient-push-delivery');
@@ -174,6 +175,9 @@ beforeAll(async () => {
       '693-agent-facts-federation-stamp-regime.sql',
       '722-agent-facts-evicted-at.sql',
       '730-agent-facts-undecidable-kind.sql',
+      '795-agent-facts-volatile-measurements.sql',
+      '801-agent-facts-retraction-reason.sql',
+      '940-agent-facts-recheck-contract.sql',
     ],
     { label: 'ambient-acceptance-drills.integration.test.ts' },
   );
@@ -209,18 +213,16 @@ describe('P-005 acceptance drill — two agents seeded onto the same bug', () =>
     'verifying the summarize endpoint after the summarizer pool recycle fix; no gateway 502 or ECONNREFUSED so far',
   ];
 
-  // DRILL-CALIBRATED enter threshold — a P-005 ratification-packet finding, not
-  // a convenience: collisionCandidates scores with BM25 idf over the LIVE-PEER
+  // RATIFIED enter threshold — a P-005 measurement, not a test convenience:
+  // collisionCandidates scores with BM25 idf over the LIVE-PEER
   // corpus, and in a small corpus (here: exactly one peer) every shared term
   // sits at minimal idf (df=1) while self-only terms get maximal idf (df=0), so
   // this realistically-worded same-bug pair scores 0.20→0.44 across the rounds
   // where its RAW cosine is 0.61→0.87. At the shipped default enterThreshold
   // 0.4 it would need ~6 turns to enter (or never) — only near-identically
-  // worded cursors clear 0.4 in a small fleet. The drill keeps the shipped
-  // dwell (the anti-Clippy guarantee under test) and runs the enter threshold
-  // at the measured 0.30; the default-vs-measured gap is exactly what the plan
-  // item's "thresholds ratified by a human from the dashboard" clause decides.
-  const DRILL_PARAMS = { enterThreshold: 0.3, enterDwell: 3, exitThreshold: 0.15, exitDwell: 6, stalenessTicks: 4, maxTrackedPeers: 16 };
+  // worded cursors clear 0.4 in a small fleet. D-021 measured 0/70 false
+  // positives at 0.30 with IDF on, so the acceptance drill now exercises the
+  // shipped default directly and will fail if runtime defaults drift away.
 
   // The drill drives the UNBOUNDED tick: the record-turn seam wraps it in
   // boundedCollisionTick, whose fail-soft fallback would silently swallow a
@@ -229,7 +231,7 @@ describe('P-005 acceptance drill — two agents seeded onto the same bug', () =>
     const r = await runCollisionTick({
       selfSessionId: agent.sessionId,
       selfOwnerId: agent.ownerId,
-      params: DRILL_PARAMS,
+      params: DEFAULT_COLLISION_HYSTERESIS_PARAMS,
     });
     expect(r.ran).toBe(true);
     return r;

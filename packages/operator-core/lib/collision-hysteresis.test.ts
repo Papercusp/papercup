@@ -43,6 +43,7 @@ const absent = (n: number): Sample[] => Array.from({ length: n }, () => ({ absen
 describe('validateCollisionParams', () => {
   it('accepts the sane defaults', () => {
     expect(validateCollisionParams(DEFAULT_COLLISION_HYSTERESIS_PARAMS)).toEqual([]);
+    expect(DEFAULT_COLLISION_HYSTERESIS_PARAMS.enterThreshold).toBe(0.3);
   });
   it('flags a missing hysteresis gap and a non-asymmetric dwell', () => {
     const w = validateCollisionParams({ ...DEFAULT_COLLISION_HYSTERESIS_PARAMS, exitThreshold: 0.5, exitDwell: 2 });

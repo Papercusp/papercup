@@ -75,7 +75,10 @@ export interface CollisionHysteresisParams {
 /** Deliberate defaults (no runtime self-adaptation — carry D-001). Asymmetric:
  *  3 ticks to enter, 6 to drift out, but only 4 to clear on outright absence. */
 export const DEFAULT_COLLISION_HYSTERESIS_PARAMS: CollisionHysteresisParams = {
-  enterThreshold: 0.4,
+  // Ratified from the P-005 seeded drill + live shadow sample (D-021): with
+  // IDF enabled, 0.4 misses realistically worded same-bug convergence in small
+  // peer corpora; 0.30 retained 0/70 false positives in the measured sample.
+  enterThreshold: 0.3,
   enterDwell: 3,
   exitThreshold: 0.2,
   exitDwell: 6,
