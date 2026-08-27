@@ -7,11 +7,7 @@
  */
 import { createHash } from 'node:crypto';
 import { scorecardEmittedKey } from './scorecard-emitted-events.js';
-import {
-  MAX_TREE_LEAVES,
-  type ComposedLeafSpec,
-  type ComposedSpec,
-} from './events/await/compose-spec.js';
+import { MAX_TREE_LEAVES, type ComposedLeafSpec, type ComposedSpec } from './events/await/compose-spec.js';
 
 export const PILOT_FAN_IN_COHORT_SIZE = 21;
 
@@ -80,10 +76,13 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'null';
 }
 
-function fingerprintRoot(kind: PilotFanInKind, batchIndex: number, itemIds: readonly string[], spec: ComposedSpec): string {
-  return createHash('sha256')
-    .update(canonicalJson({ kind, batchIndex, itemIds, spec }))
-    .digest('hex');
+function fingerprintRoot(
+  kind: PilotFanInKind,
+  batchIndex: number,
+  itemIds: readonly string[],
+  spec: ComposedSpec,
+): string {
+  return createHash('sha256').update(canonicalJson({ kind, batchIndex, itemIds, spec })).digest('hex');
 }
 
 function chunks<T>(values: readonly T[], size: number): T[][] {
@@ -92,7 +91,12 @@ function chunks<T>(values: readonly T[], size: number): T[][] {
   return result;
 }
 
-function rootPlan(kind: PilotFanInKind, batchIndex: number, itemIds: string[], leaves: ComposedLeafSpec[]): PilotFanInRootPlan {
+function rootPlan(
+  kind: PilotFanInKind,
+  batchIndex: number,
+  itemIds: string[],
+  leaves: ComposedLeafSpec[],
+): PilotFanInRootPlan {
   const spec: ComposedSpec = { all: leaves };
   return {
     kind,
@@ -116,7 +120,9 @@ export function buildPilotFanInPlan(input: { itemIds: readonly string[]; rubricR
     itemIds.some((id) => id.trim().length === 0) ||
     input.rubricRef.trim().length === 0
   ) {
-    throw new Error(`pilot fan-in requires exactly ${PILOT_FAN_IN_COHORT_SIZE} unique non-empty item ids and a rubricRef`);
+    throw new Error(
+      `pilot fan-in requires exactly ${PILOT_FAN_IN_COHORT_SIZE} unique non-empty item ids and a rubricRef`,
+    );
   }
 
   const batches = chunks(itemIds, MAX_TREE_LEAVES);
@@ -163,11 +169,23 @@ export function validatePilotExactCompletionReceipts(
   for (const [itemId, event] of expectedByItem) {
     const matches = receipts.filter((receipt) => receipt.itemId === itemId);
     if (matches.length === 0) {
-      gaps.push({ kind: 'completion', batchIndex: null, itemId, code: 'missing-registration-receipt', detail: `no exact await receipt for ${event}` });
+      gaps.push({
+        kind: 'completion',
+        batchIndex: null,
+        itemId,
+        code: 'missing-registration-receipt',
+        detail: `no exact await receipt for ${event}`,
+      });
       continue;
     }
     if (matches.length !== 1) {
-      gaps.push({ kind: 'completion', batchIndex: null, itemId, code: 'duplicate-registration-receipt', detail: `found ${matches.length} exact await receipts` });
+      gaps.push({
+        kind: 'completion',
+        batchIndex: null,
+        itemId,
+        code: 'duplicate-registration-receipt',
+        detail: `found ${matches.length} exact await receipts`,
+      });
       continue;
     }
     const receipt = matches[0]!;
@@ -178,12 +196,24 @@ export function validatePilotExactCompletionReceipts(
       !Number.isFinite(receipt.registeredAtMs) ||
       receipt.registeredAtMs <= 0
     ) {
-      gaps.push({ kind: 'completion', batchIndex: null, itemId, code: 'registration-receipt-mismatch', detail: `exact await receipt does not bind ${event}` });
+      gaps.push({
+        kind: 'completion',
+        batchIndex: null,
+        itemId,
+        code: 'registration-receipt-mismatch',
+        detail: `exact await receipt does not bind ${event}`,
+      });
     }
   }
   for (const receipt of receipts) {
     if (!expectedByItem.has(receipt.itemId)) {
-      gaps.push({ kind: 'completion', batchIndex: null, itemId: receipt.itemId, code: 'unbound-registration-receipt', detail: 'receipt names an item outside the frozen cohort' });
+      gaps.push({
+        kind: 'completion',
+        batchIndex: null,
+        itemId: receipt.itemId,
+        code: 'unbound-registration-receipt',
+        detail: 'receipt names an item outside the frozen cohort',
+      });
     }
   }
   return { ok: gaps.length === 0 && receipts.length === plan.completionExactLeaves.length, gaps };
@@ -200,11 +230,21 @@ export function validatePilotComposedFanInReceipts(
   for (const root of roots) {
     const matches = receipts.filter((receipt) => receipt.kind === root.kind && receipt.batchIndex === root.batchIndex);
     if (matches.length === 0) {
-      gaps.push({ kind: root.kind, batchIndex: root.batchIndex, code: 'missing-registration-receipt', detail: `no receipt for ${root.kind} root ${root.batchIndex}` });
+      gaps.push({
+        kind: root.kind,
+        batchIndex: root.batchIndex,
+        code: 'missing-registration-receipt',
+        detail: `no receipt for ${root.kind} root ${root.batchIndex}`,
+      });
       continue;
     }
     if (matches.length !== 1) {
-      gaps.push({ kind: root.kind, batchIndex: root.batchIndex, code: 'duplicate-registration-receipt', detail: `found ${matches.length} receipts for one root` });
+      gaps.push({
+        kind: root.kind,
+        batchIndex: root.batchIndex,
+        code: 'duplicate-registration-receipt',
+        detail: `found ${matches.length} receipts for one root`,
+      });
       continue;
     }
     const receipt = matches[0]!;
@@ -218,13 +258,23 @@ export function validatePilotComposedFanInReceipts(
       !Number.isFinite(receipt.registeredAtMs) ||
       receipt.registeredAtMs <= 0
     ) {
-      gaps.push({ kind: root.kind, batchIndex: root.batchIndex, code: 'registration-receipt-mismatch', detail: 'root receipt does not bind the planned spec and returned registration ids' });
+      gaps.push({
+        kind: root.kind,
+        batchIndex: root.batchIndex,
+        code: 'registration-receipt-mismatch',
+        detail: 'root receipt does not bind the planned spec and returned registration ids',
+      });
     }
   }
 
   for (const receipt of receipts) {
     if (!expected.has(`${receipt.kind}:${receipt.batchIndex}`)) {
-      gaps.push({ kind: receipt.kind, batchIndex: receipt.batchIndex, code: 'unbound-registration-receipt', detail: 'receipt names a root outside the frozen fan-in plan' });
+      gaps.push({
+        kind: receipt.kind,
+        batchIndex: receipt.batchIndex,
+        code: 'unbound-registration-receipt',
+        detail: 'receipt names a root outside the frozen fan-in plan',
+      });
     }
   }
   return { ok: gaps.length === 0 && receipts.length === roots.length, gaps };

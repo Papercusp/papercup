@@ -32,7 +32,9 @@ describe('pilot 20+1 fan-in planning', () => {
 
   it('rejects fewer, more, duplicate, empty, or rubric-less cohorts before registration', () => {
     expect(() => buildPilotFanInPlan({ itemIds: IDS.slice(0, 20), rubricRef: 'pilot-quality' })).toThrow(/exactly 21/);
-    expect(() => buildPilotFanInPlan({ itemIds: [...IDS.slice(0, 20), 'WI-1'], rubricRef: 'pilot-quality' })).toThrow(/exactly 21/);
+    expect(() => buildPilotFanInPlan({ itemIds: [...IDS.slice(0, 20), 'WI-1'], rubricRef: 'pilot-quality' })).toThrow(
+      /exactly 21/,
+    );
     expect(() => buildPilotFanInPlan({ itemIds: IDS, rubricRef: '' })).toThrow(/rubricRef/);
   });
 });
@@ -48,10 +50,17 @@ describe('pilot fan-in registration receipt sets', () => {
     expect(validatePilotExactCompletionReceipts(plan, receipts)).toEqual({ ok: true, gaps: [] });
 
     const missing = validatePilotExactCompletionReceipts(plan, receipts.slice(1));
-    expect(missing.gaps).toContainEqual(expect.objectContaining({ itemId: 'WI-1', code: 'missing-registration-receipt' }));
+    expect(missing.gaps).toContainEqual(
+      expect.objectContaining({ itemId: 'WI-1', code: 'missing-registration-receipt' }),
+    );
 
-    const wrong = validatePilotExactCompletionReceipts(plan, [{ ...receipts[0]!, event: 'work-item:done:WI-X' }, ...receipts.slice(1)]);
-    expect(wrong.gaps).toContainEqual(expect.objectContaining({ itemId: 'WI-1', code: 'registration-receipt-mismatch' }));
+    const wrong = validatePilotExactCompletionReceipts(plan, [
+      { ...receipts[0]!, event: 'work-item:done:WI-X' },
+      ...receipts.slice(1),
+    ]);
+    expect(wrong.gaps).toContainEqual(
+      expect.objectContaining({ itemId: 'WI-1', code: 'registration-receipt-mismatch' }),
+    );
   });
 
   it('binds each composed registration receipt to the exact root fingerprint and returned ids', () => {
@@ -71,9 +80,13 @@ describe('pilot fan-in registration receipt sets', () => {
       { ...receipts[0]!, rootFingerprint: '0'.repeat(64) },
       receipts[1]!,
     ]);
-    expect(tampered.gaps).toContainEqual(expect.objectContaining({ batchIndex: 0, code: 'registration-receipt-mismatch' }));
+    expect(tampered.gaps).toContainEqual(
+      expect.objectContaining({ batchIndex: 0, code: 'registration-receipt-mismatch' }),
+    );
 
     const duplicate = validatePilotComposedFanInReceipts(plan.gradingRoots, [receipts[0]!, receipts[0]!, receipts[1]!]);
-    expect(duplicate.gaps).toContainEqual(expect.objectContaining({ batchIndex: 0, code: 'duplicate-registration-receipt' }));
+    expect(duplicate.gaps).toContainEqual(
+      expect.objectContaining({ batchIndex: 0, code: 'duplicate-registration-receipt' }),
+    );
   });
 });

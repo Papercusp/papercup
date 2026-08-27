@@ -72,7 +72,10 @@ describe('pilot grade prebinding guards', () => {
   it('accepts exactly one opaque prebound independent grader per frozen item', () => {
     const result = validatePilotGradeBindings({
       itemIds: ['WI-1', 'WI-2'],
-      bindings: [gradeBinding(), gradeBinding({ itemId: 'WI-2', graderOwnerId: 'su-grader-2', packetFingerprint: 'b'.repeat(64) })],
+      bindings: [
+        gradeBinding(),
+        gradeBinding({ itemId: 'WI-2', graderOwnerId: 'su-grader-2', packetFingerprint: 'b'.repeat(64) }),
+      ],
       participantOwnerIds: ['su-a', 'su-b'],
       operatorOwnerId: 'su-operator',
       runbookAuthorOwnerId: 'su-author',
@@ -81,31 +84,41 @@ describe('pilot grade prebinding guards', () => {
     expect(result.accepted).toHaveLength(2);
   });
 
-  it.each(['su-a', 'su-operator', 'su-author'])('rejects grader %s because cohort-wide independence is mandatory', (graderOwnerId) => {
-    const result = validatePilotGradeBindings({
-      itemIds: ['WI-1'],
-      bindings: [gradeBinding({ graderOwnerId })],
-      participantOwnerIds: ['su-a'],
-      operatorOwnerId: 'su-operator',
-      runbookAuthorOwnerId: 'su-author',
-    });
-    expect(result.gaps).toContainEqual(expect.objectContaining({ code: 'ineligible-grader' }));
-  });
+  it.each(['su-a', 'su-operator', 'su-author'])(
+    'rejects grader %s because cohort-wide independence is mandatory',
+    (graderOwnerId) => {
+      const result = validatePilotGradeBindings({
+        itemIds: ['WI-1'],
+        bindings: [gradeBinding({ graderOwnerId })],
+        participantOwnerIds: ['su-a'],
+        operatorOwnerId: 'su-operator',
+        runbookAuthorOwnerId: 'su-author',
+      });
+      expect(result.gaps).toContainEqual(expect.objectContaining({ code: 'ineligible-grader' }));
+    },
+  );
 
   it('fails closed on duplicate, missing, out-of-cohort, or non-opaque bindings', () => {
     const result = validatePilotGradeBindings({
       itemIds: ['WI-1', 'WI-2', 'WI-3'],
-      bindings: [gradeBinding(), gradeBinding(), gradeBinding({ itemId: 'WI-3', packetFingerprint: 'raw grading packet' }), gradeBinding({ itemId: 'WI-X' })],
+      bindings: [
+        gradeBinding(),
+        gradeBinding(),
+        gradeBinding({ itemId: 'WI-3', packetFingerprint: 'raw grading packet' }),
+        gradeBinding({ itemId: 'WI-X' }),
+      ],
       participantOwnerIds: [],
       operatorOwnerId: 'su-operator',
       runbookAuthorOwnerId: 'su-author',
     });
-    expect(result.gaps.map((gap) => gap.code)).toEqual(expect.arrayContaining([
-      'duplicate-grade-binding',
-      'missing-grade-binding',
-      'invalid-packet-fingerprint',
-      'unbound-grade-binding',
-    ]));
+    expect(result.gaps.map((gap) => gap.code)).toEqual(
+      expect.arrayContaining([
+        'duplicate-grade-binding',
+        'missing-grade-binding',
+        'invalid-packet-fingerprint',
+        'unbound-grade-binding',
+      ]),
+    );
   });
 });
 
@@ -145,9 +158,17 @@ describe('pilot exact blind-grade receipts', () => {
 
   it.each([
     ['pre-terminal-scorecard', card({ createdAt: '2026-08-27T00:59:59.999Z' })],
-    ['provisional-scorecard', card({ provisional: { violatableKeys: ['quality'], stampedAt: '2026-08-27T01:00:01.000Z' } })],
+    [
+      'provisional-scorecard',
+      card({ provisional: { violatableKeys: ['quality'], stampedAt: '2026-08-27T01:00:01.000Z' } }),
+    ],
     ['incomplete-scorecard', card({ missingKeys: ['quality'] })],
-    ['scorecard-audit-not-passed', card({ gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-27T01:00:01.000Z' } })],
+    [
+      'scorecard-audit-not-passed',
+      card({
+        gradingAudit: { state: 'pending', metaRubricRef: 'grading-integrity', stampedAt: '2026-08-27T01:00:01.000Z' },
+      }),
+    ],
     ['unbound-scorecard', card({ createdBy: 'su-someone-else' })],
   ] as const)('returns typed %s rather than treating the event as evidence', (code, ledgerCard) => {
     const result = validatePilotGradeReceipt({
@@ -173,13 +194,15 @@ describe('pilot receipt-derived cost windows', () => {
     });
     expect(result).toMatchObject({
       ok: true,
-      windows: [{
-        bindingReceiptId: 'bind-1',
-        dispatchReceiptId: 'dispatch-1',
-        startMs: CLOSED - 5_000,
-        endMs: CLOSED,
-        evidenceSource: 'binding-dispatch-receipts',
-      }],
+      windows: [
+        {
+          bindingReceiptId: 'bind-1',
+          dispatchReceiptId: 'dispatch-1',
+          startMs: CLOSED - 5_000,
+          endMs: CLOSED,
+          evidenceSource: 'binding-dispatch-receipts',
+        },
+      ],
     });
   });
 
@@ -193,8 +216,20 @@ describe('pilot receipt-derived cost windows', () => {
         binding({ receiptId: 'bind-i', ownerId: 'su-i', sessionId: 's-i', role: 'implementer' }),
       ],
       dispatches: [
-        dispatch({ receiptId: 'dispatch-d', bindingReceiptId: 'bind-d', ownerId: 'su-d', sessionId: 's-d', role: 'director' }),
-        dispatch({ receiptId: 'dispatch-i', bindingReceiptId: 'bind-i', ownerId: 'su-i', sessionId: 's-i', role: 'implementer' }),
+        dispatch({
+          receiptId: 'dispatch-d',
+          bindingReceiptId: 'bind-d',
+          ownerId: 'su-d',
+          sessionId: 's-d',
+          role: 'director',
+        }),
+        dispatch({
+          receiptId: 'dispatch-i',
+          bindingReceiptId: 'bind-i',
+          ownerId: 'su-i',
+          sessionId: 's-i',
+          role: 'implementer',
+        }),
       ],
     });
     expect(result.ok).toBe(true);

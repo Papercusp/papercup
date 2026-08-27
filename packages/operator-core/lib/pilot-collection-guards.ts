@@ -123,11 +123,7 @@ export function validatePilotGradeBindings(input: {
 }): PilotGradeBindingValidation {
   const itemIds = [...new Set(input.itemIds)];
   const expected = new Set(itemIds);
-  const excluded = new Set([
-    ...input.participantOwnerIds,
-    input.operatorOwnerId,
-    input.runbookAuthorOwnerId,
-  ]);
+  const excluded = new Set([...input.participantOwnerIds, input.operatorOwnerId, input.runbookAuthorOwnerId]);
   const gaps: PilotCollectionGuardGap[] = [];
   const accepted: PilotGradeBinding[] = [];
 
@@ -187,11 +183,7 @@ function scorecardQualityGap(card: ScorecardRow): PilotCollectionGuardGapCode | 
   return null;
 }
 
-function cardBelongsToBinding(
-  card: ScorecardRow,
-  binding: PilotGradeBinding,
-  rubricRef: string,
-): boolean {
+function cardBelongsToBinding(card: ScorecardRow, binding: PilotGradeBinding, rubricRef: string): boolean {
   return (
     card.subject?.kind === 'work-item' &&
     card.subject.ref === binding.itemId &&
@@ -218,7 +210,9 @@ export function validatePilotGradeReceipt(input: {
     return {
       ok: false,
       receipt: null,
-      gaps: [{ itemId: binding.itemId, code: 'invalid-terminal-time', detail: 'closedAtMs must be finite and positive' }],
+      gaps: [
+        { itemId: binding.itemId, code: 'invalid-terminal-time', detail: 'closedAtMs must be finite and positive' },
+      ],
     };
   }
 
@@ -227,14 +221,26 @@ export function validatePilotGradeReceipt(input: {
     return {
       ok: false,
       receipt: null,
-      gaps: [{ itemId: binding.itemId, code: 'missing-exact-card', detail: `card ${input.returnedCardId} is absent from the scorecard ledger` }],
+      gaps: [
+        {
+          itemId: binding.itemId,
+          code: 'missing-exact-card',
+          detail: `card ${input.returnedCardId} is absent from the scorecard ledger`,
+        },
+      ],
     };
   }
   if (exact.length !== 1) {
     return {
       ok: false,
       receipt: null,
-      gaps: [{ itemId: binding.itemId, code: 'duplicate-scorecard', detail: `card id ${input.returnedCardId} appears ${exact.length} times` }],
+      gaps: [
+        {
+          itemId: binding.itemId,
+          code: 'duplicate-scorecard',
+          detail: `card id ${input.returnedCardId} appears ${exact.length} times`,
+        },
+      ],
     };
   }
 
@@ -324,7 +330,11 @@ export function derivePilotReceiptCostWindows(input: {
 }): { ok: boolean; windows: PilotReceiptCostWindow[]; gaps: PilotCollectionGuardGap[] } {
   const gaps: PilotCollectionGuardGap[] = [];
   if (!finitePositive(input.closedAtMs)) {
-    gaps.push({ itemId: input.itemId, code: 'invalid-terminal-time', detail: 'closedAtMs must be finite and positive' });
+    gaps.push({
+      itemId: input.itemId,
+      code: 'invalid-terminal-time',
+      detail: 'closedAtMs must be finite and positive',
+    });
   }
 
   const roles = expectedRoles(input.arm);
