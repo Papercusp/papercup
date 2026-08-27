@@ -368,21 +368,24 @@ describe('Personal Vault import orphan recovery (D-010)', () => {
     expect(existsSync(otherArchive)).toBe(true);
     const rows = await org.adminSql<Array<{
       source_id: string;
+      provider_account_id: string;
       status: string;
       cancel_requested: boolean;
       storage_path: string | null;
     }>>`
-      SELECT source_id, status, cancel_requested, storage_path
+      SELECT source_id, provider_account_id, status, cancel_requested, storage_path
         FROM harness_shared.personal_vault_import_jobs
        WHERE workspace_id = ${WS} AND user_id = ${userId}::uuid
        ORDER BY source_id`;
     expect(rows).toHaveLength(2);
     expect(rows.find((row) => row.source_id === sourceId)).toMatchObject({
+      provider_account_id: 'owner@example.com',
       status: 'cancelled',
       cancel_requested: true,
       storage_path: null,
     });
     expect(rows.find((row) => row.source_id === otherSourceId)).toMatchObject({
+      provider_account_id: 'other@example.com',
       status: 'queued',
       cancel_requested: false,
       storage_path: otherArchive,
