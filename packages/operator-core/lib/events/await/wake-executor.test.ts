@@ -337,6 +337,114 @@ describe('executeWake — delivery-time fleet claim-release freshness (EI-215553
   });
 });
 
+describe('executeWake — delivery-time canonical claimable freshness (EI-21584263523911583)', () => {
+  const claimableWork = (overrides: Partial<DeliveryWork> = {}): DeliveryWork =>
+    work({
+      eventKey: 'work-item:claimable',
+      payload: {
+        id: 'WI-42419',
+        kind: 'bug',
+        harness: 'papercusp',
+        state: 'open',
+        reason: 'requeued',
+      },
+      wakeHandle: advHandle(),
+      ...overrides,
+    });
+
+  it('downgrades a confirmed terminal claimable payload before any wake side effect', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-stale' }));
+    const write = vi.fn(() => true);
+    const sendCoordMessage = vi.fn(async () => ({}) as never);
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42419', state: 'done', assignee: null, payload: null })) as never;
+    const d = deps({
+      findPty: findPty as never,
+      write: write as never,
+      sendCoordMessage: sendCoordMessage as never,
+      getCurrentWorkItem,
+    });
+
+    const out = await executeWake(claimableWork(), d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-42419', 'papercusp');
+    expect(sendCoordMessage).toHaveBeenCalledTimes(1);
+    const [, opts] = sendCoordMessage.mock.calls[0] as unknown as [unknown, { summary: string; body: string }];
+    expect(opts.summary).toContain('revalidated stale item(s): WI-42419');
+    expect(opts.body).toContain('no longer claimable');
+    expect(findPty).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+  });
+
+  it('keeps a current unclaimed claimable item on the normal wake ladder', async () => {
+    const findPty = vi.fn(() => ({ id: 'pty-current' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42419', state: 'open', assignee: null, payload: null })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    await expect(executeWake(claimableWork(), d)).resolves.toEqual({
+      kind: 'delivered',
+      channel: 'pty-inject',
+    });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-42419', 'papercusp');
+    expect(write).toHaveBeenCalled();
+  });
+
+  it('fails open on a missing or unreadable claimable lookup', async () => {
+    const lookups = [
+      vi.fn(async () => null),
+      vi.fn(async () => {
+        throw new Error('work-item store unavailable');
+      }),
+    ];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    for (const getCurrentWorkItem of lookups) {
+      const findPty = vi.fn(() => ({ id: 'pty-fail-open' }));
+      const write = vi.fn(() => true);
+      const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem: getCurrentWorkItem as never });
+
+      await expect(executeWake(claimableWork(), d)).resolves.toEqual({
+        kind: 'delivered',
+        channel: 'pty-inject',
+      });
+      expect(findPty).toHaveBeenCalled();
+      expect(write).toHaveBeenCalled();
+      expect(d.sendCoordMessage).not.toHaveBeenCalled();
+    }
+
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('work-item store unavailable'));
+  });
+
+  it('removes only stale claimable components from a coalesced wake', async () => {
+    const { coalesceDeliveries } = await import('./engine');
+    const stale = claimableWork({ id: 70, createdAt: new Date(1000).toISOString() });
+    const live = work({
+      id: 71,
+      eventKey: 'lock:grant:t-1',
+      summary: 'the lock is still actionable',
+      payload: { ok: true },
+      createdAt: new Date(2000).toISOString(),
+      wakeHandle: advHandle(),
+    });
+    const findPty = vi.fn(() => ({ id: 'pty-coalesced' }));
+    const write = vi.fn(() => true);
+    const getCurrentWorkItem = vi.fn(async () => ({ id: 'WI-42419', state: 'done', assignee: null, payload: null })) as never;
+    const d = deps({ findPty: findPty as never, write: write as never, getCurrentWorkItem });
+
+    const out = await executeWake({ ...coalesceDeliveries([stale, live]), wakeHandle: advHandle() }, d);
+
+    expect(out).toEqual({ kind: 'delivered', channel: 'pty-inject' });
+    expect(getCurrentWorkItem).toHaveBeenCalledWith('WI-42419', 'papercusp');
+    expect(write).toHaveBeenCalled();
+    const injected = String((write.mock.calls[0]?.[1] as Buffer | undefined)?.toString('utf8') ?? '');
+    expect(injected).toContain('lock:grant:t-1');
+    expect(injected).toContain('the lock is still actionable');
+    expect(injected).not.toContain('WI-42419');
+    expect(injected).not.toContain('requeued');
+  });
+});
+
 describe('executeWake ambient-push seam (P-003, DEFAULT-OFF)', () => {
   const OLD_FLAG = process.env.PAPERCUSP_AMBIENT_CURSOR;
   afterEach(() => {

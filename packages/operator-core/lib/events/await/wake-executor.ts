@@ -82,7 +82,8 @@ import {
 import { getPresence } from '../../agent-tools/coordination/presence';
 import { sendMessage } from '../../agent-tools/coordination/messages';
 import { getSessionBriefLifecycle, type SessionBriefLifecycle } from '../../session-brief';
-import { getWorkItem } from '../../work-items';
+import { getWorkItem, isClaimHoldParked, isSettledWorkItemState } from '../../work-items';
+import { CLAIM_STATES_ALLOWLIST } from '../../scheduler/claim-states';
 // EI-20489286325396940: `payloadIsTimeout` + `wakeSummaryHeadline` live in
 // timeout-fallback.ts (PG-free, beside the other timeout wording) so engine.ts can
 // import the summary renderer WITHOUT going through this module — engine.test.ts
@@ -525,6 +526,8 @@ const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
  */
 const FLEET_CLAIM_RELEASED_PREFIX = 'fleet:claim-released:';
 const FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS = 1_000;
+const WORK_ITEM_CLAIMABLE_KEY = 'work-item:claimable';
+const CLAIMABLE_LOOKUP_TIMEOUT_MS = 1_000;
 
 type FleetClaimReleasedPayload = {
   id: string;
@@ -570,6 +573,204 @@ async function currentFleetClaimReleasedItem(
     // Fail open even if an injected lookup violates the Promise contract.
     return null;
   }
+}
+
+type CoalescedDeliveryEvent = {
+  event?: unknown;
+  summary?: unknown;
+  payload?: unknown;
+  delivery_id?: unknown;
+  createdAt?: unknown;
+};
+
+type ClaimableDeliveryComponent = {
+  payload: unknown;
+  eventIndex: number | null;
+};
+
+type ClaimableDeliveryFreshness = {
+  delivery: DeliveryWork;
+  staleOnly: boolean;
+  staleIds: string[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Find canonical claimable-event components in either a plain or coalesced wake. */
+function claimableDeliveryComponents(d: DeliveryWork): ClaimableDeliveryComponent[] {
+  if (d.eventKey === WORK_ITEM_CLAIMABLE_KEY && !(isRecord(d.payload) && d.payload.coalesced === true)) {
+    return [{ payload: d.payload, eventIndex: null }];
+  }
+
+  if (!isRecord(d.payload) || d.payload.coalesced !== true) return [];
+  if (Array.isArray(d.payload.events)) {
+    return d.payload.events.flatMap((event, eventIndex) => {
+      if (!isRecord(event) || event.event !== WORK_ITEM_CLAIMABLE_KEY) return [];
+      return [{ payload: event.payload, eventIndex }];
+    });
+  }
+
+  // Compatibility with envelopes written before `events[]` was added.
+  if (isRecord(d.payload.latest) && d.payload.latest.event === WORK_ITEM_CLAIMABLE_KEY) {
+    return [{ payload: d.payload.latest.payload, eventIndex: null }];
+  }
+  return [];
+}
+
+function currentWorkItemIsClaimable(item: Awaited<ReturnType<typeof getWorkItem>>): boolean {
+  if (!item || item.assignee || isSettledWorkItemState(item.state)) return false;
+  if (!CLAIM_STATES_ALLOWLIST.includes(item.state as (typeof CLAIM_STATES_ALLOWLIST)[number])) return false;
+  return !isClaimHoldParked(item.payload);
+}
+
+function deliveryEventLabel(event: CoalescedDeliveryEvent): string {
+  return typeof event.event === 'string' ? event.event : 'unknown event';
+}
+
+function deliveryEventSummary(event: CoalescedDeliveryEvent): string | null {
+  return typeof event.summary === 'string' && event.summary.length > 0 ? event.summary : null;
+}
+
+function deliveryEventPayloadIsTimeout(event: CoalescedDeliveryEvent): boolean {
+  return isRecord(event.payload) && event.payload.timeout === true;
+}
+
+/** Rebuild the coalesced headline after stale claimable components are removed. */
+function rebuildCoalescedClaimableDelivery(
+  d: DeliveryWork,
+  events: CoalescedDeliveryEvent[],
+): DeliveryWork {
+  const payload = d.payload as Record<string, unknown>;
+  const latest = events[events.length - 1];
+  const eventDeliveries = events.filter((event) => !deliveryEventPayloadIsTimeout(event));
+  const timeoutDeliveries = events.filter((event) => deliveryEventPayloadIsTimeout(event));
+  const plural = (count: number, singular: string): string => (count === 1 ? singular : `${singular}s`);
+  const summaryParts: string[] = [];
+  if (eventDeliveries.length > 0) {
+    summaryParts.push(
+      `${eventDeliveries.length} ${plural(eventDeliveries.length, 'event')} fired while you slept: ${eventDeliveries.map(deliveryEventLabel).join(', ')}`,
+    );
+  }
+  if (timeoutDeliveries.length > 0) {
+    summaryParts.push(
+      `${timeoutDeliveries.length} ${plural(timeoutDeliveries.length, 'await deadline')} expired while you slept: ${timeoutDeliveries.map(deliveryEventLabel).join(', ')}`,
+    );
+  }
+
+  const latestSummary = latest ? deliveryEventSummary(latest) : null;
+  return {
+    ...d,
+    eventKey: latest ? deliveryEventLabel(latest) : d.eventKey,
+    summary: summaryParts.join('; ') + (latestSummary ? ` — latest: ${latestSummary}` : ''),
+    payload: {
+      ...payload,
+      count: events.length,
+      eventCount: eventDeliveries.length,
+      timeoutCount: timeoutDeliveries.length,
+      events,
+      latest: latest
+        ? {
+            event: deliveryEventLabel(latest),
+            payload: latest.payload,
+            createdAt: latest.createdAt,
+            delivery_id: latest.delivery_id,
+          }
+        : undefined,
+    },
+    coalescedCount: events.length,
+  };
+}
+
+/**
+ * Revalidate canonical claimable wakes at the delivery boundary. The event payload is
+ * a fire-time snapshot and can outlive the item returning to a claimed/terminal/held
+ * state while the delivery waits behind a gate. Unknown reads deliberately preserve
+ * the original wake (fail-open); only a confirmed non-claimable current row is stale.
+ */
+async function revalidateClaimableDelivery(
+  d: DeliveryWork,
+  lookup: typeof getWorkItem,
+  timeoutMs: number,
+): Promise<ClaimableDeliveryFreshness> {
+  const components = claimableDeliveryComponents(d);
+  if (components.length === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const freshnessByRef = new Map<string, Promise<boolean | null>>();
+  const staleEventIndexes = new Set<number>();
+  const staleIds = new Set<string>();
+
+  const check = (payload: unknown): Promise<boolean | null> => {
+    const parsed = parseFleetClaimReleasedPayload(payload);
+    if (!parsed) return Promise.resolve(false);
+    const ref = `${parsed.harness ?? ''}:${parsed.id}`;
+    const existing = freshnessByRef.get(ref);
+    if (existing) return existing;
+    const pending = withWakeTimeout(
+      Promise.resolve().then(() => lookup(parsed.id, parsed.harness)),
+      `claimable delivery lookup/${parsed.id}`,
+      Math.max(1, timeoutMs),
+    ).then((item) => {
+      if (!item) return null;
+      return !currentWorkItemIsClaimable(item);
+    });
+    freshnessByRef.set(ref, pending);
+    return pending;
+  };
+
+  for (const component of components) {
+    let stale = false;
+    try {
+      stale = (await check(component.payload)) === true;
+    } catch {
+      // An injected/non-conforming lookup must remain fail-open like the real read.
+      stale = false;
+    }
+    if (!stale) continue;
+    const parsed = parseFleetClaimReleasedPayload(component.payload);
+    if (parsed) staleIds.add(parsed.id);
+    if (component.eventIndex != null) staleEventIndexes.add(component.eventIndex);
+  }
+
+  if (staleIds.size === 0) return { delivery: d, staleOnly: false, staleIds: [] };
+
+  const coalescedPayload =
+    isRecord(d.payload) && d.payload.coalesced === true && Array.isArray(d.payload.events) ? d.payload : null;
+  if (!coalescedPayload) {
+    const ids = [...staleIds].join(', ');
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `${WORK_ITEM_CLAIMABLE_KEY} delivery is stale; ${ids} is no longer claimable`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  const remaining = coalescedPayload.events.filter(
+    (_event: unknown, index: number) => !staleEventIndexes.has(index),
+  ) as CoalescedDeliveryEvent[];
+  if (remaining.length === 0) {
+    const ids = [...staleIds].join(', ');
+    return {
+      delivery: {
+        ...d,
+        payload: null,
+        summary: `${WORK_ITEM_CLAIMABLE_KEY} delivery is stale; ${ids} is no longer claimable`,
+      },
+      staleOnly: true,
+      staleIds: [...staleIds],
+    };
+  }
+
+  return {
+    delivery: rebuildCoalescedClaimableDelivery(d, remaining),
+    staleOnly: false,
+    staleIds: [...staleIds],
+  };
 }
 
 type LoopDeliveryMarker = {
@@ -1614,6 +1815,8 @@ export interface ExecuteWakeDeps {
   getCurrentWorkItem?: typeof getWorkItem;
   /** Upper bound for the delivery-time fleet claim lookup. */
   fleetClaimReleasedLookupTimeoutMs?: number;
+  /** Upper bound for the delivery-time canonical claimable lookup. */
+  claimableLookupTimeoutMs?: number;
   alive?: (pid: number | null) => boolean;
   /** WI-666: whether this owner has an active engine loop. Only loop owners
    *  are eligible for the bounded alive-but-uninjectable recovery leg. */
@@ -2184,6 +2387,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
   const getCurrentWorkItem = deps.getCurrentWorkItem ?? getWorkItem;
   const fleetClaimReleasedLookupTimeoutMs =
     deps.fleetClaimReleasedLookupTimeoutMs ?? FLEET_CLAIM_RELEASED_LOOKUP_TIMEOUT_MS;
+  const claimableLookupTimeoutMs = deps.claimableLookupTimeoutMs ?? CLAIMABLE_LOOKUP_TIMEOUT_MS;
   const alive = deps.alive ?? pidAlive;
   const isLoopArmed =
     deps.isLoopArmed ?? (async (ownerId: string) => Boolean((await getLoopStatus(ownerId).catch(() => null))?.active));
@@ -2256,6 +2460,21 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       return degradeToInboxOrDrop(
         staleDelivery,
         `work item ${currentReleasedItem.id} is already claimed by ${currentReleasedItem.assignee}`,
+        sendCoordMessage,
+      );
+    }
+
+    // EI-21584263523911583: the canonical claimable payload is a fire-time snapshot.
+    // Revalidate every claimable component immediately before any wake side effect so
+    // a requeued/open payload cannot revive a member for an item that is now terminal,
+    // claimed, or parked. Coalesced unions retain unrelated live components; only the
+    // confirmed-stale claimable entries are removed.
+    const claimableFreshness = await revalidateClaimableDelivery(d, getCurrentWorkItem, claimableLookupTimeoutMs);
+    d = claimableFreshness.delivery;
+    if (claimableFreshness.staleOnly) {
+      return degradeToInboxOrDrop(
+        d,
+        `work-item:claimable delivery revalidated stale item(s): ${claimableFreshness.staleIds.join(', ')}`,
         sendCoordMessage,
       );
     }
