@@ -356,47 +356,70 @@ async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<voi
   await writeFile(encFilePath(keychainId), blob, { mode: 0o600 });
 }
 
-async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
-  const name = encFileName(keychainId);
-  // Try each candidate dir in priority order; return the FIRST decryptable copy.
-  // A miss in the primary dir falls through to the legacy dir (split-key resilience).
-  let sawDecryptFail: KeychainError | null = null;
-  let sawIoError: KeychainError | null = null;
-  for (const dir of identityReadDirs()) {
-    let blob: Buffer;
-    try {
-      blob = await readFile(join(dir, name));
-    } catch (err: unknown) {
-      const code = (err as { code?: string }).code;
-      if (code !== 'ENOENT') sawIoError = { kind: 'io_error', reason: String(err) };
-      continue; // not in this dir — try the next candidate
-    }
-    if (blob.length < FILE_HEADER_LEN) {
-      sawDecryptFail = { kind: 'decryption_failed', reason: 'file too short' };
-      continue;
-    }
-    const salt = blob.subarray(0, SALT_LEN);
-    const iv = blob.subarray(SALT_LEN, SALT_LEN + IV_LEN);
-    const authTag = blob.subarray(SALT_LEN + IV_LEN, FILE_HEADER_LEN);
-    const ciphertext = blob.subarray(FILE_HEADER_LEN);
+async function fileLoadFromDir(dir: string, name: string): Promise<KeychainResult<Buffer>> {
+  let blob: Buffer;
+  try {
+    blob = await readFile(join(dir, name));
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code;
+    return code === 'ENOENT'
+      ? { kind: 'error', error: { kind: 'not_found' } }
+      : { kind: 'error', error: { kind: 'io_error', reason: String(err) } };
+  }
+  if (blob.length < FILE_HEADER_LEN) {
+    return { kind: 'error', error: { kind: 'decryption_failed', reason: 'file too short' } };
+  }
 
-    const key = await deriveMachineKey(salt);
-    const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_LEN });
-    decipher.setAuthTag(authTag);
-    try {
-      const plain = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-      return { kind: 'ok', value: plain };
-    } catch {
-      // Found but undecryptable here — keep trying other dirs (one may hold a good copy).
-      sawDecryptFail = {
+  const salt = blob.subarray(0, SALT_LEN);
+  const iv = blob.subarray(SALT_LEN, SALT_LEN + IV_LEN);
+  const authTag = blob.subarray(SALT_LEN + IV_LEN, FILE_HEADER_LEN);
+  const ciphertext = blob.subarray(FILE_HEADER_LEN);
+  const key = await deriveMachineKey(salt);
+  const decipher = createDecipheriv('aes-256-gcm', key, iv, { authTagLength: TAG_LEN });
+  decipher.setAuthTag(authTag);
+  try {
+    return { kind: 'ok', value: Buffer.concat([decipher.update(ciphertext), decipher.final()]) };
+  } catch {
+    return {
+      kind: 'error',
+      error: {
         kind: 'decryption_failed',
         reason: 'auth tag mismatch — key rotated or file corrupted',
-      };
-    }
+      },
+    };
   }
-  // Prefer the most-informative error: a found-but-broken file over a plain miss.
-  if (sawDecryptFail) return { kind: 'error', error: sawDecryptFail };
-  if (sawIoError) return { kind: 'error', error: sawIoError };
+}
+
+async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
+  const name = encFileName(keychainId);
+  const dirs = identityReadDirs();
+  const primary = await fileLoadFromDir(dirs[0], name);
+  if (dirs.length === 1) return primary;
+
+  const legacy = await fileLoadFromDir(dirs[1], name);
+  if (primary.kind === 'ok' && legacy.kind === 'ok') {
+    if (!primary.value.equals(legacy.value)) {
+      // Both files decrypt, so first-success ordering cannot identify the
+      // canonical key. The legacy copy predates the configured-directory
+      // migration and is the only surviving provenance for the original
+      // identity. Heal the configured mirror synchronously before returning so
+      // a later legacy cleanup cannot expose the divergent primary again.
+      await fileStore(keychainId, legacy.value);
+      return legacy;
+    }
+    return primary;
+  }
+  if (primary.kind === 'ok') return primary;
+  if (legacy.kind === 'ok') return legacy;
+
+  // Prefer the most-informative error: a found-but-broken file over an I/O
+  // failure, and either over a plain miss.
+  for (const result of [primary, legacy]) {
+    if (result.error.kind === 'decryption_failed') return result;
+  }
+  for (const result of [primary, legacy]) {
+    if (result.error.kind === 'io_error') return result;
+  }
   return { kind: 'error', error: { kind: 'not_found' } };
 }
 

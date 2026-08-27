@@ -203,6 +203,42 @@ describe('keychain (encrypted-file fallback)', () => {
     }
   });
 
+  it('prefers the canonical legacy key over a divergent primary and heals the primary mirror', async () => {
+    const id = 'hive:default:divergent-fallbacks';
+    const canonicalDer = Buffer.from('canonical-legacy-hive-key-material');
+    const divergentDer = Buffer.from('divergent-primary-hive-key-material');
+
+    // The original identity predates PAPERCUSP_IDENTITY_DIR and therefore has
+    // the only provenance that crosses the directory migration.
+    const { keychainStore } = await loadKeychain();
+    await keychainStore(id, canonicalDer);
+    expect(existsSync(encPath(id))).toBe(true);
+
+    const primaryDir = mkdtempSync(join(tmpdir(), 'pc-keychain-divergent-primary-'));
+    process.env.PAPERCUSP_IDENTITY_DIR = primaryDir;
+    const primaryPath = join(primaryDir, 'keypair-hive_default_divergent-fallbacks.enc');
+    try {
+      // Reproduce the live split: a later configured-directory copy is valid
+      // but belongs to a different identity, while the OS tier is unavailable.
+      await keychainStore(id, divergentDer);
+      expect(existsSync(primaryPath)).toBe(true);
+
+      vi.resetModules();
+      const firstLoad = await (await loadKeychain()).keychainLoad(id);
+      expect(firstLoad).toEqual({ kind: 'ok', value: canonicalDer });
+
+      // The reconciliation is durable, not just a one-load preference: after
+      // legacy cleanup, a fresh module must still resolve the canonical DER
+      // from the healed configured mirror.
+      rmSync(encPath(id));
+      vi.resetModules();
+      const afterLegacyRemoval = await (await loadKeychain()).keychainLoad(id);
+      expect(afterLegacyRemoval).toEqual({ kind: 'ok', value: canonicalDer });
+    } finally {
+      rmSync(primaryDir, { recursive: true, force: true });
+    }
+  });
+
   it('honors PAPERCUSP_IDENTITY_DIR over HOME for fallback storage', async () => {
     const customIdentityDir = mkdtempSync(join(tmpdir(), 'pc-keychain-identity-'));
     process.env.PAPERCUSP_IDENTITY_DIR = customIdentityDir;
