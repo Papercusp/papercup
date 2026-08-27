@@ -690,6 +690,13 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
       totalTimeoutMs: 0,
       maxAttempts: 2,
       retryDelayMs: 1_000,
+      // Pin the retry pacing so the assertion below stays EXACT: the retry wait is
+      // `retryWaitMsWithJitter`, which adds bounded positive jitter on top of the
+      // minimum (ptool.mjs:1245 — deliberate, so a shed does not resynchronize into
+      // another retry wave). This case is asserting that the server's retryAfterSec
+      // is honoured as the FLOOR, not what the jitter drew, and jitterMs <= 0 returns
+      // the base exactly. Without it the assert reads 2105 and looks like a flake.
+      retryJitterMs: 0,
       sleep,
     })).resolves.toEqual([{ name: 'coord:orient' }]);
     expect(client.listTools).toHaveBeenCalledTimes(2);
@@ -713,6 +720,8 @@ describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
       totalTimeoutMs: 120_000,
       maxAttempts: 2,
       retryDelayMs: 1_000,
+      // Same reason as above: assert the retryDelayMs FLOOR, not the jittered draw.
+      retryJitterMs: 0,
       sleep,
     })).resolves.toEqual([{ name: 'state:read' }]);
     expect(client.listTools).toHaveBeenCalledTimes(2);
