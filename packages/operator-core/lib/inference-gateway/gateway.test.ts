@@ -413,6 +413,36 @@ test('WI-3150: the internal-retry 429 log names the THROTTLED account with ITS u
   assert.ok(!retryLine!.includes("on 'acctB'"), `log must NOT attribute A's util to the rotated-to acctB; got: ${retryLine}`);
 });
 
+test('WI-21593176337659162: the pre-dispatch route trace labels its account as picked, not served', async () => {
+  const previousRouteLog = process.env.PAPERCUSP_GATEWAY_ROUTE_LOG;
+  process.env.PAPERCUSP_GATEWAY_ROUTE_LOG = '1';
+  const events: string[] = [];
+  try {
+    await boot(
+      (_req, res) => {
+        events.push('upstream-dispatch');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      },
+      { log: (_level, msg) => events.push(`log:${msg}`) },
+    );
+    const res = await post({ model: 'claude-sonnet-5', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] });
+    assert.equal(res.status, 200);
+
+    const dispatchIndex = events.indexOf('upstream-dispatch');
+    assert.notEqual(dispatchIndex, -1, `the request reached the upstream; events=${events.join(' | ')}`);
+    const preDispatchRouteLines = events
+      .slice(0, dispatchIndex)
+      .filter((event) => event.startsWith('log:gw-route:'));
+    assert.equal(preDispatchRouteLines.length, 1, `expected one pre-dispatch route trace; events=${events.join(' | ')}`);
+    assert.match(preDispatchRouteLines[0]!, /\bpicked=test-acct\b/);
+    assert.doesNotMatch(preDispatchRouteLines[0]!, /\brouted=/);
+  } finally {
+    if (previousRouteLog === undefined) delete process.env.PAPERCUSP_GATEWAY_ROUTE_LOG;
+    else process.env.PAPERCUSP_GATEWAY_ROUTE_LOG = previousRouteLog;
+  }
+});
+
 test('transparent proxy — injects OAuth bearer + merges anthropic-beta, forwards body + status', async () => {
   await boot((_req, res, _body) => {
     res.writeHead(200, { 'content-type': 'application/json' });
