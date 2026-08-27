@@ -12,6 +12,7 @@ import {
 const target: FleetHeadcountTarget = {
   workspaceId: 'ws-test',
   fleetSlug: 'byoc',
+  enabled: true,
   target: 16,
   config: {
     plan: 'byoc-plan',
