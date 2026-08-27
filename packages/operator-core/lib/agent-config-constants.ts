@@ -677,16 +677,27 @@ export type LaunchAgentBackend = 'claude' | 'codex' | 'omp';
 /**
  * Infer the CLI backend from the SAME model vocabulary the launch selectors
  * render. A host-local OMP selector is always `provider/id`; the native aliases
- * carry their backend on `CLOUD_MODEL_MENU`. Unknown/full ids deliberately
- * return null so the start-route validator can refuse ambiguity instead of
- * pairing a model with a guessed CLI.
+ * carry their backend on `CLOUD_MODEL_MENU`. Codex also exposes the canonical
+ * `gpt-5.6-{sol,terra,luna}` ids in settings/launch records, so those known
+ * expansions must resolve to the same backend as their bare aliases. Unknown
+ * full ids deliberately return null so the start-route validator can refuse
+ * ambiguity instead of pairing a model with a guessed CLI.
  */
 export function launchAgentBackendForModel(model?: string | null): LaunchAgentBackend | null {
   const split = splitModelSpec(model);
   const base = split.model?.replace(/\[[^\]]+\]$/, '') ?? null;
   if (!base) return null;
   if (base.includes('/')) return 'omp';
-  return CLOUD_MODEL_MENU.find((choice) => choice.value === base)?.backend ?? null;
+  const normalizedBase = base.toLowerCase();
+  const bareChoice = CLOUD_MODEL_MENU.find((choice) => choice.value === normalizedBase);
+  if (bareChoice) return bareChoice.backend;
+
+  // Codex's native model ids are the canonical expansion of the same three
+  // selectable aliases. Keep the mapping derived from the menu so adding a
+  // codex family cannot create another unlaunchable canonical id.
+  const codexAlias = normalizedBase.match(/^gpt-5\.6-(.+)$/)?.[1];
+  if (!codexAlias) return null;
+  return CLOUD_MODEL_MENU.find((choice) => choice.value === codexAlias && choice.backend === 'codex')?.backend ?? null;
 }
 
 /**

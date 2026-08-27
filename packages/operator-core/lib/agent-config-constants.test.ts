@@ -78,6 +78,15 @@ describe('bulk resolver client-safe launch vocabulary', () => {
     expect(launchAgentBackendForModel(null)).toBeNull();
     expect(launchAgentBackendForModel('unknown-full-id')).toBeNull();
   });
+
+  it('derives Codex from canonical gpt-5.6 family ids, including effort and window markers', () => {
+    for (const family of ['sol', 'terra', 'luna']) {
+      expect(launchAgentBackendForModel(`gpt-5.6-${family}`), family).toBe('codex');
+      expect(launchAgentBackendForModel(`gpt-5.6-${family}:xhigh`), `${family}:xhigh`).toBe('codex');
+      expect(launchAgentBackendForModel(`gpt-5.6-${family}[1m]:high`), `${family}[1m]:high`).toBe('codex');
+    }
+    expect(launchAgentBackendForModel('GPT-5.6-SOL:HIGH')).toBe('codex');
+  });
 });
 
 describe('modelWindowForSpec (keys on the [1m] MARKER only)', () => {
