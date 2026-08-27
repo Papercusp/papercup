@@ -125,7 +125,9 @@ async function harnessMismatchForMiss(
 // needs the current version/contentHash from plans:get for its CAS, so a bee blind to
 // this tool risked clobbering a peer's plan edit or hand-copying an untracked docs/plans
 // mirror that lags PG. Read-only (capability: plans:read) — never grants a write path.
-const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup"] as const;
+// The evidence-only gym judge also needs the plan itself to evaluate accepted specs;
+// keep that role on the explicit allowlist rather than broadening the SU role set.
+const ALL_ROLES = [...SU_ROLES, "promote", "kettle", "worker", "cup", "judge"] as const;
 
 const argsSchema = z
   .object({
