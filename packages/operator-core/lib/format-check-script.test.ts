@@ -72,7 +72,7 @@ describe('scoped repository format check', () => {
     expect(args).toContain('40');
   });
 
-  it('builds a whole-file stdin invocation only for explicitly task-created files', () => {
+  it('builds a whole-file stdin invocation for explicitly classified files', () => {
     expect(buildPrettierWholeFileArgs('/tmp/prettier.cjs', 'new-file.ts')).toEqual([
       '/tmp/prettier.cjs',
       '--ignore-unknown',
@@ -110,6 +110,33 @@ describe('scoped repository format check', () => {
       paths: [],
       newFilePaths: ['scripts/check-format.mjs'],
     });
+  });
+
+  it('parses repeatable whole-file classifications in both flag forms', () => {
+    expect(
+      parseFormatCliArgs([
+        '--whole-file',
+        'scripts/check-format.mjs',
+        '--whole-file=package.json',
+        'packages/operator-core/lib/format-check-script.test.ts',
+      ]),
+    ).toEqual({
+      mode: 'check',
+      paths: ['packages/operator-core/lib/format-check-script.test.ts'],
+      wholeFilePaths: ['scripts/check-format.mjs', 'package.json'],
+    });
+  });
+
+  it('rejects a file classified as both range-scoped and whole-file', () => {
+    expect(() => parseFormatCliArgs(['--whole-file', 'package.json', 'package.json'])).toThrow(
+      /file cannot be both range-scoped and --whole-file: package\.json/,
+    );
+  });
+
+  it('rejects duplicate whole-file classifications', () => {
+    expect(() => parseFormatCliArgs(['--whole-file', 'package.json', '--whole-file=package.json'])).toThrow(
+      /file cannot be listed more than once as --whole-file: package\.json/,
+    );
   });
 
   it.each(['--help', '-h'])('prints usage and exits successfully for %s', (flag) => {
