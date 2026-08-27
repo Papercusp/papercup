@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import AdmZip from 'adm-zip';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -11,8 +11,10 @@ import {
   streamPersonalArchiveFile,
 } from './archive-import';
 import {
+  PERSONAL_ARCHIVE_ENCRYPTION_HEADER_BYTES,
   PersonalArchiveEncryptedWriter,
   assertPersonalArchiveDataChunkIndex,
+  openEncryptedPersonalArchive,
 } from './archive-encryption';
 
 const tempDirs: string[] = [];
@@ -26,6 +28,75 @@ describe('Personal Vault archive importers', () => {
     expect(() => assertPersonalArchiveDataChunkIndex(0xffff_ffff)).toThrow(
       'personal_vault_import_chunk_index_overflow',
     );
+  });
+
+  it('stores only ciphertext at rest and restores plaintext with the same key', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-encrypted-import-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'archive.bin');
+    const plaintext = Buffer.from('private-mail-marker: the plaintext must not appear on disk');
+    const rootKey = 'same-host-restore-key-with-at-least-thirty-two-bytes';
+    const writer = await PersonalArchiveEncryptedWriter.create('workspace-a', path, {
+      chunkBytes: 1024,
+      rootKey,
+    });
+    await writer.write(plaintext);
+    await writer.finish();
+
+    const ciphertext = await readFile(path);
+    expect(ciphertext.includes(plaintext)).toBe(false);
+    const restored = await openEncryptedPersonalArchive('workspace-a', path, { rootKey });
+    const chunks: Buffer[] = [];
+    for await (const chunk of restored.createReadStream()) chunks.push(Buffer.from(chunk));
+    expect(Buffer.concat(chunks)).toEqual(plaintext);
+  });
+
+  it('fails non-destructively when a restored archive does not have its original key', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-encrypted-import-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'archive.bin');
+    const writer = await PersonalArchiveEncryptedWriter.create('workspace-a', path, {
+      chunkBytes: 1024,
+      rootKey: 'original-host-key-with-at-least-thirty-two-bytes',
+    });
+    await writer.write(Buffer.from('encrypted owner history'));
+    await writer.finish();
+    const before = await readFile(path);
+
+    await expect(openEncryptedPersonalArchive('workspace-a', path, {
+      rootKey: 'replacement-host-key-after-original-key-was-lost',
+    })).rejects.toThrow('personal_vault_import_manifest_authentication_failed');
+    expect(await readFile(path)).toEqual(before);
+  });
+
+  it('rejects authenticated-header mutation and ciphertext truncation explicitly', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-encrypted-import-'));
+    tempDirs.push(dir);
+    const rootKey = 'mutation-test-key-with-at-least-thirty-two-bytes';
+    const writeArchive = async (name: string) => {
+      const path = join(dir, name);
+      const writer = await PersonalArchiveEncryptedWriter.create('workspace-a', path, {
+        chunkBytes: 1024,
+        rootKey,
+      });
+      await writer.write(Buffer.from('authenticated archive payload'));
+      await writer.finish();
+      return path;
+    };
+
+    const mutatedPath = await writeArchive('mutated.bin');
+    const mutated = await readFile(mutatedPath);
+    mutated[32] ^= 0x01;
+    await writeFile(mutatedPath, mutated);
+    await expect(openEncryptedPersonalArchive('workspace-a', mutatedPath, { rootKey }))
+      .rejects.toThrow('personal_vault_import_manifest_authentication_failed');
+
+    const truncatedPath = await writeArchive('truncated.bin');
+    const complete = await readFile(truncatedPath);
+    expect(complete.length).toBeGreaterThan(PERSONAL_ARCHIVE_ENCRYPTION_HEADER_BYTES);
+    await writeFile(truncatedPath, complete.subarray(0, -1));
+    await expect(openEncryptedPersonalArchive('workspace-a', truncatedPath, { rootKey }))
+      .rejects.toThrow('personal_vault_import_ciphertext_size_invalid');
   });
 
   it('parses Gmail mbox messages with stable ids and participants', () => {
