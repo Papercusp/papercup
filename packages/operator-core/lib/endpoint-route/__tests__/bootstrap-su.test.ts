@@ -1465,6 +1465,20 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(json.envelopeEnv.PAPERCUSP_ACCOUNT_ID).toBe('aviynw6');
   });
 
+  it('POST Codex pin threads SU owner/priority metadata into the CODEX_HOME writer', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'codex-main', provider: 'codex' }] });
+    const response = await callPost({ agent: 'codex', harness_slug: 'papercup', account: 'codex-main' });
+    expect(response.status).toBe(200);
+    expect(writeSuCodexHomeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codexGatewayAccountId: 'codex-main',
+        codexGatewayPriority: 'su',
+        sid: expect.stringMatching(/^su-/),
+      }),
+    );
+  });
+
   it('POST without account → no accountNotice, explicit default marker, no gateway env', async () => {
     const json = await (await callPost({ agent: 'claude', harness_slug: 'papercup' })).json();
     expect(json.accountNotice).toBeNull();

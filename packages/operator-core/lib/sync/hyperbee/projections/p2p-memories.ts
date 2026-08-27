@@ -22,6 +22,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
@@ -92,7 +93,6 @@ export interface MemoriesProjectionOpts {
 async function flagOn(opts: MemoriesProjectionOpts): Promise<boolean> {
   try {
     if (opts.isFlagOn) return (await opts.isFlagOn()) === true;
-    const { getFlag } = await import('@papercusp/flags/server');
     return (await getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system')) === true;
   } catch {
     return false;

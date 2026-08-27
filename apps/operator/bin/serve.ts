@@ -35,6 +35,12 @@
  *   PAPERCUSP_USE_EMBEDDED_PG=0   attach external PG via HARNESS_*_DATABASE_URL instead
  *   PAPERCUSP_SERVE_UI=1          force the SPA on even under serve (default off here)
  */
+// MUST remain the first import. Projection/background modules can resolve
+// flags during ESM evaluation, before main() runs; without this side effect the
+// packaged/headless serve process logs "No override store installed" and
+// silently serves dark defaults even after flags:set wrote a runtime override.
+import "./boot-flag-store";
+
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { homedir } from "node:os";
 import {

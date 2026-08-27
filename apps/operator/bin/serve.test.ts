@@ -58,6 +58,13 @@ beforeAll(async () => {
 
 
 describe("vm-release boot ordering (D-043 / P-050)", () => {
+  it("installs the runtime flag store before any other import graph can read a flag", () => {
+    const flagStore = serveSrc.indexOf('import "./boot-flag-store";');
+    const firstHostImport = serveSrc.indexOf('import { fileURLToPath, pathToFileURL }');
+    expect(flagStore).toBeGreaterThan(-1);
+    expect(firstHostImport).toBeGreaterThan(flagStore);
+  });
+
   it("verifies the immutable manifest before --ensure reuse and the effective port after sticky resolution", () => {
     const policy = serveSrc.indexOf("assertVmReleaseRuntimePolicy({");
     const ensureReuse = serveSrc.indexOf("if (ensure) {", policy);

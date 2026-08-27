@@ -200,6 +200,119 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(ledger).toEqual([{ state: 'complete', before: 1, after: 0 }]);
   }, 60_000);
 
+  it('includes durable parks but mutates only an exact duplicate, preserving park and occurrence provenance', async () => {
+    await seed();
+    const mergedPark = {
+      _claimHold: true,
+      claim_hold_by: 'su-parked-duplicate',
+      claim_hold_at: '2026-08-26T12:00:00.000Z',
+      claim_hold_reason: 'awaiting deterministic reconciliation',
+    };
+    const distinctPark = {
+      _claimHold: true,
+      claim_hold_by: 'su-parked-distinct',
+      claim_hold_at: '2026-08-26T13:00:00.000Z',
+      claim_hold_reason: 'operator decision: preserve independently',
+    };
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET payload = ${JSON.stringify(mergedPark)}::text::jsonb
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND feature_id = 'b'`;
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated follow-up', 'A separate failure and remedy',
+              'open', NULL, ${JSON.stringify(distinctPark)}::text::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+
+    const result = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-parks',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        expect(input.system).toContain('DUPLICATION ONLY');
+        expect(input.messages[0]?.content).toContain('a::b');
+        expect(input.messages[0]?.content).toContain('c::d');
+        return {
+          text: '',
+          json: {
+            judgements: [
+              { pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure and remedy' },
+              { pairKey: 'c::d', verdict: 'distinct', reason: 'different failure and remedy' },
+            ],
+          },
+          inputTokens: 100,
+          outputTokens: 30,
+        };
+      },
+    });
+
+    expect(result).toMatchObject({
+      scope: 'machine-emitter-targeted',
+      converged: true,
+      initialCensus: 2,
+      finalCensus: 0,
+    });
+
+    const parked = await db.sql<
+      Array<{
+        feature_id: string;
+        status: string;
+        payload: Record<string, unknown>;
+        terminal_owner: string | null;
+      }>
+    >`
+      SELECT feature_id, status, payload, terminal_owner
+        FROM harness_shared.work_items
+       WHERE feature_id = ANY(ARRAY['b', 'd']::text[])
+       ORDER BY feature_id`;
+    expect(parked[0]).toMatchObject({
+      feature_id: 'b',
+      status: 'dropped',
+      terminal_owner: 'system:work-item-admission-bulk-dedup',
+      payload: {
+        ...mergedPark,
+        admissionMerge: {
+          canonicalId: 'a',
+          runId: 'bulk-parks-stage-1',
+          actor: 'system:work-item-admission-bulk-dedup',
+        },
+      },
+    });
+    expect(parked[1]).toEqual({
+      feature_id: 'd',
+      status: 'open',
+      payload: distinctPark,
+      terminal_owner: null,
+    });
+
+    const occurrences = await db.sql<
+      Array<{ canonical: string; kind: string; merged_from: string; run_id: string }>
+    >`
+      SELECT canonical_work_item_id AS canonical,
+             report_kind AS kind,
+             evidence->>'mergedFrom' AS merged_from,
+             evidence->>'runId' AS run_id
+        FROM harness_shared.work_item_occurrences
+       ORDER BY occurrence_id`;
+    expect(occurrences).toEqual([
+      { canonical: 'a', kind: 'duplicate', merged_from: 'b', run_id: 'bulk-parks-stage-1' },
+    ]);
+
+    const adjudications = await db.sql<Array<{ a: string; b: string; verdict: string; canonical: string | null }>>`
+      SELECT a, b, verdict, canonical
+        FROM harness_shared.dedup_adjudications
+       ORDER BY a, b`;
+    expect(adjudications).toEqual([
+      { a: 'a', b: 'b', verdict: 'r-finding-merge', canonical: 'a' },
+      { a: 'c', b: 'd', verdict: 'distinct', canonical: null },
+    ]);
+  }, 60_000);
+
   it('rolls back the complete stage and marks it failed when an injected post-judgement census rises', async () => {
     await seed();
     await expect(

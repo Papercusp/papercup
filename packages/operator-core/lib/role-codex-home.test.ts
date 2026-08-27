@@ -447,7 +447,10 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(fresh.configPath, 'utf8')).toContain('"x-papercusp-owner" = "su-context"');
     expect(readFileSync(fresh.configPath, 'utf8')).toContain('"x-papercusp-priority" = "su"');
 
-    writeFileSync(fresh.configPath, '# archived config lost\n');
+    const staleGatewayIdentity = readFileSync(fresh.configPath, 'utf8')
+      .replace('"x-papercusp-owner" = "su-context"', '"x-papercusp-owner" = "su-stale"')
+      .replace('"x-papercusp-priority" = "su"', '"x-papercusp-priority" = "bee"');
+    writeFileSync(fresh.configPath, staleGatewayIdentity);
     const repaired = ensureSuCodexHomeConfig({
       sessionKey: 'context-su',
       mcpUrl: 'http://x/api/mcp?superuser=1',
@@ -463,6 +466,7 @@ describe('writeSuCodexHome', () => {
     expect(readFileSync(repaired.configPath, 'utf8')).toContain(`log_dir = "${join(repaired.codexHome, 'log')}"`);
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('"x-papercusp-owner" = "su-context"');
     expect(readFileSync(repaired.configPath, 'utf8')).toContain('"x-papercusp-priority" = "su"');
+    expect(readFileSync(repaired.configPath, 'utf8')).not.toContain('su-stale');
   });
 
   it.each([

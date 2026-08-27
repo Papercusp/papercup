@@ -150,6 +150,12 @@ export interface PrewarmedCheckpointDependencyGeneration {
   identity: string;
   token: string;
   inputFingerprint: string;
+  /** D-033 / WI-42329: whether the selector REUSED an already-published generation
+   *  (`reused=true` on the DEPENDENCY_GENERATION_RESULT line). A reused generation is
+   *  immutable and already on disk, so checkpoint materialization only hardlink-copies it
+   *  into this run's private root — no whole-box exclusive hold is needed for it.
+   *  Missing/unparseable degrades to false (conservative: keep the exclusive barrier). */
+  reused: boolean;
 }
 
 export interface CheckpointMaterializationSelection {
@@ -10266,7 +10272,12 @@ export async function ensureCheckpointDependencyGeneration(
       `dependency-generation prewarm completed without candidate identity, token, and input fingerprint for ${candidate.slice(0, 64)}`,
     );
   }
-  return { candidate, identity, token, inputFingerprint };
+  // D-033: `reused=` is advisory — a missing/unparseable value degrades to false
+  // (exclusive materialization), never to a refusal.
+  const reused =
+    output.match(/DEPENDENCY_GENERATION_RESULT[^\n]*\sreused=(true|false)\b/)?.[1] ===
+    "true";
+  return { candidate, identity, token, inputFingerprint, reused };
 }
 
 /**
@@ -12428,7 +12439,9 @@ export function realCheckpointDeps(
   const selectPrewarmedDependencyGeneration = async (
     ref: string,
     inputRoot: string,
-  ): Promise<Pick<PrewarmedCheckpointDependencyGeneration, "identity" | "token">> => {
+  ): Promise<
+    Pick<PrewarmedCheckpointDependencyGeneration, "identity" | "token" | "reused">
+  > => {
     // Keep selector reads behind the existing install-safe boundary. Publication
     // swaps the selector atomically, but the reader lock also ensures an install
     // cannot finish between exact-input derivation and identity selection.
@@ -12508,6 +12521,11 @@ export function realCheckpointDeps(
     return {
       identity: selectedDependencyGeneration,
       token: selectedDependencyGenerationToken,
+      // D-033: advisory — missing/unparseable degrades to false (exclusive hold kept).
+      reused:
+        publishedGenerationOutput.match(
+          /DEPENDENCY_GENERATION_RESULT[^\n]*\sreused=(true|false)\b/,
+        )?.[1] === "true",
     };
   };
   const prepareExactSource = async (ref: string): Promise<void> => {
@@ -13217,13 +13235,28 @@ export function realCheckpointDeps(
             `for exact candidate ${ref.slice(0, 12)} input=${prewarmedDependencyGeneration.inputFingerprint}`,
         );
       }
+      // D-033 / WI-42329: demand the whole-box exclusive barrier ONLY when the selector had
+      // to PUBLISH a fresh generation this run. The hourly common case REUSES an immutable,
+      // content-addressed generation already on disk (published pre-lock, D-081/D-082), and
+      // materialization then only hardlink-copies it into this run's private checkpoint
+      // root — parallel-safe across pots. Unconditional `--exclusive-all-slots` here is what
+      // serialized 21 pots' hourly gates behind one host-wide lock (measured 3 acquired /
+      // 16 starved-after-900s over 40 runs) and froze `main` for 6 days. An ordinary
+      // pc-heavy slot still bounds the copy's resource use in the shared case.
+      const exclusiveMaterialization = !selectedDependencyGeneration.reused;
+      log(
+        `dependency generation ${selectedDependencyGeneration.identity} reused=${selectedDependencyGeneration.reused} — ` +
+          (exclusiveMaterialization
+            ? "EXCLUSIVE materialization (fresh publish this run)"
+            : "shared-slot materialization (D-033: reuse needs no whole-box hold)"),
+      );
       let setup: CheckpointExecResult;
       try {
         setup = await exec(
           "bash",
           [
             path.join(toolingRoot(), "scripts/pc-heavy.sh"),
-            "--exclusive-all-slots",
+            ...(exclusiveMaterialization ? ["--exclusive-all-slots"] : []),
             "--",
             "bash",
             script,

@@ -41,3 +41,27 @@ export const HARNESS_SLUG_RE = /^[A-Za-z0-9._-]+$/;
 export function isLaunchableSlug(slug: string): boolean {
   return HARNESS_SLUG_RE.test(slug);
 }
+
+/**
+ * The tokens that mean "workspace-global scope" rather than naming a Pot.
+ *
+ * `'all'` is the reason this list exists separately from HARNESS_SLUG_RE: it is a
+ * perfectly well-SHAPED slug, so a pattern check waves it through, and it then
+ * files the row against a Pot named `all` that does not exist. `'*'` fails the
+ * pattern and `'all'` does not, which is precisely why "is it launchable?" and
+ * "is it a scope token?" have to be two questions.
+ */
+export const WILDCARD_SCOPE_TOKENS: readonly string[] = ['*', 'all'];
+
+/**
+ * Is this a workspace-global scope token rather than a Pot name?
+ *
+ * Callers must decide deliberately what to do with a `true`, and the two doors
+ * differ on purpose: `goals:create` RESOLVES it (the token arrives from ambient
+ * session scope, so refusing would leave a workspace-global session unable to
+ * file a goal at all), while `goals:update` REFUSES it (the caller is naming a
+ * repair target explicitly and can simply name the Pot).
+ */
+export function isWildcardScopeToken(slug: string): boolean {
+  return WILDCARD_SCOPE_TOKENS.includes(slug);
+}

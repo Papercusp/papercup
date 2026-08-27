@@ -59,6 +59,8 @@ export interface RegistryEntry {
   id: string;
   kind: 'component' | 'icon';
   summary: string;
+  /** Product/surface vocabulary that should find this reusable primitive. */
+  searchTerms?: readonly string[];
   inputs?: ReadonlyArray<{
     name: string;
     type: string;

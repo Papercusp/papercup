@@ -216,8 +216,12 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
       workspaceId: WS,
       harnessSlug: HARNESS,
       ideaIds: ['i1', 'i4'],
+      // The ordinary newest-first lens report can be empty without hiding the
+      // exact frontier selection from its dedicated bounded provenance read.
+      limit: 0,
     });
-    expect(report.refreshed).toEqual([
+    expect(report.refreshed).toHaveLength(2);
+    expect(report.refreshed).toEqual(expect.arrayContaining([
       expect.objectContaining({
         ideaId: 'i1',
         routedRef: 'gym:sp-1',
@@ -232,7 +236,7 @@ describe('scout routed-ledger (real PG, migration 194)', () => {
         sourceKind: 'none',
         sourceRef: null,
       }),
-    ]);
+    ]));
 
     const rows = await db.adminSql<
       { idea_id: string; outcome: string | null; outcome_checked_at: string | null }[]

@@ -2276,6 +2276,81 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     });
   });
 
+  it("D-033: a REUSED generation materializes on a shared slot — no --exclusive-all-slots; a fresh publish keeps the exclusive barrier", async () => {
+    // WI-42329: unconditional --exclusive-all-slots serialized 21 pots' hourly gates
+    // behind one host-wide lock (3 acquired / 16 starved-after-900s over 40 runs) and
+    // froze `main` for 6 days. Reuse of an already-published immutable generation is a
+    // hardlink copy into this run's private root — parallel-safe, so it must NOT demand
+    // the whole-box barrier. A fresh publish keeps it (conservative path).
+    const candidate = "c".repeat(40);
+    const inputFingerprint = "d".repeat(64);
+    const makeDepsExec = (reused: boolean) => {
+      const calls: Array<{ cmd: string; args: string[] }> = [];
+      const exec: CheckpointExec = async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (args.includes("--ensure-ref")) {
+          return {
+            code: 0,
+            stdout:
+              `DEPENDENCY_GENERATION_RESULT schema=1 identity=${generationId} ` +
+              `source=fixture input=${inputFingerprint} scope=full reused=${reused} ` +
+              `token=${FIXTURE_DEPENDENCY_GENERATION_TOKEN} path=/fixture/${generationId}`,
+            stderr: "",
+          };
+        }
+        return {
+          code: 0,
+          stdout: `[setup-release] DEPENDENCY_GENERATION_PIN identity=${generationId}`,
+          stderr: "",
+        };
+      };
+      return { exec, calls };
+    };
+
+    // reused=true → shared-slot materialization.
+    const shared = makeDepsExec(true);
+    const sharedPrewarmed = await ensureCheckpointDependencyGeneration(
+      cfg,
+      candidate,
+      shared.exec,
+    );
+    expect(sharedPrewarmed.reused).toBe(true);
+    await realCheckpointDeps(
+      cfg,
+      shared.exec,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      sharedPrewarmed,
+    ).setupTree(candidate, { preparedSource: true });
+    const sharedSetup = shared.calls[1];
+    expect(sharedSetup.args).not.toContain("--exclusive-all-slots");
+    expect(sharedSetup.args).toEqual(
+      expect.arrayContaining(["--node-modules-generation-id", generationId]),
+    );
+
+    // reused=false → the exclusive barrier is preserved.
+    const exclusive = makeDepsExec(false);
+    const exclusivePrewarmed = await ensureCheckpointDependencyGeneration(
+      cfg,
+      candidate,
+      exclusive.exec,
+    );
+    expect(exclusivePrewarmed.reused).toBe(false);
+    await realCheckpointDeps(
+      cfg,
+      exclusive.exec,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      exclusivePrewarmed,
+    ).setupTree(candidate, { preparedSource: true });
+    const exclusiveSetup = exclusive.calls[1];
+    expect(exclusiveSetup.args).toContain("--exclusive-all-slots");
+  });
+
   it("D-081 joined guard: unseen exact inputs traverse the real prelock publisher and materializer to a normal candidate-bound verdict", async () => {
     // This test deliberately drives the REAL dependency-generation prewarm (that is the
     // whole point of the "unseen exact inputs" path). green-checkpoint.ts routes every

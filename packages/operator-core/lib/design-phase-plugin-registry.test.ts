@@ -11,6 +11,7 @@ const ECOSYSTEM = 'react-tailwind';
 
 type PluginEntry = {
   id: string;
+  searchTerms?: readonly string[];
   ecosystems?: Record<string, { sourcePointer?: { path?: string }; importHint?: string }>;
 };
 
@@ -58,6 +59,20 @@ describe('design-phase plugin registry search', () => {
     expect(result.results.map((entry) => entry.id)).toEqual([
       'control.select',
       'control.checkbox',
+      'control.text',
+      'feedback.tooltip',
+    ]);
+  });
+
+  it('finds the reusable bundle for a task-list sidebar query', async () => {
+    const result = await search('task-list sidebar');
+
+    expect(result.results.map((entry) => entry.id)).toEqual([
+      'control.checkbox',
+      'control.text',
+      'feedback.tooltip',
+      'overlay.popover',
+      'data.rich-grid',
     ]);
   });
 
@@ -114,8 +129,9 @@ describe('design-phase memo projection (EI-21339929518770631)', () => {
  *   1. against the FILESYSTEM — a pointer must name a file that exists. This one cannot
  *      drift with the canonical registry because reality is its reference.
  *   2. against the CANONICAL registry — where both define an id, they must agree.
- * The plugin deliberately mirrors only a SUBSET of canonical, so parity is asserted on
- * the intersection; guard 1 still covers any entry the plugin adds later.
+ * A partial mirror is itself drift: search_registry cannot return a canonical component
+ * it does not know exists. The guard therefore requires exact id + search-vocabulary
+ * parity, in addition to validating each source pointer against the filesystem.
  */
 describe('design-phase plugin registry pointers (EI-21213360212584785)', () => {
   it('every sourcePointer names a file that exists in the tree', async () => {
@@ -134,18 +150,16 @@ describe('design-phase plugin registry pointers (EI-21213360212584785)', () => {
     expect(checked.filter((c) => !c.exists)).toEqual([]);
   });
 
-  it('agrees with the canonical registry on every id they both define', async () => {
+  it('mirrors every canonical registry id, search term, pointer, and import', async () => {
     const entries = await allPluginEntries();
     const canonical = new Map(_CURATED_FOR_TESTS.map((e) => [e.id, e]));
+    expect(entries.map((entry) => entry.id)).toEqual(_CURATED_FOR_TESTS.map((entry) => entry.id));
 
-    const shared = entries.filter((e) => canonical.has(e.id));
-    // Non-vacuity: if the ids ever stop overlapping, this guard silently checks nothing.
-    expect(shared.length).toBeGreaterThan(0);
-
-    const divergent = shared.flatMap((entry) => {
+    const divergent = entries.flatMap((entry) => {
       const mine = entry.ecosystems?.[ECOSYSTEM];
       const theirs = canonical.get(entry.id)!.ecosystems[ECOSYSTEM];
       const same =
+        JSON.stringify(entry.searchTerms ?? []) === JSON.stringify(canonical.get(entry.id)!.searchTerms ?? []) &&
         mine?.sourcePointer?.path === theirs?.sourcePointer?.path &&
         mine?.importHint === theirs?.importHint;
       return same

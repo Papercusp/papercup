@@ -1274,6 +1274,46 @@ describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escala
     };
   }
 
+  it('EI-21549554609576994: retries promptly when the routine claim parked but fire dispatch never started', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const updates: unknown[][] = [];
+    const sql = fakeSql(
+      [
+        parkedRow({
+          carry: 'cold',
+          // claimDueRoutine stamped routines.last_fired_at at T0, but neither the
+          // fire-state writer nor the routine-scoped wake ledger advanced for this claim.
+          fire_state_last_fired_at: pgString(T0 - 60_000),
+          fire_state_last_withheld_at: null,
+          last_wake_at: pgString(T0 - 60_000),
+        }),
+      ],
+      updates,
+    );
+    const recordFire = vi.fn(async () => {});
+    const guard = vi.fn(async () => ({ breach: true, reason: 'must-not-run-inside-dispatch-grace' }));
+
+    const res = await reconcileLoopRoutines({
+      sql,
+      nowMs: T0 + 2 * 60_000,
+      recordFire,
+      readFireState: NO_PRIOR_ERRORS,
+      checkUnreachableTerminalGuard: guard,
+    });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.terminated).toEqual([]);
+    expect(res.loops[0]).toMatchObject({ id: 'rt-parked', via: 'claim-dispatch-gap' });
+    expect(res.loops[0].nextFireAt).toBe(T0 + 60_000);
+    expect(guard).not.toHaveBeenCalled();
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-parked',
+      'loop-claim-dispatch-gap',
+      'error',
+    );
+  });
+
   it('a quiet-parked, REACHABLE loop retries EARLY (10min, well before the classic 30min dwell) when under the attempt cap', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];

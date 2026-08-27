@@ -638,6 +638,11 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs
         exhausted: boolean;
     }>;
 };
+/** Translate the submit verifier's semantic negative outcomes into the stable
+ * delivery reasons consumed by launch/recycle callers. A human-input abort is
+ * not proof that the injected turn landed, so it must remain distinguishable
+ * from both success and bounded exhaustion. Pure; exported for tests. */
+export function submitVerificationFailureReason(result: any): string | null;
 /**
  * Control-socket wire protocol (v1). A connector writes ONE UTF-8 payload then
  * half-closes. If it parses as a `{ v:1, mode, data }` envelope we act on the

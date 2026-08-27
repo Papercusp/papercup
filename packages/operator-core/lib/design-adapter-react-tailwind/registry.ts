@@ -74,6 +74,7 @@ const HANDCURATED: RegistryEntry[] = [
     id: 'control.checkbox',
     kind: 'component',
     summary: 'Checkbox',
+    searchTerms: ['task', 'task-list', 'list', 'sidebar', 'completion', 'toggle'],
     inputs: [
       { name: 'checked', type: 'boolean', required: true },
       { name: 'label', type: 'string' },
@@ -89,6 +90,7 @@ const HANDCURATED: RegistryEntry[] = [
     id: 'control.text',
     kind: 'component',
     summary: 'Text input with optional leading and trailing slots',
+    searchTerms: ['task', 'task-list', 'list', 'sidebar', 'search', 'filter'],
     inputs: [
       { name: 'value', type: 'string', required: true },
       { name: 'placeholder', type: 'string' },
@@ -108,6 +110,7 @@ const HANDCURATED: RegistryEntry[] = [
     id: 'feedback.tooltip',
     kind: 'component',
     summary: 'Hover/focus tooltip for buttons, labels, and compact controls',
+    searchTerms: ['task', 'task-list', 'list', 'sidebar', 'compact', 'action'],
     inputs: [
       { name: 'label', type: 'ReactNode', required: true },
       { name: 'children', type: 'ReactNode', required: true },
@@ -144,6 +147,7 @@ const HANDCURATED: RegistryEntry[] = [
     id: 'overlay.popover',
     kind: 'component',
     summary: 'Anchored popover panel for stable React trigger-owned dropdowns',
+    searchTerms: ['task', 'task-list', 'list', 'sidebar', 'menu', 'actions'],
     inputs: [
       { name: 'open', type: 'boolean', required: true },
       { name: 'onOpenChange', type: '(open:boolean)=>void', required: true },
@@ -178,6 +182,7 @@ const HANDCURATED: RegistryEntry[] = [
     id: 'data.rich-grid',
     kind: 'component',
     summary: 'Virtualizable React grid for rows with JSX cells, status pills, actions, and expansion',
+    searchTerms: ['task', 'task-list', 'list', 'sidebar', 'rows'],
     inputs: [
       { name: 'rows', type: 'Row[]', required: true },
       { name: 'columns', type: 'ColumnDef<Row>[]', required: true },

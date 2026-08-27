@@ -60,6 +60,9 @@ import {
 } from '../harness/routines/goal-holder-launch-action';
 import { resolveGoalHolders, type GoalHolders } from './holder';
 import { setMode } from '../modes/store';
+// Same direction the sibling package-start door already imports (start-from-package.ts):
+// lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
+import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 
 export interface StartGoalByIdInput {
   workspaceId: string;
@@ -78,11 +81,17 @@ export interface StartGoalByIdInput {
   /**
    * First-turn brief for the spawned holder, threaded to launch-su's
    * `kickoff_prompt` (the spawn-safe PAPERCUSP_KICKOFF_PROMPT env; psu
-   * delivers it as the fresh CLI's first turn). Omitted ⇒ the holder
-   * re-orients from its GOAL-mode contract alone — the pre-P-017 behavior for
-   * every trigger/schedule/watchdog leg. The package start door (P-017) passes
-   * `buildGoalKickoffBrief` output here so a deliberate start briefs its agent
-   * exactly as `goals:start` does.
+   * delivers it as the fresh CLI's first turn).
+   *
+   * OMITTED ⇒ this door now builds the brief from the goal row itself
+   * (EI-21566842357792802). It previously sent `null`, and the spawned session
+   * fell through to the generic fleet-member kickoff that names no goal — so
+   * the holder never learned its own subject and worked the ordinary backlog
+   * instead. That was the behavior of EVERY caller that omitted this: the
+   * trigger, schedule and watchdog legs included.
+   *
+   * Pass a value only to OVERRIDE that default — as the package start door
+   * (P-017) does, briefing from package content rather than the goal row.
    */
   kickoffPrompt?: string | null;
 }
@@ -108,6 +117,18 @@ export type StartGoalByIdResult =
     }
   | { ok: false; reason: StartGoalByIdRefusalReason; detail: string };
 
+/**
+ * `budget_cents` / `budget_window_sec` are BIGINT, which postgres-js hands back
+ * as a STRING. Passing that straight into a brief renders a plausible-looking
+ * ceiling built from the wrong type, so coerce once, here — and return null for
+ * anything non-finite rather than letting `NaN` reach the agent's brief.
+ */
+function numericOrNull(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 export interface StartGoalByIdDeps {
   launch: (input: GoalHolderLaunchInput) => Promise<GoalHolderLaunchResult>;
   resolveHolders: (sql: Sql, opts: { workspaceId: string; goalId: string }) => Promise<GoalHolders>;
@@ -125,11 +146,19 @@ export interface StartGoalByIdDeps {
     goalTitle: string;
     setBy: string;
   }) => Promise<{ ok: boolean; error?: string | null }>;
+  /**
+   * Builds the DEFAULT first-turn brief when the caller passes no
+   * `kickoffPrompt` (EI-21566842357792802). Injectable for the same reason the
+   * package-start door injects it: a brief is a string, and asserting on a stub
+   * is how a test proves the goal's own fields reached it.
+   */
+  buildBrief: typeof buildGoalKickoffBrief;
 }
 
 const DEFAULT_DEPS: StartGoalByIdDeps = {
   launch: launchGoalHolderSession,
   resolveHolders: resolveGoalHolders,
+  buildBrief: buildGoalKickoffBrief,
   // The structural GoalSqlTag/Sql mismatch is bridged HERE, once — the same
   // cast goal-auto-start.ts makes at its call site (postgres' PendingQuery is
   // Promise-like but the generic signatures are not mutually assignable).
@@ -169,10 +198,24 @@ export async function startGoalById(
   if (!goalId) throw new Error('startGoalById requires goalId');
 
   // ── the goal row ────────────────────────────────────────────────────────
+  // EI-21566842357792802: the brief-shaped columns are selected HERE, not in a
+  // second read at the launch site, because a goal that cannot be briefed is a
+  // goal that should not be launched — the two facts belong to one row read.
   const rows = await sql<
-    { id: string; title: string; status: string; install_slug: string | null }[]
+    {
+      id: string;
+      title: string;
+      status: string;
+      install_slug: string | null;
+      body: string | null;
+      kill_criterion: string | null;
+      budget_cents: string | number | null;
+      budget_window_sec: string | number | null;
+      standing: boolean | null;
+    }[]
   >`
-    SELECT id, title, status, install_slug
+    SELECT id, title, status, install_slug,
+           body, kill_criterion, budget_cents, budget_window_sec, standing
       FROM harness_shared.goals
      WHERE workspace_id = ${workspaceId} AND id = ${goalId}`;
   const goal = rows[0];
@@ -238,6 +281,38 @@ export async function startGoalById(
       input.startBlockedReason?.trim() || `started despite unsatisfied blocker(s): ${unsatisfied}`;
   }
 
+  /* EI-21566842357792802 — a goal agent MUST be told its goal.
+     Until now, omitting `kickoffPrompt` sent `null` to the launch door, and the
+     spawned session fell through to the generic fleet-member kickoff: "You are a
+     fleet member with no human at your keyboard", naming no goal. The session
+     was nonetheless stamped `overlay:goal` with the right subject, so the mode
+     row and the delivered prompt DISAGREED — the goal read healthy on every
+     surface while the agent, correctly following the only instruction it had,
+     pulled unrelated backlog via scheduler:get_next.
+
+     Observed end-to-end on goal `the-papercusp-desktop-gui-is-verified-end-to-end-9425fe`
+     (holder su-830bbb98): the string '9425fe' first entered its context 18 MINUTES
+     into the run, in the tool_result of its OWN agent_modes query — self-discovery,
+     not delivery. In the meantime it closed four unrelated rename chunks and
+     launched zero agents.
+
+     Defaulting here rather than at the admin route is deliberate: the doc on
+     `kickoffPrompt` called the unbriefed launch "the pre-P-017 behavior for every
+     trigger/schedule/watchdog leg", so EVERY caller that omits it had the same
+     defect. A per-door fix would have left the watchdog and external-trigger legs
+     launching mute goal agents. An explicit caller-supplied brief still wins. */
+  const kickoffPrompt =
+    input.kickoffPrompt ??
+    deps.buildBrief({
+      goalId,
+      title: goal.title,
+      killCriterion: goal.kill_criterion,
+      body: goal.body,
+      budgetCents: numericOrNull(goal.budget_cents),
+      budgetWindowSec: numericOrNull(goal.budget_window_sec),
+      standing: goal.standing ?? false,
+    });
+
   // ── launch, then attach (launch failures throw from the launch door) ────
   const launched = await deps.launch({
     workspaceId,
@@ -245,7 +320,7 @@ export async function startGoalById(
     harnessSlug,
     launcherOwnerId: input.launcherOwnerId ?? null,
     deferSpawn: input.deferSpawn ?? false,
-    kickoffPrompt: input.kickoffPrompt ?? null,
+    kickoffPrompt,
   });
 
   const attach = await deps.attach({
