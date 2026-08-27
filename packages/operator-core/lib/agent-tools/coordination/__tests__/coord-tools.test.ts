@@ -187,6 +187,19 @@ describe('coord:inbox kind filter parity', () => {
       ).toBe(true);
     }
   });
+
+  it('distinguishes conceptual interrupts from the canonical yield wire kind', () => {
+    const description = String(inboxTool.description);
+    const canonicalKinds = [...COORD_EXECUTABLE_KINDS, ...COORD_CONVERSATIONAL_KINDS];
+
+    expect(description).toMatch(/canonical `CoordKind` wire values/i);
+    expect(description).toMatch(/`interrupt` is conceptual language.*not a `kinds` value/i);
+    expect(description).toMatch(/cooperative turn-interrupt\/wrap-up.*canonical executable kind `yield`/i);
+    for (const kind of canonicalKinds) {
+      expect(description, `description should name canonical kind ${kind}`).toContain(kind);
+    }
+    expect(inboxTool.args.safeParse({ kinds: ['interrupt'] }).success).toBe(false);
+  });
 });
 
 describe('coord:thread', () => {
