@@ -16,6 +16,7 @@ import { resolveCapabilityBaseDir, resolveCapabilityIntegrationRoot } from './ba
 import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from '../../context-doors';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { SCRATCH_SCHEME, safeScratchFilesystemPath } from '../../scratch-uri';
+import { redactSensitiveText } from '../../sensitive-text';
 import {
   authorizeScratchReference,
   parseScratchReference,
@@ -52,6 +53,31 @@ const CAPABILITY_READ_SEE_ALSO = [
   'capability:write (overwrite / create)',
   'capability:bash (grep / rg to search across files)',
 ] as const;
+
+/**
+ * Config/auth files are useful diagnostics but are not safe exact-read inputs:
+ * Codex's config.toml carries the per-session MCP bearer, and the other names
+ * below commonly carry credentials or server headers as well. Keep ordinary
+ * line reads useful by redacting their values, while refusing raw/byte/structured
+ * modes so a caller cannot bypass the redaction boundary (or write a redacted
+ * placeholder back through the raw-read → edit/write flow).
+ */
+function isCredentialBearingConfigPath(absPath: string): boolean {
+  const normalized = absPath.replaceAll('\\', '/').toLowerCase();
+  const basename = normalized.slice(normalized.lastIndexOf('/') + 1);
+  if (
+    basename === 'config.toml' ||
+    basename === 'auth.json' ||
+    basename === 'credential.json' ||
+    basename === 'credentials.json' ||
+    basename === 'oauth.json' ||
+    basename === '.mcp.json' ||
+    basename === '.env' ||
+    basename.startsWith('.env.')
+  ) return true;
+  return basename === 'settings.json' &&
+    (normalized.includes('/.claude/') || normalized.includes('/.codex/') || normalized.includes('/su-codex-homes/'));
+}
 
 /**
  * Machine-oriented read modes promise an exact or structured payload. Appending
@@ -242,7 +268,7 @@ const readArgs = z.union([lineWindowArgs, byteWindowArgs, contentIndexArgs, evid
 export default defineTool({
   name: 'capability:read',
   description:
-    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
+    'Read a file with line-numbered text windows, exact undecorated text windows (raw:true), or exact resumable byte pages. offset/limit window lines; tail:N reads the last N lines. byte_offset+byte_limit returns base64 bytes with a next cursor, including for a single very long line. Credential-bearing config/auth files are redacted for ordinary line reads and refuse exact/raw/byte/structured modes. Path is absolute, ~/-relative, relative to the project dir, or a papercusp://scratch URI.',
   guidance: {
     when: 'Read a source/text file before editing it, or inspect content. Use offset+limit for line pages, tail:N for a log tail, raw:true when passing text to capability:write/edit, and byte_offset+byte_limit when exact resumable bytes matter or the file may be one long line.',
     notWhen: 'To run a command, use capability:bash. To search across files, use capability:bash with grep/rg.',
@@ -370,6 +396,20 @@ export default defineTool({
       };
     }
 
+    const credentialBearingConfig = isCredentialBearingConfigPath(abs);
+    const exactReadRequested =
+      args.raw === true ||
+      args.byte_offset !== undefined ||
+      args.byte_limit !== undefined ||
+      args.content_indexes !== undefined ||
+      args.evidence_class !== undefined;
+    if (credentialBearingConfig && exactReadRequested) {
+      return err(
+        'sensitive_file',
+        'exact, raw, byte, and structured reads are refused for credential-bearing config files; use an ordinary line read, which redacts secret values.',
+      );
+    }
+
     const byteMode = args.byte_offset !== undefined || args.byte_limit !== undefined;
     if (byteMode) {
       if (args.byte_offset === undefined || args.byte_limit === undefined) {
@@ -432,7 +472,11 @@ export default defineTool({
       };
     }
 
-    const text = bytes.toString('utf8');
+    const sourceText = bytes.toString('utf8');
+    // Redact the complete source before selecting a line window. A secret near
+    // a window boundary must not survive merely because the caller requested a
+    // narrow diagnostic slice.
+    const text = credentialBearingConfig ? redactSensitiveText(sourceText) : sourceText;
 
     const allLines = text.split('\n');
     // A trailing newline yields a final empty element; drop it so line counts match the file.
