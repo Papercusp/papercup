@@ -12,6 +12,7 @@
  * auto-tagging) live in exactly one place.
  */
 import { z } from 'zod';
+import { isDeepStrictEqual } from 'node:util';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, deriveAgentRole, resolveSelfLiteral } from '../coordination/identity';
 import { getPresence } from '../coordination/presence';
@@ -758,9 +759,13 @@ export default defineTool({
         'conflicting rubricRef values: pass the scorecard once under observation.rubricRef (preferred) or top-level rubricRef (compatibility alias)',
       );
     }
-    if (args.observation?.ratings && args.ratings) {
+    // Compatibility aliases may be emitted together by callers that combine an
+    // older top-level schema with the current nested shape. Coalesce equivalent
+    // values (the nested value remains canonical below), but reject an actual
+    // disagreement so one spelling cannot silently overwrite the other.
+    if (args.observation?.ratings && args.ratings && !isDeepStrictEqual(args.observation.ratings, args.ratings)) {
       throw new ObservationEvidenceError(
-        'ratings were supplied twice: pass them once under observation.ratings (preferred) or top-level ratings (compatibility alias)',
+        'conflicting ratings values: pass matching ratings once under observation.ratings (preferred) or top-level ratings (compatibility alias)',
       );
     }
     // EI-20212184497318148: `notExercised` is scorecard shorthand, not a

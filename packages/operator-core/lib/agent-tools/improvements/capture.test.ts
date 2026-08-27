@@ -1703,6 +1703,39 @@ describe('improvements:capture — gradedGeneration stamp (EI-12147)', () => {
     });
   });
 
+  it('coalesces equivalent nested and compatibility-alias ratings into the canonical observation payload', async () => {
+    await callTool({
+      title: 'scorecard with repeated ratings aliases',
+      lane: 'observation',
+      rubricRef: 'blender-release-readiness',
+      ratings: { 'cycle-error-rate': { evidence: '0/8 post-watermark', rating: 'pass' } },
+      observation: {
+        rubricRef: 'blender-release-readiness',
+        ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+      },
+    });
+    expect(passedObservation()).toMatchObject({
+      rubricRef: 'blender-release-readiness',
+      ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+    });
+  });
+
+  it('rejects conflicting nested and compatibility-alias ratings loudly', async () => {
+    await expect(
+      callTool({
+        title: 'conflicting scorecard ratings',
+        lane: 'observation',
+        rubricRef: 'blender-release-readiness',
+        ratings: { 'cycle-error-rate': { rating: 'pass', evidence: '0/8 post-watermark' } },
+        observation: {
+          rubricRef: 'blender-release-readiness',
+          ratings: { 'cycle-error-rate': { rating: 'broken', evidence: '8/8 failures' } },
+        },
+      }),
+    ).rejects.toThrow(/conflicting ratings values/);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
   it('rejects conflicting nested and compatibility-alias rubric values loudly', async () => {
     await expect(
       callTool({
