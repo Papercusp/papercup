@@ -1087,6 +1087,11 @@ export interface CheckpointProcessAuthorityProbeDeps {
   perReadTimeoutMs?: number;
 }
 
+/** Injectable launch-time seam for the async pre-lock authority census. */
+export type CheckpointProcessAuthorityReader = (
+  root: string,
+) => CheckpointProcessAuthorityReading | PromiseLike<CheckpointProcessAuthorityReading>;
+
 async function defaultListProcPids(): Promise<number[]> {
   const entries = await readdirAsync('/proc', { withFileTypes: true });
   return entries
@@ -2396,7 +2401,7 @@ export async function cancelStaleCheckpointAwaits(
  * injectable so the replaceStale path's candidate-replaced wake is testable without a real
  * DB, and `recordDisplacement` (EI-19323010647367612) the same for the pre-stop log marker.
  */
-export function launchDetachedCheckpoint(
+export async function launchDetachedCheckpoint(
   opts: LaunchCheckpointOpts = {},
   spawnFn: SpawnLike = spawn,
   execFn: ExecSyncLike = defaultExecSync,
@@ -2406,6 +2411,7 @@ export function launchDetachedCheckpoint(
     staleCandidateSha: string,
   ) => Promise<{ cancelled: number }> = cancelStaleCheckpointAwaits,
   recordDisplacement: (logPath: string, info: CheckpointDisplacementInfo) => void = recordCheckpointDisplacement,
+  readProcessAuthority: CheckpointProcessAuthorityReader = readCheckpointProcessAuthorityCheap,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
   const unit = checkpointUnitForRoot(root);
@@ -2443,6 +2449,66 @@ export function launchDetachedCheckpoint(
         reason: 'probe_failed',
         alreadyRunning: active,
       });
+    }
+    // P-009 / EI-21340355513221785: systemd and the shared run-lock both have a blind
+    // startup interval. The checkpoint materializer acquires the exclusive materialization
+    // lock before it publishes either signal, so a trusted inactive systemd read is not yet
+    // enough to authorize a second launch. This census is intentionally awaited BEFORE the
+    // child is spawned; once spawnFn returns, listeners below are attached synchronously in
+    // the same turn so callers cannot race a fast systemd-run child.
+    const authority = await readProcessAuthority(root);
+    if (authority.probeFailed) {
+      const authorityProbe: ActiveCheckpointCheck = {
+        active: true,
+        unit,
+        systemd: active.systemd,
+        probe_failed: true,
+        probe_detail: 'checkpoint process-authority probe failed before launch',
+        candidate_stale: false,
+      };
+      return {
+        launched: false,
+        unit,
+        argv: [],
+        logPath,
+        reason: 'probe_failed',
+        alreadyRunning: authorityProbe,
+      };
+    }
+    if (authority.active) {
+      // The authority probe is deliberately stronger than argv matching: its environment,
+      // exact integration root, and unified cgroup identify the live materializer before the
+      // run-lock exists. Preserve the structured alreadyRunning contract so callers wait rather
+      // than firing force:true and replacing the unit once materialization reaches systemd.
+      const startedAt =
+        authority.startedAtMs != null && Number.isFinite(authority.startedAtMs)
+          ? new Date(authority.startedAtMs).toISOString()
+          : null;
+      const authorityProbe: ActiveCheckpointCheck = {
+        active: true,
+        unit,
+        systemd: active.systemd,
+        pre_lock_authority: {
+          workspace: authority.workspace,
+          harness: authority.harness,
+          cgroup_path: authority.cgroupPath,
+          pid: authority.pid,
+        },
+        candidate: null,
+        candidate_stale: false,
+        started_at: startedAt,
+        elapsed_sec: authority.elapsedSec,
+        progress_at: startedAt,
+        current_phase: 'materializing',
+      };
+      return {
+        launched: false,
+        unit,
+        argv: [],
+        logPath,
+        reason: 'already_running',
+        alreadyRunning: authorityProbe,
+      };
     }
     if (active.active) {
       // EI-9672: a CONFIRMED-stale active run (judging an older candidate than the current
