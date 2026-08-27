@@ -144,6 +144,25 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(res).not.toHaveProperty('content');
   });
 
+  it('redirects the removed rubric relation to the plan-backed canonical store', async () => {
+    const res = await pgQueryTool.handler({ describe: 'harness_shared.rubrics' } as never, {} as never);
+    const payload = payloadOf(res as never);
+
+    expect(payload).toMatchObject({ reason: 'relation_not_found' });
+    expect(String(payload.error)).toContain('harness_shared.harness_plans');
+    expect(String(payload.error)).toContain("template = 'rubric'");
+    expect(String(payload.error)).toContain('rubrics:list');
+  });
+
+  it('documents the plan-backed rubric relation and canonical read tools', () => {
+    const description = (pgQueryTool as unknown as { description?: string }).description ?? '';
+    const chaining = (pgQueryTool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(description).toContain('harness_shared.harness_plans');
+    expect(description).toContain("template = 'rubric'");
+    expect(chaining).toContain('rubrics:list');
+    expect(chaining).toContain('harness_shared.harness_plans');
+  });
+
   it('refuses an unscoped tenant read before executing it', async () => {
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
     const res = await pgQueryTool.handler(

@@ -65,6 +65,20 @@ function jsonError(reason: string, message: string) {
 }
 
 /**
+ * Rubrics are plan-backed after migration 338/353; keep the removed v1 relation
+ * from sending callers into a schema-guessing loop when they use describe.
+ */
+function canonicalRelationRedirect(ref: string): string | null {
+  const normalized = ref.trim().toLowerCase();
+  if (normalized !== 'harness_shared.rubrics' && normalized !== 'rubrics') return null;
+  return (
+    ' Rubrics are plan-backed: the standalone `harness_shared.rubrics` relation was removed. ' +
+    "Use `harness_shared.harness_plans` with `template = 'rubric'` for raw schema reads, or " +
+    'use `rubrics:list`, `rubrics:get`, and `rubrics:search` for canonical rubric reads.'
+  );
+}
+
+/**
  * EI-20218730860484837: PostgreSQL's `regprocedure` input syntax requires a
  * function signature, even for a zero-argument function. The raw 22P02 error
  * says only "expected a left parenthesis", which sends a caller back to SQL
@@ -119,7 +133,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts.',
+    "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts. Rubrics are plan-backed in `harness_shared.harness_plans` (`template = 'rubric'`); `harness_shared.rubrics` is retired.",
   capability: 'intel:read',
   guidance: {
     when:
@@ -127,7 +141,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      'Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.',
+      "Use `describe` before guessing schema. For rubric schema, describe `harness_shared.harness_plans`; use `rubrics:list`, `rubrics:get`, or `rubrics:search` for canonical rubric reads. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.",
     returns:
       'SQL: `{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }`; zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. `code:run` returns this root directly. Describe returns relation metadata. bigint/int8 stays exact.',
     seeAlso: [
@@ -250,7 +264,9 @@ export default defineTool({
           const near = await listRelations(`*${args.describe.replace(/^.*\./, '')}*`, { limit: 10 }).catch(() => []);
           return jsonError(
             'relation_not_found',
-            `No relation matching "${args.describe}".` + (near.length ? ` Did you mean: ${near.map((r) => r.relation).join(', ')}?` : ''),
+            `No relation matching "${args.describe}".` +
+              (near.length ? ` Did you mean: ${near.map((r) => r.relation).join(', ')}?` : '') +
+              (canonicalRelationRedirect(args.describe) ?? ''),
           );
         }
         return dataResult(description);
