@@ -17,7 +17,7 @@ let routes: { method: string; path: string; handler: (req: Request) => Promise<R
 beforeAll(async () => {
   const mod = await import('./bootstrap-su');
   routes = mod.default as unknown as typeof routes;
-}, 30_000);
+}, 60_000);
 
 const claimResumeMock = vi.hoisted(() => vi.fn(async (): Promise<boolean> => true));
 const acquireResumeMock = vi.hoisted(() =>

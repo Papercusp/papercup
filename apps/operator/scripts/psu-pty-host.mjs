@@ -5507,6 +5507,23 @@ export function hostThroughPty(o) {
         } catch {
           /* ignore */
         }
+        // WI-42458: returning stdin to cooked mode does NOT reset terminal-emulator
+        // DEC modes. A child killed before its own teardown can leave SGR mouse
+        // reporting armed, so the shell that inherits this terminal receives
+        // ESC[<35;col;rowM on every mouse move. Final exit is a terminal handoff
+        // just like recycle: restore the existing mode set and anchor below a
+        // possibly half-drawn frame, but omit the restart marker because no
+        // successor agent is being spawned. Keep this inside bridgeTty so a
+        // headless session never writes terminal controls into its log stream.
+        try {
+          const handoff = respawnTerminalHandoffBytes({
+            rows: sanePtyDim(stdout.rows, 0, 500) || undefined,
+            separator: false,
+          });
+          if (handoff) stdout.write(handoff);
+        } catch {
+          /* a closing terminal is best-effort — cleanup must still finish */
+        }
       }
       try {
         stdin.off?.('data', onStdin);

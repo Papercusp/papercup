@@ -16,6 +16,10 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const readFleetWindDownLoopEndAuthorizationMock = vi.hoisted(() =>
+  vi.fn(async (..._a: unknown[]) => null as boolean | null),
+);
+
 vi.mock('../coordination/roles', () => ({ COORD_ROLES: ['operator'] }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({
@@ -52,6 +56,14 @@ vi.mock('../../modes/store', () => ({
   getModeSubject: vi.fn(),
   getModes: vi.fn(async () => []),
 }));
+vi.mock('../coordination/tools/continuation-gate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../coordination/tools/continuation-gate')>();
+  return {
+    ...actual,
+    readFleetWindDownLoopEndAuthorization: (...a: unknown[]) =>
+      readFleetWindDownLoopEndAuthorizationMock(...a),
+  };
+});
 vi.mock('../coordination/escalations', () => ({ openEscalation: vi.fn(async () => ({})) }));
 vi.mock('../../goals/wind-down-disposition', async (importOriginal) => {
   const real = await importOriginal<typeof import('../../goals/wind-down-disposition')>();
@@ -145,6 +157,8 @@ beforeEach(() => {
   listParkedAwaitsMock.mockResolvedValue([]);
   getModesMock.mockReset();
   getModesMock.mockResolvedValue([]);
+  readFleetWindDownLoopEndAuthorizationMock.mockReset();
+  readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(null);
   checkOpenDirectivesGuardMock.mockReset();
   checkOpenDirectivesGuardMock.mockResolvedValue(null);
 });
@@ -233,6 +247,31 @@ describe('the P-012 wake-less autonomy guard', () => {
     expect(got.isError).toBe(false);
     expect(got.ended).toBe(true);
     expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows a claimless typed fleet wind-down cue to authorize ending without a parked await', async () => {
+    getModesMock.mockResolvedValue([mode('drain')]);
+    readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(true);
+
+    const got = await run({ reason: 'typed fleet stand-down' });
+
+    expect(got.isError).toBe(false);
+    expect(got.ended).toBe(true);
+    expect(readFleetWindDownLoopEndAuthorizationMock).toHaveBeenCalledWith({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+    });
+    expect(deactivateLoopMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the wake-less guard fail-closed when typed fleet wind-down authorization is denied', async () => {
+    getModesMock.mockResolvedValue([mode('drain')]);
+    readFleetWindDownLoopEndAuthorizationMock.mockResolvedValue(false);
+
+    const got = await run({ reason: 'untyped stand-down' });
+
+    expect(got).toMatchObject({ isError: true, ok: false, error: 'wake_less_autonomy_refused' });
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
   });
 
   it('does not mistake a platform-armed claim-release interest for a deliberate event park', async () => {

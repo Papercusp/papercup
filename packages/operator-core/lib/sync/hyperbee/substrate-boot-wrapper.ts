@@ -77,6 +77,19 @@ let reaper: SubstrateEvictionReaper | null = null;
 /** Module singleton — one keepalive listener per process. */
 let keepalive: OutboxKeepaliveHandle | null = null;
 
+/**
+ * Optional operational timing overrides for bounded physical/chaos drills.
+ * Production keeps the reaper's own defaults when these are absent. Invalid
+ * values are ignored rather than turning a diagnostic override into a boot
+ * failure or a zero-delay busy loop.
+ */
+function positiveEnvMs(name: string): number | undefined {
+  const raw = process.env[name];
+  if (raw == null || raw.trim() === '') return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
 /** WI-1877: register the post-respawn reconcile hook at most once per process
  *  (spawnSubstrateSidecar's respawn machinery is itself a module singleton, so
  *  double-registering here would re-boot every remote harness twice per respawn). */
@@ -115,9 +128,13 @@ export async function maybeStartSubstrateEvictionReaper(): Promise<boolean> {
   if (!on) return false;
   try {
     enableSubstrateEvictionTracking();
+    const intervalMs = positiveEnvMs('PAPERCUSP_SUBSTRATE_EVICTION_INTERVAL_MS');
+    const idleMs = positiveEnvMs('PAPERCUSP_SUBSTRATE_EVICTION_IDLE_MS');
     reaper = startSubstrateEvictionReaper({
       gatherFacts: (now) => gatherBootedHarnessFacts(now),
       evict: (key, guard) => evictBootedHarnessEngine(key, guard),
+      ...(intervalMs == null ? {} : { intervalMs }),
+      ...(idleMs == null ? {} : { idleMs }),
     });
     registerEvictionReaperShutdown();
     console.log('[substrate-boot] LAZY_SUBSTRATE_BOOT eviction reaper started');

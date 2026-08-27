@@ -1741,6 +1741,65 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
   );
 });
 
+describe('final interactive terminal handoff (WI-42458)', () => {
+  it(
+    'disables mouse reporting after the child exits before returning the terminal to its shell',
+    async () => {
+      let captured = '';
+      const rawModes: boolean[] = [];
+      const stdout = {
+        columns: 100,
+        rows: 40,
+        write: (d: Buffer | string) => {
+          captured += d.toString();
+        },
+        on() {},
+        off() {},
+      };
+      const stdin = Object.assign(new EventEmitter(), {
+        isTTY: true,
+        resume() {},
+        pause() {},
+        setRawMode(enabled: boolean) {
+          rawModes.push(enabled);
+        },
+      });
+      const ownerId = `su-final-terminal-handoff-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const childCode =
+        "process.stdout.write('\\x1b[?1003h\\x1b[?1006h');" +
+        'setTimeout(()=>process.exit(0),50);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' },
+        ownerId,
+        io: { stdin, stdout },
+        bridgeTty: true,
+        onExit: () => {},
+      });
+
+      expect(await done).toBe(0);
+      const mouseEnableAt = captured.indexOf('\x1b[?1003h');
+      const mouseDisableAt = captured.lastIndexOf('\x1b[?1003l');
+      expect(mouseEnableAt).toBeGreaterThanOrEqual(0);
+      expect(mouseDisableAt).toBeGreaterThan(mouseEnableAt);
+      for (const mode of ['1000', '1002', '1003', '1006']) {
+        expect(captured).toContain(`\x1b[?${mode}l`);
+      }
+      expect(captured).toContain('\x1b[?2004l');
+      expect(captured).not.toContain('session restarted');
+      expect(rawModes).toEqual([true, false]);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    10_000,
+  );
+});
+
 describe('force interrupt via the operator-side interruptViaPty (Phase 4 pty-force leg)', () => {
   it(
     'lands a real SIGINT mid-run through the control socket; the shell survives',

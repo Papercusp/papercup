@@ -34,6 +34,7 @@ import { getLoopCarryNote } from '../../carry-note';
 import { listActiveAwaits, listParkedAwaitsForSubscribers, INBOX_WAKE_KEY_PREFIX } from '../../events/await/store';
 import { getModes } from '../../modes/store';
 import { modeImpliesAutonomy } from '../../modes/registry';
+import { readFleetWindDownLoopEndAuthorization } from '../coordination/tools/continuation-gate';
 
 /** Bound the receipt's surviving-awaits enumeration (the count stays exact). */
 const SURVIVING_AWAITS_LISTED_CAP = 10;
@@ -273,7 +274,16 @@ export default defineTool({
             })
             .catch(() => null)
         : null;
-    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy) {
+    // A typed fleet wind-down is the one deliberate, fail-closed exception to
+    // the wake-less autonomy guard. The fleet cue is only authoritative after
+    // the member has released its claim; the helper independently verifies the
+    // claimless/current-fleet/winding-down/typed-cue tuple. A read failure stays
+    // denied here, while the explicit acknowledgement remains the escape hatch.
+    const fleetWindDownLoopEndAuthorized =
+      wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy && workspaceId
+        ? await readFleetWindDownLoopEndAuthorization({ ownerId, workspaceId }).catch(() => null)
+        : null;
+    if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy && fleetWindDownLoopEndAuthorized !== true) {
       const recoveryArgs = {
         ...args,
         acknowledgeWakeLessAutonomy: true,

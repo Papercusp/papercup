@@ -37,7 +37,7 @@ const launchTransaction = vi.hoisted(() => ({
     sessions: [],
     note: 'verified',
   })),
-  persist: vi.fn(async (..._args: unknown[]) => null),
+  persist: vi.fn(async (..._args: unknown[]): Promise<boolean | null> => null),
 }));
 
 vi.mock('../../../console-launcher', () => ({

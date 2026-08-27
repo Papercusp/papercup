@@ -84,9 +84,9 @@ vi.mock('./substrate-ipc-client', () => ({
   getSubstrateIpcClient: () => ipcClient,
 }));
 
-const startReaper = vi.fn(() => ({ stop: vi.fn(), tickOnce: vi.fn(async () => []) }));
+const startReaper = vi.fn((_opts?: unknown) => ({ stop: vi.fn(), tickOnce: vi.fn(async () => []) }));
 vi.mock('./substrate-eviction-reaper', () => ({
-  startSubstrateEvictionReaper: () => startReaper(),
+  startSubstrateEvictionReaper: (opts: unknown) => startReaper(opts),
 }));
 
 const startKeepalive = vi.fn(() => ({ stop: vi.fn(async () => {}) }));
@@ -109,6 +109,8 @@ import {
 import { createPgMergeCursorStore } from './pg-merge-cursor-store';
 
 beforeEach(() => {
+  delete process.env.PAPERCUSP_SUBSTRATE_EVICTION_INTERVAL_MS;
+  delete process.env.PAPERCUSP_SUBSTRATE_EVICTION_IDLE_MS;
   h.lazyOn = false;
   h.sidecarOn = false;
   h.mergeCursorPgOn = false;
@@ -147,6 +149,25 @@ describe('LAZY_SUBSTRATE_BOOT reaper gating', () => {
     expect(started).toBe(true);
     expect(enableTracking).toHaveBeenCalledOnce();
     expect(startReaper).toHaveBeenCalledOnce();
+  });
+
+  it('threads positive operational timing overrides without changing defaults', async () => {
+    h.lazyOn = true;
+    process.env.PAPERCUSP_SUBSTRATE_EVICTION_INTERVAL_MS = '250';
+    process.env.PAPERCUSP_SUBSTRATE_EVICTION_IDLE_MS = '500';
+    await maybeStartSubstrateEvictionReaper();
+    expect(startReaper).toHaveBeenCalledWith(
+      expect.objectContaining({ intervalMs: 250, idleMs: 500 }),
+    );
+
+    stopSubstrateEvictionReaper();
+    startReaper.mockClear();
+    process.env.PAPERCUSP_SUBSTRATE_EVICTION_INTERVAL_MS = '0';
+    process.env.PAPERCUSP_SUBSTRATE_EVICTION_IDLE_MS = 'not-a-number';
+    await maybeStartSubstrateEvictionReaper();
+    expect(startReaper).toHaveBeenCalledWith(
+      expect.not.objectContaining({ intervalMs: expect.anything(), idleMs: expect.anything() }),
+    );
   });
 
   it('is idempotent — a second call does not start a second reaper', async () => {
