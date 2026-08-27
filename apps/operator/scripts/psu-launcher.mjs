@@ -3081,6 +3081,7 @@ export const OMP_CORE_MCP_TOOL_NAMES = [
   // canonical list — 47 calls/7d; a coord:send reply covers it. coord:ask cut
   // 2026-07-19 by the same bar — 16 calls/14d seeded, zero fallback reaches.)
   "coord:orient",
+  "coord:declare-intent",
   "coord:inbox",
   "coord:send",
   "coord:glance",
