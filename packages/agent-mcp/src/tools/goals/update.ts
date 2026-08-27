@@ -19,6 +19,7 @@ import { defineTool } from '@papercusp/tooldef';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
+import { HARNESS_SLUG_RE } from '@papercusp/operator-core/lib/harness-slug';
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
@@ -63,9 +64,9 @@ export default defineTool({
   name: 'goals:update',
   needsWorkspaceTx: true,
   description:
-    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings?, drainFleet? }. ' +
+    'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, installSlug?, launchSettings?, drainFleet? }. ' +
     'Partial — omitted fields stay untouched. status:"killed" when the kill criterion trips, "achieved" when the outcome is met. ' +
-    'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
+    'status FANS OUT: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
   guidance: {
@@ -112,6 +113,18 @@ export default defineTool({
         'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
       ),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+    installSlug: z
+      .string()
+      .min(1)
+      .max(120)
+      .regex(
+        HARNESS_SLUG_RE,
+        'install_slug must match the launch door\'s slug pattern (HARNESS_SLUG_RE) — a wildcard scope token like "*" is rejected here precisely because it is accepted at write time and then fails at every holder launch',
+      )
+      .optional()
+      .describe(
+        'REPAIR the Pot this goal is filed against (EI-21563406996333542). A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',
+      ),
     blockedBy: z
       .array(z.string().min(1).max(200))
       .max(20)
@@ -215,6 +228,7 @@ export default defineTool({
     const existing = await ctx.tx<
       Array<{
         workspace_id: string;
+        install_slug: string;
         title: string;
         body: string | null;
         status: string;
@@ -226,7 +240,7 @@ export default defineTool({
         launch_settings: unknown;
       }>
     >`
-      SELECT workspace_id, title, body, status, parent_id, budget_cents, kill_criterion,
+      SELECT workspace_id, install_slug, title, body, status, parent_id, budget_cents, kill_criterion,
              tripwires, metadata, launch_settings
         FROM harness_shared.goals WHERE id = ${args.id} LIMIT 1
     `;
@@ -350,6 +364,7 @@ export default defineTool({
       status: args.status ?? prev.status,
       budgetCents: args.budgetCents ?? (prev.budget_cents === null ? null : Number(prev.budget_cents)),
       parentId: args.parentId === undefined ? prev.parent_id : args.parentId,
+      installSlug: args.installSlug ?? prev.install_slug,
       // Omitted leaves it alone; a blank CLEARS it to null (see the gate above)
       // rather than storing whitespace that every reader has to re-trim before
       // it reads as absent — `killCriterionLine` and the board card both decide
@@ -375,6 +390,7 @@ export default defineTool({
              status         = ${next.status},
              budget_cents   = ${next.budgetCents},
              parent_id      = ${next.parentId},
+             install_slug   = ${next.installSlug},
              kill_criterion = ${next.killCriterion},
              tripwires      = ${next.tripwires}::jsonb,
              metadata       = ${next.metadata}::jsonb,
