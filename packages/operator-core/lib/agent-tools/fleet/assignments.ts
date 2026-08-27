@@ -81,6 +81,11 @@ import { resolveEffectiveStatusForItems } from '../plans/effective-status';
 import { shapeDagFrontier, claimsFromCoverage, type DagFrontierView } from '../../fleet-dag-view';
 import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../../harness/routines/loop';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { getWorkItem, type WorkItem } from '../../work-items';
+import {
+  extractWorkItemIds,
+  TERMINAL_WORK_ITEM_STATES,
+} from '../work_items/mirror-guard';
 
 /** Coverage levels most-covered → least, for sorting the rollup. Every member of
  *  CoverageLevel must appear: `indexOf` returns -1 for an unlisted one, which sorts
@@ -108,6 +113,7 @@ export const FLEET_ASSIGNMENTS_SUBREAD_TIMEOUT_MS = 8_000;
 
 const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'assignments',
+  'intentWorkItems',
   'coverage',
   'harnessPlans',
   'wakeability',
@@ -125,6 +131,67 @@ const FLEET_ASSIGNMENTS_DEGRADED_LEG_ORDER = [
   'residue',
   'dag',
 ] as const;
+
+/** Bound the extra intent-reference lookup independently of roster size. */
+export const ABANDONED_INTENT_REF_CAP = 40;
+
+export interface AbandonedIntentWorkItem {
+  agentId: string;
+  intent: string;
+  workItemId: string;
+  title: string;
+  state: string;
+  harness: string | null;
+}
+
+export type IntentWorkItemSnapshot = Pick<
+  WorkItem,
+  'id' | 'title' | 'state' | 'assignee' | 'harness'
+>;
+
+/** Keep population prefiltering and final detection on one reference grammar. */
+export function hasIntentWorkItemReference(intent: string): boolean {
+  return extractWorkItemIds(intent).length > 0;
+}
+
+/**
+ * Detect the claimless-death blind spot (EI-21560781905286213): a member can
+ * die after declaring a WI-/EI- intent but before it acquires the work-item.
+ * Claim-primary orphan counters then have no row to inspect, so the lane looks
+ * healthy precisely because ownership was never established.
+ *
+ * This is deliberately a detector, not a new ownership concept. The work item
+ * must still resolve as non-terminal and unassigned, and the member's settled
+ * lifecycle verdict must be dead.
+ */
+export function findAbandonedIntentWorkItems(
+  agents: ReadonlyArray<
+    Pick<AgentAssignment, 'agentId' | 'intent'> & { verdict?: MemberVerdict | null }
+  >,
+  itemsById: ReadonlyMap<string, IntentWorkItemSnapshot>,
+): AbandonedIntentWorkItem[] {
+  const out: AbandonedIntentWorkItem[] = [];
+  const seen = new Set<string>();
+  for (const agent of agents) {
+    if (agent.verdict !== 'dead') continue;
+    for (const workItemId of extractWorkItemIds(agent.intent)) {
+      const item = itemsById.get(workItemId);
+      if (!item || item.assignee || TERMINAL_WORK_ITEM_STATES.has(item.state.toLowerCase())) continue;
+      const key = `${agent.agentId}\u0000${item.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        agentId: agent.agentId,
+        intent: agent.intent,
+        workItemId: item.id,
+        title: item.title,
+        state: item.state,
+        harness: item.harness,
+      });
+    }
+  }
+  return out;
+}
 
 /**
  * EI-9015: the ACTIVE-scope coverage default. coord_links edges never expire, so the
@@ -943,19 +1010,13 @@ export default defineTool({
     // WHICH population its `agents` count counted. Same fleet, same minutes:
     // leader-brief said 11 and 14, this tool said 8 and 9 — all correct, none
     // reconciled, so a leader comparing two of them sees members appear/vanish.
-    const agentPopulation = selectFleetPopulation(
-      groupByAgent(rows),
-      (g) => args.include_stale || g.claims.length > 0 || g.alive,
-      {
-        population: 'agent(s) in scope',
-        basis:
-          'A row is in scope if this query resolved it (claim rows plus presence-only members); it ' +
-          'is shown if it holds a claim or is alive (heartbeat-fresh), or unconditionally under include_stale.',
-        withheldReason: 'idle AND not heartbeat-fresh (stale-idle)',
-        reveal: 'include_stale: true',
-      },
-    );
-    const agents: (AgentAssignment & {
+    const groupedAgents = groupByAgent(rows);
+    const basePopulationPredicate = (g: AgentAssignment): boolean =>
+      Boolean(args.include_stale || g.claims.length > 0 || g.alive);
+    // Stale idle rows are normally filtered before liveness decoration. Preserve
+    // only intent-bearing candidates long enough to settle their verdict and
+    // inspect the referenced item; non-findings are removed below.
+    let agents: (AgentAssignment & {
       sessionState?: SessionState | null;
       wakeable?: boolean | null;
       /** Stamped by decorateMemberVerdicts — the holder's last GENUINE work signal
@@ -967,7 +1028,10 @@ export default defineTool({
       monitorState?: MonitorState | null;
       nextFireAt?: string | null;
       loopMode?: 'work' | 'monitor' | null;
-    })[] = agentPopulation.rows;
+      verdict?: MemberVerdict;
+    })[] = groupedAgents.filter(
+      (g) => basePopulationPredicate(g) || hasIntentWorkItemReference(g.intent),
+    );
     const runDecoration = async (label: string, work: () => Promise<unknown>): Promise<void> => {
       try {
         await work();
@@ -1080,6 +1144,41 @@ export default defineTool({
           ),
       ),
     );
+    const deadIntentWorkItemIds = [
+      ...new Set(
+        agents
+          .filter((a) => a.verdict === 'dead')
+          .flatMap((a) => extractWorkItemIds(a.intent)),
+      ),
+    ].slice(0, ABANDONED_INTENT_REF_CAP);
+    const intentWorkItems = await boundedRead(
+      'intentWorkItems',
+      async () => {
+        const resolved = await Promise.all(
+          deadIntentWorkItemIds.map(async (id) => [id, await getWorkItem(id, args.harness)] as const),
+        );
+        return new Map(
+          resolved.filter((entry): entry is readonly [string, WorkItem] => entry[1] != null),
+        );
+      },
+      new Map<string, WorkItem>(),
+    );
+    const abandonedIntents = findAbandonedIntentWorkItems(agents, intentWorkItems);
+    const abandonedIntentOwners = new Set(abandonedIntents.map((row) => row.agentId));
+    const agentPopulation = selectFleetPopulation(
+      groupedAgents,
+      (g) => basePopulationPredicate(g) || abandonedIntentOwners.has(g.agentId),
+      {
+        population: 'agent(s) in scope',
+        basis:
+          'A row is in scope if this query resolved it (claim rows plus presence-only members); it ' +
+          'is shown if it holds a claim, is alive (heartbeat-fresh), has an abandoned nonterminal ' +
+          'unassigned WI-/EI- named in its dead member intent, or unconditionally under include_stale.',
+        withheldReason: 'idle AND not heartbeat-fresh (stale-idle) with no abandoned intent item',
+        reveal: 'include_stale: true',
+      },
+    );
+    agents = agentPopulation.rows;
     // EI-18698865231464142: `orphaned`/`stalled` below read straight off `rows`,
     // whose `.orphaned` was set by the DATA layer's endedRecordedOwnerIds-keyed
     // downgrade — which has no key for a non-session (role-string) holder like
@@ -1339,6 +1438,9 @@ export default defineTool({
       // one principal for the same plan-item deliverable — the same-principal
       // duplicate that the cross-principal collision detector cannot see.
       coverage_duplicates: duplicates.length,
+      // No claim exists to orphan, so this is a separate detector beside the
+      // claim counters rather than another spelling of orphaned_claims.
+      abandoned_intents: abandonedIntents.length,
       declared_unclaimed: agents.filter((a) => a.declaredUnclaimed).length,
       // P-001 (fleet-member-dx): members deliberately parked on an events:await —
       // idle-by-design, not stalled/abandoned.
@@ -1464,6 +1566,9 @@ export default defineTool({
         // Read those, not the array name: presence in `stalled` is NOT permission
         // to reclaim.
         stalled: stalledRows,
+        // Re-place these unassigned items; there is no claim to release.
+        // Always present so zero means measured-clean.
+        abandoned_intents: abandonedIntents,
         ...(liveHeldRows.length
           ? {
               live_holder_note:

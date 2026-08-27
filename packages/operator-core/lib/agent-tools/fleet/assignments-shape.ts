@@ -38,6 +38,7 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
         agents?: unknown[];
         orphaned?: unknown[];
         stalled?: unknown[];
+        abandoned_intents?: unknown[];
         coverage?: unknown[];
         coverage_collisions?: unknown[];
         coverage_duplicates?: unknown[];
@@ -157,6 +158,9 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
   };
   const orphaned = capList(d.orphaned, c.reclaim);
   const stalled = capList(d.stalled, c.reclaim);
+  // Claimless dead-intent lanes are reclaimable-grade coordination signals and
+  // must survive the trimmed leader-monitor tier.
+  const abandonedIntents = capList(d.abandoned_intents, c.reclaim);
   // Coverage collisions (EI-6074) are a reclaimable-grade coordination smell —
   // kept (capped) at every tier like orphaned/stalled, since the whole point is
   // the Queen sees the cross-table duplicate without a full-payload read.
@@ -232,6 +236,8 @@ export function shapeFleetAssignments(data: unknown, tier: AssignTier): unknown 
     ...(orphaned.note ? { orphaned_note: orphaned.note } : {}),
     stalled: stalled.rows,
     ...(stalled.note ? { stalled_note: stalled.note } : {}),
+    abandoned_intents: abandonedIntents.rows,
+    ...(abandonedIntents.note ? { abandoned_intents_note: abandonedIntents.note } : {}),
     ...(collisions.rows.length ? { coverage_collisions: collisions.rows } : {}),
     ...(collisions.note ? { coverage_collisions_note: collisions.note } : {}),
     ...(duplicates.rows.length ? { coverage_duplicates: duplicates.rows } : {}),

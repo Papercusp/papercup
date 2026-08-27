@@ -25,6 +25,9 @@ import {
   COVERAGE_ACTIVE_WINDOW_MS,
   VERDICT_SPEAKING_FRESH_MS,
   VERDICT_STALL_MS,
+  findAbandonedIntentWorkItems,
+  hasIntentWorkItemReference,
+  type IntentWorkItemSnapshot,
   type MemberVerdict,
 } from './assignments';
 import fleetAssignmentsTool from './assignments';
@@ -86,6 +89,75 @@ it('fleet:assignments keeps oversized include_stale JSON intact for structured c
   expect((fleetAssignmentsTool as { skipResultDoor?: string }).skipResultDoor).toBe(
     'oversize-by-design',
   );
+});
+
+describe('abandoned intent work-item detection (EI-21560781905286213)', () => {
+  const item = (
+    overrides: Partial<IntentWorkItemSnapshot> = {},
+  ): IntentWorkItemSnapshot => ({
+    id: 'WI-42199',
+    harness: 'papercusp',
+    state: 'open',
+    title: 'Partition crew',
+    assignee: null,
+    ...overrides,
+  });
+
+  it('keeps intent-bearing stale rows eligible for the liveness fold', () => {
+    expect(hasIntentWorkItemReference('Resume WI-42199: implement partition_crew')).toBe(true);
+    expect(hasIntentWorkItemReference('idle between fleet pulls')).toBe(false);
+  });
+
+  it('surfaces a dead member whose intent names a nonterminal unassigned item', () => {
+    const agent = { ...baseAgent({ intent: 'Resume WI-42199 now' }), verdict: 'dead' as const };
+    expect(findAbandonedIntentWorkItems([agent], new Map([['WI-42199', item()]]))).toEqual([
+      expect.objectContaining({
+        agentId: 'su-agent-1',
+        workItemId: 'WI-42199',
+        state: 'open',
+        harness: 'papercusp',
+      }),
+    ]);
+  });
+
+  it.each([
+    ['live member', { verdict: 'speaking' as const }, item()],
+    ['terminal item', { verdict: 'dead' as const }, item({ state: 'done' })],
+    ['assigned item', { verdict: 'dead' as const }, item({ assignee: 'su-other' })],
+  ])('does not surface a %s', (_label, agentOverrides, workItem) => {
+    const agent = {
+      ...baseAgent({ intent: 'Resume WI-42199 now' }),
+      ...agentOverrides,
+    };
+    expect(findAbandonedIntentWorkItems([agent], new Map([['WI-42199', workItem]]))).toEqual([]);
+  });
+
+  it('keeps abandoned_intents visible at every payload tier', () => {
+    const data = {
+      ok: true,
+      summary: { agents: 1, abandoned_intents: 1 },
+      orphaned: [],
+      stalled: [],
+      abandoned_intents: [
+        {
+          agentId: 'su-dead',
+          intent: 'Resume WI-42199',
+          workItemId: 'WI-42199',
+          title: 'Partition crew',
+          state: 'open',
+          harness: 'papercusp',
+        },
+      ],
+      agents: [],
+    };
+    for (const tier of ['trimmed', 'standard'] as const) {
+      const shaped = shapeFleetAssignments(data, tier) as Record<string, unknown>;
+      expect((shaped.summary as { abandoned_intents: number }).abandoned_intents).toBe(1);
+      expect(shaped.abandoned_intents).toEqual([
+        expect.objectContaining({ agentId: 'su-dead', workItemId: 'WI-42199' }),
+      ]);
+    }
+  });
 });
 
 describe('reconcileWakeability (EI-6077)', () => {
