@@ -21,6 +21,9 @@ import {
   headlessClaudeOnboardingEnabled,
   headlessClaudeOnboardingStartupMs,
   makeHeadlessClaudeOnboardingStateMachine,
+  claudeResumeCompactionStartupMs,
+  claudeResumeCompactionRecoveryMs,
+  makeClaudeResumeCompactionRecoveryStateMachine,
   clearSettleMs,
   resetWritesForAgent,
   submitVerifyQuietMs,
@@ -896,6 +899,73 @@ describe('makeHeadlessClaudeOnboardingStateMachine (EI-21382897362160495)', () =
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '4500' })).toBe(4_500);
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: '0' })).toBe(30_000);
     expect(headlessClaudeOnboardingStartupMs({ PAPERCUSP_PSU_HEADLESS_ONBOARDING_STARTUP_MS: 'nope' })).toBe(30_000);
+  });
+});
+
+describe('makeClaudeResumeCompactionRecoveryStateMachine (EI-21540586187946540)', () => {
+  const MENU =
+    'Autocompact is thrashing\n' +
+    '1. Resume from summary (recommended)\n' +
+    '2. Resume full session as-is\n' +
+    "3. Don't ask again";
+
+  it('selects the safe summary choice once across ANSI and chunk boundaries, then requires a later composer prompt', () => {
+    let clock = 1_000;
+    const machine = makeClaudeResumeCompactionRecoveryStateMachine({
+      now: () => clock,
+      startupMs: 5_000,
+      recoveryMs: 5_000,
+    });
+
+    expect(machine.observe(`\u001b[31m${MENU.slice(0, 31)}`)).toMatchObject({
+      action: 'none',
+      phase: 'watching',
+    });
+    const selected = machine.observe(`${MENU.slice(31)}\u001b[0m`);
+    expect(selected).toMatchObject({
+      action: 'select-summary',
+      phase: 'awaiting-prompt',
+      ready: false,
+      selectedSummary: true,
+    });
+
+    // The selected menu row can itself contain a `❯`; it is not the composer.
+    expect(machine.observe('\n❯ 1. Resume from summary (recommended)\n')).toMatchObject({
+      action: 'none',
+      phase: 'awaiting-prompt',
+      ready: false,
+    });
+    expect(machine.observe('\n\u001b[32m')).toMatchObject({ action: 'none', phase: 'awaiting-prompt' });
+    expect(machine.observe('❯\u001b[0m \n')).toMatchObject({
+      action: 'ready',
+      phase: 'ready',
+      ready: true,
+      awaitingPrompt: false,
+    });
+    expect(machine.observe(MENU)).toMatchObject({ action: 'none', phase: 'ready' });
+    clock += 1_000;
+  });
+
+  it('expires a selected recovery instead of authorizing a kickoff without a standalone prompt', () => {
+    let clock = 10_000;
+    const machine = makeClaudeResumeCompactionRecoveryStateMachine({
+      now: () => clock,
+      startupMs: 5_000,
+      recoveryMs: 100,
+    });
+    expect(machine.observe(MENU)).toMatchObject({ action: 'select-summary', phase: 'awaiting-prompt' });
+    clock = 10_099;
+    expect(machine.tick()).toMatchObject({ action: 'none', phase: 'awaiting-prompt', timedOut: false });
+    clock = 10_100;
+    expect(machine.tick()).toMatchObject({ action: 'expired', phase: 'timed-out', timedOut: true, ready: false });
+    expect(machine.observe('\n❯\n')).toMatchObject({ action: 'none', phase: 'timed-out', ready: false });
+  });
+
+  it('uses positive environment overrides and ignores invalid recovery windows', () => {
+    expect(claudeResumeCompactionStartupMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '4500' })).toBe(4_500);
+    expect(claudeResumeCompactionRecoveryMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_RECOVERY_MS: '7000' })).toBe(7_000);
+    expect(claudeResumeCompactionStartupMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '0' })).toBe(30_000);
+    expect(claudeResumeCompactionRecoveryMs({ PAPERCUSP_PSU_PTY_RESUME_COMPACTION_RECOVERY_MS: 'nope' })).toBe(30_000);
   });
 });
 
