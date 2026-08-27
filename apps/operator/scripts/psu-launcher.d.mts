@@ -1011,8 +1011,10 @@ export function linkOmpAgentDb(srcAgent: any, dstAgent: any): void;
  * link, psu→omp sessions boot with an empty credential store and Grok/xAI
  * (and any other post-login provider) silently vanish from `/model`.
  *
- *   opts.discoveryOff   → flip OMP tool-discovery OFF (contextSize:'full' — whole catalog up-front
- *                         for a capable model).
+ *   opts.discoveryOff   → flip OMP tool-discovery OFF. NOT a whole-catalog switch (that mode is
+ *                         retired): it accompanies the trimmed SEED, because with discovery ON
+ *                         even tools:find/tools:invoke sit behind activation and a 0-match query
+ *                         strands the entire surface.
  *   opts.toolsAllowlist → advertise ONLY these MCP tools (weak-model trim; listing-only, the rest
  *                         stay callable via tools:find).
  *
@@ -1595,11 +1597,13 @@ export function preflightWindowGuard({ personaBytes, contextSize, model, agent, 
 };
 /**
  * WI-39948: Codex's code-mode bridge serializes the advertised tool surface into
- * its per-call IPC request. With `contextSize:'full'`, Papercusp's full catalog
- * currently produces a ~128 MiB frame, above the bridge's hard 64 MiB limit, so
- * the session boots but EVERY tool call is rejected before execution. `--force`
- * cannot make that transport valid; fail before spawning and point at the
- * growable trimmed seed (tools:find/tools:invoke preserve full reachability).
+ * its per-call IPC request. Advertising Papercusp's whole catalog produced a
+ * ~128 MiB frame, above the bridge's hard 64 MiB limit, so the session booted but
+ * EVERY tool call was rejected before execution. `--force` cannot make that
+ * transport valid. Retiring the whole-catalog mode removed the ordinary route into
+ * this state — the guard remains as a backstop for any caller that reaches here with
+ * a non-trimmed size, and still points at the growable trimmed seed
+ * (tools:find/tools:invoke preserve full reachability).
  */
 export function assertCodexToolTransport({ agent, contextSize }: {
     agent?: string | undefined;
@@ -2969,7 +2973,6 @@ export function CACHE_PROXY_URL(): string;
  * are removed by persistDefaultClaudeAuthSettings. */
 export const CLAUDE_DEFAULT_AUTH_ENV_KEYS: readonly string[];
 export namespace SU_CONTEXT_TOKEN_ESTIMATES {
-    let full: string;
     let trimmed: string;
 }
 export const SU_CONTEXT_CHOICES: {
