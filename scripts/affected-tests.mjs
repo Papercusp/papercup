@@ -55,10 +55,14 @@ import {
 } from "./lib/related-tests.mjs";
 import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
 import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
-// EI-21082046676950143: the lint:declared-consumed guard entry below keys on this registry
-// rather than restating its paths. Import-safe — check-declared-consumed.mjs runs nothing at
-// module scope behind its `import.meta.url === process.argv[1]` main guard.
-import { DECLARED_FIELDS as DECLARED_CONSUMED_FIELDS } from "./check-declared-consumed.mjs";
+// EI-21082046676950143: the lint:declared-consumed guard entry below keys on the guard's OWN
+// declaring-path set rather than restating any of it — fields (`declaredIn`), columns (their
+// migration), and the registry module itself. Import-safe: check-declared-consumed.mjs runs
+// nothing at module scope behind its `import.meta.url === process.argv[1]` main guard.
+import { declaringPaths as declaredConsumedPaths } from "./check-declared-consumed.mjs";
+
+/** Frozen once: the guard's policed declaration sites, as an exact-path membership test. */
+const DECLARED_CONSUMED_PATHS = new Set(declaredConsumedPaths());
 import {
   summarizeDerivation,
   formatDerivationMarker,
@@ -2019,17 +2023,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // CellSpec surfaced only ~14 min later, inside test:lane-pure's declared-consumed-sweep.
     // Same orphaned-guard shape lint:guard-reachability above exists to catch.
     //
-    // The policed paths are DERIVED from the guard's own DECLARED_FIELDS registry, never
-    // restated here (CLAUDE.md, derived-truth ladder rung 1). A hardcoded copy would drift in
-    // the SILENT direction: the next field declared under a NEW `declaredIn` would quietly
-    // stop selecting this guard — which is precisely the failure this entry closes, so
-    // re-introducing it one layer up would be self-defeating.
+    // The policed paths are DERIVED from the guard's own registries (`declaringPaths()`),
+    // never restated here (CLAUDE.md, derived-truth ladder rung 1). A hardcoded copy would
+    // drift in the SILENT direction: the next field declared under a NEW `declaredIn`, or a
+    // column added by a new migration, would quietly stop selecting this guard — which is
+    // precisely the failure this entry closes, so re-introducing it one layer up would be
+    // self-defeating. Both halves matter: DECLARED_FIELDS is 9 of the 24 policed rows, so a
+    // fields-only key would look wired while missing most of the guard's own surface.
+    //
+    // ⚠ The entry alone is NOT sufficient: the runner execs `script` INSIDE `workspace`, so
+    // it must also be declared in packages/operator-core/package.json. It was root-only until
+    // this fix, and an entry naming a script its workspace does not declare registers cleanly
+    // and does NOTHING — the same orphaned-guard shape again, one layer further up.
     workspace: "@papercusp/operator-core",
     script: "lint:declared-consumed",
     // No hostSuiteRatchet: declared-consumed-sweep.test.ts execs this detector only from a
     // slow lane, so attaching unconditionally is the fail-safe direction — and it is cheap,
     // being an exact-path membership test over a couple of dozen declaring files.
-    appliesTo: (f) => DECLARED_CONSUMED_FIELDS.some((d) => d.declaredIn === f),
+    appliesTo: (f) => DECLARED_CONSUMED_PATHS.has(f),
   },
   {
     // EI-20098997113620795 — `attributeFailedTask` must be able to name a failing FILE for every

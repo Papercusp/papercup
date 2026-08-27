@@ -187,6 +187,13 @@ def call_tool(name, arguments):
     if fallback_operator_url and fallback_operator_url != operator_url:
         origins.append(fallback_operator_url)
     for attempt in range(len(RETRY_BACKOFFS) + 1):
+        # A staging authority can accept the connection but never answer while
+        # it is restarting.  That timeout is exactly when the stable operator
+        # fallback matters most, so every transport exception advances to the
+        # next origin.  Preserve the bounded backoff only when *all* configured
+        # origins actively refused the connection; retrying timeouts would turn
+        # this best-effort hook into a minute-long PostToolUse stall.
+        all_conn_refused = True
         for base_url in origins:
             try:
                 raw_response = urllib.request.urlopen(
@@ -200,10 +207,10 @@ def call_tool(name, arguments):
                 return inner, None
             except Exception as exc:
                 last_exc = exc
-                if _is_conn_refused(exc):
-                    continue
-                return None, str(exc)[:200]
-        if _is_conn_refused(last_exc) and attempt < len(RETRY_BACKOFFS):
+                if not _is_conn_refused(exc):
+                    all_conn_refused = False
+                continue
+        if all_conn_refused and attempt < len(RETRY_BACKOFFS):
             time.sleep(RETRY_BACKOFFS[attempt])
             continue
         break

@@ -26,6 +26,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../workspace-registry';
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
+// WI-42439: the single source for which `--account=` spellings bypass the gateway.
+import { isGatewayFreeAccount } from '../../../agent-config-constants';
 import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
@@ -356,7 +358,11 @@ export async function resolveAccountPin(
   //     account-routing disclosure. It must never be reinterpreted as the nominated account.
   //   • '' (unspecified) — "whatever the owner nominated". That is the local login ONLY while
   //     no default account is set; otherwise it is that account.
-  const literalSystem = lower === 'default' || lower === 'none' || lower === 'system';
+  // WI-42439: the SET lives in agent-config-constants, not here. It used to be spelled out
+  // inline, which read as a local detail and was copied wrong by the ACCOUNT chat pill (it
+  // tested `=== 'default'` alone and offered live re-pins on `--account=system` sessions
+  // that bypass the gateway). Both sides now ask the same predicate.
+  const literalSystem = isGatewayFreeAccount(lower);
   const impliedDefault = !raw;
   // OMP default means the selected OMP provider, not a Papercusp account. Do not
   // let a configured Claude default account silently replace an OMP catalog model.

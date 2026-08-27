@@ -968,7 +968,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     launchTransaction.recovery.retryOwnerIds = newMemberIds.filter(
       (ownerId) => !openedMemberIds.includes(ownerId),
     );
-    launchTransaction.waves[0].state = openedMemberIds.length === newMemberIds.length ? 'partial' : 'partial';
+    launchTransaction.waves[0].state = 'partial';
     await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
 
     if (openedMemberIds.length === 0) {
