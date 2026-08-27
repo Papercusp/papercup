@@ -983,6 +983,8 @@ export function issueClaimCandidateSubquery(
           wi.created_ts,
           wi.updated_ts,
           wi.taken_by,
+          wi.author_pubkey,
+          wi.admission,
           wi.terminal_owner,
           wi.terminal_completion_ref,
           wi.authority,

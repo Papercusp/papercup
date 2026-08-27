@@ -175,6 +175,8 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(projection).toContain('wi.lane');
     // Completion and per-claim cooldown floors also read columns after the CTE is
     // re-aliased as `wi`; keep the narrow projection complete for every outer floor.
+    expect(projection).toContain('wi.author_pubkey');
+    expect(projection).toContain('wi.admission');
     expect(projection).toContain('wi.terminal_owner');
     expect(projection).toContain('wi.terminal_completion_ref');
     expect(projection).toContain('wi.authority');
