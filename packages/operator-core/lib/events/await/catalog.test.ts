@@ -52,11 +52,15 @@ describe('events catalog — registry integrity', () => {
 
 describe('buildKey', () => {
   it('interpolates a required param', () => {
+    expect(buildKey('governor-transition', { kind: 'backlog-unhealthy' })).toBe(
+      'governor:transition:backlog-unhealthy',
+    );
     expect(buildKey('work-item', { id: 'WI-1234' })).toBe('work-item:status:WI-1234');
     expect(buildKey('lock', { ticket: 'abc' })).toBe('lock:grant:abc');
     expect(buildKey('plan-item', { slug: 'my-plan', id: 'P-014' })).toBe('plan-item:done:my-plan:P-014');
-    expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' }))
-      .toBe('ext:gmail:message.received');
+    expect(buildKey('external-trigger', { source: 'gmail', event: 'message.received' })).toBe(
+      'ext:gmail:message.received',
+    );
     expect(buildKey('consult-reply', { conversationId: 'conv-123' })).toBe('consult:reply:conv-123');
   });
 
@@ -383,7 +387,7 @@ describe('P-004/D-002 — findZeroParamSuffixMismatch (the zero-param-family-wit
     expect(findZeroParamSuffixMismatch(undefined as unknown as string)).toBeUndefined();
   });
 
-  it('does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard\'s job)', () => {
+  it("does NOT flag an unrelated orphan key (that is the EI-10870 orphan guard's job)", () => {
     expect(findZeroParamSuffixMismatch('overwatch:surface-landed')).toBeUndefined();
   });
 });

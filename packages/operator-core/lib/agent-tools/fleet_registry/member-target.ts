@@ -12,6 +12,7 @@ import { getPresence } from '../coordination/presence';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { classifyFleetControlInvoker } from './fleet-auth';
 import { resolveFleetCaller } from './_shared';
+import { latestFleetMembership } from '../../fleet-membership-store';
 import type { AgentIdentity, ResolveIdentityCtx } from '../coordination/identity';
 
 export interface ResolvedFleetMemberTarget {
@@ -84,7 +85,7 @@ export async function resolveFleetMemberTarget(
   }
 
   // 3. Resolve the target member within the fleet.
-  const resolved = await resolveMemberInFleet(member, slug);
+  const resolved = await resolveMemberInFleet(member, slug, workspaceId);
   if (!resolved.ok) {
     return { ...resolved, fleet: slug };
   }
@@ -108,12 +109,26 @@ export async function resolveFleetMemberTarget(
 export async function resolveMemberInFleet(
   member: string,
   slug: string,
+  workspaceId?: string,
 ): Promise<{ ok: true; ownerId: string; role: string } | { ok: false; error: string; message: string }> {
   const trimmed = member.trim();
   const directRole = (await fetchPresenceFleet([trimmed]).catch(() => new Map())).get(trimmed);
   if (directRole?.fleetSlug === slug) {
     return { ok: true, ownerId: trimmed, role: directRole.fleetRole ?? 'member' };
   }
+
+  // A claim-backed member can remain in fleet_assignment after its ephemeral
+  // coord_presence row is reaped. Resolve an exact ownerId against the durable
+  // latest membership fact before consulting the live delivery audience; the
+  // latter intentionally excludes recorded/dead members and is not a
+  // membership authority (EI-21590236680691215).
+  if (workspaceId) {
+    const durable = await latestFleetMembership(workspaceId, trimmed).catch(() => null);
+    if (durable?.fleetSlug === slug) {
+      return { ok: true, ownerId: trimmed, role: durable.fleetRole ?? 'member' };
+    }
+  }
+
   const { hostAudienceResolvers } = await import('../coordination/audience-host');
   const members = (await hostAudienceResolvers.listFleetMembers(slug).catch(() => [])) as string[];
   const matches = members.filter((id) => id === trimmed || id.startsWith(trimmed) || id.includes(trimmed));

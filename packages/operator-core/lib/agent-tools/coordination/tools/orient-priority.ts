@@ -102,9 +102,15 @@ export const ORIENT_OPTIONAL_PRIORITY = {
     {
       name: 'peersKnow',
       fields: ['peersKnow'],
-      recoverVia: "consult:get_feedback { question: '<your intent>' } (archive-first serves settled questions instantly)",
+      recoverVia:
+        "consult:get_feedback { question: '<your intent>' } (archive-first serves settled questions instantly)",
     },
     { name: 'pipeline', fields: ['pipeline'], recoverVia: 'dev:pipeline_position { path }' },
+    {
+      name: 'governor',
+      fields: ['governor'],
+      recoverVia: "state:read { cell: 'governor.health' } plus governor.admission/queue/resources/recovery",
+    },
     // P-011 (state-plane-interest-and-hardening-2026-08-21). ADDITIVE, and namespaced
     // under its own leg so it composes with fleet-spec-scoped-metrics P-007's leader
     // fold on this same file rather than altering it (D-005).

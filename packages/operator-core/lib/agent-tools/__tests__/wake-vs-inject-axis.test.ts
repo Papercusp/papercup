@@ -80,4 +80,11 @@ describe('wake-vs-inject axis stays declared at tool choice (D-001)', () => {
     expect(block).toMatch(/inject-only/i);
     expect(block).toMatch(/one-shot/i);
   });
+
+  it('the canonical su prompt uses the live events:await shape, not retired watch flags', () => {
+    const prompt = read('../../../../../libs/papercusp/packages/harness/blueprints/base/prompts/su.md');
+    expect(prompt).toContain("events:await { event, timeout_sec, on_timeout:'wake' }");
+    expect(prompt).toContain('do not pass retired `wake`/`once` keys');
+    expect(prompt).not.toContain('`events:await` (wake:true, once:true)');
+  });
 });

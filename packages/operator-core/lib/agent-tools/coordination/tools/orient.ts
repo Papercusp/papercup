@@ -349,6 +349,8 @@ export interface OrientResult {
    *  same reference) so a caller reading either coord:orient's or coord:inbox's
    *  key name gets the real rows instead of a silent [] on a mismatched read. */
   inbox: { summary?: unknown; recent?: unknown; entries?: unknown };
+  /** Bounded capless-governor state; never includes per-request or per-queue rows. */
+  governor?: import('../../../resource-governor/state-snapshot').GovernorOrientSummary | null;
   /** memory:search recall for `intent`/`memoryQuery` — bounded hits; null if the
    *  recall failed/timed out; absent when no query was given. `withheld` counts
    *  queen-loop-steering hits stripped for a responsive caller (P-002). EI-9031:
@@ -3204,6 +3206,16 @@ export default defineTool({
     // overlapped rather than serial.
     const recovery = compactionRecoveryPromise ? await compactionRecoveryPromise : undefined;
     const continuityProbes = continuityProbesPromise ? await continuityProbesPromise : undefined;
+    // capless-adaptive-resource-governor P-011: bounded, best-effort shared state.
+    // Read after composition so governor availability cannot delay the core orient legs.
+    try {
+      const { readGovernorStateSnapshot, buildGovernorOrientSummary } = await import('../../../resource-governor/state-snapshot');
+      const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+      const governor = await readGovernorStateSnapshot(ws);
+      result.governor = governor ? buildGovernorOrientSummary(governor.payload) : null;
+    } catch {
+      result.governor = null;
+    }
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
     // show a human what THIS agent was actually told about what its reads left

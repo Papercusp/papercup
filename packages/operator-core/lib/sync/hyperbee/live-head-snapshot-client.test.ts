@@ -266,6 +266,43 @@ describe('retrying across a holder recycle', () => {
     });
   });
 
+  it('starts a retry after the first attempt consumes the full default timeout', async () => {
+    // The retry budget must cover the complete in-flight timeout plus the next delay.
+    // Otherwise the budget guard returns the first transport failure before retrying.
+    let virtualNow = 0;
+    let realCalls = 0;
+    const f = fleet({ ports: [3070], holderPort: 3070 });
+    const fetchImpl = (async (url: string, init: { body: string }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (body.probeOnly !== true) {
+        realCalls += 1;
+        if (realCalls === 1) {
+          virtualNow += DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS;
+          throw new Error('request timed out');
+        }
+      }
+      return await (f.fetchImpl as unknown as (u: string, i: { body: string }) => Promise<unknown>)(url, init);
+    }) as never;
+
+    const out = await requestLiveOperatorHeadSnapshot({
+      ...base,
+      ...f,
+      fetchImpl,
+      nowImpl: () => virtualNow,
+      sleepImpl: async (ms) => {
+        virtualNow += ms;
+      },
+    });
+
+    expect(out).toMatchObject({ kind: 'produced', port: 3070 });
+    expect(realCalls).toBe(2);
+    expect(out.retry).toEqual({
+      attempts: 2,
+      waitedMs: DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+      elapsedMs: DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS + DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+    });
+  });
+
   it('aborts an in-flight request when the specific holder disappears', async () => {
     let replacementActive = false;
     let realStarted!: () => void;
@@ -534,6 +571,9 @@ describe('retrying across a holder recycle', () => {
     // a recycle returns in seconds. A budget under one recycle would be decorative.
     expect(DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS).toBeGreaterThanOrEqual(5 * 60_000);
     expect(DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS).toBeLessThanOrEqual(30_000);
+    expect(DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS).toBeGreaterThan(
+      DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS + DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS,
+    );
   });
 });
 
