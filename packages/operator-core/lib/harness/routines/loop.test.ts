@@ -665,6 +665,7 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(p).toContain('assign_to');
     // how to stop (don't spin on empty wakes)
     expect(p).toContain('loop:end');
+    expect(p).toContain('acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true');
     // every placeholder was substituted
     expect(p).not.toMatch(/\{(intervalSec|harness|ownerId|goal)\}/);
   });
@@ -720,6 +721,7 @@ describe('buildLoopWakePrompt (the per-wake template, P-008)', () => {
     expect(monitor).toContain('120');
     expect(monitor).toContain('deltas');
     expect(monitor).toContain('loop:end');
+    expect(monitor).toContain('acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true');
     // …with NONE of the per-wake work-item contract (the boilerplate a monitor loop burned every wake).
     expect(monitor).not.toContain('work_items:create');
     expect(monitor).not.toContain('assign_to');
