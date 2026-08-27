@@ -25,6 +25,48 @@ const STATED_UNPARK_CONDITION = /\b(?:unpark|unhold|release|resume|clear)\b|\b(?
 export type AuditAgeStatus = 'known' | 'missing' | 'invalid';
 export type AuditAgeBucket = 'under-1d' | '1-7d' | '7-30d' | '30d-plus' | 'unknown';
 export type UnparkConditionStatus = 'stated' | 'missing' | 'unresolved';
+export type DurableParkReleaseReachability = 'reachable' | 'blocked' | 'unreachable' | 'satisfied';
+export type DurableParkReleaseLivenessStatus =
+  | 'tracked'
+  | 'unverified'
+  | 'unreachable'
+  | 'satisfied-still-parked';
+export type DurableParkReleaseLivenessFinding =
+  | 'condition-missing'
+  | 'condition-ambiguous'
+  | 'owner-missing'
+  | 'trigger-missing'
+  | 'reachability-unverified'
+  | 'evidence-missing'
+  | 'condition-unreachable'
+  | 'condition-satisfied-still-parked';
+
+/**
+ * Optional typed release contract stored at `payload.claim_hold_release`.
+ *
+ * A durable park deliberately outlives its parker, so `claim_hold_by` is provenance,
+ * not proof that somebody still owns the condition. Likewise, release-looking prose
+ * is not proof that the condition is realistic or will ever be checked again. This
+ * contract supplies the liveness half without weakening the no-TTL safety rule.
+ */
+export interface DurableParkReleaseContract {
+  condition: string;
+  owner: string;
+  trigger: string;
+  reachability: DurableParkReleaseReachability;
+  evidence: string;
+}
+
+export interface DurableParkReleaseLiveness {
+  status: DurableParkReleaseLivenessStatus;
+  contractPresent: boolean;
+  condition: string | null;
+  owner: string | null;
+  trigger: string | null;
+  reachability: DurableParkReleaseReachability | null;
+  evidence: string | null;
+  findings: DurableParkReleaseLivenessFinding[];
+}
 
 export interface DurableParkAuditSourceRow {
   id: string;
@@ -55,6 +97,7 @@ export interface DurableParkAuditParkRow {
     status: UnparkConditionStatus;
     text: string | null;
   };
+  releaseLiveness: DurableParkReleaseLiveness;
 }
 
 export interface DurableParkAuditLeaseRow {
@@ -76,7 +119,7 @@ export interface DurableParkAuditReviewRow {
 }
 
 export interface DurableParkAuditReport {
-  schemaVersion: 'durable-park-audit-v1';
+  schemaVersion: 'durable-park-audit-v2';
   runId: string;
   workspaceId: string;
   harnessSlug: string;
@@ -97,6 +140,12 @@ export interface DurableParkAuditReport {
   };
   parkAgeBuckets: Record<AuditAgeBucket, number>;
   unparkConditions: Record<UnparkConditionStatus, number>;
+  releaseConditionHealth: {
+    statusCounts: Record<DurableParkReleaseLivenessStatus, number>;
+    findingCounts: Record<DurableParkReleaseLivenessFinding, number>;
+    flagged: number;
+    requirement: string;
+  };
   missingMetadata: {
     unattributedClaimHolds: number;
     parkReason: number;
@@ -217,6 +266,72 @@ function numberOrNull(value: unknown): number | null {
 
 function textOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() ? value : null;
+}
+
+const RELEASE_REACHABILITY = new Set<DurableParkReleaseReachability>([
+  'reachable',
+  'blocked',
+  'unreachable',
+  'satisfied',
+]);
+
+/**
+ * Fail-closed liveness assessment for a retained durable park.
+ *
+ * The legacy reason remains a valid condition description when it explicitly
+ * names an unpark transition, but it cannot prove ownership, reachability, or a
+ * re-evaluation trigger. Only the typed `claim_hold_release` contract can close
+ * those gaps. `unreachable` and `satisfied` are findings, never auto-clear
+ * instructions: reconciliation still requires a fingerprinted, evidence-backed
+ * decision through the existing CAS path.
+ */
+export function classifyDurableParkReleaseLiveness(
+  payloadValue: unknown,
+  parkReason: string | null,
+): DurableParkReleaseLiveness {
+  const payload = record(payloadValue);
+  const rawContract = record(payload.claim_hold_release);
+  const contractPresent = Object.keys(rawContract).length > 0;
+  const proseCondition = classifyUnparkCondition(parkReason);
+  const condition = textOrNull(rawContract.condition) ??
+    (proseCondition.status === 'stated' ? proseCondition.text : null);
+  const owner = textOrNull(rawContract.owner);
+  const trigger = textOrNull(rawContract.trigger);
+  const reachabilityText = textOrNull(rawContract.reachability);
+  const reachability = reachabilityText && RELEASE_REACHABILITY.has(reachabilityText as DurableParkReleaseReachability)
+    ? (reachabilityText as DurableParkReleaseReachability)
+    : null;
+  const evidence = textOrNull(rawContract.evidence);
+  const findings: DurableParkReleaseLivenessFinding[] = [];
+
+  if (!condition) {
+    findings.push(proseCondition.status === 'missing' ? 'condition-missing' : 'condition-ambiguous');
+  }
+  if (!owner) findings.push('owner-missing');
+  if (!trigger) findings.push('trigger-missing');
+  if (!reachability) findings.push('reachability-unverified');
+  if (!evidence) findings.push('evidence-missing');
+  if (reachability === 'unreachable') findings.push('condition-unreachable');
+  if (reachability === 'satisfied') findings.push('condition-satisfied-still-parked');
+
+  const status: DurableParkReleaseLivenessStatus = reachability === 'unreachable'
+    ? 'unreachable'
+    : reachability === 'satisfied'
+      ? 'satisfied-still-parked'
+      : findings.length === 0
+        ? 'tracked'
+        : 'unverified';
+
+  return {
+    status,
+    contractPresent,
+    condition,
+    owner,
+    trigger,
+    reachability,
+    evidence,
+    findings,
+  };
 }
 
 /**
@@ -396,6 +511,23 @@ export function buildDurableParkAuditReport(input: {
     missing: 0,
     unresolved: 0,
   };
+  const releaseStatusCounts: Record<DurableParkReleaseLivenessStatus, number> = {
+    tracked: 0,
+    unverified: 0,
+    unreachable: 0,
+    'satisfied-still-parked': 0,
+  };
+  const releaseFindingCounts: Record<DurableParkReleaseLivenessFinding, number> = {
+    'condition-missing': 0,
+    'condition-ambiguous': 0,
+    'owner-missing': 0,
+    'trigger-missing': 0,
+    'reachability-unverified': 0,
+    'evidence-missing': 0,
+    'condition-unreachable': 0,
+    'condition-satisfied-still-parked': 0,
+  };
+  let releaseConditionFlagged = 0;
   const missingMetadata = {
     unattributedClaimHolds: 0,
     parkReason: 0,
@@ -441,8 +573,12 @@ export function buildDurableParkAuditReport(input: {
       axes.durableParks += 1;
       const age = classifyAuditAge(provenance.parked.at, input.nowMs);
       const unparkCondition = classifyUnparkCondition(provenance.parked.reason);
+      const releaseLiveness = classifyDurableParkReleaseLiveness(payload, provenance.parked.reason);
       parkAgeBuckets[age.bucket] += 1;
       unparkConditions[unparkCondition.status] += 1;
+      releaseStatusCounts[releaseLiveness.status] += 1;
+      if (releaseLiveness.status !== 'tracked') releaseConditionFlagged += 1;
+      for (const finding of releaseLiveness.findings) releaseFindingCounts[finding] += 1;
       if (!provenance.parked.reason?.trim()) missingMetadata.parkReason += 1;
       if (age.status === 'missing') missingMetadata.parkTimestamp += 1;
       if (age.status === 'invalid') missingMetadata.invalidParkTimestamp += 1;
@@ -457,6 +593,7 @@ export function buildDurableParkAuditReport(input: {
         parkedAt: provenance.parked.at,
         age,
         unparkCondition,
+        releaseLiveness,
       });
     }
 
@@ -494,7 +631,7 @@ export function buildDurableParkAuditReport(input: {
     .sort((a, b) => b.count - a.count || a.reason.localeCompare(b.reason));
 
   return {
-    schemaVersion: 'durable-park-audit-v1',
+    schemaVersion: 'durable-park-audit-v2',
     runId: input.runId,
     workspaceId: input.workspaceId,
     harnessSlug: input.harnessSlug,
@@ -508,6 +645,15 @@ export function buildDurableParkAuditReport(input: {
     },
     parkAgeBuckets,
     unparkConditions,
+    releaseConditionHealth: {
+      statusCounts: releaseStatusCounts,
+      findingCounts: releaseFindingCounts,
+      flagged: releaseConditionFlagged,
+      requirement:
+        'Every retained durable park needs a realistically reachable condition, accountable owner/source, ' +
+        'concrete re-evaluation trigger, and evidence. Unreachable or satisfied conditions require explicit ' +
+        'reconciliation, reframing/terminalization, or escalation; age and parker death never auto-clear a park.',
+    },
     missingMetadata,
     reasons,
     durableParks,
@@ -560,7 +706,7 @@ export async function runWorkItemDurableParkAudit(opts: {
   const existingDetail = record(existing[0]?.detail);
   if (existingDetail.status === 'complete' && existingDetail.mode === 'durable-park-audit') {
     const report = record(existingDetail.report);
-    if (report.schemaVersion === 'durable-park-audit-v1') return report as unknown as DurableParkAuditReport;
+    if (report.schemaVersion === 'durable-park-audit-v2') return report as unknown as DurableParkAuditReport;
   }
 
   await sql`

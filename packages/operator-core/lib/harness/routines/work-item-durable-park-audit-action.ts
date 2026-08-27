@@ -79,6 +79,9 @@ export function makeWorkItemDurableParkAuditAction(overrides: Partial<DurablePar
       deps.log(
         `${ctx.installSlug}: run=${result.runId} parks=${result.population.axes.durableParks} ` +
           `missing=${result.unparkConditions.missing} unresolved=${result.unparkConditions.unresolved} ` +
+          `livenessFlagged=${result.releaseConditionHealth.flagged} ` +
+          `unreachable=${result.releaseConditionHealth.statusCounts.unreachable} ` +
+          `satisfiedStillParked=${result.releaseConditionHealth.statusCounts['satisfied-still-parked']} ` +
           `overdueReviews=${result.overdueReviews.rows.length} reportOnly=true`,
       );
     }

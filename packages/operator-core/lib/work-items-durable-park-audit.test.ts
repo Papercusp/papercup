@@ -3,6 +3,7 @@ import {
   buildDurableParkEvidenceMatrix,
   buildDurableParkAuditReport,
   classifyAuditAge,
+  classifyDurableParkReleaseLiveness,
   classifyUnparkCondition,
   durableParkFingerprint,
   planDurableParkClear,
@@ -82,7 +83,7 @@ describe('durable park audit classification', () => {
 
     expect(rows).toEqual(before);
     expect(report).toMatchObject({
-      schemaVersion: 'durable-park-audit-v1',
+      schemaVersion: 'durable-park-audit-v2',
       reportOnly: true,
       modelCalled: false,
       population: {
@@ -104,6 +105,25 @@ describe('durable park audit classification', () => {
         unknown: 1,
       },
       unparkConditions: { stated: 1, missing: 1, unresolved: 0 },
+      releaseConditionHealth: {
+        statusCounts: {
+          tracked: 0,
+          unverified: 2,
+          unreachable: 0,
+          'satisfied-still-parked': 0,
+        },
+        findingCounts: {
+          'condition-missing': 1,
+          'condition-ambiguous': 0,
+          'owner-missing': 2,
+          'trigger-missing': 2,
+          'reachability-unverified': 2,
+          'evidence-missing': 2,
+          'condition-unreachable': 0,
+          'condition-satisfied-still-parked': 0,
+        },
+        flagged: 2,
+      },
       missingMetadata: {
         unattributedClaimHolds: 1,
         parkReason: 1,
@@ -113,6 +133,12 @@ describe('durable park audit classification', () => {
       },
     });
     expect(report.durableParks.map(({ id }) => id)).toEqual(['WI-B', 'WI-D']);
+    expect(report.durableParks[0]?.releaseLiveness).toMatchObject({
+      status: 'unverified',
+      condition: 'UNPARK when dependency WI-1 is done',
+      owner: null,
+      trigger: null,
+    });
     expect(report.holdOpenLeases).toEqual([
       expect.objectContaining({ id: 'WI-B', age: { status: 'invalid', ageMs: null, bucket: 'unknown' } }),
     ]);
@@ -138,6 +164,68 @@ describe('durable park audit classification', () => {
     expect(classifyUnparkCondition('Release after WI-1 is done')).toEqual({
       status: 'stated',
       text: 'Release after WI-1 is done',
+    });
+  });
+
+  it('requires reachable typed ownership and re-evaluation evidence for a healthy retained park', () => {
+    expect(
+      classifyDurableParkReleaseLiveness(
+        {
+          claim_hold_release: {
+            condition: 'dependency WI-1 reaches a terminal state',
+            owner: 'plan:queue-cleanup',
+            trigger: 'work-item:done:WI-1',
+            reachability: 'reachable',
+            evidence: 'WI-1 is open, owned, and its completion event is registered',
+          },
+        },
+        'UNPARK when WI-1 is done',
+      ),
+    ).toEqual({
+      status: 'tracked',
+      contractPresent: true,
+      condition: 'dependency WI-1 reaches a terminal state',
+      owner: 'plan:queue-cleanup',
+      trigger: 'work-item:done:WI-1',
+      reachability: 'reachable',
+      evidence: 'WI-1 is open, owned, and its completion event is registered',
+      findings: [],
+    });
+
+    expect(
+      classifyDurableParkReleaseLiveness(
+        {
+          claim_hold_release: {
+            condition: 'retired external service returns',
+            owner: 'system:queue-audit',
+            trigger: 'daily durable-park audit',
+            reachability: 'unreachable',
+            evidence: 'the service was permanently retired',
+          },
+        },
+        'Release when the service returns',
+      ),
+    ).toMatchObject({
+      status: 'unreachable',
+      findings: ['condition-unreachable'],
+    });
+
+    expect(
+      classifyDurableParkReleaseLiveness(
+        {
+          claim_hold_release: {
+            condition: 'dependency WI-1 reaches a terminal state',
+            owner: 'plan:queue-cleanup',
+            trigger: 'work-item:done:WI-1',
+            reachability: 'satisfied',
+            evidence: 'WI-1 is done',
+          },
+        },
+        'UNPARK when WI-1 is done',
+      ),
+    ).toMatchObject({
+      status: 'satisfied-still-parked',
+      findings: ['condition-satisfied-still-parked'],
     });
   });
 });
