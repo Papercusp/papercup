@@ -153,7 +153,7 @@ describe('migration 938 activation-audit ledger', () => {
     const repairCall = vi.mocked(ensureActivationAuditRepairFiling).mock.calls[0]?.[0];
     expect(repairCall).toMatchObject({
       workspaceId: 'activation-audit-test',
-      harnessSlug: 'papercup',
+      harnessSlug: 'papercusp',
       planSlug: 'activation-target',
     });
   });
