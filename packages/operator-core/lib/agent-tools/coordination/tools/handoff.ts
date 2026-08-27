@@ -56,7 +56,7 @@ export async function hydrateHandoffItemBodies(
 export default defineTool({
   name: 'coord:handoff',
   description:
-    'Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc. — optionally `items` (P-NNN ids of `plan_slug`) to inline each item\'s own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.',
+    'Record a work transition. Either OPEN a new handoff to other agents (provide `to[]` and `summary`; optionally `plan_slug` and `items` (P-NNN ids of `plan_slug`) to inline each item\'s own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.',
   guidance: {
     when: 'Wrapping up your piece of a plan and naming who picks up next — or accepting a handoff someone made to you.',
     notWhen: 'A routine status update — use coord:send. A blocking decision — use coord:escalate.',
@@ -120,7 +120,7 @@ export default defineTool({
         ],
       };
     }
-    if (!args.to || !args.plan_slug || !args.summary) {
+    if (!args.to || !args.summary) {
       return {
         content: [
           {
@@ -128,7 +128,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: false,
               error: 'missing_fields',
-              detail: 'open-handoff requires to[], plan_slug, summary',
+              detail: 'open-handoff requires to[], summary; plan_slug is optional for ad-hoc handoffs',
             }),
           },
         ],

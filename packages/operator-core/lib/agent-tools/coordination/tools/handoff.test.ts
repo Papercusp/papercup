@@ -114,6 +114,39 @@ const openArgs = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+describe('coord:handoff — open schema contract', () => {
+  it('accepts ad-hoc opens without plan_slug while preserving the plan-scoped shape', () => {
+    expect(
+      handoff.args.safeParse({ to: ['su-bee-1'], summary: 'pick up the registry work' }).success,
+    ).toBe(true);
+    expect(handoff.args.safeParse(openArgs()).success).toBe(true);
+  });
+});
+
+describe('coord:handoff — ad-hoc open', () => {
+  let log: InMemoryCoordLog;
+  beforeEach(() => {
+    log = new InMemoryCoordLog();
+    configureCoordLog(log);
+    emitAwaitedEvent.mockClear();
+    emitAwaitedEvent.mockResolvedValue({ ok: true, key: 'k', woken: 1, notified: [], msgId: null });
+    listPresence.mockReset();
+    listPresence.mockResolvedValue([{ ownerId: 'su-bee-1' }, { ownerId: 'su-bee-2' }]);
+  });
+  afterEach(() => resetCoordLog());
+
+  it('records an open handoff without a plan slug', async () => {
+    const res = await handoff.handler(
+      parse(handoff, { to: ['su-bee-1'], summary: 'pick up the ad-hoc work' }),
+      ctx,
+    );
+    const body = out(res);
+    expect(body.ok).toBe(true);
+    const rec = (await log.readEvents('handoffs')).find((r) => r.kind === 'handoff') as { plan_slug?: string };
+    expect(rec?.plan_slug).toBeUndefined();
+  });
+});
+
 describe('coord:handoff — wake-on-open (P-003)', () => {
   let log: InMemoryCoordLog;
   beforeEach(() => {

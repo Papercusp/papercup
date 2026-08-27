@@ -47,7 +47,8 @@ const HANDOFF_KIND_SET: ReadonlySet<string> = new Set(HANDOFF_KINDS);
 
 export interface OpenHandoffInput {
   to: string[];
-  plan_slug: string;
+  /** Optional for ad-hoc handoffs; plan-scoped handoffs may provide it. */
+  plan_slug?: string;
   summary: string;
   body?: string;
   next_action?: string;
