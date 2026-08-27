@@ -233,11 +233,25 @@ describe('runAgentProductivitySweepOnce', () => {
       },
     };
 
-    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+    // The swallow is deliberate, so assert it rather than tolerate it: a silent
+    // catch and a catch that reports are very different things to operate.
+    // ⚠ Snapshot the calls BEFORE mockRestore — in Vitest mockRestore is
+    // mockReset + restore, so it wipes mock.calls and the assertion would read 0.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    let out: Awaited<ReturnType<typeof runAgentProductivitySweepOnce>>;
+    let warnCalls: unknown[][];
+    try {
+      out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+      warnCalls = warn.mock.calls.map((c) => [...c]);
+    } finally {
+      warn.mockRestore();
+    }
 
     expect(out.wedged).toBe(2);
     expect(out.wavesEscalated).toBe(1);
     expect(escalated.map((w) => w.phase)).toEqual(['booted-never-worked']);
+    expect(warnCalls).toHaveLength(1);
+    expect(String(warnCalls[0][0])).toContain('escalation surface down');
   });
 
   it('carries the evidence a reader needs onto each victim', async () => {
