@@ -32,6 +32,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { listTrackedFiles } from './lib/tracked-files.mjs';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = new URL('..', import.meta.url).pathname;
 
@@ -42,14 +43,27 @@ const RUN_LINE = /^\s*\*\s*Run:\s*(\S.*\S|\S)\s*$/;
  * Extract documented `Run:` commands (with their `\` continuations) from a
  * file's text. Returns [{ line, command }].
  * @param {string} text
+ * @param {string} [fileName] source path — enables string-literal masking
  * @returns {{ line: number, command: string }[]}
  */
-export function extractDocumentedRunCommands(text) {
+export function extractDocumentedRunCommands(text, fileName) {
   const out = [];
   const lines = text.split('\n');
+  // EI-20045405992394901: RUN_LINE is a raw text match, so a `* Run: npx vitest …`
+  // sitting inside a STRING or template literal — prose ABOUT this rule, or a test
+  // fixture quoting it — parsed as a real documented command and minted a phantom
+  // offender against a path that was never meant to exist.
+  //
+  // stripCommentsOnly BLANKS comments and leaves strings standing, which is exactly
+  // the discriminator needed here: this guard's subject IS comment text, so a match
+  // that SURVIVES the mask was never a comment (it is code or a string) and must be
+  // skipped. Masking is opt-in via fileName so the pure unit tests, which pass bare
+  // text with no path to parse, keep exercising the extractor directly.
+  const maskedLines = fileName ? stripCommentsOnly(text, fileName).split('\n') : null;
   for (let i = 0; i < lines.length; i++) {
     const m = RUN_LINE.exec(lines[i]);
     if (!m) continue;
+    if (maskedLines && (maskedLines[i] ?? '').trim() !== '') continue;
     const first = m[1];
     // Only vitest/test-file invocations — other `Run:` prose is not this guard's concern.
     if (!/\b(vitest|npm run test)\b/.test(first)) continue;
@@ -131,7 +145,7 @@ export function findViolations(files, read = (f) => readFileSync(f, 'utf8')) {
     } catch {
       continue;
     }
-    for (const { line, command } of extractDocumentedRunCommands(text)) {
+    for (const { line, command } of extractDocumentedRunCommands(text, file)) {
       const err = judgeDocumentedRunCommand(command);
       if (err) violations.push(`${file}:${line} — ${err}\n    command: ${command}`);
     }

@@ -2684,9 +2684,9 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
 describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-042's per-tab picker)", () => {
   const badge = () => document.querySelector(".pc-learning__hivepick");
 
-  it("shows the inherited-pot badge on hive-aware views (Improvements), named via hiveHomeLabel", () => {
+  it("shows the inherited-pot badge on hive-aware views (Improvements), named via potHomeLabel", () => {
     render(<LearningTab />); // default view = improvements (hive-aware)
-    // hiveHomeLabel strips the `-hive` home suffix for display
+    // potHomeLabel strips the `-hive` home suffix for display
     // (workspace-hive-ui-2026-06-17); the badge is read-only — the selection
     // lives in the top-bar pot selector, not here.
     expect(badge()?.textContent).toContain("alpha");

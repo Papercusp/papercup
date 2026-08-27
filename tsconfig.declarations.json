@@ -139,6 +139,12 @@
     // --check cannot police. Unlike that one it IS also imported directly by a .ts
     // (guard-string-literal-blindness.test.ts), which had been paying a suppressed TS7016 for it.
     "scripts/lib/strip-comments-and-strings.mjs",
+    // Imported directly by packages/operator-core/lib/lint-migrations.test.ts
+    // (selectExplicitBasenames), so it pays a TS7016 there while unregistered —
+    // and `gen:declarations` reports SUCCESS while emitting nothing for an
+    // unlisted input (EI-20035436440627349), so the absence is silent until the
+    // check-unenrolled-mjs-imports ratchet names it at the green gate.
+    "scripts/lib/explicit-files.mjs",
     // EI-20091394509538630 — the mug/kettle D7 "offers a route vs merely names the tier"
     // classifier. Registered for the FIRST reason this list exists: it is imported directly
     // by mug-kettle-census-ui-route-vs-display.test.ts, which is the whole point of it being
@@ -235,6 +241,14 @@
     "apps/operator/scripts/ptool.mjs",
     "apps/operator/scripts/operator-discovery.mjs",
     "packages/operator-core/lib/model-context-budget.mjs",
+    // WI-126377 — the psu model-picker row builder + the effort-intersection rule.
+    // Registered for BOTH reasons this list exists: it is imported directly by
+    // su-model-menu.test.ts (which is what makes the "never offer an effort the
+    // launcher cannot encode" rule falsifiable), AND psu-launcher.mjs imports it,
+    // so tsc pulls it into the same already-registered program and emits its
+    // declaration REGARDLESS — leaving it unregistered would make that an
+    // untracked byproduct `--check` cannot police.
+    "packages/operator-core/lib/su-model-menu.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs",
     // Imported by `scripts/set-doc-part.ts`. Enrolling rather than `@ts-ignore`-ing

@@ -149,7 +149,7 @@ import type { FilterableColumn } from "@papercusp/grid-core";
 import { statusToneColor } from "@/app/harness/theme";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import { usePromptDialog } from "@/app/harness/usePromptDialog";
-import { hiveHomeLabel } from "@/lib/hive-label";
+import { potHomeLabel } from "@/lib/pot-label";
 import { useLexicon } from "@/lib/useLexicon";
 import { useFlag } from "@papercusp/flags/client";
 import { FLAGS } from "@papercusp/flags";
@@ -874,7 +874,7 @@ export default function LearningTab() {
           >
             <Brain size={12} aria-hidden />
             <span className="pc-learning__hivepicklabel">
-              {hiveHomeLabel(hive)}
+              {potHomeLabel(hive)}
             </span>
           </span>
         ) : null}

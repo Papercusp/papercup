@@ -162,6 +162,7 @@ export function backendDefaultRows({ backends, sourceAgent }) {
  *
  * @param {{ aliases: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           backends: readonly string[], sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function aliasModelRows({ aliases, backends, sourceAgent }) {
   return (aliases ?? [])

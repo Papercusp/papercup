@@ -433,6 +433,31 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
 
   // ── Sidecars and separate processes ──────────────────────────────────────────────
   {
+    name: 'resource-governor-live-health-publisher',
+    file: 'packages/operator-core/lib/resource-governor/live-health-publisher.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note:
+      'Publishes THIS process\'s live-health fragment (loop lag, GC, RSS) to the shared ' +
+      'fragment dir for the sampler to merge. Publication only — it repairs nothing and ' +
+      'decides nothing, so no substrate component sits inside a failure domain it targets. ' +
+      'Armed once per publishing process under one literal name with instanced: true, so ' +
+      'schedule:inventory shows a single aggregated row carrying the live instance count.',
+  },
+  {
+    name: 'resource-governor-live-health-monitor',
+    file: 'packages/operator-core/lib/resource-governor/live-health-monitor.ts',
+    executor: 'sidecar-process-timer',
+    recovers: [],
+    note:
+      'The out-of-process live-health sampler its own header calls "cross-platform, ' +
+      'out-of-process": it OBSERVES host health and owns "only observation and freshness". ' +
+      'It recovers nothing — it never decides whether a reading should contract admission, ' +
+      'which belongs to the P-005/P-006 controller — so no substrate component is inside a ' +
+      'failure domain it targets. Being a separate process spawned by live-health-supervisor ' +
+      'is also what keeps its sampling honest when the operator loop is the thing degrading.',
+  },
+  {
     name: 'spawner-sidecar-orphan-watchdog',
     file: 'packages/operator-core/lib/fleet/spawner-sidecar-server.ts',
     executor: 'sidecar-process-timer',
@@ -471,6 +496,20 @@ export const RECOVERY_MECHANISMS: readonly RecoveryMechanism[] = [
   },
 
   // ── Agent / session layer (the operator watches; the agents are the subject) ──────
+  {
+    name: 'agent-productivity-watchdog',
+    file: 'packages/operator-core/lib/system-health/agent-productivity-watchdog.ts',
+    executor: 'operator-in-process-timer',
+    recovers: [],
+    note:
+      'REPORT-ONLY, and its header says so as a decision: "It never respawns anything." It ' +
+      'opens a deduped escalation for wedged / never-booted agent sessions and stops there, ' +
+      'because N respawns fired into the wall that caused the wedge spend the little capacity ' +
+      'left. Recovery belongs to a caller that can also see whether capacity exists (the ' +
+      'goal-holder respawn leg, behind its own owner-authority flag). Declaring recovers: [] ' +
+      'is therefore the accurate statement, not a waiver: it repairs no substrate component, ' +
+      'so its in-process executor cannot fate-share with one.',
+  },
   {
     name: 'mcp-dark-watchdog',
     file: 'packages/operator-core/lib/system-health/mcp-dark-watchdog.ts',

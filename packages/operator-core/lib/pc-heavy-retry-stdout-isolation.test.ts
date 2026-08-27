@@ -102,6 +102,7 @@ function runPcHeavy(command: string, retries: number): RunResult {
   try {
     const stdout = execFileSync('bash', [SCRIPT, 'sh', '-c', command, 'lint:tsc'], {
       encoding: 'utf-8',
+      timeout: 120_000,
       // stdio 'pipe' is the point: a piped (non-TTY) stdout is what every machine
       // consumer has, and it is the path that must be isolated.
       stdio: ['ignore', 'pipe', 'pipe'],

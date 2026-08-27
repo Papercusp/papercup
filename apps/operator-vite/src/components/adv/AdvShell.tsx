@@ -34,7 +34,7 @@ import {
 import type { SelectEntry, SelectOption } from '@/app/harness/Select';
 import { Popover } from '@/app/harness/Popover';
 import { groupByHive } from '@papercusp/operator-core/lib/harness/hive-groups';
-import { hiveHomeLabel } from '@/lib/hive-label';
+import { potHomeLabel } from '@/lib/pot-label';
 import { CreateHarnessPicker } from '@/app/harness/CreateHarnessPicker';
 import { Modal } from '@/app/harness/Modal';
 import { PublishPotCard } from '@/app/harness/PublishPotCard';
@@ -1321,7 +1321,7 @@ export function buildHarnessSelectOptions(
     // doesn't always carry harness_kind, and members never end in `-hive`, so
     // the suffix is a safe robust fallback.
     const isHiveHome = root.harness_kind === 'hive' || root.slug.endsWith('-hive');
-    const rootLabel = isHiveHome ? hiveHomeLabel(root.slug) : root.slug;
+    const rootLabel = isHiveHome ? potHomeLabel(root.slug) : root.slug;
     tree.push({ value: root.slug, label: rootLabel });
     for (const member of members) {
       // Single-repo collapse: a `<x>-hive` home whose one member is the repo `<x>`

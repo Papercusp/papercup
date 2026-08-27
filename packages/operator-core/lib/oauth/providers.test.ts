@@ -145,6 +145,32 @@ describe('Google Workspace Desktop OAuth provider', () => {
     expect(url.toString()).not.toContain(privateContext.codeVerifier!);
   });
 
+  it('WI-129473: forces the account chooser AND re-consent, so "Add account" cannot silently reuse the connected account', async () => {
+    // Regression pin for a silent, one-shot-consuming failure. With no `prompt`,
+    // Google is free to satisfy this request from the browser's active session:
+    //
+    //  - it skips the account chooser, so an Add-account flow re-authorizes the
+    //    account ALREADY connected instead of the new one the owner meant to add;
+    //  - and because that account already granted these scopes to this client —
+    //    which include_granted_scopes=true explicitly invites it to reuse — the
+    //    token response carries an access token and NO refresh_token, persisting
+    //    a credential that dies at the first expiry with nothing to renew it.
+    //
+    // Neither half shows the owner an error, which is what made this expensive:
+    // the flow redirects looking successful. Both halves are load-bearing, so
+    // assert them individually rather than only matching the joined string.
+    const provider = makeGoogleProvider(config);
+    const privateContext = await provider.createFlowContext!();
+    const url = new URL(provider.buildAuthorizeUrl([], 'STATE_TOKEN', privateContext));
+
+    const prompt = url.searchParams.get('prompt')?.split(' ') ?? [];
+    expect(prompt, 'select_account: forces a deliberate account pick').toContain('select_account');
+    expect(prompt, 'consent: guarantees the refresh_token expiry recovery needs').toContain('consent');
+    // offline + a forced consent screen is the combination that actually yields a
+    // refresh token; pin them together so removing either is a visible change.
+    expect(url.searchParams.get('access_type')).toBe('offline');
+  });
+
   it('requires the persisted verifier and uses it during code exchange', async () => {
     const provider = makeGoogleProvider(config);
     await expect(provider.exchangeCode('code-without-context')).rejects.toThrow(/PKCE verifier/);

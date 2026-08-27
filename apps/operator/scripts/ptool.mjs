@@ -1812,6 +1812,14 @@ export async function listAllTools(
     retryDelayMs = PTOOL_LIST_TOOLS_RETRY_DELAY_MS,
     totalTimeoutMs = PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
     sleep,
+    // WI-71582: listToolsWithLocalRetry already takes these, and
+    // retryWaitMsWithJitter documents itself as "pure + injectable for
+    // deterministic fanout tests" — but the seam stopped one level short of the
+    // entry point callers and tests actually use, so the jitter could not be
+    // pinned from here. Forwarded (not defaulted) so omitting them keeps the
+    // real randomized pacing exactly as before.
+    rand,
+    retryJitterMs,
   } = {},
 ) {
   const all = [];
@@ -1824,6 +1832,8 @@ export async function listAllTools(
         retryDelayMs,
         totalTimeoutMs,
         sleep,
+        ...(rand === undefined ? {} : { rand }),
+        ...(retryJitterMs === undefined ? {} : { retryJitterMs }),
       })
       : await client.listTools(
         cursor ? { cursor } : {},

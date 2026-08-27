@@ -190,6 +190,18 @@ const CLAIM_DOORS: ReadonlyMap<string, DoorEntry> = new Map([
     },
   ],
   [
+    'agent-launch-core.ts#claimAgentLaunch',
+    {
+      klass: 'not-a-work-item-door',
+      note:
+        'Claims an AGENT-LAUNCH IDEMPOTENCY KEY — a single-winner INSERT ... ON CONFLICT DO ' +
+        'NOTHING on harness_shared.agent_launch_idempotency, whose purpose is to stop a client ' +
+        'retry opening a second window/process for the same launch. It reads and writes no ' +
+        'work_items row and selects no work to serve, so dependency-blocking readiness floors ' +
+        'are not its concern. Its rollback half is releaseAgentLaunchClaim in the same module.',
+    },
+  ],
+  [
     'pot/watchdog.ts#claimWatchdogFire',
     {
       klass: 'not-a-work-item-door',

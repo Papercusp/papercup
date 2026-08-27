@@ -63,8 +63,18 @@ import {
   buildContextBudget,
   codexContextConfigArgs,
   codexContextConfigToml,
+  listCodexInstalledModels,
   normalizeCodexCliModel,
 } from "../../../packages/operator-core/lib/model-context-budget.mjs";
+// WI-126377: the ONE builder for this picker's rows + the effort intersection
+// rule. Plain .mjs for the same reason as every import below it — see that
+// file's header for why a registry's advertised effort list can never be
+// offered verbatim.
+import {
+  buildResumeModelRows,
+  composeRegistryModelSpec,
+  effortRowsFor,
+} from "../../../packages/operator-core/lib/su-model-menu.mjs";
 // EI-996: the ONE su-tier role list, shared with the server-side allow-list in
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
 // operator import the SAME definition — a second copy here would drift silently.
@@ -6002,6 +6012,29 @@ async function fetchAccountChoices(workspace, agent = "claude") {
   }
 }
 
+/** WI-126377: the host-local OMP model registry (`omp models --json`), read off
+ *  the SAME `/options` response this file already fetches for workspaces,
+ *  harnesses, plans, accounts and fleets — and the same `ompCatalog` field the
+ *  GUI's New Session launcher renders, so the terminal and the window cannot
+ *  offer different models.
+ *
+ *  Fail-soft to `[]` on every failure mode, including the endpoint's OWN
+ *  `status:'unavailable'` (it reports a catalog read failure in-band rather than
+ *  erroring, precisely so one broken `omp` binary cannot take down the rest of
+ *  the picker). The caller then shows its alias rows and the free-text escape —
+ *  degraded, never absent. */
+async function fetchOmpModelCatalog(workspace) {
+  try {
+    const q = workspace ? `?workspace=${encodeURIComponent(workspace)}` : "";
+    const r = await api(`/api/agent-mcp/console/bootstrap-su/options${q}`);
+    const catalog = r?.ompCatalog;
+    if (!catalog || catalog.status !== "available") return [];
+    return Array.isArray(catalog.models) ? catalog.models : [];
+  } catch {
+    return [];
+  }
+}
+
 /** Build the account picker rows from already-fetched choices. Pure so the
  * provider-specific routing contract is regression-testable without driving
  * Inquirer. */
@@ -10136,8 +10169,9 @@ async function confirmUntrackedResume(session, args) {
 
 /** Sentinel for the "type a different model" resume-prompt row. */
 const CHOOSE_MODEL = "<choose-model>";
-/** Sentinel for the "type a custom spec" escape inside the base-model menu (WI-4889). */
-const CUSTOM_MODEL = "<custom-model>";
+// The base-model menu's rows carry a discriminated `kind` now (WI-126377), so the
+// old `<custom-model>` string sentinel is gone — a row whose value is an OBJECT
+// cannot be confused with a model id the way a bare string could.
 
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
@@ -10385,7 +10419,7 @@ async function chooseResumeTarget(session, args) {
   // model vocabulary is intentionally open/config-driven.
   if (args.model || args.agent || !args.picker)
     return resolveResumeTarget(session, args);
-  const { select, input } = await import("@inquirer/prompts");
+  const { select, input, search } = await import("@inquirer/prompts");
   const picked = await select({
     message: "Continue this session with which backend/model?",
     choices: [
@@ -10429,50 +10463,81 @@ async function chooseResumeTarget(session, args) {
     });
   };
 
-  const menu = RESUME_MODEL_MENU.filter((row) =>
-    allowedBackends.includes(row.backend),
-  ).map((row) => ({
-    name: `${row.backend === session.agent ? "Native" : "Port to"} ${row.backend}: ${row.name}`,
-    value: { targetAgent: row.backend, model: row.value },
-  }));
-  const baseModel = await select({
-    message: "Target backend and base model",
-    choices: [
-      ...menu,
-      ...(allowedBackends.includes("omp")
-        ? [
-            {
-              name: `${session.agent === "omp" ? "Native" : "Port to"} omp: configured/custom model…`,
-              value: { targetAgent: "omp", model: CUSTOM_MODEL },
-            },
-          ]
-        : []),
-      { name: "Type a custom model id / full spec…", value: CUSTOM_MODEL },
-    ],
+  // WI-126377 (owner directive 2026-08-27) — this used to be four hardcoded
+  // aliases and a free-text `<model>[:<effort>]` prompt, which is how a human
+  // with gpt-5.5 installed ended up typing its id from memory. Every row now
+  // comes from a registry something else already reads:
+  //   claude → the bare aliases (the CLI resolves them; there is no local list)
+  //   codex  → ~/.codex/models_cache.json, the Codex CLI's own installed models
+  //   omp    → ompCatalog off /options, the field the GUI launcher renders
+  // Both registry reads are fail-soft: a missing one costs its GROUP, never the
+  // picker, and a per-backend free-text escape still closes the menu for an id
+  // no registry lists (claude ships no local registry at all, so its four
+  // aliases plus that escape genuinely are the whole list).
+  const codexModels = allowedBackends.includes("codex")
+    ? listCodexInstalledModels()
+    : [];
+  const ompModels = allowedBackends.includes("omp")
+    ? await fetchOmpModelCatalog(args.workspace ?? null)
+    : [];
+  const modelRows = buildResumeModelRows({
+    backends: allowedBackends,
+    sourceAgent: session.agent,
+    aliases: RESUME_MODEL_MENU,
+    codexModels,
+    ompModels,
   });
-  if (baseModel === CUSTOM_MODEL) {
-    const targetAgent =
-      allowedBackends.length === 1
-        ? allowedBackends[0]
-        : await select({
-            message: "Target backend",
-            choices: allowedBackends.map((agent) => ({
-              name: agent,
-              value: agent,
-            })),
-          });
-    return askCustomSpec(targetAgent);
-  }
-  if (baseModel.model === CUSTOM_MODEL)
-    return askCustomSpec(baseModel.targetAgent);
-  const effort = await select({
-    message: "Reasoning effort",
-    default: "",
-    choices: RESUME_EFFORT_MENU,
+  // A `select` cannot be typed into, so it is unusable at catalog scale (the OMP
+  // registry measured 499 rows on this box). Above the threshold the picker
+  // becomes the same autocomplete `search` the harness/plan pickers use, whose
+  // filter matches row NAMES — which is why the row builders fold provider, id
+  // and context window into the name rather than a separate detail field.
+  const baseModel =
+    modelRows.length > 25
+      ? await search({
+          message: "Target backend and model (type to filter)",
+          source: async (term) => filterRows(modelRows, term),
+        })
+      : await select({
+          message: "Target backend and model",
+          choices: modelRows,
+        });
+
+  // Each escape row names its own backend, so the follow-up "Target backend"
+  // select this path used to need is gone.
+  if (baseModel.kind === "custom") return askCustomSpec(baseModel.targetAgent);
+  // "just take in claude or omp or codex" — a backend is a complete answer, so
+  // there is no model prompt and no effort prompt after this row.
+  if (baseModel.kind === "backend-default")
+    return resolveResumeTarget(session, args, {
+      targetAgent: baseModel.targetAgent,
+      modelSpec: null,
+    });
+
+  const effortRows = effortRowsFor({
+    published: baseModel.efforts,
+    encodable: RESUME_EFFORT_MENU.map((row) => row.value).filter(
+      (value) => value !== "",
+    ),
   });
+  const effort =
+    effortRows.length > 1
+      ? await select({
+          message: "Reasoning effort",
+          default: "",
+          choices: effortRows,
+        })
+      : "";
   return resolveResumeTarget(session, args, {
     targetAgent: baseModel.targetAgent,
-    modelSpec: composeResumeModelSpec(baseModel.model, effort),
+    // An ALIAS keeps the pre-existing composer (which appends the `[1m]` window
+    // marker for the default-1M families). A REGISTRY id must not: psu's
+    // DEFAULT_1M_FAMILY_RE is unanchored, so a selector like
+    // `google-vertex/claude-fable-5@default` matches `fable` and would be handed
+    // to omp wearing a Claude-Code-private marker it has no syntax for.
+    modelSpec: baseModel.alias
+      ? composeResumeModelSpec(baseModel.model, effort)
+      : composeRegistryModelSpec({ model: baseModel.model, effort }),
   });
 }
 

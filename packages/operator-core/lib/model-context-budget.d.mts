@@ -15,6 +15,44 @@
 export function normalizeCodexCliModel(model: any): string;
 export function bareModelId(model: any): string;
 /**
+ * LIST the Codex CLI's installed models, from the same `~/.codex/models_cache.json`
+ * `codexModelRecord` above has been reading one-at-a-time since the 1M-window work.
+ *
+ * WI-126377: nothing enumerated it, so psu's resume picker could offer only the
+ * three hardcoded `sol/terra/luna` aliases and a free-text prompt — gpt-5.5,
+ * gpt-5.4, gpt-5.4-mini and gpt-5.3-codex-spark were installed and reachable only
+ * by typing their ids from memory.
+ *
+ * Two filters, both from the registry's own fields rather than a hand-kept list:
+ *   • `visibility: 'hide'` is dropped. Codex marks its internal entries that way
+ *     (measured 2026-08-27: `gpt-reserve`, `codex-auto-review`) — they are real
+ *     models, but they are not what a human means by "the model list".
+ *   • order follows the registry's `priority`, so the picker's first rows are the
+ *     ones Codex itself ranks first, and a new model lands in the right place with
+ *     no code change.
+ *
+ * A missing / unparseable cache returns `[]`, never a throw: the caller must
+ * degrade to its alias rows, not lose the picker. A registry that yields nothing
+ * is INDISTINGUISHABLE from one that is absent, and deliberately so — both mean
+ * "nothing extra to offer here".
+ *
+ * @param {{ home?: string }} [opts]
+ * @returns {Array<{ id: string, label: string | null, description: string | null,
+ *   efforts: string[], defaultEffort: string | null, contextWindow: number | null,
+ *   maxContextWindow: number | null }>}
+ */
+export function listCodexInstalledModels({ home }?: {
+    home?: string;
+}): Array<{
+    id: string;
+    label: string | null;
+    description: string | null;
+    efforts: string[];
+    defaultEffort: string | null;
+    contextWindow: number | null;
+    maxContextWindow: number | null;
+}>;
+/**
  * The context window papercusp DECLARES to the Codex CLI for `model`, or null
  * when that model has no extended window to ask for (plan
  * codex-1m-context-window-2026-08-17 D-008).

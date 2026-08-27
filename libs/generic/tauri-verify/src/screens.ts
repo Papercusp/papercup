@@ -57,6 +57,27 @@ export const SCREENS = {
     route: { pathname: /^\/admin(?:\/|$)/ },
     requiredElements: ['.pc-adminshell'],
   }),
+  QUICK_PANEL: defineScreen({
+    id: 'quick-panel',
+    name: 'Quick Panel',
+    href: '/quick-panel',
+    route: { pathname: '/quick-panel' },
+    requiredElements: ['.pc-qp', '.pc-qp__tabs'],
+  }),
+  FLEET_STATUS: defineScreen({
+    id: 'fleet-status',
+    name: 'Fleet Status',
+    href: '/fleet-status',
+    route: { pathname: '/fleet-status' },
+    requiredElements: ['.pc-fleet-status'],
+  }),
+  WEATHER: defineScreen({
+    id: 'weather',
+    name: 'Weather',
+    href: '/weather',
+    route: { pathname: '/weather' },
+    requiredElements: ['.pc-weather-widget'],
+  }),
 } as const;
 
 function testPattern(value: string, pattern: string | RegExp): boolean {

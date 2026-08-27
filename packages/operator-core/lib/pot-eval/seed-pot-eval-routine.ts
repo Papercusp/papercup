@@ -2,10 +2,10 @@
  * Seed the monthly Hive-evaluation cadence routine (hive-run-evaluation-2026-06-13 HE-07, P-050)
  * — the SIBLING of lib/iq-battery/seed-benchmark-routine.ts.
  *
- *   - `hive-eval-battery` (monthly): one budget-capped SCORED Hive-eval generation per new code
- *     SHA, run through the `hive-eval` deterministic blueprint (fired via `system:blueprint-run`,
+ *   - `pot-eval-battery` (monthly): one budget-capped SCORED Hive-eval generation per new code
+ *     SHA, run through the `pot-eval` deterministic blueprint (fired via `system:blueprint-run`,
  *     which detects program-mode and runs the `pot-eval:gen` step inline). The step self-gates
- *     HARD (lib/hive-eval/cadence-tick.ts): no owner-set payload budgetUsd → REFUSE; an
+ *     HARD (lib/pot-eval/cadence-tick.ts): no owner-set payload budgetUsd → REFUSE; an
  *     already-measured SHA → skip.
  *
  * SEEDED INACTIVE by default: a whole-Hive generation is real LLM spend (the owner-gated P-051

@@ -431,6 +431,15 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * size so the set can only shrink. GRADUATIONS SINCE SEEDING (each dropped the
  * watermark by one, which is the only way it may move):
  *   · `_tmp-fire-git-sync.ts` — deleted 2026-08-26; a committed scratch file, 21 → 20.
+ *   · 2026-08-27 (WI-71582), 20 → 11: NINE entries graduated at once because the guard
+ *     itself reported them "STALE acknowledged-unreachable — now wired or deleted", i.e.
+ *     the fixpoint no longer finds them dead. All nine files still EXIST on disk, so they
+ *     were WIRED, not retired. Removed: prompt-divergence, gitignored-asset-coverage,
+ *     external-prerequisite-ports, external-prerequisites (family ROOT),
+ *     external-prerequisite-probe-runner, record-release-cli (publication ROOT),
+ *     release-completeness, changelog-generate, runtime-workspace-build-coverage.
+ *     Both family group-comments above were rewritten rather than left describing
+ *     members that are no longer in the set — a stale rationale is how this list rots.
  *
  * ⚠ SHRINK-ONLY, same doctrine as ACKNOWLEDGED_UNREACHABLE above and for the same
  * reason: the correct way to clear an entry is to WIRE the module or DELETE it, never
@@ -442,33 +451,24 @@ export const PARTIAL_COVERAGE_HIGH_WATERMARK = 2;
  * enforcing nothing, so they read as diligence in a review.
  */
 export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
-  // ── The three that started this (WI-41775 discovery sweep) ──────────────────
-  ['apps/operator/lib/release/prompt-divergence.ts', 'gate detector, 1 test, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
-  ['apps/operator/lib/release/gitignored-asset-coverage.ts', 'gate detector, 2 tests, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
-  ['packages/operator-core/lib/release/external-prerequisite-ports.ts', 'gate detector, 2 tests, 0 callers; D-013 pt2 says do NOT wire — decide wire-or-retire'],
-
-  // ── The external-prerequisite family: a complete ports-and-adapters detector
-  // stack, every layer tested, the whole stack called by nothing. The fixpoint
-  // reports these as dead TOGETHER because they import only each other — the exact
-  // shape a per-file "is it imported?" check (knip) reports as fully used.
-  ['packages/operator-core/lib/release/external-prerequisites.ts', 'family root, 5 tests, only dead siblings import it — wire-or-retire the whole family as one call'],
-  ['packages/operator-core/lib/release/external-prerequisite-probe-runner.ts', 'family member, 2 tests, only dead siblings import it'],
+  // ── The external-prerequisite family: a ports-and-adapters detector stack whose
+  // members import only each other — the exact shape a per-file "is it imported?"
+  // check (knip) reports as fully used. The ROOT and the probe-runner have since
+  // been wired and graduated out; only the two leaf adapters remain unreachable,
+  // and they are now reachable-or-retirable INDEPENDENTLY of the family decision.
   ['packages/operator-core/lib/release/external-prerequisite-apple-adapter.ts', 'family member, 1 test, only dead siblings import it'],
   ['packages/operator-core/lib/release/external-prerequisite-stripe-adapter.ts', 'family member, 1 test, only dead siblings import it'],
 
-  // ── The release-publication family: same transitive shape. Retiring the root
-  // clears most of the rest, so these are one decision, not eleven.
-  ['apps/operator/lib/release/record-release-cli.ts', '2 tests; reached only from dead publication siblings — wire-or-retire with the family'],
+  // ── The release-publication family: same transitive shape. The CLI root
+  // (record-release-cli), release-completeness and changelog-generate have since
+  // been wired and graduated out; these three are what is left of the family.
   ['apps/operator/lib/release/finalize-release-publication.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/release-completeness.ts', 'no test; imported by preflight-build-set + record-release-cli, both themselves dead — retire the family ROOT, never this leaf'],
   ['apps/operator/lib/release/patch-artifact-provenance.ts', 'no test, no caller — strongest retire candidate in the family'],
   ['apps/operator/lib/release/preflight-build-set.ts', '1 test; reached only from dead publication siblings'],
-  ['apps/operator/lib/release/changelog-generate.ts', '1 test; reached only from record-release-cli, itself dead — wire-or-retire with the publication family'],
   ['apps/operator/lib/release/gate-release-site.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/seed-release-routines.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/verify-seed-payload-cli.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/retrofit-hive-to-gate.ts', '1 test, 0 callers — one-shot migration tool; likely retire'],
-  ['apps/operator/lib/release/runtime-workspace-build-coverage.ts', '2 tests; reached only from gitignored-asset-coverage, itself dead — wire-or-retire as a pair'],
   ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
   ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
 ]);
@@ -477,7 +477,7 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
  * ⚠ SHRINK-ONLY. Pinned to the seeded population size so a NEWLY orphaned detector
  * module fails the build on the commit that orphans it, exactly as the script axis does.
  */
-export const UNREACHABLE_MODULES_HIGH_WATERMARK = 20;
+export const UNREACHABLE_MODULES_HIGH_WATERMARK = 11;
 
 export const BLOCKING_TIERS = new Set(['gate', 'ci', 'test', 'chained', 'repo-wide']);
 

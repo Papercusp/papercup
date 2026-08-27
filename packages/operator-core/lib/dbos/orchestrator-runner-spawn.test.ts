@@ -14,6 +14,9 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execPath } from 'node:process';
+// Imported, never re-spelled: the marker is invoke.ts's to define, and a second
+// literal copy here would keep passing after a rename while production broke.
+import { OUTER_ACTIVITY_ECHO_MARKER } from '@papercusp/orchestrator';
 
 // Set the invoke timeout BEFORE orchestrator-runner is imported (INVOKE_TIMEOUT_MS
 // is a module-load const). 600ms is ample for the fast cases and bounds the kill.
@@ -221,6 +224,42 @@ describe('spawnInvokeOnce', () => {
     expect(r.exitCode).toBe(0);
     expect(r.firstTurnTimedOut).toBe(false);
   });
+
+  it('release-fixer first-turn guard clears on the stderr activity marker (production shape)', async () => {
+    // WI-85288 regression. The test above disarms the guard via STDOUT, which is a
+    // shape production never produces: invoke.ts does NOT echo the inner agent CLI's
+    // stdout onto this child's stdout — WI-3302 deliberately routes the liveness
+    // signal to STDERR as OUTER_ACTIVITY_ECHO_MARKER, because downstream consumers
+    // key off exact stdout content. So the real fixer emits only timestamp-prefixed
+    // stdout (which extractAgentOutput strips) plus that marker. Before the fix the
+    // guard could never be disarmed and SIGTERM'd every release-fixer at exactly
+    // 300000ms: 0 completions and 100% timeouts from 2026-08-24 16:57Z onward, which
+    // is what stopped `main` advancing — no fixer survived long enough to commit.
+    // A clean exit that still produced stderr makes spawnInvokeOnce console.warn the
+    // stderr surfacing (orchestrator-runner.ts:862), and vitest-fail-on-console is
+    // active — same spy+assert idiom the other stderr-bearing cases in this file use.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    H.cmd = node(
+      'process.stdout.write("[2026-08-27T12:23:25.000Z] prompt-budget role=release-fixer total=63586\\n");' +
+        `process.stderr.write(${JSON.stringify(`${OUTER_ACTIVITY_ECHO_MARKER}\n`)});` +
+        // Outlive the 200ms guard so a still-armed timer would kill this and fail.
+        'setTimeout(() => process.exit(0), 500)',
+    );
+    const start = Date.now();
+    const r = await spawnInvokeOnce(
+      process.cwd(),
+      'release-fixer',
+      [],
+      {},
+      { timeoutMs: 2_000, firstTurnTimeoutMs: 200 },
+    );
+    expect(r.firstTurnTimedOut).toBe(false);
+    expect(r.timedOut).toBe(false);
+    expect(r.exitCode).toBe(0);
+    expect(Date.now() - start).toBeGreaterThan(400); // it really outlived the guard
+    expect(warnSpy).toHaveBeenCalled();
+    warnSpy.mockRestore();
+  }, 10_000);
 
   it('resolves (never rejects) with exitCode 1 on a spawn error (bad command)', async () => {
     H.cmd = { command: 'papercusp-no-such-binary-zzz', args: [], env: process.env };

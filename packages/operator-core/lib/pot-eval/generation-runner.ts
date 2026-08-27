@@ -4,7 +4,8 @@
  * each recorded run with the HE-06 composite + un-gameable gate and persist it to `hive_eval_scores`.
  *
  * This is the single orchestration shared by:
- *   - the CADENCE (`system:hive-eval-battery`, P-050) — invoked monthly per new code SHA so the
+ *   - the CADENCE (the `pot-eval-battery` routine, which targets `system:blueprint-run`; P-050) —
+ *     invoked monthly per new code SHA so the
  *     Hive's good/efficient/fast scores become a TREND; and
  *   - the FULL-BATTERY integration (P-061) — the scenarios run end-to-end and produce a scored
  *     distribution per scenario.

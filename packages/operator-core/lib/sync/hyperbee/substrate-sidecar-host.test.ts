@@ -26,6 +26,7 @@ import {
   type SubstrateSidecarHost,
 } from './substrate-sidecar-host';
 import { openOwnLog, type PeerLogOp } from './peer-log';
+import { bootHarnessSubstrate } from './boot';
 import type { BootedHarnessHandle, BootHarnessOpts, LocalWriteOp } from './boot';
 import { recordBootEvent, _resetBootHistoryForTests } from './boot-history';
 import { makeFakeBootedHandle } from './__tests__/fake-booted-handle';
@@ -60,6 +61,14 @@ function makeHost(): SubstrateSidecarHost {
   const host = createSubstrateSidecarHost({
     wireOutbox: async () => {},
     wirePresence: async () => {},
+    // WI-71582: the host calls the REAL bootHarnessSubstrate (substrate-sidecar-host.ts:306),
+    // which since WI-42229 builds its Hive re-key boot deps fail-CLOSED and so opens a real
+    // Postgres pool — which the unit-test guard rejects. These cases assert real store and
+    // own-log behaviour, so the seam to double is the re-key deps, NOT boot itself: inject
+    // rekeyDepsOverride: null, the same idiom the other hyperbee unit tests use
+    // (boot.test.ts:48-50). Caller opts still win, so per-test overrides keep working.
+    bootHarnessImpl: (opts: BootHarnessOpts) =>
+      bootHarnessSubstrate({ rekeyDepsOverride: null, ...opts }),
   });
   cleanups.push(() => host.closeAll());
   return host;

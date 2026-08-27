@@ -64,7 +64,7 @@ import {
   HintText,
   Pill,
 } from '@/app/harness/picker-kit';
-import { hiveHomeLabel } from '@/lib/hive-label';
+import { potHomeLabel } from '@/lib/pot-label';
 // Relative, not `@/…`: the `@` alias points at the operator (Next) tree, so an
 // intra-operator-vite import must be a relative path or it won't resolve.
 //
@@ -525,7 +525,7 @@ function UnifiedInboxView() {
                       <span className="pc-advconv__unified-meta">
                         {row.actor ? <span>{row.actor}</span> : null}
                         {row.recipient ? <span>→ {row.recipient}</span> : null}
-                        {row.harnessSlug ? <span>{hiveHomeLabel(row.harnessSlug)}</span> : null}
+                        {row.harnessSlug ? <span>{potHomeLabel(row.harnessSlug)}</span> : null}
                         {row.relatedRef ? <span>{row.relatedRef}</span> : null}
                         {row.count ? <span>{row.count}</span> : null}
                       </span>
@@ -1626,7 +1626,7 @@ function ThreadsView({
             </span>
             <span className="pc-coord__row-title">{c.title ?? c.id}</span>
             <span className="pc-coord__row-meta">
-              {c.harness_slug ? hiveHomeLabel(c.harness_slug) : 'workspace'}
+              {c.harness_slug ? potHomeLabel(c.harness_slug) : 'workspace'}
               {c.promoted_issue_id ? ` · → ${c.promoted_issue_id}` : ''}
             </span>
             {(c.topics ?? []).length > 0 && (
@@ -1747,7 +1747,7 @@ function ThreadsView({
               </div>
               <div className="pc-advconv__detailstats" aria-label="Conversation metadata">
                 <span><strong>{detail.subscriber_count}</strong> follower{detail.subscriber_count === 1 ? '' : 's'}</span>
-                <span>{detail.scope === 'harness' && detail.harness_slug ? hiveHomeLabel(detail.harness_slug) : 'workspace'}</span>
+                <span>{detail.scope === 'harness' && detail.harness_slug ? potHomeLabel(detail.harness_slug) : 'workspace'}</span>
                 {detail.asker_id && <span>asked by {detail.asker_id}</span>}
               </div>
             </header>
@@ -1933,7 +1933,7 @@ function DeliberationsView({
             </span>
             <span className="pc-coord__row-title">{t.title ?? t.thread_id}</span>
             <span className="pc-coord__row-meta">
-              {t.harness_slug ? hiveHomeLabel(t.harness_slug) : 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
+              {t.harness_slug ? potHomeLabel(t.harness_slug) : 'workspace'} · {t.post_count} post{t.post_count === 1 ? '' : 's'}
               {t.created_by ? ` · ${t.created_by}` : ''}
             </span>
           </div>
@@ -2023,7 +2023,7 @@ function DeliberationsView({
                 <h2>{head.title ?? head.thread_id}</h2>
               </div>
               <div className="pc-advconv__detailstats" aria-label="Thread metadata">
-                <span>{head.harness_slug ? hiveHomeLabel(head.harness_slug) : 'workspace'}</span>
+                <span>{head.harness_slug ? potHomeLabel(head.harness_slug) : 'workspace'}</span>
                 <span><strong>{posts.length}</strong> posts</span>
               </div>
             </header>
@@ -2154,7 +2154,7 @@ function AgentChatsView({
             </span>
             <span className="pc-coord__row-title">{c.title ?? c.id}</span>
             <span className="pc-coord__row-meta">
-              {c.harness_slug ? hiveHomeLabel(c.harness_slug) : 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
+              {c.harness_slug ? potHomeLabel(c.harness_slug) : 'workspace'}{c.feature_id ? ` · ${c.feature_id}` : ''} · {c.turns} turn{c.turns === 1 ? '' : 's'}
             </span>
           </div>
         ),
@@ -2260,7 +2260,7 @@ function AgentChatsView({
                 <h2>{detail.title ?? detail.id}</h2>
               </div>
               <div className="pc-advconv__detailstats" aria-label="Chat metadata">
-                <span>{detail.harness_slug ? hiveHomeLabel(detail.harness_slug) : 'workspace'}</span>
+                <span>{detail.harness_slug ? potHomeLabel(detail.harness_slug) : 'workspace'}</span>
                 <span><strong>{(detail.transcript ?? []).length}</strong> turns</span>
                 <span>${((detail.total_cost_usd_cents ?? 0) / 100).toFixed(2)} · {(detail.total_input_tokens ?? 0) + (detail.total_output_tokens ?? 0)} tok</span>
               </div>
@@ -2391,7 +2391,7 @@ function AgentMessagesView({
                   <h2>{head.summary ?? loadingSummary?.title ?? head.msg_id}</h2>
                 </div>
                 <div className="pc-advconv__detailstats" aria-label="Message metadata">
-                  <span>{head.harness_slug ? hiveHomeLabel(head.harness_slug) : 'workspace'}</span>
+                  <span>{head.harness_slug ? potHomeLabel(head.harness_slug) : 'workspace'}</span>
                   <span>
                     <strong>{replies.length}</strong> replies
                   </span>

@@ -28,6 +28,7 @@ import {
   captureDebuggerOutput,
   materializeFeatureDebugNote,
   healSandboxZeroByteManifest,
+  OUTER_ACTIVITY_ECHO_MARKER,
 } from '@papercusp/orchestrator';
 import { emitPipelineEvent } from '../events/pipeline-events';
 import { firePluginLifecycle } from '../plugin-host-runtime';
@@ -734,7 +735,26 @@ function runChild(
       reportActivity();
       stdout += chunk;
     });
-    child.stderr?.on('data', (d) => { reportActivity(); stderr += String(d); });
+    child.stderr?.on('data', (d) => {
+      const chunk = String(d);
+      // WI-85288: the inner agent CLI's own stdout is NEVER echoed onto this child's
+      // stdout — WI-3302 deliberately routes its liveness signal to STDERR instead
+      // (`OUTER_ACTIVITY_ECHO_MARKER`, invoke.ts:4160), because downstream consumers
+      // key off exact stdout content. invoke.ts emits that marker only from the inner
+      // child's `stdout.on('data')`, so it means precisely what the stdout heuristic
+      // below is trying to detect: the agent stream has really started. Without this,
+      // the release-fixer first-turn guard could never be disarmed and SIGTERM'd every
+      // fixer at exactly 300000ms — measured 0 completions and 100% timeouts from
+      // 2026-08-24 16:57Z (the last `exited` run) through 2026-08-27, which is why
+      // `main` could not advance: no fixer ever survived long enough to commit.
+      if (!firstTurnStarted && firstTurnTimer && chunk.includes(OUTER_ACTIVITY_ECHO_MARKER)) {
+        firstTurnStarted = true;
+        clearTimeout(firstTurnTimer);
+        firstTurnTimer = null;
+      }
+      reportActivity();
+      stderr += chunk;
+    });
     // Scope-launch failure (fast systemd-run exit with a launch-shaped stderr, before
     // any real agent turn could plausibly have run) → retry DIRECT once, exactly like
     // release-actions.ts's runScript, so a box without a reachable user bus degrades

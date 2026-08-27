@@ -112,14 +112,14 @@ describe('triggerRoutineSpecs — workspace-singleton triggers (D-018)', () => {
 describe('triggerRoutineSpecs — ephemeral tier (P-011 / D-006)', () => {
   it('derives an ephemeral spec (tier=ephemeral, intervalSec, no cron) from a tier:ephemeral entry', () => {
     const specs = triggerRoutineSpecs({
-      triggers: { schedule: [{ tier: 'ephemeral', action: 'system:hive-watchdog-sweep', intervalSec: 5 }] },
+      triggers: { schedule: [{ tier: 'ephemeral', action: 'system:pot-watchdog-sweep', intervalSec: 5 }] },
     });
     expect(specs).toEqual([
       {
         name: 'bp-schedule-0',
         tier: 'ephemeral',
         intervalSec: 5,
-        targetRole: 'system:hive-watchdog-sweep',
+        targetRole: 'system:pot-watchdog-sweep',
         singleton: false,
         singletonActive: false,
       },

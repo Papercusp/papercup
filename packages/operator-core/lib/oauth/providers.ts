@@ -271,6 +271,20 @@ export function makeGoogleProvider(config: GoogleDesktopClientConfig): OAuthProv
       u.searchParams.set('response_type', 'code');
       u.searchParams.set('access_type', 'offline');
       u.searchParams.set('include_granted_scopes', 'true');
+      // Multi-account Google (D-004/P-005) depends on BOTH halves of this prompt.
+      //
+      // `select_account`: with no explicit prompt Google is free to reuse the
+      // browser's active session and skip the account chooser entirely, so
+      // "Add account" silently re-authorizes the account that is ALREADY
+      // connected instead of the new one the owner meant to add.
+      //
+      // `consent`: access_type=offline only yields a refresh_token on the FIRST
+      // authorization for a given client+account, and include_granted_scopes=true
+      // turns this into an incremental-auth request that Google may satisfy with
+      // no re-consent at all. Without forcing consent a re-authorized account
+      // returns an access token and NO refresh token, which persists a credential
+      // that dies at the first expiry with nothing to recover from.
+      u.searchParams.set('prompt', 'select_account consent');
       u.searchParams.set('scope', (scopes.length ? scopes : GOOGLE_WORKSPACE_SCOPES).join(' '));
       u.searchParams.set('code_challenge', pkceChallenge(verifier));
       u.searchParams.set('code_challenge_method', 'S256');

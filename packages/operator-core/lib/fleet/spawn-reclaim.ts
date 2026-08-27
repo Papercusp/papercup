@@ -289,11 +289,19 @@ export async function heartbeatSpawns(
   if (withOutput.length > 0) {
     const ids = withOutput;
     const stamps = withOutput.map((id) => new Date(outputAtMs!.get(id)!).toISOString());
+    // WI-85288: both arrays MUST go through sql.array(). A bare `${array}` works for the
+    // single-parameter `ANY(${plain}::text[])` above, but TWO array parameters in one
+    // statement make postgres.js fall back to a serializer that throws
+    // `The "string" argument must be of type string ... Received an instance of Array`.
+    // The throw is swallowed by the caller's best-effort catch (routes/harness/spawn.ts),
+    // so the only symptom was last_output_at silently staying NULL for every spawn that
+    // streams output — which then reads as "this spawn has produced nothing since launch"
+    // to every liveness observer. Reproduced and fixed against the live DB before landing.
     await sql`
       UPDATE harness_shared.spawned_agents AS a
          SET heartbeat_at = now(),
              last_output_at = GREATEST(coalesce(a.last_output_at, 'epoch'::timestamptz), u.output_at)
-        FROM unnest(${ids}::text[], ${stamps}::timestamptz[]) AS u(spawn_id, output_at)
+        FROM unnest(${sql.array(ids)}::text[], ${sql.array(stamps)}::timestamptz[]) AS u(spawn_id, output_at)
        WHERE a.spawn_id = u.spawn_id
          AND a.status IN ('running', 'restarting')`;
   }

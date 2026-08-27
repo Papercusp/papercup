@@ -451,7 +451,7 @@ export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, c
     contextTier?: string;
 }): URL;
 /** List every tool, following pagination if the server returns a cursor. */
-export function listAllTools(client: any, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, }?: {
+export function listAllTools(client: any, { timeoutMs, retryLocalErrors, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
     timeoutMs?: number | undefined;
     retryLocalErrors?: boolean | undefined;
     maxAttempts?: number | undefined;
