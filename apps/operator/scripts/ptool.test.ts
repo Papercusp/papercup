@@ -723,6 +723,16 @@ describe('stdout delivery failure (EI-21250765620092599)', () => {
 });
 
 describe('ptool JSON input', () => {
+  it('treats empty stdin as an empty args object for zero-argument tools (EI-21579932287582806)', () => {
+    expect(parseJsonInput('', { emptyAsObject: true })).toEqual({});
+    expect(parseJsonInput('  \n\t', { emptyAsObject: true })).toEqual({});
+  });
+
+  it('keeps empty inline and file payloads strict', () => {
+    expect(() => parseJsonInput('')).toThrow();
+    expect(() => parseJsonInput('  \n\t')).toThrow();
+  });
+
   it('accepts literal newlines inside quoted values from a heredoc payload', () => {
     const payload = [
       '{',
