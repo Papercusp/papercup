@@ -11,6 +11,16 @@ const HIDDEN_PLUGIN_BASENAMES = new Set([
   'notion-export', 'slack-notifier', 'jira-sync',
 ]);
 
+// Reserved by the CLI's lock-resolve node:test fixtures. Those tests used to
+// write into the real global-plugins directory and a killed process could
+// leave production-visible manifests behind. Keep the API safe during mixed
+// version rollouts while old debris is removed and new tests become hermetic.
+const LOCK_RESOLVE_FIXTURE_RE = /^lockresolve-\d+-/;
+
+export function isLockResolveFixtureName(value: string | undefined | null): boolean {
+  return typeof value === 'string' && LOCK_RESOLVE_FIXTURE_RE.test(value);
+}
+
 function isHidden(slugOrName: string | undefined | null): boolean {
   if (!slugOrName) return false;
   const base = slugOrName.includes('/') ? slugOrName.split('/').pop()! : slugOrName;
@@ -41,7 +51,7 @@ export default defineTool({
     const entries = await fs.readdir(GLOBAL_PLUGINS_DIR(), { withFileTypes: true }).catch(() => []);
     const plugins: Array<PluginManifest & { source: string; path: string }> = [];
     for (const e of entries) {
-      if (e.name.startsWith('.')) continue;
+      if (e.name.startsWith('.') || isLockResolveFixtureName(e.name)) continue;
       let isDirOrLinkToDir = e.isDirectory();
       if (!isDirOrLinkToDir && e.isSymbolicLink()) {
         const stat = await fs.stat(join(GLOBAL_PLUGINS_DIR(), e.name)).catch(() => null);
@@ -51,13 +61,14 @@ export default defineTool({
       const dir = join(GLOBAL_PLUGINS_DIR(), e.name);
       const m = await readJson<PluginManifest>(join(dir, 'papercusp.json'));
       if (m?.name && m?.version) {
+        if (isLockResolveFixtureName(m.name)) continue;
         plugins.push({ ...m, source: 'global', path: dir });
         continue;
       }
       if (!e.name.startsWith('@')) continue;
       const inner = await fs.readdir(dir, { withFileTypes: true }).catch(() => []);
       for (const sub of inner) {
-        if (sub.name.startsWith('.')) continue;
+        if (sub.name.startsWith('.') || isLockResolveFixtureName(sub.name)) continue;
         let subIsDir = sub.isDirectory();
         if (!subIsDir && sub.isSymbolicLink()) {
           const t = await fs.stat(join(dir, sub.name)).catch(() => null);
@@ -67,6 +78,7 @@ export default defineTool({
         const subDir = join(dir, sub.name);
         const subM = await readJson<PluginManifest>(join(subDir, 'papercusp.json'));
         if (!subM?.name || !subM?.version) continue;
+        if (isLockResolveFixtureName(subM.name)) continue;
         plugins.push({ ...subM, source: 'global', path: subDir });
       }
     }
