@@ -22,6 +22,8 @@ export {
   configureBackup,
   configureBackupStepRunner,
   type BackupHost,
+  type BackupIntervalHandle,
+  type BackupIntervalScheduler,
   type IntervalSnapshotAdmission,
 } from './config';
 export { WorkspaceBackup, type WorkspaceBackupOpts } from './workspace-backup';
