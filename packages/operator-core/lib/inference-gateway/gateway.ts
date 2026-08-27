@@ -54,6 +54,15 @@ import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewa
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
+  GatewayRequestTelemetry,
+  classifyGatewayTelemetryOutcome,
+  type GatewayRequestSpan,
+  type GatewayRequestTelemetrySnapshot,
+  type GatewayTelemetryProtocol,
+  type GatewayTelemetryProvider,
+  type GatewayTelemetryTransport,
+} from './request-stage-telemetry';
+import {
   codexCliResponsesBody,
   extractResponsesInputText,
   parseBridgeModel,
@@ -881,6 +890,12 @@ export interface GatewayStats {
    *  bootstrap snapshot from sustained pool exhaustion. Optional for deploy-skew readers. */
   processUptimeMs?: number;
   totalRequests: number;
+  /**
+   * Correlated, privacy-safe request-stage timelines + bounded p50/p95/p99 histograms (P-001).
+   * Optional only for deploy-skew readers of an older live gateway; this implementation emits it on
+   * every `/stats` read. The same collector augments `/admin/owner-report`.
+   */
+  requestStages?: GatewayRequestTelemetrySnapshot;
   /** Prompt-cache-policy telemetry (gateway-cache-plane-shared-prefix-ttl-2026-07-19 P-002):
    *  what the request-body rewrite did, as a byproduct of doing it. `breakpointHistogram[n]` =
    *  requests that arrived carrying n cache_control markers (the headroom for the opt-in
@@ -1418,6 +1433,59 @@ export async function peekBody(
 
 export function createInferenceGateway(deps: GatewayDeps) {
   const processStartedAt = Date.now();
+  const requestStageTelemetry = new GatewayRequestTelemetry();
+  interface RequestTelemetryState {
+    span: GatewayRequestSpan;
+    finished: boolean;
+    shed: boolean;
+    gatewayError: boolean;
+  }
+  const requestTelemetryByRequest = new WeakMap<http.IncomingMessage, RequestTelemetryState>();
+  function beginRequestTelemetry(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    provider: GatewayTelemetryProvider,
+    protocol: GatewayTelemetryProtocol,
+    transport: GatewayTelemetryTransport = 'unknown',
+  ): GatewayRequestSpan {
+    const span = requestStageTelemetry.begin({
+      ownerId: (req.headers[OWNER_HEADER] as string | undefined)?.trim() || null,
+      provider,
+      protocol,
+      transport,
+    });
+    const state: RequestTelemetryState = { span, finished: false, shed: false, gatewayError: false };
+    requestTelemetryByRequest.set(req, state);
+    const finish = (closedBeforeFinish: boolean) => {
+      if (state.finished) return;
+      state.finished = true;
+      span.endStage('stream');
+      const hasStatus = res.headersSent || res.writableEnded;
+      const finalStatus = hasStatus ? res.statusCode : null;
+      span.finish(
+        classifyGatewayTelemetryOutcome(finalStatus, {
+          cancelled: closedBeforeFinish && !res.writableEnded,
+          shed: state.shed,
+          gatewayError: state.gatewayError,
+        }),
+        finalStatus,
+      );
+      requestTelemetryByRequest.delete(req);
+    };
+    res.once('finish', () => finish(false));
+    res.once('close', () => finish(true));
+    return span;
+  }
+  const requestSpan = (req: http.IncomingMessage): GatewayRequestSpan | undefined =>
+    requestTelemetryByRequest.get(req)?.span;
+  const markRequestShed = (req: http.IncomingMessage): void => {
+    const state = requestTelemetryByRequest.get(req);
+    if (state) state.shed = true;
+  };
+  const markRequestGatewayError = (req: http.IncomingMessage): void => {
+    const state = requestTelemetryByRequest.get(req);
+    if (state) state.gatewayError = true;
+  };
   const upstreamBase = (deps.upstreamBase ?? DEFAULT_UPSTREAM).replace(/\/$/, '');
   const openaiUpstreamBase = (deps.openaiUpstreamBase ?? 'https://api.openai.com').replace(/\/$/, '');
   const doFetch = deps.fetchImpl ?? fetch;
@@ -2514,6 +2582,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       processStartedAt,
       processUptimeMs: Math.max(0, now - processStartedAt),
       totalRequests,
+      requestStages: requestStageTelemetry.snapshot(),
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
       cachePolicy: { enabled: cachePolicyEnabled, toolsBreakpoint: cacheToolsBreakpointEnabled, splitBoundary: cacheSplitBoundaryEnabled, ...cachePolicyStats },
       inFlight: admission.running + codexAdmission.running,
@@ -2720,6 +2789,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
    * upstream response body through untouched (SSE `stream:true` included).
    */
   async function proxyLocal(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const stageSpan = requestSpan(req);
     const pool = deps.localBackends;
     if (!pool) {
       sendJson(res, 404, { type: 'error', error: { type: 'not_found_error', message: 'inference-gateway: no local-backend pool configured' }, gateway: true });
@@ -2736,6 +2806,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const circuitBefore = getClientCircuit(ownerId);
       const verdict = shouldShedClient(circuitBefore, Date.now(), deps.localBackendClientMaxInFlight ?? DEFAULT_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT);
       if (verdict.shed) {
+        markRequestShed(req);
         req.resume(); // drain the unread body so the socket releases cleanly (queue-full shed precedent)
         recordOwnerOutcome(ownerId, 'shed', { detail: `local-backend client ${verdict.reason}` }); // P-008 ledger
         sendJson(
@@ -2765,11 +2836,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // exhausted with none reachable, the actual "this owner is wedging the pool" signal.
     let requestOk = false;
     try {
-      const bodyBuf = await readBody(req);
-      let model: string | undefined;
+      stageSpan?.beginStage('bodyRead');
+      let bodyBuf: Buffer;
       try {
-        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string };
+        bodyBuf = await readBody(req);
+      } finally {
+        stageSpan?.endStage('bodyRead');
+      }
+      let model: string | undefined;
+      let isStream = false;
+      try {
+        const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
         if (typeof j.model === 'string') model = j.model;
+        isStream = j.stream === true;
       } catch {
         /* non-JSON body — fall through to the "no model" 400 below */
       }
@@ -2778,6 +2857,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         requestOk = true;
         return;
       }
+      stageSpan?.setModel(model);
+      stageSpan?.setStreaming(isStream);
 
       // COLD-START PRE-FLIGHT (P-008/D-009). A STOPPED on-demand backend fails its health probe, so
       // it is never SELECTED — the request would 502 before any forward, which is why ensure-running
@@ -2795,6 +2876,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
       const tried = new Set<string>();
       let lastError: string | null = null;
+      let previousBackendId: string | null = null;
       // At most ONE cold start per request (D-014). Bounds the blast radius of the rescue below:
       // a backend that keeps answering 502 after a successful start is a real fault to report, not
       // a reason to restart it again.
@@ -2802,18 +2884,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
       for (let attempt = 0; attempt < LOCAL_BACKEND_MAX_ATTEMPTS; attempt++) {
         // P-028 slot affinity: the owner's last backend is preferred while eligible, so the
         // session's KV prefix survives across hops (a process switch = full re-prefill).
+        stageSpan?.beginStage('routeSelection');
         const backend: LocalBackend | null = pool.select(model, tried, ownerId || undefined);
+        stageSpan?.endStage('routeSelection');
         if (!backend) break;
+        if (previousBackendId !== null && previousBackendId !== backend.id) stageSpan?.recordFailover();
+        previousBackendId = backend.id;
         tried.add(backend.id);
         pool.recordStart(backend.id);
         let settled = false;
         try {
+          stageSpan?.recordAttempt();
+          stageSpan?.beginStage('upstreamTtfb');
           const upstream = await doFetch(`${backend.baseUrl}${url}`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
             body: bodyBuf,
             signal: AbortSignal.timeout(deps.localBackendTimeoutMs ?? DEFAULT_LOCAL_BACKEND_TIMEOUT_MS),
           } as RequestInit);
+          stageSpan?.endStage('upstreamTtfb');
           settled = true;
           pool.recordEnd(backend.id);
           pool.recordOutcome(backend.id, upstream.ok || (upstream.status >= 400 && upstream.status < 500));
@@ -2852,6 +2941,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             // already hardened this way; the local-backend path was the last unguarded pipe.
             // Tear down both ends on error and never re-throw.
             const nodeStream = Readable.fromWeb(upstream.body as import('stream/web').ReadableStream<Uint8Array>);
+            if (isStream) stageSpan?.beginStage('stream');
             nodeStream.on('error', (e) => {
               log('warn', `inference-gateway: local backend '${backend.id}' stream error mid-body: ${(e as Error)?.message ?? String(e)}`);
               try { res.destroy(); } catch { /* already torn down */ }
@@ -2864,6 +2954,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           requestOk = true;
           return;
         } catch (e) {
+          stageSpan?.endStage('upstreamTtfb');
           if (!settled) {
             pool.recordEnd(backend.id);
             pool.recordOutcome(backend.id, false, (e as Error).message);
@@ -3025,9 +3116,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
 
   async function proxy(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const stageSpan = requestSpan(req);
+    stageSpan?.setTransport('oauth-http');
     // `let` (not const): WI-1073 may rewrite this to a sonnet body as a last resort when opus is walled
     // pool-wide (see the downgrade hook in the internal-retry loop below).
-    let bodyBuf = await readBody(req);
+    stageSpan?.beginStage('bodyRead');
+    let bodyBuf: Buffer;
+    try {
+      bodyBuf = await readBody(req);
+    } finally {
+      stageSpan?.endStage('bodyRead');
+    }
     let model = 'claude-opus-4';
     let context1m = false;
     // WI-1073: at-most-once guard — we downgrade a walled OPUS request to sonnet only ONCE per request,
@@ -3051,7 +3150,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           splitBoundary: cacheSplitBoundaryEnabled,
         });
         bodyBuf = cached.body;
-        if (cached.stats) recordCachePolicy('anthropic', cached.stats);
+        if (cached.stats) {
+          recordCachePolicy('anthropic', cached.stats);
+          stageSpan?.setCacheRouting('rewritten');
+        }
       }
       try {
         const j = JSON.parse(bodyBuf.toString('utf8')) as { model?: string; stream?: boolean };
@@ -3062,6 +3164,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         /* non-JSON body (e.g. a count_tokens variant) — keep defaults */
       }
     }
+    stageSpan?.setModel(model);
+    stageSpan?.setStreaming(isStream);
     // Cache-affinity routing (P-002/P-003): a spawn pins its requests to one account via the
     // x-papercusp-account header so its per-credential conversation cache survives; an unknown id
     // (or no header / a single-account pool) falls back to the active account — today's behavior.
@@ -3489,6 +3593,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // bee's retry to a healthy account) and return a retryable 503. The finally releases the slot, so
         // one stalled credential can never wedge the pool.
         let token: string;
+        stageSpan?.beginStage('auth');
         try {
           token = await withDeadline(active.token(), tokenTimeoutMs, `token refresh '${active.accountId}'`);
         } catch (e) {
@@ -3531,6 +3636,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             );
           }
           return;
+        } finally {
+          stageSpan?.endStage('auth');
         }
         const headers: Record<string, string> = { ...baseHeaders, authorization: `Bearer ${token}` };
 
@@ -3573,7 +3680,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // resets body-idle), so this never aborts a legitimately-streaming response.
           const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
           armStall(Math.max(1, Math.min(headersStallMs, retryDeadlineAt - Date.now())));
+          stageSpan?.recordAttempt();
+          stageSpan?.beginStage('upstreamTtfb');
           up = await doFetch(`${upstreamBase}${url}`, init as RequestInit);
+          stageSpan?.endStage('upstreamTtfb');
           armStall(upstreamBodyIdleTimeoutMs);
           // Transport succeeded for THIS account (response headers arrived) — its egress proxy works, so
           // clear its transport-failure streak. A 429/5xx still means the proxy WORKED (just throttled —
@@ -3590,6 +3700,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (ipCooldownUntil.has(curEgressKey)) ipCooldownUntil.delete(curEgressKey);
           checkEgressProxyHealthAlarm(active); // defect B: a recovered IP may clear a standing "all proxies down" alarm
         } catch (e) {
+          stageSpan?.endStage('upstreamTtfb');
           clearStall();
           upstreamErrors++;
           const stalled = ac.signal.aborted;
@@ -3684,6 +3795,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const next = pool.onExhausted(active.accountId, resetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
+                stageSpan?.recordFailover();
                 everRotated = true;
                 active = next;
                 gov = governorForAccount(model, active.accountId);
@@ -4086,6 +4198,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               const next = pool.onExhausted(active.accountId, internalRetry.exhaustResetAt);
               if (next && next.accountId !== active.accountId) {
                 failovers++;
+                stageSpan?.recordFailover();
                 everRotated = true;
                 active = next;
                 gov = governorForAccount(model, active.accountId);
@@ -4196,6 +4309,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             if (!hardPin) {
               const reCand = pool.active();
               if (reCand.accountId !== active.accountId) {
+                stageSpan?.recordFailover();
                 everRotated = true;
                 active = reCand;
                 gov = governorForAccount(model, active.accountId);
@@ -4233,6 +4347,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               opusToSonnetDowngrades++;
               bodyBuf = sonnetBody;
               model = LAST_RESORT_SONNET_MODEL;
+              stageSpan?.setModel(model);
               if (!hardPin) active = pool.active(); // spread the sonnet retry (a hard pin stays on its own credential)
               gov = governorForAccount(model, active.accountId); // rebind pacing to the sonnet bucket
               attempt = 0;
@@ -4305,6 +4420,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           { account: active.accountId, status: up.status },
         );
         res.writeHead(up.status, outHeaders);
+        if (isStream) stageSpan?.beginStage('stream');
         // P-005 (structured mid-stream failure): when the upstream body stalls/errors mid-relay, a bare
         // res.destroy() surfaces to the bee as a raw connection reset — an opaque "API Error" it may not
         // retry. For an SSE stream we can do better: append a final Anthropic-shaped `error` event (the
@@ -4423,6 +4539,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     preBody?: Buffer,
     routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string } = { hardPin: false, pinned: null },
   ) {
+    const stageSpan = requestSpan(req);
+    stageSpan?.setTransport('cli-exec');
+    stageSpan?.setStreaming(false);
     totalRequests++;
     codexRequests++;
     recordOwnerOutcome(routing.ownerId, 'request');
@@ -4430,6 +4549,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (preBody) {
       bodyBuf = preBody; // already-read body (the OAuth-proxy path hands off a non-streaming request here)
     } else {
+      stageSpan?.beginStage('bodyRead');
       try {
         bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-cli readBody '${cli.accountId}'`);
       } catch {
@@ -4442,6 +4562,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex-cli request body read stalled; retry shortly' }, gateway: true });
         }
         return;
+      } finally {
+        stageSpan?.endStage('bodyRead');
       }
     }
     let body: { model?: unknown; input?: unknown; instructions?: unknown; stream?: unknown } = {};
@@ -4456,6 +4578,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     const { id: model, effort } = parseBridgeModel(typeof body.model === 'string' ? body.model : undefined);
+    stageSpan?.setModel(model);
     const inputText = extractResponsesInputText(body.input);
     if (!inputText.trim()) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge got no input text' }, gateway: true });
@@ -4471,6 +4594,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     try {
       for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
+          // The CLI home already encapsulates its credential. Record the local selection seam
+          // separately from provider execution so auth remains explicit without inventing timing.
+          stageSpan?.beginStage('auth');
+          stageSpan?.endStage('auth');
+          stageSpan?.recordAttempt();
+          stageSpan?.beginStage('upstreamTtfb');
           const r = await codexCliRun({
             home: cli.home,
             model,
@@ -4479,6 +4608,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             timeoutMs: requestCeilingMs,
             signal: ac.signal,
           });
+          stageSpan?.endStage('upstreamTtfb');
           codexAimd.recordSuccess();
           const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
           if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
@@ -4490,6 +4620,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (!res.headersSent) sendJson(res, 200, codexCliResponsesBody({ model, ...r }), headers);
           return;
         } catch (e) {
+          stageSpan?.endStage('upstreamTtfb');
           codexUpstreamErrors++;
           recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'cli-bridge' });
           log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
@@ -4498,6 +4629,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           const nextCli = next ? codexCliAccounts().find((a) => a.accountId === next.accountId) : undefined;
           if (nextCli && nextCli.accountId !== cli.accountId) {
             codexFailovers++;
+            stageSpan?.recordFailover();
             cli = nextCli;
             continue;
           }
@@ -4529,6 +4661,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     url: string,
     routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string },
   ) {
+    const stageSpan = requestSpan(req);
+    stageSpan?.setTransport('oauth-http');
+    stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
       bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
@@ -4536,6 +4671,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try { req.destroy(); } catch { /* already torn down */ }
       if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex request body read stalled; retry shortly' }, gateway: true });
       return;
+    } finally {
+      stageSpan?.endStage('bodyRead');
     }
     if (bodyBuf.length) bodyBuf = normalizeCodexChatGptResponsesBody(bodyBuf).body;
     if (cachePolicyEnabled && bodyBuf.length) {
@@ -4545,7 +4682,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         injectRetention: false,
       });
       bodyBuf = cached.body;
-      if (cached.stats) recordCachePolicy('codex', cached.stats);
+      if (cached.stats) {
+        recordCachePolicy('codex', cached.stats);
+        stageSpan?.setCacheRouting('rewritten');
+      }
     }
     // Non-streaming (scout/judge) uses the bounded OAuth transport by default. Keep the one-shot
     // CLI bridge as an emergency compatibility fallback: it is deliberately opt-out because every
@@ -4559,6 +4699,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         if (typeof parsed.model === 'string') bodyModel = parsed.model;
       } catch { /* non-JSON — treat as non-stream */ }
     }
+    stageSpan?.setModel(bodyModel || null);
+    stageSpan?.setStreaming(wantStream);
     if (!wantStream && !codexOAuthNonStreamEnabled) {
       await serveCodexCliBridge(req, res, cli, bodyBuf, routing);
       return;
@@ -4582,6 +4724,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const nextCli = codexCliAccounts().find((a) => a.accountId === next.accountId);
       if (!nextCli) return false;
       codexFailovers++;
+      stageSpan?.recordFailover();
       cli = nextCli;
       return true;
     };
@@ -4618,6 +4761,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
         const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
         if (!auth || authAccount !== cli.accountId) {
+          stageSpan?.beginStage('auth');
           try {
             auth = await withDeadline(resolveCodexAccessToken(cli.home), tokenTimeoutMs, `codex oauth token '${cli.accountId}'`);
             authAccount = cli.accountId;
@@ -4631,6 +4775,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
             if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: codex OAuth token unavailable for '${cli.accountId}'` }, gateway: true }, { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: cli.accountId });
             return;
+          } finally {
+            stageSpan?.endStage('auth');
           }
         }
         const ac = new AbortController();
@@ -4657,9 +4803,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
           if (dispatcher) init.dispatcher = dispatcher;
           egressAttemptsByAccount.set(cli.accountId, (egressAttemptsByAccount.get(cli.accountId) ?? 0) + 1);
           armStall(upstreamStreamHeadersTimeoutMs); // SHORT TTFB — this is always a stream
+          stageSpan?.recordAttempt();
+          stageSpan?.beginStage('upstreamTtfb');
           up = await doFetch(upstreamUrl, init as RequestInit);
+          stageSpan?.endStage('upstreamTtfb');
           armStall(upstreamBodyIdleTimeoutMs);
         } catch (e) {
+          stageSpan?.endStage('upstreamTtfb');
           detach();
           codexUpstreamErrors++;
           egressFailsByAccount.set(cli.accountId, (egressFailsByAccount.get(cli.accountId) ?? 0) + 1);
@@ -4749,6 +4899,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
           );
           nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+          stageSpan?.beginStage('stream');
           try {
             const aggregated = await aggregateCodexNonStreamResponse(nodeStream, {
               contentType: up.headers.get('content-type'),
@@ -4757,6 +4908,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               signal: reqAbort.signal,
               onTimeout: () => ac.abort(new Error(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`)),
             });
+            stageSpan?.endStage('stream');
             if (reqAbort.signal.aborted || ac.signal.aborted) {
               try { nodeStream.destroy(); } catch { /* already torn down */ }
               return;
@@ -4770,6 +4922,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             clearStall();
             return;
           } catch (e) {
+            stageSpan?.endStage('stream');
             try { nodeStream.destroy(); } catch { /* already torn down */ }
             detach();
             clearStall();
@@ -4812,6 +4965,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           { account: cli.accountId, status: up.status },
         );
         res.writeHead(up.status, outHeaders);
+        if (wantStream) stageSpan?.beginStage('stream');
         if (!up.body) { detach(); res.end(); return; }
         const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
         observeOpenAiCacheUsage(
@@ -4841,6 +4995,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
 
   async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
+    const stageSpan = requestSpan(req);
     const adapter = providerAdapters.codex;
     const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
     const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
@@ -4903,6 +5058,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const hardPin =
       pinnedBearer !== null &&
       (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+    stageSpan?.setTransport('bearer-http');
 
     // Stable request abort for the Codex proxy. Scout times out its in-process
     // `/v1/responses` call at the caller, but the gateway must also stop the
@@ -4932,6 +5088,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // BOUNDED body read (2026-06-22 audit F1): a Codex bee that stalls mid-upload must not hold this admission
     // slot forever — the Claude proxy's ceiling timer covers its readBody; the codex path had none, and
     // proxyOpenAi never registers in inFlightReg so the self-heal valve can't reclaim it. Cap it + free the slot.
+    stageSpan?.beginStage('bodyRead');
     let bodyBuf: Buffer;
     try {
       bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex readBody '${active.accountId}'`);
@@ -4945,6 +5102,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
         sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: Codex request body read stalled; retry shortly' }, gateway: true });
       }
       return;
+    } finally {
+      stageSpan?.endStage('bodyRead');
     }
     // Stream detection — PARITY with the Claude proxy (backlog #1 / 2026-06-22 audit follow-up): a stream:true
     // request gets the SHORT TTFB headers deadline + a per-chunk body-idle guard; non-streaming keeps the
@@ -4966,16 +5125,24 @@ export function createInferenceGateway(deps: GatewayDeps) {
         cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
       });
       bodyBuf = cached.body;
-      if (cached.stats) recordCachePolicy('codex', cached.stats);
+      if (cached.stats) {
+        recordCachePolicy('codex', cached.stats);
+        stageSpan?.setCacheRouting('rewritten');
+      }
     }
     let isStream = false;
+    let requestModel: string | null = null;
     if (bodyBuf.length) {
       try {
-        if ((JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean }).stream === true) isStream = true;
+        const parsed = JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean; model?: string };
+        if (parsed.stream === true) isStream = true;
+        if (typeof parsed.model === 'string') requestModel = parsed.model;
       } catch {
         /* non-JSON body — keep the generous (non-stream) deadline */
       }
     }
+    stageSpan?.setModel(requestModel);
+    stageSpan?.setStreaming(isStream);
     const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
     totalRequests++;
     codexRequests++;
@@ -5003,6 +5170,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const next = adapter.pool!.onExhausted(active.accountId, resetAt);
       if (next && next.accountId !== active.accountId) {
         codexFailovers++;
+        stageSpan?.recordFailover();
         active = next;
         return true;
       }
@@ -5011,6 +5179,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
       const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
       let token: string;
+      stageSpan?.beginStage('auth');
       try {
         token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
       } catch (e) {
@@ -5027,6 +5196,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           );
         }
         return;
+      } finally {
+        stageSpan?.endStage('auth');
       }
 
       const headers: Record<string, string> = {};
@@ -5061,9 +5232,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const dispatcher = await dispatcherFor(active);
         if (dispatcher) init.dispatcher = dispatcher;
         armStall(headersStallMs); // SHORT TTFB for streams; generous otherwise
+        stageSpan?.recordAttempt();
+        stageSpan?.beginStage('upstreamTtfb');
         up = await doFetch(`${adapter.upstreamBase}${url}`, init as RequestInit);
+        stageSpan?.endStage('upstreamTtfb');
         armStall(upstreamBodyIdleTimeoutMs); // headers arrived → switch to the per-chunk body-idle deadline
       } catch (e) {
+        stageSpan?.endStage('upstreamTtfb');
         detachDownstreamAbort();
         clearStall();
         codexUpstreamErrors++;
@@ -5129,6 +5304,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // upstreamBodyIdleTimeoutMs) aborts → the stream errors → we tear down both ends. Await completion so the
       // admission slot is held for the stream's life (forwarded-concurrency parity) and released cleanly.
       const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+      if (isStream) stageSpan?.beginStage('stream');
       observeOpenAiCacheUsage(
         nodeStream,
         active.accountId,
@@ -5212,7 +5388,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const e = ownerLedger.get(owner) ?? null;
         const route = lastRouteByOwner.get(owner) ?? null;
         const pin = ownerPinMap.get(owner) ?? null;
-        sendJson(res, 200, { ok: true, now: Date.now(), owner, ledger: e, lastRoute: route, pin });
+        sendJson(res, 200, {
+          ok: true,
+          now: Date.now(),
+          owner,
+          ledger: e,
+          lastRoute: route,
+          pin,
+          stageTelemetry: requestStageTelemetry.snapshotForOwner(owner),
+        });
         return;
       }
       const top = [...ownerLedger.entries()]
@@ -5600,7 +5784,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // `/v1/responses` (Codex), so this never shadows the existing routes. Only intercepted when a
     // local-backend pool is actually wired; otherwise falls through unchanged (byte-identical to today).
     if (req.method === 'POST' && deps.localBackends && (url.startsWith('/v1/chat/completions') || url.startsWith('/v1/completions'))) {
+      const span = beginRequestTelemetry(req, res, 'local', 'openai-chat', 'local-http');
+      span.setCacheRouting('not-applicable');
+      span.routeSelected();
+      span.admitted(); // local capacity is enforced inside proxyLocal; there is no outer cloud queue.
       void proxyLocal(req, res, url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions').catch((e) => {
+        markRequestGatewayError(req);
         log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
         if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway local-backend error' }, gateway: true });
         else res.destroy();
@@ -5629,7 +5818,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // is unambiguously Codex; `/v1/models` is shared, so the request-aware
     // router uses a Codex account pin to keep Codex model discovery off the
     // Anthropic proxy while preserving Claude model probes.
+    const inferredProvider: GatewayTelemetryProvider = url.startsWith('/v1/responses') ? 'codex' : 'claude';
+    const stageSpan = req.method === 'POST'
+      ? beginRequestTelemetry(
+          req,
+          res,
+          inferredProvider,
+          inferredProvider === 'codex' ? 'openai-responses' : 'anthropic-messages',
+        )
+      : undefined;
+    stageSpan?.setCacheRouting(cachePolicyEnabled ? 'unchanged' : 'disabled');
     const providerId = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id;
+    stageSpan?.routeSelected();
     const requestTierMap = providerId === 'codex' ? codexTierMap : tierMap;
     const tier = requestTierMap ? tierOf(priLabel, requestTierMap) : undefined;
     const handler = providerId === 'codex' ? proxyOpenAi : proxy;
@@ -5639,6 +5839,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // valve can now reclaim a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
     const runHandler = providerId === 'codex'
       ? async () => {
+          stageSpan?.admitted();
           const reqId = ++reqSeq;
           inFlightReg.set(reqId, {
             id: reqId,
@@ -5664,13 +5865,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
         }
-      : () => handler(req, res, url);
+      : async () => {
+          stageSpan?.admitted();
+          await handler(req, res, url);
+        };
     admissionQueue.run(pri, runHandler, tier !== undefined ? { tier } : undefined).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
       if (e instanceof QueueFullError) {
         shed429++;
+        markRequestShed(req);
         recordOwnerOutcome((req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined, 'shed', { detail: 'queue full (backlog cap)' }); // P-008 ledger
         // proxy() never ran, so the request body was never consumed — drain it (and close the
         // connection) or the unread socket stays busy and can't be released cleanly (leaks sockets;
@@ -5702,6 +5907,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         return;
       }
       upstreamErrors++;
+      markRequestGatewayError(req);
       log('error', `proxy handler crashed: ${msg}`);
       if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway internal error' }, gateway: true });
       else res.destroy();
