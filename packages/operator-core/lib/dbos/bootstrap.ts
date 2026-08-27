@@ -540,6 +540,17 @@ export async function startDbos(): Promise<void> {
     // or dead. Runtime gate: FLAGS.GOAL_DRAIN_FLEET_WATCHDOG (default ON).
     const { startGoalDrainFleetWatchdog } = await import('../system-health/goal-drain-fleet-watchdog');
     startGoalDrainFleetWatchdog(getOrgPg().sql);
+    // WI-42442: the present-but-unproductive sweep, generalised past goal holders
+    // to EVERY agent. The goal legs above ask "is anyone alive on this goal?"; this
+    // one asks the question that survives a yes — "is this session, which every
+    // dispatcher reads as wakeable, actually producing anything?". Measured
+    // 2026-08-27: 22 of 166 present sessions had never made an agent-origin call.
+    // Escalates ONE correlated wave per (workspace, phase), report-only, never
+    // respawns. Runtime gate: FLAGS.AGENT_PRODUCTIVITY_WATCHDOG (default ON).
+    const { startAgentProductivityWatchdog } = await import(
+      '../system-health/agent-productivity-watchdog'
+    );
+    startAgentProductivityWatchdog(getOrgPg().sql);
     // P-008 (EI-20581177540737568 half 2): near-real-time alarm on the FIRST
     // edit-claim by a goal-mode owner — the deterministic never-implements
     // instrument (edit_attribution_ledger x goal-mode agent_modes). A grader
