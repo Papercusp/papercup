@@ -8,12 +8,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import setItemBlockedByTool from '../set-item-blocked-by';
-import {
-  cleanupPlans,
-  seedPlan,
-  setupPlanPgFixture,
-  type PlanPgFixture,
-} from './_pg-tool-fixture';
+import { cleanupPlans, seedPlan, setupPlanPgFixture, type PlanPgFixture } from './_pg-tool-fixture';
 
 const HARNESS = `zzz-candidate-deps-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 const SLUG = 'candidate-dependency-structured-writer';
@@ -26,8 +21,7 @@ function planBody(
   status: 'draft' | 'ready' | 'active',
   opts: { p1BlockedBy?: string[]; p2BlockedBy?: string[] } = {},
 ): string {
-  const blockedBy = (refs: string[] | undefined) =>
-    refs?.length ? ` blocked-by: ${refs.join(', ')}` : '';
+  const blockedBy = (refs: string[] | undefined) => (refs?.length ? ` blocked-by: ${refs.join(', ')}` : '');
   return `---
 title: candidate dependency structured writer
 slug: ${SLUG}
@@ -158,13 +152,7 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
   }, 60_000);
 
   it('rejects a reciprocal cycle even in a draft and leaves the prior DAG intact', async () => {
-    await seedPlan(
-      admin,
-      wsId,
-      HARNESS,
-      SLUG,
-      planBody('draft', { p2BlockedBy: ['P-001'] }),
-    );
+    await seedPlan(admin, wsId, HARNESS, SLUG, planBody('draft', { p2BlockedBy: ['P-001'] }));
     const before = await livePlan();
 
     const { result, counts } = await runSetBlockedBy('P-001', ['P-002']);
