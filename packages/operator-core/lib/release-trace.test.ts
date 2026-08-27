@@ -172,6 +172,7 @@ function deploy(over: Partial<DeployStatus> = {}): DeployStatus {
       failingTests: [],
       lastVerdict: null,
     },
+    manualRunAuthority: null,
     deploy: {
       deployedSha: deployed,
       stagingHeadSha: sha,
