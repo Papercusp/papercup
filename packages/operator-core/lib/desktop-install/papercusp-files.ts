@@ -1532,6 +1532,7 @@ export async function writeShim(
   runtime: ShimRuntimeOptions,
 ): Promise<boolean> {
   const nodeCmd = await resolveShimNode(launcherPath);
+  const bundledBinDir = nodeCmd === 'node' ? null : path.dirname(nodeCmd);
   const relativeLauncherPaths = launcherRelativePaths(launcherPath);
   const shellLiteral = (value: string): string => JSON.stringify(value);
   const fallbackLiterals = runtime.fallbackLaunchers.map(shellLiteral);
@@ -1540,14 +1541,15 @@ export async function writeShim(
     '#!/usr/bin/env bash\n' +
     `# papercusp ${label} shim — managed by Papercusp.app (installPapercuspFiles).\n` +
     '# Refreshed on every boot; do not edit. Resolves the launcher at runtime.\n' +
-    // The agent backend (claude, installed by the official claude.ai/install.sh
-    // into ~/.local/bin) must be resolvable by the launcher's pty.spawn('claude').
-    // The WSL2 distro's login PATH omits ~/.local/bin, so a console-launched psu
-    // failed with `execvp("claude"): No such file or directory` even though the
-    // setup wizard's detectClaude() reported it installed (found live on the
-    // Windows VM 2026-07-04, WI-2149). Prepending here is a harmless no-op on
-    // macOS/Linux, where ~/.local/bin is already on PATH.
-    'export PATH="$HOME/.local/bin:$PATH"\n' +
+    // The agent backend must be resolvable by the launcher's pty.spawn('claude').
+    // The official claude.ai installer uses ~/.local/bin, while `npm install -g`
+    // in the packaged Windows WSL runtime writes its shim beside the bundled node
+    // under sidecar/bin. The distro deliberately omits both from its login PATH.
+    // Prepend the resolved node's directory when it is not a bare PATH command;
+    // JSON quoting keeps packaged paths containing spaces shell-safe.
+    (bundledBinDir
+      ? `export PATH=${shellLiteral(bundledBinDir)}:"$HOME/.local/bin:$PATH"\n`
+      : 'export PATH="$HOME/.local/bin:$PATH"\n') +
     'resolve_launcher() {\n' +
     `  if [ -n "\${${runtime.explicitLauncherEnv}:-}" ] && [ -f "\${${runtime.explicitLauncherEnv}}" ]; then\n` +
     `    printf '%s\\n' "\${${runtime.explicitLauncherEnv}}"\n` +

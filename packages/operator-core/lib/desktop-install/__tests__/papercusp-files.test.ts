@@ -149,13 +149,33 @@ describe('installPapercuspFiles', () => {
     expect(psu).toContain('PAPERCUSP_RELEASE_ROOT');
     expectLauncherInterpreter(psu, process.execPath);
     expect(psu).toContain(JSON.stringify(result.psuLauncherSource));
-    // WI-2149: the shim prepends ~/.local/bin so the launcher's pty.spawn('claude')
-    // resolves the agent installed by claude.ai/install.sh — the WSL2 distro's login
-    // PATH omits ~/.local/bin, which otherwise made a console-launched psu fail with
-    // execvp ENOENT despite the wizard reporting claude installed.
-    expect(psu).toContain('export PATH="$HOME/.local/bin:$PATH"');
+    // The shim exposes both supported Claude install locations: the bundled
+    // sidecar bin (Windows WSL's npm global prefix) and ~/.local/bin (the
+    // official claude.ai installer). Neither is on the minimal distro's login
+    // PATH by default.
+    expect(psu).toContain(
+      `export PATH=${JSON.stringify(path.dirname(process.execPath))}:"$HOME/.local/bin:$PATH"`,
+    );
     expect((await fs.stat(result.psuPath)).mode & 0o777).toBe(0o755);
     expect((await fs.stat(result.ptoolPath)).mode & 0o777).toBe(0o755);
+  });
+
+  it('quotes a packaged sidecar bin path containing spaces on the shim PATH', async () => {
+    const sidecarBin = path.join(tmpHome, 'Papercusp Server', 'sidecar', 'bin');
+    await fs.mkdir(sidecarBin, { recursive: true });
+    await fs.writeFile(path.join(sidecarBin, 'node'), '');
+    const priorSidecarBin = process.env.PAPERCUSP_SIDECAR_BIN;
+    process.env.PAPERCUSP_SIDECAR_BIN = sidecarBin;
+    try {
+      const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+      const psu = await fs.readFile(result.psuPath, 'utf8');
+      expect(psu).toContain(
+        `export PATH=${JSON.stringify(sidecarBin)}:"$HOME/.local/bin:$PATH"`,
+      );
+    } finally {
+      if (priorSidecarBin == null) delete process.env.PAPERCUSP_SIDECAR_BIN;
+      else process.env.PAPERCUSP_SIDECAR_BIN = priorSidecarBin;
+    }
   });
 
   it('resolves the integration launcher at runtime and falls back to the release launcher', async () => {
