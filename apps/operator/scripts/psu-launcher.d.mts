@@ -2015,6 +2015,7 @@ export function reportSessionEnded(advSessionId: number | string | null, exitCod
  * @property {()=>number} [now]
  * @property {(message:string)=>any} [onNotice]
  * @property {string} [resumeClaimKey]
+ * @property {unknown} [localLivenessEvidence]
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {ResumeClaimOptions} [opts]
@@ -2029,6 +2030,7 @@ export function reportSessionResumed(advSessionId: number | string | null, opts?
  * @property {()=>number} [now]
  * @property {(message:string)=>any} [onNotice]
  * @property {number} [waitBudgetMs]
+ * @property {unknown} [localLivenessEvidence]
  */
 /**
  * Ride through another launcher's short reservation with the SAME local attempt
@@ -2371,6 +2373,23 @@ export function codexThreadWriterHolder(codexHome: any, sessionId: any, { readPr
     sessionId: any;
     reason: string;
 };
+/** Normalize a wire value to the one canonical local-liveness witness. */
+export function normalizeResumeLocalLivenessEvidence(value: any): {
+    version: 1;
+    kind: "no-live-codex-writer";
+} | null;
+/**
+ * Build the positive witness for an exact Codex resume only when both local
+ * liveness oracles positively say there is no competing writer. Every other
+ * result remains unknown and therefore returns null (fail closed).
+ */
+export function normalizeCodexResumeLocalLivenessEvidence({ agent, fork, forceResume, liveHost, writerHolder, }?: {
+    fork?: boolean | undefined;
+    forceResume?: string | undefined;
+}): {
+    version: 1;
+    kind: "no-live-codex-writer";
+} | null;
 /**
  * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
  * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
@@ -3084,6 +3103,15 @@ export const MIN_UPTIME_BEFORE_SELF_EXIT_MS: number;
 export const CODEX_DIAGNOSTIC_RUST_LOG: "codex_core=info,codex_tui=info";
 export const LIVE_HOST_IDLE_THRESHOLD_MS: number;
 /**
+ * The only local liveness witness accepted by the resume endpoint. Keep this
+ * closed and exact: a probe result that is missing, malformed, or from an
+ * unknown failure mode must not relax the server's recent-active guard.
+ */
+export const NO_LIVE_CODEX_WRITER_EVIDENCE: Readonly<{
+    version: 1;
+    kind: "no-live-codex-writer";
+}>;
+/**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
  * path is a MENU, not a free-text `<model>[:<effort>]` prompt. Two selects —
  * base model, then reasoning effort — with a "type a custom spec…" escape that
@@ -3198,6 +3226,7 @@ export type ResumeClaimOptions = {
     now?: (() => number) | undefined;
     onNotice?: ((message: string) => any) | undefined;
     resumeClaimKey?: string | undefined;
+    localLivenessEvidence?: unknown;
 };
 export type ResumeAcquireRecoveryOptions = {
     resumeClaimKey?: string | undefined;
@@ -3208,6 +3237,7 @@ export type ResumeAcquireRecoveryOptions = {
     now?: (() => number) | undefined;
     onNotice?: ((message: string) => any) | undefined;
     waitBudgetMs?: number | undefined;
+    localLivenessEvidence?: unknown;
 };
 /**
  * Report a keyed post-acquire transition. The body is constructed once and
