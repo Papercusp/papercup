@@ -37,7 +37,9 @@
  * refused before the assignee takes over, the claim is released back to `todo`.
  * THE TOOL DELIVERS/SPAWNS, NOT THE SENTINEL — the sentinel's own capability
  * envelope still denies cup:spawn (the SN-H04 no-spawn contract); this module
- * is the accountable, capped indirection.
+ * is the accountable indirection. Capacity pressure is handled after durable
+ * persistence by the shared spawn/governor path; this layer never drops a
+ * question because other deep items are open.
  *
  * Dependency-injected so the core unit-tests without PG/spawn/coord machinery;
  * the real substrate wiring lives in sentinel-deep-delegate-deps.ts.
@@ -48,8 +50,6 @@ import { randomUUID } from 'node:crypto';
  *  (sentinel-deep-watch) and the sentinel's own "how's it going" reads key on it. */
 export const DEEP_DELEGATION_LABEL = 'deep-delegation';
 
-/** Max concurrently-open delegations (D-003): bounds spend + keeps answers timely. */
-export const DEEP_MAX_CONCURRENT = 2;
 /** Bound one deep-analysis child so it cannot squat a deep slot indefinitely. */
 export const DEEP_TIMEOUT_MS = 15 * 60_000;
 
@@ -67,8 +67,6 @@ export interface DeepDelegateInput {
 }
 
 export interface DeepDelegateDeps {
-  /** How many deep-delegation items are currently OPEN (non-terminal). */
-  countOpenDelegations(workspaceId: string): Promise<number>;
   /** Mint the durable claimed work_item (kind `task`, tagged DEEP_DELEGATION_LABEL). */
   createWorkItem(input: {
     assignee: string;
@@ -175,14 +173,6 @@ export async function delegateDeep(
 ): Promise<DeepDelegateResult> {
   const question = input.question.trim();
   if (!question) return { ok: false, error: 'empty question' };
-
-  const open = await deps.countOpenDelegations(input.workspaceId).catch(() => 0);
-  if (open >= DEEP_MAX_CONCURRENT) {
-    return {
-      ok: false,
-      error: `at capacity: ${open} deep dives already in flight (max ${DEEP_MAX_CONCURRENT}) — answer when one lands, or ask the user to wait`,
-    };
-  }
 
   const title = question.length > TITLE_MAX ? `${question.slice(0, TITLE_MAX - 1)}…` : question;
 
