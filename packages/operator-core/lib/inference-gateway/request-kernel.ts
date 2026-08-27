@@ -58,11 +58,12 @@ export interface GatewayKernelContext {
   startedAt: number;
 }
 
-export interface GatewayKernelRouteContext<T> extends GatewayKernelContext {
+export interface GatewayKernelRouteContext<T, TChunk = unknown, TMetadata = unknown>
+  extends GatewayKernelContext {
   currentRoute: GatewayKernelRoute<T> | null;
   triedRouteKeys: readonly string[];
   attempt: number;
-  lastResponse: GatewayKernelUpstreamResponse<unknown, unknown> | null;
+  lastResponse: GatewayKernelUpstreamResponse<TChunk, TMetadata> | null;
   lastError: GatewayRequestKernelError | null;
 }
 
@@ -110,8 +111,12 @@ export interface GatewayKernelAdmissionController<TRoute, TChunk, TMetadata> {
 }
 
 export interface GatewayKernelAdapter<TRoute, TPrepared, TChunk, TMetadata> {
-  selectInitial(context: GatewayKernelRouteContext<TRoute>): MaybePromise<GatewayKernelRoute<TRoute>>;
-  selectFailover(context: GatewayKernelRouteContext<TRoute>): MaybePromise<GatewayKernelRoute<TRoute> | null>;
+  selectInitial(
+    context: GatewayKernelRouteContext<TRoute, TChunk, TMetadata>,
+  ): MaybePromise<GatewayKernelRoute<TRoute>>;
+  selectFailover(
+    context: GatewayKernelRouteContext<TRoute, TChunk, TMetadata>,
+  ): MaybePromise<GatewayKernelRoute<TRoute> | null>;
   /** Protocol/transport-owned parsing, auth, URL, header, model, and cache work. */
   prepareAttempt(context: GatewayKernelAttemptContext<TRoute>): MaybePromise<TPrepared>;
   /** Returns a response whose retryability/outcome has already been normalized at the boundary. */
@@ -421,7 +426,7 @@ async function selectFailover<TRoute, TPrepared, TChunk, TMetadata>(opts: {
       currentRoute: opts.currentRoute,
       triedRouteKeys: [...opts.triedRouteKeys],
       attempt: opts.attempt,
-      lastResponse: opts.lastResponse as GatewayKernelUpstreamResponse<unknown, unknown> | null,
+      lastResponse: opts.lastResponse,
       lastError: opts.lastError,
     })),
     opts.base.signal,
@@ -445,24 +450,25 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
   bodyIdleTimeoutMs: number;
   downstreamIdleTimeoutMs: number;
 }): Promise<void> {
-  await withDeadline({
-    parent: opts.signal,
-    timeoutMs: opts.downstreamIdleTimeoutMs,
-    error: () => new GatewayRequestKernelError(
-      `gateway downstream start exceeded ${opts.downstreamIdleTimeoutMs}ms`,
-      { code: 'downstream-idle', outcome: 'cancelled', status: null },
-    ),
-    run: () => Promise.resolve(opts.downstream.start({
-      status: opts.response.status,
-      streaming: opts.response.streaming,
-      transport: opts.response.transport,
-      metadata: opts.response.metadata,
-    })),
-  });
-
-  const iterator = opts.response.body?.[Symbol.asyncIterator]();
-  let completed = !iterator;
+  let iterator: AsyncIterator<TChunk> | undefined;
+  let bodyCompleted = false;
   try {
+    await withDeadline({
+      parent: opts.signal,
+      timeoutMs: opts.downstreamIdleTimeoutMs,
+      error: () => new GatewayRequestKernelError(
+        `gateway downstream start exceeded ${opts.downstreamIdleTimeoutMs}ms`,
+        { code: 'downstream-idle', outcome: 'cancelled', status: null },
+      ),
+      run: () => Promise.resolve(opts.downstream.start({
+        status: opts.response.status,
+        streaming: opts.response.streaming,
+        transport: opts.response.transport,
+        metadata: opts.response.metadata,
+      })),
+    });
+    iterator = opts.response.body?.[Symbol.asyncIterator]();
+    bodyCompleted = !iterator;
     while (iterator) {
       const next = await withDeadline({
         parent: opts.signal,
@@ -474,7 +480,7 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
         run: (signal) => abortable(Promise.resolve(iterator.next()), signal),
       });
       if (next.done) {
-        completed = true;
+        bodyCompleted = true;
         break;
       }
       await withDeadline({
@@ -496,8 +502,27 @@ async function pumpResponse<TChunk, TMetadata>(opts: {
       ),
       run: () => Promise.resolve(opts.downstream.end()),
     });
-  } finally {
-    if (!completed) await iterator?.return?.().catch(() => undefined);
+  } catch (error) {
+    const cleanupErrors: unknown[] = [];
+    if (!bodyCompleted) {
+      try {
+        await iterator?.return?.();
+      } catch (cleanupError) {
+        cleanupErrors.push(cleanupError);
+      }
+    }
+    try {
+      await opts.response.discard?.();
+    } catch (cleanupError) {
+      cleanupErrors.push(cleanupError);
+    }
+    if (cleanupErrors.length) {
+      throw new AggregateError(
+        [error, ...cleanupErrors],
+        'gateway response forwarding and cleanup both failed',
+      );
+    }
+    throw error;
   }
 }
 
@@ -546,6 +571,28 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     startedAt: span.startedAt,
   };
   const triedRouteKeys = new Set<string>();
+  const chooseFailover = async (args: {
+    currentRoute: GatewayKernelRoute<TRoute>;
+    attempt: number;
+    lastResponse: GatewayKernelUpstreamResponse<TChunk, TMetadata> | null;
+    lastError: GatewayRequestKernelError | null;
+  }): Promise<GatewayKernelRoute<TRoute> | null> => {
+    span.beginStage('routeSelection');
+    try {
+      return await selectFailover({
+        adapter: opts.adapter,
+        base,
+        currentRoute: args.currentRoute,
+        triedRouteKeys,
+        attempt: args.attempt,
+        pin,
+        lastResponse: args.lastResponse,
+        lastError: args.lastError,
+      });
+    } finally {
+      span.endStage('routeSelection');
+    }
+  };
   let route: GatewayKernelRoute<TRoute> | null = null;
   let lease: GatewayKernelAdmissionLease | null = null;
   let inFlight: GatewayKernelInFlightHandle | null = null;
@@ -614,28 +661,31 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
       span.setTransport(currentRoute.transport);
       const measureAuth = provider !== 'local';
       if (measureAuth) span.beginStage('auth');
-      let prepared: TPrepared;
+      let prepared!: TPrepared;
+      let preparationFailure: GatewayRequestKernelError | null = null;
       try {
         prepared = await abortable(
           Promise.resolve(opts.adapter.prepareAttempt(attemptContext)),
           requestController.signal,
         );
       } catch (error) {
-        const normalized = normalizeError(error, requestController.signal);
-        await opts.admission.observeAttempt?.({ context: attemptContext, response: null, error: normalized });
-        if (normalized.retryable && attempt < opts.policy.maxAttempts) {
-          span.beginStage('routeSelection');
-          const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
-            adapter: opts.adapter,
-            base,
+        preparationFailure = normalizeError(error, requestController.signal);
+      } finally {
+        if (measureAuth) span.endStage('auth');
+      }
+      if (preparationFailure) {
+        await opts.admission.observeAttempt?.({
+          context: attemptContext,
+          response: null,
+          error: preparationFailure,
+        });
+        if (preparationFailure.retryable && attempt < opts.policy.maxAttempts) {
+          const next = await chooseFailover({
             currentRoute,
-            triedRouteKeys,
             attempt,
-            pin,
             lastResponse: null,
-            lastError: normalized,
+            lastError: preparationFailure,
           });
-          span.endStage('routeSelection');
           if (next) {
             route = currentRoute = next;
             triedRouteKeys.add(next.key);
@@ -644,14 +694,13 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             continue;
           }
         }
-        throw normalized;
-      } finally {
-        if (measureAuth) span.endStage('auth');
+        throw preparationFailure;
       }
 
       span.recordAttempt();
       span.beginStage('upstreamTtfb');
-      let response: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
+      let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
+      let attemptFailure: GatewayRequestKernelError | null = null;
       try {
         response = await withDeadline({
           parent: requestController.signal,
@@ -663,21 +712,23 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
           run: (signal) => opts.adapter.executeAttempt(prepared, { ...attemptContext, signal }),
         });
       } catch (error) {
-        const normalized = normalizeError(error, requestController.signal);
-        await opts.admission.observeAttempt?.({ context: attemptContext, response: null, error: normalized });
-        if (normalized.retryable && attempt < opts.policy.maxAttempts) {
-          span.beginStage('routeSelection');
-          const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
-            adapter: opts.adapter,
-            base,
+        attemptFailure = normalizeError(error, requestController.signal);
+      } finally {
+        span.endStage('upstreamTtfb');
+      }
+      if (attemptFailure) {
+        await opts.admission.observeAttempt?.({
+          context: attemptContext,
+          response: null,
+          error: attemptFailure,
+        });
+        if (attemptFailure.retryable && attempt < opts.policy.maxAttempts) {
+          const next = await chooseFailover({
             currentRoute,
-            triedRouteKeys,
             attempt,
-            pin,
             lastResponse: null,
-            lastError: normalized,
+            lastError: attemptFailure,
           });
-          span.endStage('routeSelection');
           if (next) {
             route = currentRoute = next;
             triedRouteKeys.add(next.key);
@@ -686,9 +737,7 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
             continue;
           }
         }
-        throw normalized;
-      } finally {
-        span.endStage('upstreamTtfb');
+        throw attemptFailure;
       }
 
       validateRoute(
@@ -698,20 +747,39 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
         false,
       );
       span.setTransport(response.transport);
-      await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
+      try {
+        await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
+      } catch (error) {
+        try {
+          await response.discard?.();
+        } catch (discardError) {
+          throw new AggregateError(
+            [error, discardError],
+            'gateway attempt observation and response cleanup both failed',
+          );
+        }
+        throw error;
+      }
       if (response.retryable && attempt < opts.policy.maxAttempts) {
-        span.beginStage('routeSelection');
-        const next: GatewayKernelRoute<TRoute> | null = await selectFailover({
-          adapter: opts.adapter,
-          base,
-          currentRoute,
-          triedRouteKeys,
-          attempt,
-          pin,
-          lastResponse: response,
-          lastError: null,
-        });
-        span.endStage('routeSelection');
+        let next: GatewayKernelRoute<TRoute> | null;
+        try {
+          next = await chooseFailover({
+            currentRoute,
+            attempt,
+            lastResponse: response,
+            lastError: null,
+          });
+        } catch (error) {
+          try {
+            await response.discard?.();
+          } catch (discardError) {
+            throw new AggregateError(
+              [error, discardError],
+              'gateway failover selection and response cleanup both failed',
+            );
+          }
+          throw error;
+        }
         if (next) {
           await response.discard?.();
           route = currentRoute = next;
