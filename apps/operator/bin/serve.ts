@@ -1464,7 +1464,8 @@ async function main(): Promise<void> {
     process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === "1" ||
     process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === "1" ||
     process.env.PAPERCUSP_EMBED_SIDECAR_MODE === "1" ||
-    process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1";
+    process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1" ||
+    process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === "1";
   if (packagedSidecarMode) startSidecarParentDeathWatch();
 
   // PACKAGED substrate-sidecar (P-006): the spawner re-execs THIS bundled
@@ -1512,6 +1513,14 @@ async function main(): Promise<void> {
       }
       process.exit(1);
     });
+    return;
+  }
+  // PACKAGED resource-governor live-health monitor. The same bundle re-exec
+  // keeps this path available in the Tauri desktop without tsx or systemd.
+  if (process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === "1") {
+    const { runLiveHealthMonitorMain } =
+      await import("@papercusp/operator-core/lib/resource-governor/live-health-monitor-main");
+    await runLiveHealthMonitorMain();
     return;
   }
   const args = new Set(argv);

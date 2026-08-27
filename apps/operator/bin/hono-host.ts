@@ -97,6 +97,7 @@ import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyp
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
+import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
 import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
 import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
 
@@ -127,7 +128,7 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | null =
+const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | null =
   process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
     ? 'substrate'
     : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
@@ -136,7 +137,9 @@ const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | null =
         ? 'gateway'
         : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1'
           ? 'embed'
-          : null;
+          : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1'
+            ? 'resource-health'
+            : null;
 if (sidecarMode === 'substrate') runSubstrateSidecarServer();
 if (sidecarMode === 'spawner') runSpawnerSidecarServer();
 if (sidecarMode === 'gateway') {
@@ -146,6 +149,12 @@ if (sidecarMode === 'gateway') {
   });
 }
 if (sidecarMode === 'embed') runEmbedSidecarServer();
+if (sidecarMode === 'resource-health') {
+  runLiveHealthMonitorMain().catch((e) => {
+    console.error('[resource-governor-health] fatal:', e);
+    process.exit(1);
+  });
+}
 
 // Resilience guard: the multi-tenant host must never let ONE bad inbound frame
 // crash-loop :3070 for the entire fleet. Two known classes originate inside the

@@ -1609,6 +1609,40 @@ export function runBootstrap(): void {
     })();
   }
 
+  // P-004 (capless adaptive resource governor): every long-lived operator
+  // process publishes its process-local fragment, while the one background host
+  // owns the cross-platform out-of-process sampler. The managed child keeps host
+  // evidence moving when the operator loop wedges; the fragment going stale is
+  // itself the progress signal. Default ON, with one emergency kill-switch.
+  if (!utilityHost && process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR !== '0') {
+    void import('@papercusp/operator-core/lib/resource-governor/live-health-publisher')
+      .then(({ startProcessLiveHealthPublisher }) => startProcessLiveHealthPublisher())
+      .catch((err) => {
+        console.warn(
+          '[resource-governor-health] process publisher failed to start (non-fatal; snapshot marks it unknown):',
+          err instanceof Error ? err.message : err,
+        );
+      });
+  }
+  if (
+    backgroundWorkers &&
+    !utilityHost &&
+    process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR !== '0'
+  ) {
+    void import('@papercusp/operator-core/lib/resource-governor/live-health-supervisor')
+      .then(async ({ ensureLiveHealthMonitor }) => {
+        const t0 = Date.now();
+        await ensureLiveHealthMonitor();
+        console.log(`[resource-governor-health] monitor ready in ${Date.now() - t0}ms`);
+      })
+      .catch((err) => {
+        console.warn(
+          '[resource-governor-health] monitor supervision failed (non-fatal; readers see unknown/stale):',
+          err instanceof Error ? err.message : err,
+        );
+      });
+  }
+
   // [harness-state P-003a] Registry coverage + peer-log drift guard (fail-loud,
   // non-fatal). Asserts every live harness_shared table is intentionally
   // classified by the two-axis registry (lib/harness-state/table-registry.ts)
