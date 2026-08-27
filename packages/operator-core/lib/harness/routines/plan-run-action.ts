@@ -459,6 +459,12 @@ export async function runScheduledPlanFire(
   if (promotion.specQualityBlocked) {
     throw new Error(`plan_run_spec_quality_blocked:${prepared.instanceSlug}`);
   }
+  if (promotion.dependencyBlocked) {
+    throw new Error(
+      `plan_run_invalid_dependencies:${prepared.instanceSlug}:` +
+        (promotion.dependencyDiagnostics ?? []).map((diagnostic) => diagnostic.message).join('; '),
+    );
+  }
   const expectedOpenItems = promotion.promoted + promotion.skipped;
   if (promotion.workItems.length !== expectedOpenItems) {
     throw new Error(

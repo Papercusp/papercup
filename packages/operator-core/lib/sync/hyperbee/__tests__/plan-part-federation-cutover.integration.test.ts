@@ -144,6 +144,11 @@ async function setupSchema(sql: postgres.Sql): Promise<void> {
       template      TEXT,            -- mig 329 (plan-template-mechanism)
       template_data JSONB,           -- mig 329 (plan-template-mechanism)
       promote_policy JSONB,          -- mig 331 (promote-policy-column)
+      input_schema JSONB,            -- mig 714 (structured plan inputs)
+      output_schema JSONB,           -- mig 908 (structured plan outputs)
+      property_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+      properties JSONB NOT NULL DEFAULT '{}'::jsonb,
+      forced_past JSONB,
       author_pubkey TEXT,
       owner_author_pubkey TEXT,      -- P-018/D-012 author-scoped write authority
       origin        TEXT NOT NULL DEFAULT 'local',
