@@ -19,16 +19,12 @@
  * operator-credentials availability check (`isLlmAvailable`).
  */
 
-import {
-  LlmCallError,
-  tryParseJson,
-  type LlmCallOpts,
-  type LlmCallResult,
-} from '@papercusp/testing-shell/llm';
+import { LlmCallError, tryParseJson, type LlmCallOpts, type LlmCallResult } from '@papercusp/testing-shell/llm';
 
 import {
   runAgentChat,
   classifyHttpError,
+  ownerHeaders,
   probeStatelessTransport,
   type AgentBackend,
   type TurnError,
@@ -57,7 +53,10 @@ export function isCodexModel(model: string | undefined): boolean {
   return /^(chatgpt:|gpt-|openai-codex\/)/.test(m);
 }
 
-export function backendForLlmCall(model: string | undefined, explicitBackend: AgentBackend | undefined = TEST_BACKEND): AgentBackend {
+export function backendForLlmCall(
+  model: string | undefined,
+  explicitBackend: AgentBackend | undefined = TEST_BACKEND,
+): AgentBackend {
   if (isCodexModel(model)) return 'codex';
   return explicitBackend ?? 'anthropic-direct';
 }
@@ -112,7 +111,7 @@ export function canonicalizeAnthropicModel(model: string): string {
     throw new Error(
       `unresolvable model spec for the anthropic-direct backend: ${JSON.stringify(trimmed)} → ` +
         `${JSON.stringify(base)} is not a raw Anthropic model id. Fleet-spec syntax ([1m], :effort, ` +
-        "provider: prefixes) belongs to fleet/model-tiers resolution, not this raw API call — pass a " +
+        'provider: prefixes) belongs to fleet/model-tiers resolution, not this raw API call — pass a ' +
         "bare id like 'claude-sonnet-5' instead (EI-13118).",
     );
   }
@@ -151,16 +150,15 @@ function codexCostUsd(model: string | undefined, inputTokens: number, outputToke
   // Strip a `:effort` suffix (e.g. 'gpt-5.5:low') — the gateway bridge parses it
   // out of the model id, so pricing must key on the bare id too.
   const m = model?.trim().toLowerCase().split(':')[0];
-  const price =
-    m === 'gpt-5.5'
-      ? { in: 2.5, out: 20 }
-      : m === 'gpt-5'
-        ? { in: 1.25, out: 10 }
-        : { in: 0, out: 0 };
+  const price = m === 'gpt-5.5' ? { in: 2.5, out: 20 } : m === 'gpt-5' ? { in: 1.25, out: 10 } : { in: 0, out: 0 };
   return (inputTokens * price.in + outputTokens * price.out) / 1_000_000;
 }
 
-async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefined, promptText: string): Promise<LlmCallResult> {
+async function llmCallViaCodexGateway(
+  opts: LlmCallOpts,
+  model: string | undefined,
+  promptText: string,
+): Promise<LlmCallResult> {
   const input =
     opts.responseFormat === 'json' && !/\bjson\b/i.test(promptText)
       ? `${promptText}\n\nRespond with valid json.`
@@ -180,6 +178,7 @@ async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefin
     headers: {
       authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
       'content-type': 'application/json',
+      ...ownerHeaders(opts.ownerId),
       // EI-315: an unlabeled llm-testing call used to default to 'scout' (tier 1 — WRONG
       // direction, falsely elevating batch test traffic ahead of real interactive/Queen
       // work) here, while the anthropic-direct path below fell to the map's bottom `default`
@@ -205,9 +204,7 @@ async function llmCallViaCodexGateway(opts: LlmCallOpts, model: string | undefin
   }
   if (!res.ok) {
     const message =
-      raw && typeof raw === 'object'
-        ? ((raw as { error?: { message?: string } }).error?.message ?? text)
-        : text;
+      raw && typeof raw === 'object' ? ((raw as { error?: { message?: string } }).error?.message ?? text) : text;
     throw new LlmCallError(classifyHttpError({ status: res.status, message }, providerForBackend('codex')));
   }
 
@@ -259,9 +256,7 @@ export async function llmCall(opts: LlmCallOpts): Promise<LlmCallResult> {
   const promptText =
     opts.messages.length === 1 && opts.messages[0].role === 'user'
       ? opts.messages[0].content
-      : opts.messages
-          .map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`)
-          .join('\n\n');
+      : opts.messages.map((m) => `${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`).join('\n\n');
 
   if (backend === 'codex') {
     return llmCallViaCodexGateway(opts, model, promptText);

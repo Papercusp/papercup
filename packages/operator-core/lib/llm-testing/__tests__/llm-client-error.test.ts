@@ -89,6 +89,7 @@ describe('llmCall backend selection', () => {
       model: 'chatgpt:5.5',
       maxTokens: 8,
       responseFormat: 'json',
+      ownerId: 'system:work-item-admission-bulk-dedup:run-1',
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -98,6 +99,7 @@ describe('llmCall backend selection', () => {
         headers: expect.objectContaining({
           authorization: 'Bearer papercusp-gateway',
           'x-papercusp-priority': 'llm-testing',
+          'x-papercusp-owner': 'system:work-item-admission-bulk-dedup:run-1',
         }),
       }),
     );
