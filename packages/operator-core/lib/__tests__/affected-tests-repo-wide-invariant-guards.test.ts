@@ -1053,12 +1053,12 @@ describe('affected-tests: ungated mug/kettle guard (EI-20032324229208320)', () =
  *      TS-family-only predicate cannot attach for 39 submodules' worth of source. The
  *      measured incident lives inside one, which is what makes this a correctness case and
  *      not a completeness nicety;
- *   2. the ADVISORY form. `--typecheck` execs `lint:tsc` over operator-core (~104s cold,
- *      and it queues behind pc-heavy.sh — measured still queued at 90s under load 93.8).
- *      "Strengthening" the registration to that variant would put a two-orders-of-magnitude
- *      cost into every agent's edit loop, and the natural next step is un-registering it.
+ *   2. the ENFORCED form. The registered `:typecheck` alias first performs the cheap AST
+ *      trigger scan and only invokes `lint:tsc --files=...` when a changed exported shape
+ *      actually adds a required field. That keeps ordinary edits at the ~1.7s parser cost
+ *      while making the existing attributed typecheck fail on a real stranded site.
  */
-const RFS_SCRIPT = 'lint:required-field-strands';
+const RFS_SCRIPT = 'lint:required-field-strands:typecheck';
 const RFS_TASK = `${HOST_WORKSPACE} :: ${RFS_SCRIPT}`;
 /** A TS path outside the host workspace (routes to @papercusp/web, never operator-core). */
 const RFS_OUTSIDE_TS_PATH = 'apps/operator/lib/release/deploy-cli.ts';
@@ -1159,7 +1159,7 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
     expect(out).not.toContain(RFS_TASK);
   });
 
-  it('registers the ADVISORY form, never the --typecheck variant', () => {
+  it('registers the ATTRIBUTED typecheck form for the affected-path enforcement rung', () => {
     const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
       scripts?: Record<string, string>;
     };
@@ -1170,13 +1170,7 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
         'affected-tests.mjs skips a registered-but-undeclared guard with a bare `continue`',
     ).toBeTruthy();
     expect(cmd).toContain('check-required-field-strands.mjs');
-    expect(
-      cmd,
-      'the --typecheck variant execs lint:tsc over operator-core (~104s cold, and it queues ' +
-        'behind pc-heavy.sh). Registered here it would be the most expensive guard by two ' +
-        'orders of magnitude, on every edit — the advisory form exits 0 even WITH findings, ' +
-        "and printing the strand into the author's own run is the entire value",
-    ).not.toContain('--typecheck');
+    expect(cmd).toContain('check-required-field-strands.mjs --typecheck');
   });
 });
 

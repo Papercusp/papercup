@@ -2442,20 +2442,22 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // libs/papercusp/packages/locks/, stranded its constructors, and froze `main` ~14h.
     // `npm run test:affected` was green throughout, because this guard was in it nowhere.
     //
-    // ⚠ THE ADVISORY FORM, DELIBERATELY — never `lint:required-field-strands:typecheck`.
-    // The `--typecheck` variant execs `lint:tsc` over packages/operator-core (~104s cold,
-    // and it QUEUES behind scripts/pc-heavy.sh: measured 2026-08-13 still queued at 90s
-    // under load 93.8). Putting that in every agent's edit loop would be the most
-    // expensive entry here by two orders of magnitude. The advisory form exits 0 even WITH
-    // findings (`if (!runTypecheck) process.exit(0)`) — being registered is what makes it
-    // SPEAK, printing the strand + the workspace-specific typecheck command into the run
-    // of whoever added the field.
+    // ENFORCED TYPECHECK FORM — the guard's parser first checks whether the changed exported
+    // shape actually added required fields. Only then does `--typecheck` invoke lint:tsc
+    // with the exact operator-core changed files (and files referencing their exported
+    // types), so ordinary edits pay only the ~1.7s parser cost while a real addition pays
+    // the existing attributed check.
+    //
+    // `lint:required-field-strands` remains advisory for manual invocation. This registered
+    // `:typecheck` alias is the affected-path enforcement rung: it fails when the changed
+    // required field strands a construction site, while preserving the guard's existing
+    // NOT_CHECKED/non-gating behavior when there is no attributable comparison.
     //
     // ~1.72-1.77s (3 runs measured through the workspace script, 9 files examined) — a
     // `git show` + TS parse per changed file, so cost tracks the working diff, which
     // git-sync keeps small by sweeping every few minutes.
     workspace: "@papercusp/operator-core",
-    script: "lint:required-field-strands",
+    script: "lint:required-field-strands:typecheck",
     // Its subject is the WORKING DIFF, so a gate checkout — clean by construction — makes
     // it examine zero files and exit EXIT_NOT_CHECKED on every candidate. Non-gating is
     // therefore mandatory, not defensive; the strand-family declaration test in
