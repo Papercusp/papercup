@@ -47,6 +47,7 @@
  */
 
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import {
@@ -78,6 +79,8 @@ import {
 } from '../capability/base-dir';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { tscHeapEnv } from '../tsc-heap';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { beginGovernedExecution, governedExecutionRuntime } from '../../resource-governor/execution';
 import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   clampForegroundTimeoutMs,
@@ -814,9 +817,31 @@ export default defineTool({
     const tscArgs = ['--noEmit', '--pretty', 'false', '-p', scoped ? scoped.configPath : resolved];
     if (args.incremental !== true) tscArgs.push('--incremental', 'false');
 
+    const workspaceId =
+      (ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : undefined)
+      ?? (ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
+        ? ctx.principal.workspaceId
+        : undefined)
+      ?? activeWorkspaceId();
+    const execution = await beginGovernedExecution(
+      {
+        idempotencyKey: `build:typecheck:${ctx.principal?.slug ?? 'operator'}:${randomUUID()}`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024 },
+        payloadRef: `build:typecheck:${relative(root, resolved)}`,
+        metadata: { project: relative(root, resolved), scoped: args.scopeToFiles === true },
+      },
+      { owner: ctx.principal?.slug ?? 'build:typecheck' },
+      governedExecutionRuntime(workspaceId, 'build-typecheck'),
+    );
+
     let outcome: TscOutcome;
     try {
       outcome = await runTsc(tscArgs, root, timeoutMs);
+      await execution.finish();
+    } catch (error) {
+      await execution.cancel(error instanceof Error ? error.message : String(error));
+      throw error;
     } finally {
       scoped?.cleanup();
     }

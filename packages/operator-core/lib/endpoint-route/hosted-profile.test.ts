@@ -1,8 +1,19 @@
 import { describe, expect, it } from 'vitest';
+import { HostedSessionCookieCodec, type CreateHostedSessionInput, type HostedSession } from '../auth/hosted-session';
+import { createFakeHostedIdentityProvider, FAKE_HOSTED_IDENTITY_NOW_MS } from '../auth/hosted/fake-provider';
+import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import type { RouteDefinition } from './define-route';
 import { ALL_ROUTES } from './routes';
+import { HOSTED_AUTH_ROUTES, type HostedAuthSessionStore } from './routes/hosted-auth';
+import type {
+  HostedAuthFlow,
+  HostedAuthFlowConsumeResult,
+  HostedAuthFlowStore,
+} from './routes/hosted-auth/flow';
 import {
+  HOSTED_AUTH_ROUTE_ALLOWLIST,
   HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST,
+  createHostedControlPlane,
   createHostedControlPlaneApp,
   selectHostedControlPlaneRoutes,
   type HostedRouteAllowlistEntry,
@@ -106,5 +117,231 @@ describe('hosted control-plane route profile', () => {
       [route('GET', '/wildcard', { capabilities: ['*'] })],
       [{ method: 'GET', path: '/wildcard', access: 'authenticated' }],
     )).toThrow(/wildcard capability/);
+  });
+});
+
+/* ─── The integration: hosted auth routes actually mounted ──────────────── */
+
+const HOSTED_ORIGIN = 'https://app.papercusp.com';
+const HOSTED_NOW = new Date(FAKE_HOSTED_IDENTITY_NOW_MS);
+const COOKIE_SECRET = 'hosted-profile-test-cookie-secret-is-at-least-32-bytes';
+
+class NullSessionStore implements HostedAuthSessionStore {
+  async create(input: CreateHostedSessionInput): Promise<HostedSession> {
+    return {
+      id: `hs_${'A'.repeat(43)}`,
+      userId: input.userId,
+      organizationId: input.organizationId,
+      workspaceId: input.workspaceId ?? null,
+      permissionVersion: input.permissionVersion,
+      upstreamProvider: input.upstreamProvider,
+      upstreamSessionId: input.upstreamSessionId,
+      createdAt: HOSTED_NOW,
+      rotatedAt: null,
+      expiresAt: input.expiresAt,
+      lastSeenAt: null,
+      revokedAt: null,
+      revocationReason: null,
+      updatedAt: HOSTED_NOW,
+    };
+  }
+
+  async resolve(): Promise<HostedSession | null> {
+    return null;
+  }
+
+  async revoke(): Promise<boolean> {
+    return false;
+  }
+}
+
+class MemoryFlowStore implements HostedAuthFlowStore {
+  private readonly flows = new Map<string, HostedAuthFlow>();
+  private next = 1;
+
+  async create(flow: HostedAuthFlow): Promise<string> {
+    const state = `state-${this.next++}`;
+    this.flows.set(state, flow);
+    return state;
+  }
+
+  async consume(state: string): Promise<HostedAuthFlowConsumeResult> {
+    const flow = this.flows.get(state);
+    if (!flow) return { ok: false, error: 'already-consumed' };
+    this.flows.delete(state);
+    return { ok: true, flow };
+  }
+}
+
+function hostedControlPlane(
+  resolvePrincipal?: HostedPrincipalResolver,
+  extra: {
+    routes?: ReadonlyArray<RouteDefinition>;
+    staticAllowlist?: ReadonlyArray<HostedRouteAllowlistEntry>;
+  } = {},
+) {
+  return createHostedControlPlane({
+    hostedAuth: {
+      provider: createFakeHostedIdentityProvider(),
+      bindIdentity: async () => ({
+        userId: 'user-1',
+        organizationId: 'org-1',
+        workspaceId: 'workspace-1',
+        permissionVersion: 7,
+      }),
+      sessionStore: new NullSessionStore(),
+      sessionCookieCodec: new HostedSessionCookieCodec(COOKIE_SECRET),
+      // Injected: the default flow store is Postgres-backed, and a unit test
+      // that silently fell back to it would report a provider 503 rather than
+      // exercise the mount.
+      flowStore: new MemoryFlowStore(),
+      publicOrigin: HOSTED_ORIGIN,
+      clock: () => HOSTED_NOW,
+    },
+    resolvePrincipal:
+      resolvePrincipal ?? (async () => ({ ok: false, reason: 'session_cookie_missing' })),
+    ...(extra.routes === undefined ? {} : { routes: extra.routes }),
+    ...(extra.staticAllowlist === undefined ? {} : { staticAllowlist: extra.staticAllowlist }),
+  });
+}
+
+describe('hosted control plane integration', () => {
+  it('derives the hosted auth allowlist from the route module manifest', () => {
+    // Not restated here: the mounted set cannot drift from the implemented set.
+    expect(HOSTED_AUTH_ROUTE_ALLOWLIST).toBe(HOSTED_AUTH_ROUTES);
+  });
+
+  it('mounts the static allowlist plus every hosted auth route', () => {
+    const { mounted } = hostedControlPlane();
+
+    expect(mounted.map(({ method, path }) => `${method} ${path}`)).toEqual([
+      'GET /health',
+      'GET /health/ready',
+      'GET /hosted/auth/sign-in',
+      'GET /hosted/auth/callback',
+      'POST /hosted/auth/logout',
+      'GET /hosted/auth/session',
+    ]);
+  });
+
+  it('serves the hosted auth routes rather than 404ing them', async () => {
+    // The regression this exists to prevent: createHostedAuthRoutes was
+    // implemented and tested but never registered, so every hosted auth path
+    // 404'd in production while its unit tests stayed green.
+    const { app } = hostedControlPlane();
+
+    for (const { method, path } of HOSTED_AUTH_ROUTES) {
+      const res = await app.request(`/api${path}`, { method });
+      expect(res.status).not.toBe(404);
+    }
+  });
+
+  it('answers unauthenticated hosted requests through the HOSTED stack', async () => {
+    const { app } = hostedControlPlane();
+
+    const res = await app.request('/api/hosted/auth/session');
+    expect(res.status).toBe(401);
+    // The hosted resolver's typed reason — proof the hosted auth step ran, not
+    // the local principal chain.
+    expect((await res.json()).error.message).toBe('session_cookie_missing');
+  });
+
+  it('runs a public hosted auth route end to end', async () => {
+    const { app } = hostedControlPlane();
+
+    const res = await app.request(
+      `/api/hosted/auth/sign-in?returnTo=${encodeURIComponent('/workspaces/ws-1')}`,
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get('location')).toBeTruthy();
+  });
+
+  it('admits an authenticated request and hands the handler the hosted principal', async () => {
+    const { createHostedPrincipal } = await import('../auth/hosted-principal');
+    const probe: RouteDefinition = {
+      method: 'GET',
+      path: '/hosted/probe',
+      auth: { capabilities: ['workspace:view'] },
+      handler: (_req, ctx) =>
+        Response.json({
+          organizationId: (ctx.principal as { activeOrganizationId?: string } | null)
+            ?.activeOrganizationId ?? null,
+        }),
+    };
+    const { app } = hostedControlPlane(
+      async () => ({
+        ok: true,
+        principal: createHostedPrincipal({
+          workspaceId: 'papercusp-control-plane',
+          userId: 'user-1',
+          activeOrganizationId: 'org-1',
+          sessionId: `hs_${'A'.repeat(43)}`,
+          sessionVersion: 7,
+          permissions: ['workspace:view'],
+        }),
+        session: { id: `hs_${'A'.repeat(43)}` } as never,
+        membership: { organizationId: 'org-1' } as never,
+      }),
+      {
+        routes: [probe],
+        staticAllowlist: [{ method: 'GET', path: '/hosted/probe', access: 'authenticated' }],
+      },
+    );
+
+    const res = await app.request('/api/hosted/probe');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ organizationId: 'org-1' });
+  });
+
+  it('denies that same authenticated route when no principal resolves', async () => {
+    const probe: RouteDefinition = {
+      method: 'GET',
+      path: '/hosted/probe',
+      auth: { capabilities: ['workspace:view'] },
+      handler: () => Response.json({ reached: true }),
+    };
+    const { app } = hostedControlPlane(undefined, {
+      routes: [probe],
+      staticAllowlist: [{ method: 'GET', path: '/hosted/probe', access: 'authenticated' }],
+    });
+
+    const res = await app.request('/api/hosted/probe');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({
+      error: { code: 'unauthorized', message: 'session_cookie_missing' },
+    });
+  });
+
+  it('still refuses every local authority surface after the hosted routes are added', async () => {
+    const { app } = hostedControlPlane();
+
+    for (const path of [
+      '/api/auth/login',
+      '/api/auth/logout',
+      '/api/auth/signup',
+      '/api/auth/me',
+      '/api/auth/change-password',
+    ]) {
+      expect((await app.request(path, { method: 'POST' })).status).toBe(404);
+      expect((await app.request(path)).status).toBe(404);
+    }
+  });
+
+  it('refuses to mount a hosted auth manifest entry that is not implemented', () => {
+    expect(() =>
+      createHostedControlPlane({
+        hostedAuth: {
+          provider: createFakeHostedIdentityProvider(),
+          bindIdentity: async () => null,
+          sessionStore: new NullSessionStore(),
+          sessionCookieCodec: new HostedSessionCookieCodec(COOKIE_SECRET),
+          publicOrigin: HOSTED_ORIGIN,
+          clock: () => HOSTED_NOW,
+        },
+        resolvePrincipal: async () => ({ ok: false, reason: 'session_cookie_missing' }),
+        // A deployment cannot widen the surface with a route nobody implemented.
+        staticAllowlist: [{ method: 'GET', path: '/not-implemented', access: 'public' }],
+      }),
+    ).toThrow(/not registered/);
   });
 });

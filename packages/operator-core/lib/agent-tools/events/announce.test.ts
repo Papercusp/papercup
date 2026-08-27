@@ -96,6 +96,21 @@ vi.mock('../../events/await/store', () => ({
   // coverage guard at the bottom of this file is what surfaced it.
   cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
   cancelAwait: vi.fn(async () => true),
+  // Same class again: fd4bbd8766 (2026-08-27T09:06Z) added this import to await.ts
+  // beside the monitor dedup gate mocked below. That commit updated await.test.ts
+  // (both mocks) but not this file. Mirrors await.test.ts:56 — "no live exact await",
+  // so the dedup gate never suppresses and every assertion here is unaffected.
+  hasLiveExactAwaitForSubscriberKey: vi.fn(async () => false),
+}));
+// fd4bbd8766 also put a REAL-PG read on awaitTool.handler's registration path
+// (hasActiveMonitorForOwnerPredicate -> boundedPgReadTxn -> getOrgPg). Left unmocked it
+// trips the unit-test live-Postgres guard [EI-19311807188719573] for every test here
+// that registers an await against a live announcement. Spread-the-original mirrors
+// await.test.ts:58-61 so the pure helpers (normalizeMonitorPredicateKey,
+// monitorPredicateDedupRefusal) keep their real implementations.
+vi.mock('../../harness/routines/monitor-policy', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../harness/routines/monitor-policy')>()),
+  hasActiveMonitorForOwnerPredicate: vi.fn(async () => false),
 }));
 
 import emit from './emit';

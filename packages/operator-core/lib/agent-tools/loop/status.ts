@@ -20,6 +20,11 @@ import type { LivePushChannels } from './arm';
 export default defineTool({
   name: 'loop:status',
   profile: 'engineer',
+  // @not-a-cell live state, but a SINGLE DOOR and inherently owner-scoped + argument-taking
+  // (ownerId), not a no-arg globally cacheable value — the shape the cell registry exists for.
+  // `getLoopStatus` (harness/routines/loop.ts) is the one derivation of "this owner's loop
+  // record"; nothing else re-derives it independently, so a cell would add a registry entry
+  // without removing a door (the D-010 failure this gate exists to prevent).
   // P-011 prompt-weight budget counts description + when + notWhen + chaining
   // and NOT returns/seeAlso. The RESPONSE documentation below therefore lives in
   // `guidance.returns`: it was in `description`, which pushed this tool to 1568

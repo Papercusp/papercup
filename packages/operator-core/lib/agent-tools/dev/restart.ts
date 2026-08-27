@@ -80,7 +80,13 @@ import { RESTART_TARGET_UNITS } from './restart-target-units';
 import { preflightRestartTarget } from './restart-preflight';
 import { DESKTOP_DEV_RESOURCE, resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { checkGateCollision, isGateSensitiveTarget } from '../../release/gate-collision-guard';
+import {
+  acquireGitSyncRestartBarrier,
+  checkGateCollision,
+  checkGitSyncCollision,
+  isGateSensitiveTarget,
+  isGitSyncSensitiveTarget,
+} from '../../release/gate-collision-guard';
 
 const MAX_DRAIN_SEC = 300;
 const DEFAULT_DRAIN_SEC = 120;
@@ -128,11 +134,18 @@ type RestartTarget = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar'
  * not operable until its resource (and optional cooldown marker) is seeded by
  * a locks-package migration — WI-4780 was the production miss this prevents.
  */
-export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: string; cooldownResource?: string; blastRadius: string }> = {
+export const RESTART_TARGETS: Record<
+  RestartTarget,
+  { unit: string; resource: string; cooldownResource?: string; blastRadius: string }
+> = {
   // `unit` comes from RESTART_TARGET_UNITS (systemd-service-probe) so the unit
   // names have ONE definition — read-only callers that need "which unit runs
   // this?" import that map instead of this heavyweight module.
-  dev: { unit: RESTART_TARGET_UNITS.dev, resource: 'dev-server', blastRadius: 'the :3070 operator (green release checkout)' },
+  dev: {
+    unit: RESTART_TARGET_UNITS.dev,
+    resource: 'dev-server',
+    blastRadius: 'the :3070 operator (green release checkout)',
+  },
   staging: {
     unit: RESTART_TARGET_UNITS.staging,
     resource: 'staging-server',
@@ -143,7 +156,8 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
     unit: RESTART_TARGET_UNITS.gateway,
     resource: 'inference-gateway',
     cooldownResource: 'inference-gateway-cooldown',
-    blastRadius: 'EVERY agent in the fleet — all LLM egress flows through :8788, so in-flight requests are dropped fleet-wide',
+    blastRadius:
+      'EVERY agent in the fleet — all LLM egress flows through :8788, so in-flight requests are dropped fleet-wide',
   },
   'bg-host': {
     unit: RESTART_TARGET_UNITS['bg-host'],
@@ -168,7 +182,8 @@ export const RESTART_TARGETS: Record<RestartTarget, { unit: string; resource: st
     // validates and signals the wrapper-owned :3270 listener directly.
     unit: 'desktop-dev-wrapper',
     resource: DESKTOP_DEV_RESOURCE,
-    blastRadius: 'the owner-visible :3270 desktop dev operator (SIGUSR2 bounded drain + no-native-teardown hard exit; success waits for a verified wrapper respawn)',
+    blastRadius:
+      'the owner-visible :3270 desktop dev operator (SIGUSR2 bounded drain + no-native-teardown hard exit; success waits for a verified wrapper respawn)',
   },
 };
 
@@ -190,7 +205,10 @@ const json = (payload: unknown) => ({
 });
 
 const holderJson = (h: ResourceHolder) => ({
-  owner: h.owner, owner_label: h.owner_label, mode: h.mode, status: h.status,
+  owner: h.owner,
+  owner_label: h.owner_label,
+  mode: h.mode,
+  status: h.status,
 });
 
 /**
@@ -215,6 +233,12 @@ async function writeRestartAudit(
      *  whether the collision guard was deliberately overridden. Recorded so a later
      *  gate red can be ATTRIBUTED to this restart instead of read as a regression. */
     gateCollision?: { kind: string; overridden: boolean; runElapsedSec: number | null } | null;
+    /** WI-222053: a real restart that deliberately crossed an in-flight git-sync
+     *  operation is attributable from the durable audit row. */
+    gitSyncCollision?: { kind: string; overridden: boolean; resources: string[]; pids: number[] } | null;
+    /** The atomic legacy-resource barrier intentionally left to expire after
+     *  systemctl has crossed the delayed handoff. */
+    gitSyncBarrier?: { resource: string; expiresAt: string } | null;
   },
 ): Promise<void> {
   try {
@@ -235,11 +259,13 @@ async function writeRestartAudit(
 export default defineTool({
   name: 'dev:restart',
   description:
-    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" wrapper :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
+    'Coordinated restart with drain/coalesce/audit. Targets: "dev" :3070 (default), "staging" :3170, "desktop-dev" :3270, "gateway" :8788, "bg-host" routines/git-sync, "embed-sidecar" :3384, "mcp-proxy" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.',
   guidance: {
-    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a bounded drain + no-native-teardown hard exit and waits for a different verified listener. Route: desktop → "desktop-dev"; inference-gateway → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; MCP proxy/transport → "mcp-proxy"; shared server → "staging" (probe :3170).',
-    notWhen: 'Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.',
-    chaining: 'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
+    when: 'Load integration-tree edits into long-running hosts (no deploy). desktop-dev uses the verified wrapper-owned :3270 listener (bounded drain, no-native-teardown hard exit, waits for a new listener). Route desktop→"desktop-dev"; inference-gateway→"gateway"; routines/git-sync→"bg-host"; embeddings→"embed-sidecar"; MCP proxy/transport→"mcp-proxy"; shared server→"staging" (probe :3170).',
+    notWhen:
+      'Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/staging/bg-host refuse an in-flight git-sync operation; use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.',
+    chaining:
+      'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
       'dev:service_health (check what is down first)',
       'gateway:status (in-flight/admission state — read BEFORE and AFTER a gateway restart)',
@@ -277,6 +303,16 @@ export default defineTool({
       .describe(
         'Restart a gate-sensitive target (embed-sidecar/gateway/bg-host) even though a green-checkpoint run is in flight or imminent. Rarely needed: a run in its own transient unit is cgroup-isolated and SURVIVES a restart, so the check reports would_block:false. Pass only when it blocks.',
       ),
+    /** WI-222053: a restart can kill the very git-sync commit whose absence
+     *  prompted the restart. Keep the escape hatch explicit + audited so a
+     *  genuinely wedged operation remains recoverable without making the
+     *  feedback loop the default. */
+    override_git_sync_collision: z
+      .boolean()
+      .optional()
+      .describe(
+        'Restart dev/staging/bg-host even though a live git-sync lock holder is inside that target systemd cgroup. This kills and abandons the commit; pass only when the host itself is wedged and record why.',
+      ),
     /** EI-18661647550414959: restart a target whose tree cannot boot. Only pass when
      *  the restart is itself the remedy — otherwise this hands you the crash-loop the
      *  preflight just predicted. */
@@ -313,9 +349,10 @@ export default defineTool({
     // but fleet/spawner-sidecar-spawn.ts:194 uses a raw spawn(…,{detached:false})
     // and inherits this cgroup. Do NOT "fix" this by widening the drain — a lock
     // drain cannot reach a child process. Fix the spawn site.
-    const restartCmd = target === 'desktop-dev'
-      ? 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)'
-      : `systemctl --user restart ${cfg.unit}`;
+    const restartCmd =
+      target === 'desktop-dev'
+        ? 'SIGUSR2 recycle verified desktop-dev listener on :3270 (wait for verified wrapper respawn)'
+        : `systemctl --user restart ${cfg.unit}`;
     // EI-13307: per-target, not global — computed up front so both the
     // dry-run note and the real debounce path below quote the SAME window.
     const cooldownSec = COOLDOWN_SEC[target] ?? STAGING_COOLDOWN_SEC;
@@ -357,6 +394,7 @@ export default defineTool({
       // here is what prevents the confirm call from being made at all — strictly better than
       // refusing that call afterwards. Read-only; never blocks the dry run.
       const preview = await checkGateCollision(target, args.override_gate_collision === true);
+      const gitSyncPreview = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
       // EI-18661647550414959: same reasoning as the gate-collision preview above — the dry
       // run is where the decision is actually made, so "this tree cannot boot" belongs HERE,
       // where it costs nothing, not only in the refusal afterwards.
@@ -376,9 +414,18 @@ export default defineTool({
         ...(isGateSensitiveTarget(target)
           ? { gate_collision: { kind: preview.kind, would_block: preview.blocked, ...preview.detail } }
           : {}),
+        ...(isGitSyncSensitiveTarget(target)
+          ? {
+              git_sync_collision: {
+                kind: gitSyncPreview.kind,
+                would_block: gitSyncPreview.blocked,
+                ...gitSyncPreview.detail,
+              },
+            }
+          : {}),
         note: `Pass confirm:true to acquire exclusive(${cfg.resource}), drain current users, then restart. DISRUPTS all agents.${cooldownNote} confirm:true ALONE is not enough — the real restart also needs the enablement gate: pass authorize:true + a short \`reason\` (≤300 chars) in the same call, or set PAPERCUSP_ALLOW_DEV_RESTART=1 on the operator process. Without it the call is REFUSED outright (ok:false, nothing drained).${
-          preview.blocked ? ` ⚠ ${preview.note}` : ''
-        }`,
+          gitSyncPreview.blocked ? ` ⚠ ${gitSyncPreview.note}` : ''
+        }${preview.blocked ? ` ⚠ ${preview.note}` : ''}`,
       });
     }
 
@@ -459,6 +506,25 @@ export default defineTool({
       });
     }
 
+    // WI-222053: the lock-shaped drain below cannot see processes INSIDE the
+    // target's systemd cgroup. Measure the actual destructive mechanism before
+    // claiming a cooldown or draining anyone: if a live system:git-sync PID is
+    // inside this unit, systemctl restart would SIGKILL its commit and orphan the
+    // lease. This covers both scheduled bg-host fires and manual :3070/:3170
+    // fires, unlike a target-name-only bg-host check.
+    const gitSync = await checkGitSyncCollision(target, args.override_git_sync_collision === true);
+    if (gitSync.blocked) {
+      return json({
+        ok: false,
+        target,
+        reason: `git_sync_collision_${gitSync.kind.replace(/-/g, '_')}`,
+        restarted: false,
+        drained: false,
+        git_sync_collision: { kind: gitSync.kind, ...gitSync.detail },
+        note: gitSync.note,
+      });
+    }
+
     // EI-19385475092979200: refuse a gate-sensitive restart while a green-checkpoint run is in
     // flight (or is within the two-sided window around a scheduled fire). Placed HERE
     // deliberately — after the enablement refusal (which is cheaper and needs no probe) and
@@ -518,8 +584,7 @@ export default defineTool({
         // tree ONLY on restart, so that meant its code fixes never went live.
         // Cross-check the coalesce against the service's REAL last-start.
         const svc = await probeServiceStart(cfg.unit);
-        const restartedRecently =
-          svc.ok && svc.secondsSinceStart !== undefined && svc.secondsSinceStart <= cooldownSec;
+        const restartedRecently = svc.ok && svc.secondsSinceStart !== undefined && svc.secondsSinceStart <= cooldownSec;
         if (restartedRecently) {
           // GENUINE coalesce — a peer's restart actually landed within the window.
           const ago = Math.round(svc.secondsSinceStart!);
@@ -635,6 +700,8 @@ export default defineTool({
             fenceSeq: fence.seq,
             phantomCoalesceBroken: false,
             gateCollision: null,
+            gitSyncCollision: null,
+            gitSyncBarrier: null,
           });
           return json({
             ok: true,
@@ -648,8 +715,39 @@ export default defineTool({
             fence_seq: fence.seq,
             enabledVia: enabledByEnv ? 'env' : 'authorize_arg',
             audited: true,
-            verifyWith: 'dev:listening_ports { port: 3270 } (the helper already observed a different owner-visible hono-host listener under dev-operator-ifneeded.sh; this is an independent re-check)',
+            verifyWith:
+              'dev:listening_ports { port: 3270 } (the helper already observed a different owner-visible hono-host listener under dev-operator-ifneeded.sh; this is an independent re-check)',
             note: desktopRestart.note,
+          });
+        }
+        // The cgroup read above is a precise explanation, not a barrier. Close
+        // its TOCTOU window on the existing legacy superproject seam while the
+        // target fence is current and immediately before the destructive handoff.
+        // A successful restart intentionally leaves this unique 60s lease to
+        // expire: the shell sleeps 1s before systemctl, so releasing on callback
+        // return would let a new fire enter during that gap. Abort paths release.
+        const gitSyncBarrier =
+          isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
+            ? await acquireGitSyncRestartBarrier(ownerLabel)
+            : null;
+        if (gitSyncBarrier && !gitSyncBarrier.acquired) {
+          await releaseCooldownOnAbort();
+          return json({
+            ok: false,
+            target,
+            reason: `git_sync_barrier_${gitSyncBarrier.reason.replace(/-/g, '_')}`,
+            restarted: false,
+            drained: true,
+            resource: gitSyncBarrier.resource,
+            holders: gitSyncBarrier.holders.map((holder) => ({
+              owner: holder.owner,
+              owner_label: holder.owner_label ?? null,
+              mode: holder.mode,
+              status: holder.status,
+            })),
+            note:
+              `Restart ABORTED before signaling — a git-sync operation acquired the atomic ${gitSyncBarrier.resource} ` +
+              'barrier after the earlier cgroup preflight. The target drain is being released; retry when that operation settles.',
           });
         }
         // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
@@ -670,6 +768,18 @@ export default defineTool({
           gateCollision: isGateSensitiveTarget(target)
             ? { kind: gate.kind, overridden: gate.overridden, runElapsedSec: gate.detail.runElapsedSec }
             : null,
+          gitSyncCollision: isGitSyncSensitiveTarget(target)
+            ? {
+                kind: gitSync.kind,
+                overridden: gitSync.overridden,
+                resources: gitSync.detail.collidingResources,
+                pids: gitSync.detail.collidingPids,
+              }
+            : null,
+          gitSyncBarrier:
+            gitSyncBarrier?.acquired === true
+              ? { resource: gitSyncBarrier.resource, expiresAt: gitSyncBarrier.expiresAt }
+              : null,
         });
         // Detached + delayed so this response returns before the service dies.
         // systemd latches a unit after it exceeds StartLimitBurst. A plain
@@ -683,10 +793,17 @@ export default defineTool({
         const scheduledRestartCmd = resetFailedBeforeRestart
           ? `systemctl --user reset-failed ${cfg.unit} && ${restartCmd}`
           : restartCmd;
-        const child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
-          detached: true,
-          stdio: 'ignore',
-        });
+        let child;
+        try {
+          child = spawn('sh', ['-c', `sleep 1; ${scheduledRestartCmd}`], {
+            detached: true,
+            stdio: 'ignore',
+          });
+        } catch (error) {
+          if (gitSyncBarrier?.acquired === true) await gitSyncBarrier.release().catch(() => {});
+          await releaseCooldownOnAbort();
+          throw error;
+        }
         child.unref();
         return json({
           ok: true,
@@ -700,6 +817,16 @@ export default defineTool({
           ...(phantomCoalesceBroken ? { phantomCoalesceBroken } : {}),
           ...(resetFailedBeforeRestart ? { resetFailedBeforeRestart: true } : {}),
           ...(gate.overridden ? { gateCollisionOverridden: { kind: gate.kind, ...gate.detail } } : {}),
+          ...(gitSync.overridden ? { gitSyncCollisionOverridden: { kind: gitSync.kind, ...gitSync.detail } } : {}),
+          ...(gitSyncBarrier?.acquired === true
+            ? {
+                gitSyncRestartBarrier: {
+                  resource: gitSyncBarrier.resource,
+                  expiresAt: gitSyncBarrier.expiresAt,
+                  release: 'lease-expiry-after-systemctl-handoff',
+                },
+              }
+            : {}),
           verifyWith: `systemctl --user show ${cfg.unit} -p MainPID --value  (expect a NEW pid${
             before.mainPid ? ` ≠ ${before.mainPid}` : ''
           } within ~3s)`,
@@ -715,7 +842,7 @@ export default defineTool({
             target === 'bg-host'
               ? ' bg-host restart freezes cross-machine peer-log rails ~13min while the substrate rejoins — see EI-13317.'
               : ''
-          }${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
+          }${gitSync.overridden || gitSync.kind === 'probe-failed' || gitSync.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
         });
       },
     );

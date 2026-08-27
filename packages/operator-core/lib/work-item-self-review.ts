@@ -68,14 +68,32 @@ export const SESSION_TURN_PARTS_WORKSPACE_ID = 'default';
  * "no review happened" and would refuse an honest completion. `workspace_id +
  * coord_owner_id + goal_ref` is already a tighter scope than adding the harness would be.
  *
- * ⚠ **`goal_ref IS NULL` is admitted, deliberately.** The column is populated on roughly 86%
- * of agent-origin calls (measured, this workspace, 6h window), so requiring it would drop
- * real review calls. The rows are already pinned to this agent and to the window since this
- * item was claimed, so a null-goal call in that window is overwhelmingly this item's work.
+ * ⚠ **NO `goal_ref` predicate, deliberately (WI-134439).** This leg was once scoped
+ * `(goal_ref = $3 OR goal_ref IS NULL)`. That predicate bought no attribution and cost honest
+ * closes, so it is gone. Three measurements, this workspace, 2026-08-27:
  *
- * ⚠ **The turn-parts leg has NO goal_ref at all** — the table does not carry one — so it is
- * scoped by owner + window only. That is strictly more permissive than the invocations leg,
- * in the same direction and for the same reason as the `goal_ref IS NULL` admission above.
+ *   · `goal_ref` holds ONE value per agent — `readAgentStateStamp(coordOwnerId).goalRef`, a
+ *     single `string | null` per owner, last-write-wins (`agent-state-stamp.ts`). An agent
+ *     holding two items stamps EVERY row with whichever it claimed most recently, so closing
+ *     the OTHER one matched nothing at all.
+ *   · 26.2% of agent-origin rows (13,654 / 52,032, 6h, 213 agents) carry a `fleet:<slug>` ref,
+ *     which can never equal a `WI-` id — so a quarter of the fast leg was filtered away from
+ *     exactly the fleet agents this gate's pilot exists to measure.
+ *   · only 15.5% are NULL, so the `IS NULL` escape hatch did not rescue either case above.
+ *
+ * The decisive argument is that the turn-parts leg below has NEVER been goal-scoped — that
+ * table carries no such column — so the union always admitted this agent's unattributed calls
+ * anyway, merely ~2 minutes later. The predicate therefore never decided WHAT corroborates,
+ * only WHEN: it withheld the real-time leg until the lagging leg caught up, which is exactly
+ * the false refusal WI-134439 reports. Keeping it would buy latency, not rigour. Scoping is
+ * by agent and by the window since this item was claimed, identically on both legs.
+ *
+ * ⚠ **The two legs do NOT ingest at the same speed, and the gap is load-bearing.** Measured
+ * for one live agent (2026-08-27): `tool_invocations` 0s behind with 102 rows, while
+ * `session_turn_parts` was 115s behind with 13. Leg 1 is a debounced server-side telemetry
+ * writer; leg 2 is session ingestion. Anything that stops leg 1 corroborating leaves the
+ * verdict resting on a ledger two minutes stale — and an agent that closes promptly after a
+ * genuine review is then told its claim "rests on prose alone".
  *
  * The direction of those choices is the point: being slightly permissive risks crediting a
  * review performed for a neighbouring item, while being strict risks REFUSING an honest close
@@ -91,7 +109,6 @@ export const SESSION_TURN_PARTS_WORKSPACE_ID = 'default';
 export function selfReviewLedgerQuery(args: {
   workspaceId: string;
   coordOwnerId: string;
-  goalRef: string;
   sinceMs: number;
 }): { text: string; values: unknown[] } {
   return {
@@ -99,8 +116,7 @@ export function selfReviewLedgerQuery(args: {
              FROM harness_shared.tool_invocations
             WHERE workspace_id = $1
               AND coord_owner_id = $2
-              AND (goal_ref = $3 OR goal_ref IS NULL)
-              AND invoked_at >= $4
+              AND invoked_at >= $3
             UNION ALL
            SELECT tool_name, ts AS invoked_at, NULL AS status, 'turn-parts' AS source
              FROM harness_shared.session_turn_parts
@@ -108,9 +124,58 @@ export function selfReviewLedgerQuery(args: {
               AND owner = $2
               AND part_kind = 'tool_use'
               AND tool_name IS NOT NULL
-              AND ts >= $4
+              AND ts >= $3
             ORDER BY invoked_at ASC`,
-    values: [args.workspaceId, args.coordOwnerId, args.goalRef, new Date(args.sinceMs)],
+    values: [args.workspaceId, args.coordOwnerId, new Date(args.sinceMs)],
+  };
+}
+
+/**
+ * Can the instrument see THIS AGENT at all in the window, ignoring goal scoping?
+ *
+ * WI-134439. Deliberately the SAME two ledgers and the SAME window as `selfReviewLedgerQuery`,
+ * minus exactly TWO predicates and nothing else. Naming both matters, because the whole
+ * argument for comparability is that the delta is known and small:
+ *   1. the `goal_ref` filter on the invocations leg — the scoping predicate this exists to
+ *      isolate, and the reason the comparison answers the question at all; and
+ *   2. `tool_name IS NOT NULL` on the turn-parts leg — dropped because existence, not
+ *      identity, is what a blindness test needs.
+ *
+ * (2) is worth a word, since it widens in the REFUSING direction: `ledger-behind` refuses,
+ * so a row visible here but hidden from the scoped query would refuse an honest close while
+ * advising a retry that could never succeed. Measured before dropping it (this workspace,
+ * 7-day window): 0 of 1,054,876 `part_kind='tool_use'` rows have a null `tool_name`, across
+ * 0 distinct owners — the predicate selects nothing today, so the two queries do not in fact
+ * diverge on it. Should such rows ever appear, restore the predicate HERE rather than
+ * relaxing it in `selfReviewLedgerQuery`: the scoped query needs `tool_name` to normalize
+ * across the three naming schemes, so the honest repair is to keep both legs aligned.
+ *
+ * A non-empty answer here beside an empty answer there therefore isolates the difference to
+ * scoping or ingest lag, and rules out blindness. Widening the window or the tables instead
+ * would make the two incomparable and the verdict meaningless.
+ *
+ * `LIMIT 1` because only existence matters; this runs on the completion hot path.
+ */
+export function selfReviewAgentVisibilityQuery(args: {
+  workspaceId: string;
+  coordOwnerId: string;
+  sinceMs: number;
+}): { text: string; values: unknown[] } {
+  return {
+    text: `SELECT 1 AS seen
+             FROM harness_shared.tool_invocations
+            WHERE workspace_id = $1
+              AND coord_owner_id = $2
+              AND invoked_at >= $3
+            UNION ALL
+           SELECT 1 AS seen
+             FROM harness_shared.session_turn_parts
+            WHERE workspace_id = '${SESSION_TURN_PARTS_WORKSPACE_ID}'
+              AND owner = $2
+              AND part_kind = 'tool_use'
+              AND ts >= $3
+            LIMIT 1`,
+    values: [args.workspaceId, args.coordOwnerId, new Date(args.sinceMs)],
   };
 }
 
@@ -181,8 +246,30 @@ export type SelfReviewVerdict =
    * POSITIVE evidence of blindness, not evidence of inactivity. Refusing on it would mean an
    * ingestion outage silently converting arm B into a wall on the fleet's one unroutable
    * verb. Non-refusing, and recorded so the pilot can report how often it fired.
+   *
+   * ⚠ That self-falsification argument is sound but was INCOMPLETE, and the gap was a
+   * fail-open — see `ledger-behind` below and WI-134439.
    */
-  | 'unobservable';
+  | 'unobservable'
+  /**
+   * The goal-scoped ledger is empty, but the instrument can demonstrably SEE this agent
+   * right now — so the emptiness is scoping or ingest lag, NOT blindness.
+   *
+   * WI-134439, measured live: `sinceMs` is the item's `takenAt`, leg 1 requires
+   * `goal_ref = <the completed item>` while invocations attribute `goal_ref` to the item the
+   * agent HOLDS, and leg 2 (`session_turn_parts`) ingest lags its own event-time `ts`. On a
+   * freshly-claimed item both legs therefore return nothing, `ledgerVisible` is false, and
+   * `unobservable` — correctly non-refusing for a real outage — ACCEPTED the close with zero
+   * corroboration. 3 of 4 live arm-B closes went that way, including a deliberately STALE
+   * review. Promptness alone defeated the gate, with no intent required.
+   *
+   * The fix keeps the outage protection intact by splitting the two states the old verdict
+   * conflated. `unobservable` still means "we cannot see this agent at all" and still does
+   * not refuse. This verdict means "we can see this agent, we just cannot see a review YET",
+   * which is not evidence of compliance and must not pass. It REFUSES, with a retry hint
+   * rather than a re-read instruction: the agent's review may well already be recorded.
+   */
+  | 'ledger-behind';
 
 export interface SelfReviewJudgement {
   readonly verdict: SelfReviewVerdict;
@@ -204,6 +291,18 @@ export interface SelfReviewJudgement {
    * subjects.
    */
   readonly ledgerVisible: boolean;
+  /**
+   * Whether the instrument could see THIS AGENT at all in the window, independently of the
+   * goal scoping that `ledgerVisible` is subject to.
+   *
+   * This is what separates `ledger-behind` from `unobservable` (WI-134439), and it is a pilot
+   * measurement in its own right: `ledgerVisible === false` while this is TRUE is precisely
+   * the fail-open population — closes the old gate would have waved through uncorroborated.
+   *
+   * `undefined` means the caller supplied no such probe, in which case the judge cannot tell
+   * lag from blindness and falls back to the historical non-refusing behaviour.
+   */
+  readonly agentVisibleInWindow?: boolean;
   readonly reason?: string;
 }
 
@@ -347,6 +446,11 @@ export const SELF_REVIEW_REFUSING_VERDICTS: ReadonlySet<SelfReviewVerdict> = new
   'not-claimed',
   'uncorroborated',
   'stale-review',
+  // WI-134439. NOT a tightening of policy: `unobservable` keeps its non-refusing behaviour
+  // for a genuine ingestion outage. This entry only covers the case where the instrument
+  // demonstrably CAN see the agent, so an empty goal-scoped ledger is lag or scoping rather
+  // than blindness — which is not evidence of a review and previously passed silently.
+  'ledger-behind',
 ]);
 
 /**
@@ -362,6 +466,23 @@ export function selfReviewRefusal(
   itemId: string,
 ): string | undefined {
   if (!SELF_REVIEW_REFUSING_VERDICTS.has(judgement.verdict)) return undefined;
+  // WI-134439: `ledger-behind` is the one refusal that is NOT a finding against the agent —
+  // its review may already be recorded and merely not queryable yet. Telling it to go and
+  // re-read the code would be wrong advice, and worse, it would teach agents that the way
+  // past this gate is to perform redundant reads until something sticks.
+  if (judgement.verdict === 'ledger-behind') {
+    return (
+      `NOT YET — ${itemId} is assigned to pilot arm B and its self-review cannot be ` +
+      `confirmed YET. Verdict: ledger-behind` +
+      (judgement.reason ? ` — ${judgement.reason}` : '') +
+      `. This is a TIMING refusal, not a judgement about your work: do NOT re-read the code ` +
+      `on account of it, and do NOT perform redundant reads until something sticks. Either ` +
+      `re-send the SAME completion unchanged in a couple of minutes, or — to settle it ` +
+      `immediately — make ONE capability:read or capability:git call now. Those reach the ` +
+      `ledger in real time, whereas the native Read / Grep this gate equally accepts arrive ` +
+      `about two minutes later; that lag is the only thing you are waiting on.`
+    );
+  }
   return (
     `REJECTED — ${itemId} is assigned to pilot arm B, which requires a corroborated ` +
     `self-review before it can close. Verdict: ${judgement.verdict}` +
@@ -374,11 +495,94 @@ export function selfReviewRefusal(
   );
 }
 
+/**
+ * How stale the native-tool leg may be before its silence stops counting as evidence.
+ *
+ * The two legs do NOT ingest at the same speed. `tool_invocations` is a debounced server-side
+ * writer measured at 0s behind; `session_turn_parts` is session ingestion, measured at 115s
+ * behind for a live agent on 2026-08-27. That gap matters because the two legs record
+ * DISJOINT tool families: `capability:read` / `capability:git` reach leg 1 in real time, while
+ * the native `Read` / `Grep` / `Glob` that `REVIEW_TOOLS` deliberately admits exist ONLY in
+ * leg 2. So an agent that reviews natively and closes promptly is judged on a ledger that
+ * cannot yet contain its review, and `uncorroborated` — "the claim rests on prose alone" —
+ * asserts more than was observed.
+ *
+ * The tolerance is ~1.5× the measured lag. The CEILING is what keeps this bounded: a leg that
+ * has produced nothing for a quarter of an hour is not lagging, it is not reporting for this
+ * agent at all (a pure-MCP client emits no turn-parts ever), and excusing that indefinitely
+ * would let anyone hold the gate open by never producing a native call.
+ */
+export const NATIVE_LEDGER_LAG_TOLERANCE_MS = 3 * 60_000;
+export const NATIVE_LEDGER_LAG_CEILING_MS = 15 * 60_000;
+
+/**
+ * Is the native-tool leg demonstrably too far behind for its silence to be evidence?
+ *
+ * ⚠ Returns FALSE whenever it cannot tell — no window, no clock, or a leg that is current.
+ * False is the historical behaviour (refuse `uncorroborated`), so every caller that supplies
+ * no probe keeps its exact semantics, and an unmeasurable ledger never becomes an excuse.
+ *
+ * Pure and clock-injected so the rule is testable without a database, which is the whole
+ * reason it is a named export rather than an inline conditional in the verdict branch.
+ */
+export function nativeLedgerBehind(args: {
+  ledger: readonly SelfReviewLedgerRow[];
+  sinceMs?: number;
+  nowMs?: number;
+}): boolean {
+  const { ledger, sinceMs, nowMs } = args;
+  if (sinceMs === undefined || nowMs === undefined) return false;
+
+  // ⚠ `reduce`, not `Math.max(...rows)`. The ledger is every call this agent made since the
+  // item was claimed, so on a long-held item it is unbounded in principle, and a spread of
+  // that many arguments is a RangeError rather than a large number.
+  let frontier: number | undefined;
+  for (const r of ledger) {
+    if (r.source !== 'turn-parts') continue;
+    if (!Number.isFinite(r.invokedAtMs)) continue;
+    if (frontier === undefined || r.invokedAtMs > frontier) frontier = r.invokedAtMs;
+  }
+
+  // How long this item has been open — the most the native leg could ever have been asked to
+  // report on. Past the ceiling, a silent leg is not lagging: it is not reporting for this
+  // agent at all (a pure-MCP client emits no turn-parts, ever), and excusing that forever
+  // would let anyone hold the gate open by never making a native call.
+  if (nowMs - sinceMs > NATIVE_LEDGER_LAG_CEILING_MS) return false;
+
+  // NO rows at all: leg 2 has delivered NOTHING about this window, so it cannot speak to a
+  // native review performed at ANY point in it — including one a few seconds ago. Note this
+  // is deliberately NOT expressed as a lag against the window start: a very prompt close has
+  // a window SHORTER than the tolerance, and treating that as "current" would convict
+  // precisely the fastest honest closes, which is the defect being fixed.
+  if (frontier === undefined) return true;
+
+  // Rows present, so the leg's frontier is known. Below the tolerance it is current, and its
+  // silence about review tools genuinely is evidence that no native review happened.
+  return nowMs - frontier > NATIVE_LEDGER_LAG_TOLERANCE_MS;
+}
+
 export function judgeSelfReview(args: {
   evidence: SelfReviewEvidence | null | undefined;
   ledger: readonly SelfReviewLedgerRow[];
+  /**
+   * The window start (when the item was claimed) and the current clock, used ONLY to tell
+   * whether the native-tool leg is too stale for its silence to convict. Omit BOTH and the
+   * judge keeps its historical behaviour exactly — see `nativeLedgerBehind`.
+   */
+  sinceMs?: number;
+  nowMs?: number;
+  /**
+   * Whether the instrument can see THIS AGENT at all right now, measured WITHOUT the goal
+   * scoping `ledger` is subject to (WI-134439).
+   *
+   * Supply it and an empty `ledger` can be told apart from a blind one: true selects the
+   * refusing `ledger-behind`, false keeps the non-refusing `unobservable`. OMIT it and the
+   * judge cannot distinguish them and preserves the historical non-refusing behaviour, so
+   * every existing caller and test keeps its exact semantics.
+   */
+  agentVisibleInWindow?: boolean;
 }): SelfReviewJudgement {
-  const { evidence, ledger } = args;
+  const { evidence, ledger, agentVisibleInWindow, sinceMs, nowMs } = args;
 
   const findings = evidence?.findings ?? [];
   const changed = evidence?.changedAsResult ?? [];
@@ -407,18 +611,62 @@ export function judgeSelfReview(args: {
 
   if (reviewCalls.length === 0) {
     if (!ledgerVisible) {
+      // WI-134439: an empty goal-scoped ledger has TWO causes with opposite correct answers.
+      // Only one of them is blindness. When the caller can show the instrument sees this
+      // agent, the emptiness is scoping or ingest lag, and passing it is a fail-open.
+      if (agentVisibleInWindow === true) {
+        return {
+          verdict: 'ledger-behind',
+          reviewCalls: [],
+          rubberStampRisk: false,
+          yieldedChange,
+          ledgerVisible,
+          agentVisibleInWindow,
+          reason:
+            'no review is visible for THIS work item yet, but the instrument can see this ' +
+            'agent right now — so the ledger is behind or scoped away, not blind. A review ' +
+            'you already performed is probably recorded and simply not queryable yet; this ' +
+            'is a retry, not a finding against you',
+        };
+      }
       return {
         verdict: 'unobservable',
         reviewCalls: [],
         rubberStampRisk: false,
         yieldedChange,
         ledgerVisible,
+        ...(agentVisibleInWindow === undefined ? {} : { agentVisibleInWindow }),
         reason:
           'neither the invocation ledger nor the session transcript recorded ANY call by ' +
           'this agent in this window, so the absence of a review is not evidence that none ' +
           'happened — the gate is blind here and does not refuse on it',
       };
     }
+    // WI-134439 defect 1. The agent IS visible, but visibility here is overwhelmingly leg 1
+    // (real-time), while a NATIVE review can only ever appear in leg 2 (~2 min behind). When
+    // leg 2 is demonstrably stale, "neither ledger records a read" describes the instrument,
+    // not the agent — so say the true thing instead of the accusing one.
+    //
+    // This does NOT open the gate: `ledger-behind` refuses too. It swaps a wrong finding and
+    // wrong advice ("re-read the code") for a correct, transient one that names a real-time
+    // path out. Deliberately placed AFTER the blindness branch so a genuine outage still
+    // reaches the non-refusing `unobservable` and cannot be walled by this.
+    if (nativeLedgerBehind({ ledger, sinceMs, nowMs })) {
+      return {
+        verdict: 'ledger-behind',
+        reviewCalls: [],
+        rubberStampRisk: false,
+        yieldedChange,
+        ledgerVisible,
+        ...(agentVisibleInWindow === undefined ? {} : { agentVisibleInWindow }),
+        reason:
+          'a self-review was claimed and this agent IS visible, but the ledger that records ' +
+          'NATIVE tool calls has not caught up to this window — so it cannot yet show a ' +
+          'Read or Grep performed here. That is the instrument being behind, not evidence ' +
+          'that no review happened',
+      };
+    }
+
     // Reachable only with `reviewCalls` empty, so "saw a shell command" and "the ONLY
     // code-adjacent calls were shell commands" coincide here — named for the latter, which
     // is what the reason it selects actually asserts.
@@ -489,6 +737,12 @@ export interface PersistedSelfReviewJudgement {
   readonly reviewCallCount: number;
   /** Which ledgers corroborated, deduped and sorted. Absent when nothing corroborated. */
   readonly reviewSources?: readonly ('invocations' | 'turn-parts')[];
+  /**
+   * WI-134439. Kept because `ledgerVisible: false` alone cannot tell the pilot whether the
+   * gate was blind or merely behind, and those two have opposite implications for how much
+   * of arm B was actually gated. Absent when the caller supplied no visibility probe.
+   */
+  readonly agentVisibleInWindow?: boolean;
 }
 
 /** Project a judgement onto the shape stored with the completion. */
@@ -509,6 +763,9 @@ export function toPersistedSelfReviewJudgement(
     ledgerVisible: judgement.ledgerVisible,
     reviewCallCount: judgement.reviewCalls.length,
     ...(sources.length ? { reviewSources: sources } : {}),
+    ...(judgement.agentVisibleInWindow === undefined
+      ? {}
+      : { agentVisibleInWindow: judgement.agentVisibleInWindow }),
   };
 }
 

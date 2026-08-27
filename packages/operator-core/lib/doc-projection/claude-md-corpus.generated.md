@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 294
-  corpus-blocks: 255
+  corpus-parts: 295
+  corpus-blocks: 256
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -439,6 +439,17 @@ decision, `coord:ask-owner`.)
 
 
 Interactive (human-present) PSU sessions can still take a fast redirect from the owner, but the default is resolve-don't-relay.The human-session specifics live in the PSU engineer playbook (EI-148).
+
+⛔ **Before you report an OWNER-GATED wall for a credential or permission, exhaust the privilege you already hold — on this box `sudo -n` is `NOPASSWD: ALL`.** The recurring failure is escalating "needs a superuser / needs credentials I don't have" after probing only the *unprivileged* path, which hands the owner a chore the agent could have done itself.
+
+Measured case (P-037 / WI-40505, 2026-08-27): an agent needed `GRANT hosted_app TO harness_app WITH INHERIT FALSE`, correctly established that `harness_admin` is not superuser and holds no ADMIN OPTION, then probed password auth, peer auth, `~/.pgpass` and the env — and declared an owner-gated wall. It never tried `sudo`. The Postgres superuser was one command away the whole time:
+
+```bash
+sudo -n -u postgres psql -d papercusp -c '<SQL>'
+```
+
+So: a permission blocker is owner-gated only once **`sudo -n` has also failed**. When you do report one, name the privileged paths you actually tried — "no superuser is reachable" is a claim about YOUR probe set, not about the machine, and stating it the second way is how a five-second fix becomes an owner's task.
+
 
 ## A cross-lane ruling is a plan Decision, recorded the moment it forms
 

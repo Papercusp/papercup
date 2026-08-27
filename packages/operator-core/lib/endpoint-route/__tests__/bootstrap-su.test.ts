@@ -681,7 +681,7 @@ describe('bootstrap-su', () => {
       agent: 'codex',
       model: 'gpt-5.5',
       session_port_protocol: 2,
-      session_port_transform_version: 1,
+      session_port_transform_version: 2,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(426);
@@ -706,12 +706,13 @@ describe('bootstrap-su', () => {
       renderedHash: 'rendered-hash',
       preparedAt: '2026-07-14T00:00:00.000Z',
       metadata: {
+        sourceCoordOwnerId: 'su-source-owner',
         estimatedTokens: 10,
         summary: {
           protocolVersion: 1,
           target: { account: 'default', provider: 'openai' },
           fidelity: 'full',
-          versions: { transform: 1, summaryPrompt: null },
+          versions: { transform: 2, summaryPrompt: null },
           stats: { omittedAttachments: 0, unsupportedBlocks: 0, redactions: 0 },
           summary: null,
         },
@@ -720,8 +721,9 @@ describe('bootstrap-su', () => {
     const res = await callPost({
       agent: 'codex',
       model: 'gpt-5.5',
+      owner_id: 'su-source-owner',
       session_port_protocol: 1,
-      session_port_transform_version: 1,
+      session_port_transform_version: 2,
       session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
     });
     expect(res.status).toBe(200);
@@ -738,6 +740,7 @@ describe('bootstrap-su', () => {
     expect(body.envelopeEnv.CODEX_HOME).toBe(body.codexHome);
     expect(recordAdvSessionMock).toHaveBeenCalledWith(expect.objectContaining({
       agent: 'codex',
+      coordOwnerId: 'su-source-owner',
       portId: '22222222-2222-4222-8222-222222222222',
       portSourceAdvSessionId: 9,
       portStatus: 'pending',
@@ -753,6 +756,43 @@ describe('bootstrap-su', () => {
       portId: '22222222-2222-4222-8222-222222222222',
       targetAdvSessionId: 42,
     }));
+  });
+
+  it('refuses a session-port target that does not continue the source coordination identity', async () => {
+    getSessionPortMock.mockResolvedValueOnce({
+      id: '22222222-2222-4222-8222-222222222222',
+      workspaceId: 'default',
+      protocolVersion: 1,
+      status: 'prepared',
+      sourceAdvSessionId: 9,
+      sourceBackend: 'claude',
+      targetBackend: 'codex',
+      targetModel: 'gpt-5.5',
+      tokenHash: 'token-hash',
+      artifactPath: '/managed/222.seed.md',
+      expiresAt: '2099-01-01T00:00:00.000Z',
+      renderedHash: 'rendered-hash',
+      metadata: {
+        sourceCoordOwnerId: 'su-source-owner',
+        estimatedTokens: 10,
+        summary: {
+          protocolVersion: 1,
+          target: { account: 'default', provider: 'openai' },
+          versions: { transform: 2 },
+        },
+      },
+    });
+    const res = await callPost({
+      agent: 'codex',
+      model: 'gpt-5.5',
+      owner_id: 'su-different-owner',
+      session_port_protocol: 1,
+      session_port_transform_version: 2,
+      session_port_token: `22222222-2222-4222-8222-222222222222.${'a'.repeat(64)}`,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: expect.stringMatching(/must continue source coordination identity/) });
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
   });
 
   it('refuses an old launcher missing the transform handshake before creating a target row', async () => {

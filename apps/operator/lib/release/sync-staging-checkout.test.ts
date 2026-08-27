@@ -1,7 +1,7 @@
 /**
  * Regression coverage for sync-staging-checkout.sh's WI-5710 restart gates.
  *
- * THE BUG: the script gated its `systemctl restart papercup-staging-api` on
+ * THE BUG: the script gated its `systemctl restart papercusp-staging-api` on
  * `target != current` alone — i.e. it used "the `staging` branch moved" as a
  * proxy for "the code the running :3170 process holds changed". Under a fleet
  * where git-sync auto-commits the whole tree every ~3min, that proxy decoupled

@@ -4,6 +4,7 @@ import {
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
+  confirmFlapRestart,
   decideFlapDamping,
   initialFlapDampingState,
   type FlapDampingState,
@@ -20,7 +21,7 @@ describe('shared flap damping (goal-live-holder-guarantee P-008)', () => {
       expect(result.action.kind).toBe('restart');
       if (result.action.kind !== 'restart') throw new Error('expected restart');
       observed.push(result.action.backoffSec);
-      state = result.nextState;
+      state = confirmFlapRestart(result.nextState, now);
       now += result.action.backoffSec * 1_000;
     }
 
@@ -36,6 +37,19 @@ describe('shared flap damping (goal-live-holder-guarantee P-008)', () => {
     expect(ready.action).toEqual({ kind: 'restart', backoffSec: 5 });
   });
 
+  it('paces failed attempts without counting them as confirmed restarts', () => {
+    const attempted = decideFlapDamping({ healthy: false, state: initialFlapDampingState(), now: 10_000 });
+
+    expect(attempted.action).toEqual({ kind: 'restart', backoffSec: 1 });
+    expect(attempted.nextState.restarts).toEqual([]);
+    expect(attempted.nextState.lastAttemptAt).toBe(10_000);
+    expect(attempted.nextState.lastRestartAt).toBeNull();
+
+    const confirmed = confirmFlapRestart(attempted.nextState, 11_000);
+    expect(confirmed.restarts).toEqual([11_000]);
+    expect(confirmed.lastRestartAt).toBe(11_000);
+  });
+
   it('gives up after six attempts inside ten minutes and latches the escalation', () => {
     let state = initialFlapDampingState();
     let now = 0;
@@ -43,7 +57,7 @@ describe('shared flap damping (goal-live-holder-guarantee P-008)', () => {
       const result = decideFlapDamping({ healthy: false, state, now });
       expect(result.action.kind).toBe('restart');
       if (result.action.kind !== 'restart') throw new Error('expected restart');
-      state = result.nextState;
+      state = confirmFlapRestart(result.nextState, now);
       now += result.action.backoffSec * 1_000;
     }
 
@@ -69,7 +83,13 @@ describe('shared flap damping (goal-live-holder-guarantee P-008)', () => {
 
     const result = decideFlapDamping({ healthy: false, state, now });
     expect(result.action).toEqual({ kind: 'restart', backoffSec: 60 });
-    expect(result.nextState.restarts).toEqual([now]);
+    expect(result.nextState.restarts).toEqual(state.restarts);
+    expect(result.nextState.lastAttemptAt).toBe(now);
+    expect(result.nextState.lastRestartAt).toBe(50_000);
+
+    const confirmed = confirmFlapRestart(result.nextState, now);
+    expect(confirmed.restarts).toEqual([now]);
+    expect(confirmed.lastRestartAt).toBe(now);
   });
 
   it('clears attempts and give-up only after five continuously healthy minutes', () => {

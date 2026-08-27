@@ -3,14 +3,14 @@
  * bg-host (DBOS routines / git-sync / substrate) ticker watchdog — 2026-06-20; freeze-signal rewritten
  * 2026-06-22 (EI-2421/EI-2434).
  *
- * `papercup-bg-host`'s event loop can get STARVED under heavy box load, freezing the routines + git-sync
+ * `papercusp-bg-host`'s event loop can get STARVED under heavy box load, freezing the routines + git-sync
  * ticker: the process stays `active` (so systemd Restart=always NEVER fires) but routines stop firing and
  * git-sync stops committing — ALL fleet work stops persisting to origin/staging (the recurring 2026-06-20
  * overnight freeze). On a real freeze we restart the unit to revive it (working tree is kopia-backed,
  * separate from the user-facing :3070).
  *
  * FREEZE SIGNAL — journald-INDEPENDENT (this is the 2026-06-22 fix). The original detector polled
- * `journalctl -u papercup-bg-host` and restarted on journal SILENCE. But journald's stdout-socket capture
+ * `journalctl -u papercusp-bg-host` and restarted on journal SILENCE. But journald's stdout-socket capture
  * wedged host-wide (EI-2434), so a perfectly HEALTHY, ticking bg-host showed an empty journal → the
  * watchdog false-concluded "frozen" → `systemctl restart` → EI-2186 boot-reconcile reclaimed every
  * in-flight bee spawn (the canary deaths, 2026-06-22). We now read the ticker's ACTUAL liveness directly
@@ -27,10 +27,10 @@
  * BOOT GRACE (EI-8901, 2026-07-10) — the staleness signal (`MAX(last_fired_at)` / `MAX(created_at)` for
  * routinesTick) is read from Postgres and so SPANS process restarts: a freshly-restarted unit that hasn't
  * ticked yet still reads as "frozen for Nmin" (the age of the LAST tick from the PREVIOUS generation), and
- * papercup-bg-host takes ~4-5min to boot (ExecStartPre esbuild bundle), longer under load. With
+ * papercusp-bg-host takes ~4-5min to boot (ExecStartPre esbuild bundle), longer under load. With
  * DEBOUNCE_MS=5min this manifests as a RESTART STORM: every new generation is judged frozen before it can
  * possibly tick, gets restarted again, forever (until the hourly circuit breaker opens). The fix: after a
- * restart (by us OR anyone else — `systemctl restart papercup-bg-host` by hand hits the same trap), grant a
+ * restart (by us OR anyone else — `systemctl restart papercusp-bg-host` by hand hits the same trap), grant a
  * BOOT GRACE measured from systemd's OWN `ActiveEnterTimestampMonotonic` (restart-attribution-safe,
  * independent of this watchdog's own in-memory state) — skip the freeze judgment entirely while the unit
  * has been active less than BOOT_GRACE_MS. A boot-time-unknown reading (systemctl/proc read failure) does
@@ -218,7 +218,7 @@ import { cpus, freemem, homedir, hostname, loadavg, totalmem } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const UNIT = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host';
+const UNIT = process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercusp-bg-host';
 const POLL_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_POLL_MS) || 30_000;
 const FREEZE_SILENCE_S = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_SILENCE_S) || 100; // newest routine older than this while active = frozen
 const DEBOUNCE_MS = Number(process.env.PAPERCUSP_BGHOST_WATCHDOG_DEBOUNCE_MS) || 5 * 60_000;
@@ -665,7 +665,7 @@ export function shouldAlert(consecutiveRestartsArg, alertAfter = ALERT_AFTER_RES
 /* ─────────────────────────────────────────────────────────────────────────────
  * COLLATERAL REPORTING (EI-19485006080051257, 2026-08-04)
  *
- * `systemctl restart papercup-bg-host` tears down the unit's WHOLE cgroup (KillMode=control-group,
+ * `systemctl restart papercusp-bg-host` tears down the unit's WHOLE cgroup (KillMode=control-group,
  * the systemd default). That cgroup does not hold only bg-host: measured 2026-08-04, it also held the
  * agent spawner (spawner-sidecar.ts) and 5 of the owner's LIVE desktop-app sidecars, because
  * fleet/spawner-sidecar-spawn.ts spawns them with a raw `spawn(..., { detached: false })` that inherits
@@ -1163,7 +1163,7 @@ export function circuitOpenMessage(reason, restartCount, cap, snapshot = hostPre
   const diagnosis = snapshot?.hasHeadroom
     ? 'Host has headroom; treat this as a bg-host ticker/event-loop/DBOS stall, not a fleet-wide load problem.'
     : 'Host pressure may be contributing; verify CPU/memory before shedding fleet load.';
-  return `CIRCUIT OPEN: ${restartCount} restarts in the last hour >= cap ${cap} — NOT restarting (${reason}).${host} ${diagnosis} Investigate papercup-bg-host internals; do not use blanket load reduction as the remediation.`;
+  return `CIRCUIT OPEN: ${restartCount} restarts in the last hour >= cap ${cap} — NOT restarting (${reason}).${host} ${diagnosis} Investigate papercusp-bg-host internals; do not use blanket load reduction as the remediation.`;
 }
 
 /** Read DATABASE_URL out of a process's /proc/<pid>/environ (same-user readable). The bg-host's ACTUAL
@@ -1613,7 +1613,7 @@ function start() {
  *  SHARED service: every importer had to remember the env var, and one that forgets silently gets a
  *  SECOND live watchdog polling the real unit with its own independent debounce/circuit state. That is
  *  not hypothetical — it happened to an agent importing `procTreeCpuTicks` for a one-off /proc probe on
- *  2026-08-10, which started a real watchdog against papercup-bg-host and wrote to the durable log. The
+ *  2026-08-10, which started a real watchdog against papercusp-bg-host and wrote to the durable log. The
  *  guard is now correct-by-construction: importing this file can no longer start anything, whether or
  *  not the importer knows the env var exists.
  *

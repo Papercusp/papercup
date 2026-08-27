@@ -32,12 +32,12 @@
  */
 import { isAbsolute, resolve as resolvePath } from 'node:path';
 import { join } from 'node:path';
-import { statSync } from 'node:fs';
+import { closeSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
-import { spawnConsole, spawnHeadless } from '../../console-spawn';
+import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetHeadcountTarget, getFleetScheme } from '../../agent-fleets-store';
@@ -62,6 +62,7 @@ import {
   isStaleHeadlessAgentHost,
   memberSpecSchema,
   recordAgentLaunchResult,
+  releaseAgentLaunchClaim,
   resolveResumeTarget,
   restoreVisibleMayShutdown,
   verifyFreshLaunchStarted,
@@ -78,9 +79,14 @@ import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime } from '../../adv-sessions';
 import type { ColorScheme } from '../../console-color-schemes';
 import { findLiveHost, shutdownViaPty } from '../../events/await/psu-pty-discovery';
+import { classifyResumeTurnExit } from '../../events/await/resume-turn-outcome';
 import { nodeCgroupFs } from '../../task-manager/cgroup-read';
 import { isPidInLiveWindowScope } from '../../task-manager/terminal-residue-census';
-import { PSU_LAUNCH_LOG_TAIL_CHARS, readPsuLaunchLogTail } from '../../psu-launch-log.mjs';
+import {
+  HEADLESS_LAUNCH_LOG_SCAN_BYTES,
+  PSU_LAUNCH_LOG_TAIL_CHARS,
+  readPsuLaunchLogTail,
+} from '../../psu-launch-log.mjs';
 import { isSuTierRole } from '../../su-role-addendum';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import {
@@ -107,6 +113,54 @@ function readResumeBootLogTail(ownerId: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Read only the bounded tail of the per-launch headless log. The owner-keyed
+ * psu boot log is not the same artifact as spawnHeadless's fleet log: the
+ * former may stop before the resumed CLI starts, while the latter contains the
+ * eventual provider error that childExit observed. */
+function readHeadlessResumeLogTail(logPath: string | null | undefined): string | null {
+  if (!logPath) return null;
+  let fd: number | null = null;
+  try {
+    fd = openSync(logPath, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, HEADLESS_LAUNCH_LOG_SCAN_BYTES);
+    if (length <= 0) return '';
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    return buffer.subarray(0, read).toString('utf8').slice(-PSU_LAUNCH_LOG_TAIL_CHARS);
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // Best-effort diagnostic; a missing tail must not change the exit verdict.
+      }
+    }
+  }
+}
+
+/** Classify a persistent headless child exit with the shared resume taxonomy. */
+function classifyHeadlessResumeExit(
+  exit: SpawnChildExit,
+  logPath: string | null | undefined,
+  agent: string | null,
+): { logTail: string | null; outcome: ReturnType<typeof classifyResumeTurnExit> } {
+  const logTail = readHeadlessResumeLogTail(logPath);
+  const outcome = classifyResumeTurnExit({
+    // A spawn-level error has no meaningful exit code; force the failed-exit
+    // branch so its message is classified instead of being mistaken for a
+    // clean null/null exit.
+    exitCode: exit.error ? 1 : exit.code,
+    signal: exit.signal,
+    stdoutTail: logTail ?? '',
+    stderrTail: exit.error?.message ?? '',
+    ...(agent === 'codex' ? { outputProtocol: 'codex-jsonl' as const } : {}),
+  });
+  return { logTail, outcome };
 }
 
 function resumeBootLogNote(tail: string | null): string {
@@ -1153,14 +1207,15 @@ export default defineTool({
     const spawnStartedAt = Date.now();
     const memberLabels = memberCommands.map((_, i) => (count > 1 ? `${label} (${i + 1}/${count})` : label));
     const results = await Promise.all(
-      memberCommands.map((cmd, i) => {
+      memberCommands.map(async (cmd, i) => {
         const memberBrief = isSuccessor
           ? (successorBrief ?? undefined)
           : ((memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined);
         const env = memberBrief ? { ...base.env, PAPERCUSP_KICKOFF_PROMPT: memberBrief } : base.env;
         const memberLabel = memberLabels[i];
         const targetOwnerId = isSuccessor || (isResume && !fork) ? resumeOwnerId : null;
-        return spawnGovernedAgentProcess(
+        try {
+          return await spawnGovernedAgentProcess(
           {
             workspaceId,
             idempotencyKey: `agent-spawn:${callerOwnerId ?? 'operator'}:${spawnStartedAt}:${i}`,
@@ -1206,12 +1261,35 @@ export default defineTool({
                   preferProcessPerWindow: true,
                 });
           },
-        );
+          );
+        } catch (error) {
+          // Admission can reject before the console spawner runs (for example when
+          // its durable receipt cannot be persisted). Keep the attempt in its member
+          // slot so a partial batch still reports the right member labels, while
+          // making the rejection eligible for the zero-open rollback below.
+          return {
+            status: 'error' as const,
+            code: 500,
+            error: `governed spawn failed: ${(error as Error)?.message ?? error}`,
+          };
+        }
       }),
     );
 
     const opened = results.filter((r) => r.status === 'ok');
     const failed = results.filter((r) => r.status !== 'ok');
+    let launchClaimReleased = false;
+    if (opened.length === 0 && args.idempotencyKey?.trim()) {
+      launchClaimReleased = await releaseAgentLaunchClaim({
+        workspaceId,
+        idempotencyKey: args.idempotencyKey,
+      });
+      notes.push(
+        launchClaimReleased
+          ? `↩ No agent process opened; released idempotencyKey ${JSON.stringify(args.idempotencyKey)} so the failed launch can be retried.`
+          : `⚠ No agent process opened, but the idempotencyKey ${JSON.stringify(args.idempotencyKey)} could not be released; retry with a fresh key after checking the launch ledger.`,
+      );
+    }
 
     // EI-11524: a clean terminal spawn is NOT proof the agent is running. An
     // in-place `psu --resume` whose transcript was archived off-disk (or whose
@@ -1460,11 +1538,13 @@ export default defineTool({
         : {}),
     };
 
-    await recordAgentLaunchResult({
-      workspaceId,
-      idempotencyKey: args.idempotencyKey,
-      summary: launchSummary,
-    });
+    if (!launchClaimReleased) {
+      await recordAgentLaunchResult({
+        workspaceId,
+        idempotencyKey: args.idempotencyKey,
+        summary: launchSummary,
+      });
+    }
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],

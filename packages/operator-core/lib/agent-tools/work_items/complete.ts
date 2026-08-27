@@ -110,6 +110,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import {
   itemIsArmB,
   judgeSelfReview,
+  selfReviewAgentVisibilityQuery,
   selfReviewLedgerQuery,
   selfReviewRefusal,
   toPersistedSelfReviewJudgement,
@@ -2281,7 +2282,6 @@ async function completeOne(
     const query = selfReviewLedgerQuery({
       workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
       coordOwnerId: ident.ownerId,
-      goalRef: it.id,
       sinceMs,
     });
     const rawRows = await sql.unsafe(query.text, query.values as never[]);
@@ -2289,11 +2289,50 @@ async function completeOne(
       .map((r) => toSelfReviewLedgerRow(r))
       .filter((r): r is SelfReviewLedgerRow => r !== undefined);
 
+    // WI-134439: an EMPTY `ledger` is ambiguous, and its two causes need opposite answers.
+    // Ask the one question that separates them — can the instrument see this agent AT ALL?
+    // ⚠ This probe was built when the ledger query was goal-scoped, so the two differed by
+    // that predicate AND by `tool_name IS NOT NULL`. The goal scoping is now gone (it bought
+    // latency, not attribution — see `selfReviewLedgerQuery`), leaving only the `tool_name`
+    // predicate between them, which selects nothing today (0 of 1,054,876 rows). So the probe
+    // now almost always agrees with `ledgerVisible`, and `ledger-behind` is correspondingly
+    // rare on THIS branch. It is kept rather than deleted because it is the only thing
+    // standing between a future null-`tool_name` population and a silent fail-open, and it
+    // costs one indexed query on an already-empty ledger. Only worth a query when empty;
+    // when it has rows, the instrument is self-evidently not blind. A probe failure leaves
+    // this `undefined`, which preserves the historical non-refusing behaviour: this guard
+    // must never convert an infrastructure fault into a wall on the fleet's one unroutable
+    // verb, which is the very failure `unobservable` exists to prevent.
+    let agentVisibleInWindow: boolean | undefined;
+    if (ledger.length === 0) {
+      try {
+        const visibility = selfReviewAgentVisibilityQuery({
+          workspaceId: ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId(),
+          coordOwnerId: ident.ownerId,
+          sinceMs,
+        });
+        const seen = await sql.unsafe(visibility.text, visibility.values as never[]);
+        agentVisibleInWindow = (seen as unknown[]).length > 0;
+      } catch {
+        agentVisibleInWindow = undefined;
+      }
+    }
+
     // Refuses ONLY on the verdicts meaning the review did not happen against the state
     // being closed. `rubberStampRisk` and `yieldedChange` are pilot MEASUREMENTS and never
     // block (D-020) — that rule lives in `selfReviewRefusal` so it is unit-testable rather
     // than reachable only through a live ledger query.
-    selfReviewJudgement = judgeSelfReview({ evidence: it.completion.selfReview, ledger });
+    selfReviewJudgement = judgeSelfReview({
+      evidence: it.completion.selfReview,
+      ledger,
+      agentVisibleInWindow,
+      // WI-134439 defect 1: lets the judge tell a stale NATIVE-tool leg from a genuine
+      // absence of review. The two ledgers record disjoint tool families and ingest ~2min
+      // apart, so without the window and a clock the judge would keep convicting agents
+      // whose review simply has not been ingested yet.
+      sinceMs,
+      nowMs: Date.now(),
+    });
     selfReviewError = selfReviewRefusal(selfReviewJudgement, it.id);
   }
   if (selfReviewError) {

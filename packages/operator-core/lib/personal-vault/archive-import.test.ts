@@ -170,4 +170,38 @@ describe('Personal Vault archive importers', () => {
     expect(first).toEqual(messages.slice(0, 125).map(({ id }) => id));
     expect(resumed).toEqual(messages.slice(125).map(({ id }) => id));
   });
+
+  it('reports a deliberately unparseable ZIP entry while preserving good records', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'papercusp-malformed-import-'));
+    tempDirs.push(dir);
+    const path = join(dir, 'archive.bin');
+    const zip = new AdmZip();
+    zip.addFile(
+      'facebook/messages/inbox/good.json',
+      Buffer.from(JSON.stringify({
+        messages: [{ id: 'good-record', sender_name: 'Ada', content: 'Keep this message.' }],
+      })),
+    );
+    zip.addFile(
+      'facebook/messages/inbox/bad.json',
+      Buffer.from('{ deliberately unparseable JSON'),
+    );
+    const writer = await PersonalArchiveEncryptedWriter.create('workspace-a', path, {
+      chunkBytes: 1024,
+    });
+    await writer.write(zip.toBuffer());
+    await writer.finish();
+
+    const records = [];
+    for await (const record of streamPersonalArchiveFile('workspace-a', 'facebook.zip', path, {})) {
+      records.push(record);
+    }
+    const documents = records.flatMap(({ document }) => (document ? [document] : []));
+    const warnings = records.flatMap(({ warning }) => (warning ? [warning] : []));
+
+    expect(documents).toHaveLength(1);
+    expect(documents[0]).toMatchObject({ externalId: 'good-record', text: 'Keep this message.' });
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('facebook/messages/inbox/bad.json:');
+  });
 });

@@ -25,7 +25,7 @@
 #     checkout keeps serving.
 #
 # Reverse the whole tier: stop+disable papercup-staging-sync.timer, delete the
-# 50-staging-checkout.conf drop-in, daemon-reload, restart papercup-staging-api.
+# 50-staging-checkout.conf drop-in, daemon-reload, restart papercusp-staging-api.
 set -euo pipefail
 
 # Default to the checkout this script actually lives in — never one box's path
@@ -35,7 +35,7 @@ _HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_DEFAULT="$(git -C "$_HERE" rev-parse --show-toplevel 2>/dev/null || (cd "$_HERE/../../../.." && pwd))"
 INTEGRATION_ROOT="${PAPERCUSP_INTEGRATION_ROOT:-$_REPO_DEFAULT}"
 STAGING_ROOT="${PAPERCUSP_STAGING_ROOT:-$(dirname "$INTEGRATION_ROOT")/papercusp-staging}"
-UNIT="${PAPERCUSP_STAGING_UNIT:-papercup-staging-api.service}"
+UNIT="${PAPERCUSP_STAGING_UNIT:-papercusp-staging-api.service}"
 HEALTH_URL="${PAPERCUSP_STAGING_HEALTH_URL:-http://127.0.0.1:3170/api/health}"
 BRANCH="${PAPERCUSP_INTEGRATION_BRANCH:-staging}"
 

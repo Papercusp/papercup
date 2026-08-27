@@ -19,6 +19,7 @@ import {
   checkRestartPolicyDrift,
   checkSilentCrashLoop,
   BACKOFF_SEQUENCE_SEC,
+  confirmFlapRestart,
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
@@ -530,9 +531,14 @@ describe('decideReconcile', () => {
       backoffSec: BACKOFF_SEQUENCE_SEC[0],
       notify: true,
     });
-    expect(nextState.restarts).toEqual([1000]);
+    expect(nextState.restarts).toEqual([]);
     expect(nextState.backoffIndex).toBe(1);
-    expect(nextState.lastRestartAt).toBe(1000);
+    expect(nextState.lastAttemptAt).toBe(1000);
+    expect(nextState.lastRestartAt).toBeNull();
+
+    const confirmed = confirmFlapRestart(nextState, 1000);
+    expect(confirmed.restarts).toEqual([1000]);
+    expect(confirmed.lastRestartAt).toBe(1000);
   });
 
   it('a second restart attempt too soon (before the backoff wait elapses) -> waiting-backoff, no double-restart', () => {
@@ -611,7 +617,7 @@ describe('decideReconcile', () => {
     for (let i = 0; i < GIVE_UP_THRESHOLD; i++) {
       const r = decideReconcile({ entry: AUTORESTART_ENTRY, status: down('papercup-mcp-proxy.service'), show: { result: 'success' }, state, autoRestartFlagOn: true, now });
       expect(r.action.kind).toBe('restart');
-      state = r.nextState;
+      state = confirmFlapRestart(r.nextState, now);
       now += 61_000; // past even the 60s cap rung
     }
     expect(state.restarts.length).toBe(GIVE_UP_THRESHOLD);
@@ -1168,6 +1174,41 @@ describe('reconcileTick (orchestrator, mocked deps)', () => {
     });
     await expect(reconcileTick(deps)).resolves.toBeDefined();
     expect(deps.notify).toHaveBeenCalled();
+    const [snapshot] = supervisionSnapshot(1_000_000, [AUTORESTART_ENTRY]);
+    expect(snapshot).toMatchObject({
+      restartsLast10m: 0,
+      lastRestartAt: null,
+      flapObserved: true,
+    });
+  });
+
+  it('paces repeated failed restart commands without consuming the confirmed give-up budget', async () => {
+    let now = 0;
+    const deps = makeDeps({
+      now: () => now,
+      registry: () => [AUTORESTART_ENTRY],
+      execUser: vi.fn(async (args: string[]) => {
+        if (args[0] === 'list-units') return LIST_UNITS_FIXTURE;
+        if (args[0] === 'show') return 'Result=success\nNRestarts=0\n';
+        if (args[0] === 'restart') throw new Error('systemctl restart failed');
+        return '';
+      }),
+    });
+
+    for (let attempt = 0; attempt < GIVE_UP_THRESHOLD + 1; attempt += 1) {
+      await reconcileTick(deps);
+      now += 61_000;
+    }
+
+    const restartCalls = deps.execUser.mock.calls.filter((c) => c[0][0] === 'restart');
+    expect(restartCalls).toHaveLength(GIVE_UP_THRESHOLD + 1);
+    expect(deps.notify.mock.calls.some((c) => String(c[0]?.summary ?? '').includes('GIVING UP'))).toBe(false);
+    const [snapshot] = supervisionSnapshot(now, [AUTORESTART_ENTRY]);
+    expect(snapshot).toMatchObject({
+      restartsLast10m: 0,
+      lastRestartAt: null,
+      flapObserved: true,
+    });
   });
 
   it('EI-21271585349726650: pages once per continuous restart-failure episode, then re-arms after recovery', async () => {

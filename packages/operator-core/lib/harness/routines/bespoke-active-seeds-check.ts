@@ -124,6 +124,14 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
     name: 'work-item-admission-delta-sweep',
     seedScript: 'seed-work-item-admission-delta-sweep-routine.ts',
   },
+  {
+    name: 'work-item-admission-daily-digest',
+    seedScript: 'seed-work-item-admission-daily-digest-routine.ts',
+  },
+  {
+    name: 'work-item-durable-park-audit',
+    seedScript: 'seed-work-item-durable-park-audit-routine.ts',
+  },
 ];
 
 /**

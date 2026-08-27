@@ -483,6 +483,67 @@ describe('deriveMemberVerdict (EI-8995)', () => {
       ).toBe('first-turn-done');
     });
   });
+
+  // WI-42457: a member whose ENTIRE tool history is HOUSEKEEPING_TOOL_NAMES has
+  // never taken an agent-authored turn, but `lastToolCallAtByOwner` counts those
+  // hook-emitted rows, so `last != null` reported `first-turn-done` — whose own
+  // contract is "has completed real work (>= 1 recorded tool call)".
+  //
+  // Measured on the P-003 acceptance canary
+  // (su-respawn-829ef88b24abde91c8a6d37bdc2678a2): its whole tool_invocations
+  // history was ONE `activity:report` row with call_origin='hook'. The session
+  // reached zero assistant turns and zero agent-authored tools — it died in the
+  // Codex admission path — yet fleet:assignments reported first-turn-done, so a
+  // launch that never started read as a launch that succeeded. A failed canary
+  // that reports success is worse than one that reports nothing.
+  describe('housekeeping-only history is NOT a first turn (WI-42457)', () => {
+    it('housekeeping-only + quiet + holding nothing → joined, NOT first-turn-done', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 0, lastToolCallAtMs: last, lastProductiveToolCallAtMs: null }),
+          NOW,
+        ),
+      ).toBe('joined');
+    });
+
+    it('a real productive call still reports first-turn-done (the fix does not swallow real work)', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 0, lastToolCallAtMs: last, lastProductiveToolCallAtMs: last }),
+          NOW,
+        ),
+      ).toBe('first-turn-done');
+    });
+
+    it('OMITTING the field preserves the pre-existing verdict exactly (no stranded caller)', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(deriveMemberVerdict(verdictInput({ load: 0, lastToolCallAtMs: last }), NOW)).toBe(
+        'first-turn-done',
+      );
+    });
+
+    it('does NOT touch the stall branch: housekeeping-only while HOLDING quiet claims stays stalled', () => {
+      const last = NOW - VERDICT_STALL_MS - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 1, lastToolCallAtMs: last, lastProductiveToolCallAtMs: null }),
+          NOW,
+        ),
+      ).toBe('stalled');
+    });
+
+    it('does NOT touch the speaking branch: a FRESH housekeeping call still proves the process is alive', () => {
+      const last = NOW - 60_000;
+      expect(
+        deriveMemberVerdict(
+          verdictInput({ load: 0, lastToolCallAtMs: last, lastProductiveToolCallAtMs: null }),
+          NOW,
+        ),
+      ).toBe('speaking');
+    });
+  });
 });
 
 describe('loop-owned monitor state — P-010 agent-operability (EI-11402)', () => {
@@ -684,6 +745,7 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
       async () => new Map<string, WakeMode>([['su-member-2', 'manual']]),
       async () => 'auto',
       NOW,
+      async () => new Map([['su-member-1', lastIso]]),
     );
     expect(speaking.verdict).toBe('speaking');
     expect(speaking.lastToolCallAt).toBe(lastIso);
@@ -700,6 +762,7 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
       async () => new Map<string, WakeMode>(),
       async () => 'manual',
       NOW,
+      async () => new Map(),
     );
     expect(out.wakeMode).toBe('manual');
   });
@@ -711,9 +774,63 @@ describe('decorateMemberVerdicts (EI-8995)', () => {
       async () => ((called += 1), new Map()),
       async () => ((called += 1), new Map()),
       async () => ((called += 1), 'auto' as WakeMode),
+      NOW,
+      async () => ((called += 1), new Map()),
     );
     expect(out).toEqual([]);
     expect(called).toBe(0);
+  });
+
+  // WI-42457: the wiring half of the housekeeping-only fix. deriveMemberVerdict
+  // can only refuse a false first turn if this decorator actually hands it the
+  // productive-call map; without it the field is undefined and the legacy
+  // any-tool verdict stands.
+  describe('housekeeping-only members (WI-42457)', () => {
+    it('a member whose ONLY tool call is housekeeping reports joined, not first-turn-done', async () => {
+      // The measured shape: one hook-emitted `activity:report`, nothing else.
+      const housekeepingIso = new Date(NOW - VERDICT_STALL_MS - 60_000).toISOString();
+      const [out] = await decorateMemberVerdicts(
+        [memberAgent()],
+        async () => new Map([['su-member-1', housekeepingIso]]),
+        async () => new Map<string, WakeMode>(),
+        async () => 'auto',
+        NOW,
+        async () => new Map(), // no productive call ever
+      );
+      expect(out.verdict).toBe('joined');
+      // lastToolCallAt still reports the raw fact — the fix changes the VERDICT,
+      // not the underlying observation.
+      expect(out.lastToolCallAt).toBe(housekeepingIso);
+    });
+
+    it('the same member WITH a productive call reports first-turn-done', async () => {
+      const iso = new Date(NOW - VERDICT_STALL_MS - 60_000).toISOString();
+      const [out] = await decorateMemberVerdicts(
+        [memberAgent()],
+        async () => new Map([['su-member-1', iso]]),
+        async () => new Map<string, WakeMode>(),
+        async () => 'auto',
+        NOW,
+        async () => new Map([['su-member-1', iso]]),
+      );
+      expect(out.verdict).toBe('first-turn-done');
+    });
+
+    it('a THROWN productive fetch is unknown, not "nobody worked" — the legacy verdict stands', async () => {
+      const iso = new Date(NOW - VERDICT_STALL_MS - 60_000).toISOString();
+      const [out] = await decorateMemberVerdicts(
+        [memberAgent()],
+        async () => new Map([['su-member-1', iso]]),
+        async () => new Map<string, WakeMode>(),
+        async () => 'auto',
+        NOW,
+        async () => {
+          throw new Error('pg down');
+        },
+      );
+      // Never flip a whole healthy fleet to `joined` because one read failed.
+      expect(out.verdict).toBe('first-turn-done');
+    });
   });
 });
 

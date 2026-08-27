@@ -37,6 +37,9 @@ import { FLAGS } from '@papercusp/flags';
 import { inWorkspaceTxn } from '../../agent-tools/locks/in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from '../../agent-tools/locks/contention-retry';
 import {
+  clearResourceExclusiveQueue,
+  clearResourceWaiter,
+  readResourceQueue,
   tryAcquireResource,
   tryReleaseResource,
   type ResourceAcquireResult,
@@ -184,6 +187,7 @@ import {
   type GitSyncLockHolderSnapshot,
 } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
+import { pinModuleState } from '@papercusp/module-singleton';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
@@ -216,6 +220,44 @@ export function parseGitSyncOwnerPid(owner: string): number | null {
   if (!m) return null;
   const pid = Number(m[1]);
   return Number.isFinite(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * The lock owners of the fires CURRENTLY in flight in THIS host process.
+ *
+ * `reclaimDeadExclusiveHolders` can only reclaim a lease whose owner PID is
+ * definitively dead, which leaves one orphan class permanently unreclaimable:
+ * a fire that acquired the lock and then stopped existing while its HOST
+ * process kept running (a cancelled/reaped DBOS workflow — WI-1416's reaper
+ * does exactly this — or any abort between the acquire and the `finally` that
+ * releases). The row's PID is alive, so the dead-holder test declines; the fire
+ * that would have released it is gone; so nothing frees it until the 600s TTL.
+ * Worse, it is self-sustaining: every later tick reads it as a live peer and
+ * skips, and when it finally expires the next tick can orphan a fresh one.
+ * Measured 2026-08-27: 3h40m with ZERO commits fleet-wide, `git_sync_activity`
+ * frozen at `active:false` the whole time (no fire ever entered the pipeline),
+ * while the lease relayed in exact 600s hops that were never heartbeat-extended.
+ *
+ * Membership here is the falsifier the PID test cannot be: an owner naming THIS
+ * pid that is NOT in this set belongs to a fire this process no longer has, so
+ * it is provably an orphan. Pinned per the shared-package singleton rule — a
+ * split module record would make the set read empty and turn every live fire's
+ * own lease into a reclaim candidate.
+ */
+const gitSyncLockState = pinModuleState(
+  '@papercusp/operator-core.git-sync-lock-owners',
+  () => ({ inFlight: new Set<string>() }),
+);
+
+/** True when `owner` names this process but no fire here still holds it. */
+export function isOrphanedSelfOwner(
+  owner: string,
+  // Injectable so the decision is testable without driving the process-wide
+  // pinned set; production callers pass neither.
+  inFlight: ReadonlySet<string> = gitSyncLockState.inFlight,
+  selfPid: number = process.pid,
+): boolean {
+  return parseGitSyncOwnerPid(owner) === selfPid && !inFlight.has(owner);
 }
 
 /**
@@ -458,7 +500,44 @@ interface AcquireOutcome {
   holders?: GitSyncLockHolderSnapshot[];
 }
 
+/**
+ * A git-sync fire never waits for an exclusive FIFO ticket: a refused acquire
+ * is a terminal skipped fire. The generic resource store cannot know that and
+ * correctly enqueues every refused exclusive, so git-sync must remove its own
+ * abandoned request before returning. Otherwise resource_grant_cascade later
+ * grants the ticket to a fire that no longer exists, creating a self-relaying
+ * 600s lease with nobody left to heartbeat or release it (WI-209800 / D-104).
+ *
+ * Clear every queued git-sync owner, not only the current UUID. Historical
+ * skipped fires may already have returned, and no live consumer can ever use
+ * those tickets. Non-git-sync owners retain the generic FIFO contract.
+ */
+async function clearQueuedGitSyncOwners(
+  tx: Parameters<typeof readResourceQueue>[0],
+  coordinationDomain: string,
+  resource: string,
+): Promise<string[]> {
+  const queue = await readResourceQueue(tx, { coordinationDomain, resource });
+  const owners = [
+    ...new Set(
+      (queue.queue ?? [])
+        .map((entry) => entry.owner)
+        .filter((queuedOwner) => queuedOwner === GIT_SYNC_OWNER || queuedOwner.startsWith(`${GIT_SYNC_OWNER}:`)),
+    ),
+  ];
+  for (const queuedOwner of owners) {
+    await clearResourceExclusiveQueue(tx, coordinationDomain, resource, queuedOwner);
+    await clearResourceWaiter(tx, coordinationDomain, resource, queuedOwner);
+  }
+  return owners;
+}
+
 async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
+  // This fire is done with the lock either way — drop it from the in-flight set
+  // FIRST, so that a release which fails below (TTL becomes the backstop, see the
+  // warn) still leaves a row a later tick here can recognise as our orphan and
+  // reclaim, instead of one that blocks this host for the full ten minutes.
+  gitSyncLockState.inFlight.delete(owner);
   for (const resource of acquired.reverse()) {
     try {
       // Releasing a lock takes the same workspace transaction/advisory lock as
@@ -569,6 +648,13 @@ async function acquireLocks(
       inWorkspaceTxn(cd, owner, async (tx) => {
         // Auto-register ONLY the per-slug name, in the same txn as its acquire.
         if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
+        const purgedOwners = await clearQueuedGitSyncOwners(tx, cd, resource);
+        if (purgedOwners.length > 0) {
+          console.error(
+            `[git-sync] ABANDONED EXCLUSIVE QUEUE PURGED — ${slug} ${resource}: ` +
+            `${purgedOwners.length} terminal fire ticket(s)`,
+          );
+        }
         return tryAcquireResource(tx, {
           coordinationDomain: cd,
           resource,
@@ -590,7 +676,7 @@ async function acquireLocks(
         // A killed bg-host leaves a fresh-looking exclusive row behind. Give
         // this fire one proof-safe reclaim attempt before treating it as a live
         // peer; the helper scopes release by lock_id and only accepts ESRCH.
-        const reclaimed = await reclaimDeadExclusiveHolders(
+        let reclaimed = await reclaimDeadExclusiveHolders(
           cd,
           owner,
           r.holders ?? [],
@@ -602,6 +688,26 @@ async function acquireLocks(
             );
           },
         );
+        // The orphan class the dead-PID test above structurally cannot see: a
+        // lease taken by a fire of OURS that no longer exists while this process
+        // does (see `gitSyncLockState`). Its PID is alive, so the reclaim
+        // declines; nothing else will ever release it; and every later tick then
+        // reads our own abandoned row as a live peer and skips. Falsify it with
+        // the in-flight set rather than with liveness, and release by lock_id so
+        // this can never touch a lease a concurrent fire here legitimately holds.
+        for (const holder of r.holders ?? []) {
+          if (holder.mode !== 'exclusive' || !isOrphanedSelfOwner(holder.owner)) continue;
+          const released = await inWorkspaceTxn(cd, owner, (tx) =>
+            tryReleaseResource(tx, { coordinationDomain: cd, owner: holder.owner, lockId: holder.lock_id }),
+          ).catch(() => null);
+          if (released && released.released > 0) {
+            reclaimed = true;
+            console.error(
+              `[git-sync] ORPHANED SELF-LEASE RECLAIMED — ${slug} ${resource} holder ${holder.owner} ` +
+              `(this process, but no fire here still holds it); retrying the acquire`,
+            );
+          }
+        }
         if (reclaimed) r = await acquireOne();
       }
     } catch (e) {
@@ -620,7 +726,26 @@ async function acquireLocks(
       };
     }
     if (!r.ok) {
-      // A peer holds it (or an extra name is unregistered) — skip this tick, retry next.
+      // A peer holds it (or an extra name is unregistered) — skip this tick,
+      // retry next. tryAcquireResource queues refused exclusives by design, but
+      // this fire has no wait loop and is terminal now. Cancel every abandoned
+      // git-sync ticket and release a possible late cascade grant atomically
+      // before returning; releasing by THIS owner cannot touch the peer row.
+      try {
+        await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(cd, owner, async (tx) => {
+            await clearQueuedGitSyncOwners(tx, cd, resource);
+            await clearResourceExclusiveQueue(tx, cd, resource, owner);
+            await clearResourceWaiter(tx, cd, resource, owner);
+            await tryReleaseResource(tx, { coordinationDomain: cd, owner, resource });
+          }),
+        );
+      } catch (error) {
+        console.error(
+          `[git-sync] ${slug}: failed to cancel terminal exclusive request for ${resource}; ` +
+          `TTL remains the backstop (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
       await releaseAll(cd, owner, acquired);
       acquired.length = 0;
       return {
@@ -630,6 +755,10 @@ async function acquireLocks(
         holders: snapshotGitSyncLockHolders(r.holders ?? []),
       };
     }
+    // Mark this fire's owner live BEFORE the next resource is attempted: from
+    // here on, a row naming it is legitimately held and must never be read as
+    // an orphan (by a concurrent fire in this process, or by our own retry).
+    gitSyncLockState.inFlight.add(owner);
     acquired.push(resource);
   }
   return { state: 'acquired' };
@@ -1914,101 +2043,105 @@ async function handleGitSync(
       ...(lock.holders ? { holders: lock.holders } : {}),
     };
   }
+  // Keep the resource lease alive from the moment it is acquired. Setup has
+  // several awaits before the local pipeline starts, and a six-hundred-second
+  // lease can otherwise expire while those reads are still in flight.
   const activityStartedAt = Date.now();
-  await writeGitSyncActivity(slug, workspaceId, {
-    active: true,
-    phase: 'local-sync',
-    started_at: activityStartedAt,
-    updated_at: activityStartedAt,
-    completed_at: null,
-    outcome_status: null,
-  });
-  // EI-18: previous tick's counters BEFORE this tick overwrites them.
-  const prev = await readEscalationCounters(slug, workspaceId);
-
-  // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
-  // exact paths this tick moved. Best-effort — never gate the sync on it.
-  let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
-  let prevHeadSha: string | null = null;
-  try {
-    docFreshnessModule = await import('../docs/sweep-after-sync');
-    prevHeadSha = await docFreshnessModule.captureHeadSha(slug, workspaceId, repoPath);
-  } catch {
-    /* best-effort */
-  }
-
-  // EI-438 content-guard KILL-SWITCH (default ON): when OFF, pass an EMPTY detector
-  // set so runGitSync commits exactly as before this plan (no quarantine/escalation/
-  // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
-  // flag-infra error falls back to the default (ON), keeping the safety on.
-  const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
-  // EI-17 kill-switch: default ON (see FLAGS.GIT_SYNC_DELETION_GUARD doc). A flag-infra
-  // error falls back to the default (ON), keeping the safety on — same as content-guard.
-  const deletionGuardOn = await getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug);
-  // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
-  // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
-  // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
-  // presence-read failure degrades to no attribution (today's single commit).
-  const attributionOn = await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug);
-  // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
-  // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
-  const diffSubjectsOn = await getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug);
-  // File locks are the automatic edit-plane authority. Keep git-sync's broad
-  // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
-  // maps these superproject-root-relative paths into each submodule before add.
-  let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
-  try {
-    liveLockHoldingRows = await liveLockHoldingsStrict();
-  } catch (error) {
-    // This read is a safety gate: treating an unreadable lock plane as [] lets
-    // runGitSync stage a peer's transiently-truncated file. Refuse the tick,
-    // make the reason visible, and release the resource locks acquired above.
-    const detail = error instanceof Error ? error.message : String(error);
-    const skippedAt = Date.now();
-    console.error(
-      `[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`,
-    );
-    try {
-      await patchRoutineMetadata(slug, workspaceId, {
-        last_status: 'skipped',
-        local_sync_status: 'skipped',
-        last_skip_reason: 'live-lock-read-failed',
-        last_skipped_at: skippedAt,
-        last_skipped_paths: [],
-        last_lock_read_error: detail,
-        last_error: `live lock read failed (fail-closed): ${detail}`,
-        last_errors: [`live-lock-read: ${detail}`],
-        git_sync_activity: {
-          active: false,
-          phase: 'error',
-          started_at: activityStartedAt,
-          updated_at: skippedAt,
-          completed_at: skippedAt,
-          outcome_status: null,
-        },
-      });
-    } catch (metadataError) {
-      // The primary console error above remains the visible signal if the
-      // metadata store is unavailable; cleanup must still run below.
-      console.warn(
-        `[git-sync] ${slug}: could not record live lock read failure metadata: ${
-          metadataError instanceof Error ? metadataError.message : String(metadataError)
-        }`,
-      );
-    } finally {
-      await releaseAll(cd, lockOwner, acquired);
-      acquired.length = 0;
-    }
-    return { status: 'skipped', reason: 'live-lock-read-failed' };
-  }
-  const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
-
-  // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
-  let outcome: GitSyncOutcome;
   const stopLockHeartbeat = lock.state === 'acquired'
     ? startLockHeartbeat(cd, slug, [...acquired], lockOwner)
     : async () => {};
+  let outcome: GitSyncOutcome;
+  // These values are consumed by the post-pipeline escalation/recording tail;
+  // the surrounding catch rethrows every setup failure before that tail runs.
+  let prev!: Awaited<ReturnType<typeof readEscalationCounters>>;
+  let attributionOn!: boolean;
+  let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
+  let prevHeadSha: string | null = null;
   try {
+    await writeGitSyncActivity(slug, workspaceId, {
+      active: true,
+      phase: 'local-sync',
+      started_at: activityStartedAt,
+      updated_at: activityStartedAt,
+      completed_at: null,
+      outcome_status: null,
+    });
+    // EI-18: previous tick's counters BEFORE this tick overwrites them.
+    prev = await readEscalationCounters(slug, workspaceId);
+
+    // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
+    // exact paths this tick moved. Best-effort — never gate the sync on it.
+    try {
+      docFreshnessModule = await import('../docs/sweep-after-sync');
+      prevHeadSha = await docFreshnessModule.captureHeadSha(slug, workspaceId, repoPath);
+    } catch {
+      /* best-effort */
+    }
+
+    // EI-438 content-guard KILL-SWITCH (default ON): when OFF, pass an EMPTY detector
+    // set so runGitSync commits exactly as before this plan (no quarantine/escalation/
+    // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
+    // flag-infra error falls back to the default (ON), keeping the safety on.
+    const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
+    // EI-17 kill-switch: default ON (see FLAGS.GIT_SYNC_DELETION_GUARD doc). A flag-infra
+    // error falls back to the default (ON), keeping the safety on — same as content-guard.
+    const deletionGuardOn = await getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug);
+    // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
+    // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
+    // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
+    // presence-read failure degrades to no attribution (today's single commit).
+    attributionOn = await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug);
+    // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
+    // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
+    const diffSubjectsOn = await getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug);
+    // File locks are the automatic edit-plane authority. Keep git-sync's broad
+    // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
+    // maps these superproject-root-relative paths into each submodule before add.
+    let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
+    try {
+      liveLockHoldingRows = await liveLockHoldingsStrict();
+    } catch (error) {
+      // This read is a safety gate: treating an unreadable lock plane as [] lets
+      // runGitSync stage a peer's transiently-truncated file. Refuse the tick,
+      // make the reason visible; the outer finally owns lease cleanup.
+      const detail = error instanceof Error ? error.message : String(error);
+      const skippedAt = Date.now();
+      console.error(
+        `[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`,
+      );
+      try {
+        await patchRoutineMetadata(slug, workspaceId, {
+          last_status: 'skipped',
+          local_sync_status: 'skipped',
+          last_skip_reason: 'live-lock-read-failed',
+          last_skipped_at: skippedAt,
+          last_skipped_paths: [],
+          last_lock_read_error: detail,
+          last_error: `live lock read failed (fail-closed): ${detail}`,
+          last_errors: [`live-lock-read: ${detail}`],
+          git_sync_activity: {
+            active: false,
+            phase: 'error',
+            started_at: activityStartedAt,
+            updated_at: skippedAt,
+            completed_at: skippedAt,
+            outcome_status: null,
+          },
+        });
+      } catch (metadataError) {
+        // The primary console error above remains the visible signal if the
+        // metadata store is unavailable; cleanup still runs in the outer finally.
+        console.warn(
+          `[git-sync] ${slug}: could not record live lock read failure metadata: ${
+            metadataError instanceof Error ? metadataError.message : String(metadataError)
+          }`,
+        );
+      }
+      return { status: 'skipped', reason: 'live-lock-read-failed' };
+    }
+    const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
+
+    // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
     outcome = await runGitSync(slug, {
       repoPath,
       config: cfg,

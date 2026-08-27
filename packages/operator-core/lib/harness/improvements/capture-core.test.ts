@@ -100,6 +100,44 @@ describe('captureImprovement — initialState seam (observation-lane-scorecard-c
     // (EI-19325151590626958) depends on capture-route rows staying open.
     expect(d.created[0].state).toBeUndefined();
   });
+
+  it('scorecard verdicts bypass derived observation folding and mint an immutable row', async () => {
+    setFlagOverridesForTest({ [FLAGS.OBSERVATION_DERIVED_FOLD]: true });
+    const prior = existing({
+      id: 'EI-prior-scorecard',
+      title: 'an unrelated prior scorecard observation',
+      kind: 'change',
+      state: 'open',
+      payload: { lane: 'observation', repeatCount: 1 },
+    });
+    const d = deps();
+    const merges: string[] = [];
+    d.findSemanticDupes = async () => ({
+      hard: [{ id: prior.id, title: prior.title, state: prior.state, harness: null, similarity: 0.88 }],
+      soft: [],
+      thresholds: { hard: 0.93, soft: 0.8 },
+    });
+    d.getIssue = async (id) => (id === prior.id ? prior : null);
+    d.mergeIssuePayload = async (id) => {
+      merges.push(id);
+      return prior;
+    };
+
+    const result = await captureImprovement(
+      {
+        title: 'a fresh acceptance scorecard',
+        kind: 'change',
+        lane: 'observation',
+        initialState: 'done',
+      },
+      d,
+    );
+
+    expect(result).toMatchObject({ ok: true, created: true });
+    expect(d.created).toHaveLength(1);
+    expect(d.created[0].state).toBe('done');
+    expect(merges).toEqual([]);
+  });
 });
 
 describe('captureImprovement — review-required pre-enrollment park', () => {

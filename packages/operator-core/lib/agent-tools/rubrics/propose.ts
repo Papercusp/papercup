@@ -79,7 +79,7 @@ export const rubricsProposeArgs = z.object({
     .enum(['standard', 'acceptance'])
     .optional()
     .describe(
-      "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot per-plan definition-of-done (acceptance-rubrics-on-every-plan-2026-08-11): requires subjectPlan, activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the plan's implementation, before the plan may be marked done — the completion gate reads it",
+      "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot definition-of-done linked by subjectPlan (plan mode) or subjectGoal (goal mode), activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the work's implementation, before it may be marked done — the matching completion gate reads it",
     ),
   subjectPlan: z
     .string()
@@ -88,6 +88,14 @@ export const rubricsProposeArgs = z.object({
     .optional()
     .describe(
       'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
+    ),
+  subjectGoal: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      "acceptance kind only: the id of the goal this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused",
     ),
   classRef: z
     .string()
@@ -184,6 +192,7 @@ export default defineTool({
       rubricId: args.rubricRef,
       ...(args.kind ? { kind: args.kind } : {}),
       ...(args.subjectPlan ? { subjectPlan: args.subjectPlan } : {}),
+      ...(args.subjectGoal ? { subjectGoal: args.subjectGoal } : {}),
       ...(args.classRef ? { classRef: args.classRef } : {}),
       characteristic: args.characteristic,
       title: args.title,

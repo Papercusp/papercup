@@ -12,11 +12,13 @@ import { describe, expect, it } from 'vitest';
 // prettier-ignore
 // @ts-ignore -- plain .mjs formatter script, no declaration file.
 import {
+  applyFormattedChangesWithinRange,
   buildPrettierArgs,
   buildPrettierCheckArgs,
   buildPrettierStdinArgs,
   buildPrettierWholeFileArgs,
   characterRangeForLines,
+  formatRangeWithPrettier,
   normalizeScopedPaths,
   parseAddedLineRanges,
   parseFormatCliArgs,
@@ -128,6 +130,46 @@ describe('scoped repository format check', () => {
         end: commentEnd,
       }),
     ).toBe(false);
+  });
+
+  it('formats a statement range inside an object method without rewriting legacy context', () => {
+    const source = [
+      'const legacy={untouched:true};',
+      'export default defineThing({',
+      '  async handler(args) {',
+      '    const before = 1;',
+      '    // changed block',
+      '    const gitSync=await check(args);',
+      '    if (gitSync.blocked) {',
+      '      return json({ok:false,note:gitSync.note});',
+      '    }',
+      '',
+      '    return before;',
+      '  },',
+      '});',
+      '',
+    ].join('\n');
+    const start = source.indexOf('    // changed block');
+    const end = source.indexOf('\n\n', start) + 1;
+    const prettierCli = require.resolve('prettier/bin/prettier.cjs', {
+      paths: [REPO_ROOT],
+    });
+
+    const formatted = formatRangeWithPrettier(prettierCli, 'fixture.ts', source, { start, end });
+
+    expect(formatted).toContain('const legacy={untouched:true};');
+    expect(formatted).toContain('const gitSync = await check(args);');
+    expect(formatted).toContain('return json({ ok: false, note: gitSync.note });');
+  });
+
+  it('applies only whole-file formatter changes whose source span is inside the requested range', () => {
+    const source = 'const legacy={foo:1};\nconst changed={bar:2};\n';
+    const formatted = 'const legacy = { foo: 1 };\nconst changed = { bar: 2 };\n';
+    const start = source.indexOf('const changed');
+
+    expect(applyFormattedChangesWithinRange(source, formatted, { start, end: source.length })).toBe(
+      'const legacy={foo:1};\nconst changed = { bar: 2 };\n',
+    );
   });
 
   it('parses write mode separately from explicit paths', () => {

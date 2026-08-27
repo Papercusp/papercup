@@ -882,6 +882,29 @@ describe('buildConsoleOneliner', () => {
     expect(script).toContain("trap 'rm -f .papercup-console-active.$$' EXIT");
   });
 
+  it('stamps a shell birth identity before the greeting for orphan-window cleanup', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'papercup-console-identity-'));
+    try {
+      const out = buildConsoleOneliner(
+        dir,
+        { SHELL: '/bin/true' },
+        `printf '%s' "$PAPERCUSP_CONSOLE_IDENTITY" > identity.txt`,
+        APPEARANCE,
+      );
+      expect(out).toContain('export PAPERCUSP_CONSOLE_IDENTITY');
+      expect(out).toContain('/proc/sys/kernel/random/boot_id');
+
+      execFileSync('bash', ['-c', out], { stdio: 'ignore' });
+
+      const identity = readFileSync(join(dir, 'identity.txt'), 'utf8');
+      expect(identity).not.toBe('');
+      if (process.platform === 'linux') expect(identity).toMatch(/^linux:[^:]+:\d+$/);
+      if (process.platform === 'darwin') expect(identity).toMatch(/^darwin:\S(?:.*\S)?$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('can omit the cwd sentinel for no-window managed launches', () => {
     const out = buildConsoleOneliner('/repo', {}, 'true', APPEARANCE, null, false);
     const script = interactiveRcScript(out);

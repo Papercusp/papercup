@@ -23,10 +23,13 @@ export const HEALTHY_RESET_MS = 5 * 60 * 1000;
  * importing either consumer's domain model.
  */
 export interface FlapDampingState {
-  /** Restart-attempt timestamps (epoch ms), pruned to the trailing give-up window. */
+  /** Confirmed successful restart timestamps (epoch ms), pruned to the trailing give-up window. */
   restarts: number[];
   /** Index into BACKOFF_SEQUENCE_SEC for the next restart attempt. */
   backoffIndex: number;
+  /** Epoch ms of the most recent restart attempt, whether it succeeded or failed. */
+  lastAttemptAt: number | null;
+  /** Epoch ms of the most recent restart that the caller confirmed succeeded. */
   lastRestartAt: number | null;
   /** Epoch ms the target was first observed continuously healthy; null while unhealthy. */
   healthySince: number | null;
@@ -38,6 +41,7 @@ export function initialFlapDampingState(): FlapDampingState {
   return {
     restarts: [],
     backoffIndex: 0,
+    lastAttemptAt: null,
     lastRestartAt: null,
     healthySince: null,
     gaveUp: false,
@@ -66,11 +70,14 @@ export function decideFlapDamping(input: FlapDampingInput): { action: FlapDampin
 
   if (input.healthy) {
     if (state.healthySince == null) state.healthySince = input.now;
-    const reset = (state.gaveUp || state.restarts.length > 0) && input.now - state.healthySince >= HEALTHY_RESET_MS;
+    const reset =
+      (state.gaveUp || state.restarts.length > 0 || state.lastAttemptAt != null || state.backoffIndex > 0) &&
+      input.now - state.healthySince >= HEALTHY_RESET_MS;
     if (reset) {
       state.gaveUp = false;
       state.restarts = [];
       state.backoffIndex = 0;
+      state.lastAttemptAt = null;
       state.lastRestartAt = null;
     }
     return { action: { kind: 'healthy', reset }, nextState: state };
@@ -81,11 +88,11 @@ export function decideFlapDamping(input: FlapDampingInput): { action: FlapDampin
     return { action: { kind: 'already-escalated' }, nextState: state };
   }
 
-  if (state.lastRestartAt != null) {
+  if (state.lastAttemptAt != null) {
     // backoffIndex advances after an attempt, so spacing uses the prior rung.
     const priorIndex = Math.max(0, state.backoffIndex - 1);
     const priorWaitSec = BACKOFF_SEQUENCE_SEC[Math.min(priorIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
-    if (input.now - state.lastRestartAt < priorWaitSec * 1000) {
+    if (input.now - state.lastAttemptAt < priorWaitSec * 1000) {
       return { action: { kind: 'waiting-backoff' }, nextState: state };
     }
   }
@@ -101,8 +108,22 @@ export function decideFlapDamping(input: FlapDampingInput): { action: FlapDampin
   }
 
   const backoffSec = BACKOFF_SEQUENCE_SEC[Math.min(state.backoffIndex, BACKOFF_SEQUENCE_SEC.length - 1)];
-  state.restarts = [...pruned, input.now];
   state.backoffIndex = Math.min(state.backoffIndex + 1, BACKOFF_SEQUENCE_SEC.length - 1);
-  state.lastRestartAt = input.now;
+  state.lastAttemptAt = input.now;
   return { action: { kind: 'restart', backoffSec }, nextState: state };
+}
+
+/**
+ * Record a restart only after the caller's restart/attach operation succeeds.
+ *
+ * `decideFlapDamping` reserves the next attempt and advances pacing before I/O, but a rejected
+ * command must never consume the give-up budget or masquerade as a successful restart in status
+ * output. Consumers call this at the success boundary and persist the returned state.
+ */
+export function confirmFlapRestart(state: FlapDampingState, now: number): FlapDampingState {
+  const next = { ...state };
+  const pruned = state.restarts.filter((at) => now - at < GIVE_UP_WINDOW_MS);
+  next.restarts = [...pruned, now];
+  next.lastRestartAt = now;
+  return next;
 }

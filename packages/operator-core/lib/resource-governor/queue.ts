@@ -24,6 +24,21 @@ export const RESOURCE_GOVERNOR_PAYLOAD_KEY = 'resource_governor';
 export const RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION = 1 as const;
 export const RESOURCE_GOVERNOR_PARK_OWNER = 'system:resource-governor';
 
+/**
+ * The vocabulary `harness_shared.work_items_signal_origin_chk` accepts for
+ * `payload._ei.signal_origin` (migration 403-work-items-signal-origin-restore.sql).
+ *
+ * This is deliberately NOT the same vocabulary as the `work_items.origin` COLUMN,
+ * which takes 'local' | 'federated'. Writing a column value here raises SQLSTATE
+ * 23514 on the enqueue INSERT — and because that INSERT is how EVERY spawner-sidecar
+ * admission is persisted, a single wrong word stops every process this host admits,
+ * which in turn stops git-sync from spawning `git` at all. See WI-144314.
+ */
+export const WORK_ITEM_SIGNAL_ORIGINS = ['organic', 'drill', 'replay', 'shadow'] as const;
+
+/** Governor receipts are real, locally-originated rows — not a drill/replay/shadow. */
+export const RESOURCE_GOVERNOR_SIGNAL_ORIGIN: (typeof WORK_ITEM_SIGNAL_ORIGINS)[number] = 'organic';
+
 type SqlClient = ReturnType<typeof getOrgPg>['sql'];
 type DecisionValue = string | number | boolean | null;
 
@@ -258,6 +273,36 @@ function outerState(state: QueueReceiptState): 'open' | 'wip' | 'done' | 'droppe
  * Durable admission driver. It always accepts valid work into the durable queue;
  * a later feedback controller promotes queue records into leases.
  */
+/**
+ * Render an unknown thrown value into a short, diagnosable suffix.
+ *
+ * The admission path wraps every store failure in a single AdmissionPersistenceError. Before this
+ * existed the wrapper carried a CONSTANT message and kept the real fault only on `.cause`, which is
+ * not serialised to MCP callers — so every distinct DB fault (constraint, type, permission,
+ * deadlock, missing relation) surfaced to an agent as the same undiagnosable sentence. Postgres
+ * error fields are included when present because the SQLSTATE is usually the whole diagnosis.
+ */
+function describeAdmissionCause(error: unknown): string {
+  if (!(error instanceof Error)) return typeof error === 'string' ? error : JSON.stringify(error);
+  const pg = error as Error & {
+    code?: unknown;
+    detail?: unknown;
+    constraint?: unknown;
+    table?: unknown;
+    schema?: unknown;
+  };
+  const parts = [error.message];
+  for (const [label, value] of [
+    ['sqlstate', pg.code],
+    ['detail', pg.detail],
+    ['constraint', pg.constraint],
+    ['relation', pg.schema && pg.table ? `${String(pg.schema)}.${String(pg.table)}` : pg.table],
+  ] as const) {
+    if (typeof value === 'string' && value.trim()) parts.push(`${label}=${value.trim()}`);
+  }
+  return parts.join(' | ');
+}
+
 export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
   private readonly namespace: string;
   private readonly now: () => number;
@@ -320,7 +365,10 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       stored = await this.store.enqueue(candidate);
     } catch (error) {
       if (error instanceof AdmissionIdempotencyConflictError || error instanceof AdmissionPersistenceError) throw error;
-      throw new AdmissionPersistenceError('durable admission record could not be persisted', { cause: error });
+      throw new AdmissionPersistenceError(
+        `durable admission record could not be persisted: ${describeAdmissionCause(error)}`,
+        { cause: error },
+      );
     }
     if (stored.record.requestFingerprint !== candidate.requestFingerprint) {
       throw new AdmissionIdempotencyConflictError(request.idempotencyKey);
@@ -585,7 +633,12 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
           severity: 'minor',
           source: 'resource-governor',
           created_by: RESOURCE_GOVERNOR_PARK_OWNER,
-          signal_origin: 'local',
+          // MUST be one of work_items_signal_origin_chk's vocabulary
+          // (NULL|organic|drill|replay|shadow — migration 403). 'local' belongs to
+          // the work_items.origin COLUMN, a DIFFERENT vocabulary; using it here made
+          // every enqueue INSERT raise 23514, which failed every spawner-sidecar
+          // admission and froze git-sync fleet-wide (WI-144314).
+          signal_origin: RESOURCE_GOVERNOR_SIGNAL_ORIGIN,
         },
         _claimHold: true,
         claim_hold_by: RESOURCE_GOVERNOR_PARK_OWNER,

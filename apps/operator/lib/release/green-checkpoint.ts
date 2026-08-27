@@ -199,6 +199,60 @@ export interface CheckpointExecutionContext {
 /** Canonical provenance for the candidate a run judges. */
 export type CheckpointCandidateSource = "pinned" | "tip";
 
+/** A source/test sibling whose newest committed half sits beyond the candidate cut. */
+export interface SplitSourceTestPair {
+  candidatePath: string;
+  siblingPath: string;
+  siblingCommit: string;
+}
+
+/** Return same-directory source/test siblings for the JS/TS family. */
+export function sourceTestSiblingPaths(file: string): string[] {
+  const match = /^(.*?)(\.(?:[cm]?js|[cm]?ts|jsx|tsx))$/.exec(file);
+  if (!match) return [];
+  const stem = match[1]!;
+  const ext = match[2]!;
+  if (stem.endsWith(".test") || stem.endsWith(".spec")) {
+    return [stem.replace(/\.(?:test|spec)$/, "") + ext];
+  }
+  return [`${stem}.test${ext}`, `${stem}.spec${ext}`];
+}
+
+/**
+ * Detect a quiet-cut candidate that contains one half of a source/test pair while
+ * the sibling's newest commit is present only at the excluded tip. Diagnostic only:
+ * filename affinity can annotate a red, but never rewrites the candidate.
+ */
+export async function detectSplitSourceTestPairs(input: {
+  repo: string;
+  base: string;
+  candidate: string;
+  tip: string;
+}): Promise<SplitSourceTestPair[]> {
+  const changed = await changedFilesRecursive(input.repo, input.base, input.candidate).catch(() => null);
+  if (!changed) return [];
+  const found = new Map<string, SplitSourceTestPair>();
+  for (const candidatePath of changed.files) {
+    const candidateExists = await git(input.repo, ["cat-file", "-e", `${input.candidate}:${candidatePath}`])
+      .then(() => true)
+      .catch(() => false);
+    if (!candidateExists) continue;
+    for (const siblingPath of sourceTestSiblingPaths(candidatePath)) {
+      const siblingCommit = await git(input.repo, ["log", "-1", "--format=%H", input.tip, "--", siblingPath]).catch(
+        () => "",
+      );
+      if (!siblingCommit) continue;
+      const outsideCandidate = !(await isAncestor(input.repo, siblingCommit, input.candidate).catch(() => true));
+      if (!outsideCandidate) continue;
+      const key = [candidatePath, siblingPath].sort().join("\0");
+      found.set(key, { candidatePath, siblingPath, siblingCommit });
+    }
+  }
+  return [...found.values()].sort((a, b) =>
+    `${a.candidatePath}\0${a.siblingPath}`.localeCompare(`${b.candidatePath}\0${b.siblingPath}`),
+  );
+}
+
 /** Backward-compatible provenance for a run that is intentionally diagnostic. */
 export type CheckpointDiagnostic = "candidate-pinned";
 
@@ -402,6 +456,12 @@ export interface CheckpointDeps {
     refireDepth: number;
     pid: number;
   }): Promise<void>;
+  /** Cheap quiet-cut detector: source/test sibling commits outside the candidate. */
+  detectSplitSourceTestPairs?(input: {
+    base: string;
+    candidate: string;
+    tip: string;
+  }): Promise<SplitSourceTestPair[]>;
   /** Terminal-state twin of {@link CheckpointDeps.recordInFlightCandidate}: clear the marker once
    *  a verdict is reached, so a finished run never reads as live. The 3h freshness bound cannot
    *  do this job — it is deliberately generous enough for a ~55min suite plus refires. */
@@ -855,6 +915,8 @@ export interface CheckpointResult {
    *  failingTests + the release-fixer still target the real failure). Absent otherwise. */
   advancedTo?: string;
   summary?: string;
+  /** Candidate-selection evidence that a source/test sibling pair straddles the cut. */
+  splitSourceTestPairs?: SplitSourceTestPair[];
   /** P-012: a stable signature of what failed (test files / workspaces) on the
    *  not-green path, so the release-fixer dispatch dedups by FAILURE, not candidate sha. */
   failingTests?: string[];
@@ -8048,6 +8110,7 @@ async function runGreenCheckpointInner(
   // that is silently wrong rather than erroring when you get it subtly right-looking.
   const candidateBeforeQuietCut = candidate;
   let quietCutApplied = false;
+  let splitSourceTestPairs: SplitSourceTestPair[] = [];
   if (
     !opts.candidate &&
     !repairVerification &&
@@ -8157,6 +8220,31 @@ async function runGreenCheckpointInner(
       green: null,
       reason: "not-fast-forward",
     };
+  }
+
+  // The quiet cut can still land BETWEEN a source commit and its later sibling
+  // test commit. Detect that ancestry shape while candidate and excluded tip are
+  // both known. Diagnostic only: never rewrite the candidate or skip tests.
+  if (quietCutApplied && lastReady && candidateBeforeQuietCut !== candidate && deps.detectSplitSourceTestPairs) {
+    try {
+      splitSourceTestPairs = await deps.detectSplitSourceTestPairs({
+        base: lastReady,
+        candidate,
+        tip: candidateBeforeQuietCut,
+      });
+      if (splitSourceTestPairs.length > 0) {
+        deps.log(
+          `quiet-cut split-pair suspected: ${splitSourceTestPairs
+            .map(
+              (pair) =>
+                `${pair.candidatePath} <> ${pair.siblingPath} (sibling ${pair.siblingCommit.slice(0, 8)} excluded)`,
+            )
+            .join(", ")}`,
+        );
+      }
+    } catch (e) {
+      deps.log(`quiet-cut split-pair detector skipped (${e instanceof Error ? e.message : e})`);
+    }
   }
 
   // EI-21051243455875854: the exact 09f2 run spent the singleton on 21 zero-duration
@@ -8692,6 +8780,18 @@ async function runGreenCheckpointInner(
     postSuiteLegs,
     infraFault,
   } = candidateSuiteResult;
+  const splitPairNote =
+    !green && splitSourceTestPairs.length > 0
+      ? `\n\n⚠ SPLIT-PAIR SUSPECTED: the quiet-cut candidate contains one half while the sibling's newest commit is outside the cut: ` +
+        splitSourceTestPairs
+          .map(
+            (pair) =>
+              `${pair.candidatePath} <> ${pair.siblingPath} (sibling commit ${pair.siblingCommit.slice(0, 12)})`,
+          )
+          .join(", ") +
+        ". Verify both halves at tip before fixing or quarantining the reported test."
+      : "";
+  const verdictSummary = `${summary}${splitPairNote}`;
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -8824,8 +8924,9 @@ async function runGreenCheckpointInner(
       ...(diagnostic ? { diagnostic } : {}),
       reason: green ? "up-to-date" : "not-green",
       promotionPending: true,
-      summary,
+      summary: verdictSummary,
       ...(failingTests?.length ? { failingTests } : {}),
+      ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
     })
@@ -8989,7 +9090,7 @@ async function runGreenCheckpointInner(
           const reservationSummary = reservation
             ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
             : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
-          const redSummary = `${summary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
+          const redSummary = `${verdictSummary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
           stampPromotion(false, "not-green");
           const terminalResult: CheckpointResult = {
             advanced: false,
@@ -8999,6 +9100,7 @@ async function runGreenCheckpointInner(
             reason: "not-green",
             summary: redSummary,
             failingTests,
+            ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
             failingTestNames: extractFailingTestNames(summary),
             repairQueue,
             ...(deps.runId ? { runId: deps.runId } : {}),
@@ -9021,7 +9123,7 @@ async function runGreenCheckpointInner(
         fired = dispatch.fired;
       }
       const repairSummary =
-        `${summary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
+        `${verdictSummary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
         `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
         `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
       stampPromotion(false, "not-green");
@@ -9033,6 +9135,7 @@ async function runGreenCheckpointInner(
         reason: "not-green",
         summary: repairSummary,
         failingTests,
+        ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
         failingTestNames: extractFailingTestNames(summary),
         repairQueue,
         ...(deps.runId ? { runId: deps.runId } : {}),
@@ -9094,8 +9197,9 @@ async function runGreenCheckpointInner(
       candidateSource,
       ...(diagnostic ? { diagnostic } : {}),
       reason: "not-green",
-      summary,
+      summary: verdictSummary,
       failingTests,
+      ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       failingTestNames: extractFailingTestNames(summary),
       ...(forRetriage ? { retriage: forRetriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
@@ -9209,6 +9313,7 @@ async function runGreenCheckpointInner(
               // reading top-down should learn WHAT held the gate before being told
               // whether it might already be fixed.
               heldByNoteForLog +
+              splitPairNote +
               lineageNote +
               alreadyFixedNote +
               historicalFlakeNote +
@@ -9225,7 +9330,7 @@ async function runGreenCheckpointInner(
         // WI-9613: the held-gate broadcast/escalation carries the same canonical cause
         // line as the log, so an agent woken by the red does not have to open the log
         // to learn which leg held it.
-        summary +
+        verdictSummary +
           heldByNote +
           lineageNote +
           alreadyFixedNote +
@@ -9258,8 +9363,9 @@ async function runGreenCheckpointInner(
         from: lastReady ?? null,
         pipeline,
         candidateSource,
-        summary: summary + lineageNote + alreadyFixedNote + historicalFlakeNote,
+        summary: verdictSummary + lineageNote + alreadyFixedNote + historicalFlakeNote,
         failingTests: failingTests ?? [],
+        splitSourceTestPairs,
         logPath: logPath ?? null,
         runId: deps.runId ?? null,
         // EI-18685041726970077: the structured lineage, so a consumer (dev:why,
@@ -9298,7 +9404,7 @@ async function runGreenCheckpointInner(
     await deps
       .escalate?.(
         `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-        `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${summary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
+        `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${verdictSummary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
       )
       .catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
@@ -9311,7 +9417,7 @@ async function runGreenCheckpointInner(
         await deps
           .broadcast(
             `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? "unset"}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
-            summary,
+            verdictSummary,
           )
           .catch(() => {});
       }
@@ -9778,7 +9884,11 @@ async function runGreenCheckpointInner(
         // EI-20014356905761236: a prefix salvage DID promote — `main` moved, just not to this
         // (red) tip. Without this the log's `green=false` reads as "nothing shipped".
         stampPromotion(partial.advanced, partial.reason, partial.advancedTo);
-        return partial;
+        return {
+          ...partial,
+          summary: `${partial.summary ?? ""}${splitPairNote}`,
+          ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
+        };
       }
       // WI-38207: the silent branch that mattered most. A null here means the salvage RAN and
       // found no green prefix — an entirely different operator situation from "it never ran",
@@ -9824,9 +9934,10 @@ async function runGreenCheckpointInner(
       from: lastReady,
       green: false,
       reason: "not-green",
-      summary,
+      summary: verdictSummary,
       failingTests,
       failingTestNames: extractFailingTestNames(summary),
+      ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
       ...(retriage ? { retriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
@@ -14197,6 +14308,9 @@ export function realCheckpointDeps(
       } catch {
         return null;
       }
+    },
+    async detectSplitSourceTestPairs(input) {
+      return detectSplitSourceTestPairs({ repo: cfg.integrationRoot, ...input });
     },
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's

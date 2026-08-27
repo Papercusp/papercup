@@ -18,7 +18,7 @@ import {
   sep,
 } from "node:path";
 import { fileURLToPath } from "node:url";
-import { diffLines } from "diff";
+import { diffChars, diffLines } from "diff";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -324,6 +324,67 @@ function formatWholeFileWithPrettier(cli, repoPath, source) {
   return result.stdout;
 }
 
+/**
+ * Reapply a whole-file formatter result without publishing changes outside the
+ * requested source range.
+ *
+ * Prettier's range parser can reject a valid range nested inside an object
+ * method because it extracts the method (`async handler(...) { ... }`) and then
+ * parses that fragment as a standalone program. Whole-file formatting remains
+ * valid in that case. Diff at character granularity so the fallback can retain
+ * legacy formatting everywhere else while adopting only formatter edits whose
+ * source span is fully inside the line-aligned requested range.
+ */
+export function applyFormattedChangesWithinRange(source, formatted, range) {
+  if (source === formatted) return source;
+
+  const output = [];
+  const parts = diffChars(source, formatted);
+  let sourceOffset = 0;
+
+  for (let index = 0; index < parts.length; ) {
+    const part = parts[index];
+    if (!part.added && !part.removed) {
+      output.push(part.value);
+      sourceOffset += part.value.length;
+      index += 1;
+      continue;
+    }
+
+    const changeStart = sourceOffset;
+    let original = "";
+    let replacement = "";
+    while (index < parts.length && (parts[index].added || parts[index].removed)) {
+      const changed = parts[index];
+      if (changed.removed) {
+        original += changed.value;
+        sourceOffset += changed.value.length;
+      } else {
+        replacement += changed.value;
+      }
+      index += 1;
+    }
+    const changeEnd = sourceOffset;
+    const insertion = changeStart === changeEnd;
+    const touchesRange = insertion
+      ? changeStart > range.start && changeStart < range.end
+      : changeStart < range.end && changeEnd > range.start;
+
+    if (!touchesRange) {
+      output.push(original);
+      continue;
+    }
+    if (!insertion && (changeStart < range.start || changeEnd > range.end)) {
+      throw new Error(
+        `whole-file formatter change crosses requested range boundary (${changeStart}-${changeEnd} vs ${range.start}-${range.end})`,
+      );
+    }
+    output.push(replacement);
+  }
+
+  return output.join("");
+}
+
 export function buildPrettierStdinArgs(cli, repoPath, range) {
   return [
     cli,
@@ -337,7 +398,7 @@ export function buildPrettierStdinArgs(cli, repoPath, range) {
   ];
 }
 
-function formatRangeWithPrettier(cli, repoPath, source, range) {
+export function formatRangeWithPrettier(cli, repoPath, source, range) {
   const result = spawnSync(
     process.execPath,
     buildPrettierStdinArgs(cli, repoPath, range),
@@ -350,9 +411,24 @@ function formatRangeWithPrettier(cli, repoPath, source, range) {
   );
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    throw new Error(
-      (result.stderr || `prettier failed for ${repoPath}`).trim(),
-    );
+    const rangeError = (
+      result.stderr || `prettier failed for ${repoPath}`
+    ).trim();
+    try {
+      return applyFormattedChangesWithinRange(
+        source,
+        formatWholeFileWithPrettier(cli, repoPath, source),
+        range,
+      );
+    } catch (fallbackError) {
+      throw new Error(
+        `${rangeError}\nwhole-file range fallback failed: ${
+          fallbackError instanceof Error
+            ? fallbackError.message
+            : String(fallbackError)
+        }`,
+      );
+    }
   }
   return result.stdout;
 }

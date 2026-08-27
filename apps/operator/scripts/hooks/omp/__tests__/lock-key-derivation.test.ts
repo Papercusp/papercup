@@ -60,6 +60,7 @@ async function makeWorktreeFixture(): Promise<{
   const base = await fs.realpath(await fs.mkdtemp(join(tmpdir(), 'omp-lockkey-ws-')));
   const repo = join(base, 'papercusp');
   await fs.mkdir(join(repo, '.git'), { recursive: true });
+  await fs.writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/staging\n');
   return {
     workspace: base,
     repo,

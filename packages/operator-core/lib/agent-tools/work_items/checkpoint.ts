@@ -240,6 +240,38 @@ type AppendChecksOverflowRow = {
 };
 
 /**
+ * Merge an additive checks write without evicting carried rows.
+ *
+ * A body-bearing checkpoint write must not be rejected merely because its optional
+ * checks cannot all fit, and it must not buy space by deleting predecessor evidence.
+ * Existing rows are still updated in place; genuinely new rows use only vacant slots.
+ * The remainder is returned verbatim enough for the response to say what did not land.
+ */
+function mergeChecksPreservingCarried(
+  prior: ReadonlyArray<AppendChecksOverflowRow>,
+  supplied: ReadonlyArray<AppendChecksOverflowRow>,
+  nowMs: number = Date.now(),
+): { merged: AppendChecksOverflowRow[]; notRetained: AppendChecksOverflowRow[] } {
+  let merged = [...prior];
+  const notRetained: AppendChecksOverflowRow[] = [];
+
+  for (const row of supplied) {
+    const patched = patchExistingCheckEntries([row], merged, nowMs);
+    if (patched !== null) {
+      merged = patched;
+      continue;
+    }
+    if (merged.length >= CARRY_NOTE_MAX_CHECKS) {
+      notRetained.push(row);
+      continue;
+    }
+    merged = normalizeCheckEntries([...merged, row], merged, nowMs);
+  }
+
+  return { merged, notRetained };
+}
+
+/**
  * Return the exact PRIOR check rows that the additive normalizer would evict.
  *
  * This deliberately mirrors the transform rather than deriving victims from the
@@ -473,11 +505,11 @@ function checksSpec() {
               'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
                 'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
             ).optional(),
-              probe: continuityProbeSchema
-                .optional()
-                .describe(
-                  'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; use `schemaRevision:"live"` as a writer-only shorthand for the current target revision; persisted probes retain the concrete revision; `recheck` remains the human explanation.',
-                ),
+            probe: continuityProbeSchema
+              .optional()
+              .describe(
+                'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; use `schemaRevision:"live"` as a writer-only shorthand for the current target revision; persisted probes retain the concrete revision; `recheck` remains the human explanation.',
+              ),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),
@@ -490,9 +522,10 @@ function checksSpec() {
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
         "plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
-        `${CARRY_NOTE_MAX_CHECKS}: an overflow would evict the carried tail, so an additive write refuses atomically ` +
-        'before it can drop rows. Retire stale rows with a plain replace first, or append without `checks` to leave ' +
-        'the carried set untouched. ' +
+        `${CARRY_NOTE_MAX_CHECKS}: a checks-only overflow refuses atomically before it can drop rows. A body-bearing ` +
+        'append/merge still stores the body and every carried row, admits supplied rows only into vacant slots, and ' +
+        'returns `checksNotRetained`/`checksNotRetainedRows` for supplied rows that did not fit. Retire stale rows with ' +
+        'a plain replace first, or append without `checks` to leave the carried set untouched. ' +
         "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
         "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
         'that is how you RETIRE a stale check. A supplied ' +
@@ -528,8 +561,9 @@ const itemSpec = z.object({
       'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
       'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
       'treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would ' +
-      `overflow it. A checks union that would exceed the ${CARRY_NOTE_MAX_CHECKS}-row cap is refused before the write, so an additive ` +
-      'append never evicts carried checks; retire stale rows with a plain replace first or omit `checks`.',
+      `overflow it. A body-bearing checks union that exceeds the ${CARRY_NOTE_MAX_CHECKS}-row cap still stores the body and carried ` +
+      'rows, and reports supplied rows that did not fit; a checks-only overflow refuses. Retire stale rows with a ' +
+      'plain replace first or omit `checks`.',
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -943,6 +977,8 @@ export default defineTool({
         // captures what went missing so the loss is VISIBLE in the result rather than
         // inferable only by diffing a count you would have to have recorded beforehand.
         let droppedCheckClaims: string[] = [];
+        let suppliedChecksNotRetained: AppendChecksOverflowRow[] = [];
+        let preserveCarriedChecksOnOverflow = false;
         const checksTransform =
           suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch
             ? (priorNote: string | null, incoming: string | null | undefined) => {
@@ -1012,8 +1048,14 @@ export default defineTool({
                 // normalizeCheckEntries, or the recovery would succeed only after
                 // silently evicting the very rows it promised to preserve.
                 const preserveEmptyAdditiveChecks = additiveChecks && suppliedChecks?.length === 0;
-                const merged =
-                  patchedExistingChecks !== null
+                const preservedOverflow =
+                  preserveCarriedChecksOnOverflow && suppliedChecks !== undefined
+                    ? mergeChecksPreservingCarried(prior, suppliedChecks)
+                    : null;
+                if (preservedOverflow) suppliedChecksNotRetained = preservedOverflow.notRetained;
+                const merged = preservedOverflow
+                  ? preservedOverflow.merged
+                  : patchedExistingChecks !== null
                     ? patchedExistingChecks
                     : effectiveChecks !== undefined
                       ? preserveEmptyAdditiveChecks
@@ -1216,6 +1258,17 @@ export default defineTool({
                 const legacyExcess = priorChecksOverCapCount(_priorNote);
                 if (legacyExcess > 0) {
                   legacyOverCapNormalization.legacyExcess = legacyExcess;
+                  return null;
+                }
+                // EI-21602661222231785: the body is the primary checkpoint payload;
+                // optional check capacity must not strand it. For body-bearing writes,
+                // proceed atomically while the transform preserves every carried row,
+                // updates matching supplied rows in place, and admits new rows only into
+                // vacant slots. The response explicitly names supplied rows that did not
+                // fit. Checks-only patches retain the refusal contract: their sole payload
+                // is the metadata that overflowed, so reporting success would be false.
+                if (hasCheckpointBody) {
+                  preserveCarriedChecksOnOverflow = true;
                   return null;
                 }
                 appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
@@ -1487,6 +1540,29 @@ export default defineTool({
                         `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
                         `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
                         `the stored rows untouched.`,
+              }
+            : {}),
+          ...(suppliedChecksNotRetained.length > 0
+            ? {
+                checksNotRetained: suppliedChecksNotRetained.map((row) =>
+                  row.claim.length > 300 ? `${row.claim.slice(0, 300)}…` : row.claim,
+                ),
+                checksNotRetainedRows: suppliedChecksNotRetained.map((row) => {
+                  const id = sanitizeCarryRowId(row.id);
+                  return {
+                    ...(id ? { id } : {}),
+                    claim: row.claim.trim(),
+                    ...(row.recheck?.trim() ? { recheck: row.recheck.trim() } : {}),
+                    ...(row.verified?.trim() ? { verified: row.verified.trim() } : {}),
+                    ...(row.contested?.trim() ? { contested: row.contested.trim() } : {}),
+                  };
+                }),
+                checksNotRetainedNote:
+                  `BODY PRESERVED: the checkpoint body and all carried checks were stored atomically, but ` +
+                  `${suppliedChecksNotRetained.length} supplied check row(s) could not fit within the ` +
+                  `${CARRY_NOTE_MAX_CHECKS}-row cap. Existing supplied rows were updated in place and new rows used ` +
+                  'only vacant slots; the rows named above were not stored. Retire stale rows explicitly before ' +
+                  're-sending any that still matter.',
               }
             : {}),
           /**

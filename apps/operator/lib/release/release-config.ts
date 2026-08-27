@@ -316,11 +316,11 @@ export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseCo
     integrationBranch:
       overrides.integrationBranch ?? process.env.PAPERCUSP_INTEGRATION_BRANCH ?? 'staging',
     systemdUnit:
-      overrides.systemdUnit ?? process.env.PAPERCUSP_SYSTEMD_UNIT ?? 'papercup-dev-api.service',
+      overrides.systemdUnit ?? process.env.PAPERCUSP_SYSTEMD_UNIT ?? 'papercusp-dev-api.service',
     backgroundSystemdUnit:
       overrides.backgroundSystemdUnit ??
       process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT ??
-      'papercup-bg-host.service',
+      'papercusp-bg-host.service',
     operatorHealthUrl:
       overrides.operatorHealthUrl ??
       process.env.PAPERCUSP_HEALTH_URL ??

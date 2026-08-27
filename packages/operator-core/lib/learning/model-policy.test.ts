@@ -256,12 +256,19 @@ function providerModelIdsInTypeScript(path: string, source: string): string[] {
 
 describe('canonical learning model policy', () => {
   it('preserves the exact Sol xhigh owner directive without a family alias', () => {
+    // Owner-directed [owner 2026-08-27]: Codex limits reset, so learning moved
+    // back to the exact Sol xhigh spec after the temporary Opus 5 switch.
     expect(LEARNING_MODEL_ID).toBe('gpt-5.6-sol');
     expect(LEARNING_MODEL_EFFORT).toBe('xhigh');
     expect(LEARNING_MODEL_SPEC).toBe('gpt-5.6-sol:xhigh');
     expect(isCanonicalLearningModel(LEARNING_MODEL_SPEC)).toBe(true);
+    // A near-miss family alias and a wrong effort must BOTH still be rejected —
+    // that is what "without a family alias" buys, and it has to keep holding
+    // across the provider change.
     expect(isCanonicalLearningModel('gpt-5.6:xhigh')).toBe(false);
     expect(isCanonicalLearningModel('gpt-5.6-sol:high')).toBe(false);
+    // The temporary fallback must not still read as canonical.
+    expect(isCanonicalLearningModel('claude-opus-5:xhigh')).toBe(false);
   });
 
   it('keeps every audited model-bearing edge on its canonical policy seam', () => {

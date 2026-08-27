@@ -104,7 +104,7 @@ export type SupervisionStatusEntryWithRecency = SupervisionStatusEntry & {
    * EI-20093902925801178: systemd's OWN monotonic restart count for this unit
    * (`NRestarts`), read straight from the OS. THE trustworthy restart signal in
    * this payload — `restartsLast10m` beside it is written by the reconciler
-   * routine inside `papercup-bg-host` and read here in the OPERATOR process,
+   * routine inside `papercusp-bg-host` and read here in the OPERATOR process,
    * where that Map is always empty, so it reads 0 no matter what happened.
    * Measured 2026-08-10: this field was 4 while `restartsLast10m` said 0.
    *
@@ -251,7 +251,7 @@ export async function overlaySystemdRestartRecency(
               flapCountersNote:
                 `restartsLast10m/lastRestartAt/flapState for ${entry.name} measured NOTHING in this ` +
                 `process and are zero-defaults — the supervision reconciler populates them only ` +
-                `inside papercup-bg-host. Do NOT read flapState:'ok' here as healthy. Use ` +
+                `inside papercusp-bg-host. Do NOT read flapState:'ok' here as healthy. Use ` +
                 `nRestarts (systemd ground truth) with secondsSinceStart instead.`,
             }),
       };
@@ -275,7 +275,7 @@ export async function overlaySystemdRestartRecency(
  * EI-19934795546523351: the bg-host-ticker probe (`probeBgHostTicker`, in
  * ../../service-health) can see ONLY the newest routine `last_fired_at` — it has no
  * visibility into whether the process just restarted. During the ~50s a fresh
- * `papercup-bg-host` takes to boot (swarm joins, epoch gates, wire-presence), no
+ * `papercusp-bg-host` takes to boot (swarm joins, epoch gates, wire-presence), no
  * routine has fired yet, so the ticker probe reads FROZEN even though the process is
  * healthy and mid-boot. The `supervision[]` block computed in the SAME response
  * already carries the ground truth (systemd `secondsSinceStart` for the `bg-host`
@@ -311,7 +311,7 @@ export function reconcileBgHostTicker(
   if (ticker.up) return services; // nothing to reconcile — already healthy
   // Supervision names the process 'bg-host' (SUPERVISED_PROCESSES); the ticker
   // probe names itself 'bg-host-ticker' — the two are deliberately different
-  // identifiers for the same underlying `papercup-bg-host` service, so join by
+  // identifiers for the same underlying `papercusp-bg-host` service, so join by
   // the registry-declared name rather than assuming they match.
   const bgHost = supervision.find((s) => s.name === "bg-host");
   if (!bgHost || bgHost.secondsSinceStart === undefined) return services; // no ground truth to reconcile against
@@ -357,13 +357,13 @@ function nextVerbForService(name: string, wedged?: boolean): string {
 }
 
 /** The out-of-process supervisor that OWNS bg-host restarts (`apps/operator/scripts/bghost-watchdog.mjs`). */
-export const BG_HOST_WATCHDOG_UNIT = "papercup-bg-host-watchdog";
+export const BG_HOST_WATCHDOG_UNIT = "papercusp-bg-host-watchdog";
 
 /**
  * EI-20065717746825416: a `nextVerb` prescribing an action that an AUTONOMOUS SUPERVISOR already
  * owns must disclose that owner, or it is instructing agents to race it.
  *
- * `papercup-bg-host-watchdog` is active on this box, out-of-process, and restarts bg-host on
+ * `papercusp-bg-host-watchdog` is active on this box, out-of-process, and restarts bg-host on
  * exactly the condition the ticker probe reports (routine fires AND routinesTick both >240s
  * stale). Nothing on this AGENT-FACING surface said so. The watchdog is referenced ~15 times
  * across the tree — but every one of those is an internal doc comment in a subsystem that
@@ -473,7 +473,7 @@ export function buildMcpProxyTransportBlock(
 export function buildServiceHealthDiagnostic(
   services: ProbeResult[],
   supervision: SupervisionStatusEntryWithRecency[],
-  /** EI-20065717746825416: live `ActiveState` of `papercup-bg-host-watchdog`, when the caller
+  /** EI-20065717746825416: live `ActiveState` of `papercusp-bg-host-watchdog`, when the caller
    *  could read it. Drives the ownership disclosure on a bg-host `nextVerb`; `undefined` is an
    *  honest unknown that discloses ownership WITHOUT asserting the watchdog is up. */
   watchdogActive?: boolean,
@@ -541,7 +541,7 @@ export default defineTool({
   description:
     'Probe fixed dev endpoints (:3070 operator, :3170 staging, :3055 vite, :46229 oddsmith, desktop, bg-host ticker) plus optional systemd units. Services report URL/status/latency; `mcpHandshake` independently validates JSON-RPC initialize, so a green operator GET does not prove MCP health. bg-host-ticker is separate from :3070, and an absent desktop is absent rather than failed. In `supervision[]`, read `healthy` as the verdict and `activeState` as raw systemd state: episodic inactive may be healthy, while enabled/static inactive is not; omitted is unknown. `units` + `scope` query arbitrary user/system units and return `unitStates` + `unitsUnknown`; read unknowns first because nonexistent and stopped units can both appear inactive.',
   guidance: {
-    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercup-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
+    when: 'Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:"staging" }` with `dev:service_health { units:["papercusp-staging-api"], scope:"user" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.',
     notWhen:
       "File/lock contention — that is locks:queue. Migration drift — db:check_drift.",
     returns:

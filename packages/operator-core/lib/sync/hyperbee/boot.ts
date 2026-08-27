@@ -3446,6 +3446,15 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         // still correct) — it must never abort the pass via the outer catch.
         try {
           await seedCursorFromSnapshots(logs, mergeCursor);
+          // WI-3985: the live OFF→ON memory replay is also a FRESH cursor. Reuse
+          // the same complete-snapshot seed as every other fresh/reset fold so a
+          // large peer log reconstitutes its current memory winners from the
+          // snapshot plus tail instead of decoding its entire history from 0.
+          // Torn/incomplete sets still fail closed inside seedCursorFromSnapshots
+          // and leave this cursor unseeded for the slower full replay.
+          if (memoryReplayCursor) {
+            await seedCursorFromSnapshots(logs, memoryReplayCursor);
+          }
         } catch (e) {
           recordBootEvent(
             opts.workspaceId,

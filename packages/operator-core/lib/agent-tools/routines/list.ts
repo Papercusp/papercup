@@ -17,6 +17,9 @@ import { formatIdleAge } from '../../format/relative-time';
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
 import { parseInFlightCandidate } from '../../release/in-flight-candidate';
+import { computeNextFireAt } from '../../harness/routines/cron';
+
+const GIT_SYNC_FRESHNESS_INTERVALS = 3;
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -217,6 +220,58 @@ function healthOf(metadata: Record<string, unknown> | null): Record<string, unkn
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * Derive git-sync health from the age of the last completed local-sync outcome.
+ *
+ * A scheduled fire can legitimately return `skipped` before `recordOutcome` runs
+ * (for example while the exclusive git-sync resource is held). Those skips still
+ * advance `last_fired_at`, but they deliberately do not overwrite the last real
+ * outcome. Consequently `last_status:'synced'` can remain green for hours while no
+ * synchronization has completed. `last_synced_at` is the writer-backed timestamp
+ * that distinguishes those states: every completed outcome, including `nothing`,
+ * refreshes it; a pre-outcome skip does not.
+ *
+ * Keep this a read-time derivation rather than another mutable counter. That makes
+ * every new skip reason subject to the same detector and avoids a second writer
+ * whose state can drift from the underlying proof.
+ */
+export function deriveGitSyncFreshness(
+  metadata: Record<string, unknown> | null,
+  cron: string | null,
+  active: boolean,
+  nowMs: number = Date.now(),
+): Record<string, unknown> {
+  const lastSyncedAtMs = epochMs(metadata?.last_synced_at);
+  const first = cron ? computeNextFireAt(cron, new Date(nowMs)) : null;
+  const second = first ? computeNextFireAt(cron!, new Date(first.getTime())) : null;
+  const cadenceMs = first && second ? second.getTime() - first.getTime() : null;
+  const staleAfterMs = cadenceMs && cadenceMs > 0 ? cadenceMs * GIT_SYNC_FRESHNESS_INTERVALS : null;
+  const ageMs = lastSyncedAtMs === null ? null : Math.max(0, nowMs - lastSyncedAtMs);
+  const status = !active
+    ? 'inactive'
+    : ageMs === null || staleAfterMs === null
+      ? 'unknown'
+      : ageMs > staleAfterMs
+        ? 'degraded'
+        : 'fresh';
+
+  return {
+    status,
+    measured_at: isoAt(nowMs),
+    last_synced_at: isoAt(lastSyncedAtMs),
+    age_ms: ageMs,
+    cadence_ms: cadenceMs,
+    stale_after_ms: staleAfterMs,
+    missed_intervals: ageMs !== null && cadenceMs && cadenceMs > 0 ? Math.floor(ageMs / cadenceMs) : null,
+    raw_last_status: typeof metadata?.last_status === 'string' ? metadata.last_status : null,
+    warning:
+      status === 'degraded'
+        ? `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
+          'the raw last_status may describe an older successful tick.'
+        : null,
+  };
+}
+
 export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
@@ -233,7 +288,7 @@ export default defineTool({
     returns: [
       'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
-      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at and the cron cadence: degraded means no completed outcome for more than three scheduled intervals even if raw last_status remains synced. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
@@ -479,7 +534,17 @@ export default defineTool({
         lastFiredAt: iso(r.last_fired_at),
         group: r.group_slug,
         paused: pauseOf(r.metadata),
-        health: healthOf(r.metadata),
+        health:
+          r.target_role === 'system:git-sync'
+            ? {
+                ...(healthOf(r.metadata) ?? {}),
+                git_sync_freshness: deriveGitSyncFreshness(
+                  r.metadata,
+                  (r.trigger_config as { cron?: string } | null)?.cron ?? null,
+                  r.active,
+                ),
+              }
+            : healthOf(r.metadata),
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs
       // may use the same routine name but have independent gates; stamping them with

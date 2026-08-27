@@ -74,11 +74,15 @@ const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-
 
 const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
-  'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only).';
+  'capability:inspect accepts one test path per call; split a multi-file run into one detached call per file, and do not pass the file array as onlyPaths (that field is typecheck-only). If this run returns a detachedRunId, poll it with testing:run-status { runId }. ';
 
 const DETACHED_ROUTER_TEST_HINT =
   "For integration test files, re-run detached with capability:bash { command: 'npm run test:file -- <test path>', run_in_background: true }, then poll capability:bash_output. " +
-  'The test:file router selects the owning Vitest config; run one file per detached call when needed.';
+  'The test:file router selects the owning Vitest config; run one file per detached call when needed. If this run returns a detachedRunId, poll it with testing:run-status { runId }. ';
+
+function detachedRunStatusHint(runId: string): string {
+  return `started detached recovery run ${runId}; poll it with testing:run-status { runId: '${runId}' }. `;
+}
 
 /**
  * Choose the timeout recovery that can actually run the timed-out file.
@@ -747,9 +751,8 @@ export async function runTestFilesCore(opts: {
         root,
         error: 'timeout',
         timeoutMs,
-        hint:
-          `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
-          (detachedRunId ? `started detached recovery run ${detachedRunId}; poll its snapshot. ` : '') +
+        hint: `hit the ${(timeoutMs / 1000).toFixed(0)}s budget. ` +
+          (detachedRunId ? detachedRunStatusHint(detachedRunId) : '') +
           detachedTestTimeoutHint(opts.files),
         routerOutput: outcome.output.slice(-2000),
         ...(detachedRunId ? { detachedRunId } : {}),
@@ -841,7 +844,7 @@ export async function runTestFilesCore(opts: {
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery and returns `detachedRunId`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
+    'Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery, returns `detachedRunId`, and tells you to call `testing:run-status { runId }` for its snapshot. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen:
@@ -929,7 +932,7 @@ export default defineTool({
           ...surfacedResult,
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            (result.detachedRunId ? `started detached recovery run ${result.detachedRunId}; poll its snapshot. ` : '') +
+            (result.detachedRunId ? detachedRunStatusHint(result.detachedRunId) : '') +
             detachedTestTimeoutHint(args.files),
         },
       };

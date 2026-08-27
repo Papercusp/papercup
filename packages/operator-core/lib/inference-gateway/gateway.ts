@@ -49,7 +49,7 @@ import { dbHealthSnapshot, type DbHealthSnapshot } from './db-health';
 import { evaluateSelfHeal, pickReclaimTarget, classifySlotReconcile } from './gateway-self-heal';
 import { probeEgress } from './egress-probe';
 import { recordGatewayStall } from './gateway-stall-store';
-import { managedSetInterval } from '@papercusp/scheduled-registry';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   gatewayProviderStatuses,
   legacyEntryRouteForGatewayLane,
@@ -79,6 +79,7 @@ import {
 import {
   codexCliResponsesBody,
   extractResponsesInputText,
+  isCodexAuthFailure,
   parseBridgeModel,
   runCodexCliCompletion,
   type CodexCliAccount,
@@ -198,6 +199,27 @@ const BAREBURST_CLUSTER_MIN_ACCOUNTS = Number(process.env.PAPERCUSP_GATEWAY_BARE
  *  transient-throttle duration: long enough to let it clear, short enough not to over-bench an
  *  account that's already recovered (which would thin the pool under broad concurrent contention). */
 const BARE_429_FAILOVER_BACKOFF_MS = 15 * 1000;
+/** CODEX-CLI DEAD-CREDENTIAL QUARANTINE (EI-21618978789879488). A codex home whose `auth.json`
+ *  cannot authenticate is NOT out of quota: it advertises `available:true` with healthy headroom
+ *  and — because credentials resolve from CODEX_HOME only AFTER selection — nothing feeds that
+ *  failure back into selection. On 2026-08-27 a clobbered credential was therefore chosen ahead of
+ *  four healthy codex homes on every request for hours, and the resulting blank failure was read
+ *  fleet-wide as "the provider is out of usage". Quarantining through the pool's ORDINARY
+ *  exhaustion path (not a parallel health map) makes a dead credential skippable with the same
+ *  readmit semantics as a rate wall. Much longer than the 429 backoff — a credential does not
+ *  heal on its own; it takes an owner `codex login` — but still bounded, so a repaired home is
+ *  readmitted without a gateway restart (an account hot-reload readmits it immediately). */
+const CODEX_CLI_AUTH_QUARANTINE_MS = Number(process.env.PAPERCUSP_GATEWAY_CODEX_AUTH_QUARANTINE_MS) || 15 * 60 * 1000;
+/** CODEX-CLI SSE KEEPALIVE. The subscription bridge drives a nested `codex exec` to completion
+ *  before it holds a single output byte, but `codex exec` asks for SSE and BOTH ends enforce an
+ *  idle deadline — the gateway's own `downstreamIdleMs` (2 min) destroys the response first, which
+ *  aborts the signal, which SIGKILLs the child. So adapting the buffered result to SSE *without*
+ *  keeping the socket warm does not fix `stream:true`, it only converts a fail-fast 400 into a
+ *  120s hang: measured ~10 `request aborted`/min for every gateway-routed Codex agent turn between
+ *  17:51Z and 18:31Z on 2026-08-27, against ZERO in the preceding four hours. Comment frames are
+ *  ignored by every SSE reader and reset both deadlines; well under downstreamIdleMs so one missed
+ *  tick is survivable. */
+const CODEX_CLI_SSE_KEEPALIVE_MS = Number(process.env.PAPERCUSP_GATEWAY_CODEX_SSE_KEEPALIVE_MS) || 15 * 1000;
 /** BARE-429 PERSISTENCE CIRCUIT (auto-route-around fix, 2026-06-29). A bare/burst 429 is normally a SHORT
  *  transient (paced 15s above). But a per-IP Cloudflare EDGE throttle on an account's egress proxy returns
  *  the SAME bare 429 PERSISTENTLY — and since a 429 means "the proxy WORKED", the transport egress circuit
@@ -4606,7 +4628,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
   ) {
     const stageSpan = requestSpan(req);
     stageSpan?.setTransport('cli-exec');
-    stageSpan?.setStreaming(false);
+    // `setStreaming` is deliberately NOT called here. The transport descriptor declares
+    // `streaming: false` because the nested `codex exec` run is buffered, but this handler
+    // ADAPTS that completed run back onto the SSE wire whenever the client sent `stream:true`
+    // (see the response.completed write below). Stamping `false` up front therefore described
+    // the implementation rather than the wire, and it disarmed the one detector that covers
+    // this path: request-stage-telemetry's `missingStages` guard only requires the `stream`
+    // stage when the span says the request streamed, so every gateway-routed Codex agent
+    // request recorded `streaming:false` with no `stream` stage and no missing-stage finding —
+    // a stream that opened and never terminated was indistinguishable from a non-streaming
+    // request that correctly had no stream. It is set from the parsed body instead.
     totalRequests++;
     codexRequests++;
     recordOwnerOutcome(routing.ownerId, 'request');
@@ -4638,10 +4669,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge needs a JSON /v1/responses body' }, gateway: true });
       return;
     }
-    if (body.stream === true) {
-      sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: the codex-cli (ChatGPT subscription) bridge is non-streaming — send stream:false' }, gateway: true });
-      return;
-    }
+    const wantsStream = body.stream === true;
+    // The wire contract this request will actually be served on — not the transport's buffered
+    // implementation. This is what arms the `stream`-stage requirement in the span's finish gate.
+    stageSpan?.setStreaming(wantsStream);
     const { id: model, effort } = parseBridgeModel(typeof body.model === 'string' ? body.model : undefined);
     stageSpan?.setModel(model);
     const inputText = extractResponsesInputText(body.input);
@@ -4656,6 +4687,48 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const onGone = () => ac.abort();
     res.once('close', onGone);
     res.setTimeout(downstreamIdleMs, () => res.destroy());
+    // The stream is opened BEFORE the nested CLI run, not after it: the run is the part that
+    // takes minutes, so deferring the first byte until it returns is exactly what trips the idle
+    // deadline (see CODEX_CLI_SSE_KEEPALIVE_MS). Opening early commits the 200 and the
+    // routed-account header at a point where a later failover can still move the account — the
+    // ordinary cost of streaming, which the bearer SSE path above pays too — so an in-band
+    // `event: error` has to stand in for the status code we can no longer set.
+    let sseOpen = false;
+    let keepalive: ManagedHandle | null = null;
+    const stopKeepalive = () => {
+      keepalive?.stop();
+      keepalive = null;
+    };
+    const openSse = () => {
+      if (sseOpen || res.headersSent) return;
+      sseOpen = true;
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+        [ROUTED_ACCOUNT_HEADER]: cli.accountId,
+      });
+      // A Responses client waits on `response.created` before it will sit through a long turn;
+      // the keepalive comments then hold the socket open until the real payload lands.
+      res.write(
+        `event: response.created\ndata: ${JSON.stringify({ type: 'response.created', response: { object: 'response', status: 'in_progress', model } })}\n\n`,
+      );
+      // The stream is live from here. Pairing this with `setStreaming(wantsStream)` above is what
+      // makes an SSE request that never opened its stream show up as a missing `stream` stage
+      // instead of a clean `ok`.
+      stageSpan?.beginStage('stream');
+      keepalive = managedSetInterval(
+        'inference-gateway:codex-cli-sse-keepalive',
+        CODEX_CLI_SSE_KEEPALIVE_MS,
+        () => {
+          if (!res.writableEnded) res.write(': keepalive\n\n');
+        },
+        // `instanced` is what makes a per-connection timer legal here: without it each new
+        // request would STOP the previous request's keepalive by name collision.
+        { category: 'lifecycle', instanced: true, classification: 'timeout-reaper' },
+      );
+    };
+    res.once('close', stopKeepalive);
     try {
       for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
         try {
@@ -4665,6 +4738,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           stageSpan?.endStage('auth');
           stageSpan?.recordAttempt();
           stageSpan?.beginStage('upstreamTtfb');
+          // Open the stream (and start the keepalive) BEFORE the await — the whole point.
+          if (wantsStream) openSse();
           const r = await codexCliRun({
             home: cli.home,
             model,
@@ -4682,7 +4757,23 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           recordRoute(routing.ownerId, cli.accountId, model);
           recordOwnerOutcome(routing.ownerId, 'ok', { account: cli.accountId, status: 200 });
-          if (!res.headersSent) sendJson(res, 200, codexCliResponsesBody({ model, ...r }), headers);
+          const response = codexCliResponsesBody({ model, ...r });
+          if (wantsStream) {
+            // `codex exec` always asks a Responses endpoint for SSE. The subscription bridge is
+            // itself buffered (it drives a nested codex CLI to completion), but that is an
+            // implementation detail: the completed result is adapted back onto the streaming
+            // wire contract instead of rejecting every gateway-routed agent. The stream is
+            // already open by here — this call only covers a run that somehow finished before
+            // the opener ran. One completed event carries the whole response; [DONE] closes it.
+            openSse();
+            stopKeepalive();
+            res.end(
+              `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response })}\n\ndata: [DONE]\n\n`,
+            );
+            stageSpan?.endStage('stream');
+          } else if (!res.headersSent) {
+            sendJson(res, 200, response, headers);
+          }
           return;
         } catch (e) {
           stageSpan?.endStage('upstreamTtfb');
@@ -4690,7 +4781,29 @@ export function createInferenceGateway(deps: GatewayDeps) {
           recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'cli-bridge' });
           log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
           const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && !routing.hardPin && !ac.signal.aborted;
-          const next = canRetry ? codexCliPool?.onExhausted(cli.accountId, Date.now() + bare429FailoverBackoffMs) : null;
+          // A DEAD CREDENTIAL must leave selection even when no retry remains (EI-21618978789879488).
+          // The plain failure path only marks the account exhausted while `canRetry` holds, so on the
+          // last attempt a home whose auth.json cannot authenticate stayed fully selectable — and was
+          // re-chosen on the very next request, forever, because `available` only ever described quota.
+          // Auth-class failures are quarantined unconditionally, and for longer than a rate wall.
+          const authClass = isCodexAuthFailure((e as Error).message);
+          if (authClass) {
+            log(
+              'error',
+              `inference-gateway: codex-cli account '${cli.accountId}' has an UNUSABLE CREDENTIAL (not a quota wall) — ` +
+                `quarantining for ${Math.round(CODEX_CLI_AUTH_QUARANTINE_MS / 1000)}s; repair with \`codex login\` in its CODEX_HOME (${cli.home})`,
+            );
+          }
+          // Quarantine is unconditional for an auth-class failure (it must outlive THIS request);
+          // the in-request failover below stays gated on `canRetry`, because `continue` on the last
+          // attempt would leave the loop without ever sending a response.
+          const exhausted =
+            authClass && !routing.hardPin
+              ? (codexCliPool?.onExhausted(cli.accountId, Date.now() + CODEX_CLI_AUTH_QUARANTINE_MS) ?? null)
+              : canRetry
+                ? (codexCliPool?.onExhausted(cli.accountId, Date.now() + bare429FailoverBackoffMs) ?? null)
+                : null;
+          const next = canRetry ? exhausted : null;
           const nextCli = next ? codexCliAccounts().find((a) => a.accountId === next.accountId) : undefined;
           if (nextCli && nextCli.accountId !== cli.accountId) {
             codexFailovers++;
@@ -4698,8 +4811,25 @@ export function createInferenceGateway(deps: GatewayDeps) {
             cli = nextCli;
             continue;
           }
+          stopKeepalive();
           if (!res.headersSent) {
             sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+          } else if (sseOpen && !res.writableEnded) {
+            // The status line is already committed, so the failure has to travel in-band.
+            // Destroying the socket instead makes a real bridge error indistinguishable from a
+            // network drop — which is the shape a client retries blindly against.
+            //
+            // Telemetry has to be told, though: `classifyGatewayTelemetryOutcome` reads
+            // `res.statusCode`, which is the 200 `openSse()` already committed, so a request that
+            // FAILED for the client was finalized as `outcome:'ok'` — the same
+            // records-success-from-a-partial-signal shape the bridge's own
+            // `codexCliResponsesBody` comment documents. `gatewayError` outranks the status in
+            // that classifier, so marking it here is what keeps the span honest.
+            markRequestGatewayError(req);
+            stageSpan?.endStage('stream');
+            res.end(
+              `event: error\ndata: ${JSON.stringify({ type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true })}\n\ndata: [DONE]\n\n`,
+            );
           } else {
             res.destroy();
           }
@@ -4708,6 +4838,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
     } finally {
       res.removeListener('close', onGone);
+      res.removeListener('close', stopKeepalive);
+      // Belt and braces: a keepalive that outlives its request would write to a dead socket
+      // forever, and `instanced` timers are only cheap while they are actually stopped.
+      stopKeepalive();
     }
   }
 

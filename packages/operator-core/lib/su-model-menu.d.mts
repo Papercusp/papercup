@@ -53,17 +53,14 @@ export function effortRowsFor({ published, encodable, describe }: {
  * must not look like a fallback buried under a model list.
  *
  * @param {{ backends: readonly string[], sourceAgent: string }} args
- * @returns {Array<{ name: string, value: { kind: 'backend-default', targetAgent: string } }>}
+ * @returns {Array<{ name: string, value: BackendDefaultChoice }>}
  */
 export function backendDefaultRows({ backends, sourceAgent }: {
     backends: readonly string[];
     sourceAgent: string;
 }): Array<{
     name: string;
-    value: {
-        kind: "backend-default";
-        targetAgent: string;
-    };
+    value: BackendDefaultChoice;
 }>;
 /**
  * Rows for the bare cloud aliases the launcher recognizes, scoped to the
@@ -76,6 +73,7 @@ export function backendDefaultRows({ backends, sourceAgent }: {
  *
  * @param {{ aliases: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           backends: readonly string[], sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function aliasModelRows({ aliases, backends, sourceAgent }: {
     aliases: ReadonlyArray<{
@@ -85,16 +83,10 @@ export function aliasModelRows({ aliases, backends, sourceAgent }: {
     }>;
     backends: readonly string[];
     sourceAgent: string;
-}): {
+}): Array<{
     name: string;
-    value: {
-        kind: string;
-        targetAgent: string;
-        model: string;
-        alias: boolean;
-        efforts: null;
-    };
-}[];
+    value: ModelChoice;
+}>;
 /**
  * Rows for the Codex CLI's own installed models (`~/.codex/models_cache.json`).
  *
@@ -102,9 +94,19 @@ export function aliasModelRows({ aliases, backends, sourceAgent }: {
  * the claude-shaped alias normalizer. Each row carries the model's OWN advertised
  * effort levels for `effortRowsFor` to narrow.
  *
+ * `skipIds` drops registry rows an ALIAS row already covers. `sol` and
+ * `gpt-5.6-sol` are the same model — the alias is just what psu's own flags and
+ * docs call it — so listing both is a duplicate that makes the menu look like it
+ * holds a choice it does not. The alias row wins because it is the documented
+ * spelling; nothing is lost, since the two normalize to one launch. The CALLER
+ * supplies the normalized ids rather than this module computing them: the
+ * normalizer lives in a module that imports `node:fs`, and this one must stay
+ * importable by the browser bundle.
+ *
  * @param {ReadonlyArray<{ id: string, label?: string | null, description?: string | null,
  *          efforts?: readonly string[] | null, contextWindow?: number | null }>} models
- * @param {{ sourceAgent: string }} args
+ * @param {{ sourceAgent: string, skipIds?: readonly string[] }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function codexModelRows(models: ReadonlyArray<{
     id: string;
@@ -112,18 +114,13 @@ export function codexModelRows(models: ReadonlyArray<{
     description?: string | null;
     efforts?: readonly string[] | null;
     contextWindow?: number | null;
-}>, { sourceAgent }: {
+}>, { sourceAgent, skipIds }: {
     sourceAgent: string;
-}): {
+    skipIds?: readonly string[];
+}): Array<{
     name: string;
-    value: {
-        kind: string;
-        targetAgent: string;
-        model: string;
-        alias: boolean;
-        efforts: readonly string[] | null;
-    };
-}[];
+    value: ModelChoice;
+}>;
 /**
  * Rows for the host-local OMP registry (`omp models --json`, served as
  * `ompCatalog.models`). This is the group that turns a 4-row menu into the real
@@ -141,6 +138,7 @@ export function codexModelRows(models: ReadonlyArray<{
  *          contextWindow?: number | null, reasoning?: boolean | null,
  *          thinking?: readonly string[] | null }>} models
  * @param {{ sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function ompModelRows(models: ReadonlyArray<{
     selector: string;
@@ -151,16 +149,10 @@ export function ompModelRows(models: ReadonlyArray<{
     thinking?: readonly string[] | null;
 }>, { sourceAgent }: {
     sourceAgent: string;
-}): {
+}): Array<{
     name: string;
-    value: {
-        kind: string;
-        targetAgent: string;
-        model: string;
-        alias: boolean;
-        efforts: readonly string[] | null;
-    };
-}[];
+    value: ModelChoice;
+}>;
 /**
  * The open-set escape, one row PER allowed backend.
  *
@@ -175,17 +167,15 @@ export function ompModelRows(models: ReadonlyArray<{
  * model the four hardcoded aliases did not name.
  *
  * @param {{ backends: readonly string[], sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: CustomSpecChoice }>}
  */
 export function customModelRows({ backends, sourceAgent }: {
     backends: readonly string[];
     sourceAgent: string;
-}): {
+}): Array<{
     name: string;
-    value: {
-        kind: string;
-        targetAgent: string;
-    };
-}[];
+    value: CustomSpecChoice;
+}>;
 /**
  * The whole base-model menu for a resume, in presentation order:
  *   backend defaults → native aliases → codex registry → OMP registry → escapes.
@@ -202,9 +192,10 @@ export function customModelRows({ backends, sourceAgent }: {
  * @param {{ backends: readonly string[], sourceAgent: string,
  *           aliases?: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           codexModels?: readonly any[], ompModels?: readonly any[],
- *           includeCustomRows?: boolean }} args
+ *           codexSkipIds?: readonly string[], includeCustomRows?: boolean }} args
+ * @returns {ResumeModelRow[]}
  */
-export function buildResumeModelRows({ backends, sourceAgent, aliases, codexModels, ompModels, includeCustomRows, }: {
+export function buildResumeModelRows({ backends, sourceAgent, aliases, codexModels, ompModels, codexSkipIds, includeCustomRows, }: {
     backends: readonly string[];
     sourceAgent: string;
     aliases?: ReadonlyArray<{
@@ -214,14 +205,9 @@ export function buildResumeModelRows({ backends, sourceAgent, aliases, codexMode
     }>;
     codexModels?: readonly any[];
     ompModels?: readonly any[];
+    codexSkipIds?: readonly string[];
     includeCustomRows?: boolean;
-}): {
-    name: string;
-    value: {
-        kind: string;
-        targetAgent: string;
-    };
-}[];
+}): ResumeModelRow[];
 /**
  * Compose the `--model` spec for a chosen registry row + effort.
  *

@@ -31,12 +31,29 @@ function artifactPath(payload: Record<string, unknown>, runId: string, suffix: s
   return `reports/durable-parks/${safe}-${suffix}.json`;
 }
 
+/**
+ * Which branch a routine payload selects.
+ *
+ * Exported so the REPORT-ONLY property of the P-022 daily backstop is testable
+ * without a live database: `audit` is the default and the only branch the
+ * scheduled row may ever take (D-018/D-022/D-023 — a durable park is never
+ * cleared by age, parker death, or model judgment). `reconcile` mutates, and is
+ * reachable only from an explicit on-demand invocation that names it.
+ *
+ * Anything other than the exact string `'reconcile'` — absent, empty, misspelled,
+ * a truthy object — falls back to the reporting branch, so a malformed payload
+ * degrades to reading rather than to clearing parks.
+ */
+export function selectDurableParkAuditMode(payload: Record<string, unknown>): 'audit' | 'reconcile' {
+  return payload.mode === 'reconcile' ? 'reconcile' : 'audit';
+}
+
 async function productionRun(ctx: SystemActionCtx): Promise<DurableParkAuditReport | DurableParkReconcileResult> {
   if (process.env.VITEST) throw new Error('production durable-park audit must not run from a unit test');
   const payload = ctx.payloadTemplate ?? {};
   const explicit = typeof payload.runId === 'string' ? payload.runId.trim() : '';
   const runId = explicit || DBOS.workflowID?.trim() || `${WORK_ITEM_DURABLE_PARK_AUDIT}:${randomUUID()}`;
-  if (payload.mode === 'reconcile') {
+  if (selectDurableParkAuditMode(payload) === 'reconcile') {
     const decisions = Array.isArray(payload.decisions) ? (payload.decisions as DurableParkReconcileDecision[]) : [];
     return runWorkItemDurableParkReconciliation({
       workspaceId: ctx.workspaceId,
@@ -88,6 +105,15 @@ export function makeWorkItemDurableParkAuditAction(overrides: Partial<DurablePar
   };
 }
 
+// P-022: this action now has a STANDING daily report-only row
+// (`seed-work-item-durable-park-audit-routine.ts`, registered in
+// BESPOKE_ACTIVE_SEEDS), so a missing row must be LOUD again. It was declared
+// `on-demand` while the only invocations were per-call reconcile runs; leaving it
+// that way after wiring the daily backstop would exempt the very routine whose
+// absence is the failure this phase exists to close — the audit sat un-seeded and
+// never once ticked precisely because nothing was checking for its row.
+// On-demand reconcile invocations are unaffected: `scheduling` governs only the
+// code↔data row cross-check, never dispatch.
 registerSystemAction(WORK_ITEM_DURABLE_PARK_AUDIT, makeWorkItemDurableParkAuditAction(), {
-  scheduling: 'on-demand',
+  scheduling: 'standing',
 });

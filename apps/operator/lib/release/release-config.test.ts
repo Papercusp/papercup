@@ -62,27 +62,27 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
 
   it('papercusp default (no overlay) → LEGACY papercup-release + per-root <basename>-checkpoint + main/staging', () => {
     const cfg = releaseConfig();
-    // releaseRoot keeps the legacy fixed name — the live papercup-dev-api.service points at
+    // releaseRoot keeps the legacy fixed name — the live papercusp-dev-api.service points at
     // it. checkpointRoot is per-root (disposable checkout, safe to namespace) so two
     // lineages sharing a parent dir can never race one checkout.
     expect(basename(cfg.releaseRoot)).toBe('papercup-release');
     expect(basename(cfg.checkpointRoot)).toBe(`${basename(cfg.integrationRoot)}-checkpoint`);
     expect(cfg.releaseRef).toBe('main');
     expect(cfg.integrationBranch).toBe('staging');
-    expect(cfg.systemdUnit).toBe('papercup-dev-api.service');
-    expect(cfg.backgroundSystemdUnit).toBe('papercup-bg-host.service');
+    expect(cfg.systemdUnit).toBe('papercusp-dev-api.service');
+    expect(cfg.backgroundSystemdUnit).toBe('papercusp-bg-host.service');
     expect(cfg.greenCmd).toBe('npm run test:related');
     expect(cfg.greenCheckpointCapacityMode).toBe('shared');
   });
 
   it('keeps the background-unit override, including an explicit empty disable value', () => {
-    process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT = 'papercup-bg-host-test.service';
-    expect(releaseConfig().backgroundSystemdUnit).toBe('papercup-bg-host-test.service');
+    process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT = 'papercusp-bg-host-test.service';
+    expect(releaseConfig().backgroundSystemdUnit).toBe('papercusp-bg-host-test.service');
 
     process.env.PAPERCUSP_BACKGROUND_SYSTEMD_UNIT = '';
     expect(releaseConfig().backgroundSystemdUnit).toBe('');
-    expect(releaseConfig({ backgroundSystemdUnit: 'papercup-bg-host-override.service' }).backgroundSystemdUnit).toBe(
-      'papercup-bg-host-override.service',
+    expect(releaseConfig({ backgroundSystemdUnit: 'papercusp-bg-host-override.service' }).backgroundSystemdUnit).toBe(
+      'papercusp-bg-host-override.service',
     );
   });
 

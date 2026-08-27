@@ -8,6 +8,8 @@ import { EventEmitter } from 'node:events';
 import * as os from 'node:os';
 import {
   CODEX_CLI_REF_PREFIX,
+  codexCliFailureDetail,
+  isCodexAuthFailure,
   codexCliResponsesBody,
   extractResponsesInputText,
   parseBridgeModel,
@@ -100,14 +102,14 @@ describe('codexCliResponsesBody', () => {
       status: string;
       output_text: string;
       output: Array<{ type: string; content: Array<{ type: string; text: string }> }>;
-      usage: { input_tokens: number; output_tokens: number };
+      usage: { input_tokens: number; output_tokens: number; total_tokens: number };
       gateway_codex_cli: boolean;
     };
     expect(b.object).toBe('response');
     expect(b.status).toBe('completed');
     expect(b.output_text).toBe('hi');
     expect(b.output[0].content[0]).toEqual({ type: 'output_text', text: 'hi' });
-    expect(b.usage).toEqual({ input_tokens: 3, output_tokens: 1 });
+    expect(b.usage).toEqual({ input_tokens: 3, output_tokens: 1, total_tokens: 4 });
     expect(b.gateway_codex_cli).toBe(true);
   });
 });
@@ -256,5 +258,133 @@ describe('runCodexCliCompletion', () => {
     });
     ac.abort();
     await expect(p).rejects.toThrow(/aborted/);
+  });
+});
+
+/**
+ * EI-21618978789879488 — a failure detail must never be blank.
+ *
+ * A clobbered ~/.codex/auth.json made every bridged call exit 1 while codex
+ * wrote the actual cause to its --json STDOUT stream. The bridge reported
+ * stderr only, so the error read `codex exited 1: ` with an empty tail. That
+ * blank tail got diagnosed fleet-wide as a quota wall for hours, and the
+ * proposed remedy was to move ~20 model-bearing learning paths onto a more
+ * exhausted provider. The real message was sitting unread in stdout.
+ *
+ * The incident's own stdout is the fixture, with the bearer value replaced by a
+ * non-credential placeholder.
+ */
+const AUTH_HEADER_ERROR_STDOUT = [
+  '{"type":"thread.started","thread_id":"01a04414-e33b-7cc3-bc02-6bf0fe3c3ac9"}',
+  '{"type":"turn.started"}',
+  "2026-08-27T16:36:54.864240Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: UTF-8 encoding error: failed to convert header to a str for header name 'authorization' with value: \"Bearer PLACEHOLDER-NOT-A-REAL-TOKEN\"",
+].join('\n');
+
+describe('codexCliFailureDetail (EI-21618978789879488)', () => {
+  it('surfaces the tracing ERROR codex wrote to STDOUT when stderr is empty', () => {
+    const detail = codexCliFailureDetail(AUTH_HEADER_ERROR_STDOUT, '');
+    expect(detail).not.toBe('');
+    expect(detail).toMatch(/authorization/);
+    expect(detail).toMatch(/failed to convert header/);
+    expect(detail).toContain('[REDACTED]');
+    expect(detail).not.toContain('PLACEHOLDER-NOT-A-REAL-TOKEN');
+  });
+
+  it('redacts bearer values from stderr fallbacks too', () => {
+    const detail = codexCliFailureDetail('', 'HTTP 401 Authorization: Bearer sk-not-a-real-secret');
+    expect(detail).toContain('HTTP 401');
+    expect(detail).toContain('Bearer [REDACTED]');
+    expect(detail).not.toContain('sk-not-a-real-secret');
+  });
+
+  it('never returns empty while either stream holds content — the whole contract', () => {
+    // Benign JSONL only: no error line, no stderr. Must still say something.
+    expect(codexCliFailureDetail('{"type":"turn.started"}', '')).not.toBe('');
+    expect(codexCliFailureDetail('', 'boom from stderr')).toContain('boom from stderr');
+    expect(codexCliFailureDetail('some banner text', '')).toContain('some banner text');
+  });
+
+  it('prefers an explicit error over incidental noise, and honours the tail limit', () => {
+    const detail = codexCliFailureDetail(AUTH_HEADER_ERROR_STDOUT, '');
+    expect(detail).not.toMatch(/thread\.started/);
+    expect(codexCliFailureDetail(AUTH_HEADER_ERROR_STDOUT, '', 40).length).toBeLessThanOrEqual(40);
+  });
+
+  it('reads a structured error field out of a JSONL event', () => {
+    const detail = codexCliFailureDetail('{"type":"turn.failed","error":"usage limit reached"}', '');
+    expect(detail).toContain('usage limit reached');
+  });
+});
+
+describe('runCodexCliCompletion — a non-zero exit is always diagnosable', () => {
+  it('names the stdout auth error instead of rejecting with a blank tail', async () => {
+    const { spawnFn } = fakeSpawn({ stdout: AUTH_HEADER_ERROR_STDOUT, stderr: '', code: 1 });
+    let err: Error | undefined;
+    try {
+      await runCodexCliCompletion({
+        home: '/tmp/clobbered-home',
+        model: 'gpt-5.6-sol',
+        effort: 'xhigh',
+        prompt: 'anything',
+        timeoutMs: 5_000,
+        spawnFn,
+        codexBin: '/usr/bin/codex',
+      });
+    } catch (e) {
+      err = e as Error;
+    }
+
+    expect(err).toBeInstanceOf(Error);
+    // The pre-fix message was EXACTLY `codex-cli bridge: codex exited 1: `.
+    // Assert both that the blank shape is gone and that the cause is named.
+    expect(err?.message).not.toMatch(/exited 1:\s*$/);
+    expect(err?.message).toMatch(/authorization/);
+  });
+});
+
+describe('isCodexAuthFailure (EI-21618978789879488)', () => {
+  it('classifies the real 2026-08-27 clobber — the failure that read as a quota wall for hours', () => {
+    expect(isCodexAuthFailure(codexCliFailureDetail(AUTH_HEADER_ERROR_STDOUT, ''))).toBe(true);
+  });
+
+  it('classifies the other ways a codex credential is unusable', () => {
+    for (const detail of [
+      'codex-oauth-proxy: no usable auth.json at /home/x/.codex/auth.json',
+      'codex-oauth-proxy: no refresh_token in auth.json — re-login with `codex`',
+      'HTTP 401 Unauthorized',
+      'invalid_api_key: Incorrect API key provided',
+      'authentication failed',
+      'refresh_token_reused',
+    ]) {
+      expect(isCodexAuthFailure(detail), detail).toBe(true);
+    }
+  });
+
+  // CONTROL — the classifier is only worth anything if it does NOT fire here. A quota wall is an
+  // exhausted-but-HEALTHY account with its own failover path; relabelling it as credential death
+  // would quarantine a good account for 15 minutes and thin the pool under exactly the load that
+  // produced the 429. The incident was this mistake in the other direction (a credential fault read
+  // as "the provider is out of usage"); neither direction may be possible.
+  it('does NOT classify quota/rate walls as credential death', () => {
+    for (const detail of [
+      "You've hit your usage limit.",
+      'rate limited, retry after 30s',
+      'rate_limit_error',
+      'HTTP 429 Too Many Requests',
+      'quota exceeded for this account',
+    ]) {
+      expect(isCodexAuthFailure(detail), detail).toBe(false);
+    }
+  });
+
+  it('does NOT classify unrelated failures, or an empty detail, as credential death', () => {
+    for (const detail of ['', '   ', 'request aborted', 'spawn failed: ENOENT', 'context window exceeded']) {
+      expect(isCodexAuthFailure(detail), JSON.stringify(detail)).toBe(false);
+    }
+  });
+
+  // A 429 that merely MENTIONS authorization must stay a quota wall — quota wording wins.
+  it('lets quota wording win when a message carries both', () => {
+    expect(isCodexAuthFailure('429 too many requests on the authorization endpoint')).toBe(false);
   });
 });

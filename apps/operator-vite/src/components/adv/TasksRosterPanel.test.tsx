@@ -51,6 +51,7 @@ import TasksRosterPanel, {
   fmtAge,
   fmtBytes,
   groupByClass,
+  liveProcessName,
   shortCmd,
   splitUnowned,
   unaccountedGroups,
@@ -122,6 +123,12 @@ describe('pure projections', () => {
     expect(shortCmd('node /a/b/hono-host.ts --port 3070')).toBe('hono-host.ts');
     expect(shortCmd('npx tsx /x/deploy-cli.ts')).toBe('deploy-cli.ts');
     expect(shortCmd(null)).toBe('—');
+  });
+
+  it('labels a scanned process from redacted metadata, never a raw cmdline', () => {
+    expect(liveProcessName({ executable: 'papercup-bg-host', role: 'bg-host' })).toBe('papercup-bg-host');
+    expect(liveProcessName({ executable: null, role: 'background-service' })).toBe('background-service');
+    expect(liveProcessName({ executable: null, role: null })).toBe('—');
   });
 
   /**
@@ -242,11 +249,19 @@ describe('<TasksRosterPanel>', () => {
   it('SHOWS a scanned process that no chokepoint enrolled', () => {
     H.payload = payload({
       liveProcesses: [
-        { pid: 41208, cmdline: 'node /x/papercup-bg-host.ts', cgroupPath: '/sys/fs/cgroup/x', owned: false },
+        {
+          pid: 41208,
+          startedAt: null,
+          executable: 'papercup-bg-host',
+          role: 'bg-host',
+          build: null,
+          cgroupPath: '/sys/fs/cgroup/x',
+          owned: false,
+        },
       ],
     });
     render(<TasksRosterPanel active />);
-    expect(screen.getByTestId('task-scanned-41208')).toBeTruthy();
+    expect(screen.getByTestId('task-scanned-41208').textContent).toContain('papercup-bg-host');
     // The row carries no `scope`, so splitUnowned's absent-discriminant rule puts
     // it in the `unaccounted` group (over-report rather than silently exempt).
     expect(screen.getByTestId('tasks-roster').textContent).toContain('unaccounted');
@@ -255,8 +270,8 @@ describe('<TasksRosterPanel>', () => {
   it('keeps unenrolled rows OUT of the ledger groups', () => {
     H.payload = payload({
       liveProcesses: [
-        { pid: 41208, cmdline: 'node /x/bg.ts', cgroupPath: '/c', owned: false },
-        { pid: 41209, cmdline: 'node /x/enrolled.ts', cgroupPath: '/c', owned: true },
+        { pid: 41208, startedAt: null, executable: 'bg', role: null, build: null, cgroupPath: '/c', owned: false },
+        { pid: 41209, startedAt: null, executable: 'enrolled', role: null, build: null, cgroupPath: '/c', owned: true },
       ],
     });
     render(<TasksRosterPanel active />);
@@ -275,7 +290,7 @@ describe('<TasksRosterPanel>', () => {
   it('offers kill on enrolled rows and NEVER on a scanned-only process', () => {
     H.payload = payload({
       liveProcesses: [
-        { pid: 41208, cmdline: 'node /x/bg.ts', cgroupPath: '/c', owned: false },
+        { pid: 41208, startedAt: null, executable: 'bg', role: null, build: null, cgroupPath: '/c', owned: false },
       ],
     });
     render(<TasksRosterPanel active />);
@@ -336,7 +351,16 @@ describe('splitUnowned', () => {
   // operator that predates them arrives without either — which is precisely the
   // case the absent-discriminant rule exists for. Cast so we can construct it.
   const row = (p: Partial<Parameters<typeof splitUnowned>[0][number]>) =>
-    ({ pid: 1, cmdline: 'x', cgroupPath: '/c', owned: false, ...p }) as Parameters<
+    ({
+      pid: 1,
+      startedAt: null,
+      executable: 'x',
+      role: null,
+      build: null,
+      cgroupPath: '/c',
+      owned: false,
+      ...p,
+    }) as Parameters<
       typeof splitUnowned
     >[0][number];
 
@@ -408,7 +432,10 @@ describe('exemptByReason', () => {
   const row = (reason: string | null, pid: number) =>
     ({
       pid,
-      cmdline: 'x',
+      startedAt: null,
+      executable: 'x',
+      role: null,
+      build: null,
       cgroupPath: '/c',
       owned: false,
       scope: 'exempt',

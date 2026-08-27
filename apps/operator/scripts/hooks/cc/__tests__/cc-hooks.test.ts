@@ -262,7 +262,12 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
     const t0 = Date.now();
     const r = runRelease(
       payload({ tool_use_id: tuId, session_id: "s" }),
-      { PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1" },
+      {
+        PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1",
+        // Keep both configured origins refused so this test exercises the
+        // bounded all-origins retry path rather than the live stable fallback.
+        PAPERCUSP_LOCKS_FALLBACK_OPERATOR_URL: "http://127.0.0.1:1",
+      },
     );
     const elapsed = Date.now() - t0;
     expect(r.status).toBe(0); // release is always best-effort — never blocks the turn

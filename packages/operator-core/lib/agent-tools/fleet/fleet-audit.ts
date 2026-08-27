@@ -314,20 +314,25 @@ const defaultReaders: FleetAuditEvidenceReaders = {
   async sessions(input, sql) {
     const rows = await sql<Array<Record<string, unknown>>>`
       WITH ranked AS (
-        SELECT coord_owner_id, id, agent, role, session_id, plan_slug, harness_slug,
+        SELECT coord_owner_id, id, agent, role, session_id, plan_slug,
                started_at, ended_at, ended_by, ended_signal, exit_code,
                row_number() OVER (PARTITION BY coord_owner_id ORDER BY started_at DESC, id DESC) AS rn
           FROM harness_shared.adv_sessions
          WHERE workspace_id = ${input.workspaceId}
            AND coord_owner_id = ANY(${sql.array(input.ownerIds)}::text[])
            AND started_at >= ${input.sinceAt}::timestamptz
-           AND started_at <= ${input.snapshotAt}::timestamptz
-           ${input.harnessSlug ? sql`AND (harness_slug = ${input.harnessSlug} OR harness_slug IS NULL)` : sql``})
+           AND started_at <= ${input.snapshotAt}::timestamptz)
       SELECT * FROM ranked WHERE rn <= ${FLEET_AUDIT_MEMBER_EVIDENCE_CAP}
        ORDER BY coord_owner_id, started_at DESC, id DESC`;
     return rows.map((row) => ({
       ownerId: String(row.coord_owner_id), id: Number(row.id), agent: text(row.agent), role: text(row.role),
-      sessionId: text(row.session_id), planSlug: text(row.plan_slug), harnessSlug: text(row.harness_slug),
+      // harness_slug is NOT a column on harness_shared.adv_sessions (33 columns, none of them
+      // this one). Selecting and filtering on it made every real sessions read throw 42703, so
+      // this leg reported `unavailable` on every call the tool has ever served — invisible because
+      // the unit suite substitutes a fake reader and never executes this SQL. The remaining
+      // predicates (workspace + coord_owner_id + the sinceAt/snapshotAt window) already scope the
+      // read; a session simply carries no harness of its own to report here.
+      sessionId: text(row.session_id), planSlug: text(row.plan_slug), harnessSlug: null,
       startedAt: iso(row.started_at)!, endedAt: iso(row.ended_at), endedBy: text(row.ended_by),
       endedSignal: text(row.ended_signal), exitCode: number(row.exit_code),
     }));
@@ -544,10 +549,26 @@ export async function readFleetAudit(
     record?.lastLaunchTransaction,
   );
 
+  // The reason must carry the ACTUAL rejection, not a label derived from the writer name.
+  // This previously returned `${writer}-read-failed`, which discarded settled.reason entirely:
+  // the export correctly announced that a leg was degraded but destroyed the one detail needed
+  // to fix it. That is how a plain Postgres 42703 ("column harness_slug does not exist") sat
+  // undiagnosed in the sessions reader — every caller saw only "adv_sessions-read-failed".
+  // An audit whose contract is "unavailable legs are unknown/degraded, never zero" has to say
+  // WHY, or the honesty is unactionable.
+  const failureReason = (settled: PromiseRejectedResult, writer: string): string => {
+    const raw = settled.reason;
+    const detail = raw instanceof Error
+      ? (raw.message || raw.name)
+      : typeof raw === 'string' ? raw : (() => { try { return JSON.stringify(raw); } catch { return String(raw); } })();
+    const trimmed = (detail ?? '').trim();
+    return trimmed ? `${writer}-read-failed: ${trimmed.slice(0, 500)}` : `${writer}-read-failed`;
+  };
+
   const resultFor = <T>(settled: PromiseSettledResult<T[]>, writer: string, ownerId: string) =>
     settled.status === 'fulfilled'
       ? available(writer, 'bounded', rowsFor(settled.value as Array<T & { ownerId: string }>, ownerId))
-      : unavailable<T[]>(writer, `${writer}-read-failed`);
+      : unavailable<T[]>(writer, failureReason(settled, writer));
 
   const members = ownerIds.map((ownerId) => {
     const assignment = assignmentGroups?.find((group) => group.agentId === ownerId);

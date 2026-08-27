@@ -768,7 +768,7 @@ describe('evaluateBgHostCodeDrift (WI-1867 — stale routines-primary detection)
     expect(res.note).toMatch(/CODE DRIFT/);
     expect(res.note).toMatch(/loop-fire\.ts/); // the newest changed file, so the reader sees WHAT drifted
     expect(res.note).toMatch(/~50m AFTER/); // boot 60m ago, change 10m ago
-    expect(res.note).toMatch(/systemctl --user restart papercup-bg-host\.service/);
+    expect(res.note).toMatch(/systemctl --user restart papercusp-bg-host\.service/);
     expect(res.note).toMatch(/doesn't take effect/); // the exact symptom an agent greps for
   });
 
@@ -849,7 +849,7 @@ describe('evaluateMcpProxyCodeDrift (EI-21390665295968159 — stale :9071 proxy 
     const proxy = evaluateMcpProxyCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'a.ts');
     const bgHost = evaluateBgHostCodeDrift(NOW - 60 * 60_000, NOW - 10 * 60_000, 'a.ts');
     expect(proxy.name).not.toBe(bgHost.name);
-    expect(proxy.note).not.toMatch(/papercup-bg-host/);
+    expect(proxy.note).not.toMatch(/papercusp-bg-host/);
     expect(bgHost.note).not.toMatch(/papercup-mcp-proxy/);
   });
 });

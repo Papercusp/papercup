@@ -126,6 +126,72 @@ describe('event_awaits + event_wake_deliveries (real PG)', () => {
     expect(total).toBe(2);
   });
 
+  it('keeps one newest exact one-shot across sequential and concurrent registration surfaces', async () => {
+    const subscriberId = 'su-exact-registration-dedup';
+    const eventKey = 'exact:registration:dedup';
+    const first = await store.registerAwait({ subscriberId, eventKey, note: 'direct events:await' });
+    const second = await store.registerAwait({
+      subscriberId,
+      eventKey,
+      note: 'lifecycle auto-arm',
+      boundTo: { kind: 'work-item-claim', ref: 'EI-exact-registration-dedup' },
+    });
+
+    expect((await store.listActiveAwaits(subscriberId)).map((row) => row.id)).toEqual([second.id]);
+
+    const concurrent = await Promise.all(
+      Array.from({ length: 12 }, (_, index) =>
+        store.registerAwait({
+          subscriberId,
+          eventKey,
+          note: `concurrent surface ${index}`,
+          ...(index % 2 === 0
+            ? {}
+            : { boundTo: { kind: 'fleet-leadership', ref: 'exact-registration-dedup' } }),
+        }),
+      ),
+    );
+    const active = (await store.listActiveAwaits(subscriberId)).filter((row) => row.eventKey === eventKey);
+    expect(active).toHaveLength(1);
+    expect(concurrent.map((row) => row.id)).toContain(active[0].id);
+
+    const history = await db.adminSql<{ id: number; cancelled_at: string | null }[]>`
+      SELECT id, cancelled_at
+        FROM harness_shared.event_awaits
+       WHERE subscriber_id = ${subscriberId} AND event_key = ${eventKey}
+       ORDER BY id
+    `;
+    expect(history).toHaveLength(14);
+    expect(history.filter((row) => row.cancelled_at == null)).toHaveLength(1);
+    expect(history.find((row) => row.id === first.id)?.cancelled_at).not.toBeNull();
+    expect(history.find((row) => row.id === second.id)?.cancelled_at).not.toBeNull();
+  });
+
+  it('keeps filtered predicates and fleet benches distinct from ordinary exact dedup', async () => {
+    const subscriberId = 'su-exact-special-surfaces';
+    const eventKey = 'exact:special:surfaces';
+    const filtered = await store.registerAwait({
+      subscriberId,
+      eventKey,
+      payloadFilter: { candidate: { equals: 'one' } },
+    });
+    const filteredSibling = await store.registerAwait({
+      subscriberId,
+      eventKey,
+      payloadFilter: { candidate: { equals: 'two' } },
+    });
+    const bench = await store.registerAwait({
+      subscriberId,
+      eventKey,
+      note: '[fleet:bench] staged assignment',
+    });
+    const ordinary = await store.registerAwait({ subscriberId, eventKey });
+
+    expect((await store.listActiveAwaits(subscriberId)).map((row) => row.id).sort()).toEqual(
+      [filtered.id, filteredSibling.id, bench.id, ordinary.id].sort(),
+    );
+  });
+
   it('cancel is subscriber-scoped: yours cancels, a peer’s does not', async () => {
     const mine = await store.registerAwait({ subscriberId: 'su-5', eventKey: 'cancel:k' });
     expect(await store.cancelAwait({ awaitId: mine.id, subscriberId: 'su-other' })).toBe(false);

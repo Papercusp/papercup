@@ -164,7 +164,7 @@ export function acceptanceGraderLabelPrefix(rubricRef: string): string {
   return `acceptance-grader:${safe || 'rubric'}:`;
 }
 
-function compactSnapshot(input: {
+export function compactSnapshot(input: {
   plan: NonNullable<Awaited<ReturnType<typeof readPlanBySlug>>>;
   rubric: NonNullable<Awaited<ReturnType<typeof getAcceptanceRubricForPlan>>>;
   audit: NonNullable<Awaited<ReturnType<typeof getLatestPlanAudit>>>;
@@ -216,19 +216,136 @@ function compactSnapshot(input: {
   };
 }
 
-function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>): string {
+export const ACCEPTANCE_SNAPSHOT_CAP_CHARS = 5_800;
+
+/**
+ * What a truncated package MUST tell the judge. Without it a judge cannot tell
+ * "this field is empty" from "this field was deleted to fit a cap", so it stalls
+ * instead of reporting the gap (EI-21615102901369580).
+ */
+const DEGRADED_SNAPSHOT_NOTICE =
+  'TRUNCATED EVIDENCE PACKAGE. Every field named in droppedFields is ABSENT FROM THIS SNAPSHOT. ' +
+  'That absence is a limit of this package, NOT evidence that the underlying record is empty. ' +
+  'Do NOT rate a criterion satisfied or unsatisfied on the strength of a field named here: mark that ' +
+  'criterion NOT GRADED, say which field you lacked, and grade the criteria you can still evidence.';
+
+/**
+ * Fit the frozen evidence package under the size cap.
+ *
+ * Degrades PROGRESSIVELY and BY VALUE — stopping at the first stage that fits — and
+ * always stamps `contextIntegrity` when anything was surrendered.
+ *
+ * EI-21615102901369580: the previous implementation jumped straight from "full" to a
+ * maximally-stripped shape that deleted `audit.items[].citations`, plan item text,
+ * decision bodies and terminal-work evidence in a single blanket step, with no marker
+ * of any kind. Those are exactly the bytes a grader needs — the class rubrics require
+ * it to spot-check the implementer's audit citations — so a judge over the cap got a
+ * package that looked complete, carried no evidence, and could only stall. Citations
+ * are therefore surrendered LAST, and never silently.
+ */
+export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>): string {
+  const cap = ACCEPTANCE_SNAPSHOT_CAP_CHARS;
   const full = JSON.stringify(snapshot);
-  if (full.length <= 5_800) return full;
-  return JSON.stringify({
-    ...snapshot,
-    plan: {
-      ...snapshot.plan,
-      items: snapshot.plan.items.map(({ id, status }) => ({ id, status })),
-      decisions: snapshot.plan.decisions.map(({ id, title }) => ({ id, title })),
+  if (full.length <= cap) return full;
+
+  const working: Record<string, unknown> = { ...snapshot };
+  const dropped: string[] = [];
+  const plan = () => working.plan as Record<string, unknown>;
+  const audit = () => working.audit as Record<string, unknown>;
+  const render = (): string =>
+    JSON.stringify({
+      ...working,
+      contextIntegrity: {
+        degraded: true,
+        fullChars: full.length,
+        capChars: cap,
+        droppedFields: [...dropped],
+        notice: DEGRADED_SNAPSHOT_NOTICE,
+      },
+    });
+
+  // Least decision-relevant bytes first; the grader's spot-check material last.
+  const steps: Array<{ label: string; apply: () => void }> = [
+    {
+      label: 'terminalWork[].evidence',
+      apply: () => {
+        working.terminalWork = snapshot.terminalWork.map((w) => ({
+          id: w.id,
+          state: w.state,
+          title: w.title,
+          terminalOwner: w.terminalOwner,
+          completionRef: w.completionRef,
+        }));
+      },
     },
-    audit: { ...snapshot.audit, items: snapshot.audit.items.map(({ itemId, verdict }) => ({ itemId, verdict })) },
-    terminalWork: snapshot.terminalWork.map(({ id, state, completionRef }) => ({ id, state, completionRef })),
-  });
+    {
+      label: 'plan.decisions[].body shortened to 120 chars',
+      apply: () => {
+        working.plan = { ...plan(), decisions: snapshot.plan.decisions.map((d) => ({ ...d, body: trim(d.body, 120) })) };
+      },
+    },
+    {
+      label: 'plan.items[].text shortened to 90 chars',
+      apply: () => {
+        working.plan = { ...plan(), items: snapshot.plan.items.map((i) => ({ ...i, text: trim(i.text, 90) })) };
+      },
+    },
+    {
+      label: 'audit.summary shortened to 200 chars',
+      apply: () => {
+        working.audit = { ...audit(), summary: trim(snapshot.audit.summary, 200) };
+      },
+    },
+    {
+      label: 'rubric.criteria[].description shortened to 120 chars',
+      apply: () => {
+        working.rubric = {
+          ...(working.rubric as Record<string, unknown>),
+          criteria: snapshot.rubric.criteria.map((c) => ({ ...c, description: trim(c.description, 120) })),
+        };
+      },
+    },
+    {
+      label: 'terminalWork[].title',
+      apply: () => {
+        working.terminalWork = snapshot.terminalWork.map((w) => ({
+          id: w.id,
+          state: w.state,
+          terminalOwner: w.terminalOwner,
+          completionRef: w.completionRef,
+        }));
+      },
+    },
+    {
+      label: 'plan.decisions[].body',
+      apply: () => {
+        working.plan = { ...plan(), decisions: snapshot.plan.decisions.map((d) => ({ id: d.id, title: d.title })) };
+      },
+    },
+    {
+      label: 'plan.items[].text',
+      apply: () => {
+        working.plan = { ...plan(), items: snapshot.plan.items.map((i) => ({ id: i.id, status: i.status })) };
+      },
+    },
+    {
+      label: 'audit.items[].citations — LAST RESORT: the grader can no longer spot-check the audit',
+      apply: () => {
+        working.audit = {
+          ...audit(),
+          items: snapshot.audit.items.map((i) => ({ itemId: i.itemId, verdict: i.verdict })),
+        };
+      },
+    },
+  ];
+
+  for (const step of steps) {
+    const candidate = render();
+    if (candidate.length <= cap) return candidate;
+    step.apply();
+    dropped.push(step.label);
+  }
+  return render();
 }
 
 /**

@@ -605,6 +605,57 @@ describe('GET /api/oauth/callback', () => {
     expect(cfg['other-facebook-field_refresh']).toBe('keep-other-facebook-refresh');
   });
 
+  it('WI-133209: fails closed when an ADD-account Facebook consent comes back with an already-connected account', async () => {
+    // Symmetric to the Google case. The test directly above is the CONTRAST that
+    // makes this one meaningful: there the owned source is facebook-user-2 while
+    // the consent resolves facebook-user-1, so it is a genuine second account and
+    // must succeed. Here the owned source IS facebook-user-1 — the same account the
+    // consent came back with — so a new slot would duplicate an existing connection.
+    // Facebook reaches this more easily than Google: its authorize URL carries no
+    // account-chooser hint, so an active session just continues as the logged-in user.
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '55555555-5555-4555-8555-555555555555',
+        workspaceId: 'workspace-1',
+        kind: 'facebook',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        // identical to what resolveFacebookAccount returns for this consent
+        providerAccountId: 'facebook-user-1',
+        credentialRef: 'facebook-personal-vault:already-connected-field',
+        status: 'connected',
+        config: { displayName: 'Owner One' },
+        cursor: { since: 'existing-cursor' },
+      },
+    ]);
+    providers.registerProvider({
+      id: 'facebook',
+      config: {
+        clientId: 'facebook-app',
+        clientSecret: 'facebook-secret',
+        authorizeUrl: 'https://www.facebook.com/dialog/oauth',
+        tokenUrl: 'https://graph.facebook.com/oauth/access_token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      defaultScopes: ['public_profile', 'user_posts', 'user_photos'],
+      allowedScopes: ['public_profile', 'user_posts', 'user_photos'],
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'facebook-long-lived',
+        refreshToken: 'facebook-long-lived',
+        expiresAt: Date.now() + 60 * 24 * 60 * 60 * 1000,
+      }),
+      refresh: async () => ({ accessToken: 'facebook-refreshed' }),
+    });
+
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=facebook.valid'));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=facebook_personal_vault_account_already_connected',
+    );
+    expect(sourceMocks.provisionFacebook).not.toHaveBeenCalled();
+  });
+
   it('fails closed when a targeted Facebook reconnect authenticates a different account', async () => {
     sourceMocks.resolveFacebookAccount.mockResolvedValue({
       providerAccountId: 'facebook-user-2',

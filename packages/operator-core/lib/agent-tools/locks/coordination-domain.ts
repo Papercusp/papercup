@@ -260,12 +260,24 @@ export const HOST_GLOBAL_RESOURCES: ReadonlySet<string> = new Set([
  * Matched by PREFIX (the resource name embeds a dynamic harness slug, unlike the
  * fixed {@link HOST_GLOBAL_RESOURCES} names).
  */
+/**
+ * WI-222686: the legacy superproject-wide `git-sync` resource is acquired by
+ * git-sync-action under the SAME `ctx.workspaceId || '*'` domain as the
+ * per-slug family. Leaving the exact name on the caller-tree domain made the
+ * routine's hold invisible to restart-side drains loaded from another
+ * checkout, so a `dev:restart` barrier could report clear and still kill the
+ * commit it was meant to protect.
+ */
+const WORKSPACE_SCOPED_RESOURCES: ReadonlySet<string> = new Set(['git-sync']);
 const WORKSPACE_SCOPED_RESOURCE_PREFIXES: readonly string[] = ['git-sync:'];
 
 /** True when `resource` belongs to a family whose system-side acquirer keys
  *  itself by workspace (see {@link WORKSPACE_SCOPED_RESOURCE_PREFIXES}). */
 export function isWorkspaceScopedResource(resource: string): boolean {
-  return WORKSPACE_SCOPED_RESOURCE_PREFIXES.some((prefix) => resource.startsWith(prefix));
+  return (
+    WORKSPACE_SCOPED_RESOURCES.has(resource) ||
+    WORKSPACE_SCOPED_RESOURCE_PREFIXES.some((prefix) => resource.startsWith(prefix))
+  );
 }
 
 /**

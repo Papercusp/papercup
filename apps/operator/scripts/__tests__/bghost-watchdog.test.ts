@@ -714,7 +714,7 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
 
   describe('collateralAlertMessage', () => {
     it('names the agent spawner and the desktop sidecars explicitly', () => {
-      const msg = collateralAlertMessage('papercup-bg-host', classifyCollateral(MEASURED), 'ticker frozen')!;
+      const msg = collateralAlertMessage('papercusp-bg-host', classifyCollateral(MEASURED), 'ticker frozen')!;
       expect(msg).toContain('AGENT SPAWNER');
       expect(msg).toContain('2 LIVE desktop-app sidecars');
       expect(msg).toContain('KILLED 5 process(es)');
@@ -725,11 +725,11 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
 
     it('says NOTHING when the restart destroys only the unit itself', () => {
       const benign = classifyCollateral([{ pid: 1, cmdline: 'npm exec tsx bin/hono-host.ts' }]);
-      expect(collateralAlertMessage('papercup-bg-host', benign, 'frozen')).toBeNull();
+      expect(collateralAlertMessage('papercusp-bg-host', benign, 'frozen')).toBeNull();
     });
 
     it('says NOTHING on an UNKNOWN snapshot — never infer destruction from a missing signal', () => {
-      expect(collateralAlertMessage('papercup-bg-host', null, 'frozen')).toBeNull();
+      expect(collateralAlertMessage('papercusp-bg-host', null, 'frozen')).toBeNull();
     });
   });
 
@@ -740,7 +740,7 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
       expect(shouldAlert(1)).toBe(false);
       // ...but the collateral notice must fire regardless, or a lone restart kills the owner's
       // desktop with no signal anywhere. Before this fix, nothing was emitted here at all.
-      expect(collateralAlertMessage('papercup-bg-host', classifyCollateral(MEASURED), 'frozen')).not.toBeNull();
+      expect(collateralAlertMessage('papercusp-bg-host', classifyCollateral(MEASURED), 'frozen')).not.toBeNull();
     });
 
     it('CONTROL: a threshold-gated collateral signal would be silent here — proving the guard bites', () => {
@@ -845,7 +845,7 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
   });
 
   describe('readCollateral — fail-soft on every fault (never breaks the restart path)', () => {
-    const okShow = async () => ({ err: null, stdout: '/user.slice/app.slice/papercup-bg-host.service\n' });
+    const okShow = async () => ({ err: null, stdout: '/user.slice/app.slice/papercusp-bg-host.service\n' });
 
     it('returns UNKNOWN(null) when systemctl cannot report the cgroup', async () => {
       expect(await readCollateral({ sh: async () => ({ err: new Error('boom'), stdout: '' }) })).toBeNull();
@@ -1360,7 +1360,7 @@ describe('bghost-watchdog — collateral reporting (EI-19485006080051257)', () =
    * The autostart used to be an OPT-OUT (`start()` unless PAPERCUSP_BGHOST_WATCHDOG_NO_AUTOSTART=1),
    * which put the whole burden on the importer knowing an env var exists. On 2026-08-10 an agent
    * importing `procTreeCpuTicks` for a one-off /proc probe started a SECOND real watchdog against
-   * papercup-bg-host — polling the live unit with its own independent debounce and circuit state, able
+   * papercusp-bg-host — polling the live unit with its own independent debounce and circuit state, able
    * to issue its own `systemctl restart` of a shared service, and writing to the durable log.
    *
    * These are BEHAVIOURAL (spawn a real node process and observe what it does), not source greps: the

@@ -152,6 +152,18 @@ describe('codexModelRows — the registry that made gpt-5.5 reachable without ty
     const rows = codexModelRows(MODELS, { sourceAgent: 'codex' });
     expect(rows[1].name).toContain('gpt-5.5');
   });
+
+  it('drops a registry row an ALIAS row already covers, so the menu holds no duplicate', () => {
+    // `sol` normalizes to `gpt-5.6-sol` — one launch, two spellings. The alias
+    // wins because it is the spelling psu's own flags and docs use.
+    const rows = codexModelRows(MODELS, { sourceAgent: 'codex', skipIds: ['gpt-5.6-sol'] });
+    expect(rows.map((r) => r.value.model)).toEqual(['gpt-5.5']);
+  });
+
+  it('matches skipIds case-insensitively rather than trusting the registry\'s casing', () => {
+    const rows = codexModelRows(MODELS, { sourceAgent: 'codex', skipIds: ['GPT-5.6-SOL'] });
+    expect(rows.map((r) => r.value.model)).toEqual(['gpt-5.5']);
+  });
 });
 
 describe('ompModelRows', () => {
@@ -229,14 +241,14 @@ describe('buildResumeModelRows', () => {
       ompModels: OMP,
     });
     expect(rows.map((r) => r.value.targetAgent)).not.toContain('omp');
-    expect(rows.some((r) => r.value.model === 'gpt-5.5')).toBe(true);
+    expect(rows.some((r) => r.value.kind === 'model' && r.value.model === 'gpt-5.5')).toBe(true);
   });
 
   it('degrades to aliases + escape when BOTH registries come back empty', () => {
     // The fail-soft contract: a missing registry costs its group, never the picker.
     const rows = buildResumeModelRows({ backends: ['codex'], sourceAgent: 'codex', aliases: ALIASES });
     expect(rows.some((r) => r.value.kind === 'backend-default')).toBe(true);
-    expect(rows.some((r) => r.value.model === 'sol')).toBe(true);
+    expect(rows.some((r) => r.value.kind === 'model' && r.value.model === 'sol')).toBe(true);
     expect(rows.some((r) => r.value.kind === 'custom')).toBe(true);
   });
 

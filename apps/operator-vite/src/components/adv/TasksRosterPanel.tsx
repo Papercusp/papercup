@@ -170,6 +170,25 @@ export function shortCmd(cmdline: string | null): string {
   return argv0.length > 0 ? argv0 : raw.slice(0, 40);
 }
 
+/**
+ * Live-process rows deliberately expose redacted metadata instead of raw
+ * command lines (EI-21570098453017620). Keep this compact roster on the same
+ * contract: executable is the primary label, with role as the honest fallback.
+ */
+export function liveProcessName(process: Pick<LiveProcessRow, 'executable' | 'role'>): string {
+  return process.executable ?? process.role ?? '—';
+}
+
+function liveProcessTitle(process: Pick<LiveProcessRow, 'pid' | 'executable' | 'role' | 'build'>): string {
+  return [process.executable, process.role, process.build, `pid ${process.pid}`]
+    .filter((part): part is string => Boolean(part))
+    .join(' · ');
+}
+
+function liveProcessDetail(process: Pick<LiveProcessRow, 'pid' | 'role' | 'build'>): string {
+  return [process.role, process.build].filter((part): part is string => Boolean(part)).join(' · ') || `pid ${process.pid}`;
+}
+
 /** Unaccounted cgroup groups, whichever of the two shapes the scan used. Pure. */
 export function unaccountedGroups(live: LiveScan | null): { cgroupPath: string; pids: number[]; sample: string }[] {
   const u = live?.unaccounted;
@@ -277,7 +296,7 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
     [data?.rows, needle],
   );
   const scanned = useMemo(
-    () => (data?.liveProcesses ?? []).filter((p: LiveProcessRow) => match(p.cmdline, p.cgroupPath)),
+    () => (data?.liveProcesses ?? []).filter((p: LiveProcessRow) => match(p.executable, p.role, p.build, p.cgroupPath)),
     [data?.liveProcesses, needle],
   );
   const groups = useMemo(() => groupByClass(ledger), [ledger]);
@@ -422,9 +441,9 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
                 className="pc-tasks-roster__row is-orphan"
                 data-testid={`task-scanned-${p.pid}`}
               >
-                <span className="pc-tasks-roster__age">—</span>
-                <span className="pc-tasks-roster__name" title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>
-                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>pid {p.pid}</span>
+                <span className="pc-tasks-roster__age">{fmtAge(p.startedAt, nowMs)}</span>
+                <span className="pc-tasks-roster__name" title={liveProcessTitle(p)}>{liveProcessName(p)}</span>
+                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>{liveProcessDetail(p)}</span>
                 <span className="pc-tasks-roster__num">—</span>
                 <span className="pc-tasks-roster__num">—</span>
               </div>
@@ -454,9 +473,9 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
                 className="pc-tasks-roster__row"
                 data-testid={`task-abandoned-${p.pid}`}
               >
-                <span className="pc-tasks-roster__age">—</span>
-                <span className="pc-tasks-roster__name" title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>
-                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>pid {p.pid}</span>
+                <span className="pc-tasks-roster__age">{fmtAge(p.startedAt, nowMs)}</span>
+                <span className="pc-tasks-roster__name" title={liveProcessTitle(p)}>{liveProcessName(p)}</span>
+                <span className="pc-tasks-roster__doing" title={p.cgroupPath}>{liveProcessDetail(p)}</span>
                 <span className="pc-tasks-roster__num">—</span>
                 <span className="pc-tasks-roster__num">—</span>
               </div>
@@ -503,8 +522,8 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
                 className="pc-tasks-roster__row is-muted"
                 data-testid={`task-exempt-${p.pid}`}
               >
-                <span className="pc-tasks-roster__age">—</span>
-                <span className="pc-tasks-roster__name" title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>
+                <span className="pc-tasks-roster__age">{fmtAge(p.startedAt, nowMs)}</span>
+                <span className="pc-tasks-roster__name" title={liveProcessTitle(p)}>{liveProcessName(p)}</span>
                 <span className="pc-tasks-roster__doing" title={p.cgroupPath}>
                   {EXEMPT_LABEL[p.exemptReason ?? 'other'] ?? p.exemptReason}
                 </span>

@@ -84,7 +84,7 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     deployedSha: 'sha0000001',
     serving: {
       host: 'operator-release',
-      unit: 'papercup-dev-api.service',
+      unit: 'papercusp-dev-api.service',
       pid: 99,
       startedAtMs: 1,
       codeAsOfMs: 1,
@@ -115,7 +115,7 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     gitSyncLastStatus: 'synced',
     runtimeGenerations: [
       {
-        unit: 'papercup-bg-host.service',
+        unit: 'papercusp-bg-host.service',
         label: 'bg-host',
         pid: 42,
         startedAtMs: 1,
@@ -166,7 +166,7 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     });
     expect(out.data.runtimeGenerations).toMatchObject([
       {
-        unit: 'papercup-bg-host.service',
+        unit: 'papercusp-bg-host.service',
         loadedIdentity: { source: 'runtime-vintage', treeSha: 'abc123', host: 'tower' },
         loadedIdentityUnknown: null,
       },

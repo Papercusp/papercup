@@ -17,6 +17,8 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   private seq = 0;
   private readonly rows = new Map<string, StoredAdmissionRecord>();
   failEnqueue = false;
+  /** Optional concrete fault to throw instead of the generic one, so tests can inject a pg-shaped error. */
+  enqueueError: unknown;
 
   get size(): number {
     return this.rows.size;
@@ -37,7 +39,7 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
   }
 
   async enqueue(record: DurableAdmissionRecord) {
-    if (this.failEnqueue) throw new Error('database unavailable');
+    if (this.failEnqueue) throw this.enqueueError ?? new Error('database unavailable');
     const key = this.key(record.namespace, record.idempotencyKey);
     const existing = this.rows.get(key);
     if (existing) return { ...existing, created: false };
@@ -280,6 +282,64 @@ describe('WorkItemAdmissionQueueDriver', () => {
       governor(store).governor.admit({ idempotencyKey: 'lost', admissionClass: 'mcp' }),
     ).rejects.toBeInstanceOf(AdmissionPersistenceError);
     expect(store.size).toBe(0);
+  });
+
+  // Regression: the wrapper used to carry a CONSTANT message and keep the real fault only on
+  // `.cause`, which is not serialised to MCP callers. Every distinct DB fault therefore reached an
+  // agent as the same undiagnosable sentence. Observed 2026-08-27: capability:launch-agent failed
+  // 4/4 with only "durable admission record could not be persisted", costing hours of blind
+  // hypothesis-elimination because the actual SQLSTATE was never visible.
+  it('surfaces the underlying fault in the thrown message, not just on .cause', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true;
+    store.enqueueError = new Error('relation "harness_shared.work_items" does not exist');
+
+    const error = await governor(store)
+      .governor.admit({ idempotencyKey: 'lost', admissionClass: 'mcp' })
+      .then(
+        () => null,
+        (thrown: unknown) => thrown as AdmissionPersistenceError,
+      );
+
+    expect(error).toBeInstanceOf(AdmissionPersistenceError);
+    expect(error?.message).toContain('relation "harness_shared.work_items" does not exist');
+    // The constant prefix alone must never be the whole message again.
+    expect(error?.message).not.toBe('durable admission record could not be persisted');
+    expect((error?.cause as Error | undefined)?.message).toBe(
+      'relation "harness_shared.work_items" does not exist',
+    );
+  });
+
+  it('includes postgres diagnostic fields when the fault is a pg error', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true;
+    store.enqueueError = Object.assign(new Error('new row violates check constraint'), {
+      code: '23514',
+      constraint: 'work_items_status_check',
+      schema: 'harness_shared',
+      table: 'work_items',
+    });
+
+    const error = await governor(store)
+      .governor.admit({ idempotencyKey: 'lost', admissionClass: 'mcp' })
+      .then(
+        () => null,
+        (thrown: unknown) => thrown as AdmissionPersistenceError,
+      );
+
+    expect(error?.message).toContain('sqlstate=23514');
+    expect(error?.message).toContain('constraint=work_items_status_check');
+    expect(error?.message).toContain('relation=harness_shared.work_items');
+  });
+
+  it('does not throw while describing a non-Error rejection', async () => {
+    const store = new MemoryQueueStore();
+    store.failEnqueue = true;
+    store.enqueueError = 'connection terminated unexpectedly';
+
+    await expect(
+      governor(store).governor.admit({ idempotencyKey: 'lost', admissionClass: 'mcp' }),
+    ).rejects.toThrow(/connection terminated unexpectedly/);
   });
 
   it('leases once, rejects a stale lease, and exposes the durable result', async () => {

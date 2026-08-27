@@ -19,10 +19,10 @@
 export type RestartTargetName = 'dev' | 'staging' | 'gateway' | 'bg-host' | 'embed-sidecar' | 'mcp-proxy';
 
 export const RESTART_TARGET_UNITS: Record<RestartTargetName, string> = {
-  dev: 'papercup-dev-api.service',
-  staging: 'papercup-staging-api.service',
+  dev: 'papercusp-dev-api.service',
+  staging: 'papercusp-staging-api.service',
   gateway: 'papercup-inference-gateway.service',
-  'bg-host': 'papercup-bg-host.service',
+  'bg-host': 'papercusp-bg-host.service',
   'embed-sidecar': 'papercup-embed-sidecar.service',
   'mcp-proxy': 'papercup-mcp-proxy.service',
 };

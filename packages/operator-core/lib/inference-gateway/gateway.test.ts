@@ -9,6 +9,7 @@ import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor, getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 import {
   configureScheduledRegistry,
+  listManaged,
   resetScheduledRegistry,
   type TimerHandle,
 } from '@papercusp/scheduled-registry';
@@ -3325,9 +3326,10 @@ test('[codex-cli] with NO bearer pool, /v1/responses is served by the CLI runner
   });
   assert.equal(res.status, 200, 'CLI bridge served the request');
   assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
-  const body = (await res.json()) as { output_text: string; usage: { input_tokens: number; output_tokens: number }; gateway_codex_cli: boolean };
+  const body = (await res.json()) as { output_text: string; usage: { input_tokens: number; output_tokens: number; total_tokens: number }; gateway_codex_cli: boolean };
   assert.equal(body.output_text, 'BRIDGED');
   assert.equal(body.usage.input_tokens, 11);
+  assert.equal(body.usage.total_tokens, 14, 'Responses usage includes the required aggregate');
   assert.equal(body.gateway_codex_cli, true, 'reply is marked as CLI-served');
   assert.equal(runs.length, 1);
   assert.equal(runs[0].home, '/tmp/sub-home', 'CODEX_HOME comes from the account credentialRef');
@@ -3336,7 +3338,7 @@ test('[codex-cli] with NO bearer pool, /v1/responses is served by the CLI runner
   assert.equal(runs[0].prompt, 'SYS\n\nhello', 'instructions prepended to the input');
 });
 
-test('[codex-cli] stream:true is rejected 400 (the bridge is non-streaming)', async () => {
+test('[codex-cli] stream:true adapts the buffered CLI result to Responses SSE', async () => {
   resetGovernorRegistry();
   await boot(
     (_req, res) => {
@@ -3345,7 +3347,7 @@ test('[codex-cli] stream:true is rejected 400 (the bridge is non-streaming)', as
     },
     {
       codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
-      codexCliRun: async () => ({ text: 'x', inputTokens: 0, outputTokens: 0 }),
+      codexCliRun: async () => ({ text: 'BRIDGED SSE', inputTokens: 7, outputTokens: 3 }),
     },
   );
   const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
@@ -3353,9 +3355,87 @@ test('[codex-cli] stream:true is rejected 400 (the bridge is non-streaming)', as
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ model: 'gpt-5.4', input: 'hello', stream: true }),
   });
-  assert.equal(res.status, 400);
-  const body = (await res.json()) as { error: { message: string } };
-  assert.match(body.error.message, /non-streaming/);
+  assert.equal(res.status, 200);
+  assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
+  assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
+  const wire = await res.text();
+  assert.match(wire, /"total_tokens":10/, 'response.completed is parseable by the Codex client');
+  assert.match(wire, /^event: response\.created\n/, 'the stream opens before the payload exists');
+  assert.match(wire, /event: response\.completed\n/);
+  assert.match(wire, /"type":"response.completed"/);
+  assert.match(wire, /"output_text":"BRIDGED SSE"/);
+  assert.match(wire, /"input_tokens":7/);
+  assert.match(wire, /data: \[DONE\]\n\n$/);
+});
+
+test('[codex-cli] stream:true opens the SSE stream BEFORE the CLI run resolves, and keeps it warm', async () => {
+  resetGovernorRegistry();
+  // The registry keeps its default backend inert under Vitest, so an un-armed keepalive would
+  // be SILENT here (EI-21209553211440005). Inject a real seam so listManaged() can see it.
+  enableRealManagedTimersForTest();
+  let releaseRun: (() => void) | undefined;
+  let markStarted: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  await boot(
+    (_req, res) => {
+      res.writeHead(500);
+      res.end();
+    },
+    {
+      codexCliAccounts: () => [{ accountId: 'chatgpt-sub', home: '/tmp/sub-home' }],
+      codexCliRun: async () => {
+        markStarted();
+        await new Promise<void>((resolve) => {
+          releaseRun = resolve;
+        });
+        return { text: 'SLOW TURN', inputTokens: 2, outputTokens: 1 };
+      },
+    },
+  );
+
+  // THE REGRESSION (2026-08-27): `fetch` resolves on HEADERS. While the adaptation wrote nothing
+  // until the nested CLI returned, this await blocked for the entire turn — and the gateway's own
+  // `downstreamIdleMs` (2 min) destroyed the response first, which aborted the signal and SIGKILLed
+  // the child, so every gateway-routed Codex agent turn died as `request aborted`. If the write is
+  // ever moved back after the run, this line hangs until the test times out.
+  const res = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'gpt-5.4', input: 'hello', stream: true }),
+  });
+  await started;
+  assert.equal(res.status, 200, 'headers arrive while the CLI run is still pending');
+  assert.match(res.headers.get('content-type') ?? '', /text\/event-stream/);
+  assert.equal(res.headers.get('x-papercusp-routed-account'), 'chatgpt-sub');
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  const first = await reader.read();
+  assert.match(decoder.decode(first.value), /^event: response\.created\n/, 'first frame precedes the run');
+
+  // Opening early only buys ONE idle window; the keepalive is what holds a multi-minute turn open.
+  // Assert it is ARMED rather than that the request merely completed — a fast test run would pass
+  // on the early open alone and leave the real long-turn case unguarded.
+  assert.ok(
+    listManaged().some((e) => e.name === 'inference-gateway:codex-cli-sse-keepalive'),
+    'per-connection SSE keepalive armed while the run is in flight',
+  );
+
+  releaseRun!();
+  let rest = '';
+  for (;;) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    rest += decoder.decode(chunk.value);
+  }
+  assert.match(rest, /"output_text":"SLOW TURN"/);
+  assert.match(rest, /data: \[DONE\]\n\n$/);
+  assert.ok(
+    !listManaged().some((e) => e.name === 'inference-gateway:codex-cli-sse-keepalive'),
+    'keepalive stopped with the response — a per-connection timer must not outlive its socket',
+  );
 });
 
 test('[codex-cli] an explicit x-papercusp-account pin to a CLI account WINS over an existing bearer pool', async () => {

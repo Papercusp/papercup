@@ -4209,43 +4209,55 @@ export default defineTool({
             await persistLaunchTransaction();
 
             const waveResults = await Promise.all(
-              indices.map((i) => {
+              indices.map(async (i) => {
                 const memberOwnerId = requestedMemberIds[i];
                 const memberLabel = `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`;
-                return spawnGovernedAgentProcess(
-                  {
-                    workspaceId,
-                    idempotencyKey: `fleet-spawn:${fleetSlug}:${launchRequestedAt}:member:${i}`,
-                    owner: memberOwnerId,
-                    payloadRef: `fleet:${fleetSlug}:member:${memberOwnerId}`,
-                    parent: leaderAdmissionContext,
-                    metadata: { launchedBy: ownerId, targetOwnerId: memberOwnerId, fleetSlug, role: 'member' },
-                  },
-                  (admissionContext) => {
-                    const governedBase = {
-                      ...base,
-                      env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
-                    };
-                    return args.headless
-                      ? spawnHeadless({
-                          envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
-                          label: memberLabel,
-                          logDir: headlessLogDir,
-                          launchedBy: ownerId,
-                          fleetSlug,
-                          coordOwnerId: memberOwnerId,
-                        })
-                      : spawnConsole({
-                          envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
-                          label: memberLabel,
-                          writeMcpJson: false,
-                          scheme,
-                          allowDesktopBridge: true,
-                          displayOverride: args.display,
-                          preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
-                        });
-                  },
-                );
+                try {
+                  return await spawnGovernedAgentProcess(
+                    {
+                      workspaceId,
+                      idempotencyKey: `fleet-spawn:${fleetSlug}:${launchRequestedAt}:member:${i}`,
+                      owner: memberOwnerId,
+                      payloadRef: `fleet:${fleetSlug}:member:${memberOwnerId}`,
+                      parent: leaderAdmissionContext,
+                      metadata: { launchedBy: ownerId, targetOwnerId: memberOwnerId, fleetSlug, role: 'member' },
+                    },
+                    (admissionContext) => {
+                      const governedBase = {
+                        ...base,
+                        env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+                      };
+                      return args.headless
+                        ? spawnHeadless({
+                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                            label: memberLabel,
+                            logDir: headlessLogDir,
+                            launchedBy: ownerId,
+                            fleetSlug,
+                            coordOwnerId: memberOwnerId,
+                          })
+                        : spawnConsole({
+                            envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                            label: memberLabel,
+                            writeMcpJson: false,
+                            scheme,
+                            allowDesktopBridge: true,
+                            displayOverride: args.display,
+                            preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+                          });
+                    },
+                  );
+                } catch (error) {
+                  // Admission can reject before the console spawner runs (for example when
+                  // its durable receipt cannot be persisted). Keep the rejection in its
+                  // member slot so Promise.all can finalize the wave and report the exact
+                  // member instead of aborting the whole launch transaction.
+                  return {
+                    status: 'error' as const,
+                    code: 500,
+                    error: `governed spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+                  };
+                }
               }),
             );
             const openedThisWave: string[] = [];

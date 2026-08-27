@@ -3,8 +3,20 @@
  *
  * Keep the bare model id and reasoning effort independently addressable for
  * APIs that expose separate fields, and use {@link LEARNING_MODEL_SPEC} at the
- * existing Papercusp model-spec seams (LLM calls and spawned roles). The Codex
- * Responses bridge splits the suffix before sending the request upstream.
+ * existing Papercusp model-spec seams (LLM calls and spawned roles).
+ *
+ * The `:<effort>` suffix is a PAPERCUSP spec convention, never part of a raw
+ * upstream model id — each backend strips it its own way before the request
+ * goes out: `canonicalizeAnthropicModel` (llm-client.ts) drops a known effort
+ * suffix for the anthropic-direct path, and the Codex Responses bridge splits
+ * it for codex models.
+ *
+ * Owner-directed [owner 2026-08-27]: moved BACK to `gpt-5.6-sol:xhigh` once the
+ * codex limits reset ("CHANGE ALL OUR LEARNING LOOP AGENTS TO SOL XHIGH TOO").
+ * This reverses the earlier same-day move to `claude-opus-5:xhigh` recorded
+ * against plan work-queue-admission-and-bulk-dedup-2026-08-24 D-026 — that
+ * switch was taken under codex rate-limit exhaustion, and the constraint it
+ * answered no longer holds.
  */
 export const LEARNING_MODEL_ID = 'gpt-5.6-sol' as const;
 export const LEARNING_MODEL_EFFORT = 'xhigh' as const;

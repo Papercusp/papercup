@@ -19,8 +19,19 @@ import {
   IMMINENT_FIRE_LOOKAHEAD_SEC,
   IMMINENT_FIRE_LOOKBEHIND_SEC,
   gateRunCgroupRelation,
+  GIT_SYNC_SENSITIVE_RESTART_TARGETS,
+  isGitSyncSensitiveTarget,
+  judgeGitSyncCollision,
+  probeGitSyncCollision,
+  checkGitSyncCollision,
+  acquireGitSyncRestartBarrier,
+  GIT_SYNC_RESTART_BARRIER_RESOURCE,
+  GIT_SYNC_RESTART_BARRIER_TTL_SEC,
   type GateCollisionProbe,
   type GateCollisionProbeDeps,
+  type GitSyncCollisionProbe,
+  type GitSyncCollisionProbeDeps,
+  type GitSyncRestartBarrierDeps,
 } from './gate-collision-guard';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
 
@@ -299,5 +310,289 @@ describe('checkGateCollision', () => {
       });
       expect(v.blocked, `${t} must be guarded`).toBe(true);
     }
+  });
+});
+
+const GIT_SYNC_CLEAR: GitSyncCollisionProbe = {
+  probeFailed: false,
+  targetCgroupPath: '/user.slice/app.slice/papercup-bg-host.service',
+  operations: [],
+};
+
+const gitSyncOperation = (over: Partial<GitSyncCollisionProbe['operations'][number]> = {}) => ({
+  resource: 'git-sync:papercusp',
+  owner: 'system:git-sync:4242:run-1',
+  acquiredAtMs: 1_000,
+  expiresAtMs: 601_000,
+  pid: 4242,
+  alive: true,
+  processCgroupPath: '/user.slice/app.slice/papercup-bg-host.service',
+  cgroupRelation: 'same' as const,
+  ageSec: 120,
+  ...over,
+});
+
+describe('git-sync restart-collision target set', () => {
+  it('covers every host that can execute git-sync and excludes unrelated services', () => {
+    expect([...GIT_SYNC_SENSITIVE_RESTART_TARGETS]).toEqual(['dev', 'staging', 'bg-host']);
+    expect(isGitSyncSensitiveTarget('dev')).toBe(true);
+    expect(isGitSyncSensitiveTarget('staging')).toBe(true);
+    expect(isGitSyncSensitiveTarget('bg-host')).toBe(true);
+    for (const target of ['gateway', 'embed-sidecar', 'mcp-proxy', 'desktop-dev']) {
+      expect(isGitSyncSensitiveTarget(target)).toBe(false);
+    }
+  });
+});
+
+describe('git-sync operation-in-flight verdict', () => {
+  it('BLOCKS when a live holder PID shares the restart target cgroup', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'bg-host',
+      probe: { ...GIT_SYNC_CLEAR, operations: [gitSyncOperation()] },
+      override: false,
+    });
+    expect(verdict.blocked).toBe(true);
+    expect(verdict.kind).toBe('operation-in-flight');
+    expect(verdict.detail.collidingResources).toEqual(['git-sync:papercusp']);
+    expect(verdict.detail.collidingPids).toEqual([4242]);
+    expect(verdict.note).toContain('SIGKILL');
+    expect(verdict.note).toContain('override_git_sync_collision:true');
+  });
+
+  it('single condition removed — a provably dead holder never blocks', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'bg-host',
+      probe: { ...GIT_SYNC_CLEAR, operations: [gitSyncOperation({ alive: false, cgroupRelation: 'unknown' })] },
+      override: false,
+    });
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.kind).toBe('clear');
+    expect(verdict.detail.deadResources).toEqual(['git-sync:papercusp']);
+  });
+
+  it('single condition removed — a live holder in a sibling cgroup is isolated', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'bg-host',
+      probe: {
+        ...GIT_SYNC_CLEAR,
+        operations: [
+          gitSyncOperation({
+            processCgroupPath: '/user.slice/app.slice/papercup-dev-api.service',
+            cgroupRelation: 'different',
+          }),
+        ],
+      },
+      override: false,
+    });
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.kind).toBe('operation-in-flight-isolated');
+  });
+
+  it('single condition removed — the same operation on an unrelated restart target does not apply', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'gateway',
+      probe: { ...GIT_SYNC_CLEAR, operations: [gitSyncOperation()] },
+      override: false,
+    });
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.kind).toBe('not-git-sync-sensitive');
+  });
+
+  it('fails closed when process/cgroup evidence is unreadable, with the audited override as escape hatch', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'bg-host',
+      probe: {
+        ...GIT_SYNC_CLEAR,
+        targetCgroupPath: null,
+        operations: [gitSyncOperation({ alive: null, processCgroupPath: null, cgroupRelation: 'unknown' })],
+      },
+      override: false,
+    });
+    expect(verdict.blocked).toBe(true);
+    expect(verdict.kind).toBe('operation-in-flight-unknown');
+    expect(verdict.note).toContain('Restart safety is unknown');
+    const overridden = judgeGitSyncCollision({
+      target: 'bg-host',
+      probe: {
+        ...GIT_SYNC_CLEAR,
+        targetCgroupPath: null,
+        operations: [gitSyncOperation({ alive: null, processCgroupPath: null, cgroupRelation: 'unknown' })],
+      },
+      override: true,
+    });
+    expect(overridden.blocked).toBe(false);
+    expect(overridden.overridden).toBe(true);
+    expect(overridden.note).toContain('audited override');
+  });
+
+  it('fails closed when the holder ledger cannot be read', () => {
+    const probe = { ...GIT_SYNC_CLEAR, probeFailed: true };
+    expect(judgeGitSyncCollision({ target: 'dev', probe, override: false }).blocked).toBe(true);
+    expect(judgeGitSyncCollision({ target: 'dev', probe, override: true })).toMatchObject({
+      blocked: false,
+      overridden: true,
+      kind: 'probe-failed',
+    });
+  });
+
+  it('allows a deliberate override and preserves attribution fields', () => {
+    const verdict = judgeGitSyncCollision({
+      target: 'dev',
+      probe: {
+        ...GIT_SYNC_CLEAR,
+        targetCgroupPath: '/user.slice/app.slice/papercup-dev-api.service',
+        operations: [
+          gitSyncOperation({
+            processCgroupPath: '/user.slice/app.slice/papercup-dev-api.service/worker',
+          }),
+        ],
+      },
+      override: true,
+    });
+    expect(verdict.blocked).toBe(false);
+    expect(verdict.overridden).toBe(true);
+    expect(verdict.detail.collidingPids).toEqual([4242]);
+    expect(verdict.note).toContain('audited');
+  });
+});
+
+describe('git-sync collision probe shell', () => {
+  const deps = (over: Partial<GitSyncCollisionProbeDeps> = {}): GitSyncCollisionProbeDeps => ({
+    readHolders: async () => [],
+    readProcess: () => ({ alive: true, cgroupPath: '/user.slice/app.slice/papercup-bg-host.service' }),
+    readTargetCgroup: async () => '/user.slice/app.slice/papercup-bg-host.service',
+    nowMs: () => 121_000,
+    ...over,
+  });
+
+  it('parses the writer-backed system:git-sync PID and proves the cgroup collision', async () => {
+    const readProcess = vi.fn(() => ({
+      alive: true,
+      cgroupPath: '/user.slice/app.slice/papercup-bg-host.service/worker',
+    }));
+    const probe = await probeGitSyncCollision(
+      deps({
+        readHolders: async () => [
+          {
+            resource: 'git-sync:papercusp',
+            owner: 'system:git-sync:4242:uuid',
+            acquiredAtMs: 1_000,
+            expiresAtMs: 601_000,
+          },
+        ],
+        readProcess,
+      }),
+      'bg-host',
+    );
+    expect(readProcess).toHaveBeenCalledWith(4242);
+    expect(probe.operations[0]).toMatchObject({ pid: 4242, alive: true, cgroupRelation: 'same', ageSec: 120 });
+    expect(judgeGitSyncCollision({ target: 'bg-host', probe, override: false }).blocked).toBe(true);
+  });
+
+  it('ignores an advisory/manual holder whose owner is not a git-sync operation identity', async () => {
+    const readProcess = vi.fn();
+    const probe = await probeGitSyncCollision(
+      deps({
+        readHolders: async () => [
+          { resource: 'git-sync:papercusp', owner: 'su-manual-holder', acquiredAtMs: 1_000, expiresAtMs: 601_000 },
+        ],
+        readProcess,
+      }),
+      'bg-host',
+    );
+    expect(readProcess).not.toHaveBeenCalled();
+    expect(judgeGitSyncCollision({ target: 'bg-host', probe, override: false }).kind).toBe('clear');
+  });
+
+  it('short-circuits unrelated targets without reading holders', async () => {
+    const readHolders = vi.fn(async () => [
+      { resource: 'git-sync:papercusp', owner: 'system:git-sync:1:x', acquiredAtMs: 0, expiresAtMs: 1 },
+    ]);
+    const verdict = await checkGitSyncCollision('gateway', false, deps({ readHolders }));
+    expect(verdict.kind).toBe('not-git-sync-sensitive');
+    expect(readHolders).not.toHaveBeenCalled();
+  });
+});
+
+describe('git-sync restart atomic barrier (WI-222053 / WI-222686)', () => {
+  const deps = (over: Partial<GitSyncRestartBarrierDeps> = {}): GitSyncRestartBarrierDeps => ({
+    resolveDomain: vi.fn(() => 'workspace-domain'),
+    newOwner: () => 'system:dev-restart:git-sync-barrier:42:uuid',
+    acquire: vi.fn(async () => ({
+      ok: true as const,
+      lock_id: 'barrier-1',
+      expires_ts: new Date('2026-08-27T19:00:00Z'),
+    })),
+    release: vi.fn(async () => undefined),
+    ...over,
+  });
+
+  it('resolves the existing exact git-sync resource through the canonical domain mapper and acquires it exclusively', async () => {
+    const resolveDomain = vi.fn(() => 'workspace-domain');
+    const acquire = vi.fn(async () => ({
+      ok: true as const,
+      lock_id: 'barrier-1',
+      expires_ts: new Date('2026-08-27T19:00:00Z'),
+    }));
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ resolveDomain, acquire }));
+    expect(resolveDomain).toHaveBeenCalledWith(GIT_SYNC_RESTART_BARRIER_RESOURCE);
+    expect(acquire).toHaveBeenCalledWith({
+      coordinationDomain: 'workspace-domain',
+      resource: 'git-sync',
+      owner: 'system:dev-restart:git-sync-barrier:42:uuid',
+      ownerLabel: 'Agent',
+      ttlSec: GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+    });
+    expect(result).toMatchObject({
+      acquired: true,
+      resource: 'git-sync',
+      expiresAt: '2026-08-27T19:00:00.000Z',
+    });
+  });
+
+  it('returns the live holder instead of pretending the atomic barrier was acquired', async () => {
+    const result = await acquireGitSyncRestartBarrier(
+      'Agent',
+      deps({
+        acquire: async () => ({
+          ok: false,
+          reason: 'held_exclusive',
+          holders: [
+            {
+              owner: 'system:git-sync:77:run',
+              owner_label: 'git-sync:papercusp',
+              mode: 'exclusive',
+              status: 'held',
+            },
+          ],
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      acquired: false,
+      resource: 'git-sync',
+      reason: 'held_exclusive',
+      holders: [
+        {
+          owner: 'system:git-sync:77:run',
+          owner_label: 'git-sync:papercusp',
+          mode: 'exclusive',
+          status: 'held',
+        },
+      ],
+    });
+  });
+
+  it('releases by the captured domain + unique owner on an abort path', async () => {
+    const release = vi.fn(async () => undefined);
+    const result = await acquireGitSyncRestartBarrier('Agent', deps({ release }));
+    expect(result.acquired).toBe(true);
+    if (!result.acquired) throw new Error('expected barrier');
+    await result.release();
+    expect(release).toHaveBeenCalledWith({
+      coordinationDomain: 'workspace-domain',
+      owner: 'system:dev-restart:git-sync-barrier:42:uuid',
+      lockId: 'barrier-1',
+    });
   });
 });

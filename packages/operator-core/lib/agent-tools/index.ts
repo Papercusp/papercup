@@ -672,6 +672,7 @@ import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
 import './testing/run';
+import './testing/run-status';
 import './testing/runs';
 import './testing/coverage';
 // build:typecheck — bash-to-tool-substitution-2026-07-26 P-024. The sibling of

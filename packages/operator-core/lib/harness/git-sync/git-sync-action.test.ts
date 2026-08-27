@@ -56,9 +56,25 @@ import { resourceLockDomain, workspaceScopedLockDomain } from '../../agent-tools
 // --- mocks (factories only close over these; nothing dereferenced at hoist time) --
 const tryAcquireResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean; reason?: string; holders?: unknown[] }> => ({ ok: true }));
 const tryReleaseResourceMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>): Promise<{ ok: boolean }> => ({ ok: true }));
+const readResourceQueueMock = vi.fn(async (_tx: unknown, _opts: Record<string, unknown>) => ({
+  holders: [],
+  draining: false,
+  queue: [] as Array<Record<string, unknown>>,
+}));
+const clearResourceExclusiveQueueMock = vi.fn(
+  async (_tx: unknown, _coordinationDomain: string, _resource: string, _owner: string) => undefined,
+);
+const clearResourceWaiterMock = vi.fn(
+  async (_tx: unknown, _coordinationDomain: string, _resource: string, _owner: string) => undefined,
+);
 vi.mock('../../agent-tools/locks/su-lock-store', () => ({
   tryAcquireResource: (...a: unknown[]) => tryAcquireResourceMock(a[0], a[1] as Record<string, unknown>),
   tryReleaseResource: (...a: unknown[]) => tryReleaseResourceMock(a[0], a[1] as Record<string, unknown>),
+  readResourceQueue: (...a: unknown[]) => readResourceQueueMock(a[0], a[1] as Record<string, unknown>),
+  clearResourceExclusiveQueue: (...a: unknown[]) =>
+    clearResourceExclusiveQueueMock(a[0], a[1] as string, a[2] as string, a[3] as string),
+  clearResourceWaiter: (...a: unknown[]) =>
+    clearResourceWaiterMock(a[0], a[1] as string, a[2] as string, a[3] as string),
 }));
 
 const liveLockHoldingsMock = vi.fn(
@@ -216,6 +232,10 @@ let resolverRows: Array<{ lr: { status?: string; at?: number; instance?: string 
 let contentFixerRows: Array<{ lr: { status?: string; at?: number; instance?: string } | null }> = [];
 /** Rows returned for the EI-18 + content counters read (`consecutive_error_ticks`/`last_oversized`/`consecutive_content_error_ticks`). */
 let counterRows: Array<{ et: number; lo: string[] | null; ct?: number }> = [];
+/** One-shot setup failures injected at the exact post-lock boundaries under test. */
+let rejectUnsafeAtCall: number | null = null;
+let unsafeCallCount = 0;
+let rejectTemplateOnce: Error | null = null;
 /** Every `sql.unsafe(text, params)` write, in order. */
 const unsafeCalls: Array<{ text: string; params: unknown[] }> = [];
 /** EI-18799539619330782: every tagged-template READ, with its interpolated values —
@@ -226,6 +246,11 @@ const fakeSql = Object.assign(
   (strings: TemplateStringsArray, ...values: unknown[]): Promise<Row[]> => {
     const text = strings.join('?');
     templateCalls.push({ text, values });
+    if (rejectTemplateOnce) {
+      const error = rejectTemplateOnce;
+      rejectTemplateOnce = null;
+      return Promise.reject(error);
+    }
     if (text.includes("'last_content_fixer'")) return Promise.resolve(contentFixerRows as unknown as Row[]);
     if (text.includes("'last_resolver'")) return Promise.resolve(resolverRows as unknown as Row[]);
     if (text.includes('consecutive_error_ticks')) return Promise.resolve(counterRows as unknown as Row[]);
@@ -234,6 +259,11 @@ const fakeSql = Object.assign(
   {
     unsafe: (text: string, params: unknown[] = []): Promise<Row[]> => {
       unsafeCalls.push({ text, params });
+      unsafeCallCount += 1;
+      if (rejectUnsafeAtCall === unsafeCallCount) {
+        rejectUnsafeAtCall = null;
+        return Promise.reject(new Error('injected setup metadata write failure'));
+      }
       return Promise.resolve([]);
     },
   },
@@ -438,6 +468,12 @@ function definitelyDeadPid(): Promise<number> {
 beforeEach(() => {
   tryAcquireResourceMock.mockReset();
   tryReleaseResourceMock.mockReset();
+  readResourceQueueMock.mockReset();
+  readResourceQueueMock.mockResolvedValue({ holders: [], draining: false, queue: [] });
+  clearResourceExclusiveQueueMock.mockReset();
+  clearResourceExclusiveQueueMock.mockResolvedValue(undefined);
+  clearResourceWaiterMock.mockReset();
+  clearResourceWaiterMock.mockResolvedValue(undefined);
   liveLockHoldingsMock.mockReset();
   liveLockHoldingsMock.mockResolvedValue([]);
   liveLockHoldingsStrictMock.mockReset();
@@ -461,6 +497,9 @@ beforeEach(() => {
   unsafeCalls.length = 0;
   templateCalls.length = 0;
   txQueries.length = 0;
+  rejectUnsafeAtCall = null;
+  unsafeCallCount = 0;
+  rejectTemplateOnce = null;
   registryProjects = [{ slug: 'papercup', path: repoDir }];
   ambientRegistryProjects = null;
   loadHarnessRegistryMock.mockClear();
@@ -631,8 +670,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(routinePatches()).toEqual([]);
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
     expect(captureHeadShaMock).not.toHaveBeenCalled();
-    // …but the partially-acquired locks were released (reverse order)
-    expect(releasedResources()).toEqual(['git-sync', 'git-sync:papercup']);
+    // …and the refused resource gets an owner-scoped late-grant cleanup before
+    // the partially-acquired locks are released in reverse order. That cleanup
+    // cannot delete the peer row because tryReleaseResource checks `owner`.
+    expect(releasedResources()).toEqual([
+      'libs-papercusp-submodule',
+      'git-sync',
+      'git-sync:papercup',
+    ]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
     log.mockRestore();
   });
@@ -747,11 +792,104 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // the resource release/grant path owns the truthful wake instead.
     expect(sequence).toEqual([
       'peer-held-refusal',
+      'released:libs-papercusp-submodule',
       'released:git-sync',
       'released:git-sync:papercup',
     ]);
     expect(peerRowLive).toBe(true);
     expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
+  });
+
+  it('WI-209800: purges queued terminal git-sync fires without disturbing a peer FIFO ticket', async () => {
+    const abandonedOwner = 'system:git-sync:12345:returned-fire';
+    const peerOwner = 'su-peer-waiter';
+    readResourceQueueMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      return {
+        holders: [],
+        draining: false,
+        queue: resource === 'git-sync:papercup'
+          ? [
+              { owner: abandonedOwner },
+              { owner: peerOwner },
+            ]
+          : [],
+      };
+    });
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+    } finally {
+      error.mockRestore();
+    }
+
+    expect(clearResourceExclusiveQueueMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-42',
+      'git-sync:papercup',
+      abandonedOwner,
+    );
+    expect(clearResourceWaiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-42',
+      'git-sync:papercup',
+      abandonedOwner,
+    );
+    expect(clearResourceExclusiveQueueMock.mock.calls.some((call) => call[3] === peerOwner)).toBe(false);
+    expect(runGitSyncMock).toHaveBeenCalledOnce();
+  });
+
+  it('WI-209800: a terminal held_exclusive skip cancels its ticket and releases a late cascade grant', async () => {
+    const peerHolder = {
+      owner: 'su-live-peer',
+      owner_label: 'peer agent',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'peer-lock',
+      reason: 'manual work',
+      acquired_ts: new Date('2026-08-27T18:00:00.000Z'),
+      expires_ts: new Date('2026-08-27T19:00:00.000Z'),
+      fence_seq: 7,
+    };
+    let terminalOwner = '';
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      terminalOwner = (opts as { owner: string }).owner;
+      return { ok: false, reason: 'held_exclusive', holders: [peerHolder] };
+    });
+
+    await action(ctx);
+
+    expect(terminalOwner).toMatch(/^system:git-sync:\d+:[0-9a-f-]+$/);
+    expect(clearResourceExclusiveQueueMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-42',
+      'git-sync:papercup',
+      terminalOwner,
+    );
+    expect(clearResourceWaiterMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'ws-42',
+      'git-sync:papercup',
+      terminalOwner,
+    );
+    expect(tryReleaseResourceMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        coordinationDomain: 'ws-42',
+        resource: 'git-sync:papercup',
+        owner: terminalOwner,
+      }),
+    );
+    expect(runGitSyncMock).not.toHaveBeenCalled();
   });
 
   it('SKIPS after workspace-lock contention exhausts retries — it never runs unlocked', async () => {
@@ -1109,7 +1247,10 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // the deliberate, human-registered surface: warned about, not auto-registered
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));
-    expect(releasedResources()).toEqual(['git-sync:papercup']);
+    // The unknown name cannot have produced a lease, but the terminal-skip
+    // cleanup still issues the same owner-scoped no-op release before unwinding
+    // the already-held per-slug resource.
+    expect(releasedResources()).toEqual(['my-deploy-lock', 'git-sync:papercup']);
     warn.mockRestore();
   });
 
@@ -1122,6 +1263,46 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // nothing past the run executed
     expect(routinePatches()).toEqual([]);
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
+  });
+
+  /** Every setup await after acquisition must leave through the same outer finally. */
+  async function expectSetupFailure(errorMessage: string): Promise<void> {
+    tryAcquireResourceMock.mockResolvedValue({ ok: true });
+    tryReleaseResourceMock.mockResolvedValue({ ok: true });
+
+    await expect(action(ctx)).rejects.toThrow(errorMessage);
+
+    expect(runGitSyncMock).not.toHaveBeenCalled();
+    expect(releasedResources()).toEqual([
+      'libs-papercusp-submodule',
+      'git-sync',
+      'git-sync:papercup',
+    ]);
+    expect(gitSyncActivityPatches().slice(-1)[0]).toMatchObject({
+      active: false,
+      phase: 'error',
+      outcome_status: null,
+    });
+  }
+
+  it('releases every resource when the first post-lock activity write rejects', async () => {
+    // The first unsafe write is the pre-lock fire breadcrumb; the second is the
+    // activity write immediately after acquisition.
+    rejectUnsafeAtCall = 2;
+
+    await expectSetupFailure('injected setup metadata write failure');
+  });
+
+  it('releases every resource when the post-lock escalation-counter read rejects', async () => {
+    rejectTemplateOnce = new Error('injected setup counter read failure');
+
+    await expectSetupFailure('injected setup counter read failure');
+  });
+
+  it('releases every resource when the first post-lock feature-flag read rejects', async () => {
+    getFlagMock.mockRejectedValueOnce(new Error('injected setup flag read failure'));
+
+    await expectSetupFailure('injected setup flag read failure');
   });
 });
 

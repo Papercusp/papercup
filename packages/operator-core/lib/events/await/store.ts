@@ -20,7 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { boundedOrgTxn } from '../../pg-bounded-txn';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { normalizeEventKey } from './announce-key';
-import { keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
+import { isPattern, keyMatchesPattern, payloadMatchesFilter, patternLiteralPrefix } from './pattern';
 import { WAKE_TURN_CHANNELS } from './types';
 import { withEffectiveDeadlines } from './effective-deadline';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
@@ -66,6 +66,10 @@ import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
  * isolation, it needs a new design, not a parameter that was never wired.
  */
 const eventsWs = (): string => DEFAULT_COORD_WORKSPACE;
+
+/** Note prefix owned by the leader-managed fleet:bench surface. Bench rows are
+ * intentionally independent from an agent's ordinary exact-key wait. */
+export const FLEET_BENCH_NOTE_PREFIX = '[fleet:bench] ';
 
 // events:await performs these two best-effort store calls before it can create
 // the durable await row. Keep their pool acquisition and SQL execution inside a
@@ -281,6 +285,72 @@ export async function registerAwait(input: {
       );
     }
   };
+  const insertAwait = async (tx: any): Promise<AwaitRow> => {
+    const rows = input.boundTo
+      ? await tx`
+          INSERT INTO harness_shared.event_awaits
+            (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
+             expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
+          VALUES
+            (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+             ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+             ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+             ${input.urgency ?? false},
+             ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+             ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
+             ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
+          RETURNING *
+        `
+      : await tx`
+          INSERT INTO harness_shared.event_awaits
+            (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
+          VALUES
+            (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
+             ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
+             ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
+             ${input.urgency ?? false},
+             ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
+             ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
+          RETURNING *
+        `;
+    return mapAwait(rows[0]);
+  };
+  // Ordinary, unfiltered exact one-shot registrations are the shared primitive
+  // behind direct events:await, watch/interest auto-arm, and the events sugar
+  // surfaces. Serialize their retire-and-insert operation so concurrent
+  // registrations cannot leave two live rows for one subscriber/key. Payload-
+  // filtered waits intentionally coexist (each filter is a distinct predicate),
+  // as do leader-managed fleet benches. Composed rows are inserted by
+  // compose-store and are excluded by root_id below. Explicit supersession has
+  // its own surface-aware lock and intentionally bypasses this narrower policy.
+  const exactOneShot =
+    input.policy !== 'announce' &&
+    input.once !== false &&
+    !isPattern(input.eventKey) &&
+    input.payloadFilter == null &&
+    !input.note?.startsWith(FLEET_BENCH_NOTE_PREFIX);
+  const retireExactPending = async (tx: any): Promise<number> => {
+    if (!exactOneShot) return 0;
+    const lockKey = `event-await:${ws}:${input.subscriberId}:${input.eventKey}`;
+    await tx`SELECT pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`;
+    const retired = await tx`
+      UPDATE harness_shared.event_awaits
+         SET cancelled_at = now()
+       WHERE workspace_id = ${ws}
+         AND subscriber_id = ${input.subscriberId}
+         AND event_key = ${input.eventKey}
+         AND policy <> 'announce'
+         AND once = true
+         AND root_id IS NULL
+         AND payload_filter IS NULL
+         AND (note IS NULL OR note NOT LIKE ${FLEET_BENCH_NOTE_PREFIX + '%'})
+         AND fired_at IS NULL
+         AND cancelled_at IS NULL
+         AND superseded_at IS NULL
+      RETURNING id
+    `;
+    return retired.length;
+  };
   if (supersedePending) {
     return boundedOrgTxn(async (tx) => {
       const allEventKeys = supersedePending.allEventKeys === true;
@@ -315,34 +385,8 @@ export async function registerAwait(input: {
            ${noteFilter}
         RETURNING id
       `;
-      const rows = input.boundTo
-        ? await tx`
-            INSERT INTO harness_shared.event_awaits
-              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
-               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
-            VALUES
-              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-               ${input.urgency ?? false},
-               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
-               ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
-            RETURNING *
-          `
-        : await tx`
-            INSERT INTO harness_shared.event_awaits
-              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
-            VALUES
-              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-               ${input.urgency ?? false},
-               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
-            RETURNING *
-          `;
-      return { ...mapAwait(rows[0]), supersededPendingCount: superseded.length };
+      const row = await insertAwait(tx);
+      return { ...row, supersededPendingCount: superseded.length };
     });
   }
   // A generation-pinned registration must keep the declaration lock through
@@ -352,68 +396,20 @@ export async function registerAwait(input: {
   if (input.expectedGeneration != null) {
     return boundedOrgTxn(async (tx) => {
       await assertGenerationPin(tx);
-      const rows = input.boundTo
-        ? await tx`
-            INSERT INTO harness_shared.event_awaits
-              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
-               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
-            VALUES
-              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-               ${input.urgency ?? false},
-               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
-               ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
-            RETURNING *
-          `
-        : await tx`
-            INSERT INTO harness_shared.event_awaits
-              (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
-               expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
-            VALUES
-              (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-               ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-               ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-               ${input.urgency ?? false},
-               ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-               ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
-            RETURNING *
-          `;
-      return mapAwait(rows[0]);
+      await retireExactPending(tx);
+      return insertAwait(tx);
+    });
+  }
+  if (exactOneShot) {
+    return boundedOrgTxn(async (tx) => {
+      await retireExactPending(tx);
+      return insertAwait(tx);
     });
   }
   // Keep the legacy insert byte-for-byte free of `bound_to` when no binding was
   // supplied. Besides preserving manual-watch semantics, this lets older
   // hand-rolled test fixtures keep exercising the unbound path honestly.
-  const rows = input.boundTo
-    ? await sql`
-        INSERT INTO harness_shared.event_awaits
-          (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior,
-           expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health, bound_to)
-        VALUES
-          (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-           ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-           ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-           ${input.urgency ?? false},
-           ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-           ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb,
-           ${JSON.stringify(assertLifecycleBinding(input.boundTo))}::text::jsonb)
-        RETURNING *
-      `
-    : await sql`
-        INSERT INTO harness_shared.event_awaits
-          (workspace_id, subscriber_id, event_key, policy, note, wake_handle, timeout_behavior, expires_ts, once, min_sleep_sec, urgency, payload_filter, producer_health)
-        VALUES
-          (${ws}, ${input.subscriberId}, ${input.eventKey}, ${input.policy ?? 'wake'},
-           ${input.note ?? null}, ${input.wakeHandle ? JSON.stringify(input.wakeHandle) : null}::text::jsonb,
-           ${timeoutBehavior}, ${expiresTs}, ${input.once ?? true}, ${input.minSleepSec ?? null},
-           ${input.urgency ?? false},
-           ${input.payloadFilter != null ? JSON.stringify(input.payloadFilter) : null}::text::jsonb,
-           ${input.producerHealthCertificate ? JSON.stringify(input.producerHealthCertificate) : null}::text::jsonb)
-        RETURNING *
-      `;
-  return mapAwait(rows[0]);
+  return insertAwait(sql);
 }
 
 /** Fail before SQL rather than persisting an unaddressable lifecycle owner. */
@@ -962,11 +958,6 @@ export async function listActiveAwaitsByKeyPrefix(prefix: string): Promise<Await
 /** The always-armed per-agent self-wake key prefix (turn-lifecycle-control) —
  *  every live agent holds one, so it signals liveness, NOT a deliberate bench. */
 export const INBOX_WAKE_KEY_PREFIX = 'coord:inbox-wake:';
-
-/** Note prefix used by the leader-managed fleet:bench await. A bench belongs to
- * the leader's staging decision, so a member re-registering its own await on
- * the same key must not supersede it. */
-export const FLEET_BENCH_NOTE_PREFIX = '[fleet:bench] ';
 
 /**
  * P-001 (fleet-member-dx-improvements-2026-07-10, EI-9014): active NON-inbox-wake

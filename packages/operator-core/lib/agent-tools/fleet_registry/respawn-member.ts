@@ -29,6 +29,7 @@ import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getSessionBrief } from '../../session-brief';
 import { resolveProjectDir } from '../../spawn-config';
 import { isSuTierRole } from '../../su-role-addendum';
+import { PAIR_ROLE_IMPLEMENTER } from './pair-launch-options';
 import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
@@ -45,6 +46,18 @@ const DEFAULT_DRAIN_VERIFY_SEC = 90;
 const DRAIN_POLL_MS = 3_000;
 /** A presence row counts as the live replacement only if its heartbeat is this fresh. */
 const VERIFY_FRESH_MS = 120_000;
+
+/**
+ * Older paired-fleet launches persisted the shorthand `implementer`, while the
+ * paired launch contract now uses the registered `directed-implementer`
+ * persona. Keep this compatibility mapping local to recovery: new launches
+ * still validate and persist exactly the role the caller supplied.
+ */
+function normalizeRespawnRole(role?: string): string | undefined {
+  const trimmed = role?.trim();
+  if (!trimmed) return trimmed;
+  return trimmed === 'implementer' ? PAIR_ROLE_IMPLEMENTER : trimmed;
+}
 
 /**
  * Mint the identity that the replacement process will use before launching it. A stable value
@@ -373,7 +386,7 @@ async function preflightSavedPersonaRole(opts: {
       message:
         `Invalid persona role \`${role}\` for the persisted respawn member: ` +
         `${error instanceof Error ? error.message : String(error)}. ` +
-        'Omit the stale role, use `role:"su"`, or choose a registered persona. ' +
+        'Omit the stale role, set `role:"su"`, or choose a registered persona. ' +
         'Put lane/job names in `brief` or `label`. NO agents were spawned and NO terminals were opened. ' +
         'The old member was NOT killed and no replacement was launched.',
     };
@@ -386,7 +399,7 @@ export default defineTool({
   description:
     "Change ONE fleet member's BOOT-BAKED settings (model / effort / account / contextSize / agent / compactionLimit) by draining + relaunching it (as its leader/queen/owner): the old session is killed (releasing its claims) and a fresh one is launched into the SAME fleet with the new spec (a new identity, the fleet's claim lane inherited). `fleet` defaults to the one you lead. For RUNTIME settings that need no respawn (compaction limit alone, claim spec, a brief) use fleet:reconfigure-member. `carry`/`claimKinds` are not settable here.",
   guidance: {
-    when: 'Move a member to a different model/effort/account/context-size/agent CLI — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.',
+    when: 'Move a member to a different model/effort/account/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.',
     notWhen:
       'For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To change carry or seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.',
     chaining: ROUTING_LADDER,
@@ -428,6 +441,7 @@ export default defineTool({
       contextSize: z.literal('trimmed').optional().describe('New psu --context-size for the relaunched member.'),
       agent: z.string().max(40).optional().describe('New agent CLI backing the member (e.g. claude | codex).'),
       compactionLimit: z.number().int().min(20_000).max(900_000).optional().describe('New soft compaction limit (tokens) baked at launch.'),
+      role: z.string().min(1).max(120).optional().describe('New launch persona role (for example `su` or a registered harness persona).'),
       headless: z.boolean().optional().describe('Whether the replacement runs headless (default: preserve the fleet norm — headless for a background drain fleet).'),
       brief: z
         .string()
@@ -464,12 +478,13 @@ export default defineTool({
         a.contextSize != null ||
         a.agent != null ||
         a.compactionLimit != null ||
+        a.role != null ||
         a.headless != null,
-      { message: 'pass at least one boot-baked setting to change (model/effort/account/contextSize/agent/compactionLimit/headless); for a runtime-only change use fleet:reconfigure-member' },
+      { message: 'pass at least one boot-baked setting to change (model/effort/account/contextSize/agent/compactionLimit/role/headless); for a runtime-only change use fleet:reconfigure-member' },
     ),
   async handler(args, ctx) {
     // Defense-in-depth (zod refine covers the MCP path): a respawn must change ≥1 boot-baked field.
-    const changed = { model: args.model, effort: args.effort, account: args.account, contextSize: args.contextSize, agent: args.agent, compactionLimit: args.compactionLimit, headless: args.headless };
+    const changed = { model: args.model, effort: args.effort, account: args.account, contextSize: args.contextSize, agent: args.agent, compactionLimit: args.compactionLimit, role: args.role, headless: args.headless };
     const changedFields = Object.entries(changed).filter(([, v]) => v != null).map(([k]) => k);
     if (changedFields.length === 0) {
       return json({ ok: false, error: 'nothing_to_respawn', message: 'pass at least one boot-baked setting to change; for a runtime-only change use fleet:reconfigure-member' }, true);
@@ -505,10 +520,11 @@ export default defineTool({
         contextSize: args.contextSize,
         agent: args.agent,
         compactionLimit: args.compactionLimit,
+        role: args.role,
         headless: args.headless,
         brief: args.brief,
       },
-      allowDeltas: ['model', 'account', 'contextSize', 'agent', 'compactionLimit', 'headless', 'brief'],
+      allowDeltas: ['model', 'account', 'contextSize', 'agent', 'compactionLimit', 'role', 'headless', 'brief'],
       reusePath: 'fleet:respawn-member -> capability:launch-agent',
       requireSaved: true,
       memberOwnerId,
@@ -549,8 +565,9 @@ export default defineTool({
       );
     }
 
+    const respawnRole = normalizeRespawnRole(savedLaunchSpec.effective.member.role);
     const rolePreflight = await preflightSavedPersonaRole({
-      role: savedLaunchSpec.effective.member.role,
+      role: respawnRole,
       harness: savedLaunchSpec.effective.harness,
       workspaceId,
     });
@@ -684,6 +701,7 @@ export default defineTool({
       `You were respawned into fleet '${slug}' with new settings (${changedFields.join(', ')}). Resume your role: if you are a self-pulling fleet member, pull work via scheduler:get_next, then verify + complete with evidence.`;
     const spec: MemberSpec = {
       ...savedLaunchSpec.effective.member,
+      ...(respawnRole !== undefined ? { role: respawnRole } : {}),
       brief,
     };
     const launch = launchOutcome(

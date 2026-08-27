@@ -153,6 +153,8 @@ describe('session-port preparation service', () => {
     expect(out.summary.hashes.source).toBe(inspection.source.sha256);
     expect(JSON.stringify(out.summary)).not.toContain('sk-ant-');
     const persisted = createPrepared.mock.calls[0][0];
+    expect(inspection.disclosure.authorityCarried).toBe(true);
+    expect(persisted.metadata.sourceCoordOwnerId).toBe('su-source');
     expect(persisted.metadata).not.toHaveProperty('contract');
     expect(JSON.stringify(persisted.metadata)).not.toContain('history');
     expect(JSON.stringify(persisted.metadata)).not.toContain('done');
@@ -188,7 +190,7 @@ describe('session-port preparation service', () => {
           },
           target,
           fidelity: 'full',
-          versions: { adapter: 1, transform: 1, renderer: 1, summaryPrompt: null },
+          versions: { adapter: 1, transform: 2, renderer: 1, summaryPrompt: null },
           hashes: { source: inspection.source.sha256, normalized: inspection.internal.normalizedHash, rendered: 'b'.repeat(64) },
           stats: inspection.stats,
           summary: null,

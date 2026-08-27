@@ -70,6 +70,7 @@ vi.mock('./_shared', () => ({
 }));
 
 import tool, { awaitMemberDrain, awaitReplacementMember } from './respawn-member';
+import { PAIR_ROLE_IMPLEMENTER } from './pair-launch-options';
 
 const row = (ownerId: string, heartbeatAgoMs = 0) => ({
   ownerId,
@@ -178,6 +179,10 @@ beforeEach(() => {
 });
 
 describe('fleet:respawn-member (P-008)', () => {
+  it('accepts role as a boot-baked respawn setting at the tool boundary', () => {
+    expect(tool.args.safeParse({ member: MEMBER, role: 'su' }).success).toBe(true);
+  });
+
   it('kills the old member then fresh-launches the replacement with the new declarative spec', async () => {
     const res = await tool.handler(
       { member: MEMBER, model: 'opus[1m]', effort: 'high', compactionLimit: 200_000 } as never,
@@ -205,9 +210,9 @@ describe('fleet:respawn-member (P-008)', () => {
     expect(p.newMember).toBe(p.replacementOwner);
   });
 
-  it('preflights a persisted persona role before killing, preserving the diagnostic on refusal', async () => {
-    persistedRole = 'implementer';
-    const roleError = new Error('assembleRolePrompt: no prompt file found for role "implementer"');
+  it('preflights an unknown persisted persona role before killing, preserving the diagnostic on refusal', async () => {
+    persistedRole = 'missing-persona';
+    const roleError = new Error('assembleRolePrompt: no prompt file found for role "missing-persona"');
     assembleRolePrompt.mockImplementationOnce(() => {
       throw roleError;
     });
@@ -220,22 +225,80 @@ describe('fleet:respawn-member (P-008)', () => {
       error: 'saved_role_invalid',
       fleet: SLUG,
       member: MEMBER,
-      role: 'implementer',
+      role: 'missing-persona',
       killed: false,
       launched: false,
     });
-    expect(p.message).toContain('Invalid persona role `implementer`');
+    expect(p.message).toContain('Invalid persona role `missing-persona`');
     expect(p.message).toContain('The old member was NOT killed and no replacement was launched.');
     expect(p.message).toContain('NO agents were spawned and NO terminals were opened');
     expect(resolveProjectDir).toHaveBeenCalledWith('papercusp', 'ws');
     expect(assembleRolePrompt).toHaveBeenCalledWith({
       slug: 'papercusp',
       projectDir: '/tmp/papercusp',
-      role: 'implementer',
+      role: 'missing-persona',
       mode: 'chat',
     });
     expect(killHandler).not.toHaveBeenCalled();
     expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('normalizes the legacy persisted implementer role to the canonical paired persona before preflight and launch', async () => {
+    persistedRole = 'implementer';
+
+    const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: true,
+      fleet: SLUG,
+      oldMember: MEMBER,
+      changed: ['model'],
+    });
+    expect(assembleRolePrompt).toHaveBeenCalledWith({
+      slug: 'papercusp',
+      projectDir: '/tmp/papercusp',
+      role: PAIR_ROLE_IMPLEMENTER,
+      mode: 'chat',
+    });
+    expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER }), expect.anything());
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({ role: PAIR_ROLE_IMPLEMENTER })],
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('accepts an explicit role override so stale saved-role recovery can be repaired before launch', async () => {
+    persistedRole = 'implementer';
+    const roleError = new Error('assembleRolePrompt: no prompt file found for role "implementer"');
+    assembleRolePrompt.mockImplementationOnce(() => {
+      throw roleError;
+    });
+
+    const res = await tool.handler({ member: MEMBER, role: 'su', model: 'sonnet:high' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: true,
+      fleet: SLUG,
+      oldMember: MEMBER,
+      changed: expect.arrayContaining(['model', 'role']),
+    });
+    expect(resolveSavedFleetLaunchSpec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requested: expect.objectContaining({ role: 'su' }),
+        allowDeltas: expect.arrayContaining(['role']),
+      }),
+    );
+    expect(killHandler).toHaveBeenCalledWith(expect.objectContaining({ owner: MEMBER }), expect.anything());
+    expect(launchHandler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        members: [expect.objectContaining({ role: 'su' })],
+      }),
+      expect.anything(),
+    );
   });
 
   it('correlates the exact replacement when concurrent respawns add multiple fresh rows', async () => {

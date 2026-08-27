@@ -1,7 +1,6 @@
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import type { AdvSessionRow } from '../adv-sessions';
-import { mergeRosterWithAssignments } from '../adv-roster';
 import { pgSessionArchiveStore } from '../session-archive';
 import { adaptClaudeJsonl, CLAUDE_SESSION_PORT_ADAPTER_VERSION } from './claude-adapter';
 import {
@@ -19,7 +18,6 @@ import {
   SESSION_PORT_RENDERER_VERSION,
 } from './render';
 import { sanitizePortableText } from './security';
-import { modeImpliesAutonomy } from '../modes/registry';
 import {
   findCanonicalClaudeLiveJsonl,
   readCanonicalClaudeArchive,
@@ -76,7 +74,7 @@ export interface SessionPortInspection {
   disclosure: {
     newTargetSession: true;
     sourceUntouched: true;
-    authorityCarried: false;
+    authorityCarried: true;
     targetEgress: string;
     summarizerEgress: string | null;
   };
@@ -152,22 +150,6 @@ export interface TrackedClaudeSourceDeps {
 function isMissingClaudeLiveSource(error: unknown): boolean {
   if (error instanceof Error && error.message === 'canonical live Claude JSONL is missing') return true;
   return typeof error === 'object' && error !== null && 'code' in error && error.code === 'ENOENT';
-}
-
-export async function assertNoPortableAuthority(source: AdvSessionRow): Promise<void> {
-  if (!source.coordOwnerId) throw new Error('source is missing its tracked coord identity');
-  const roster = await mergeRosterWithAssignments({ workspaceId: source.workspaceId });
-  const active = roster.active.find((entry) => entry.ownerId === source.coordOwnerId);
-  if (!active) return;
-  const reasons = [
-    active.fleetSlug ? `fleet ${active.fleetSlug}` : null,
-    active.loopArmed ? 'armed loop' : null,
-    active.claims.length ? `${active.claims.length} active claim(s)` : null,
-    active.modes.some((m) => modeImpliesAutonomy(m.mode))
-      ? `mode ${active.modes.map((m) => m.mode).join(',')}`
-      : null,
-  ].filter(Boolean);
-  if (reasons.length) throw new Error(`source carries live operational authority (${reasons.join('; ')}); port refused`);
 }
 
 export async function acquireTrackedClaudeSource(
@@ -252,7 +234,7 @@ export function inspectAcquiredSessionPort(input: {
     disclosure: {
       newTargetSession: true,
       sourceUntouched: true,
-      authorityCarried: false,
+      authorityCarried: true,
       targetEgress: `${target.provider}/${target.account}`,
       summarizerEgress: fullHistoryEstimatedTokens > target.availableInputTokens
         ? (input.summarizerProvider ?? 'papercusp inference gateway')
@@ -431,6 +413,7 @@ export async function prepareInspectedSessionPort(input: {
       metadata: {
         summary,
         disclosure: inspection.disclosure,
+        sourceCoordOwnerId: sourceRow.coordOwnerId,
         estimatedTokens: fitted.estimatedTokens,
         artifactBytes: Buffer.byteLength(rendered.seed, 'utf8'),
       },

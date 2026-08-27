@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 833,
+  "count": 834,
   "tools": [
     {
       "name": "ablation:report",
@@ -9400,7 +9400,7 @@
           "POST"
         ]
       },
-      "description": "Coordinated restart with drain/coalesce/audit. Targets: \"dev\" :3070 (default), \"staging\" :3170, \"desktop-dev\" wrapper :3270, \"gateway\" :8788, \"bg-host\" routines/git-sync, \"embed-sidecar\" :3384, \"mcp-proxy\" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.",
+      "description": "Coordinated restart with drain/coalesce/audit. Targets: \"dev\" :3070 (default), \"staging\" :3170, \"desktop-dev\" :3270, \"gateway\" :8788, \"bg-host\" routines/git-sync, \"embed-sidecar\" :3384, \"mcp-proxy\" :9071. Dry-run unless confirm:true; restart needs PAPERCUSP_ALLOW_DEV_RESTART=1 or audited authorize:true. Cooldown ~2m; bg-host ~13m.",
       "capabilities": [
         "locks:write"
       ],
@@ -9461,8 +9461,8 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev asks only the verified wrapper-owned :3270 listener for a bounded drain + no-native-teardown hard exit and waits for a different verified listener. Route: desktop → \"desktop-dev\"; inference-gateway → \"gateway\"; routines/git-sync → \"bg-host\"; embeddings → \"embed-sidecar\"; MCP proxy/transport → \"mcp-proxy\"; shared server → \"staging\" (probe :3170).",
-        "notWhen": "Just probing. desktop-dev targets only the :3270 Tauri wrapper, not :3070/:3170. Gateway restarts drop in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its lock drain cannot reach child processes, so blast radius is systemd-sized (EI-19479764372783341). Never raw systemctl restart these targets; that bypasses drain/debounce (WI-4221). gateway/bg-host/embed-sidecar are refused during green-checkpoint runs; use override_gate_collision:true only when needed.",
+        "when": "Load integration-tree edits into long-running hosts (no deploy). desktop-dev uses the verified wrapper-owned :3270 listener (bounded drain, no-native-teardown hard exit, waits for a new listener). Route desktop→\"desktop-dev\"; inference-gateway→\"gateway\"; routines/git-sync→\"bg-host\"; embeddings→\"embed-sidecar\"; MCP proxy/transport→\"mcp-proxy\"; shared server→\"staging\" (probe :3170).",
+        "notWhen": "Just probing. desktop-dev is only the :3270 Tauri wrapper, not :3070/:3170. Gateway drops in-flight LLM requests fleet-wide; check gateway:status. ⚠ bg-host kills its whole cgroup (spawner, desktop sidecars, pg_dump); its drain cannot reach children (EI-19479764372783341). Never raw systemctl restart; it bypasses drain/debounce (WI-4221). dev/staging/bg-host refuse an in-flight git-sync operation; use override_git_sync_collision:true only when the host is wedged. gateway/bg-host/embed-sidecar refuse during green-checkpoint; use override_gate_collision:true only when needed.",
         "chaining": "dry → review holders → { confirm:true, authorize:true, reason:\"<why>\", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status."
       }
     },
@@ -9491,7 +9491,7 @@
         "cup"
       ],
       "guidance": {
-        "when": "Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:\"staging\" }` with `dev:service_health { units:[\"papercup-staging-api\"], scope:\"user\" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.",
+        "when": "Check dev services before testing; VERIFY A STAGING EDIT after `dev:restart { target:\"staging\" }` with `dev:service_health { units:[\"papercusp-staging-api\"], scope:\"user\" }` (read unitsUnknown before unitStates, then probe :3170); diagnose connection-refused/stale-server or a git-sync/routine-engine stall via bg-host-ticker.",
         "notWhen": "File/lock contention — that is locks:queue. Migration drift — db:check_drift."
       }
     },
@@ -11666,7 +11666,7 @@
         "curator"
       ],
       "guidance": {
-        "when": "Move a member to a different model/effort/account/context-size/agent CLI — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.",
+        "when": "Move a member to a different model/effort/account/context-size/agent/role — anything fixed at launch. It kills the old session and relaunches a replacement in the same fleet.",
         "notWhen": "For a RUNTIME tweak with no respawn (compaction limit, claim lane, a next-wake brief) — fleet:reconfigure-member. To change carry or seed claimKinds — fleet:launch-on-plan. To stand the whole fleet down — fleet:wind-down. To just kill (no replacement) — fleet:kill.",
         "chaining": "Routing ladder: (0) SELF — drive it yourself via plans:launch / plans:set-status. (1) MUG/pot — work_items:create → the pot intake. (2) FLEET — hand the plan to an existing named fleet: call fleet:take-leadership (you BECOME its leader, D-002) then drive it. (3) NEW DESKTOP FLEET — fleet:create then capability:terminal { terminals:[…] } to launch the member windows."
       }
@@ -27899,7 +27899,7 @@
           "POST"
         ]
       },
-      "description": "Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery and returns `detachedRunId`. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.",
+      "description": "Run exact Vitest files through the Papercusp router or a discovered external npm-workspace Vitest checkout and return distilled counts plus bounded failures. Files may be repo-root-relative, absolute, or relative to exactly one declared npm workspace; ambiguous workspace-relative paths refuse before execution. `root` reports the checkout actually tested. Zero/partial matches and invalid checkouts refuse instead of passing vacuously. `failed` is the true total; when `failuresTruncated` is set, read `failuresOmitted`. A Papercusp-router timeout starts a pollable detached recovery, returns `detachedRunId`, and tells you to call `testing:run-status { runId }` for its snapshot. Stamps PAPERCUSP_TEST_RUN_GROUP for ledger correlation.",
       "capabilities": [
         "testing:run"
       ],
@@ -27964,6 +27964,80 @@
         "when": "You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.",
         "notWhen": "Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.",
         "chaining": "testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression."
+      }
+    },
+    {
+      "name": "testing:run-status",
+      "http": {
+        "path": "/api/agent-tools/testing/run-status",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the in-memory snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Poll the detachedRunId returned by testing:run after a foreground timeout until its snapshot reaches a terminal status.",
+        "notWhen": "Start a test run (use testing:run), read persisted test history (use testing:runs), or poll a capability:bash job (use capability:bash_output). An unknown_run means the in-memory snapshot is missing or has expired; it is not evidence that the test passed.",
+        "chaining": "testing:run → timeout with detachedRunId → testing:run-status { runId } until status is pass, fail, cancelled, or error."
       }
     },
     {

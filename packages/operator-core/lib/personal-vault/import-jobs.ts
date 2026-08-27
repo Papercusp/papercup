@@ -58,6 +58,7 @@ export interface PersonalVaultImportJob {
   status: PersonalVaultImportStatus;
   bytesProcessed: number;
   entriesProcessed: number;
+  entriesFailed: number;
   documentsSeen: number;
   documentsImported: number;
   checkpoint: PersonalArchiveCheckpoint;
@@ -87,6 +88,7 @@ export type PublicPersonalVaultImportJob = Pick<
   | 'status'
   | 'bytesProcessed'
   | 'entriesProcessed'
+  | 'entriesFailed'
   | 'documentsSeen'
   | 'documentsImported'
   | 'warnings'
@@ -189,6 +191,7 @@ interface PersonalVaultImportJobRow {
   status: PersonalVaultImportStatus;
   bytes_processed: number | string;
   entries_processed: number;
+  entries_failed: number | string;
   documents_seen: number | string;
   documents_imported: number | string;
   checkpoint: Partial<PersonalArchiveCheckpoint> | null;
@@ -238,6 +241,7 @@ export interface PersonalVaultImportBatchResult {
   status: PersonalVaultImportStatus | 'idle';
   documentsSeen: number;
   documentsImported: number;
+  entriesFailed: number;
   warnings: number;
   error: string | null;
 }
@@ -280,6 +284,7 @@ function mapJob(row: PersonalVaultImportJobRow): PersonalVaultImportJob {
     status: row.status,
     bytesProcessed: Number(row.bytes_processed),
     entriesProcessed: row.entries_processed,
+    entriesFailed: Number(row.entries_failed),
     documentsSeen: Number(row.documents_seen),
     documentsImported: Number(row.documents_imported),
     checkpoint: checkpoint(row.checkpoint),
@@ -578,6 +583,7 @@ export function publicPersonalVaultImportJob(
     status: job.status,
     bytesProcessed: job.bytesProcessed,
     entriesProcessed: job.entriesProcessed,
+    entriesFailed: job.entriesFailed,
     documentsSeen: job.documentsSeen,
     documentsImported: job.documentsImported,
     warnings: job.warnings,
@@ -930,6 +936,7 @@ async function persistBatchProgress(
   bytesProcessed: number,
   seen: number,
   imported: number,
+  failed: number,
   warnings: string[],
   leaseSeconds: number,
 ): Promise<void> {
@@ -939,6 +946,7 @@ async function persistBatchProgress(
        SET checkpoint = ${JSON.stringify(next)}::jsonb,
            bytes_processed = GREATEST(bytes_processed, ${bytesProcessed}),
            entries_processed = GREATEST(entries_processed, ${next.entryIndex}),
+           entries_failed = entries_failed + ${failed},
            documents_seen = documents_seen + ${seen},
            documents_imported = documents_imported + ${imported},
            warnings = COALESCE((
@@ -1126,6 +1134,7 @@ async function processClaimedJob(
       status: 'cancelled',
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     };
@@ -1135,6 +1144,7 @@ async function processClaimedJob(
   const documents: PersonalDocumentInput[] = [];
   const warnings: string[] = [];
   let seen = 0;
+  let failed = 0;
   let next = current.checkpoint;
   let bytesProcessed = current.bytesProcessed;
   let exhausted = true;
@@ -1146,12 +1156,15 @@ async function processClaimedJob(
   )) {
     next = record.checkpoint;
     bytesProcessed = Math.max(bytesProcessed, record.bytesProcessed);
-    if (record.warning) warnings.push(record.warning);
+    if (record.warning) {
+      warnings.push(record.warning);
+      failed += 1;
+    }
     if (record.document) {
       seen += 1;
       documents.push(withJobProvenance(current, record.document));
     }
-    if (seen + warnings.length >= options.batchSize) {
+    if (seen + failed >= options.batchSize) {
       exhausted = false;
       break;
     }
@@ -1159,7 +1172,7 @@ async function processClaimedJob(
   const imported = documents.length
     ? (await upsertDocuments(sql, current.workspaceId, current.userId, documents)).insertedOrUpdated
     : 0;
-  if (seen > 0 || warnings.length > 0) {
+  if (seen > 0 || failed > 0) {
     await persistBatchProgress(
       sql,
       current,
@@ -1167,6 +1180,7 @@ async function processClaimedJob(
       bytesProcessed,
       seen,
       imported,
+      failed,
       warnings,
       options.leaseSeconds,
     );
@@ -1193,6 +1207,7 @@ async function processClaimedJob(
     status: exhausted ? 'completed' : 'queued',
     documentsSeen: seen,
     documentsImported: imported,
+    entriesFailed: failed,
     warnings: warnings.length,
     error: null,
   };
@@ -1223,6 +1238,7 @@ export async function runPersonalVaultImportBatch(
       status: 'idle',
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     };
@@ -1237,6 +1253,7 @@ export async function runPersonalVaultImportBatch(
       status,
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: errorText(cause),
     };

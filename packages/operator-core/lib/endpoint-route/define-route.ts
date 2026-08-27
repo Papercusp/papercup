@@ -19,7 +19,7 @@
 import type { Hono } from 'hono';
 import type { ZodTypeAny } from 'zod';
 import type { RouteDefinition } from '@papercusp/agent-mcp';
-import { runRouteStack } from './route-stack';
+import { runRouteStack, type RouteStep } from './route-stack';
 import { corsFor } from './cors';
 
 /* ─── The route types — canonical home is now @papercusp/agent-mcp ────── */
@@ -47,8 +47,19 @@ const CORS_PATHS = Symbol.for('papercusp.endpoint-route.corsPaths');
  * For `cors`-enabled routes, the shared CORS middleware is mounted (once
  * per path) ahead of the handler so the cross-origin client + its OPTIONS
  * preflight are handled centrally.
+ *
+ * `stack` selects the dispatch pipeline. Omitted, it is the default local
+ * stack, whose `auth` step resolves the local principal chain. The hosted
+ * control plane passes its own stack (`hosted-route-stack.ts`) so an
+ * internet-facing mount never runs the local chain — the profile chooses the
+ * pipeline at mount time rather than a route trying to describe which
+ * authority model it wants.
  */
-export function registerRoute(app: Hono, def: RouteDefinition<ZodTypeAny | undefined>): void {
+export function registerRoute(
+  app: Hono,
+  def: RouteDefinition<ZodTypeAny | undefined>,
+  stack?: ReadonlyArray<RouteStep>,
+): void {
   if (def.cors) {
     const reg = app as unknown as Record<symbol, Set<string> | undefined>;
     let paths = reg[CORS_PATHS];
@@ -62,5 +73,5 @@ export function registerRoute(app: Hono, def: RouteDefinition<ZodTypeAny | undef
       app.use(def.path, corsFor(origins));
     }
   }
-  app.on(def.method, def.path, (c) => runRouteStack(def, c));
+  app.on(def.method, def.path, (c) => (stack ? runRouteStack(def, c, stack) : runRouteStack(def, c)));
 }

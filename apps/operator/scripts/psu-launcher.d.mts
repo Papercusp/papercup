@@ -2767,6 +2767,12 @@ export function ensureCodexHomeViaOperator(owner: any, codexHome: any, advSessio
     token?: null | undefined;
     timeoutMs?: number | undefined;
 }): Promise<any>;
+/** Pure launch-argument half of a session port. Keeping the same owner id is the
+ * authority-continuity invariant: the new native backend is another body of the
+ * resumed session, not a fork, so its loop/claims/modes/awaits/locks stay keyed
+ * to the identity they already use. Bootstrap independently checks the prepared
+ * port's server-recorded source owner before it accepts these args. */
+export function sessionPortTargetArgs(source: any, target: any, account: any, args: any, prepared: any): any;
 /** True when an --agent value can't back a role session (claude/omp/codex can). */
 export function agentInvalidForRole(agent: any): boolean;
 /** which/where <bin> → absolute path or null — the exact gate for psu's bare-name
@@ -3139,7 +3145,7 @@ export const RESUME_EFFORT_MENU: {
     value: string;
 }[];
 export const SESSION_PORT_PROTOCOL_VERSION: 1;
-export const SESSION_PORT_TRANSFORM_VERSION: 1;
+export const SESSION_PORT_TRANSFORM_VERSION: 2;
 export namespace AGENT_LABELS {
     let claude: string;
     let codex: string;

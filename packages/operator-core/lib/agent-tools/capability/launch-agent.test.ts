@@ -120,16 +120,18 @@ const spawnHeadlessMock = vi.fn(
     desktopEnvResolvedVia: null,
   }),
 );
+const spawnGovernedAgentProcessMock = vi.fn(
+  (_input: unknown, spawnProcess: (context: Record<string, unknown>) => Promise<SpawnConsoleResult>) =>
+    spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+);
 const getFleetHeadcountTargetMock = vi.hoisted(() => vi.fn());
 vi.mock('../../console-spawn', () => ({
   spawnConsole: (o: unknown) => spawnConsoleMock(o),
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
 }));
 vi.mock('../../resource-governor/spawn-execution', () => ({
-  spawnGovernedAgentProcess: (
-    _input: unknown,
-    spawnProcess: (context: Record<string, unknown>) => Promise<SpawnConsoleResult>,
-  ) => spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+  spawnGovernedAgentProcess: (input: unknown, spawnProcess: (context: Record<string, unknown>) => Promise<SpawnConsoleResult>) =>
+    spawnGovernedAgentProcessMock(input, spawnProcess),
 }));
 
 const latestFleetMembershipMock = vi.hoisted(() => vi.fn());
@@ -208,6 +210,7 @@ const claimAgentLaunchMock = vi.fn(
   }> => ({ won: true, priorSummary: null, priorLaunchedAt: null, priorLaunchedBy: null }),
 );
 const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
+const releaseAgentLaunchClaimMock = vi.fn(async (_opts: unknown) => true);
 const waitForPtyHostGoneMock = vi.fn(async (_ownerId: unknown) => true);
 vi.mock('../../agent-launch-core', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -217,6 +220,7 @@ vi.mock('../../agent-launch-core', async (orig) => ({
   waitForPtyHostGone: (ownerId: unknown) => waitForPtyHostGoneMock(ownerId),
   claimAgentLaunch: (o: unknown) => claimAgentLaunchMock(o),
   recordAgentLaunchResult: (o: unknown) => recordAgentLaunchResultMock(o),
+  releaseAgentLaunchClaim: (o: unknown) => releaseAgentLaunchClaimMock(o),
 }));
 
 const launchAgent = (await import('./launch-agent')).default;
@@ -243,6 +247,7 @@ beforeEach(() => {
     priorLaunchedAt: null,
     priorLaunchedBy: null,
   });
+  releaseAgentLaunchClaimMock.mockResolvedValue(true);
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
   fetchContextPressureMock.mockResolvedValue(new Map());
@@ -1205,6 +1210,102 @@ describe('idempotency (P-014: a replay must not open a second set of windows)', 
 });
 
 describe('failure reporting', () => {
+  it('releases a claimed key after governed admission fails before any process opens, allowing the same-key retry', async () => {
+    claimAgentLaunchMock
+      .mockResolvedValueOnce({
+        won: true,
+        priorSummary: null,
+        priorLaunchedAt: null,
+        priorLaunchedBy: null,
+      })
+      .mockResolvedValueOnce({
+        won: true,
+        priorSummary: null,
+        priorLaunchedAt: null,
+        priorLaunchedBy: null,
+      });
+    spawnConsoleMock
+      .mockResolvedValueOnce({
+        status: 'error',
+        code: 503,
+        error: 'durable admission record could not be persisted',
+      })
+      .mockResolvedValueOnce({
+        status: 'ok',
+        pid: 4242,
+        terminal: 'xterm',
+        child: {} as never,
+        display: ':1',
+        desktopEnvResolvedVia: 'active-seat',
+      });
+
+    const first = await launchAgent.handler(
+      { brief: 'retryable launch', idempotencyKey: 'retry-after-admission-failure' },
+      ctx,
+    );
+    expect(isError(first)).toBe(true);
+    expect(textOf(first)).toContain('released idempotencyKey');
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'retry-after-admission-failure',
+    });
+    expect(recordAgentLaunchResultMock).not.toHaveBeenCalled();
+
+    const retry = await launchAgent.handler(
+      { brief: 'retryable launch', idempotencyKey: 'retry-after-admission-failure' },
+      ctx,
+    );
+    expect(isError(retry)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a claimed key when governed admission rejects before the spawner is invoked', async () => {
+    spawnGovernedAgentProcessMock.mockRejectedValueOnce(
+      new Error('durable admission record could not be persisted'),
+    );
+
+    const res = await launchAgent.handler(
+      { brief: 'retry after governed rejection', idempotencyKey: 'retry-after-governed-rejection' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(true);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(releaseAgentLaunchClaimMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      idempotencyKey: 'retry-after-governed-rejection',
+    });
+    expect(textOf(res)).toContain('governed spawn failed: durable admission record could not be persisted');
+  });
+
+  it('keeps the idempotency claim when a batch opens at least one process despite another failure', async () => {
+    spawnConsoleMock
+      .mockResolvedValueOnce({ status: 'error', code: 503, error: 'admission unavailable' })
+      .mockResolvedValueOnce({
+        status: 'ok',
+        pid: 4242,
+        terminal: 'xterm',
+        child: {} as never,
+        display: ':1',
+        desktopEnvResolvedVia: 'active-seat',
+      });
+
+    const res = await launchAgent.handler(
+      { brief: 'partial governed batch', count: 2, idempotencyKey: 'partial-governed-batch' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(releaseAgentLaunchClaimMock).not.toHaveBeenCalled();
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        idempotencyKey: 'partial-governed-batch',
+        summary: expect.objectContaining({ opened: 1, failed: 1 }),
+      }),
+    );
+  });
+
   it('reports a failed spawn as an error rather than a silent success', async () => {
     spawnConsoleMock.mockResolvedValue({
       status: 'error',

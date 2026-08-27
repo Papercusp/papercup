@@ -214,6 +214,7 @@ import {
   resolveResumeTarget,
   sessionPortTargetAccount,
   sessionPortRequestBody,
+  sessionPortTargetArgs,
   formatSessionPortInspection,
   sessionPortUpgradeError,
   SESSION_PORT_PROTOCOL_VERSION,
@@ -5303,6 +5304,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
     agent: "claude",
     role: null,
     workspaceId: "papercusp-workspace",
+    coordOwnerId: "su-source-owner",
     cwd: "/repo",
     planSlug: "the-plan",
   };
@@ -5384,22 +5386,28 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       launchContext: "/brief.md",
     });
     expect(() =>
+      sessionPortRequestBody({ ...source, coordOwnerId: null }, target, {}, {}),
+    ).toThrow(/coordination identity/);
+    expect(() =>
       sessionPortRequestBody({ ...source, id: null }, target, {}, {}),
     ).toThrow(/tracked source/);
   });
 
   it("records resume provenance and forwards the opaque handshake/source cwd to bootstrap", () => {
-    const args = {
-      model: "sol:high",
-      account: "default",
-      addDir: [],
-      passthrough: [],
-      sessionPortProtocol: 1,
-      sessionPortTransformVersion: 1,
-      sessionPortToken: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}`,
+    const args = sessionPortTargetArgs(
+      source,
+      resolveResumeTarget(source, { agent: "codex", model: "sol:high" }),
+      { id: "acct-openai" },
+      { model: "sol:high", account: "default", addDir: [], passthrough: [] },
+      { token: `22222222-2222-4222-8222-222222222222.${"a".repeat(64)}` },
+    );
+    expect(args).toMatchObject({
+      ownerId: "su-source-owner",
+      account: "acct-openai",
+      sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
       sessionPortSourceAdvSessionId: 42,
-      sessionPortSourceCwd: "/source/cwd",
-    };
+      sessionPortSourceCwd: "/repo",
+    });
     const body = freshSuBootstrapBody(
       {
         agent: "codex",
@@ -5409,10 +5417,11 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       },
       args,
     );
-    expect(body.cwd).toBe("/source/cwd");
+    expect(body.cwd).toBe("/repo");
     expect(body.session_port_protocol).toBe(1);
-    expect(body.session_port_transform_version).toBe(1);
+    expect(body.session_port_transform_version).toBe(SESSION_PORT_TRANSFORM_VERSION);
     expect(body.session_port_token).toBe(args.sessionPortToken);
+    expect(body.owner_id).toBe("su-source-owner");
     expect(body.launch_argv).toContain("--resume=42");
     expect(body.launch_argv).toContain("--agent=codex");
   });
@@ -5461,7 +5470,7 @@ describe("cross-backend resume target + protocol-v1 launcher contract", () => {
       },
     });
     expect(lines.join("\n")).toMatch(/summary \+ recent tail/);
-    expect(lines.join("\n")).toMatch(/authority is not carried/);
+    expect(lines.join("\n")).toMatch(/preserving the source coordination identity/);
     expect(lines.join("\n")).toMatch(/one malformed record/);
   });
 

@@ -224,7 +224,7 @@ describe('dev:service_health supervision overlay reports the honest state (WI-61
     return overlaySystemdRestartRecency(
       [entry('operator')],
       probeReturning('activating'),
-      [{ name: 'operator', unit: 'papercup-dev-api' }],
+      [{ name: 'operator', unit: 'papercusp-dev-api' }],
     ).then(([row]) => {
       expect(row.activeState).toBe('activating');
       expect(row.active).toBe(false);
@@ -236,7 +236,7 @@ describe('dev:service_health supervision overlay reports the honest state (WI-61
     return overlaySystemdRestartRecency(
       [entry('operator')],
       async () => ({ ok: false }) as ServiceStartInfo,
-      [{ name: 'operator', unit: 'papercup-dev-api' }],
+      [{ name: 'operator', unit: 'papercusp-dev-api' }],
     ).then(([row]) => {
       expect(row.activeState).toBeUndefined();
       expect(row.active).toBeUndefined();
@@ -310,7 +310,7 @@ describe('unit-coverage decisions (WI-6149 D-010 item 4)', () => {
  * EI-20067982007251440 — the RECOVERY PATH for a critical unit must itself be
  * supervised.
  *
- * `papercup-bg-host-watchdog` is the only out-of-process recovery bg-host has:
+ * `papercusp-bg-host-watchdog` is the only out-of-process recovery bg-host has:
  * the in-process supervision reconciler runs INSIDE bg-host and freezes with it,
  * so when the DBOS ticker wedges, the watchdog is the sole actor that can act.
  * Measured 2026-08-10: it restarted a frozen bg-host at 11:00:30Z, while that
@@ -329,7 +329,7 @@ describe('EI-20067982007251440 — bg-host-watchdog supervision', () => {
         'from the registry means a dead watchman is reported by nothing, and the next ticker ' +
         'freeze halts git-sync + all routines + the release gate fleet-wide with no recovery.',
     ).toBeDefined();
-    expect(entry()?.unit).toBe('papercup-bg-host-watchdog');
+    expect(entry()?.unit).toBe('papercusp-bg-host-watchdog');
     expect(entry()?.layer).toBe('systemd-user');
   });
 
@@ -357,7 +357,7 @@ describe('EI-20067982007251440 — bg-host-watchdog supervision', () => {
         'entry above ("already Restart=always at the systemd level"), that reasoning does not ' +
         'transfer: Restart=always fires on process EXIT and does nothing for a STOPPED unit — ' +
         'the exact way WI-5376 lost the federation gate timer twice, silently. A deliberate ' +
-        'pause is still respected via `systemctl --user disable --now papercup-bg-host-watchdog`.',
+        'pause is still respected via `systemctl --user disable --now papercusp-bg-host-watchdog`.',
     ).toBe(true);
   });
 });

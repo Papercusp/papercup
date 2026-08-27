@@ -32,6 +32,7 @@ import type { HyperswarmLike } from '../swarm';
 import { _clearRegistryForTests } from '../projection';
 import { listBootHistory, _resetBootHistoryForTests, type BootHistoryKind } from '../boot-history';
 import type { AdmittedLog, MergeCursorStore } from '../read-merge';
+import { produceLogSnapshot } from '../log-snapshot';
 import {
   setReplicationStallEpisodeReporterForTests,
   setReplicationStallRecoveryReporterForTests,
@@ -353,6 +354,74 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
 
     expect(await handle.mergeNow()).toBe(0);
     expect(applied).toEqual([OTHER_TABLE, MEMORY_TABLE]);
+  });
+
+  it('live ON snapshot-seeds the memory replay cursor instead of scanning summarized history', async () => {
+    let enabled = false;
+    const applied: string[] = [];
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId: 'ws-wi3985-snapshot',
+      harnessSlug: 'wi3985-snapshot',
+      mergePollMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      memoryFederationFlagOn: async () => enabled,
+      applyOverride: async (op) => {
+        if (op.table === MEMORY_TABLE && !enabled) return false;
+        applied.push(op.table!);
+        return true;
+      },
+    });
+    cleanups.push(() => handle.close());
+
+    await handle.append({
+      type: 'put',
+      table: MEMORY_TABLE,
+      hbKey: 'memory-before-snapshot',
+      value: { id: 'memory-before-snapshot', shareable: true },
+      ts: 2_000,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    });
+    for (let i = 0; i < 32; i++) {
+      await handle.append({
+        type: 'put',
+        table: OTHER_TABLE,
+        hbKey: `prefix-${i}`,
+        value: { i },
+        ts: 2_001 + i,
+        schema_version: CURRENT_SCHEMA_VERSION,
+      });
+    }
+    await handle.mergeNow();
+
+    const snapshot = await produceLogSnapshot(handle.ownLog, {
+      now: 3_000,
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+    });
+    expect(snapshot.appended).toBe(true);
+    await handle.append({
+      type: 'put',
+      table: OTHER_TABLE,
+      hbKey: 'tail-after-snapshot',
+      value: { tail: true },
+      ts: 3_001,
+      schema_version: CURRENT_SCHEMA_VERSION,
+    });
+    await handle.mergeNow();
+
+    const originalGet = handle.ownLog.get.bind(handle.ownLog);
+    const readIndexes: number[] = [];
+    vi.spyOn(handle.ownLog, 'get').mockImplementation(async (index) => {
+      readIndexes.push(index);
+      return originalGet(index);
+    });
+
+    const appliedBeforeEnable = applied.length;
+    enabled = true;
+    expect(await handle.mergeNow()).toBe(1);
+    expect(applied.slice(appliedBeforeEnable)).toEqual([MEMORY_TABLE]);
+    expect(readIndexes.length).toBeGreaterThan(0);
+    expect(Math.min(...readIndexes)).toBeGreaterThanOrEqual(snapshot.coversUpTo);
   });
 
   it('cold boot ON rejects OFF-stamped progress and re-folds the missed memory', async () => {

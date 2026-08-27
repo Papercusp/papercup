@@ -555,6 +555,36 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     ]);
   });
 
+  it('create: inline work-item blocks route through canonical admission and preserve satisfaction (WI-225867)', async () => {
+    const blocked = await createOne({ kind: 'bug', title: 'blocked inline target', harness: 'papercup' });
+    const blockedId = (blocked.workItem as Record<string, unknown>).id as string;
+
+    const blocker = await createOne({
+      kind: 'change',
+      title: 'inline canonical blocker',
+      harness: 'papercup',
+      links: [{ rel: 'blocks', target_id: blockedId, target_harness: 'papercup', satisfaction: 'success' }],
+    });
+    expect(blocker.ok).toBe(true);
+    const blockerId = (blocker.workItem as Record<string, unknown>).id as string;
+
+    expect(
+      await db.sql`
+        SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction
+          FROM harness_shared.work_item_deps`,
+    ).toEqual([
+      {
+        blocked_kind: 'issue',
+        blocked_ref: blockedId,
+        blocker_kind: 'issue',
+        blocker_ref: blockerId,
+        dep_type: 'blocks',
+        satisfaction: 'success',
+      },
+    ]);
+    expect(await db.sql`SELECT rel FROM harness_shared.coord_links WHERE rel = 'blocks'`).toEqual([]);
+  });
+
   it('tag + subscribe return success envelopes', async () => {
     const bug = await createOne({ kind: 'bug', title: 'b', harness: 'papercup' });
     const id = (bug.workItem as Record<string, unknown>).id as string;

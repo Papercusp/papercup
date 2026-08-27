@@ -2068,10 +2068,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          * "re-send the FULL set" is unachievable at the cap, because the full set is by
          * definition larger than `.max(CARRY_NOTE_MAX_CHECKS)` and the call is rejected.
          *
-         * The guard therefore prevents the loss, not just diagnoses it: the authoritative
-         * locked prior is checked before the append transform can evict its carried tail.
+         * The authoritative locked prior therefore wins: the body still lands, carried
+         * rows remain intact, and optional supplied rows that cannot fit are reported.
          */
-        it('at the cap, append refuses the overflowing union atomically instead of evicting the carried tail', async () => {
+        it('at the cap, append stores the body and carried rows while reporting supplied checks that did not fit', async () => {
           const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
             recheck: `probe ${i + 1}`,
@@ -2079,22 +2079,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           await seed(atCap);
           const prior = await lastStored();
           if (prior === null) throw new Error('seed did not produce a prior checkpoint');
-          let writes = 0;
-
-          // Model the real store contract: the guard runs against the authoritative
-          // locked prior, and a blocked result performs no write.
-          setWorkItemCheckpointWithPrior.mockImplementation(
-            async (
-              _ref: unknown,
-              _incoming: string | null | undefined,
-              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
-            ) => {
-              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
-              writes += 1;
-              return { stored: prior, priorLength: prior.length };
-            },
-          );
+          const readCurrent = installLegacyPrior(prior);
 
           const r = (await one({
             id: 'WI-7',
@@ -2104,19 +2089,68 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               { claim: 'MINE-A holds', verified: 'measured' },
               { claim: 'MINE-B holds', verified: 'measured' },
             ],
-          })) as { ok: boolean; error: string; errorCode: string; recovery: { append: unknown } };
+          })) as {
+            ok: boolean;
+            checksNotRetained?: string[];
+            checksNotRetainedRows?: Array<{ claim: string; verified?: string }>;
+            checksNotRetainedNote?: string;
+          };
 
-          // The additive write is refused before the transform can evict rows.
-          expect(r.ok).toBe(false);
-          expect(r.errorCode).toBe('append_checks_overflow');
-          expect(r.error).toContain('append_checks_overflow');
-          expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
-          expect(r.error).toMatch(/RETIRE stale rows|without `checks`/i);
-          expect(r.recovery.append).toMatchObject({
-            args: { append: true, checkpoint: 'my fresh finding', checks: [] },
-          });
-          expect(writes).toBe(0);
-          expect(await lastStored()).toBe(prior);
+          expect(r.ok).toBe(true);
+          const stored = readCurrent();
+          expect(stored).toContain('my fresh finding');
+          for (const row of atCap) expect(stored).toContain(row.claim);
+          expect(stored).not.toContain('MINE-A holds');
+          expect(stored).not.toContain('MINE-B holds');
+          expect(r.checksNotRetained).toEqual(['MINE-A holds', 'MINE-B holds']);
+          expect(r.checksNotRetainedRows).toEqual([
+            expect.objectContaining({ claim: 'MINE-A holds', verified: 'measured' }),
+            expect.objectContaining({ claim: 'MINE-B holds', verified: 'measured' }),
+          ]);
+          expect(r.checksNotRetainedNote).toContain('BODY PRESERVED');
+        });
+
+        it('uses a vacant slot before reporting the remaining supplied row as not retained', async () => {
+          const oneVacancy = Array.from({ length: CARRY_NOTE_MAX_CHECKS - 1 }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+            recheck: `probe ${i + 1}`,
+          }));
+          await seed(oneVacancy);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({
+            id: 'WI-7',
+            checkpoint: 'body survives partial check admission',
+            append: true,
+            checks: [{ claim: 'MINE-A holds' }, { claim: 'MINE-B holds' }],
+          })) as { ok: boolean; checks: number; checksNotRetained?: string[] };
+
+          expect(r).toMatchObject({ ok: true, checks: CARRY_NOTE_MAX_CHECKS });
+          const stored = readCurrent();
+          expect(stored).toContain('body survives partial check admission');
+          expect(stored).toContain('MINE-A holds');
+          expect(stored).not.toContain('MINE-B holds');
+          expect(r.checksNotRetained).toEqual(['MINE-B holds']);
+        });
+
+        it('keeps checks-only overflow as an atomic refusal because no body payload can be salvaged', async () => {
+          const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
+            claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
+          }));
+          await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          const readCurrent = installLegacyPrior(prior);
+
+          const r = (await one({ id: 'WI-7', append: true, checks: [{ claim: 'MINE holds' }] })) as {
+            ok: boolean;
+            errorCode?: string;
+          };
+
+          expect(r).toMatchObject({ ok: false, errorCode: 'append_checks_overflow' });
+          expect(readCurrent()).toBe(prior);
         });
 
         /**
@@ -2351,7 +2385,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          * The body here is deliberately LARGE so the shrink guard returns null: this
          * isolates the guard-slot defect rather than the shrink path's own retry.
          */
-        it('at the cap, the DEFAULT rowsMode:merge write WITH a body also refuses instead of evicting the carried tail', async () => {
+        it('at the cap, DEFAULT rowsMode:merge stores the body and reports supplied rows it could not retain', async () => {
           const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
             recheck: `probe ${i + 1}`,
@@ -2360,20 +2394,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           await seed(atCap);
           const prior = await lastStored();
           if (prior === null) throw new Error('seed did not produce a prior checkpoint');
-          let writes = 0;
-
-          setWorkItemCheckpointWithPrior.mockImplementation(
-            async (
-              _ref: unknown,
-              _incoming: string | null | undefined,
-              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
-            ) => {
-              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
-              writes += 1;
-              return { stored: prior, priorLength: prior.length };
-            },
-          );
+          const readCurrent = installLegacyPrior(prior);
 
           const freshBody = `progress refresh ${'x'.repeat(4000)}`;
           const r = (await one({
@@ -2385,24 +2406,21 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             checks: [{ claim: 'MINE-A holds' }, { claim: 'MINE-B holds' }],
           })) as {
             ok: boolean;
-            error: string;
-            errorCode: string;
+            checksNotRetained?: string[];
             checksDropped?: string[];
-            recovery: { append: unknown };
           };
 
-          // The additive-rows write is refused before the transform can evict rows.
-          expect(r.ok).toBe(false);
-          expect(r.errorCode).toBe('append_checks_overflow');
-          expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
-          expect(r.recovery.append).toMatchObject({
-            args: { rowsMode: 'merge', checkpoint: freshBody, checks: [] },
-          });
-          expect(writes).toBe(0);
-          expect(await lastStored()).toBe(prior);
+          expect(r.ok).toBe(true);
+          const stored = readCurrent();
+          expect(stored).toContain(freshBody);
+          for (const row of atCap) expect(stored).toContain(row.claim);
+          expect(stored).not.toContain('MINE-A holds');
+          expect(stored).not.toContain('MINE-B holds');
+          expect(r.checksDropped).toBeUndefined();
+          expect(r.checksNotRetained).toEqual(['MINE-A holds', 'MINE-B holds']);
         });
 
-        it('reports exact sanitized ids when a rendered [#id] label is re-sent during overflow', async () => {
+        it('updates an existing sanitized id while reporting a new supplied id that cannot fit', async () => {
           const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
             id: `peer-${String(i + 1).padStart(2, '0')}`,
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
@@ -2412,20 +2430,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           await seed(atCap);
           const prior = await lastStored();
           if (prior === null) throw new Error('seed did not produce a prior checkpoint');
-          let writes = 0;
-
-          setWorkItemCheckpointWithPrior.mockImplementation(
-            async (
-              _ref: unknown,
-              _incoming: string | null | undefined,
-              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
-            ) => {
-              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
-              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
-              writes += 1;
-              return { stored: prior, priorLength: prior.length };
-            },
-          );
+          const readCurrent = installLegacyPrior(prior);
 
           const r = (await one({
             id: 'WI-7',
@@ -2440,31 +2445,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             ],
           })) as {
             ok: boolean;
-            errorCode: string;
-            checksDropped?: string[];
-            checksDroppedRows?: Array<{
+            checksNotRetained?: string[];
+            checksNotRetainedRows?: Array<{
               id?: string;
               claim: string;
               recheck?: string;
               verified?: string;
-              sinceMs?: number;
             }>;
           };
 
-          expect(r.ok).toBe(false);
-          expect(r.errorCode).toBe('append_checks_overflow');
-          expect(r.checksDropped).toEqual(['PEER-12 holds']);
-          expect(r.checksDroppedRows).toEqual([
+          expect(r.ok).toBe(true);
+          const stored = readCurrent();
+          expect(stored).toContain('[#peer-01] PEER-01 holds');
+          expect(stored).toContain('PEER-12 holds');
+          expect(stored).not.toContain('MINE holds');
+          expect(r.checksNotRetained).toEqual(['MINE holds']);
+          expect(r.checksNotRetainedRows).toEqual([
             expect.objectContaining({
-              id: 'peer-12',
-              claim: 'PEER-12 holds',
-              recheck: 'probe 12',
-              verified: expect.stringMatching(/^measured 12 @\d{4}-\d{2}-\d{2}T/),
-              sinceMs: expect.any(Number),
+              id: 'mine-new',
+              claim: 'MINE holds',
+              recheck: 'probe mine',
+              verified: 'measured mine',
             }),
           ]);
-          expect(writes).toBe(0);
-          expect(await lastStored()).toBe(prior);
         });
 
         it("accepts the advertised rowsMode:'merge' checks:[] recovery when a legacy prior exceeds the current cap", async () => {

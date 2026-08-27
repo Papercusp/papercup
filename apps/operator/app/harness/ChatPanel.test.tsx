@@ -14,9 +14,9 @@
  * is persisted server-side, so the panel must surface the gap itself instead of
  * resetting to idle — same vanish symptom, different cause.
  */
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { ConversationContextProjection } from '@papercusp/operator-core/lib/conversation-context-projection';
 
 // useSyncQuery → a single chat row matching the panel's chatId so `chat`
@@ -482,5 +482,176 @@ describe('ChatPanel — failed turn (EI-577)', () => {
     const failed = await screen.findByText(/rate-limited — paused until later/i);
     const turn = failed.closest('.chat-turn');
     expect(turn?.className).toContain('chat-turn--error');
+  });
+});
+
+/**
+ * D-001 (single context surface) — the acceptance criterion the rest of the
+ * suite does not reach: "agent context has exactly one collapsible home AND
+ * chat remains usable when it is collapsed". Its falsifier is a collapsed
+ * layout that disables chat.
+ *
+ * This is the ONLY place that outcome can be observed. The Rust PTY suite
+ * (`pui context-pane …`) launches the context surface STANDALONE — there is no
+ * transcript or compose area in that harness to be disabled — and
+ * `ConversationContextProjectionView.test.tsx` mounts the sidebar with no chat
+ * beside it. Only ChatPanel composes both halves
+ * (`.pc-conversation-context-layout` = the `<aside>` + the chat column), which
+ * is exactly where a regression would couple them.
+ *
+ * The structural assertion is the load-bearing one: the chat column must be a
+ * SIBLING of the collapsible aside, never a descendant of it. If it were ever
+ * nested inside the `open ? …` body, collapsing would unmount the transcript
+ * and the compose path outright — the failure this criterion names.
+ */
+describe('ChatPanel — D-001: collapsing the one context surface must not disable chat', () => {
+  const collapseProjection = (): ConversationContextProjection => ({
+    schemaVersion: 'conversation-context-v1',
+    session: {
+      sourceKind: 'agent_chat',
+      sessionId: CHAT,
+      harness: SLUG,
+      role: 'worker',
+      linkedWorkItemId: 'WI-42177',
+      capabilityTier: 'owned-loop',
+    },
+    capabilities: { liveFrames: true, taskWrite: true, approvalWrite: true },
+    frames: [
+      { id: 'm1', kind: 'message', role: 'user', text: 'Ship it', timestamp: '2026-08-26T00:00:00Z' },
+      { id: 'm2', kind: 'message', role: 'assistant', text: 'On it.', timestamp: '2026-08-26T00:00:01Z' },
+      {
+        id: 'ctx-1',
+        kind: 'context',
+        section: 'identity',
+        title: 'Identity',
+        entries: [{ label: 'Harness', value: SLUG }],
+      },
+    ],
+  });
+
+  it('keeps the transcript and a working compose path while the context surface is collapsed', async () => {
+    syncRows = [chatRow([{ role: 'user', content: 'Ship it', ts: '2026-08-26T00:00:00Z' }])];
+    projectionRows = [collapseProjection()];
+    const fetchMock = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (typeof url === 'string' && url.includes('/messages')) {
+        return new Response(
+          sseStream([
+            `event: delta\ndata: ${JSON.stringify({ text: 'ack' })}\n\n`,
+            'event: done\ndata: {}\n\n',
+          ]),
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }
+      return new Response(null, { status: 404 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<ChatPanel slug={SLUG} chatId={CHAT} />);
+
+    const aside = await screen.findByTestId('conversation-context-projection');
+    const layout = aside.parentElement!;
+    expect(layout.className).toContain('pc-conversation-context-layout');
+
+    // Open: exactly ONE collapsible home, and it is expanded with a body.
+    const toggle = screen.getByRole('button', { expanded: true });
+    expect(screen.getAllByRole('button', { expanded: true })).toHaveLength(1);
+    expect(aside.className).toContain('is-open');
+    expect(aside.querySelector('.pc-context-projection__body')).toBeTruthy();
+
+    // The chat column is a SIBLING of the collapsible aside, not inside it —
+    // the structural reason a collapse cannot take the transcript with it.
+    const chatColumn = layout.querySelector('.pc-conversation-context-layout__chat')!;
+    expect(chatColumn).toBeTruthy();
+    expect(aside.contains(chatColumn)).toBe(false);
+
+    // Snapshot the transcript the chat is rendering, plus a positive control
+    // that it is non-empty (an empty-vs-empty comparison would pass vacuously).
+    const messagesBefore = lastOperatorChatProps?.messages as unknown[];
+    expect(Array.isArray(messagesBefore)).toBe(true);
+    expect(messagesBefore.length).toBeGreaterThan(0);
+    expect(chatColumn.contains(screen.getByTestId('operator-chat-probe'))).toBe(true);
+
+    // ── Collapse it ──────────────────────────────────────────────────────────
+    fireEvent.click(toggle);
+
+    // The collapse really happened: state, class, and the body is gone.
+    await waitFor(() => expect(toggle.getAttribute('aria-expanded')).toBe('false'));
+    expect(aside.className).toContain('is-collapsed');
+    expect(aside.querySelector('.pc-context-projection__body')).toBeNull();
+
+    // …and chat is still usable. Still mounted, in the same sibling column,
+    // rendering the same transcript, and NOT forced into a passive/busy state.
+    const probe = screen.getByTestId('operator-chat-probe');
+    expect(chatColumn.contains(probe)).toBe(true);
+    expect(lastOperatorChatProps?.messages).toEqual(messagesBefore);
+    expect(lastOperatorChatProps?.passive).toBe(false);
+    expect(lastOperatorChatProps?.busy).toBe(false);
+
+    // The compose path still reaches the canonical send route while collapsed.
+    const onSend = lastOperatorChatProps?.onSend as (content: string) => void;
+    expect(typeof onSend).toBe('function');
+    await act(async () => { onSend('still usable while collapsed'); });
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      `/api/harness/${SLUG}/agent-chats/${CHAT}/messages`,
+      expect.objectContaining({ method: 'POST' }),
+    ));
+    const sendCall = fetchMock.mock.calls.find(([url]) => String(url).includes('/messages'));
+    expect(JSON.parse(String(sendCall?.[1]?.body))).toMatchObject({
+      content: 'still usable while collapsed',
+    });
+  });
+
+  /**
+   * Falsifiability control — deliberately wrong, and never shipped.
+   *
+   * The test above passes today, which on its own says nothing about whether it
+   * WOULD catch the regression the criterion names. This is the regression,
+   * built explicitly: a layout that couples the two halves by nesting the chat
+   * column inside the collapsible body, so collapsing unmounts it.
+   *
+   * It lives here permanently rather than as a temporary mutation of
+   * ChatPanel.tsx: git-sync sweeps this shared tree on a schedule, so a probe
+   * that edits a tracked file can be committed mid-run even when nothing goes
+   * wrong (repo-conventions, "proving a guard is falsifiable").
+   */
+  function CoupledLayoutRegression() {
+    const [open, setOpen] = useState(true);
+    return (
+      <div className="pc-conversation-context-layout">
+        <aside
+          className={`pc-context-projection${open ? ' is-open' : ' is-collapsed'}`}
+          data-testid="regression-context-projection"
+        >
+          <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+            Context
+          </button>
+          {open ? (
+            <div className="pc-context-projection__body">
+              <div className="pc-conversation-context-layout__chat">
+                <div data-testid="regression-chat-probe" />
+              </div>
+            </div>
+          ) : null}
+        </aside>
+      </div>
+    );
+  }
+
+  it('control: both load-bearing predicates FAIL against a coupled layout', () => {
+    render(<CoupledLayoutRegression />);
+
+    const aside = screen.getByTestId('regression-context-projection');
+    const layout = aside.parentElement!;
+    const chatColumn = layout.querySelector('.pc-conversation-context-layout__chat')!;
+
+    // Predicate 1 — "the chat column is a SIBLING, not a descendant". The real
+    // ChatPanel asserts this is false; here it is true, so the assertion above
+    // is discriminating rather than vacuously satisfiable.
+    expect(aside.contains(chatColumn)).toBe(true);
+
+    // Predicate 2 — "chat survives the collapse". Here it does not.
+    fireEvent.click(screen.getByRole('button', { expanded: true }));
+    expect(screen.queryByTestId('regression-chat-probe')).toBeNull();
   });
 });

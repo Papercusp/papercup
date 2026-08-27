@@ -7,6 +7,7 @@ import {
   type ResourceGovernorInventoryRow,
   inspectGovernorSource,
   scanActiveInventory,
+  scanInventory,
   validateInventory,
 } from '../../../../scripts/check-resource-governor-enforcement.mjs';
 import { listTrackedFiles } from '../../../../scripts/lib/tracked-files.mjs';
@@ -37,6 +38,19 @@ describe('resource governor enforcement lint', () => {
         `await governor.admit(input); const context: AdmissionContext = input.context; await governor.release(context); spawn('x', []);`,
       ),
     ).not.toContain('resource-start-outside-admission');
+  });
+
+  it('recognizes the canonical durable execution lifecycle at a process boundary', () => {
+    expect(
+      inspectGovernorSource(
+        `const execution = await beginGovernedExecution(request, owner, runtime); const child = spawn('tsc', []); await execution.finish();`,
+      ),
+    ).not.toContain('resource-start-outside-admission');
+  });
+
+  it('does not treat prose inside strings as executable resource-control code', () => {
+    expect(inspectGovernorSource(`const guidance = 'waited for a semaphore slot';`)).toEqual([]);
+    expect(inspectGovernorSource(`const guidance = 'call spawn(worker) next';`)).toEqual([]);
   });
 
   it.each([
@@ -72,6 +86,24 @@ describe('resource governor enforcement lint', () => {
     }
     expect(sourceFiles.length).toBeGreaterThan(5);
     expect(scanActiveInventory(sourceFiles)).toEqual([]);
+  });
+
+  it('can audit a pending migration and applies only centrally registered dispositions', () => {
+    const files: Array<[string, string]> = [
+      [
+        'packages/operator-core/lib/agent-tools/plans/audit.ts',
+        `import { execFileSync } from 'node:child_process'; execFileSync('git', ['rev-parse', 'HEAD']);`,
+      ],
+      [
+        'packages/operator-core/lib/agent-tools/example.ts',
+        `import { spawn } from 'node:child_process'; spawn('resident-worker', []);`,
+      ],
+    ];
+
+    expect(scanInventory(files, { migrations: ['P-014'] })).toEqual([
+      'packages/operator-core/lib/agent-tools/example.ts:resource-start-outside-admission',
+    ]);
+    expect(scanActiveInventory(files)).toEqual([]);
   });
 
   it('executes the real blocking CLI over the tracked tree', () => {

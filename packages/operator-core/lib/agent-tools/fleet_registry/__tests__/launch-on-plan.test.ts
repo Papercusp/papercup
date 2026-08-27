@@ -13,6 +13,7 @@ const admissionMocks = vi.hoisted(() => ({ preflight: vi.fn() }));
 
 const spawnConsoleMock = vi.fn();
 const spawnHeadlessMock = vi.fn();
+const spawnGovernedAgentProcessMock = vi.hoisted(() => vi.fn());
 const fetchGatewayHeadroomMock = vi.fn();
 const createFleetIfAbsentMock = vi.fn();
 const getFleetMock = vi.fn();
@@ -50,17 +51,7 @@ vi.mock('../../../console-spawn', () => ({
   spawnHeadless: (...args: unknown[]) => spawnHeadlessMock(...args),
 }));
 vi.mock('../../../resource-governor/spawn-execution', () => ({
-  spawnGovernedAgentProcess: (
-    input: { idempotencyKey: string },
-    spawnProcess: (context: Record<string, unknown>) => Record<string, unknown>,
-  ) => {
-    const admissionContext = {
-      receiptId: `receipt:${input.idempotencyKey}`,
-      leaseId: `lease:${input.idempotencyKey}`,
-    };
-    const result = spawnProcess(admissionContext);
-    return result.status === 'ok' ? { ...result, admissionContext } : result;
-  },
+  spawnGovernedAgentProcess: (...args: unknown[]) => spawnGovernedAgentProcessMock(...args),
 }));
 
 vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
@@ -404,6 +395,20 @@ beforeEach(() => {
   launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
   launchTransaction.persist.mockReset();
   launchTransaction.persist.mockResolvedValue(null);
+  spawnGovernedAgentProcessMock.mockReset();
+  spawnGovernedAgentProcessMock.mockImplementation(
+    (
+      input: { idempotencyKey: string },
+      spawnProcess: (context: Record<string, unknown>) => Record<string, unknown>,
+    ) => {
+      const admissionContext = {
+        receiptId: `receipt:${input.idempotencyKey}`,
+        leaseId: `lease:${input.idempotencyKey}`,
+      };
+      const result = spawnProcess(admissionContext);
+      return result.status === 'ok' ? { ...result, admissionContext } : result;
+    },
+  );
   getFleetHeadcountTargetMock.mockReset();
   getFleetHeadcountTargetMock.mockResolvedValue(null);
   setFleetHeadcountTargetMock.mockReset();
@@ -2136,6 +2141,46 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
     expect(payload.failed).toHaveLength(1);
     expect(payload.failed[0].error).toMatch(/ServiceUnknown/);
     expect(payload.failed[0].code).toBe(502);
+  });
+
+  it('records a governed admission rejection as a member failure and finalizes the partial wave', async () => {
+    // Admission can fail before spawnConsole returns any SpawnConsoleResult. The
+    // rejection must still occupy the attempted member's slot so the transaction
+    // is durable and the remaining cohort is eligible for a later retry.
+    spawnGovernedAgentProcessMock.mockRejectedValueOnce(
+      new Error('durable admission record could not be persisted'),
+    );
+
+    const res = await invokeLaunchHandler(
+      { name: 'Admission Fail Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(false);
+    expect(payload.opened).toEqual([]);
+    expect(payload.failed).toEqual([
+      {
+        ownerId: payload.launchTransaction.requestedMemberIds[0],
+        code: 500,
+        error: 'governed spawn failed: durable admission record could not be persisted',
+      },
+    ]);
+    expect(payload.launchTransaction).toMatchObject({
+      state: 'partial',
+      failed: [{
+        ownerId: payload.launchTransaction.requestedMemberIds[0],
+        phase: 'spawn',
+        reason: 'governed spawn failed: durable admission record could not be persisted',
+      }],
+      recovery: { retryOwnerIds: payload.launchTransaction.requestedMemberIds },
+    });
+    expect(payload.launchTransaction.waves).toHaveLength(1);
+    expect(payload.launchTransaction.waves[0]).toMatchObject({
+      state: 'partial',
+      openedOwnerIds: [],
+    });
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
   it('releases the fleet-launch idempotency slot when EVERY spawn failed, so an immediate legitimate retry is not suppressed', async () => {

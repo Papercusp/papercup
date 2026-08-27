@@ -23,6 +23,7 @@ import * as rawBlockEdgeGuard from '../../../../scripts/check-no-raw-block-edge.
 const {
   RAW_WORK_ITEM_DEPS_CAPABILITIES,
   canonicalFacadeRoutingOffenders,
+  canonicalLinkFacadeRoutingOffenders,
   usesDependencyAdmissionBypass,
   writesRawBlocksEdge,
   writesRawWorkItemDependency,
@@ -38,19 +39,19 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
       ).toBe(true);
     });
 
-    it('flags a linkWorkItem(...) call with a blocks rel', () => {
-      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'blocks', { harness });")).toBe(true);
+    it('flags a low-level links.link(...) call with a blocks rel', () => {
+      expect(writesRawBlocksEdge("await links.link(src, dst, 'blocks', { created_by: by });")).toBe(true);
     });
 
-    it('flags a MULTI-LINE linkWorkItem call — a reformat must not defeat it', () => {
+    it('flags a MULTI-LINE low-level link call — a reformat must not defeat it', () => {
       expect(
-        writesRawBlocksEdge("await linkWorkItem(\n  item.id,\n  targetRef,\n  'blocks',\n  { harness, by },\n);"),
+        writesRawBlocksEdge("await links.link(\n  sourceRef,\n  targetRef,\n  'blocks',\n  { created_by: by },\n);"),
       ).toBe(true);
     });
 
     it('flags regardless of quoting style', () => {
-      expect(writesRawBlocksEdge('await linkWorkItem(id, dst, "blocks");')).toBe(true);
-      expect(writesRawBlocksEdge('await linkWorkItem(id, dst, `blocks`);')).toBe(true);
+      expect(writesRawBlocksEdge('await links.link(src, dst, "blocks");')).toBe(true);
+      expect(writesRawBlocksEdge('await links.link(src, dst, `blocks`);')).toBe(true);
     });
 
     /**
@@ -62,15 +63,24 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
      * so nobody "tightens" the predicate back into that blind spot.
      */
     it('flags the VARIABLE rel form — the shape the real caller uses', () => {
-      expect(writesRawBlocksEdge("const rel = 'blocks';\nawait linkWorkItem(id, dst, rel, { harness });")).toBe(true);
+      expect(writesRawBlocksEdge("const rel = 'blocks';\nawait links.link(src, dst, rel, { created_by: by });")).toBe(
+        true,
+      );
     });
 
     it('flags a rel reached via a branch, not a literal argument (the link.ts shape)', () => {
       expect(
         writesRawBlocksEdge(
-          "if (it.rel === 'blocks') { /* ... */ }\nawait linkWorkItem(it.id, dst, it.rel, { harness });",
+          "if (it.rel === 'blocks') { /* ... */ }\nawait links.link(src, dst, it.rel, { created_by: by });",
         ),
       ).toBe(true);
+    });
+  });
+
+  describe('does NOT flag canonical work-item link facades', () => {
+    it('trusts linkWorkItem and linkIssue callers; their definitions are checked separately', () => {
+      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'blocks', { harness });")).toBe(false);
+      expect(writesRawBlocksEdge("const rel = 'blocks';\nawait linkIssue(id, dst, rel, by);")).toBe(false);
     });
   });
 
@@ -94,7 +104,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
         writesRawBlocksEdge(
           'const err = await guardFeatureBlockEdgeAcyclic(srcRef.ref, dst.ref);\n' +
             'if (err) return { ok: false, error: err };\n' +
-            "await linkWorkItem(it.id, dst, 'blocks', { harness });",
+            "await links.link(srcRef, dst, 'blocks', { created_by: by });",
         ),
       ).toBe(false);
     });
@@ -113,8 +123,8 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
     });
 
     it('ignores a rel OTHER than blocks — only feature blocking deadlocks the frontier', () => {
-      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates', { harness });")).toBe(false);
-      expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'duplicates', { harness });")).toBe(false);
+      expect(writesRawBlocksEdge("await links.link(src, dst, 'relates', { created_by: by });")).toBe(false);
+      expect(writesRawBlocksEdge("await links.link(src, dst, 'duplicates', { created_by: by });")).toBe(false);
     });
 
     it('ignores a coord_links INSERT that carries no blocks rel at all', () => {
@@ -138,7 +148,7 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
    * blind spot that the real caller already lives in.
    */
   it('KNOWN TRADE: flags a non-blocks write in a file that also mentions blocks', () => {
-    expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';")).toBe(true);
+    expect(writesRawBlocksEdge("await links.link(src, dst, 'relates');\nconst label = 'blocks';")).toBe(true);
   });
 });
 
@@ -180,6 +190,30 @@ describe('P-006 canonical work_item_deps admission guard', () => {
         routed.replace('await mutateWorkItemDependencies(input);', 'await sql`INSERT INTO x VALUES (1)`;'),
       ),
     ).toEqual(['mirrorWorkItemBlockingEdge']);
+  });
+
+  it('requires both work-item families to keep link and unlink on the canonical mirror facades', () => {
+    const workItems = [
+      'export async function linkWorkItem() { await linkIssue(); await mirrorWorkItemBlockingEdge(); }',
+      'export async function unlinkWorkItem() { await unlinkIssue(); await removeMirroredWorkItemBlockingEdge(); }',
+    ].join('\n');
+    const issues = [
+      'export async function linkIssue() { await mirrorWorkItemBlockingEdge(); }',
+      'export async function unlinkIssue() { await removeMirroredWorkItemBlockingEdge(); }',
+    ].join('\n');
+    expect(canonicalLinkFacadeRoutingOffenders(workItems, issues)).toEqual([]);
+    expect(
+      canonicalLinkFacadeRoutingOffenders(
+        workItems.replace('await mirrorWorkItemBlockingEdge();', "await links.link(src, dst, 'blocks');"),
+        issues,
+      ),
+    ).toEqual(['linkWorkItem']);
+    expect(
+      canonicalLinkFacadeRoutingOffenders(
+        workItems,
+        issues.replace('await removeMirroredWorkItemBlockingEdge();', "await links.unlink(src, dst, 'blocks');"),
+      ),
+    ).toEqual(['unlinkIssue']);
   });
 
   it('every raw-DML capability carries a reviewable reason', () => {

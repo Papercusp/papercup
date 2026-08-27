@@ -84,7 +84,7 @@ const gateOwnershipM = vi.mocked(readGateOwnership);
 
 const listModule = await import('./list');
 const listTool = listModule.default;
-const { attestGateHealth } = listModule;
+const { attestGateHealth, deriveGitSyncFreshness } = listModule;
 const setTool = (await import('./set')).default;
 
 type Out = { content?: { text: string }[]; data?: unknown };
@@ -124,6 +124,70 @@ beforeEach(() => {
 });
 
 describe('routines:list', () => {
+  it('derives degraded git-sync health when last_synced_at is older than three scheduled intervals', () => {
+    const now = Date.parse('2026-08-27T18:00:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    expect(
+      deriveGitSyncFreshness({ last_status: 'synced', last_synced_at: now - 10 * 60_000 }, '0 */3 * * * *', true, now),
+    ).toEqual({
+      status: 'degraded',
+      measured_at: '2026-08-27T18:00:00.000Z',
+      last_synced_at: '2026-08-27T17:50:00.000Z',
+      age_ms: 10 * 60_000,
+      cadence_ms: 3 * 60_000,
+      stale_after_ms: 9 * 60_000,
+      missed_intervals: 3,
+      raw_last_status: 'synced',
+      warning:
+        'No completed git-sync outcome for more than 3 scheduled intervals; the raw last_status may describe an older successful tick.',
+    });
+  });
+
+  it('keeps a recent completed git-sync outcome fresh and reports missing proof as unknown', () => {
+    const now = Date.parse('2026-08-27T18:00:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    expect(
+      deriveGitSyncFreshness({ last_status: 'nothing', last_synced_at: now - 2 * 60_000 }, '0 */3 * * * *', true, now),
+    ).toMatchObject({ status: 'fresh', missed_intervals: 0, raw_last_status: 'nothing', warning: null });
+    expect(deriveGitSyncFreshness({ last_status: 'synced' }, '0 */3 * * * *', true, now)).toMatchObject({
+      status: 'unknown',
+      last_synced_at: null,
+      raw_last_status: 'synced',
+    });
+  });
+
+  it('surfaces the derived freshness verdict beside a stale raw synced status', async () => {
+    const now = Date.now();
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: null,
+        metadata: { last_status: 'synced', last_synced_at: now - 10 * 60_000, consecutive_error_ticks: 0 },
+      },
+    ]);
+
+    const b = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(b.routines[0].health).toMatchObject({
+      last_status: 'synced',
+      consecutive_error_ticks: 0,
+      git_sync_freshness: {
+        status: 'degraded',
+        raw_last_status: 'synced',
+        missed_intervals: 3,
+      },
+    });
+  });
+
   it('maps rows (cron from trigger_config, iso timestamps)', async () => {
     sqlMock.mockResolvedValue([
       {

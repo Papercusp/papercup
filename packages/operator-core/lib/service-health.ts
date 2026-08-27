@@ -87,7 +87,7 @@ export const HEALTH_ENDPOINTS: EndpointSpec[] = [
   // operator build on the staging port (verified live: 200 in ~2ms).
   //
   // NOT `onDemand`: unlike `vite`, this is a persistent systemd unit
-  // (papercup-staging-api, already in SUPERVISED_PROCESSES as 'staging-api'),
+  // (papercusp-staging-api, already in SUPERVISED_PROCESSES as 'staging-api'),
   // so a sustained down is a REAL signal and must still alarm. It is instead
   // flap-damped via DOWN_CONFIRM_TICKS, because `dev:restart` restarts it
   // several times a day by design — see STAGING_API_DOWN_CONFIRM_TICKS.
@@ -580,7 +580,7 @@ export async function probeEndpoint(
 }
 
 /**
- * EI-1832: liveness of the papercup-bg-host DBOS TICKER — a SEPARATE service from
+ * EI-1832: liveness of the papercusp-bg-host DBOS TICKER — a SEPARATE service from
  * the :3070 operator. The ticker drives git-sync + every scheduled routine; when it
  * freezes (event-loop starvation), :3070 stays up while the whole commit/deploy
  * pipeline silently halts. On 2026-06-20 that froze the fleet ~48m, and the only
@@ -673,8 +673,8 @@ export function evaluateBgHostTicker(
     status: null,
     latencyMs: 0,
     note: up
-      ? `last routine tick ${ageSec}s ago — papercup-bg-host DBOS ticker alive`
-      : `⚠ no routine has fired in ${ageMin}m — the SEPARATE papercup-bg-host DBOS ticker ` +
+      ? `last routine tick ${ageSec}s ago — papercusp-bg-host DBOS ticker alive`
+      : `⚠ no routine has fired in ${ageMin}m — the SEPARATE papercusp-bg-host DBOS ticker ` +
         `(git-sync + every scheduled routine) looks FROZEN. This is NOT the :3070 operator; ` +
         `do NOT dev:restart the operator. Revive the bg-host ticker (service-restart lane).`,
   };
@@ -682,7 +682,7 @@ export function evaluateBgHostTicker(
 
 /**
  * WI-1867: the routine hot paths — code that changes ROUTINE BEHAVIOR and therefore
- * only takes effect on the bg-host after a `papercup-bg-host.service` restart. When
+ * only takes effect on the bg-host after a `papercusp-bg-host.service` restart. When
  * the newest commit touching one of these is YOUNGER than the bg-host process, the
  * routines primary is running STALE code: every loop fire / scheduled routine / wake
  * emit behaves as-of its boot, however green the tree. This is exactly how the
@@ -735,9 +735,9 @@ export function evaluateBgHostCodeDrift(
     unknown: 'bg-host code-drift unknown (boot time or hot-path change time unreadable)',
     current: 'bg-host code current (no routine hot-path change on disk since its boot)',
     drift: (behindMin, which) =>
-      `⚠ bg-host CODE DRIFT: routine hot-path code changed on disk${which} ~${behindMin}m AFTER papercup-bg-host booted — ` +
+      `⚠ bg-host CODE DRIFT: routine hot-path code changed on disk${which} ~${behindMin}m AFTER papercusp-bg-host booted — ` +
       `loop fires / scheduled routines / wake emits are running STALE code until ` +
-      `\`systemctl --user restart papercup-bg-host.service\`. If you just landed routine-behavior code and it ` +
+      `\`systemctl --user restart papercusp-bg-host.service\`. If you just landed routine-behavior code and it ` +
       `"doesn't take effect", this is why (see agent-insights/bg-host-runs-stale-routine-code).`,
   });
 }
@@ -797,7 +797,7 @@ export async function probeBgHostCodeDrift(now: number = Date.now()): Promise<Pr
   return probeCodeDrift(
     {
       name: PORTLESS_PROBE_NAMES.bgHostCode,
-      unit: process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercup-bg-host',
+      unit: process.env.PAPERCUSP_BGHOST_WATCHDOG_UNIT || 'papercusp-bg-host',
       hotPaths: BG_HOST_HOT_PATHS,
       evaluate: evaluateBgHostCodeDrift,
       platformNote: 'bg-host code-drift probe is Linux/systemd-only — not applicable on this platform',
@@ -1224,7 +1224,7 @@ export interface SupervisionEntry {
 export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // Already Restart=always at the systemd level (R4-1 drop-ins) — registry
   // entry is report-only/verify per the plan, not a second restart lever.
-  { name: 'bg-host', layer: 'systemd-user', unit: 'papercup-bg-host', criticality: 'critical', autoRestart: false },
+  { name: 'bg-host', layer: 'systemd-user', unit: 'papercusp-bg-host', criticality: 'critical', autoRestart: false },
   // EI-20067982007251440: bg-host's ONLY out-of-process recovery — and until now the
   // one supervised-adjacent unit nobody supervised. `bghost-watchdog.mjs` restarts
   // bg-host on ticker-silence (240s); the in-process reconciler CANNOT do that job,
@@ -1251,10 +1251,10 @@ export const SUPERVISED_PROCESSES: SupervisionEntry[] = [
   // Restarting it is safe + idempotent: it is a stateless poller with its own circuit
   // breaker (8/hr) and 5min debounce, so a restart re-polls rather than re-running a
   // job, and WI-5378's `isAdministrativelyPaused` still honours a deliberate pause
-  // (`systemctl --user disable --now papercup-bg-host-watchdog`) as report-only.
-  { name: 'bg-host-watchdog', layer: 'systemd-user', unit: 'papercup-bg-host-watchdog', criticality: 'critical', autoRestart: true },
-  { name: 'operator', layer: 'systemd-user', unit: 'papercup-dev-api', criticality: 'critical', autoRestart: true }, // :3070
-  { name: 'staging-api', layer: 'systemd-user', unit: 'papercup-staging-api', criticality: 'important', autoRestart: true }, // :3170
+  // (`systemctl --user disable --now papercusp-bg-host-watchdog`) as report-only.
+  { name: 'bg-host-watchdog', layer: 'systemd-user', unit: 'papercusp-bg-host-watchdog', criticality: 'critical', autoRestart: true },
+  { name: 'operator', layer: 'systemd-user', unit: 'papercusp-dev-api', criticality: 'critical', autoRestart: true }, // :3070
+  { name: 'staging-api', layer: 'systemd-user', unit: 'papercusp-staging-api', criticality: 'important', autoRestart: true }, // :3170
   // Folds the bespoke inference-gateway-watchdog's intent in; the watchdog
   // unit itself stays running until parity with this registry is proven (D-002).
   { name: 'inference-gateway', layer: 'systemd-user', unit: 'papercup-inference-gateway', criticality: 'critical', autoRestart: true },
@@ -1469,7 +1469,7 @@ export function diffHealth(
  * does not cover other benign single-tick blips (a webview-eval hiccup, a
  * momentary accept-queue delay under this box's heavy concurrent-agent
  * load). Live-confirmed on 2026-07-20 06:33-06:46Z: `desktop` reported DOWN
- * for ~13 consecutive minutes with `papercup-staging-api.service` NEVER
+ * for ~13 consecutive minutes with `papercusp-staging-api.service` NEVER
  * restarted in that window (systemd ActiveEnterTimestamp/NRestarts
  * unchanged) — i.e. a real multi-tick flap unrelated to either previously-
  * fixed cause, self-clearing with no operator action.

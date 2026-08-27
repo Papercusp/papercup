@@ -18,6 +18,12 @@ import { EventEmitter } from 'node:events';
 import * as childProcess from 'node:child_process';
 import type { TscDiagnostic, TscFileCount } from '../../tsc-diagnostics';
 
+const governedExecution = vi.hoisted(() => ({
+  begin: vi.fn(),
+  finish: vi.fn(async () => true),
+  cancel: vi.fn(async () => true),
+}));
+
 // ESM module namespaces are frozen (non-configurable), so `vi.spyOn` cannot patch
 // `node:child_process`'s `spawn` export directly — it must be mocked at the module
 // level instead. Only `spawn` is replaced; everything else passes through to the
@@ -26,6 +32,17 @@ vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>();
   return { ...actual, spawn: vi.fn(actual.spawn) };
 });
+
+vi.mock('../../resource-governor/execution', () => ({
+  governedExecutionRuntime: vi.fn(() => ({ governor: {}, driver: {} })),
+  beginGovernedExecution: governedExecution.begin.mockImplementation(async () => ({
+    receiptId: 'receipt-build-typecheck',
+    context: {},
+    lease: {},
+    finish: governedExecution.finish,
+    cancel: governedExecution.cancel,
+  })),
+}));
 
 import '../index';
 import { lookupByMcpName } from '@papercusp/tooldef';
@@ -196,9 +213,11 @@ describe('selectTypecheckRoot — phantom-root fallback', () => {
     process.env.PAPERCUSP_INTEGRATION_ROOT = integration;
     const { child } = fakeChild();
     const spawnMock = vi.mocked(childProcess.spawn);
-    spawnMock.mockReturnValue(child);
-    try {
+    spawnMock.mockImplementationOnce(() => {
       queueMicrotask(() => child.emit('close', 0));
+      return child;
+    });
+    try {
       const raw = await (
         buildTypecheck as unknown as {
           handler: (args: unknown, ctx: unknown) => Promise<{ data: Record<string, unknown> }>;
@@ -215,6 +234,15 @@ describe('selectTypecheckRoot — phantom-root fallback', () => {
         expect.arrayContaining(['-p', join(integration, 'packages', 'alpha', 'tsconfig.json')]),
         expect.objectContaining({ cwd: integration }),
       );
+      expect(governedExecution.begin).toHaveBeenCalledWith(
+        expect.objectContaining({
+          admissionClass: 'process',
+          payloadRef: 'build:typecheck:packages/alpha/tsconfig.json',
+        }),
+        expect.objectContaining({ owner: 'build:typecheck' }),
+        expect.any(Object),
+      );
+      expect(governedExecution.finish).toHaveBeenCalled();
     } finally {
       spawnMock.mockReset();
       if (priorIntegrationRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;

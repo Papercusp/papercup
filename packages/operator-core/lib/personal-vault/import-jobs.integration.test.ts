@@ -28,10 +28,16 @@ import {
   reservePersonalVaultImportUpload,
   runPersonalVaultImportBatch,
   storePersonalVaultImportArchive,
+  getPersonalVaultImportJob,
+  publicPersonalVaultImportJob,
 } from './import-jobs';
 
 const MIGRATION = fileURLToPath(new URL(
   '../../../../libs/papercusp/libs/db/sql/983-personal-vault-import-jobs.sql',
+  import.meta.url,
+));
+const FAILED_ENTRIES_MIGRATION = fileURLToPath(new URL(
+  '../../../../libs/papercusp/libs/db/sql/999-personal-vault-import-failed-entries.sql',
   import.meta.url,
 ));
 const WS = `personal-vault-import-jobs-${process.pid}`;
@@ -51,6 +57,7 @@ beforeAll(async () => {
 
   org = await createOrgTestDb();
   await org.adminSql.unsafe(readFileSync(MIGRATION, 'utf8'));
+  await org.adminSql.unsafe(readFileSync(FAILED_ENTRIES_MIGRATION, 'utf8'));
   const users = await org.adminSql<Array<{ id: string }>>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES
@@ -241,6 +248,85 @@ describe('Personal Vault import orphan recovery (D-010)', () => {
     await expect(cleanupOrphanedPersonalVaultImportUploads(org.adminSql, WS)).resolves.toBe(0);
     expect(existsSync(liveUpload.storagePath)).toBe(true);
     expect(existsSync(liveJobArchive)).toBe(true);
+  });
+
+  it('counts every streamed failure beyond the bounded warning list while importing good records', async () => {
+    const archivePath = join(personalVaultImportStorageDir(WS), `${randomUUID()}.archive`);
+    const rows = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.personal_vault_import_jobs
+        (workspace_id, user_id, filename, storage_path, content_sha256,
+         idempotency_key, size_bytes)
+      VALUES (${WS}, ${userId}::uuid, 'mostly-good.zip', ${archivePath},
+              ${'a'.repeat(64)}, ${'b'.repeat(64)}, 1)
+      RETURNING id`;
+
+    const result = await runPersonalVaultImportBatch(org.adminSql, WS, {
+      batchSize: 200,
+      leaseOwner: `test:${RUN}`,
+      streamArchive: async function* streamedRecords() {
+        yield {
+          document: {
+            source: 'gmail',
+            kind: 'message',
+            externalId: 'good-record',
+            title: 'Good record',
+            text: 'This record survives the bad entries.',
+            dedupeKey: 'good-record',
+          },
+          checkpoint: { entryIndex: 0, recordIndex: 1 },
+          bytesProcessed: 1,
+        };
+        for (let index = 0; index < 101; index += 1) {
+          yield {
+            warning: `bad-entry-${index + 1}`,
+            checkpoint: { entryIndex: 1, recordIndex: index + 1 },
+            bytesProcessed: 1,
+          };
+        }
+      },
+      upsertDocuments: async (_sql, _workspaceId, _userId, documents) => ({
+        insertedOrUpdated: documents.length,
+        ids: documents.map((document, index) => document.dedupeKey ?? `document-${index}`),
+      }),
+      verifyArchive: async () => 'a'.repeat(64),
+      removeArchive: async () => undefined,
+    });
+
+    expect(result).toMatchObject({
+      claimed: true,
+      jobId: rows[0]!.id,
+      status: 'completed',
+      documentsSeen: 1,
+      documentsImported: 1,
+      entriesFailed: 101,
+      warnings: 101,
+      error: null,
+    });
+
+    const stored = await org.adminSql<Array<{
+      status: string;
+      entries_failed: number;
+      documents_seen: number;
+      documents_imported: number;
+      warning_count: number;
+      storage_path: string | null;
+    }>>`
+      SELECT status, entries_failed, documents_seen, documents_imported,
+             jsonb_array_length(warnings)::int AS warning_count, storage_path
+        FROM harness_shared.personal_vault_import_jobs
+       WHERE workspace_id = ${WS} AND id = ${rows[0]!.id}::uuid`;
+    expect(stored).toEqual([{
+      status: 'completed',
+      entries_failed: 101,
+      documents_seen: 1,
+      documents_imported: 1,
+      warning_count: 100,
+      storage_path: null,
+    }]);
+
+    const job = await getPersonalVaultImportJob(org.adminSql, WS, userId, rows[0]!.id);
+    expect(job).toMatchObject({ entriesFailed: 101 });
+    expect(publicPersonalVaultImportJob(job!)).toMatchObject({ entriesFailed: 101 });
   });
 
   it('keeps an expired upload reservation until both filesystem phases are removed', async () => {

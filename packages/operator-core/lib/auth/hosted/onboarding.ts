@@ -12,6 +12,7 @@
  * granting duplicate membership or provisioning a second workspace.
  */
 
+import type { HostedOrganizationRole } from '../hosted-role-permissions';
 import type { HostedVerifiedIdentity } from './provider';
 
 export const HOSTED_ONBOARDING_STEPS = [
@@ -26,7 +27,13 @@ export const HOSTED_ONBOARDING_STEPS = [
 ] as const;
 
 export type HostedOnboardingStep = (typeof HOSTED_ONBOARDING_STEPS)[number];
-export type HostedOrganizationRole = 'owner' | 'admin' | 'member' | 'billing';
+/**
+ * Re-exported, not re-declared: the role vocabulary has ONE source
+ * (`hosted-role-permissions.ts`), which derives it from migration 903's
+ * `organization_memberships_role_ck` constraint. A second copy here would drift
+ * from the matrix that turns these roles into permissions.
+ */
+export type { HostedOrganizationRole };
 
 export type HostedOnboardingAdmission =
   | {

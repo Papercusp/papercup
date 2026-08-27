@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 /**
  * check-no-raw-block-edge.mjs — fail-loud guards against dependency writes that
- * bypass either the historical feature-edge policy or canonical candidate admission.
+ * bypass either the polymorphic-link boundary or canonical candidate admission.
  *
  * dependency-graph-admission-and-health-2026-08-26 P-006 extends the original guard to:
+ *   - raw coord_links `blocks` writes that bypass the canonical link facades;
  *   - raw work_item_deps INSERT/UPDATE/DELETE outside an exact capability list;
  *   - the retired enforceAcyclicity:false escape hatch; and
- *   - compatibility facades that stop calling mutateWorkItemDependencies.
+ *   - compatibility/link facades that stop calling mutateWorkItemDependencies.
  *
  * WHY THIS IS A BUILD GUARD AND NOT A TEST. A feature→feature `blocks` CYCLE
  * permanently deadlocks the dispatch frontier: every feature in the cycle is
@@ -16,10 +17,15 @@
  *
  *   - `syncFeatureBlockEdges(...)`  the AUTHORITATIVE replace-semantics writer,
  *     which enforces acyclicity itself (throws on a cycle-closing set);
- *   - `guardFeatureBlockEdgeAcyclic(src, dst)` for the ONE path that structurally
- *     cannot use the writer — the link tools add a SINGLE raw coord_links edge,
- *     while the writer is DELETE-all-then-INSERT, so routing a single-edge add
- *     through it would clobber the feature's other blockers.
+ *   - `guardFeatureBlockEdgeAcyclic(src, dst)` for a capability-confined raw
+ *     coord_links writer that cannot use the canonical work-item graph.
+ *
+ * Since P-006, `linkWorkItem` and `linkIssue` are SAFE FACADES: work-item `blocks`
+ * edges route through mirrorWorkItemBlockingEdge → mutateWorkItemDependencies, while
+ * polymorphic/non-block links alone remain in coord_links. The guard therefore scans
+ * direct `links.link` / raw SQL writes and separately proves those facades still
+ * contain their canonical routes. Treating every caller of a safe facade as a raw
+ * writer would both false-positive and teach callers to duplicate admission policy.
  *
  * The existing acyclicity tests (feature-blockers-acyclicity{,.integration}.test.ts,
  * feature-blockers-edges.integration.test.ts, link.test.ts) cover the BEHAVIOUR of
@@ -30,11 +36,12 @@
  *
  *   node scripts/check-no-raw-block-edge.mjs
  *
- * THE TELL — a WRITE of a blocks edge, never a read: the file touches a coord_links
- * WRITE primitive (`linkWorkItem(...)` or a raw `INSERT INTO harness_shared.coord_links`)
- * AND carries a `'blocks'` rel literal. A file is CLEARED when it references either
- * sanctioned entry point, since that means the policy is being applied. Comments are
- * stripped first, so prose about blocks edges never trips it.
+ * THE TELL — a WRITE of a blocks edge, never a read: the file touches a RAW
+ * coord_links primitive (`links.link(...)` or `INSERT INTO ... coord_links`) AND
+ * carries a `'blocks'` rel literal. `linkWorkItem(...)` / `linkIssue(...)` are not raw
+ * primitives; their definitions are structural guard inputs below. A raw writer is
+ * CLEARED when it references a sanctioned entry point. Comments are stripped first,
+ * so prose about blocks edges never trips it.
  *
  * The match is FILE-LEVEL rather than argument-level, which is a measured trade — see
  * `writesRawBlocksEdge` for why the tighter form was implemented, tested, and rejected
@@ -78,13 +85,6 @@ export const ALLOWLIST = new Set([
   // legitimately contains the raw INSERT and the 'blocks' literal. It IS the thing
   // every other site must route through.
   "packages/operator-core/lib/dbos/feature-blockers-edges.ts",
-  // The DEFINITION SITE of the generic `linkWorkItem` primitive (work-items.ts:5360) —
-  // allowlisted the same way the sibling guards allowlist their own definition sites.
-  // Verified 2026-08-02: it does not CALL linkWorkItem anywhere; its 'blocks' literals
-  // are work_item_deps SQL (dep_type='blocks' — a different table), read-side
-  // `links.listIn(target, { rel: 'blocks' })`, and the rel dispatch inside the
-  // definition itself. A blocks-edge WRITE added here would need re-review by hand.
-  "packages/operator-core/lib/work-items.ts",
 ]);
 
 /**
@@ -156,16 +156,19 @@ export function stripComments(text) {
 }
 
 /**
- * A call into a coord_links WRITE primitive: the generic link writer, or a raw INSERT.
- * Reads (`listIn` / `listInMany` / `listOut`) are deliberately absent — reading a
- * blocker set cannot create a cycle.
+ * A call into a RAW coord_links WRITE primitive: the low-level relation writer, or a
+ * raw INSERT. The work-item facades are deliberately absent: P-006 routes their
+ * work-item `blocks` branch through canonical candidate admission, and a separate
+ * structural check below prevents that route from regressing. Reads (`listIn` /
+ * `listInMany` / `listOut`) are absent — reading a blocker set cannot create a cycle.
  */
 const WRITE_PRIMITIVE =
-  /\blinkWorkItem\s*\(|INSERT\s+INTO\s+harness_shared\.coord_links/i;
+  /\b(?:blockingLinks|links)\.link\s*\(|INSERT\s+INTO\s+harness_shared\.coord_links/i;
 /** A `blocks` rel literal in any quoting style. */
 const BLOCKS_LITERAL = /['"`]blocks['"`]/;
 /** Referencing either sanctioned entry point means the policy is being applied. */
-const SANCTIONED = /syncFeatureBlockEdges|guardFeatureBlockEdgeAcyclic/;
+const SANCTIONED =
+  /syncFeatureBlockEdges|guardFeatureBlockEdgeAcyclic|mirrorWorkItemBlockingEdge/;
 
 /**
  * Does this source WRITE a feature→feature `blocks` edge without going through the
@@ -173,9 +176,8 @@ const SANCTIONED = /syncFeatureBlockEdges|guardFeatureBlockEdgeAcyclic/;
  *
  * FILE-LEVEL on purpose, and this is a deliberate trade rather than laziness. The
  * obvious tighter predicate — require the `'blocks'` literal INSIDE the call's own
- * arguments — was implemented first and MEASURED against the tree: it missed
- * `agent-tools/work_items/link.ts`, which passes the rel as a VARIABLE
- * (`linkWorkItem(it.id, dst, it.rel, ...)` after an `it.rel === 'blocks'` branch).
+ * arguments — was implemented first and MEASURED against the tree: it missed callers
+ * that pass the rel as a VARIABLE after an `it.rel === 'blocks'` branch.
  * Since the one real in-tree caller already uses the variable form, a
  * literal-in-call predicate would miss the realistic bypass shape while looking
  * precise — the worst combination for a guard.
@@ -212,6 +214,53 @@ const CANONICAL_STORE_FACADES = [
   "removeMirroredWorkItemBlockingEdge",
   "syncWorkItemDepEdges",
 ];
+
+/**
+ * P-006 link-facade contract. Callers are allowed to trust `linkWorkItem` / `linkIssue`
+ * only while these four definitions keep routing work-item `blocks` mutations through
+ * the canonical mirror/remove facades. Checking both family branches prevents the
+ * guard fix for WI-225867 from becoming a blanket exemption for a future regression.
+ */
+const CANONICAL_LINK_FACADES = [
+  {
+    source: "work-items",
+    name: "linkWorkItem",
+    required: ["linkIssue", "mirrorWorkItemBlockingEdge"],
+  },
+  {
+    source: "work-items",
+    name: "unlinkWorkItem",
+    required: ["unlinkIssue", "removeMirroredWorkItemBlockingEdge"],
+  },
+  {
+    source: "issues-engineer",
+    name: "linkIssue",
+    required: ["mirrorWorkItemBlockingEdge"],
+  },
+  {
+    source: "issues-engineer",
+    name: "unlinkIssue",
+    required: ["removeMirroredWorkItemBlockingEdge"],
+  },
+];
+
+/** Which canonical link facades are missing, or have lost one of their family routes. */
+export function canonicalLinkFacadeRoutingOffenders(
+  workItemsText,
+  issuesEngineerText,
+) {
+  const sources = {
+    "work-items": stripComments(workItemsText),
+    "issues-engineer": stripComments(issuesEngineerText),
+  };
+  return CANONICAL_LINK_FACADES.filter(({ source, name, required }) => {
+    const body = functionSlice(sources[source], name, true);
+    return (
+      body === null ||
+      required.some((route) => !new RegExp(`\\b${route}\\s*\\(`).test(body))
+    );
+  }).map(({ name }) => name);
+}
 
 /**
  * Extract one exported function through the next exported declaration. This intentionally checks
@@ -308,11 +357,24 @@ export function findOffenders() {
   const storePath = "packages/operator-core/lib/dbos/work-item-deps-store.ts";
   const storeText = readFileSync(new URL(storePath, `file://${ROOT}`), "utf8");
   const facadeRoutingOffenders = canonicalFacadeRoutingOffenders(storeText);
+  const workItemsText = readFileSync(
+    new URL("packages/operator-core/lib/work-items.ts", `file://${ROOT}`),
+    "utf8",
+  );
+  const issuesEngineerText = readFileSync(
+    new URL("packages/operator-core/lib/issues-engineer.ts", `file://${ROOT}`),
+    "utf8",
+  );
+  const linkFacadeRoutingOffenders = canonicalLinkFacadeRoutingOffenders(
+    workItemsText,
+    issuesEngineerText,
+  );
   return {
     offenders,
     rawWorkItemDepsOffenders,
     bypassOffenders,
     facadeRoutingOffenders,
+    linkFacadeRoutingOffenders,
     unscanned,
   };
 }
@@ -323,13 +385,15 @@ function main() {
     rawWorkItemDepsOffenders,
     bypassOffenders,
     facadeRoutingOffenders,
+    linkFacadeRoutingOffenders,
     unscanned,
   } = findOffenders();
   if (
     offenders.length === 0 &&
     rawWorkItemDepsOffenders.length === 0 &&
     bypassOffenders.length === 0 &&
-    facadeRoutingOffenders.length === 0
+    facadeRoutingOffenders.length === 0 &&
+    linkFacadeRoutingOffenders.length === 0
   ) {
     console.log(
       "✓ no dependency edge write bypasses canonical admission or its confined capabilities." +
@@ -361,6 +425,12 @@ function main() {
       "✗ compatibility facade(s) no longer route through mutateWorkItemDependencies:",
     );
     for (const o of facadeRoutingOffenders) console.error("    " + o);
+  }
+  if (linkFacadeRoutingOffenders.length > 0) {
+    console.error(
+      "✗ work-item link facade(s) no longer route blocks through canonical admission:",
+    );
+    for (const o of linkFacadeRoutingOffenders) console.error("    " + o);
   }
   console.error(
     "\n  See dependency-graph-admission-and-health-2026-08-26 P-006.",

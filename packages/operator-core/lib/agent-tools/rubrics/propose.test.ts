@@ -69,4 +69,14 @@ describe('rubrics:propose args — releaseGating kind contract', () => {
 
     expect(parsed.success).toBe(true);
   });
+
+  it('accepts a goal-linked acceptance rubric', () => {
+    const parsed = rubricsProposeArgs.safeParse({
+      ...base,
+      kind: 'acceptance',
+      subjectGoal: 'goal-123',
+    });
+
+    expect(parsed.success).toBe(true);
+  });
 });

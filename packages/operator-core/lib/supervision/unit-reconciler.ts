@@ -52,6 +52,7 @@ import {
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
+  confirmFlapRestart,
   decideFlapDamping,
   initialFlapDampingState,
   type FlapDampingState,
@@ -73,6 +74,7 @@ export {
   GIVE_UP_THRESHOLD,
   GIVE_UP_WINDOW_MS,
   HEALTHY_RESET_MS,
+  confirmFlapRestart,
   decideFlapDamping,
   initialFlapDampingState,
   type FlapDampingState,
@@ -562,6 +564,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
       state.gaveUp = false;
       state.restarts = [];
       state.backoffIndex = 0;
+      state.lastAttemptAt = null;
       state.lastRestartAt = null;
       state.buildStepRetries = 0;
       return {
@@ -609,6 +612,7 @@ export function decideReconcile(input: DecideInput): { action: ReconcileAction; 
     state.gaveUp = false;
     state.restarts = [];
     state.backoffIndex = 0;
+    state.lastAttemptAt = null;
     state.lastRestartAt = null;
     return {
       action: { kind: 'report-only', unit: entry.name, reason: 'paused', notify: justWentDown },
@@ -1130,12 +1134,19 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
       const cause = await captureUnitFailureCause(deps, unitName);
       return { suffix: cause ? ` Cause: ${cause}` : fallback, cause };
     };
+    const confirmSuccessfulRestart = () => {
+      Object.assign(nextState, confirmFlapRestart(nextState, now));
+    };
 
     switch (action.kind) {
       case 'restart':
         log(`restarting ${entry.unit} (backoff was ${action.backoffSec}s)`);
         try {
           await deps.execUser(['restart', entry.unit]);
+          // Count only a restart command that actually completed. The decision already records
+          // `lastAttemptAt` for pacing, but a rejected command must not consume the give-up budget
+          // or appear as a successful restart in the supervision snapshot.
+          confirmSuccessfulRestart();
           await deps
             .notify({ summary: `↻ supervision: restarted \`${entry.unit}\` (was down)`, category: 'supervision' })
             .catch(() => {});
@@ -1183,7 +1194,8 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
           nextState.gaveUp = false;
           nextState.restarts = [];
           nextState.backoffIndex = BACKOFF_SEQUENCE_SEC.length - 1;
-          nextState.lastRestartAt = now;
+          nextState.lastAttemptAt = now;
+          nextState.lastRestartAt = null;
 
           // systemd has very likely parked the unit itself ("Start request repeated too quickly").
           // A later `restart` is REFUSED while that latch is set, so clearing it is what actually

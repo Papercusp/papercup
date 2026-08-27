@@ -10,12 +10,25 @@
  * This leaf is deliberately not wired into the local host. Hosted integration
  * chooses this profile explicitly once the hosted identity/session routes are
  * available.
+ *
+ * That integration is `createHostedControlPlane` at the bottom of this file: it
+ * composes the static allowlist with the dependency-injected hosted auth
+ * routes, and mounts the whole surface on the HOSTED route stack so no hosted
+ * request ever reaches the local principal chain.
  */
 import { Hono } from 'hono';
 import type { ZodTypeAny } from 'zod';
+import type { HostedPrincipalResolver } from '../auth/hosted-principal-resolver';
 import type { RouteDefinition, RouteMethod } from './define-route';
 import { registerRoute } from './define-route';
+import { createHostedRouteStack } from './hosted-route-stack';
+import type { RouteStep } from './route-stack';
 import { ALL_ROUTES } from './routes';
+import {
+  HOSTED_AUTH_ROUTES,
+  createHostedAuthRoutes,
+  type HostedAuthRouteDependencies,
+} from './routes/hosted-auth';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -28,14 +41,31 @@ export interface HostedRouteAllowlistEntry {
 }
 
 /**
- * The initial hosted surface is intentionally tiny. Hosted identity,
- * organization, workspace, and entitlement routes are added here only after
- * their own implementations land and declare concrete permission checks.
+ * The statically-registered hosted surface — the subset servable from
+ * `ALL_ROUTES` alone.
+ *
+ * It stays tiny on purpose. The hosted auth routes are NOT here because they
+ * are not in `ALL_ROUTES`: they are dependency-injected (a provider, a session
+ * store, a cookie codec), so they are constructed per-deployment and
+ * allowlisted through `HOSTED_AUTH_ROUTE_ALLOWLIST` below. Keeping the two
+ * lists apart means this constant continues to answer exactly one question —
+ * "which of the shared registry's routes may the internet reach?" — and adding
+ * a route to `ALL_ROUTES` still cannot make it remotely reachable by accident.
  */
 export const HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/health', access: 'public' },
   { method: 'GET', path: '/health/ready', access: 'public' },
 ] as const satisfies ReadonlyArray<HostedRouteAllowlistEntry>;
+
+/**
+ * The hosted browser-authentication surface.
+ *
+ * Derived from `HOSTED_AUTH_ROUTES` — the manifest `routes/hosted-auth/index.ts`
+ * publishes as "consumed by the later hosted-profile integration item" — rather
+ * than restated here, so the mounted set cannot drift from the implemented set.
+ */
+export const HOSTED_AUTH_ROUTE_ALLOWLIST =
+  HOSTED_AUTH_ROUTES satisfies ReadonlyArray<HostedRouteAllowlistEntry>;
 
 /** Local single-user authentication routes that can never enter this profile. */
 export const HOSTED_FORBIDDEN_ROUTE_KEYS: ReadonlySet<string> = new Set([
@@ -138,9 +168,10 @@ export function registerHostedControlPlaneRoutes(
   app: Hono,
   routes: ReadonlyArray<AnyRoute> = ALL_ROUTES,
   allowlist: ReadonlyArray<HostedRouteAllowlistEntry> = HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST,
+  stack?: ReadonlyArray<RouteStep>,
 ): ReadonlyArray<AnyRoute> {
   const selected = selectHostedControlPlaneRoutes(routes, allowlist);
-  for (const route of selected) registerRoute(app, route);
+  for (const route of selected) registerRoute(app, route, stack);
   return selected;
 }
 
@@ -148,8 +179,64 @@ export function registerHostedControlPlaneRoutes(
 export function createHostedControlPlaneApp(
   routes: ReadonlyArray<AnyRoute> = ALL_ROUTES,
   allowlist: ReadonlyArray<HostedRouteAllowlistEntry> = HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST,
+  stack?: ReadonlyArray<RouteStep>,
 ): Hono {
   const app = new Hono().basePath('/api');
-  registerHostedControlPlaneRoutes(app, routes, allowlist);
+  registerHostedControlPlaneRoutes(app, routes, allowlist, stack);
   return app;
+}
+
+export interface HostedControlPlaneOptions {
+  /** Dependencies for the injected hosted sign-in/callback/logout/session routes. */
+  readonly hostedAuth: HostedAuthRouteDependencies;
+  /**
+   * Resolves a request into a hosted principal. Build it with
+   * `createHostedPrincipalResolver`; the profile never resolves a principal any
+   * other way.
+   */
+  readonly resolvePrincipal: HostedPrincipalResolver;
+  /** The shared registry to select the static allowlist from. */
+  readonly routes?: ReadonlyArray<AnyRoute>;
+  /** Static allowlist, if a deployment narrows it further. Never widened here. */
+  readonly staticAllowlist?: ReadonlyArray<HostedRouteAllowlistEntry>;
+}
+
+export interface HostedControlPlane {
+  readonly app: Hono;
+  /** Exactly what was mounted, in mount order — the auditable surface. */
+  readonly mounted: ReadonlyArray<AnyRoute>;
+}
+
+/**
+ * Build the production hosted control plane: the static allowlist plus the
+ * injected hosted auth routes, mounted on the hosted route stack.
+ *
+ * This is the one function that turns the finished-but-unmounted hosted auth
+ * leaf into a reachable surface. Three properties hold by construction:
+ *
+ *   - every mounted route passed `selectHostedControlPlaneRoutes`, so local
+ *     auth, install surfaces, catch-alls, and wildcard capabilities are all
+ *     refused at mount time;
+ *   - every mounted route dispatches through the HOSTED stack, so the local
+ *     principal chain is unreachable even for a route that would otherwise
+ *     resolve one;
+ *   - the mounted set is returned, so a deployment can assert its exact
+ *     surface rather than trusting that the allowlist was applied.
+ */
+export function createHostedControlPlane(options: HostedControlPlaneOptions): HostedControlPlane {
+  const hostedAuthRoutes = createHostedAuthRoutes(options.hostedAuth);
+  const routes = [...(options.routes ?? ALL_ROUTES), ...hostedAuthRoutes];
+  const allowlist = [
+    ...(options.staticAllowlist ?? HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST),
+    ...HOSTED_AUTH_ROUTE_ALLOWLIST,
+  ];
+
+  const app = new Hono().basePath('/api');
+  const mounted = registerHostedControlPlaneRoutes(
+    app,
+    routes,
+    allowlist,
+    createHostedRouteStack(options.resolvePrincipal),
+  );
+  return { app, mounted };
 }

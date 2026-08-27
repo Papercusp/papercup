@@ -239,8 +239,15 @@ describe('readFleetAudit canonical composition', () => {
       available: false,
       coverage: 'unknown',
       data: null,
-      reason: 'harness_shared.fleet_membership_events-read-failed',
     });
+    // The reason must still NAME the writer, but it must ALSO carry the underlying cause.
+    // This assertion used to pin the exact string 'harness_shared.fleet_membership_events-read-failed',
+    // which locked in a reason synthesized purely from the writer name and threw settled.reason away.
+    // That is precisely how a plain Postgres 42703 ('column harness_slug does not exist') hid inside
+    // the sessions reader and left that leg permanently degraded with no way to tell why. Pin the
+    // property that matters — writer identity AND propagated cause — not the old lossy format.
+    expect(result.members[0].membership.reason).toContain('harness_shared.fleet_membership_events-read-failed');
+    expect(result.members[0].membership.reason).toContain('membership unavailable');
     expect(result.members[0].assignment).toMatchObject({ available: false, coverage: 'unknown' });
     expect(result.members[0].bootStages).toMatchObject({
       available: false,

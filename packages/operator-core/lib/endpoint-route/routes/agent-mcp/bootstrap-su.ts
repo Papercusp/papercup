@@ -1769,7 +1769,7 @@ const post = defineTool({
       if (body.fleet?.trim() || body.fleet_name?.trim() || body.seat?.trim() || body.auto === true || body.mode?.trim()) {
         return jsonRes({
           status: 'error',
-          error: 'session ports mint a fresh non-fleet, non-AUTO target; fleet/seat/auto/mode authority cannot cross the boundary',
+          error: 'session ports continue the source coordination identity; new fleet/seat/auto/mode authority cannot be requested at the port boundary',
         }, 409);
       }
       const [artifact, store, budgetModule] = await Promise.all([
@@ -1884,6 +1884,22 @@ const post = defineTool({
     // this session's row, to COMPLETE below rather than duplicate.
     let adoptableStartingRowId: number | null = null;
     const requestedSid = body.owner_id?.trim() || null;
+    if (sessionPortContext) {
+      const sourceCoordOwnerId = typeof sessionPortContext.row.metadata.sourceCoordOwnerId === 'string'
+        ? sessionPortContext.row.metadata.sourceCoordOwnerId.trim()
+        : '';
+      if (!sourceCoordOwnerId || requestedSid !== sourceCoordOwnerId) {
+        return jsonRes(
+          {
+            status: 'error',
+            error: sourceCoordOwnerId
+              ? `session port must continue source coordination identity ${sourceCoordOwnerId}; got ${requestedSid ?? 'none'}`
+              : 'prepared session port is missing its source coordination identity; inspect again with the current launcher/operator',
+          },
+          409,
+        );
+      }
+    }
     if (requestedSid != null) {
       if (!/^su-[A-Za-z0-9][A-Za-z0-9._-]{5,118}$/.test(requestedSid)) {
         return jsonRes(

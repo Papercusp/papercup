@@ -124,6 +124,8 @@ import {
   matchFailingFilesToChanged,
   unmatchedFailingFiles,
   failingFilesUncommitted,
+  detectSplitSourceTestPairs,
+  sourceTestSiblingPaths,
   type GateLineage,
   type CheckpointDeps,
   type CheckpointExec,
@@ -10705,6 +10707,80 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
     expect(r).toMatchObject({ advanced: true, candidate: c2, green: true });
     expect(await revParse(repo, "ready")).toBe(c2); // advanced to the QUIET state, not the fresh tip
     expect(r.candidate).not.toBe(c3);
+  });
+
+  it("detects a source/test sibling whose newest half sits beyond the candidate", async () => {
+    expect(sourceTestSiblingPaths("lib/holder-context.ts")).toEqual([
+      "lib/holder-context.test.ts",
+      "lib/holder-context.spec.ts",
+    ]);
+    expect(sourceTestSiblingPaths("lib/holder-context.test.ts")).toEqual([
+      "lib/holder-context.ts",
+    ]);
+
+    const base = await datedCommit("README.md", "base", 600);
+    const candidate = await datedCommit(
+      "lib/holder-context.ts",
+      "source-v2",
+      300,
+    );
+    const tip = await commit(
+      "lib/holder-context.test.ts",
+      "test-v2\n",
+      "test-v2",
+    );
+
+    await expect(
+      detectSplitSourceTestPairs({ repo, base, candidate, tip }),
+    ).resolves.toEqual([
+      {
+        candidatePath: "lib/holder-context.ts",
+        siblingPath: "lib/holder-context.test.ts",
+        siblingCommit: tip,
+      },
+    ]);
+  });
+
+  it("stamps a quiet-cut red with the split pair so triage does not fix or quarantine the old test", async () => {
+    const base = await datedCommit("README.md", "base", 600);
+    await git(repo, ["branch", "ready", base]);
+    const candidate = await datedCommit(
+      "lib/holder-context.ts",
+      "source-v2",
+      300,
+    );
+    const tip = await commit(
+      "lib/holder-context.test.ts",
+      "test-v2\n",
+      "test-v2",
+    );
+    const { deps } = stubDeps(false, ["lib/holder-context.test.ts"]);
+    const lines: string[] = [];
+    deps.log = (line) => lines.push(line);
+    deps.detectSplitSourceTestPairs = (input) =>
+      detectSplitSourceTestPairs({ repo, ...input });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: false,
+      candidate,
+      green: false,
+      splitSourceTestPairs: [
+        {
+          candidatePath: "lib/holder-context.ts",
+          siblingPath: "lib/holder-context.test.ts",
+          siblingCommit: tip,
+        },
+      ],
+    });
+    expect(result.summary).toContain("SPLIT-PAIR SUSPECTED");
+    expect(result.summary).toContain(
+      "lib/holder-context.ts <> lib/holder-context.test.ts",
+    );
+    expect(
+      lines.some((line) => line.includes("quiet-cut split-pair suspected")),
+    ).toBe(true);
   });
 
   it("a pre-lock candidate hint freezes the observed tip without turning it into a quiet-cut-bypassing pin", async () => {

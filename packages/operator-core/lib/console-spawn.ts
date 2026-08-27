@@ -340,6 +340,28 @@ export function buildPathExport(env: Record<string, string>): string | null {
   return `export PATH=${segments.join(':')}`;
 }
 
+/**
+ * Stamp the birth identity of the shell that owns the visible console.
+ *
+ * The orphan-window closer validates both the Papercusp harness marker and this
+ * kernel-backed identity before it sends a signal. Keep this in lockstep with
+ * native_console.rs: Linux uses boot-id + /proc start time, while macOS uses
+ * the normalized `ps lstart` value consumed by readProcessIdentity().
+ */
+function buildConsoleIdentityExport(): string {
+  const identity = [
+    'PAPERCUSP_CONSOLE_IDENTITY="$(',
+    'if [ -r /proc/sys/kernel/random/boot_id ] && [ -r /proc/$$/stat ]; then',
+    `printf 'linux:%s:%s' "$(cat /proc/sys/kernel/random/boot_id)" "$(awk '{print $22}' /proc/$$/stat)";`,
+    'else',
+    `papercusp_started="$(ps -o lstart= -p $$ 2>/dev/null | awk '{$1=$1; print}')";`,
+    `[ -n "$papercusp_started" ] && printf 'darwin:%s' "$papercusp_started";`,
+    'fi; true',
+    ')"',
+  ].join(' ');
+  return `${identity} && export PAPERCUSP_CONSOLE_IDENTITY`;
+}
+
 export function buildConsoleOneliner(
   cwd: string,
   env: Record<string, string>,
@@ -382,6 +404,7 @@ export function buildConsoleOneliner(
     buildAppearancePrelude(appearance),
     `cd ${escapedCwd}`,
     ...envExports,
+    ...(includeLivenessSentinel ? [buildConsoleIdentityExport()] : []),
   ].join(' && ');
   // Visible launches run the greeting in a subshell, then ALWAYS exec an
   // interactive login shell — `;` (not `&&`) on BOTH sides of the greeting, so

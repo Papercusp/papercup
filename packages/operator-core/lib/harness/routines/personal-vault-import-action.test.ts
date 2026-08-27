@@ -10,6 +10,7 @@ describe('personal-vault-import system action', () => {
       status: 'queued' as const,
       documentsSeen: 25,
       documentsImported: 25,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     }));
@@ -42,6 +43,7 @@ describe('personal-vault-import system action', () => {
       status: 'idle' as const,
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     }));
@@ -82,6 +84,7 @@ describe('personal-vault-import system action', () => {
       status: 'idle',
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     });
@@ -93,6 +96,7 @@ describe('personal-vault-import system action', () => {
       status: 'queued',
       documentsSeen: 25,
       documentsImported: 25,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     });

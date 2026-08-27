@@ -473,6 +473,13 @@ export function deriveMemberVerdict(
     load: number;
     /** Last recorded tool invocation (epoch ms), or null = none ever. */
     lastToolCallAtMs: number | null;
+    /** WI-42457: last NON-housekeeping tool invocation (epoch ms) — the same
+     *  `HOUSEKEEPING_TOOL_NAMES` exclusion `lastProductiveToolCallAtByOwner`
+     *  applies. `null` means the member's ENTIRE tool history is housekeeping,
+     *  i.e. it has never taken an agent-authored turn. `undefined` (field
+     *  omitted) preserves the legacy any-tool behaviour, so no existing caller
+     *  is stranded by this field's addition. */
+    lastProductiveToolCallAtMs?: number | null;
     /** Healthy loop-owned monitor lifecycle, derived from the loop engine. */
     monitorState?: MonitorState | null;
     /** Active non-inbox-wake events:await registrations (decorateParkedOn).
@@ -533,7 +540,24 @@ export function deriveMemberVerdict(
   // and went quiet). `last == null` with load is NOT stalled — it has never taken a
   // turn, so it is still in the boot window (joined), not wedged mid-work.
   if (a.stalled || (a.load > 0 && last != null && nowMs - last > VERDICT_STALL_MS)) return 'stalled';
-  if (last != null) return 'first-turn-done';
+  // WI-42457: `first-turn-done` asserts REAL work ("≥1 recorded tool call"), but
+  // `lastToolCallAtMs` counts HOOK-emitted housekeeping rows too, so a session
+  // that never reached an assistant turn still satisfied `last != null`. Measured
+  // on the P-003 acceptance canary su-respawn-829ef88b24abde91c8a6d37bdc2678a2:
+  // its whole tool_invocations history was ONE `activity:report` (call_origin
+  // 'hook'), it produced zero agent-authored tools — it died in the Codex
+  // admission path — and this surface reported it first-turn-done. A launch that
+  // never started then read as a launch that succeeded, which is strictly worse
+  // than reporting nothing: the leader stops looking. A housekeeping-only history
+  // is the `joined` boot window ("a join event is NOT liveness"), which is the
+  // verdict that keeps the leader verifying instead of believing.
+  //
+  // Deliberately narrow: `speaking` (above) still fires on a fresh housekeeping
+  // call — that IS live-process evidence, and "taking turns, doing nothing" is
+  // computeSpinningAlert's job — and the `stalled` branch above is untouched, so
+  // a housekeeping-only member HOLDING quiet claims still raises for relaunch
+  // rather than being masked as a boot window.
+  if (last != null && a.lastProductiveToolCallAtMs !== null) return 'first-turn-done';
   if (a.sessionState === 'recorded' || !a.present) return 'booted';
   return 'joined';
 }
@@ -563,16 +587,33 @@ export async function decorateMemberVerdicts<
   fetchWakeModeOverrides: () => Promise<Map<string, WakeMode>> = getAllWakeModeOverrides,
   fetchDefaultWakeMode: () => Promise<WakeMode> = getDefaultWakeMode,
   nowMs: number = Date.now(),
+  // WI-42457: appended AFTER `nowMs` on purpose — inserting it earlier would
+  // silently re-bind every existing positional caller's `nowMs` argument.
+  fetchProductiveToolCalls: (
+    ownerIds: string[],
+  ) => Promise<Map<string, string>> = lastProductiveToolCallAtByOwner,
 ): Promise<T[]> {
   if (agents.length === 0) return agents;
-  const [lastCalls, overrides, defaultMode] = await Promise.all([
+  const [lastCalls, overrides, defaultMode, productiveCallsOrUnknown] = await Promise.all([
     fetchLastToolCalls(agents.map((a) => a.agentId)),
     fetchWakeModeOverrides(),
     fetchDefaultWakeMode(),
+    // A THROWN fetch is "unknown", not "nobody worked": resolving it to null for
+    // every member would flip a whole healthy fleet to `joined`. Unknown feeds
+    // `undefined` below, which preserves the legacy any-tool verdict exactly.
+    // (An empty map from the fail-soft fetcher itself still reads as "no
+    // productive calls" and degrades toward `joined` — the conservative
+    // direction: a leader keeps verifying rather than believing a first turn
+    // that never happened.)
+    fetchProductiveToolCalls(agents.map((a) => a.agentId)).catch(() => null),
   ]);
   for (const a of agents) {
     const iso = lastCalls.get(a.agentId) ?? null;
     const lastMs = iso ? Date.parse(iso) : null;
+    const productiveIso = productiveCallsOrUnknown
+      ? (productiveCallsOrUnknown.get(a.agentId) ?? null)
+      : undefined;
+    const productiveParsed = productiveIso == null ? productiveIso : Date.parse(productiveIso);
     a.lastToolCallAt = iso;
     a.verdict = deriveMemberVerdict(
       {
@@ -583,6 +624,10 @@ export async function decorateMemberVerdicts<
         stalled: a.stalled,
         load: a.load,
         lastToolCallAtMs: Number.isFinite(lastMs as number) ? lastMs : null,
+        lastProductiveToolCallAtMs:
+          productiveParsed === undefined || Number.isFinite(productiveParsed as number)
+            ? productiveParsed
+            : null,
         monitorState: a.monitorState,
         parkedOn: a.parkedOn,
       },

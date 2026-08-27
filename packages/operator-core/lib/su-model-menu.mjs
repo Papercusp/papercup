@@ -186,13 +186,26 @@ export function aliasModelRows({ aliases, backends, sourceAgent }) {
  * the claude-shaped alias normalizer. Each row carries the model's OWN advertised
  * effort levels for `effortRowsFor` to narrow.
  *
+ * `skipIds` drops registry rows an ALIAS row already covers. `sol` and
+ * `gpt-5.6-sol` are the same model — the alias is just what psu's own flags and
+ * docs call it — so listing both is a duplicate that makes the menu look like it
+ * holds a choice it does not. The alias row wins because it is the documented
+ * spelling; nothing is lost, since the two normalize to one launch. The CALLER
+ * supplies the normalized ids rather than this module computing them: the
+ * normalizer lives in a module that imports `node:fs`, and this one must stay
+ * importable by the browser bundle.
+ *
  * @param {ReadonlyArray<{ id: string, label?: string | null, description?: string | null,
  *          efforts?: readonly string[] | null, contextWindow?: number | null }>} models
- * @param {{ sourceAgent: string }} args
+ * @param {{ sourceAgent: string, skipIds?: readonly string[] }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
-export function codexModelRows(models, { sourceAgent }) {
+export function codexModelRows(models, { sourceAgent, skipIds = [] }) {
   const prefix = sourceAgent === 'codex' ? 'Native' : 'Port to';
-  return (models ?? []).map((model) => ({
+  const covered = new Set((skipIds ?? []).map((id) => String(id).toLowerCase()));
+  return (models ?? [])
+    .filter((model) => !covered.has(String(model?.id ?? '').toLowerCase()))
+    .map((model) => ({
     name:
       `${prefix} codex: ${model.id}` +
       detailSuffix([model.label && model.label !== model.id ? model.label : null, formatContextWindow(model.contextWindow)]),
@@ -223,6 +236,7 @@ export function codexModelRows(models, { sourceAgent }) {
  *          contextWindow?: number | null, reasoning?: boolean | null,
  *          thinking?: readonly string[] | null }>} models
  * @param {{ sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: ModelChoice }>}
  */
 export function ompModelRows(models, { sourceAgent }) {
   const prefix = sourceAgent === 'omp' ? 'Native' : 'Port to';
@@ -261,6 +275,7 @@ export function ompModelRows(models, { sourceAgent }) {
  * model the four hardcoded aliases did not name.
  *
  * @param {{ backends: readonly string[], sourceAgent: string }} args
+ * @returns {Array<{ name: string, value: CustomSpecChoice }>}
  */
 export function customModelRows({ backends, sourceAgent }) {
   return (backends ?? []).map((agent) => ({
@@ -285,7 +300,8 @@ export function customModelRows({ backends, sourceAgent }) {
  * @param {{ backends: readonly string[], sourceAgent: string,
  *           aliases?: ReadonlyArray<{ name: string, value: string, backend: string }>,
  *           codexModels?: readonly any[], ompModels?: readonly any[],
- *           includeCustomRows?: boolean }} args
+ *           codexSkipIds?: readonly string[], includeCustomRows?: boolean }} args
+ * @returns {ResumeModelRow[]}
  */
 export function buildResumeModelRows({
   backends,
@@ -293,13 +309,14 @@ export function buildResumeModelRows({
   aliases = [],
   codexModels = [],
   ompModels = [],
+  codexSkipIds = [],
   includeCustomRows = true,
 }) {
   const allowed = backends ?? [];
   return [
     ...backendDefaultRows({ backends: allowed, sourceAgent }),
     ...aliasModelRows({ aliases, backends: allowed, sourceAgent }),
-    ...(allowed.includes('codex') ? codexModelRows(codexModels, { sourceAgent }) : []),
+    ...(allowed.includes('codex') ? codexModelRows(codexModels, { sourceAgent, skipIds: codexSkipIds }) : []),
     ...(allowed.includes('omp') ? ompModelRows(ompModels, { sourceAgent }) : []),
     ...(includeCustomRows ? customModelRows({ backends: allowed, sourceAgent }) : []),
   ];

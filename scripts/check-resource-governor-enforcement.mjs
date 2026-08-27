@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { isCliEntry } from "@papercusp/operator-core/lib/util/cli-entry";
 import { listTrackedFiles } from "./lib/tracked-files.mjs";
-import { stripCommentsOnly } from "./lib/strip-comments-and-strings.mjs";
+import { stripCommentsAndStrings } from "./lib/strip-comments-and-strings.mjs";
 
 const ROOT = new URL("..", import.meta.url).pathname;
 
@@ -104,6 +104,84 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
   },
 ]);
 
+/**
+ * D-004's exemption registry: "Control, release, and non-resident work bypass
+ * explicitly. The registry owns exemptions and lint enforces them; callers cannot
+ * self-exempt."
+ *
+ * Two design constraints, both load-bearing:
+ *
+ *   1. THE REGISTRY OWNS IT, NOT THE CALL SITE. There is deliberately no inline
+ *      pragma (`// governor-exempt`). An exemption a caller can write next to its
+ *      own spawn is self-exemption, which D-004 forbids in as many words. Adding a
+ *      row here is a reviewable diff in a file whose whole purpose is being read.
+ *
+ *   2. KEYED BY (path, findingCode), NOT BY PATH. A file-level exemption is too
+ *      coarse: `capability/bash-jobs.ts` genuinely bypasses admission for a control
+ *      kill, but that says nothing about whether it also parks an unbounded resident
+ *      queue. Exempting the file would silently retire a check nobody judged — the
+ *      decorative-allowlist failure documented at length in
+ *      check-no-unenrolled-detached-spawn.mjs ("an allowlist is evidence of what a
+ *      guard was ASKED to ignore, never evidence of what it can SEE").
+ *
+ * `disposition` reuses the inventory vocabulary. Use `bypass` for work that cannot
+ * materially increase residency, `upstream` when a physical constraint is observed
+ * rather than duplicated, `semantic` for a policy limit that is not a capacity cap.
+ * `false-positive` does NOT belong here — a detector that misfires is a detector bug
+ * to fix, and registering it would preserve the bug behind a row that reads as
+ * judgement.
+ *
+ * Shrinking this list is the point. Every row states what the process actually does.
+ */
+export const BYPASS_REGISTRY = new Map([
+  // ── cheap metadata reads: a git plumbing call that prints and exits ──────────
+  // These are D-004's "cheap metadata operations that cannot materially increase
+  // residency": single short-lived plumbing processes, awaited, no worker, no queue.
+  // Governing them would add an admission round-trip per call to operations whose
+  // whole cost is less than the admission record they would write.
+  [
+    'packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git rev-parse HEAD — cheap metadata read, awaited, exits immediately' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/plans/git-history.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git rev-parse --show-toplevel — cheap metadata read, awaited, exits immediately' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/plans/viewer-identity.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git config user.email — cheap metadata read, awaited, exits immediately' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git ls-tree — cheap metadata read over one commit, awaited, exits immediately' },
+  ],
+  // ── liveness/capability probes: ask the OS a question, start nothing ─────────
+  [
+    'apps/operator/bin/serve.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'ps -o command= -p <pid> — reads one process table row to identify a peer; starts no work' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/desktop/setup-pty-commands.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'which gh — binary-presence probe, exits immediately' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/computer/desktop-provisioner.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'xdpyinfo -display — X display liveness probe; the provisioning start it guards is governed separately' },
+  ],
+  // ── release / control path: D-004 names these explicitly ─────────────────────
+  // Admission must never gate the path that RELEASES resources, or a saturated host
+  // cannot recover: the kill that would free capacity would itself queue behind the
+  // capacity it is trying to free. This is a deadlock, not an optimisation.
+  [
+    'packages/operator-core/lib/agent-tools/capability/bash-jobs.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'systemctl --user kill — cancellation/release of an already-admitted job; gating release on admission deadlocks recovery under saturation' },
+  ],
+]);
+
+function registryKey(path, code) {
+  return `${path}::${code}`;
+}
+
 function inventory(id, migration, paths, resourceDimensions) {
   return Object.freeze({
     id,
@@ -125,7 +203,7 @@ function inventory(id, migration, paths, resourceDimensions) {
 const START =
   /(?:\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(|new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\()/;
 const GOVERNED =
-  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
+  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
@@ -138,7 +216,7 @@ const DISHONEST_METRIC =
   /\b(?:oldestAgeMs|arrivalRatePerSec|drainRatePerSec|confidence)\b[^\n]{0,80}\?\?\s*0\b/;
 
 export function inspectGovernorSource(source) {
-  const code = stripCommentsOnly(source, "fixture.ts");
+  const code = stripCommentsAndStrings(source, "fixture.ts");
   const findings = [];
   if (START.test(code) && !GOVERNED.test(code))
     findings.push("resource-start-outside-admission");
@@ -206,20 +284,28 @@ export function validateInventory(rows = RESOURCE_GOVERNOR_INVENTORY) {
   return findings;
 }
 
-export function scanActiveInventory(files) {
-  const active = RESOURCE_GOVERNOR_INVENTORY.filter(
-    (row) => row.enforcement === "active",
+export function scanInventory(files, { migrations = [] } = {}) {
+  const selected = RESOURCE_GOVERNOR_INVENTORY.filter(
+    (row) =>
+      row.enforcement === "active" ||
+      migrations.some((migration) => row.enforcement === `pending-${migration}`),
   );
   const findings = [];
   for (const [path, source] of files) {
     if (
-      !active.some((row) => row.paths.some((prefix) => path.startsWith(prefix)))
+      !selected.some((row) => row.paths.some((prefix) => path.startsWith(prefix)))
     )
       continue;
-    for (const code of inspectGovernorSource(source))
-      findings.push(`${path}:${code}`);
+    for (const code of inspectGovernorSource(source)) {
+      if (!BYPASS_REGISTRY.has(registryKey(path, code)))
+        findings.push(`${path}:${code}`);
+    }
   }
   return findings;
+}
+
+export function scanActiveInventory(files) {
+  return scanInventory(files);
 }
 
 function scanTree() {

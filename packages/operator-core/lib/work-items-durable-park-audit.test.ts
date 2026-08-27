@@ -7,6 +7,7 @@ import {
   classifyUnparkCondition,
   durableParkFingerprint,
   planDurableParkClear,
+  runWorkItemDurableParkAudit,
   type DurableParkAuditSourceRow,
 } from './work-items-durable-park-audit';
 
@@ -341,5 +342,74 @@ describe('durable park evidence matrix and reconciliation CAS', () => {
     expect(durableParkFingerprint({ state: 'open', takenBy: null, payload: parkedPayload })).toBe(
       durableParkFingerprint({ state: 'open', takenBy: null, payload: { ...parkedPayload, checkpointMirror: 'new' } }),
     );
+  });
+});
+
+/**
+ * P-022 names "replay idempotency" as a completion requirement for putting this audit on a
+ * recurring cadence. It matters more once scheduled than it did on-demand: a routine whose
+ * tick is retried (catchup, a redelivered workflow, a manual re-fire of the same runId) must
+ * hand back the run it already recorded rather than re-scanning the corpus and overwriting
+ * the ledger row a reader may already be citing.
+ *
+ * The mock counts SQL round-trips rather than inspecting the returned report, because the
+ * property under test is that the replay costs ONE lookup and stops — a version that
+ * re-scanned and happened to produce an equal report would satisfy an equality assertion
+ * while failing the actual requirement.
+ */
+function scriptedSql(responses: unknown[][]) {
+  const calls: string[] = [];
+  let i = 0;
+  const sql = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+    calls.push(strings.join('?').replace(/\s+/g, ' ').trim().slice(0, 40));
+    return Promise.resolve(responses[i++] ?? []);
+  };
+  return { sql: sql as never, calls };
+}
+
+function cachedDetail(schemaVersion: string) {
+  return {
+    status: 'complete',
+    mode: 'durable-park-audit',
+    reportOnly: true,
+    report: { schemaVersion, population: { axes: { durableParks: 7 } }, marker: 'cached-report' },
+  };
+}
+
+describe('runWorkItemDurableParkAudit — replay idempotency (P-022 scheduled cadence)', () => {
+  it('returns the recorded run on replay after exactly one lookup, re-scanning nothing', async () => {
+    const { sql, calls } = scriptedSql([[{ detail: cachedDetail('durable-park-audit-v2') }]]);
+
+    const report = await runWorkItemDurableParkAudit({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      runId: 'replayed-run',
+      sql,
+      artifactPath: false,
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('SELECT detail');
+    expect((report as unknown as { marker?: string }).marker).toBe('cached-report');
+  });
+
+  it('CONTROL: a stale-schema recorded run is NOT replayed — it re-runs and rewrites', async () => {
+    // Calibration for the assertion above. Without this, an early return that fired for ANY
+    // recorded detail would pass the replay test while silently serving a v1 report whose
+    // shape the current readers no longer understand. The schemaVersion check must be
+    // load-bearing, so the v1 case has to take the full insert/scan/update path.
+    const { sql, calls } = scriptedSql([[{ detail: cachedDetail('durable-park-audit-v1') }], [], [], []]);
+
+    const report = await runWorkItemDurableParkAudit({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      runId: 'stale-run',
+      sql,
+      artifactPath: false,
+    });
+
+    expect(calls.length).toBeGreaterThan(1);
+    expect((report as unknown as { marker?: string }).marker).toBeUndefined();
+    expect(report.schemaVersion).toBe('durable-park-audit-v2');
   });
 });

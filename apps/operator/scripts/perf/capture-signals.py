@@ -20,8 +20,8 @@ import urllib.request
 from datetime import datetime, timezone
 
 OUT_DIR = os.path.expanduser("~/.papercusp/perf-baselines")
-USER_SERVICES = ["papercup-dev-api", "papercup-bg-host", "papercup-staging-api",
-                 "papercup-inference-gateway", "kopia-snapshots", "papercup-vm-mac"]
+USER_SERVICES = ["papercusp-dev-api", "papercusp-bg-host", "papercusp-staging-api",
+                 "papercup-inference-gateway", "kopia-snapshots", "papercusp-vm-mac"]
 OPERATOR_CHECKOUT = "papercup-release"   # the :3070 green-main checkout
 GATEWAY_PORT = 8788
 OPERATOR_PORT = 3070

@@ -22,7 +22,12 @@ vi.mock('../locks/in-workspace-txn', () => ({
 }));
 vi.mock('../locks/su-lock-store', () => ({
   tryAcquireResource: vi.fn(),
-  tryReleaseResource: vi.fn(async () => ({ released: 1, releasedModes: ['exclusive'], exclusiveResources: [], waiters: {} })),
+  tryReleaseResource: vi.fn(async () => ({
+    released: 1,
+    releasedModes: ['exclusive'],
+    exclusiveResources: [],
+    waiters: {},
+  })),
 }));
 vi.mock('../locks/resource-lock-guard', () => ({ guardResource: vi.fn() }));
 vi.mock('node:child_process', async (importOriginal) => {
@@ -40,6 +45,15 @@ vi.mock('./desktop-dev-restart', () => ({
   resolveDesktopDevListener: vi.fn(),
   restartDesktopDev: vi.fn(),
 }));
+vi.mock('../../release/gate-collision-guard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../release/gate-collision-guard')>();
+  return {
+    ...actual,
+    checkGateCollision: vi.fn(),
+    checkGitSyncCollision: vi.fn(),
+    acquireGitSyncRestartBarrier: vi.fn(),
+  };
+});
 // EI-18198340374286980: the audit_log writer — asserted directly in the new
 // authorize-arg tests below, and must never make a real restart fail if it
 // throws (fire-and-forget), so every OTHER test gets a working no-op stub.
@@ -58,6 +72,12 @@ import { probeServiceStart } from './systemd-service-probe';
 import { preflightRestartTarget } from './restart-preflight';
 import { resolveDesktopDevListener, restartDesktopDev } from './desktop-dev-restart';
 import { getOrgPg } from '@papercusp/db-org';
+import { BUDGET, HARD_CAP, promptWeight } from '../tool-guidance-budget';
+import {
+  acquireGitSyncRestartBarrier,
+  checkGateCollision,
+  checkGitSyncCollision,
+} from '../../release/gate-collision-guard';
 
 const acquireM = vi.mocked(tryAcquireResource);
 const releaseM = vi.mocked(tryReleaseResource);
@@ -71,7 +91,7 @@ const desktopRestartM = vi.mocked(restartDesktopDev);
 const bootVerdict = (over: Record<string, unknown> = {}) =>
   ({
     target: 'dev',
-    unit: 'papercup-dev-api.service',
+    unit: 'papercusp-dev-api.service',
     checked: true,
     ok: true,
     requestedRoot: '/tree/apps/operator',
@@ -83,13 +103,52 @@ const bootVerdict = (over: Record<string, unknown> = {}) =>
   }) as never;
 const orgPgM = vi.mocked(getOrgPg);
 const auditUnsafeM = vi.fn(async (_query: string, _params: unknown[]) => undefined);
+const gateCollisionM = vi.mocked(checkGateCollision);
+const gitSyncCollisionM = vi.mocked(checkGitSyncCollision);
+const gitSyncBarrierM = vi.mocked(acquireGitSyncRestartBarrier);
+const gitSyncBarrierReleaseM = vi.fn(async () => undefined);
+
+const clearGateCollision = () => ({
+  blocked: false,
+  kind: 'clear' as const,
+  overridden: false,
+  note: 'clear',
+  detail: {
+    runElapsedSec: null,
+    nextFireInSec: null,
+    refiringCandidate: null,
+    refireAttempt: null,
+    runLockPid: null,
+    runLockCgroupPath: null,
+    targetCgroupPath: null,
+    cgroupRelation: 'unknown' as const,
+  },
+});
+
+const clearGitSyncCollision = () => ({
+  blocked: false,
+  kind: 'clear' as const,
+  overridden: false,
+  note: 'clear',
+  detail: {
+    targetCgroupPath: null,
+    collidingResources: [],
+    collidingPids: [],
+    isolatedResources: [],
+    unknownResources: [],
+    deadResources: [],
+  },
+});
 
 const restartModule = await import('./restart');
 const tool = restartModule.default;
 const { RESTART_TARGETS } = restartModule;
 
 type Out = { content: { text: string }[] };
-type Fence = { assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>; seq?: number };
+type Fence = {
+  assertCurrent: () => Promise<{ current: boolean; reason?: string; live_fence_seq?: number }>;
+  seq?: number;
+};
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
 /** Drive guardResource's mock as `(spec, run) => run(fence)` — a thin,
@@ -102,14 +161,22 @@ const runGuard = (fence: Fence) => async (_spec: unknown, run: (f: Fence) => Pro
   lock_id: 'L-test',
 });
 const fenceOk = (seq = 1): Fence => ({ assertCurrent: async () => ({ current: true }), seq });
-const fenceStale = (seq = 1): Fence => ({ assertCurrent: async () => ({ current: false, reason: 'superseded', live_fence_seq: 2 }), seq });
+const fenceStale = (seq = 1): Fence => ({
+  assertCurrent: async () => ({ current: false, reason: 'superseded', live_fence_seq: 2 }),
+  seq,
+});
 
 const ORIGINAL_ENV = process.env.PAPERCUSP_ALLOW_DEV_RESTART;
 
 beforeEach(() => {
   vi.clearAllMocks();
   delete process.env.PAPERCUSP_ALLOW_DEV_RESTART;
-  releaseM.mockResolvedValue({ released: 1, releasedModes: ['exclusive'], exclusiveResources: [], waiters: {} } as never);
+  releaseM.mockResolvedValue({
+    released: 1,
+    releasedModes: ['exclusive'],
+    exclusiveResources: [],
+    waiters: {},
+  } as never);
   // Benign default: no live main process to report. Individual tests that care
   // about the coalesce-truth check or the restartedFromPid surfacing override it.
   probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never);
@@ -118,6 +185,18 @@ beforeEach(() => {
   desktopRestartM.mockResolvedValue({ ok: true, pid: 327001, note: 'verified desktop-dev listener' });
   auditUnsafeM.mockClear();
   orgPgM.mockReturnValue({ sql: { unsafe: auditUnsafeM } } as never);
+  gateCollisionM.mockResolvedValue(clearGateCollision());
+  gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+  gitSyncBarrierReleaseM.mockClear();
+  gitSyncBarrierM.mockResolvedValue({
+    acquired: true,
+    resource: 'git-sync',
+    lockId: 'barrier-1',
+    owner: 'system:dev-restart:git-sync-barrier:42:uuid',
+    coordinationDomain: 'workspace-domain',
+    expiresAt: '2026-08-27T19:00:00.000Z',
+    release: gitSyncBarrierReleaseM,
+  });
 });
 
 afterAll(() => {
@@ -136,14 +215,21 @@ describe('dev:restart dry run', () => {
     for (const { resource, cooldownResource } of Object.values(RESTART_TARGETS)) {
       expect(migrations, `missing agent_resource_registry seed for ${resource}`).toContain(`('${resource}',`);
       if (cooldownResource) {
-        expect(migrations, `missing agent_resource_registry seed for ${cooldownResource}`).toContain(`('${cooldownResource}',`);
+        expect(migrations, `missing agent_resource_registry seed for ${cooldownResource}`).toContain(
+          `('${cooldownResource}',`,
+        );
       }
     }
   });
 
   it('defaults target to dev and reports the dev unit', async () => {
     const b = body(await call({}));
-    expect(b).toMatchObject({ ok: true, dry_run: true, target: 'dev', would_run: 'systemctl --user restart papercup-dev-api.service' });
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target: 'dev',
+      would_run: 'systemctl --user restart papercusp-dev-api.service',
+    });
     expect(b.note).not.toMatch(/coalesced/);
     expect(acquireM).not.toHaveBeenCalled();
   });
@@ -152,6 +238,12 @@ describe('dev:restart dry run', () => {
     expect(tool.guidance?.chaining).toMatch(/confirm:true/);
     expect(tool.guidance?.chaining).toMatch(/authorize:true/);
     expect(tool.guidance?.chaining).toMatch(/reason:/);
+  });
+
+  it('keeps the registered prompt weight within the budget and hard cap', () => {
+    const weight = promptWeight(tool);
+    expect(weight).toBeLessThanOrEqual(BUDGET);
+    expect(weight).toBeLessThanOrEqual(HARD_CAP);
   });
 
   it('generated tool catalog preserves the real-restart enablement gates', () => {
@@ -170,7 +262,12 @@ describe('dev:restart dry run', () => {
 
   it('target:staging reports the staging unit + mentions the coalescing window', async () => {
     const b = body(await call({ target: 'staging' }));
-    expect(b).toMatchObject({ ok: true, dry_run: true, target: 'staging', would_run: 'systemctl --user restart papercup-staging-api.service' });
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target: 'staging',
+      would_run: 'systemctl --user restart papercusp-staging-api.service',
+    });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~2min/);
   });
@@ -180,7 +277,12 @@ describe('dev:restart dry run', () => {
   // window shared by gateway/embed-sidecar. The dry-run note must say so.
   it('target:bg-host advertises its OWN wider ~13min coalescing window (EI-13307), not the generic ~2min one', async () => {
     const b = body(await call({ target: 'bg-host' }));
-    expect(b).toMatchObject({ ok: true, dry_run: true, target: 'bg-host', would_run: 'systemctl --user restart papercup-bg-host.service' });
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      target: 'bg-host',
+      would_run: 'systemctl --user restart papercusp-bg-host.service',
+    });
     expect(b.note).toMatch(/coalesced/);
     expect(b.note).toMatch(/~13min/);
     expect(b.note).toMatch(/EI-13307/);
@@ -252,10 +354,10 @@ describe('dev:restart dry run', () => {
   // (shared, coalescing) target advertises the debounce in its dry-run note. If a
   // target is dropped from the enum/TARGETS map, `cfg.unit` throws here.
   it.each([
-    ['dev', 'papercup-dev-api.service', false],
-    ['staging', 'papercup-staging-api.service', true],
+    ['dev', 'papercusp-dev-api.service', false],
+    ['staging', 'papercusp-staging-api.service', true],
     ['gateway', 'papercup-inference-gateway.service', true],
-    ['bg-host', 'papercup-bg-host.service', true],
+    ['bg-host', 'papercusp-bg-host.service', true],
     ['embed-sidecar', 'papercup-embed-sidecar.service', true],
     ['mcp-proxy', 'papercup-mcp-proxy.service', true],
   ] as const)('target:%s dispatches to %s (coalescing note: %s)', async (target, unit, coalesces) => {
@@ -312,7 +414,7 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
     const b = body(await call({ confirm: true, target: 'bg-host' }));
     expect(b).toMatchObject({ ok: false, drained: false, restarted: false });
     expect(b.note).toMatch(/NOTHING was done/i);
-    expect(b.note).toMatch(/papercup-bg-host\.service/);
+    expect(b.note).toMatch(/papercusp-bg-host\.service/);
   });
 });
 
@@ -326,7 +428,11 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART unset', () => {
 // the service on `[boot-integrity] FATAL` (exit 78), taking routines/git-sync down
 // fleet-wide, which is exactly what happened on 2026-07-25.
 describe('dev:restart boot-integrity preflight', () => {
-  const inconsistent = bootVerdict({ ok: false, missing: ['hono', 'postgres'], note: '[boot-integrity] /tree is INCONSISTENT' });
+  const inconsistent = bootVerdict({
+    ok: false,
+    missing: ['hono', 'postgres'],
+    note: '[boot-integrity] /tree is INCONSISTENT',
+  });
 
   it('REFUSES an inconsistent tree and does NOT drain, lock, restart or audit', async () => {
     // guardResource is deliberately left UNARMED: if the refusal ever regressed, the
@@ -391,16 +497,34 @@ describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART
   it('fires a real restart on authorize:true alone (no env var needed) and writes an audit_log row tagged viaAuthorizeArg', async () => {
     guardM.mockImplementation(runGuard(fenceOk(5)) as never);
 
-    const b = body(await call({ confirm: true, authorize: true, reason: 'landing WI-5471 fix on bg-host', target: 'dev' }));
+    const b = body(
+      await call({ confirm: true, authorize: true, reason: 'landing WI-5471 fix on bg-host', target: 'dev' }),
+    );
 
-    expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true, drained: true, enabledVia: 'authorize_arg', audited: true });
-    expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-dev-api.service')], expect.anything());
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'dev',
+      restarted: true,
+      drained: true,
+      enabledVia: 'authorize_arg',
+      audited: true,
+    });
+    expect(spawnM).toHaveBeenCalledWith(
+      'sh',
+      ['-c', expect.stringContaining('papercusp-dev-api.service')],
+      expect.anything(),
+    );
     expect(auditUnsafeM).toHaveBeenCalledTimes(1);
     const [, params] = auditUnsafeM.mock.calls[0]!;
     expect(params[3]).toBe('dev:restart'); // action
     expect(params[4]).toBe('dev'); // subject = target
     const details = JSON.parse(params[5] as string);
-    expect(details).toMatchObject({ target: 'dev', viaEnv: false, viaAuthorizeArg: true, reason: 'landing WI-5471 fix on bg-host' });
+    expect(details).toMatchObject({
+      target: 'dev',
+      viaEnv: false,
+      viaAuthorizeArg: true,
+      reason: 'landing WI-5471 fix on bg-host',
+    });
   });
 
   it('confirm:true alone (authorize omitted, no env) still withholds — authorize does not implicitly follow from confirm', async () => {
@@ -416,6 +540,155 @@ describe('dev:restart confirm:true + authorize:true, PAPERCUSP_ALLOW_DEV_RESTART
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+  });
+});
+
+describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
+  const blocked = () => ({
+    ...clearGitSyncCollision(),
+    blocked: true,
+    kind: 'operation-in-flight' as const,
+    note: 'Restart REFUSED — git-sync:papercusp is in flight; override_git_sync_collision:true only when wedged.',
+    detail: {
+      ...clearGitSyncCollision().detail,
+      targetCgroupPath: '/user.slice/app.slice/papercusp-bg-host.service',
+      collidingResources: ['git-sync:papercusp'],
+      collidingPids: [4242],
+    },
+  });
+
+  it('previews the collision before a caller chooses to confirm', async () => {
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ target: 'bg-host' }));
+    expect(b).toMatchObject({
+      ok: true,
+      dry_run: true,
+      git_sync_collision: {
+        kind: 'operation-in-flight',
+        would_block: true,
+        collidingResources: ['git-sync:papercusp'],
+        collidingPids: [4242],
+      },
+    });
+    expect(b.note).toContain('git-sync:papercusp');
+    expect(gitSyncCollisionM).toHaveBeenCalledWith('bg-host', false);
+  });
+
+  it('refuses before cooldown, drain, signal, or audit when the target cgroup owns the live operation', async () => {
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ confirm: true, authorize: true, target: 'bg-host', reason: 'reload code' }));
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'git_sync_collision_operation_in_flight',
+      restarted: false,
+      drained: false,
+      git_sync_collision: { collidingPids: [4242] },
+    });
+    expect(gateCollisionM).not.toHaveBeenCalled();
+    expect(acquireM).not.toHaveBeenCalled();
+    expect(guardM).not.toHaveBeenCalled();
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('covers the :3070 dev target, not only scheduled bg-host fires', async () => {
+    gitSyncCollisionM.mockResolvedValue(blocked());
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+    expect(b.reason).toBe('git_sync_collision_operation_in_flight');
+    expect(gitSyncCollisionM).toHaveBeenCalledWith('dev', false);
+  });
+
+  it('passes a deliberate override, surfaces it, and records operation identity in the restart audit', async () => {
+    gitSyncCollisionM.mockResolvedValue({ ...blocked(), blocked: false, overridden: true });
+    guardM.mockImplementation(runGuard(fenceOk(17)) as never);
+
+    const b = body(
+      await call({
+        confirm: true,
+        authorize: true,
+        target: 'dev',
+        reason: 'git-sync worker itself is wedged',
+        override_git_sync_collision: true,
+      }),
+    );
+
+    expect(b).toMatchObject({
+      ok: true,
+      restarted: true,
+      gitSyncCollisionOverridden: {
+        kind: 'operation-in-flight',
+        collidingResources: ['git-sync:papercusp'],
+        collidingPids: [4242],
+      },
+    });
+    expect(gitSyncCollisionM).toHaveBeenCalledWith('dev', true);
+    expect(gitSyncBarrierM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).toHaveBeenCalledTimes(1);
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details.gitSyncCollision).toEqual({
+      kind: 'operation-in-flight',
+      overridden: true,
+      resources: ['git-sync:papercusp'],
+      pids: [4242],
+    });
+  });
+
+  it('closes the post-check race: an operation that acquires before spawn aborts the restart', async () => {
+    gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
+    gitSyncBarrierM.mockResolvedValue({
+      acquired: false,
+      resource: 'git-sync',
+      reason: 'held_exclusive',
+      holders: [
+        {
+          owner: 'system:git-sync:99:late',
+          owner_label: 'git-sync:papercusp',
+          mode: 'exclusive',
+          status: 'held',
+        },
+      ],
+    });
+    guardM.mockImplementation(runGuard(fenceOk(18)) as never);
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      reason: 'git_sync_barrier_held_exclusive',
+      restarted: false,
+      drained: true,
+      resource: 'git-sync',
+      holders: [{ owner: 'system:git-sync:99:late' }],
+    });
+    expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
+    expect(spawnM).not.toHaveBeenCalled();
+    expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('keeps the successful barrier lease through the delayed systemctl handoff', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(19)) as never);
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+    expect(b.gitSyncRestartBarrier).toEqual({
+      resource: 'git-sync',
+      expiresAt: '2026-08-27T19:00:00.000Z',
+      release: 'lease-expiry-after-systemctl-handoff',
+    });
+    expect(spawnM).toHaveBeenCalledTimes(1);
+    expect(gitSyncBarrierReleaseM).not.toHaveBeenCalled();
+    const details = JSON.parse(auditUnsafeM.mock.calls[0]![1][5] as string);
+    expect(details.gitSyncBarrier).toEqual({ resource: 'git-sync', expiresAt: '2026-08-27T19:00:00.000Z' });
+  });
+
+  it('releases the barrier immediately when scheduling the restart throws', async () => {
+    guardM.mockImplementation(runGuard(fenceOk(20)) as never);
+    spawnM.mockImplementationOnce(() => {
+      throw new Error('spawn failed');
+    });
+    await expect(call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' })).rejects.toThrow(
+      'spawn failed',
+    );
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -425,7 +698,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('claims the cooldown marker, drains+restarts, and does NOT release the cooldown on success', async () => {
-    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL1', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL1',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     guardM.mockImplementation(runGuard(fenceOk(9)) as never);
     // EI-11137: the pre-restart MainPID is captured so the caller can verify a real cycle.
     probeM.mockResolvedValue({ ok: true, mainPid: 4242, secondsSinceStart: 9999 } as never);
@@ -436,10 +717,22 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       expect.anything(),
       expect.objectContaining({ resource: 'staging-server-cooldown', mode: 'exclusive', ttlSec: 120 }),
     );
-    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: true, drained: true, restartedFromPid: 4242, enabledVia: 'env', audited: true });
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: true,
+      drained: true,
+      restartedFromPid: 4242,
+      enabledVia: 'env',
+      audited: true,
+    });
     expect(b.verifyWith).toMatch(/MainPID/);
     expect(b).not.toHaveProperty('phantomCoalesceBroken');
-    expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-staging-api.service')], expect.anything());
+    expect(spawnM).toHaveBeenCalledWith(
+      'sh',
+      ['-c', expect.stringContaining('papercusp-staging-api.service')],
+      expect.anything(),
+    );
     expect(spawnM.mock.calls[0]?.[1]?.[1] as string).not.toContain('reset-failed');
     // Left to expire, not released — the debounce depends on this.
     expect(releaseM).not.toHaveBeenCalled();
@@ -450,7 +743,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('clears a latched start-limit before scheduling the restart and reports the recovery', async () => {
-    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-LATCH', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-LATCH',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     guardM.mockImplementation(runGuard(fenceOk(10)) as never);
     probeM.mockResolvedValue({ ok: true, mainPid: 0, result: 'start-limit-hit' } as never);
 
@@ -463,8 +764,8 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
       resetFailedBeforeRestart: true,
     });
     const shell = spawnM.mock.calls[0]?.[1]?.[1] as string;
-    const reset = `systemctl --user reset-failed papercup-staging-api.service`;
-    const restart = `systemctl --user restart papercup-staging-api.service`;
+    const reset = `systemctl --user reset-failed papercusp-staging-api.service`;
+    const restart = `systemctl --user restart papercusp-staging-api.service`;
     expect(shell).toContain(`${reset} && ${restart}`);
     expect(shell.indexOf(reset)).toBeLessThan(shell.indexOf(restart));
     expect(b.note).toMatch(/start-limit|reset-failed/i);
@@ -474,14 +775,31 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'peer-1', owner_label: 'peer-one', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'peer-1',
+          owner_label: 'peer-one',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     // EI-11137: the service really did restart 12s ago (< 120s window) — genuine coalesce.
     probeM.mockResolvedValue({ ok: true, mainPid: 555, secondsSinceStart: 12 } as never);
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
-    expect(b).toMatchObject({ ok: true, target: 'staging', restarted: false, coalesced: true, verified: true, restartedSecondsAgo: 12, mainPid: 555 });
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'staging',
+      restarted: false,
+      coalesced: true,
+      verified: true,
+      restartedSecondsAgo: 12,
+      mainPid: 555,
+    });
     expect(b.note).toMatch(/peer-one/);
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
@@ -493,7 +811,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'stale-peer', owner_label: 'stale-one', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'stale-peer',
+          owner_label: 'stale-one',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     probeM.mockResolvedValue({ ok: true, mainPid: 909, secondsSinceStart: 6 * 3600 } as never); // 6h ago
     guardM.mockImplementation(runGuard(fenceOk(7)) as never);
@@ -503,15 +830,32 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 909 });
     expect(b.coalesced).toBeUndefined();
     // EI-13307: bg-host's cooldown is now the widened ~13min (780s) window, not the generic 120s one.
-    expect(b.phantomCoalesceBroken).toMatchObject({ staleMarkerHolder: 'stale-one', serviceSecondsSinceStart: 6 * 3600, cooldownSec: 13 * 60 });
-    expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-bg-host.service')], expect.anything());
+    expect(b.phantomCoalesceBroken).toMatchObject({
+      staleMarkerHolder: 'stale-one',
+      serviceSecondsSinceStart: 6 * 3600,
+      cooldownSec: 13 * 60,
+    });
+    expect(spawnM).toHaveBeenCalledWith(
+      'sh',
+      ['-c', expect.stringContaining('papercusp-bg-host.service')],
+      expect.anything(),
+    );
   });
 
   it('EI-11137: down service (MainPID 0) is NOT a recent restart ⇒ marker treated as phantom, restart fires', async () => {
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'stale-peer', owner_label: 'stale-one', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'stale-peer',
+          owner_label: 'stale-one',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     probeM.mockResolvedValue({ ok: true, mainPid: 0 } as never); // no live main process
     guardM.mockImplementation(runGuard(fenceOk(1)) as never);
@@ -527,7 +871,16 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'peer-1', owner_label: 'peer-one', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'peer-1',
+          owner_label: 'peer-one',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     probeM.mockResolvedValue({ ok: false } as never); // no systemd / probe error
 
@@ -540,7 +893,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('releases the cooldown marker if the drain/restart step aborts after claiming it (stale fence)', async () => {
-    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL2', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL2',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     guardM.mockImplementation(runGuard(fenceStale()) as never);
 
     const b = body(await call({ confirm: true, target: 'staging' }));
@@ -550,12 +911,25 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:staging
   });
 
   it('releases the cooldown marker if the drain-gate itself never grants (e.g. drain_timeout)', async () => {
-    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL3', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL3',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
 
     const b = body(await call({ confirm: true, target: 'staging' }));
 
-    expect(b).toMatchObject({ ok: false, target: 'staging', reason: 'resource_drain_timeout', resource: 'staging-server' });
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'staging',
+      reason: 'resource_drain_timeout',
+      resource: 'staging-server',
+    });
     expect(releaseM).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ lockId: 'COOL3' }));
   });
 });
@@ -566,7 +940,15 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
   });
 
   it('claims the bg-host cooldown marker with the WIDENED ~13min TTL (780s), not the generic 120s one', async () => {
-    acquireM.mockResolvedValue({ ok: true, mode: 'exclusive', status: 'held', lock_id: 'COOL-BG', expires_ts: new Date(), shared_holders: [], fence_seq: 1 } as never);
+    acquireM.mockResolvedValue({
+      ok: true,
+      mode: 'exclusive',
+      status: 'held',
+      lock_id: 'COOL-BG',
+      expires_ts: new Date(),
+      shared_holders: [],
+      fence_seq: 1,
+    } as never);
     guardM.mockImplementation(runGuard(fenceOk(11)) as never);
     probeM.mockResolvedValue({ ok: true, mainPid: 7777, secondsSinceStart: 99999 } as never);
 
@@ -582,11 +964,20 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
     expect(b.note).toMatch(/EI-13317/);
   });
 
-  it('a restart request ~10min (600s) after a peer\'s real bg-host restart COALESCES under the widened window — the exact storm from EI-13307 (old 120s window would have fired a fresh restart here)', async () => {
+  it("a restart request ~10min (600s) after a peer's real bg-host restart COALESCES under the widened window — the exact storm from EI-13307 (old 120s window would have fired a fresh restart here)", async () => {
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'peer-2', owner_label: 'peer-two', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'peer-2',
+          owner_label: 'peer-two',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     // 600s ago: outside the OLD 120s window (would have been a phantom / real
     // restart under the pre-fix code) but well inside the NEW 780s window.
@@ -594,17 +985,34 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
 
     const b = body(await call({ confirm: true, target: 'bg-host' }));
 
-    expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: false, coalesced: true, verified: true, restartedSecondsAgo: 600, mainPid: 8888 });
+    expect(b).toMatchObject({
+      ok: true,
+      target: 'bg-host',
+      restarted: false,
+      coalesced: true,
+      verified: true,
+      restartedSecondsAgo: 600,
+      mainPid: 8888,
+    });
     expect(b.note).toMatch(/peer-two/);
     expect(guardM).not.toHaveBeenCalled();
     expect(spawnM).not.toHaveBeenCalled();
   });
 
-  it('a restart request >13min (900s) after a peer\'s real bg-host restart is OUTSIDE even the widened window — fires a genuine restart', async () => {
+  it("a restart request >13min (900s) after a peer's real bg-host restart is OUTSIDE even the widened window — fires a genuine restart", async () => {
     acquireM.mockResolvedValue({
       ok: false,
       reason: 'held_exclusive',
-      holders: [{ owner: 'peer-3', owner_label: 'peer-three', mode: 'exclusive', status: 'held', reason: '', expires_ts: new Date() }],
+      holders: [
+        {
+          owner: 'peer-3',
+          owner_label: 'peer-three',
+          mode: 'exclusive',
+          status: 'held',
+          reason: '',
+          expires_ts: new Date(),
+        },
+      ],
     } as never);
     probeM.mockResolvedValue({ ok: true, mainPid: 4321, secondsSinceStart: 900 } as never);
     guardM.mockImplementation(runGuard(fenceOk(12)) as never);
@@ -613,7 +1021,11 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:bg-host
 
     expect(b).toMatchObject({ ok: true, target: 'bg-host', restarted: true, restartedFromPid: 4321 });
     expect(b.coalesced).toBeUndefined();
-    expect(b.phantomCoalesceBroken).toMatchObject({ staleMarkerHolder: 'peer-three', serviceSecondsSinceStart: 900, cooldownSec: 13 * 60 });
+    expect(b.phantomCoalesceBroken).toMatchObject({
+      staleMarkerHolder: 'peer-three',
+      serviceSecondsSinceStart: 900,
+      cooldownSec: 13 * 60,
+    });
   });
 });
 
@@ -628,12 +1040,18 @@ describe('dev:restart confirm with PAPERCUSP_ALLOW_DEV_RESTART=1, target:dev (un
     expect(b).toMatchObject({ ok: true, target: 'dev', restarted: true });
     expect(acquireM).not.toHaveBeenCalled();
     expect(releaseM).not.toHaveBeenCalled();
-    expect(spawnM).toHaveBeenCalledWith('sh', ['-c', expect.stringContaining('papercup-dev-api.service')], expect.anything());
+    expect(spawnM).toHaveBeenCalledWith(
+      'sh',
+      ['-c', expect.stringContaining('papercusp-dev-api.service')],
+      expect.anything(),
+    );
   });
 
   it('target:desktop-dev drains the named resource and signals only the verified listener child', async () => {
     guardM.mockImplementation(runGuard(fenceOk(7)) as never);
-    const b = body(await call({ target: 'desktop-dev', confirm: true, authorize: true, reason: 'reload desktop operator edit' }));
+    const b = body(
+      await call({ target: 'desktop-dev', confirm: true, authorize: true, reason: 'reload desktop operator edit' }),
+    );
     expect(b).toMatchObject({
       ok: true,
       target: 'desktop-dev',

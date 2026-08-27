@@ -40,6 +40,7 @@ export async function runPersonalVaultImportAction(
       status: 'idle',
       documentsSeen: 0,
       documentsImported: 0,
+      entriesFailed: 0,
       warnings: 0,
       error: null,
     };
@@ -65,6 +66,7 @@ registerSystemAction('personal-vault-import', async (ctx) => {
     console.log(
       `[personal-vault-import] job=${result.jobId} status=${result.status} ` +
         `seen=${result.documentsSeen} imported=${result.documentsImported} ` +
+        `failed=${result.entriesFailed} ` +
         `warnings=${result.warnings}${result.error ? ` error=${result.error}` : ''}`,
     );
   }

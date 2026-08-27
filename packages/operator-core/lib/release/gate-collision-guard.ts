@@ -49,9 +49,10 @@
 
 import { readFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import type { StoredInFlightRetriage } from './in-flight-retriage';
-import { RESTART_TARGET_UNITS } from '../agent-tools/dev/restart-target-units';
+import { RESTART_TARGET_UNITS, type RestartTargetName } from '../agent-tools/dev/restart-target-units';
 
 let execFileAsync: ((...args: any[]) => Promise<any>) | undefined;
 const runExecFile = (...args: any[]) => (execFileAsync ??= promisify(execFile) as any)(...args);
@@ -176,20 +177,33 @@ export function gateRunCgroupRelation(
   return nested(target, run) || nested(run, target) ? 'same' : 'different';
 }
 
-function defaultReadProcessCgroup(pid: number): string | null {
+export interface ProcessCgroupObservation {
+  /** false is reserved for a provably absent /proc row; null means unreadable. */
+  alive: boolean | null;
+  cgroupPath: string | null;
+}
+
+function defaultReadProcessObservation(pid: number): ProcessCgroupObservation {
   try {
     const unified = readFileSync(`/proc/${pid}/cgroup`, 'utf8')
       .split('\n')
       .find((line) => line.startsWith('0::'))
       ?.slice(3)
       .trim();
-    return normalizeCgroupPath(unified);
-  } catch {
-    return null;
+    return { alive: true, cgroupPath: normalizeCgroupPath(unified) };
+  } catch (error) {
+    return {
+      alive: (error as NodeJS.ErrnoException).code === 'ENOENT' ? false : null,
+      cgroupPath: null,
+    };
   }
 }
 
-async function defaultReadTargetCgroup(target: GateSensitiveTarget): Promise<string | null> {
+function defaultReadProcessCgroup(pid: number): string | null {
+  return defaultReadProcessObservation(pid).cgroupPath;
+}
+
+async function defaultReadTargetCgroup(target: RestartTargetName): Promise<string | null> {
   const { stdout } = await runExecFile(
     'systemctl',
     ['--user', 'show', RESTART_TARGET_UNITS[target], '-p', 'ControlGroup', '--value'],
@@ -420,7 +434,7 @@ export async function probeGateCollision(
   // Only a held lock needs mechanism analysis. The default deps always provide these readers;
   // old injectable fixtures that do not provide them retain the pre-cgroup pure-test contract.
   const hasCgroupReaders = Boolean(d.readRunLockCgroup || d.readTargetCgroup);
-  if (runLockHeld && (runLockPid !== null && runLockPid !== undefined || hasCgroupReaders)) {
+  if (runLockHeld && ((runLockPid !== null && runLockPid !== undefined) || hasCgroupReaders)) {
     if (runLockPid !== null && runLockPid !== undefined && d.readRunLockCgroup) {
       try {
         runLockCgroupPath = await d.readRunLockCgroup(runLockPid);
@@ -484,4 +498,410 @@ export async function checkGateCollision(
   }
   const probe = await probeGateCollision(deps, target);
   return judgeGateCollision({ target, probe, override });
+}
+
+/**
+ * WI-222053 — the same cgroup mechanism guard, applied to git-sync operations.
+ *
+ * The 2026-08-27 papercusp freeze was sustained by restarts that killed a long
+ * superproject commit after it acquired `exclusive(git-sync:papercusp)`. Both
+ * scheduled bg-host fires and manual :3070 fires were observed as holders, so a
+ * target-name-only `bg-host` guard is incomplete. The authoritative mechanism is:
+ * a live `system:git-sync:<pid>:<uuid>` holder whose process is inside the unit
+ * being restarted. Reuse {@link gateRunCgroupRelation} so sibling transient units
+ * remain isolated and a stale/dead/foreign holder never becomes a false refusal.
+ */
+export const GIT_SYNC_SENSITIVE_RESTART_TARGETS = ['dev', 'staging', 'bg-host'] as const;
+
+export type GitSyncSensitiveTarget = (typeof GIT_SYNC_SENSITIVE_RESTART_TARGETS)[number];
+
+export function isGitSyncSensitiveTarget(target: string): target is GitSyncSensitiveTarget {
+  return (GIT_SYNC_SENSITIVE_RESTART_TARGETS as readonly string[]).includes(target);
+}
+
+export interface GitSyncLockHolder {
+  resource: string;
+  owner: string;
+  acquiredAtMs: number | null;
+  expiresAtMs: number | null;
+}
+
+export interface GitSyncOperationObservation extends GitSyncLockHolder {
+  pid: number | null;
+  alive: boolean | null;
+  processCgroupPath: string | null;
+  cgroupRelation: GateRunCgroupRelation;
+  ageSec: number | null;
+}
+
+export interface GitSyncCollisionProbe {
+  /** True only when the holder ledger itself could not be read. Per-process unknowns stay explicit. */
+  probeFailed: boolean;
+  targetCgroupPath: string | null;
+  operations: GitSyncOperationObservation[];
+}
+
+export type GitSyncCollisionKind =
+  | 'not-git-sync-sensitive'
+  | 'probe-failed'
+  | 'clear'
+  | 'operation-in-flight'
+  | 'operation-in-flight-isolated'
+  | 'operation-in-flight-unknown';
+
+export interface GitSyncCollisionVerdict {
+  blocked: boolean;
+  kind: GitSyncCollisionKind;
+  overridden: boolean;
+  note: string;
+  detail: {
+    targetCgroupPath: string | null;
+    collidingResources: string[];
+    collidingPids: number[];
+    isolatedResources: string[];
+    unknownResources: string[];
+    deadResources: string[];
+  };
+}
+
+const gitSyncPid = (owner: string): number | null => {
+  const match = /^system:git-sync:(\d+):/.exec(owner);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+};
+
+const gitSyncDetail = (probe: GitSyncCollisionProbe): GitSyncCollisionVerdict['detail'] => {
+  const recognized = probe.operations.filter((op) => op.pid !== null);
+  const colliding = recognized.filter((op) => op.alive === true && op.cgroupRelation === 'same');
+  return {
+    targetCgroupPath: probe.targetCgroupPath,
+    collidingResources: colliding.map((op) => op.resource),
+    collidingPids: colliding.flatMap((op) => (op.pid === null ? [] : [op.pid])),
+    isolatedResources: recognized
+      .filter((op) => op.alive === true && op.cgroupRelation === 'different')
+      .map((op) => op.resource),
+    unknownResources: recognized
+      .filter((op) => op.alive === null || (op.alive === true && op.cgroupRelation === 'unknown'))
+      .map((op) => op.resource),
+    deadResources: recognized.filter((op) => op.alive === false).map((op) => op.resource),
+  };
+};
+
+export function judgeGitSyncCollision(input: {
+  target: string;
+  probe: GitSyncCollisionProbe;
+  override: boolean;
+}): GitSyncCollisionVerdict {
+  const { target, probe, override } = input;
+  const detail = gitSyncDetail(probe);
+
+  if (!isGitSyncSensitiveTarget(target)) {
+    return {
+      blocked: false,
+      kind: 'not-git-sync-sensitive',
+      overridden: false,
+      note: `${target} does not host git-sync execution — no git-sync restart-collision check applies.`,
+      detail,
+    };
+  }
+  if (probe.probeFailed) {
+    const note =
+      'Could NOT read live git-sync resource holders. Restart safety is unknown, so the restart is withheld; ' +
+      're-call with override_git_sync_collision:true only when the host itself is wedged.';
+    if (override) {
+      return {
+        blocked: false,
+        kind: 'probe-failed',
+        overridden: true,
+        note: `${note} PROCEEDING ANYWAY under the audited override.`,
+        detail,
+      };
+    }
+    return {
+      blocked: true,
+      kind: 'probe-failed',
+      overridden: false,
+      note,
+      detail,
+    };
+  }
+
+  const colliding = probe.operations.filter(
+    (op) => op.pid !== null && op.alive === true && op.cgroupRelation === 'same',
+  );
+  if (colliding.length > 0) {
+    const operations = colliding
+      .map((op) => `${op.resource} (pid ${op.pid}${op.ageSec === null ? '' : `, ${humanizeSec(op.ageSec)} old`})`)
+      .join(', ');
+    const why =
+      `The live operation shares ${target}'s systemd cgroup (${probe.targetCgroupPath}), so restarting ${target} ` +
+      'would SIGKILL the commit after lock acquisition and leave the tree frozen behind an orphaned lease.';
+    if (override) {
+      return {
+        blocked: false,
+        kind: 'operation-in-flight',
+        overridden: true,
+        note: `Git-sync IS IN FLIGHT: ${operations}. ${why} PROCEEDING ANYWAY because override_git_sync_collision:true was passed; the override is audited.`,
+        detail,
+      };
+    }
+    return {
+      blocked: true,
+      kind: 'operation-in-flight',
+      overridden: false,
+      note:
+        `Restart REFUSED — NOTHING was done: no cooldown claimed, no drain, no signal. Git-sync IS IN FLIGHT: ${operations}. ` +
+        `${why} Wait for the operation to settle, or, if the host is itself wedged and the restart is the remedy, ` +
+        're-call with override_git_sync_collision:true and record why.',
+      detail,
+    };
+  }
+
+  if (detail.unknownResources.length > 0) {
+    const note =
+      `Git-sync holder(s) exist (${detail.unknownResources.join(', ')}), but their live process/cgroup relation to ${target} ` +
+      'could not be proven. Restart safety is unknown, so the restart is withheld; use override_git_sync_collision:true only when the host itself is wedged.';
+    if (override) {
+      return {
+        blocked: false,
+        kind: 'operation-in-flight-unknown',
+        overridden: true,
+        note: `${note} PROCEEDING ANYWAY under the audited override.`,
+        detail,
+      };
+    }
+    return {
+      blocked: true,
+      kind: 'operation-in-flight-unknown',
+      overridden: false,
+      note,
+      detail,
+    };
+  }
+  if (detail.isolatedResources.length > 0) {
+    return {
+      blocked: false,
+      kind: 'operation-in-flight-isolated',
+      overridden: false,
+      note:
+        `Git-sync is active for ${detail.isolatedResources.join(', ')}, but its process is in a sibling cgroup outside ` +
+        `${target}'s restart blast radius.`,
+      detail,
+    };
+  }
+  return {
+    blocked: false,
+    kind: 'clear',
+    overridden: false,
+    note: detail.deadResources.length
+      ? `No live git-sync operation shares ${target}'s cgroup; ignored expired-process holder(s): ${detail.deadResources.join(', ')}.`
+      : `No live git-sync operation shares ${target}'s cgroup.`,
+    detail,
+  };
+}
+
+export interface GitSyncCollisionProbeDeps {
+  readHolders: () => Promise<GitSyncLockHolder[]>;
+  readProcess: (pid: number) => ProcessCgroupObservation | Promise<ProcessCgroupObservation>;
+  readTargetCgroup: (target: GitSyncSensitiveTarget) => string | null | Promise<string | null>;
+  nowMs?: () => number;
+}
+
+async function defaultGitSyncDeps(): Promise<GitSyncCollisionProbeDeps> {
+  const [{ getTxPool, readResourceQueue }, { workspaceScopedLockDomain }] = await Promise.all([
+    import('../agent-tools/locks/su-lock-store'),
+    import('../agent-tools/locks/coordination-domain'),
+  ]);
+  return {
+    readHolders: async () => {
+      const queue = await readResourceQueue(getTxPool(), { coordinationDomain: workspaceScopedLockDomain() });
+      return queue.holders
+        .filter((holder) => holder.mode === 'exclusive' && holder.resource.startsWith('git-sync:'))
+        .map((holder) => ({
+          resource: holder.resource,
+          owner: holder.owner,
+          acquiredAtMs: holder.acquired_ts?.getTime?.() ?? null,
+          expiresAtMs: holder.expires_ts?.getTime?.() ?? null,
+        }));
+    },
+    readProcess: defaultReadProcessObservation,
+    readTargetCgroup: defaultReadTargetCgroup,
+  };
+}
+
+export async function probeGitSyncCollision(
+  deps?: GitSyncCollisionProbeDeps,
+  target: GitSyncSensitiveTarget = 'bg-host',
+): Promise<GitSyncCollisionProbe> {
+  let readers: GitSyncCollisionProbeDeps;
+  try {
+    readers = deps ?? (await defaultGitSyncDeps());
+  } catch {
+    return { probeFailed: true, targetCgroupPath: null, operations: [] };
+  }
+
+  let holders: GitSyncLockHolder[];
+  try {
+    holders = await readers.readHolders();
+  } catch {
+    return { probeFailed: true, targetCgroupPath: null, operations: [] };
+  }
+  if (holders.length === 0) return { probeFailed: false, targetCgroupPath: null, operations: [] };
+
+  let targetCgroupPath: string | null = null;
+  try {
+    targetCgroupPath = normalizeCgroupPath(await readers.readTargetCgroup(target));
+  } catch {
+    // Per-mechanism unknown: retain the holder observations and fail open explicitly.
+  }
+
+  const nowMs = readers.nowMs?.() ?? Date.now();
+  const operations = await Promise.all(
+    holders.map(async (holder): Promise<GitSyncOperationObservation> => {
+      const pid = gitSyncPid(holder.owner);
+      let process: ProcessCgroupObservation = { alive: null, cgroupPath: null };
+      if (pid !== null) {
+        try {
+          process = await readers.readProcess(pid);
+        } catch {
+          // One unreadable process must not collapse every independently-readable holder.
+        }
+      }
+      return {
+        ...holder,
+        pid,
+        alive: process.alive,
+        processCgroupPath: normalizeCgroupPath(process.cgroupPath),
+        cgroupRelation:
+          process.alive === true ? gateRunCgroupRelation(process.cgroupPath, targetCgroupPath) : 'unknown',
+        ageSec: holder.acquiredAtMs === null ? null : Math.max(0, Math.round((nowMs - holder.acquiredAtMs) / 1_000)),
+      };
+    }),
+  );
+  return { probeFailed: false, targetCgroupPath, operations };
+}
+
+/** Probe + judge, the one additional read-only guard `dev:restart` calls. Never throws. */
+export async function checkGitSyncCollision(
+  target: string,
+  override: boolean,
+  deps?: GitSyncCollisionProbeDeps,
+): Promise<GitSyncCollisionVerdict> {
+  if (!isGitSyncSensitiveTarget(target)) {
+    return judgeGitSyncCollision({
+      target,
+      probe: { probeFailed: false, targetCgroupPath: null, operations: [] },
+      override,
+    });
+  }
+  const probe = await probeGitSyncCollision(deps, target);
+  return judgeGitSyncCollision({ target, probe, override });
+}
+
+/**
+ * The preflight above explains a collision precisely, but it cannot close the
+ * check→kill race by itself. The legacy superproject `git-sync` resource is the
+ * existing serialization seam every papercusp superproject fire acquires after
+ * its per-slug lock. A restart takes that same resource exclusively immediately
+ * before scheduling systemctl, and intentionally leaves the short lease to
+ * expire after the delayed kill handoff. Releasing on callback return would
+ * recreate the one-second race this barrier exists to close.
+ *
+ * WI-222686 aligns the exact `git-sync` name with the action's workspace domain;
+ * always call resourceLockDomain rather than transcribing that domain here.
+ */
+export const GIT_SYNC_RESTART_BARRIER_RESOURCE = 'git-sync';
+export const GIT_SYNC_RESTART_BARRIER_TTL_SEC = 60;
+
+type BarrierHolder = { owner: string; owner_label?: string | null; mode: string; status: string };
+
+type BarrierAcquireRaw =
+  | { ok: true; lock_id: string; expires_ts: Date }
+  | { ok: false; reason: string; holders: BarrierHolder[] };
+
+export interface GitSyncRestartBarrierDeps {
+  resolveDomain: (resource: string) => string;
+  newOwner: () => string;
+  acquire: (params: {
+    coordinationDomain: string;
+    resource: string;
+    owner: string;
+    ownerLabel: string | null;
+    ttlSec: number;
+  }) => Promise<BarrierAcquireRaw>;
+  release: (params: { coordinationDomain: string; owner: string; lockId: string }) => Promise<void>;
+}
+
+export type GitSyncRestartBarrierOutcome =
+  | {
+      acquired: true;
+      resource: typeof GIT_SYNC_RESTART_BARRIER_RESOURCE;
+      lockId: string;
+      owner: string;
+      coordinationDomain: string;
+      expiresAt: string;
+      release: () => Promise<void>;
+    }
+  | {
+      acquired: false;
+      resource: typeof GIT_SYNC_RESTART_BARRIER_RESOURCE;
+      reason: string;
+      holders: BarrierHolder[];
+    };
+
+async function defaultGitSyncRestartBarrierDeps(): Promise<GitSyncRestartBarrierDeps> {
+  const [{ inWorkspaceTxn }, lockStore, { resourceLockDomain }] = await Promise.all([
+    import('../agent-tools/locks/in-workspace-txn'),
+    import('../agent-tools/locks/su-lock-store'),
+    import('../agent-tools/locks/coordination-domain'),
+  ]);
+  return {
+    resolveDomain: resourceLockDomain,
+    newOwner: () => `system:dev-restart:git-sync-barrier:${process.pid}:${randomUUID()}`,
+    acquire: async ({ coordinationDomain, resource, owner, ownerLabel, ttlSec }) =>
+      inWorkspaceTxn(coordinationDomain, owner, (tx) =>
+        lockStore.tryAcquireResource(tx, {
+          coordinationDomain,
+          resource,
+          mode: 'exclusive',
+          owner,
+          ownerLabel,
+          reason: 'dev:restart git-sync kill barrier (WI-222053)',
+          ttlSec,
+        }),
+      ) as Promise<BarrierAcquireRaw>,
+    release: async ({ coordinationDomain, owner, lockId }) => {
+      await inWorkspaceTxn(coordinationDomain, owner, (tx) =>
+        lockStore.tryReleaseResource(tx, { coordinationDomain, owner, lockId }),
+      );
+    },
+  };
+}
+
+export async function acquireGitSyncRestartBarrier(
+  ownerLabel: string | null,
+  deps?: GitSyncRestartBarrierDeps,
+): Promise<GitSyncRestartBarrierOutcome> {
+  const d = deps ?? (await defaultGitSyncRestartBarrierDeps());
+  const resource = GIT_SYNC_RESTART_BARRIER_RESOURCE;
+  const coordinationDomain = d.resolveDomain(resource);
+  const owner = d.newOwner();
+  const result = await d.acquire({
+    coordinationDomain,
+    resource,
+    owner,
+    ownerLabel,
+    ttlSec: GIT_SYNC_RESTART_BARRIER_TTL_SEC,
+  });
+  if (!result.ok) return { acquired: false, resource, reason: result.reason, holders: result.holders };
+  return {
+    acquired: true,
+    resource,
+    lockId: result.lock_id,
+    owner,
+    coordinationDomain,
+    expiresAt: result.expires_ts.toISOString(),
+    release: () => d.release({ coordinationDomain, owner, lockId: result.lock_id }),
+  };
 }

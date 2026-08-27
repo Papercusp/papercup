@@ -254,6 +254,21 @@ export default defineTool({
               .map((source) => source.credentialRef!.slice(`${FACEBOOK_PERSONAL_VAULT_OAUTH_PLUGIN}:`.length)),
           ),
         ];
+        // Symmetric to the Google guard above (WI-129473/WI-133209). oauth/start
+        // allocates a fresh field for BOTH plugins, and this branch's mismatch
+        // guard likewise needs an `expected` account, so it covers RECONNECT only.
+        // Facebook makes this easier to hit than Google: its authorize URL carries
+        // no account-chooser hint at all, so an active session simply continues as
+        // the logged-in user. Refuse rather than write a second slot for an account
+        // that is already connected.
+        if (!expected && facebookPreviousFields.length > 0) {
+          return redirectWith(
+            req.url,
+            returnPath,
+            'oauth_error',
+            'facebook_personal_vault_account_already_connected',
+          );
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);

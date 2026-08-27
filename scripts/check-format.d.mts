@@ -21,7 +21,20 @@ export function buildPrettierCheckArgs(cli: any, repoPath: any, range: any): any
 export function buildPrettierArgs(cli: any, repoPath: any, range: any, mode?: string): any[];
 /** Build a whole-file Prettier invocation for an explicitly classified file. */
 export function buildPrettierWholeFileArgs(cli: any, repoPath: any): any[];
+/**
+ * Reapply a whole-file formatter result without publishing changes outside the
+ * requested source range.
+ *
+ * Prettier's range parser can reject a valid range nested inside an object
+ * method because it extracts the method (`async handler(...) { ... }`) and then
+ * parses that fragment as a standalone program. Whole-file formatting remains
+ * valid in that case. Diff at character granularity so the fallback can retain
+ * legacy formatting everywhere else while adopting only formatter edits whose
+ * source span is fully inside the line-aligned requested range.
+ */
+export function applyFormattedChangesWithinRange(source: any, formatted: any, range: any): any;
 export function buildPrettierStdinArgs(cli: any, repoPath: any, range: any): any[];
+export function formatRangeWithPrettier(cli: any, repoPath: any, source: any, range: any): any;
 /**
  * Prettier's range formatter can reprint an enclosing AST node before the
  * requested range. Comparing equal offsets in its whole-file output then

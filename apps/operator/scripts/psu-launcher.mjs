@@ -10274,7 +10274,7 @@ export function resumeSessionLineageLabel(session) {
 }
 
 export const SESSION_PORT_PROTOCOL_VERSION = 1;
-export const SESSION_PORT_TRANSFORM_VERSION = 1;
+export const SESSION_PORT_TRANSFORM_VERSION = 2;
 
 export function sessionPortUpgradeError(error) {
   const status = Number(error?.status ?? 0);
@@ -10360,6 +10360,11 @@ export function sessionPortRequestBody(source, target, account, args = {}) {
       "cross-backend resume requires a tracked source adv session id",
     );
   }
+  if (!source?.coordOwnerId) {
+    throw new Error(
+      "cross-backend resume requires the tracked source coordination identity",
+    );
+  }
   return {
     protocolVersion: SESSION_PORT_PROTOCOL_VERSION,
     transformVersion: SESSION_PORT_TRANSFORM_VERSION,
@@ -10383,7 +10388,7 @@ export function formatSessionPortInspection(result) {
     `psu: fidelity — ${i.requiresSummary ? "summary + recent tail (target budget requires summarization)" : "full active-path history"}; estimated ${i.fullHistoryEstimatedTokens ?? "?"} tokens / ${i.target?.availableInputTokens ?? "?"} available`,
     `psu: sanitization — ${s.redactions ?? 0} secret redaction(s), ${s.omittedAttachments ?? 0} attachment omission(s), ${s.unsupportedBlocks ?? 0} unsupported block(s), ${s.sidechainRecords ?? 0} sidechain record(s) excluded`,
     `psu: egress — target ${i.disclosure?.targetEgress ?? "unknown"}${i.disclosure?.summarizerEgress ? `; summarizer ${i.disclosure.summarizerEgress}` : "; no summarizer egress"}`,
-    "psu: boundary — creates a NEW target session; source stays untouched; fleet/loop/claims/AUTO/DRAIN authority is not carried.",
+    "psu: continuity — creates a NEW native target session while preserving the source coordination identity; fleet/loop/claims/modes/awaits/locks continue on the target.",
     ...(Array.isArray(i.warnings)
       ? i.warnings.map((w) => `psu: source warning — ${w}`)
       : []),
@@ -10486,6 +10491,12 @@ async function chooseResumeTarget(session, args) {
     aliases: RESUME_MODEL_MENU,
     codexModels,
     ompModels,
+    // `sol` and `gpt-5.6-sol` are the same launch — the alias is just what psu's
+    // own flags and docs call it — so the registry row for an id an alias already
+    // resolves to would be a duplicate that looks like a choice.
+    codexSkipIds: RESUME_MODEL_MENU.filter((row) => row.backend === "codex").map(
+      (row) => normalizeCodexCliModel(row.value),
+    ),
   });
   // A `select` cannot be typed into, so it is unusable at catalog scale (the OMP
   // registry measured 499 rows on this box). Above the threshold the picker
@@ -10937,6 +10948,41 @@ export async function ensureCodexHomeViaOperator(
   }
 }
 
+/** Pure launch-argument half of a session port. Keeping the same owner id is the
+ * authority-continuity invariant: the new native backend is another body of the
+ * resumed session, not a fork, so its loop/claims/modes/awaits/locks stay keyed
+ * to the identity they already use. Bootstrap independently checks the prepared
+ * port's server-recorded source owner before it accepts these args. */
+export function sessionPortTargetArgs(source, target, account, args, prepared) {
+  return {
+    ...args,
+    picker: false,
+    resume: false,
+    resumeId: null,
+    fork: false,
+    agent: target.targetAgent,
+    model: target.modelSpec,
+    account: sessionPortTargetAccount(account),
+    fleet: null,
+    fleetRole: null,
+    fleetName: null,
+    fleetScheme: null,
+    seat: null,
+    auto: false,
+    mode: null,
+    profile: "engineer",
+    launchContext: args.launchContext ?? null,
+    launchedBy: null,
+    ownerId: source.coordOwnerId,
+    resumeSession: null,
+    sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
+    sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
+    sessionPortToken: prepared.token,
+    sessionPortSourceAdvSessionId: Number(source.id),
+    sessionPortSourceCwd: source.cwd,
+  };
+}
+
 async function launchSessionPort(source, target, account, args) {
   if (source.role != null)
     throw new Error(
@@ -10973,32 +11019,13 @@ async function launchSessionPort(source, target, account, args) {
   console.error(
     `psu: prepared session port ${prepared.portId} (${prepared.fidelity}; expires ${prepared.expiresAt}) — launching fresh target.`,
   );
-  const targetArgs = {
-    ...args,
-    picker: false,
-    resume: false,
-    resumeId: null,
-    fork: false,
-    agent: target.targetAgent,
-    model: target.modelSpec,
-    account: sessionPortTargetAccount(account),
-    fleet: null,
-    fleetRole: null,
-    fleetName: null,
-    fleetScheme: null,
-    seat: null,
-    auto: false,
-    mode: null,
-    profile: "engineer",
-    launchContext: args.launchContext ?? null,
-    launchedBy: null,
-    resumeSession: null,
-    sessionPortProtocol: SESSION_PORT_PROTOCOL_VERSION,
-    sessionPortTransformVersion: SESSION_PORT_TRANSFORM_VERSION,
-    sessionPortToken: prepared.token,
-    sessionPortSourceAdvSessionId: Number(source.id),
-    sessionPortSourceCwd: source.cwd,
-  };
+  const targetArgs = sessionPortTargetArgs(
+    source,
+    target,
+    account,
+    args,
+    prepared,
+  );
   await launchFreshSu(
     {
       agent: target.targetAgent,

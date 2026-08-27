@@ -93,6 +93,7 @@ import { launchGoalHolderSession } from '../harness/routines/goal-holder-launch-
 import { setMode } from '../modes/store';
 import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 import {
+  confirmFlapRestart,
   decideFlapDamping,
   initialFlapDampingState,
   type FlapDampingState,
@@ -1245,6 +1246,10 @@ export async function runGoalHolderRespawnOnce(
       // launch. A failed launch can therefore never leave a phantom holder row.
       await deps.attach(goal, launched.ownerId);
       summary.respawned += 1;
+      // A replacement counts toward the give-up budget only after the holder attachment
+      // succeeds. The decision already paced this attempt via `lastAttemptAt`; failed launch or
+      // attach operations must not masquerade as confirmed restarts.
+      deps.states.set(key, confirmFlapRestart(deps.states.get(key) ?? decision.nextState, deps.now()));
       // The default attach closure writes through `setMode` directly, so it
       // does not pass through the mode tool's projection refresh. Keep this
       // safety projection fail-soft: a committed holder must stay committed

@@ -22,9 +22,10 @@
  * libs/papercusp/packages/orchestrator/src/invoke.ts `format === 'codex-json'`.)
  *
  * Tradeoff: one subprocess per completion (~1-5s overhead) — right for
- * low-volume in-process callers (scout ideation, judges); high-volume agents
- * keep shelling out to codex directly. Non-streaming only: the bridge rejects
- * `stream:true` (scout sends `stream:false`).
+ * low-volume in-process callers (scout ideation, judges). The nested CLI run
+ * is buffered, but gateway.ts adapts its completed response back to Responses
+ * SSE when a client sends `stream:true`; that compatibility path is what lets
+ * gateway-routed Codex agent sessions use ChatGPT-subscription accounts too.
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { resolveAgentBinarySync } from '../agent-bin-detect';
@@ -142,6 +143,109 @@ export function parseCodexCliEvents(stdout: string): CodexCliRunResult {
 }
 
 /**
+ * Harvest a HUMAN-DIAGNOSABLE failure detail from a codex run.
+ *
+ * EI-21618978789879488: this used to report `stderr` alone, and codex writes its
+ * tracing errors to the `--json` STDOUT stream — so a credential that cannot
+ * authenticate produced exactly `codex-cli bridge: codex exited 1: ` with an
+ * empty tail. An empty tail is not a small cosmetic loss: it is unfalsifiable,
+ * so it was read fleet-wide as a quota wall for hours, and the proposed remedy
+ * was to move ~20 model-bearing learning paths onto a MORE exhausted provider.
+ * The actual message sitting unread in stdout named the cause outright:
+ *   `failed to convert header to a str for header name 'authorization'`
+ *
+ * Precedence is most-specific-first, and the contract is that this NEVER
+ * returns an empty string while either stream holds any content at all.
+ */
+export function codexCliFailureDetail(stdout: string, stderr: string, limit = 400): string {
+  const errorLines: string[] = [];
+  const otherLines: string[] = [];
+  for (const raw of stdout.split('\n')) {
+    const line = raw.trim();
+    if (!line) continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(line);
+    } catch {
+      // codex's tracing output is NOT JSON and shares the stream with the
+      // JSONL events — this is the branch that actually carried the auth error.
+      if (/\bERROR\b|\bWARN\b/.test(line)) errorLines.push(line);
+      else otherLines.push(line);
+      continue;
+    }
+    if (!obj || typeof obj !== 'object') continue;
+    const ev = obj as { type?: string; error?: unknown; message?: unknown };
+    const asText = (v: unknown): string =>
+      typeof v === 'string' ? v : v == null ? '' : (() => {
+        try {
+          return JSON.stringify(v);
+        } catch {
+          return String(v);
+        }
+      })();
+    if (ev.error != null) errorLines.push(asText(ev.error));
+    else if (typeof ev.type === 'string' && /error|failed/i.test(ev.type)) {
+      errorLines.push(`${ev.type}: ${asText(ev.message)}`.trim().replace(/:\s*$/, ''));
+    }
+  }
+  const stderrTail = stderr.trim();
+  // Most specific first: an explicit error from either stream, then whatever
+  // context remains. The last fallback exists so the caller can always say
+  // SOMETHING about a non-zero exit.
+  const picked =
+    errorLines.join(' | ').trim() ||
+    stderrTail ||
+    otherLines.join(' | ').trim() ||
+    stdout.trim();
+  // Codex tracing can include the rejected Authorization header's WHOLE bearer
+  // value in this error. The diagnostic must preserve the cause without turning
+  // a gateway log/error envelope into a credential exfiltration surface.
+  const redacted = picked
+    .replace(
+      /(header name ['"]authorization['"][^\r\n]*?with value:\s*)(?:"[^"\r\n]*"|'[^'\r\n]*')/gi,
+      '$1"[REDACTED]"',
+    )
+    .replace(/\bBearer\s+[^\s"']+/gi, 'Bearer [REDACTED]');
+  return redacted.slice(-limit);
+}
+
+/**
+ * Is this failure the CREDENTIAL being unusable, rather than the account being
+ * out of quota?
+ *
+ * The distinction is load-bearing for selection (EI-21618978789879488). An
+ * account's `available` flag is a QUOTA statement only, so a codex home whose
+ * `auth.json` cannot authenticate still advertises itself as available with
+ * healthy headroom — and the OAuth proxy resolves credentials from CODEX_HOME
+ * only AFTER selection, so nothing downstream can feed that back. A dead
+ * credential is therefore re-selected ahead of healthy siblings on every
+ * request, indefinitely. Quota exhaustion surfaces honestly (a 429 is plainly
+ * visible); credential death does not. Classifying it here is what lets the
+ * caller quarantine the account through the pool's ordinary exhaustion path.
+ *
+ * ⚠ Quota/rate wording is deliberately EXCLUDED: those already have their own
+ * failover path, and mapping them here would relabel an exhausted-but-healthy
+ * account as a dead credential.
+ */
+export function isCodexAuthFailure(detail: string): boolean {
+  const text = detail.toLowerCase();
+  if (!text.trim()) return false;
+  // Quota/rate first — a usage wall is never credential death.
+  if (/usage limit|rate.?limit|quota|too many requests|\b429\b/.test(text)) return false;
+  return (
+    // The 2026-08-27 clobber: codex rejects the bearer at the HTTP header layer
+    // because the credential is not even header-legal.
+    /header name 'authorization'|header name "authorization"/.test(text) ||
+    /failed to convert header/.test(text) ||
+    /\b401\b|unauthorized|invalid[_ ]api[_ ]key|invalid api key|incorrect api key/.test(text) ||
+    /authentication (failed|error)|not authenticated|auth(entication)? required/.test(text) ||
+    // codex-oauth-proxy's own refusals when the home has no usable credential.
+    /no usable auth\.json|no refresh_token|refresh_token_reused|re-login with/.test(text) ||
+    /please (run )?`?codex login`?|run `codex login`/.test(text)
+  );
+}
+
+/**
  * One completion through the codex CLI on the subscription credential.
  * Flags mirror the PROVEN subprocess-agent invocation (harness-invoke-once /
  * the 2026-07-01 live verification) with two bridge-specific hardenings:
@@ -223,12 +327,14 @@ export function runCodexCliCompletion(opts: CodexCliRunOpts): Promise<CodexCliRu
     child.on('close', (code) =>
       settle(() => {
         if (code !== 0) {
-          reject(new Error(`codex-cli bridge: codex exited ${code}: ${stderr.trim().slice(-400)}`));
+          reject(new Error(`codex-cli bridge: codex exited ${code}: ${codexCliFailureDetail(stdout, stderr)}`));
           return;
         }
         const r = parseCodexCliEvents(stdout);
         if (!r.text) {
-          reject(new Error(`codex-cli bridge: no agent_message in codex output (stderr: ${stderr.trim().slice(-200)})`));
+          reject(
+            new Error(`codex-cli bridge: no agent_message in codex output (${codexCliFailureDetail(stdout, stderr, 200)})`),
+          );
           return;
         }
         resolve(r);
@@ -264,7 +370,14 @@ export function codexCliResponsesBody(args: {
       },
     ],
     output_text: args.text,
-    usage: { input_tokens: args.inputTokens, output_tokens: args.outputTokens },
+    // Codex's Responses client requires the aggregate on response.completed.
+    // Omitting it leaves the upstream request recorded as HTTP 200 while the
+    // client rejects the terminal event as an invalid ResponseCompleted.
+    usage: {
+      input_tokens: args.inputTokens,
+      output_tokens: args.outputTokens,
+      total_tokens: args.inputTokens + args.outputTokens,
+    },
     /** Diagnostic marker: this reply came off the subscription CLI, not the API. */
     gateway_codex_cli: true,
   };

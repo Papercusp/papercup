@@ -118,7 +118,7 @@ describe("dev:service_health handler", () => {
   it("documents the canonical staging unit read after dev:restart", () => {
     const when = (tool as { guidance?: { when?: string } }).guidance?.when ?? "";
     expect(when).toContain('dev:restart { target:"staging" }');
-    expect(when).toContain('dev:service_health { units:["papercup-staging-api"], scope:"user" }');
+    expect(when).toContain('dev:service_health { units:["papercusp-staging-api"], scope:"user" }');
   });
 
   it("surfaces the probe snapshot under { ok, services }", async () => {
@@ -568,12 +568,12 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
     // zeros mean "measured nothing" — is covered by its own test below.
     flapObserved: true,
   };
-  const registry = [{ name: "staging-api", unit: "papercup-staging-api" }];
+  const registry = [{ name: "staging-api", unit: "papercusp-staging-api" }];
 
   it("attaches secondsSinceStart + a recentRestartNote when the unit came up inside the window", async () => {
     const probeFn = vi.fn(async () => ({ ok: true, mainPid: 123, secondsSinceStart: 5, activeState: "active" }));
     const out = await overlaySystemdRestartRecency([stagingEntry], probeFn, registry);
-    expect(probeFn).toHaveBeenCalledWith("papercup-staging-api");
+    expect(probeFn).toHaveBeenCalledWith("papercusp-staging-api");
     expect(out[0]?.secondsSinceStart).toBe(5);
     expect(out[0]?.recentRestartNote).toMatch(/restarted 5s ago/);
     expect(out[0]?.active).toBe(true);
@@ -592,9 +592,9 @@ describe("overlaySystemdRestartRecency (EI-13221, pure given injected probeFn/re
    *
    * `flapObserved:false` means the counters beside it measured NOTHING: they are
    * zero-defaults produced in a process that never runs the reconciler (it runs
-   * inside papercup-bg-host; this tool reads the Map in the operator). Rendering
+   * inside papercusp-bg-host; this tool reads the Map in the operator). Rendering
    * that as `flapState:'ok'` with no caveat is exactly how a real 4-restart
-   * crash-loop of papercup-staging-api read as perfectly healthy on 2026-08-10.
+   * crash-loop of papercusp-staging-api read as perfectly healthy on 2026-08-10.
    */
   it("flags an UNOBSERVED systemd-user entry so its zero counters cannot read as measured-healthy", async () => {
     const unobserved = { ...stagingEntry, flapObserved: false };

@@ -213,7 +213,6 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   await store.assertSessionPortStorageReady();
   const sourceRow = await getAdvSessionInWorkspace(sourceAdvSessionId, workspaceId);
   if (!sourceRow) return { response: json({ ok: false, error: 'tracked source session not found in target workspace' }, 404) } as const;
-  await service.assertNoPortableAuthority(sourceRow);
   const targetModel = typeof body.targetModel === 'string' && body.targetModel.trim() ? body.targetModel.trim() : null;
   const targetAccount = typeof body.targetAccount === 'string' && body.targetAccount.trim() ? body.targetAccount.trim() : 'default';
   const launchContextPath = typeof body.launchContext === 'string' && body.launchContext.trim() ? body.launchContext.trim() : null;

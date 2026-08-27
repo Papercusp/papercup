@@ -222,7 +222,8 @@ describe('isWorkspaceScopedResource / workspaceScopedLockDomain (WI-5960)', () =
     else process.env.PAPERCUSP_WORKSPACE_ID = SAVED_WS;
   });
 
-  it('recognizes any git-sync:<slug> name by prefix, regardless of the slug', () => {
+  it('recognizes the legacy git-sync barrier and any git-sync:<slug> name', () => {
+    expect(isWorkspaceScopedResource('git-sync')).toBe(true);
     expect(isWorkspaceScopedResource('git-sync:papercusp')).toBe(true);
     expect(isWorkspaceScopedResource('git-sync:some-other-harness')).toBe(true);
     expect(isWorkspaceScopedResource('git-sync:')).toBe(true);
@@ -232,15 +233,18 @@ describe('isWorkspaceScopedResource / workspaceScopedLockDomain (WI-5960)', () =
     expect(isWorkspaceScopedResource('release-deploy')).toBe(false);
     expect(isWorkspaceScopedResource('dev-server')).toBe(false);
     expect(isWorkspaceScopedResource('gitsync:papercusp')).toBe(false); // no colon-hyphen match
+    expect(isWorkspaceScopedResource('git-syncing')).toBe(false); // exact legacy name, not a broad prefix
     expect(isWorkspaceScopedResource('some-git-sync:papercusp')).toBe(false); // prefix, not substring
   });
 
-  it('resourceLockDomain routes a git-sync:<slug> resource to workspaceScopedLockDomain(), NOT lockCoordinationDomain()', () => {
+  it('resourceLockDomain routes both git-sync forms to workspaceScopedLockDomain(), NOT lockCoordinationDomain()', () => {
     process.env.PAPERCUSP_WORKSPACE_ID = 'papercusp-workspace';
+    expect(resourceLockDomain('git-sync')).toBe(workspaceScopedLockDomain());
     expect(resourceLockDomain('git-sync:papercusp')).toBe(workspaceScopedLockDomain());
     expect(resourceLockDomain('git-sync:papercusp')).toBe('papercusp-workspace');
     // The exact defect: these must NOT coincide, or the domain split silently
     // reintroduces the invisible-hold bug this fix closes.
+    expect(resourceLockDomain('git-sync')).not.toBe(lockCoordinationDomain());
     expect(resourceLockDomain('git-sync:papercusp')).not.toBe(lockCoordinationDomain());
   });
 

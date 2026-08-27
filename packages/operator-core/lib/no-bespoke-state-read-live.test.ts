@@ -158,7 +158,12 @@ describe('the live gate is actually scanning', () => {
    * source text and so proves only that the parser handles text the test wrote.
    */
   it('still parses the declarations real tools carry', () => {
-    expect(scan.exemptions.map((e) => e.name).sort()).toEqual(['processes:list', 'state:read', 'triggers:status']);
+    expect(scan.exemptions.map((e) => e.name).sort()).toEqual([
+      'loop:status',
+      'processes:list',
+      'state:read',
+      'triggers:status',
+    ]);
     expect(scan.lenses.map((l) => l.cell)).toContain('git.pipelinePosition');
     expect(scan.definitions.map((definition) => definition.name)).toContain('blender:success-metrics');
   });

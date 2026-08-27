@@ -839,10 +839,14 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
   it('never attaches a phantom holder when launch fails', async () => {
     const attach = vi.fn(async () => {});
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const states: GoalHolderRespawnDeps['states'] = new Map();
+    const target = respawnGoal();
     try {
       const result = await runGoalHolderRespawnOnce(
         sql,
         respawnDeps({
+          states,
+          readGoals: async () => ({ goals: [target], holders: [holder()] }),
           launch: async () => {
             throw new Error('launcher refused');
           },
@@ -853,6 +857,10 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       expect(result).toMatchObject({ attempted: 1, launchFailed: 1, attachFailed: 0, respawned: 0 });
       expect(attach).not.toHaveBeenCalled();
       expect(warn.mock.calls[0]?.[0]).toContain('launch failed');
+      const state = states.get(goalHolderRespawnKey(target));
+      expect(state?.restarts).toEqual([]);
+      expect(state?.lastRestartAt).toBeNull();
+      expect(state?.lastAttemptAt).not.toBeNull();
     } finally {
       warn.mockRestore();
     }
@@ -862,6 +870,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     const a = respawnGoal({ goalId: 'goal-a' });
     const b = respawnGoal({ goalId: 'goal-b' });
     const attached: string[] = [];
+    const states: GoalHolderRespawnDeps['states'] = new Map();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const result = await runGoalHolderRespawnOnce(
@@ -871,6 +880,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
             goals: [a, b],
             holders: [holder({ goalId: a.goalId, ownerId: 'dead-a' }), holder({ goalId: b.goalId, ownerId: 'dead-b' })],
           }),
+          states,
           resolveLiveness: async (ownerIds) => vmap(...ownerIds.map((ownerId) => verdict(ownerId, 'ended'))),
           launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
           attach: async (g) => {
@@ -883,6 +893,10 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
       expect(attached).toEqual(['goal-a', 'goal-b']);
       expect(result).toMatchObject({ attempted: 2, respawned: 1, attachFailed: 1 });
       expect(warn.mock.calls[0]?.[0]).toContain('attach failed for goal-a');
+      expect(states.get(goalHolderRespawnKey(a))?.restarts).toEqual([]);
+      expect(states.get(goalHolderRespawnKey(a))?.lastRestartAt).toBeNull();
+      expect(states.get(goalHolderRespawnKey(b))?.restarts).toHaveLength(1);
+      expect(states.get(goalHolderRespawnKey(b))?.lastRestartAt).not.toBeNull();
     } finally {
       warn.mockRestore();
     }
@@ -921,6 +935,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
         {
           restarts: [1, 2, 3, 4, 5, 6],
           backoffIndex: 3,
+          lastAttemptAt: 6,
           lastRestartAt: 6,
           healthySince: null,
           gaveUp: false,
@@ -959,6 +974,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
         {
           restarts: [1, 2, 3, 4, 5, 6],
           backoffIndex: 3,
+          lastAttemptAt: 6,
           lastRestartAt: 6,
           healthySince: null,
           gaveUp: true,

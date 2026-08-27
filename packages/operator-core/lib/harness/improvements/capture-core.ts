@@ -1143,6 +1143,14 @@ export async function captureImprovement(
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
+  // Scorecards are immutable event records, not recurring sensor observations. They
+  // use `initialState:'done'` as the scorecards:emit-only marker; letting that filing
+  // enter the derived observation-fold path can shallow-merge its nested observation
+  // onto an unrelated open scorecard row and corrupt both the row identity and the
+  // freshness timestamp. Keyed observation coalescing is already unavailable to
+  // scorecards (the public emit schema has no watchdogKey), but keep this explicit so
+  // the immutable-event rule remains true if another observation dedup path is added.
+  const immutableScorecard = isObservation && input.initialState === 'done';
   const reviewRequired = Boolean(
     input.reviewRequired && !isObservation && (input.kind === 'change' || input.kind === 'feature'),
   );
@@ -1838,7 +1846,7 @@ export async function captureImprovement(
   // (0.861–0.892) OVERLAP known-distinct pairs (0.857–0.868): no single cosine
   // threshold separates them, so a second independent signal has to.
   let softFold: { fold: FoldClassification; prior: EngineerIssue } | null = null;
-  if (isObservation && !input.watchdogKey) {
+  if (isObservation && !input.watchdogKey && !immutableScorecard) {
     // Fail-open on the flag read exactly like the classifier's own null: a flag
     // service blip must never change what happens to an agent's filing.
     const foldEnabled = await getFlag(FLAGS.OBSERVATION_DERIVED_FOLD, `observation-fold:${origin}`).catch(

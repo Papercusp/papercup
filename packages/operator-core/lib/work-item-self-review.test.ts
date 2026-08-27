@@ -10,10 +10,16 @@ import {
   SESSION_TURN_PARTS_WORKSPACE_ID,
   claimsSelfReview,
   itemIsArmB,
+  SELF_REVIEW_REFUSING_VERDICTS,
+  NATIVE_LEDGER_LAG_CEILING_MS,
+  NATIVE_LEDGER_LAG_TOLERANCE_MS,
   judgeSelfReview,
   lastEditAtMs,
+  nativeLedgerBehind,
   normalizeToolName,
+  selfReviewAgentVisibilityQuery,
   selfReviewLedgerQuery,
+  selfReviewRefusal,
   toPersistedSelfReviewJudgement,
   toSelfReviewLedgerRow,
   type SelfReviewEvidence,
@@ -56,7 +62,6 @@ describe('selfReviewLedgerQuery — the false-absence seam (EI-21476445557415319
   const q = selfReviewLedgerQuery({
     workspaceId: 'papercusp-workspace',
     coordOwnerId: 'su-abc',
-    goalRef: 'WI-1',
     sinceMs: T(0),
   });
 
@@ -66,16 +71,29 @@ describe('selfReviewLedgerQuery — the false-absence seam (EI-21476445557415319
     expect(q.text).not.toMatch(/harness_slug/);
   });
 
-  it('admits rows whose goal_ref is null rather than dropping them', () => {
-    expect(q.text).toMatch(/goal_ref\s*=\s*\$3\s*OR\s*goal_ref\s+IS\s+NULL/i);
+  it('does NOT scope the invocations leg by goal_ref (WI-134439)', () => {
+    // This leg was once `(goal_ref = $3 OR goal_ref IS NULL)`. The stamp holds exactly ONE
+    // goal per agent, last-write-wins, so an agent holding two items stamped every row with
+    // whichever it claimed most recently and closing the OTHER matched nothing; separately
+    // 26.2% of agent-origin rows carry a `fleet:<slug>` ref that can never equal a WI- id.
+    // Only 15.5% were NULL, so the IS NULL admission rescued neither case.
+    //
+    // The reason removing it is not a loosening: the turn-parts leg has NEVER been
+    // goal-scoped, so the union admitted this agent's unattributed calls regardless — just
+    // ~2 minutes later, once session ingestion caught up. The predicate therefore decided
+    // WHEN corroboration appeared, not WHAT counted as corroboration, and the wait was the
+    // false refusal. Re-introducing it re-introduces that.
+    expect(q.text).not.toMatch(/goal_ref/i);
   });
 
-  it('pins to workspace + owner + goal + window, in that parameter order', () => {
+  it('pins to workspace + owner + window, in that parameter order', () => {
     expect(q.text).toMatch(/workspace_id\s*=\s*\$1/);
     expect(q.text).toMatch(/coord_owner_id\s*=\s*\$2/);
-    expect(q.text).toMatch(/invoked_at\s*>=\s*\$4/);
-    expect(q.values.slice(0, 3)).toEqual(['papercusp-workspace', 'su-abc', 'WI-1']);
-    expect(q.values[3]).toBeInstanceOf(Date);
+    expect(q.text).toMatch(/invoked_at\s*>=\s*\$3/);
+    expect(q.values.slice(0, 2)).toEqual(['papercusp-workspace', 'su-abc']);
+    expect(q.values[2]).toBeInstanceOf(Date);
+    // No fourth value: a leftover unused parameter is how a removed predicate creeps back.
+    expect(q.values).toHaveLength(3);
   });
 });
 
@@ -488,7 +506,6 @@ describe('selfReviewLedgerQuery — the second ledger (EI-21481919801123128)', (
   const q = selfReviewLedgerQuery({
     workspaceId: 'papercusp-workspace',
     coordOwnerId: 'su-abc',
-    goalRef: 'WI-1',
     sinceMs: T(0),
   });
 
@@ -509,7 +526,13 @@ describe('selfReviewLedgerQuery — the second ledger (EI-21481919801123128)', (
 
   it('scopes the turn-parts leg by owner and window', () => {
     expect(q.text).toMatch(/owner = \$2/);
-    expect(q.text).toMatch(/ts >= \$4/);
+    expect(q.text).toMatch(/ts >= \$3/);
+  });
+
+  it('scopes BOTH legs to the same window parameter', () => {
+    // The two legs must share $3. If they ever drift apart, one leg silently reads a
+    // different window from the other and the union stops being a single observation.
+    expect(q.text).toMatch(/invoked_at\s*>=\s*\$3[\s\S]*ts >= \$3/);
   });
 
   it('keeps the part_kind literal the partial index depends on', () => {
@@ -521,5 +544,304 @@ describe('selfReviewLedgerQuery — the second ledger (EI-21481919801123128)', (
   it('tags each leg with its source so the rows can be told apart', () => {
     expect(q.text).toMatch(/'invocations' AS source/);
     expect(q.text).toMatch(/'turn-parts' AS source/);
+  });
+});
+
+/**
+ * WI-134439 — the fail-open an empty ledger used to be.
+ *
+ * Measured live before this guard existed: 3 of 4 arm-B closes were ACCEPTED with the gate's
+ * own stored judgement reading verdict 'unobservable', ledgerVisible false — one of them a
+ * DELIBERATELY stale review. The old verdict conflated two states with opposite correct
+ * answers, so the controls below are the point: each case pins one of them, and the pair
+ * fails if a future change collapses them back together.
+ */
+describe('empty ledger: blindness vs. a ledger that is merely behind', () => {
+  const evidence: SelfReviewEvidence = {
+    lookedAt: 'the diff',
+    findings: [],
+    changedAsResult: ['something'],
+  };
+
+  it('REFUSES when the instrument can demonstrably see this agent', () => {
+    const j = judgeSelfReview({ evidence, ledger: [], agentVisibleInWindow: true });
+    expect(j.verdict).toBe('ledger-behind');
+    expect(j.ledgerVisible).toBe(false);
+    expect(j.agentVisibleInWindow).toBe(true);
+    expect(SELF_REVIEW_REFUSING_VERDICTS.has(j.verdict)).toBe(true);
+    expect(selfReviewRefusal(j, 'WI-1')).toBeDefined();
+  });
+
+  it('does NOT refuse when the instrument is genuinely blind — the ingestion-outage control', () => {
+    // The neighbouring case. If this ever starts refusing, an ingestion outage becomes a
+    // wall on work_items:complete, the one verb no agent in the fleet can route around.
+    const j = judgeSelfReview({ evidence, ledger: [], agentVisibleInWindow: false });
+    expect(j.verdict).toBe('unobservable');
+    expect(SELF_REVIEW_REFUSING_VERDICTS.has(j.verdict)).toBe(false);
+    expect(selfReviewRefusal(j, 'WI-1')).toBeUndefined();
+  });
+
+  it('preserves the historical verdict when no visibility probe is supplied', () => {
+    // Back-compat control: an omitted probe must not silently start refusing callers that
+    // have not been taught to measure visibility yet.
+    const j = judgeSelfReview({ evidence, ledger: [] });
+    expect(j.verdict).toBe('unobservable');
+    expect(j.agentVisibleInWindow).toBeUndefined();
+    expect(selfReviewRefusal(j, 'WI-1')).toBeUndefined();
+  });
+
+  it('does not reach either verdict when the ledger has rows — the non-empty control', () => {
+    const j = judgeSelfReview({
+      evidence,
+      ledger: [{ toolName: 'Bash', invokedAtMs: T(1) }],
+      agentVisibleInWindow: true,
+    });
+    expect(j.verdict).toBe('uncorroborated');
+  });
+
+  it('carries the visibility measurement onto the persisted judgement', () => {
+    // ledgerVisible:false alone cannot tell the pilot whether the gate was blind or behind,
+    // and those imply very different amounts of arm B having actually been gated.
+    const persisted = toPersistedSelfReviewJudgement(
+      judgeSelfReview({ evidence, ledger: [], agentVisibleInWindow: true }),
+    );
+    expect(persisted.verdict).toBe('ledger-behind');
+    expect(persisted.agentVisibleInWindow).toBe(true);
+  });
+
+  it('tells the agent to retry rather than to re-read the code', () => {
+    // The advice matters: this refusal is not a finding against the agent, and telling it to
+    // re-read would teach the fleet that redundant reads are how you get past the gate.
+    const msg = selfReviewRefusal(
+      judgeSelfReview({ evidence, ledger: [], agentVisibleInWindow: true }),
+      'WI-1',
+    )!;
+    expect(msg).toMatch(/re-send the SAME completion/i);
+    expect(msg).toMatch(/do NOT re-read/i);
+  });
+});
+
+describe('selfReviewAgentVisibilityQuery', () => {
+  const q = selfReviewAgentVisibilityQuery({
+    workspaceId: 'ws',
+    coordOwnerId: 'su-1',
+    sinceMs: T(0),
+  });
+
+  it('drops the goal_ref predicate — that is the whole difference being measured', () => {
+    expect(q.text).not.toMatch(/goal_ref/);
+  });
+
+  it('keeps the SAME window and tables as the scoped query, so the two are comparable', () => {
+    // Widening either would make a non-empty answer here uninformative about why the scoped
+    // ledger was empty, which is the only question this query exists to answer.
+    expect(q.text).toMatch(/harness_shared\.tool_invocations/);
+    expect(q.text).toMatch(/harness_shared\.session_turn_parts/);
+    expect(q.text).toMatch(/invoked_at >= \$3/);
+    expect(q.text).toMatch(/ts >= \$3/);
+    expect(q.values).toHaveLength(3);
+  });
+
+  it('keeps the part_kind literal the partial index depends on', () => {
+    expect(q.text).toMatch(/part_kind = 'tool_use'/);
+  });
+
+  it('asks only for existence — this runs on the completion hot path', () => {
+    expect(q.text).toMatch(/LIMIT 1/);
+  });
+});
+
+
+describe('nativeLedgerBehind — telling a stale native leg from an absent review (WI-134439)', () => {
+  const sourced = (
+    toolName: string,
+    min: number,
+    source: 'invocations' | 'turn-parts',
+  ): SelfReviewLedgerRow => ({ toolName, invokedAtMs: T(min), source });
+
+  const WINDOW_START = T(0);
+
+  it('is FALSE when no clock is supplied, preserving historical behaviour exactly', () => {
+    // The fail-safe control. Every pre-existing caller omits these, and none of them may
+    // change verdict as a result of this feature existing.
+    const ledger = [sourced('work_items:get', 1, 'invocations')];
+    expect(nativeLedgerBehind({ ledger })).toBe(false);
+    expect(nativeLedgerBehind({ ledger, sinceMs: WINDOW_START })).toBe(false);
+    expect(nativeLedgerBehind({ ledger, nowMs: T(10) })).toBe(false);
+  });
+
+  it('is TRUE when the native leg has delivered NOTHING and the window is past tolerance', () => {
+    // Leg 1 is live; leg 2 has contributed no row at all, so it has told us nothing about
+    // anything that happened in this window — including a native Read.
+    const ledger = [sourced('work_items:get', 4, 'invocations')];
+    expect(nativeLedgerBehind({ ledger, sinceMs: WINDOW_START, nowMs: T(5) })).toBe(true);
+  });
+
+  it('is FALSE when the native leg is CURRENT — its silence is then real evidence', () => {
+    // The discriminating control: same shape, but leg 2 has just delivered, so an absent
+    // native review really is absent and `uncorroborated` is the honest verdict.
+    const ledger = [
+      sourced('work_items:get', 4, 'invocations'),
+      sourced('capability:bash', 5, 'turn-parts'),
+    ];
+    expect(nativeLedgerBehind({ ledger, sinceMs: WINDOW_START, nowMs: T(5) })).toBe(false);
+  });
+
+  it('is FALSE past the CEILING — a leg silent that long is not lagging, it is absent', () => {
+    // The bound that stops a pure-MCP client (which emits no turn-parts, ever) from holding
+    // the gate open indefinitely by never producing a native call.
+    const ledger = [sourced('work_items:get', 1, 'invocations')];
+    const beyond = WINDOW_START + NATIVE_LEDGER_LAG_CEILING_MS + 1;
+    expect(nativeLedgerBehind({ ledger, sinceMs: WINDOW_START, nowMs: beyond })).toBe(false);
+  });
+
+  it('is TRUE for a VERY prompt close, whose window is SHORTER than the tolerance', () => {
+    // The regression this exists to prevent, found by re-reading the first draft: expressing
+    // the zero-row case as a lag against the window START makes a 2-minute-old item look
+    // "current" and convicts precisely the fastest honest closes — the defect being fixed.
+    // A leg that has delivered nothing cannot speak to this window at ANY point in it.
+    const ledger = [sourced('work_items:get', 1, 'invocations')];
+    expect(nativeLedgerBehind({ ledger, sinceMs: WINDOW_START, nowMs: T(2) })).toBe(true);
+  });
+
+  it('brackets the tolerance band against the leg FRONTIER once rows exist', () => {
+    const at = (ms: number): boolean =>
+      nativeLedgerBehind({
+        ledger: [sourced('capability:bash', 0, 'turn-parts')],
+        sinceMs: WINDOW_START,
+        nowMs: WINDOW_START + ms,
+      });
+    expect(at(NATIVE_LEDGER_LAG_TOLERANCE_MS)).toBe(false); // current — silence is evidence
+    expect(at(NATIVE_LEDGER_LAG_TOLERANCE_MS + 1)).toBe(true);
+  });
+
+  it('applies the ceiling to the WINDOW, so neither branch can excuse forever', () => {
+    const beyond = NATIVE_LEDGER_LAG_CEILING_MS + 1;
+    // no rows at all
+    expect(
+      nativeLedgerBehind({
+        ledger: [sourced('work_items:get', 1, 'invocations')],
+        sinceMs: WINDOW_START,
+        nowMs: WINDOW_START + beyond,
+      }),
+    ).toBe(false);
+    // rows present but long stale
+    expect(
+      nativeLedgerBehind({
+        ledger: [sourced('capability:bash', 0, 'turn-parts')],
+        sinceMs: WINDOW_START,
+        nowMs: WINDOW_START + beyond,
+      }),
+    ).toBe(false);
+  });
+
+  it('does not blow the stack on a large ledger', () => {
+    // `Math.max(...rows)` was the first draft. The ledger is every call since the item was
+    // claimed, so on a long-held item it is unbounded in principle and a spread of that many
+    // arguments throws RangeError instead of returning a large number.
+    const ledger = Array.from({ length: 200_000 }, (_, i) =>
+      sourced('capability:bash', i % 2, 'turn-parts'),
+    );
+    expect(() =>
+      nativeLedgerBehind({ ledger, sinceMs: WINDOW_START, nowMs: T(5) }),
+    ).not.toThrow();
+  });
+});
+
+describe('judgeSelfReview — a stale native leg must not convict (WI-134439 defect 1)', () => {
+  const sourced = (
+    toolName: string,
+    min: number,
+    source: 'invocations' | 'turn-parts',
+  ): SelfReviewLedgerRow => ({ toolName, invokedAtMs: T(min), source });
+
+  const WINDOW_START = T(0);
+  // An agent visible ONLY through the real-time leg, with no review tool among the rows.
+  const LEG1_ONLY = [sourced('work_items:get', 4, 'invocations')];
+
+  it('returns ledger-behind, NOT uncorroborated, when the native leg is stale', () => {
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: LEG1_ONLY,
+      agentVisibleInWindow: true,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    expect(j.verdict).toBe('ledger-behind');
+    expect(j.reason).toMatch(/native/i);
+  });
+
+  it('CONTROL: the same ledger with a current native leg still convicts', () => {
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: [...LEG1_ONLY, sourced('capability:bash', 5, 'turn-parts')],
+      agentVisibleInWindow: true,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    expect(j.verdict).toBe('uncorroborated');
+  });
+
+  it('CONTROL: omitting the clock keeps the historical uncorroborated verdict', () => {
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: LEG1_ONLY,
+      agentVisibleInWindow: true,
+    });
+    expect(j.verdict).toBe('uncorroborated');
+  });
+
+  it('does NOT open the gate — ledger-behind still refuses', () => {
+    // The load-bearing assertion. This fix trades a wrong finding for a correct one; it must
+    // never trade a refusal for an acceptance.
+    expect(SELF_REVIEW_REFUSING_VERDICTS.has('ledger-behind')).toBe(true);
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: LEG1_ONLY,
+      agentVisibleInWindow: true,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    expect(selfReviewRefusal(j, 'WI-1')).toBeDefined();
+  });
+
+  it('advises the REAL-TIME path rather than telling the agent to re-read', () => {
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: LEG1_ONLY,
+      agentVisibleInWindow: true,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    const msg = selfReviewRefusal(j, 'WI-1')!;
+    expect(msg).toMatch(/capability:read|capability:git/);
+    expect(msg).toMatch(/do NOT re-read the code/);
+  });
+
+  it('a genuine blindness still reaches the NON-refusing unobservable, not this branch', () => {
+    // Ordering control: an empty ledger must never be captured by the lag branch, or an
+    // ingestion outage would become a wall on the one unroutable verb.
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: [],
+      agentVisibleInWindow: false,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    expect(j.verdict).toBe('unobservable');
+    expect(selfReviewRefusal(j, 'WI-1')).toBeUndefined();
+  });
+
+  it('a real review still corroborates even while the native leg is stale', () => {
+    // The happy path must not be shadowed: a review visible on the real-time leg is enough.
+    const j = judgeSelfReview({
+      evidence: REVIEWED,
+      ledger: [sourced('capability:read', 4, 'invocations')],
+      agentVisibleInWindow: true,
+      sinceMs: WINDOW_START,
+      nowMs: T(5),
+    });
+    expect(j.verdict).toBe('corroborated');
+    expect(selfReviewRefusal(j, 'WI-1')).toBeUndefined();
   });
 });

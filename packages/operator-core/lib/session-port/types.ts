@@ -1,6 +1,6 @@
 export const SESSION_PORT_SCHEMA = 'papercusp.session-port/v1' as const;
 export const SESSION_PORT_PROTOCOL_VERSION = 1 as const;
-export const SESSION_PORT_TRANSFORM_VERSION = 1 as const;
+export const SESSION_PORT_TRANSFORM_VERSION = 2 as const;
 
 export type SessionBackend = 'claude' | 'codex' | 'omp';
 export type PortableRole = 'user' | 'assistant' | 'system' | 'tool';
