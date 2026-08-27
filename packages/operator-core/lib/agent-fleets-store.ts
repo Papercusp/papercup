@@ -67,7 +67,7 @@ export type FleetLaunchTransactionState = 'launching' | 'partial' | 'verified';
 export type FleetLaunchFailurePhase = 'spawn' | 'verification' | 'attestation' | 'persistence';
 
 export type FleetLaunchGovernorOutcome = 'productive' | 'unverified' | 'repairing' | 'failed';
-export type FleetLaunchGovernorAction = 'none' | 'wait' | 'retry' | 'prune' | 'respawn';
+export type FleetLaunchGovernorAction = 'none' | 'wait' | 'retry' | 'prune' | 'spawn' | 'respawn';
 
 export interface FleetLaunchGovernorVerdict {
   version: 1;
@@ -85,8 +85,9 @@ export interface FleetLaunchGovernorVerdict {
 
 export interface FleetLaunchGovernorEvent {
   at: number;
-  action: 'observe' | 'retry' | 'prune' | 'respawn' | 'terminal';
+  action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal';
   reason: string;
+  transactionId?: string;
   ownerId?: string;
   replacementOwnerId?: string;
 }
@@ -96,6 +97,9 @@ export interface FleetLaunchGovernorEvent {
  * for process liveness, wakeability, claim progress, or completion authority. */
 export interface FleetLaunchGovernorState {
   version: 1;
+  /** Exact identities launched by this transaction's launcher and therefore
+   * safe to refresh through the --launched-by correlation join. */
+  probeOwnerIds: string[];
   attestationAttempts: Record<string, number>;
   retiredMemberIds: string[];
   history: FleetLaunchGovernorEvent[];
@@ -105,6 +109,8 @@ export interface FleetLaunchGovernorState {
 export interface FleetLaunchTransaction {
   version: 1;
   transactionId: string;
+  /** Bounded lineage pointer when a governor wave supersedes a prior snapshot. */
+  previousTransactionId?: string;
   /** The exact coord identity stamped into each member's --launched-by token.
    * Optional for transactions persisted before P-004. A missing value is
    * UNKNOWN and may never authorize a speculative replay. */
