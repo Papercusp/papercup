@@ -2690,6 +2690,47 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it('accepts server-generated root treeStamp and settlementManifest on a read→retry (EI-21599866958764530)', () => {
+      const treeStamp = {
+        repositoryRoot: '/repo',
+        headSha: 'a'.repeat(40),
+        contentIdentity: [{
+          path: 'src/fix.ts',
+          workingTreeBlobSha: 'b'.repeat(40),
+          headBlobSha: 'b'.repeat(40),
+        }],
+      };
+      const settlementManifest = {
+        version: 1,
+        generation: 1,
+        evidenceHash: 'c'.repeat(64),
+        repositoryRoot: '/repo',
+        headSha: treeStamp.headSha,
+        normalizedPaths: ['src/fix.ts'],
+        contentIdentity: treeStamp.contentIdentity,
+      };
+      const result = (
+        complete.args as {
+          safeParse: (value: unknown) => { success: boolean; data?: any; error?: unknown };
+        }
+      ).safeParse({
+        id: 'WI-21599866958764530',
+        completion: {
+          workItem: 'WI-21599866958764530',
+          summary: 'retrying the recorded completion',
+          testsRun: 'focused test',
+          testResult: 'passed',
+          verifiedHow: 'unit',
+          treeStamp,
+          settlementManifest,
+        },
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data?.completion).not.toHaveProperty('treeStamp');
+      expect(result.data?.completion).not.toHaveProperty('settlementManifest');
+    });
+
     it('splits a scalar filesChanged path list on comma, semicolon, or newline', () => {
       const out = coerceCompletionShape({
         summary: 's',
