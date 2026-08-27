@@ -78,9 +78,7 @@ function tmpDir(prefix: string): string {
  *  uses the SAME device_pubkey that was revoked). */
 function makeDevice(githubLogin: string, githubUserId: number) {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const devicePubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
-    .subarray(-32)
-    .toString('base64');
+  const devicePubkey = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
   return {
     devicePubkey,
     githubUserId,
@@ -97,10 +95,7 @@ function replicate(s1: Corestore, s2: Corestore): void {
   a.pipe(b).pipe(a);
 }
 
-async function announceFor(
-  device: ReturnType<typeof makeDevice>,
-  logCoreKey: string,
-): Promise<SignedAnnounce> {
+async function announceFor(device: ReturnType<typeof makeDevice>, logCoreKey: string): Promise<SignedAnnounce> {
   return buildAnnounce(
     {
       device_pubkey: device.devicePubkey,
@@ -159,6 +154,7 @@ interface HostOpts {
 
 async function bootHost(o: HostOpts): Promise<BootedHarnessHandle> {
   const handle = await bootHarnessSubstrate({
+    rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
     workspaceRoot: tmpDir(`mb-${o.slug}-`),
     workspaceId: 'ws-rev-prop',
     harnessSlug: o.slug,
@@ -213,101 +209,93 @@ async function mergeUntilSeen(
 // federates to B's PG and B's `loadRevoked` then returns X.
 // ───────────────────────────────────────────────────────────────────────────
 describe('G7 — published-revocation propagation enforces a drop at merge time', () => {
-  it(
-    'X admitted + merging → published list grows to include X → next merge drops X and refuses its re-announce',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      // The MUTABLE published-revocation list (models B loading its PG row each
-      // refresh). Starts empty: X is a member in good standing.
-      const published = new Set<string>();
-      const handle = await bootHost({
-        slug: 'g7-prop',
-        loadRevokedOverride: async () => new Set(published),
-        writes,
-      });
+  it('X admitted + merging → published list grows to include X → next merge drops X and refuses its re-announce', async () => {
+    const writes: Array<{ id: string }> = [];
+    // The MUTABLE published-revocation list (models B loading its PG row each
+    // refresh). Starts empty: X is a member in good standing.
+    const published = new Set<string>();
+    const handle = await bootHost({
+      slug: 'g7-prop',
+      loadRevokedOverride: async () => new Set(published),
+      writes,
+    });
 
-      // X joins, writes, is admitted + merged.
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g7-X-');
-      await X.write('X-1', 100);
-      const admit = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(admit.admit).toBe(true);
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
-      expect(writes).toEqual([{ id: 'X-1' }]);
+    // X joins, writes, is admitted + merged.
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g7-X-');
+    await X.write('X-1', 100);
+    const admit = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(admit.admit).toBe(true);
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+    expect(writes).toEqual([{ id: 'X-1' }]);
 
-      // ── THE REVOCATION lands in the PUBLISHED list (federated from the
-      // revoking owner). No direct handle.revoke() — this is the propagation
-      // path: the loader now returns X. The next merge's applyRevocationRefresh
-      // must discover it and drop X's log. ──
-      published.add(X.device.devicePubkey);
+    // ── THE REVOCATION lands in the PUBLISHED list (federated from the
+    // revoking owner). No direct handle.revoke() — this is the propagation
+    // path: the loader now returns X. The next merge's applyRevocationRefresh
+    // must discover it and drop X's log. ──
+    published.add(X.device.devicePubkey);
 
-      // X writes a NEW op; without propagation it would still merge.
-      await X.write('X-2', 200);
+    // X writes a NEW op; without propagation it would still merge.
+    await X.write('X-2', 200);
 
-      // Drive a merge: the cursor-unchanged refresh fires applyRevocationRefresh,
-      // unioning the published set → discovers X → drops X's admitted log.
-      await handle.mergeNow();
-      expect(
-        handle.admitted.has(X.ownLog.keyHex),
-        'a propagated published revocation must drop X from the admitted set',
-      ).toBe(false);
-      expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+    // Drive a merge: the cursor-unchanged refresh fires applyRevocationRefresh,
+    // unioning the published set → discovers X → drops X's admitted log.
+    await handle.mergeNow();
+    expect(
+      handle.admitted.has(X.ownLog.keyHex),
+      'a propagated published revocation must drop X from the admitted set',
+    ).toBe(false);
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
 
-      // X's post-revocation op must NEVER reach the apply sink.
-      const appliedAfter = await handle.mergeNow();
-      expect(appliedAfter).toBe(0);
-      expect(writes, "X's revoked-era op X-2 must not be applied").toEqual([{ id: 'X-1' }]);
+    // X's post-revocation op must NEVER reach the apply sink.
+    const appliedAfter = await handle.mergeNow();
+    expect(appliedAfter).toBe(0);
+    expect(writes, "X's revoked-era op X-2 must not be applied").toEqual([{ id: 'X-1' }]);
 
-      // And X's re-announce is now refused with reason 'revoked' (the decider
-      // closes over the same in-memory `revoked` set the refresh unioned into).
-      const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(re).toMatchObject({ admit: false, reason: 'revoked' });
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
-    },
-    30_000,
-  );
+    // And X's re-announce is now refused with reason 'revoked' (the decider
+    // closes over the same in-memory `revoked` set the refresh unioned into).
+    const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(re).toMatchObject({ admit: false, reason: 'revoked' });
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+  }, 30_000);
 
-  it(
-    'a NON-revoked peer keeps merging across the same refresh that drops X (revocation is targeted)',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      const published = new Set<string>();
-      const handle = await bootHost({
-        slug: 'g7-targeted',
-        loadRevokedOverride: async () => new Set(published),
-        writes,
-      });
+  it('a NON-revoked peer keeps merging across the same refresh that drops X (revocation is targeted)', async () => {
+    const writes: Array<{ id: string }> = [];
+    const published = new Set<string>();
+    const handle = await bootHost({
+      slug: 'g7-targeted',
+      loadRevokedOverride: async () => new Set(published),
+      writes,
+    });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g7t-X-');
-      const Y = await makeRemotePeer(handle.store, 'y-bob', 7, 'mb-g7t-Y-');
-      await X.write('X-1', 100);
-      await Y.write('Y-1', 110);
-      await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      await handle.onAnnounce(await announceFor(Y.device, Y.ownLog.keyHex));
-      // Use SET semantics throughout: dropping a revoked log mid-pass resets the
-      // merge cursor (boot.ts log-removal invariant), so survivor ops re-fold
-      // from index 0 → an idempotent re-UPSERT (a duplicate in this raw capture
-      // sink, a no-op LWW write in production). We assert WHICH ids ever
-      // appear, never how many times.
-      const seen = () => new Set(writes.map((w) => w.id));
-      expect([...seen()].sort()).toEqual(['X-1', 'Y-1']);
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g7t-X-');
+    const Y = await makeRemotePeer(handle.store, 'y-bob', 7, 'mb-g7t-Y-');
+    await X.write('X-1', 100);
+    await Y.write('Y-1', 110);
+    await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    await handle.onAnnounce(await announceFor(Y.device, Y.ownLog.keyHex));
+    // Use SET semantics throughout: dropping a revoked log mid-pass resets the
+    // merge cursor (boot.ts log-removal invariant), so survivor ops re-fold
+    // from index 0 → an idempotent re-UPSERT (a duplicate in this raw capture
+    // sink, a no-op LWW write in production). We assert WHICH ids ever
+    // appear, never how many times.
+    const seen = () => new Set(writes.map((w) => w.id));
+    expect([...seen()].sort()).toEqual(['X-1', 'Y-1']);
 
-      // Revoke only X.
-      published.add(X.device.devicePubkey);
-      await handle.mergeNow();
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
-      expect(handle.admitted.has(Y.ownLog.keyHex)).toBe(true);
+    // Revoke only X.
+    published.add(X.device.devicePubkey);
+    await handle.mergeNow();
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+    expect(handle.admitted.has(Y.ownLog.keyHex)).toBe(true);
 
-      // Y keeps federating; X does not — X-2 must NEVER appear; Y-2 must.
-      await X.write('X-2', 200);
-      await Y.write('Y-2', 210);
-      // The INVARIANT is that Y-2 EVENTUALLY federates and X-2 NEVER does —
-      // assert that, not single-cycle timing (see mergeUntilSeen).
-      await mergeUntilSeen(handle, seen, 'Y-2');
-      expect(seen().has('Y-2'), "Y's post-revocation op must federate").toBe(true);
-      expect(seen().has('X-2'), "X's post-revocation op must NOT federate").toBe(false);
-    },
-    30_000,
-  );
+    // Y keeps federating; X does not — X-2 must NEVER appear; Y-2 must.
+    await X.write('X-2', 200);
+    await Y.write('Y-2', 210);
+    // The INVARIANT is that Y-2 EVENTUALLY federates and X-2 NEVER does —
+    // assert that, not single-cycle timing (see mergeUntilSeen).
+    await mergeUntilSeen(handle, seen, 'Y-2');
+    expect(seen().has('Y-2'), "Y's post-revocation op must federate").toBe(true);
+    expect(seen().has('X-2'), "X's post-revocation op must NOT federate").toBe(false);
+  }, 30_000);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -317,149 +305,134 @@ describe('G7 — published-revocation propagation enforces a drop at merge time'
 // is never undone by this reconciliation.
 // ───────────────────────────────────────────────────────────────────────────
 describe('G8 — un-revoke / re-admission (WI-193)', () => {
-  it(
-    'dropping X from the published list + a refresh DOES re-admit X (refresh-sourced revocation, live handle, no reboot)',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      const published = new Set<string>();
-      const handle = await bootHost({
-        slug: 'g8-unrevoke',
-        loadRevokedOverride: async () => new Set(published),
-        writes,
-      });
+  it('dropping X from the published list + a refresh DOES re-admit X (refresh-sourced revocation, live handle, no reboot)', async () => {
+    const writes: Array<{ id: string }> = [];
+    const published = new Set<string>();
+    const handle = await bootHost({
+      slug: 'g8-unrevoke',
+      loadRevokedOverride: async () => new Set(published),
+      writes,
+    });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8u-X-');
-      await X.write('X-1', 100);
-      await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8u-X-');
+    await X.write('X-1', 100);
+    await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      // Revoke X via the published list + merge → dropped (refresh-sourced).
-      published.add(X.device.devicePubkey);
-      await handle.mergeNow();
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
-      const reWhileRevoked = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(reWhileRevoked).toMatchObject({ admit: false, reason: 'revoked' });
+    // Revoke X via the published list + merge → dropped (refresh-sourced).
+    published.add(X.device.devicePubkey);
+    await handle.mergeNow();
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+    const reWhileRevoked = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(reWhileRevoked).toMatchObject({ admit: false, reason: 'revoked' });
 
-      // ── UN-REVOKE: remove X from the published list (the owner reverses it). ──
-      published.delete(X.device.devicePubkey);
+    // ── UN-REVOKE: remove X from the published list (the owner reverses it). ──
+    published.delete(X.device.devicePubkey);
 
-      // A merge refresh re-loads the (now empty) published list. WI-193:
-      // applyRevocationRefresh reconciles — X's revocation was refresh-sourced
-      // (never a live revoke() call), so it is removed from `revoked`.
-      await handle.mergeNow();
+    // A merge refresh re-loads the (now empty) published list. WI-193:
+    // applyRevocationRefresh reconciles — X's revocation was refresh-sourced
+    // (never a live revoke() call), so it is removed from `revoked`.
+    await handle.mergeNow();
 
-      // X re-announces: ADMITTED — no reboot required.
-      const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(
-        re,
-        'WI-193: a refresh-sourced revocation dropped from the published list must ' +
-          're-admit the peer on a live handle, without a reboot.',
-      ).toMatchObject({ admit: true });
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+    // X re-announces: ADMITTED — no reboot required.
+    const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(
+      re,
+      'WI-193: a refresh-sourced revocation dropped from the published list must ' +
+        're-admit the peer on a live handle, without a reboot.',
+    ).toMatchObject({ admit: true });
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      // And X's ops merge again — an EVENTUAL property against the real swarm,
-      // so drive cycles until X-2 arrives rather than assuming one merge is
-      // enough (WI-7089; see mergeUntilSeen).
-      await X.write('X-2', 200);
-      const seen = () => new Set(writes.map((w) => w.id));
+    // And X's ops merge again — an EVENTUAL property against the real swarm,
+    // so drive cycles until X-2 arrives rather than assuming one merge is
+    // enough (WI-7089; see mergeUntilSeen).
+    await X.write('X-2', 200);
+    const seen = () => new Set(writes.map((w) => w.id));
 
-      // CONTROL (permanent): the poll must be able to return FALSE, or the
-      // assertion below would pass no matter what the merge did. 'X-never' is
-      // never written by anyone, so a bounded poll for it must give up.
-      expect(
-        await mergeUntilSeen(handle, seen, 'X-never', { cycles: 3, gapMs: 10 }),
-        'mergeUntilSeen must give up on an op that was never written',
-      ).toBe(false);
+    // CONTROL (permanent): the poll must be able to return FALSE, or the
+    // assertion below would pass no matter what the merge did. 'X-never' is
+    // never written by anyone, so a bounded poll for it must give up.
+    expect(
+      await mergeUntilSeen(handle, seen, 'X-never', { cycles: 3, gapMs: 10 }),
+      'mergeUntilSeen must give up on an op that was never written',
+    ).toBe(false);
 
-      await mergeUntilSeen(handle, seen, 'X-2');
-      expect(
-        seen().has('X-2'),
-        "a re-admitted peer's NEW ops must federate again, not just its replayed backlog",
-      ).toBe(true);
-    },
-    30_000,
-  );
+    await mergeUntilSeen(handle, seen, 'X-2');
+    expect(seen().has('X-2'), "a re-admitted peer's NEW ops must federate again, not just its replayed backlog").toBe(
+      true,
+    );
+  }, 30_000);
 
-  it(
-    'a LIVE revoke() is NEVER reconciled away by a later refresh, even though the published list never named X',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      // The published list never includes X — the revoke is purely a live,
-      // in-process call (the owner-ban path, independent of the PG-mediated
-      // published-list propagation).
-      const handle = await bootHost({
-        slug: 'g8-live-authoritative',
-        loadRevokedOverride: async () => new Set(),
-        writes,
-      });
+  it('a LIVE revoke() is NEVER reconciled away by a later refresh, even though the published list never named X', async () => {
+    const writes: Array<{ id: string }> = [];
+    // The published list never includes X — the revoke is purely a live,
+    // in-process call (the owner-ban path, independent of the PG-mediated
+    // published-list propagation).
+    const handle = await bootHost({
+      slug: 'g8-live-authoritative',
+      loadRevokedOverride: async () => new Set(),
+      writes,
+    });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8l-X-');
-      await X.write('X-1', 100);
-      await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g8l-X-');
+    await X.write('X-1', 100);
+    await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      await handle.revoke(X.device.devicePubkey);
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+    await handle.revoke(X.device.devicePubkey);
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
 
-      // Multiple refreshes over an (always-empty, X-never-named) published list
-      // must NEVER un-revoke a live-revoked pubkey — reconciliation only ever
-      // touches refresh-sourced entries, and X was never one.
-      for (let i = 0; i < 3; i++) await handle.mergeNow();
+    // Multiple refreshes over an (always-empty, X-never-named) published list
+    // must NEVER un-revoke a live-revoked pubkey — reconciliation only ever
+    // touches refresh-sourced entries, and X was never one.
+    for (let i = 0; i < 3; i++) await handle.mergeNow();
 
-      const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(
-        re,
-        'a live revoke() must stay authoritative across any number of refreshes — ' +
-          'never silently reconciled away just because the published list never named it.',
-      ).toMatchObject({ admit: false, reason: 'revoked' });
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
-    },
-    30_000,
-  );
+    const re = await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(
+      re,
+      'a live revoke() must stay authoritative across any number of refreshes — ' +
+        'never silently reconciled away just because the published list never named it.',
+    ).toMatchObject({ admit: false, reason: 'revoked' });
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+  }, 30_000);
 
-  it(
-    're-admission also still WORKS via a reboot (unchanged supported recovery path)',
-    async () => {
-      // Prove the ONLY re-admission path: rebooting with the published list no
-      // longer naming X (the startup seed is the only place `revoked` is built
-      // from scratch). This documents the supported recovery for G8.
-      const writes: Array<{ id: string }> = [];
-      // Boot 1: X is revoked from the start (seed includes X).
-      const X = makeDevice('x-alice', 4242);
-      const handle1 = await bootHost({
-        slug: 'g8-reboot',
-        loadRevokedOverride: async () => new Set([X.devicePubkey]),
-        writes,
-      });
-      // (no remote replication needed: assert the decider refuses the announce.)
-      const re1 = await handle1.onAnnounce(await announceFor(X, 'aa'.repeat(32)));
-      expect(re1).toMatchObject({ admit: false, reason: 'revoked' });
-      await handle1.close();
-      // pop the close cleanup we just ran so afterEach doesn't double-close.
-      cleanups.pop();
+  it('re-admission also still WORKS via a reboot (unchanged supported recovery path)', async () => {
+    // Prove the ONLY re-admission path: rebooting with the published list no
+    // longer naming X (the startup seed is the only place `revoked` is built
+    // from scratch). This documents the supported recovery for G8.
+    const writes: Array<{ id: string }> = [];
+    // Boot 1: X is revoked from the start (seed includes X).
+    const X = makeDevice('x-alice', 4242);
+    const handle1 = await bootHost({
+      slug: 'g8-reboot',
+      loadRevokedOverride: async () => new Set([X.devicePubkey]),
+      writes,
+    });
+    // (no remote replication needed: assert the decider refuses the announce.)
+    const re1 = await handle1.onAnnounce(await announceFor(X, 'aa'.repeat(32)));
+    expect(re1).toMatchObject({ admit: false, reason: 'revoked' });
+    await handle1.close();
+    // pop the close cleanup we just ran so afterEach doesn't double-close.
+    cleanups.pop();
 
-      // Boot 2 (the "reboot"): SAME workspace/slug, but the published list is now
-      // clean. The startup seed builds an EMPTY revoked set → X is admissible.
-      const handle2 = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-g8-reboot2-'),
-        workspaceId: 'ws-rev-prop',
-        harnessSlug: 'g8-reboot',
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        reverifyIntervalMs: 0,
-        loadRevokedOverride: async () => new Set(), // cleaned list
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: async () => true,
-      });
-      cleanups.push(() => handle2.close());
-      const re2 = await handle2.onAnnounce(await announceFor(X, 'bb'.repeat(32)));
-      expect(
-        re2.admit,
-        'after a reboot with X removed from the published list, X is re-admitted',
-      ).toBe(true);
-    },
-    30_000,
-  );
+    // Boot 2 (the "reboot"): SAME workspace/slug, but the published list is now
+    // clean. The startup seed builds an EMPTY revoked set → X is admissible.
+    const handle2 = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: tmpDir('mb-g8-reboot2-'),
+      workspaceId: 'ws-rev-prop',
+      harnessSlug: 'g8-reboot',
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      reverifyIntervalMs: 0,
+      loadRevokedOverride: async () => new Set(), // cleaned list
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: async () => true,
+    });
+    cleanups.push(() => handle2.close());
+    const re2 = await handle2.onAnnounce(await announceFor(X, 'bb'.repeat(32)));
+    expect(re2.admit, 'after a reboot with X removed from the published list, X is re-admitted').toBe(true);
+  }, 30_000);
 });
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -470,52 +443,48 @@ describe('G8 — un-revoke / re-admission (WI-193)', () => {
 // session was never closed).
 // ───────────────────────────────────────────────────────────────────────────
 describe('G9 — underlying core session on revoke (resource-leak finding)', () => {
-  it(
-    'revoke() stops reads but the Corestore still tracks the core session (not closed) — leak documented',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      const handle = await bootHost({
-        slug: 'g9-core',
-        loadRevokedOverride: async () => new Set(),
-        writes,
-      });
+  it('revoke() stops reads but the Corestore still tracks the core session (not closed) — leak documented', async () => {
+    const writes: Array<{ id: string }> = [];
+    const handle = await bootHost({
+      slug: 'g9-core',
+      loadRevokedOverride: async () => new Set(),
+      writes,
+    });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g9-X-');
-      await X.write('X-1', 100);
-      await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g9-X-');
+    await X.write('X-1', 100);
+    await handle.onAnnounce(await announceFor(X.device, X.ownLog.keyHex));
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(true);
 
-      // Snapshot how many cores the Corestore tracks while X is admitted.
-      const coresWhileAdmitted = trackedCoreCount(handle.store);
+    // Snapshot how many cores the Corestore tracks while X is admitted.
+    const coresWhileAdmitted = trackedCoreCount(handle.store);
 
-      await handle.revoke(X.device.devicePubkey);
-      expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
+    await handle.revoke(X.device.devicePubkey);
+    expect(handle.admitted.has(X.ownLog.keyHex)).toBe(false);
 
-      // FINDING: revoke() does `admitted.delete(logKey)` only — it never closes
-      // the Hypercore session that openRemoteLog opened. The Corestore still
-      // tracks the same number of cores after revoke (the session lingers until
-      // the whole store closes). This is a bounded leak (≤ peer count), not a
-      // correctness bug — the merge loop no longer READS the dropped log, which
-      // is the security-relevant property and IS enforced above.
-      const coresAfterRevoke = trackedCoreCount(handle.store);
-      // Verified shape: the probe returns a real count (own log + 1 remote = 2
-      // while admitted, still 2 after revoke), so the assertion below is not
-      // vacuously skipped on the Corestore version this repo pins.
-      if (coresWhileAdmitted >= 0 && coresAfterRevoke >= 0) {
-        expect(
-          coresAfterRevoke,
-          'FINDING: the revoked peer core session is not evicted from the Corestore (bounded leak)',
-        ).toBe(coresWhileAdmitted);
-      }
+    // FINDING: revoke() does `admitted.delete(logKey)` only — it never closes
+    // the Hypercore session that openRemoteLog opened. The Corestore still
+    // tracks the same number of cores after revoke (the session lingers until
+    // the whole store closes). This is a bounded leak (≤ peer count), not a
+    // correctness bug — the merge loop no longer READS the dropped log, which
+    // is the security-relevant property and IS enforced above.
+    const coresAfterRevoke = trackedCoreCount(handle.store);
+    // Verified shape: the probe returns a real count (own log + 1 remote = 2
+    // while admitted, still 2 after revoke), so the assertion below is not
+    // vacuously skipped on the Corestore version this repo pins.
+    if (coresWhileAdmitted >= 0 && coresAfterRevoke >= 0) {
+      expect(
+        coresAfterRevoke,
+        'FINDING: the revoked peer core session is not evicted from the Corestore (bounded leak)',
+      ).toBe(coresWhileAdmitted);
+    }
 
-      // The security-relevant guarantee still holds: no new ops from X merge.
-      await X.write('X-2', 200);
-      const applied = await handle.mergeNow();
-      expect(applied).toBe(0);
-      expect(writes).toEqual([{ id: 'X-1' }]);
-    },
-    30_000,
-  );
+    // The security-relevant guarantee still holds: no new ops from X merge.
+    await X.write('X-2', 200);
+    const applied = await handle.mergeNow();
+    expect(applied).toBe(0);
+    expect(writes).toEqual([{ id: 'X-1' }]);
+  }, 30_000);
 });
 
 /** Best-effort count of cores the Corestore is tracking. Corestore keeps an
@@ -541,74 +510,66 @@ function trackedCoreCount(store: unknown): number {
 // is never resurrected.
 // ───────────────────────────────────────────────────────────────────────────
 describe('G10 — admission-queue ↔ revoke race (drain re-checks revoked)', () => {
-  it(
-    'revoke(X) between enqueue and drain → X is NOT admitted (drainAdmissionQueue skips it)',
-    async () => {
-      const writes: Array<{ id: string }> = [];
-      // Drive the race by firing onAnnounce (which enqueues X via admitPeer then
-      // awaits mergeNow) and revoke(X) CONCURRENTLY — no await between them. The
-      // two passes interleave on the merge gate; whichever drains the queue,
-      // drainAdmissionQueue's `revoked.has(frame.device_pubkey)` re-check
-      // (boot.ts ~835) must skip X. The invariant under test: a revoke landing
-      // while an admission is queued is honored at drain time — X is NEVER
-      // resurrected, under any interleaving.
-      const handle = await bootHost({
-        slug: 'g10-race',
-        loadRevokedOverride: async () => new Set(),
-        writes,
-      });
+  it('revoke(X) between enqueue and drain → X is NOT admitted (drainAdmissionQueue skips it)', async () => {
+    const writes: Array<{ id: string }> = [];
+    // Drive the race by firing onAnnounce (which enqueues X via admitPeer then
+    // awaits mergeNow) and revoke(X) CONCURRENTLY — no await between them. The
+    // two passes interleave on the merge gate; whichever drains the queue,
+    // drainAdmissionQueue's `revoked.has(frame.device_pubkey)` re-check
+    // (boot.ts ~835) must skip X. The invariant under test: a revoke landing
+    // while an admission is queued is honored at drain time — X is NEVER
+    // resurrected, under any interleaving.
+    const handle = await bootHost({
+      slug: 'g10-race',
+      loadRevokedOverride: async () => new Set(),
+      writes,
+    });
 
-      const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g10-X-');
-      await X.write('X-1', 100);
-      const announce = await announceFor(X.device, X.ownLog.keyHex);
+    const X = await makeRemotePeer(handle.store, 'x-alice', 4242, 'mb-g10-X-');
+    await X.write('X-1', 100);
+    const announce = await announceFor(X.device, X.ownLog.keyHex);
 
-      // Fire the admission and the revoke CONCURRENTLY (no await between them).
-      // onAnnounce → admitPeer pushes X onto admissionQueue then awaits mergeNow;
-      // revoke adds X to `revoked` + awaits its own mergeNow. Whichever pass
-      // drains the queue, drainAdmissionQueue re-checks `revoked` (boot.ts ~835)
-      // and skips X. The race must NEVER end with X admitted.
-      const [decision] = await Promise.all([
-        handle.onAnnounce(announce),
-        handle.revoke(X.device.devicePubkey),
-      ]);
+    // Fire the admission and the revoke CONCURRENTLY (no await between them).
+    // onAnnounce → admitPeer pushes X onto admissionQueue then awaits mergeNow;
+    // revoke adds X to `revoked` + awaits its own mergeNow. Whichever pass
+    // drains the queue, drainAdmissionQueue re-checks `revoked` (boot.ts ~835)
+    // and skips X. The race must NEVER end with X admitted.
+    const [decision] = await Promise.all([handle.onAnnounce(announce), handle.revoke(X.device.devicePubkey)]);
 
-      // X must not be in the admitted set regardless of interleaving.
-      expect(
-        handle.admitted.has(X.ownLog.keyHex),
-        'a revoke racing an admission must never resurrect the revoked peer',
-      ).toBe(false);
-      expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+    // X must not be in the admitted set regardless of interleaving.
+    expect(
+      handle.admitted.has(X.ownLog.keyHex),
+      'a revoke racing an admission must never resurrect the revoked peer',
+    ).toBe(false);
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
 
-      // Defensive merge: still nothing from X.
-      await X.write('X-2', 200);
-      await handle.mergeNow();
-      expect(writes.some((w) => w.id.startsWith('X')), 'no X op may merge').toBe(false);
+    // Defensive merge: still nothing from X.
+    await X.write('X-2', 200);
+    await handle.mergeNow();
+    expect(
+      writes.some((w) => w.id.startsWith('X')),
+      'no X op may merge',
+    ).toBe(false);
 
-      // The onAnnounce decision itself is either a refusal ('revoked') or an
-      // admit that the drain then dropped — either way X ends NOT admitted.
-      if (decision.admit === false) {
-        expect(decision.reason).toBe('revoked');
-      }
-    },
-    30_000,
-  );
+    // The onAnnounce decision itself is either a refusal ('revoked') or an
+    // admit that the drain then dropped — either way X ends NOT admitted.
+    if (decision.admit === false) {
+      expect(decision.reason).toBe('revoked');
+    }
+  }, 30_000);
 
-  it(
-    'pre-revoked peer: onAnnounce is refused at the decider (queue never reached)',
-    async () => {
-      // The simpler ordering: X is already revoked when the announce arrives.
-      // The decider refuses BEFORE admitPeer enqueues — proves the first gate.
-      const writes: Array<{ id: string }> = [];
-      const X = makeDevice('x-alice', 4242);
-      const handle = await bootHost({
-        slug: 'g10-pre',
-        loadRevokedOverride: async () => new Set([X.devicePubkey]),
-        writes,
-      });
-      const decision = await handle.onAnnounce(await announceFor(X, 'cc'.repeat(32)));
-      expect(decision).toMatchObject({ admit: false, reason: 'revoked' });
-      expect(handle.admitted.has('cc'.repeat(32))).toBe(false);
-    },
-    30_000,
-  );
+  it('pre-revoked peer: onAnnounce is refused at the decider (queue never reached)', async () => {
+    // The simpler ordering: X is already revoked when the announce arrives.
+    // The decider refuses BEFORE admitPeer enqueues — proves the first gate.
+    const writes: Array<{ id: string }> = [];
+    const X = makeDevice('x-alice', 4242);
+    const handle = await bootHost({
+      slug: 'g10-pre',
+      loadRevokedOverride: async () => new Set([X.devicePubkey]),
+      writes,
+    });
+    const decision = await handle.onAnnounce(await announceFor(X, 'cc'.repeat(32)));
+    expect(decision).toMatchObject({ admit: false, reason: 'revoked' });
+    expect(handle.admitted.has('cc'.repeat(32))).toBe(false);
+  }, 30_000);
 });
