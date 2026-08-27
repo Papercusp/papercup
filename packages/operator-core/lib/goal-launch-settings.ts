@@ -306,16 +306,14 @@ export {
  * `requireLive` default knowingly — which is exactly the distinction `isDefault`
  * was added to carry, so it is read here rather than re-derived from absence.
  */
-export function goalHolderPolicyProblem(
-  settings: GoalLaunchSettings | null | undefined,
-): string | null {
+export function goalHolderPolicyProblem(settings: GoalLaunchSettings | null | undefined): string | null {
   const policy = resolveGoalHolderPolicy(settings);
   if (!policy.requireLive || !policy.isDefault) return null;
   return (
     'this goal would require a LIVE holder but declares no holder policy — ' +
     `it is inheriting the default (requireLive: ${GOAL_HOLDER_DEFAULTS.requireLive}, ` +
     `onLoss: '${GOAL_HOLDER_DEFAULTS.onLoss}') rather than stating one. ` +
-    "Declare it: holder: { requireLive: true } if a live holder is what you mean, " +
+    'Declare it: holder: { requireLive: true } if a live holder is what you mean, ' +
     'or holder: { requireLive: false } for a goal driven by routines rather than a held session.'
   );
 }
@@ -451,10 +449,29 @@ export interface GoalBudgetTruth {
   spentCentsAt: string | null;
 }
 
+/**
+ * The goal-owned fields needed to brief a freshly launched holder.
+ *
+ * This rides the SAME row read as launch settings and budget truth. A holder
+ * launch already pays for that read, and keeping the brief there prevents a
+ * recovery caller from opening a generic AUTO session before the later GOAL
+ * attachment tells it which goal it owns (EI-21640746714079700).
+ */
+export interface GoalLaunchBrief {
+  title: string;
+  body: string | null;
+  killCriterion: string | null;
+  budgetCents: number | null;
+  budgetWindowSec: number | null;
+  standing: boolean;
+}
+
 export interface GoalLaunchResolution {
   /** The goal this launch serves, resolved from the LAUNCHER (D-008). Null = no goal in scope. */
   goalId: string | null;
   settings: GoalLaunchSettings | null;
+  /** Canonical source fields for the holder's first-turn brief. */
+  goalBrief: GoalLaunchBrief | null;
   /** Merged profile: caller request > per-role > goal defaults. Absent keys stay absent. */
   effective: LaunchProfile;
   ceilings: { maxAgents: number | null; maxPerFleet: number | null };
@@ -510,6 +527,8 @@ export async function readGoalLaunchSettings(
 ): Promise<{
   settings: GoalLaunchSettings | null;
   budget: GoalBudgetTruth | null;
+  /** Goal-owned first-turn context, read atomically with its launch policy. */
+  brief: GoalLaunchBrief | null;
   /**
    * P-006: the goal's declared drain fleet, for `goalFleetFamily`. Read from the
    * SAME row for the same reason the budget is — the launch boundary needs the
@@ -519,23 +538,33 @@ export async function readGoalLaunchSettings(
   drainFleetSlug: string | null;
   error: string | null;
 }> {
-  if (!goalId) return { settings: null, budget: null, drainFleetSlug: null, error: null };
+  if (!goalId) return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null };
   try {
     const rows = await pg(sql)`
-      SELECT launch_settings, budget_cents,
+      SELECT title, body, kill_criterion, standing,
+             launch_settings, budget_cents, budget_window_sec,
              metadata->'spentCents' AS spent_cents,
              metadata->>'spentCentsAt' AS spent_cents_at,
              metadata->>'drainFleet' AS drain_fleet
         FROM harness_shared.goals WHERE id = ${goalId} LIMIT 1`;
-    if (!rows.length) return { settings: null, budget: null, drainFleetSlug: null, error: null };
+    if (!rows.length) {
+      return { settings: null, budget: null, brief: null, drainFleetSlug: null, error: null };
+    }
     const row = rows[0] as {
+      title?: unknown;
+      body?: unknown;
+      kill_criterion?: unknown;
+      standing?: unknown;
       launch_settings?: unknown;
       budget_cents?: unknown;
+      budget_window_sec?: unknown;
       spent_cents?: unknown;
       spent_cents_at?: unknown;
       drain_fleet?: unknown;
     };
     const parsed = parseGoalLaunchSettings(row.launch_settings, `goal ${goalId} launch_settings`);
+    const title = typeof row.title === 'string' && row.title.trim() ? row.title : null;
+    const briefError = title ? null : `goal ${goalId} has no usable title for its holder kickoff`;
     return {
       settings: parsed.settings,
       budget: {
@@ -543,13 +572,24 @@ export async function readGoalLaunchSettings(
         spentCents: asFiniteCents(row.spent_cents),
         spentCentsAt: typeof row.spent_cents_at === 'string' ? row.spent_cents_at : null,
       },
+      brief: title
+        ? {
+            title,
+            body: typeof row.body === 'string' ? row.body : null,
+            killCriterion: typeof row.kill_criterion === 'string' ? row.kill_criterion : null,
+            budgetCents: asFiniteCents(row.budget_cents),
+            budgetWindowSec: asFiniteNumber(row.budget_window_sec),
+            standing: row.standing === true,
+          }
+        : null,
       drainFleetSlug: typeof row.drain_fleet === 'string' ? row.drain_fleet : null,
-      error: parsed.error,
+      error: [parsed.error, briefError].filter(Boolean).join('; ') || null,
     };
   } catch (e) {
     return {
       settings: null,
       budget: null,
+      brief: null,
       drainFleetSlug: null,
       error: e instanceof Error ? e.message : String(e),
     };
@@ -629,9 +669,13 @@ export async function readGoalLaunchSettingsForLauncher(args: {
  * finite number is null — "unknown", never 0, because 0 would read as "nothing
  * spent" and admit a launch on garbage.
  */
-function asFiniteCents(v: unknown): number | null {
+function asFiniteNumber(v: unknown): number | null {
   const n = typeof v === 'string' ? Number(v) : typeof v === 'number' ? v : NaN;
   return Number.isFinite(n) ? n : null;
+}
+
+function asFiniteCents(v: unknown): number | null {
+  return asFiniteNumber(v);
 }
 
 /**
@@ -759,10 +803,7 @@ export async function goalHeadcount(args: {
  */
 async function budgetLaunchGateEnabled(): Promise<{ enabled: boolean; infraError: string | null }> {
   try {
-    const [{ getFlag }, { FLAGS }] = await Promise.all([
-      import('@papercusp/flags/server'),
-      import('@papercusp/flags'),
-    ]);
+    const [{ getFlag }, { FLAGS }] = await Promise.all([import('@papercusp/flags/server'), import('@papercusp/flags')]);
     return { enabled: await getFlag(FLAGS.GOAL_BUDGET_LAUNCH_GATE, 'system'), infraError: null };
   } catch (e) {
     return { enabled: false, infraError: e instanceof Error ? e.message : String(e) };
@@ -929,6 +970,7 @@ export async function resolveGoalLaunchForGoal(args: {
     return {
       goalId: null,
       settings: null,
+      goalBrief: null,
       effective: foldLaunchProfile(null, args.goalRole, args.requested),
       ceilings: { maxAgents: null, maxPerFleet: null },
       headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
@@ -939,7 +981,7 @@ export async function resolveGoalLaunchForGoal(args: {
     };
   }
 
-  const { settings, budget, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
+  const { settings, budget, brief: goalBrief, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
 
   // P-006 (D-001/D-003): goals.budget_cents is a BINDING ceiling over the
@@ -954,9 +996,7 @@ export async function resolveGoalLaunchForGoal(args: {
   if (budget?.budgetCents != null) {
     const gate = await budgetLaunchGateEnabled();
     if (gate.infraError) {
-      degradedReasons.push(
-        `budget ceiling not enforced — flag read failed: ${gate.infraError}`,
-      );
+      degradedReasons.push(`budget ceiling not enforced — flag read failed: ${gate.infraError}`);
     } else if (gate.enabled) {
       if (budget.spentCents == null) {
         degradedReasons.push(
@@ -1054,6 +1094,7 @@ export async function resolveGoalLaunchForGoal(args: {
   return {
     goalId,
     settings,
+    goalBrief,
     effective,
     ceilings,
     headcount,

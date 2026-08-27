@@ -11,10 +11,8 @@
  * to the goal only after the launch succeeds.
  */
 import { composeLaunchModelSpec } from '../../agent-config-constants';
-import {
-  resolveGoalLaunchForGoal,
-  type GoalLaunchResolution,
-} from '../../goal-launch-settings';
+import { resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../../goal-launch-settings';
+import { buildGoalKickoffBrief } from '../../agent-tools/goals/start';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 
@@ -27,8 +25,8 @@ export interface GoalHolderLaunchInput {
   /** Test/probe seam: record the launch without opening a process. */
   deferSpawn?: boolean;
   /** First-turn brief for the spawned holder (launch-su `kickoff_prompt` →
-   *  the spawn-safe PAPERCUSP_KICKOFF_PROMPT env). Omitted ⇒ no kickoff; the
-   *  holder re-orients from its GOAL-mode contract (the recovery legs' behavior). */
+   *  the spawn-safe PAPERCUSP_KICKOFF_PROMPT env). Omitted ⇒ build the
+   *  canonical brief from the goal row returned by launch-policy resolution. */
   kickoffPrompt?: string | null;
 }
 
@@ -87,6 +85,26 @@ export async function launchGoalHolderSession(
     throw new Error(`goal-holder-launch refused for ${goalId}: ${resolved.refusal.message}`);
   }
 
+  // EI-21640746714079700: recovery launches AUTO first and attaches GOAL mode
+  // only after the process exists. A null kickoff therefore cannot "re-orient"
+  // from the later attachment — the first turn has already received no goal and
+  // correctly asks the operator for a task. Build from the goal row that the
+  // launch-policy resolver already read, so every omitted-kickoff caller (the
+  // respawner and the on-demand system action) gets the same canonical brief as
+  // goals:start/startGoalById without another DB read or another prompt copy.
+  const explicitKickoff = input.kickoffPrompt?.trim();
+  const kickoffPrompt = explicitKickoff
+    ? input.kickoffPrompt!
+    : resolved.goalBrief
+      ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief })
+      : null;
+  if (!kickoffPrompt) {
+    throw new Error(
+      `goal-holder-launch refused for ${goalId}: launch policy resolved without the goal fields ` +
+        'needed to build a canonical first-turn kickoff',
+    );
+  }
+
   const model = composeLaunchModelSpec(resolved.effective.model, resolved.effective.effort);
   const launched = await deps.launch({
     slug: harnessSlug,
@@ -101,7 +119,7 @@ export async function launchGoalHolderSession(
     headless: resolved.effective.headless ?? true,
     mode: 'auto',
     deferSpawn: input.deferSpawn ?? false,
-    kickoffPrompt: input.kickoffPrompt ?? null,
+    kickoffPrompt,
   });
   if (!launched.ok) {
     throw new Error(

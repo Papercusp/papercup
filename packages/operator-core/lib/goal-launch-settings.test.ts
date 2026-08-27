@@ -73,6 +73,17 @@ interface MockOpts {
     string,
     { budget_cents?: number | string | null; spent_cents?: unknown; spent_cents_at?: string | null }
   >;
+  /** Goal-owned fields that share the launch-policy row read. */
+  brief?: Record<
+    string,
+    {
+      title?: string;
+      body?: string | null;
+      kill_criterion?: string | null;
+      budget_window_sec?: number | string | null;
+      standing?: boolean;
+    }
+  >;
   /** headcount fixture by goal id. */
   headcount?: Record<string, { total: number; fleet: number }>;
   /** Force a hard failure on any statement matching this. */
@@ -100,13 +111,19 @@ function mockSql(opts: MockOpts = {}): Sql {
       const g = opts.inherited?.[owner];
       return Promise.resolve(g ? [{ goal_id: g }] : []);
     }
-    if (text.includes('SELECT launch_settings')) {
+    if (text.includes('FROM harness_shared.goals WHERE id')) {
       const goalId = vals[0] as string;
-      const known = goalId in (opts.settings ?? {}) || goalId in (opts.budget ?? {});
+      const known = goalId in (opts.settings ?? {}) || goalId in (opts.budget ?? {}) || goalId in (opts.brief ?? {});
       if (!known) return Promise.resolve([]);
       const b = opts.budget?.[goalId];
+      const brief = opts.brief?.[goalId];
       return Promise.resolve([
         {
+          title: brief?.title ?? `Goal ${goalId}`,
+          body: brief?.body ?? null,
+          kill_criterion: brief?.kill_criterion ?? null,
+          budget_window_sec: brief?.budget_window_sec ?? null,
+          standing: brief?.standing ?? false,
           launch_settings: opts.settings?.[goalId] ?? null,
           budget_cents: b?.budget_cents ?? null,
           spent_cents: b?.spent_cents ?? null,
@@ -119,9 +136,9 @@ function mockSql(opts: MockOpts = {}): Sql {
       // returns the zero fixture if the query's parameter order ever changes,
       // which reads as "nothing is running" and turns every ceiling test green
       // for the wrong reason.
-      const goalId = (vals as unknown[]).find(
-        (v) => typeof v === 'string' && v in (opts.headcount ?? {}),
-      ) as string | undefined;
+      const goalId = (vals as unknown[]).find((v) => typeof v === 'string' && v in (opts.headcount ?? {})) as
+        | string
+        | undefined;
       const hc = (goalId ? opts.headcount?.[goalId] : undefined) ?? { total: 0, fleet: 0 };
       return Promise.resolve([{ total: hc.total, fleet: hc.fleet }]);
     }
@@ -152,9 +169,7 @@ describe('goalLaunchSettingsSchema', () => {
   });
 
   it('rejects an unknown key inside a role profile too', () => {
-    expect(
-      goalLaunchSettingsSchema.safeParse({ roles: { grading: { modle: 'opus' } } }).success,
-    ).toBe(false);
+    expect(goalLaunchSettingsSchema.safeParse({ roles: { grading: { modle: 'opus' } } }).success).toBe(false);
   });
 
   it('rejects a non-positive ceiling — 0 agents is a paused goal, not a launch policy', () => {
@@ -190,10 +205,9 @@ describe('goalLaunchSettingsSchema', () => {
 
   // ── P-002: the holder policy (goal-live-holder-guarantee-2026-08-18) ──────────
   it('accepts a holder policy on the settings document', () => {
-    expect(
-      goalLaunchSettingsSchema.safeParse({ holder: { requireLive: true, onLoss: 'deactivate' } })
-        .success,
-    ).toBe(true);
+    expect(goalLaunchSettingsSchema.safeParse({ holder: { requireLive: true, onLoss: 'deactivate' } }).success).toBe(
+      true,
+    );
     expect(goalLaunchSettingsSchema.safeParse({ holder: { onLoss: 'respawn' } }).success).toBe(true);
   });
 
@@ -201,9 +215,7 @@ describe('goalLaunchSettingsSchema', () => {
     // Same class as the ceiling typo: `requiresLive` silently accepted would read
     // back in the panel as a policy that is set, while the resolver applies the
     // default and nothing enforces what the owner thinks they declared.
-    expect(goalLaunchSettingsSchema.safeParse({ holder: { requiresLive: true } }).success).toBe(
-      false,
-    );
+    expect(goalLaunchSettingsSchema.safeParse({ holder: { requiresLive: true } }).success).toBe(false);
     expect(goalHolderPolicySchema.safeParse({ onLos: 'deactivate' }).success).toBe(false);
   });
 
@@ -422,12 +434,8 @@ describe('D-016 / WI-38048 — profiles bind by launch SLOT, never by psu --role
     // `su` is what launch-on-plan / launch-agent / fleet-headcount-action all
     // fed the lookup. Storing it has to fail at WRITE time, because a stored
     // key that binds nothing is indistinguishable from a working setting.
-    expect(goalLaunchSettingsSchema.safeParse({ roles: { su: { model: 'opus' } } }).success).toBe(
-      false,
-    );
-    expect(goalLaunchSettingsSchema.safeParse({ roles: { scout: { model: 'opus' } } }).success).toBe(
-      false,
-    );
+    expect(goalLaunchSettingsSchema.safeParse({ roles: { su: { model: 'opus' } } }).success).toBe(false);
+    expect(goalLaunchSettingsSchema.safeParse({ roles: { scout: { model: 'opus' } } }).success).toBe(false);
   });
 
   it('REFUSES free-text keys generally, so a typo cannot masquerade as a slot', () => {
@@ -527,6 +535,14 @@ describe('readGoalLaunchSettings', () => {
       // P-006: budget truth rides the same row read; a goal with nothing
       // declared resolves an all-null truth, not an absent one.
       budget: { budgetCents: null, spentCents: null, spentCentsAt: null },
+      brief: {
+        title: 'Goal g1',
+        body: null,
+        killCriterion: null,
+        budgetCents: null,
+        budgetWindowSec: null,
+        standing: false,
+      },
       // P-006 (goal-launch-headless-and-fleet-type): the drain-fleet declaration
       // rides that same row too, for the same reason — the launch boundary needs
       // it to pick a slot family, and a second round-trip per launch to read one
@@ -538,6 +554,33 @@ describe('readGoalLaunchSettings', () => {
   it('parses a jsonb string as readily as an object', async () => {
     const r = await readGoalLaunchSettings('g1', mockSql({ settings: { g1: '{"maxAgents":3}' } }));
     expect(r.settings?.maxAgents).toBe(3);
+  });
+
+  it('returns the canonical holder-brief fields from the same row, with bigint numerics coerced', async () => {
+    const r = await readGoalLaunchSettings(
+      'g1',
+      mockSql({
+        settings: { g1: null },
+        budget: { g1: { budget_cents: '2500' } },
+        brief: {
+          g1: {
+            title: 'Work on everything',
+            body: 'Keep the frontier moving.',
+            kill_criterion: 'the owner stops the standing duty',
+            budget_window_sec: '604800',
+            standing: true,
+          },
+        },
+      }),
+    );
+    expect(r.brief).toEqual({
+      title: 'Work on everything',
+      body: 'Keep the frontier moving.',
+      killCriterion: 'the owner stops the standing duty',
+      budgetCents: 2_500,
+      budgetWindowSec: 604_800,
+      standing: true,
+    });
   });
 
   it('reports a MALFORMED document as an error instead of treating it as absent', async () => {
@@ -756,13 +799,21 @@ describe('resolveGoalLaunch — the D-015 system defaults', () => {
     const lower = await resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
-      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 3 } }, headcount: { g1: { total: 0, fleet: 0 } } }),
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: 3 } },
+        headcount: { g1: { total: 0, fleet: 0 } },
+      }),
     });
     expect(lower.ceilings.maxAgents).toBe(3);
     const higher = await resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
-      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 400 } }, headcount: { g1: { total: 0, fleet: 0 } } }),
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: 400 } },
+        headcount: { g1: { total: 0, fleet: 0 } },
+      }),
     });
     expect(higher.ceilings.maxAgents).toBe(400);
   });

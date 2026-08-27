@@ -10,6 +10,14 @@ function resolution(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchRe
   return {
     goalId: 'goal-1',
     settings: null,
+    goalBrief: {
+      title: 'Keep the queue moving',
+      body: 'Own the unclaimed frontier and keep work moving.',
+      killCriterion: 'the stewardship goal is explicitly stopped',
+      budgetCents: 1_000,
+      budgetWindowSec: 604_800,
+      standing: true,
+    },
     effective: {},
     ceilings: { maxAgents: 12, maxPerFleet: 5 },
     headcount: { total: 1, fleet: null },
@@ -59,17 +67,23 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       goalRole: 'goal',
       requested: {},
     });
-    expect(d.launch).toHaveBeenCalledWith({
-      slug: 'hive-1',
-      agent: 'codex',
-      model: 'gpt-5.6-sol:xhigh',
-      account: 'auto',
-      contextSize: 'trimmed',
-      headless: true,
-      mode: 'auto',
-      deferSpawn: false,
-      kickoffPrompt: null,
-    });
+    expect(d.launch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slug: 'hive-1',
+        agent: 'codex',
+        model: 'gpt-5.6-sol:xhigh',
+        account: 'auto',
+        contextSize: 'trimmed',
+        headless: true,
+        mode: 'auto',
+        deferSpawn: false,
+      }),
+    );
+    const kickoff = d.launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(kickoff).toContain('You are in GOAL mode on goal `goal-1`');
+    expect(kickoff).toContain('OUTCOME — Keep the queue moving');
+    expect(kickoff).toContain('KILL THIS IF — the stewardship goal is explicitly stopped');
+    expect(kickoff).toContain('CEILING — $10.00 per week');
   });
 
   it('threads the kickoff brief to launch-su as the first turn (P-017)', async () => {
@@ -79,6 +93,14 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       d,
     );
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ kickoffPrompt: 'first-turn brief' }));
+  });
+
+  it('refuses to launch a mute holder when neither an override nor stored goal brief is available', async () => {
+    const d = deps(resolution({ goalBrief: null }));
+    await expect(
+      launchGoalHolderSession({ workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1' }, d),
+    ).rejects.toThrow('without the goal fields needed to build a canonical first-turn kickoff');
+    expect(d.launch).not.toHaveBeenCalled();
   });
 
   it('surfaces a resolver refusal and never calls launch-su', async () => {
@@ -145,9 +167,7 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
         d,
       ),
     ).resolves.toMatchObject({ ownerId: 'su-new-holder' });
-    expect(warn).toHaveBeenCalledWith(
-      '[goal-holder-launch] goal-1: launch policy degraded: headcount unavailable',
-    );
+    expect(warn).toHaveBeenCalledWith('[goal-holder-launch] goal-1: launch policy degraded: headcount unavailable');
     warn.mockRestore();
   });
 
