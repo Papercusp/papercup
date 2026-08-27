@@ -35,14 +35,19 @@ function waitForReady(child: ChildProcess, timeoutMs = 20_000): Promise<string> 
       if (ready) finish(null, ready);
     });
     child.once('error', (error) => finish(error));
-    child.once('exit', (code, signal) => finish(new Error(`monitor exited before ready (${signal ?? code ?? 'unknown'})`)));
+    child.once('exit', (code, signal) =>
+      finish(new Error(`monitor exited before ready (${signal ?? code ?? 'unknown'})`)),
+    );
   });
 }
 
 function waitForExit(child: ChildProcess, timeoutMs = 10_000): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => reject(new Error(`monitor did not exit after stdin close within ${timeoutMs}ms`)), timeoutMs);
+    const timeout = setTimeout(
+      () => reject(new Error(`monitor did not exit after stdin close within ${timeoutMs}ms`)),
+      timeoutMs,
+    );
     child.once('exit', () => {
       clearTimeout(timeout);
       resolve();

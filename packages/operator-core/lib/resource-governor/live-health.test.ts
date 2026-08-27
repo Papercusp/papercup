@@ -32,30 +32,35 @@ describe('resource-governor live-health contract', () => {
       expect(spec.platforms.length).toBeGreaterThan(0);
       expect(spec.description.length).toBeGreaterThan(10);
     }
-    expect(LIVE_HEALTH_SIGNAL_KEYS).toEqual(expect.arrayContaining([
-      'progress.heartbeatLagMs',
-      'cpu.psiSomePct',
-      'latency.eventLoopP95Ms',
-      'memory.workingSetGrowthBytesPerSec',
-      'memory.gcPauseP95Ms',
-      'memory.majorFaultsPerSec',
-      'memory.swapOutBytesPerSec',
-      'database.waitP95Ms',
-      'service.waitP95Ms',
-      'descriptor.openCount',
-      'socket.closeWaitCount',
-      'disk.freeBytes',
-      'network.rxBytesPerSec',
-      'provider.rateLimited',
-      'queue.writerLatencyP95Ms',
-      'governor.admissionLatencyP95Ms',
-    ]));
+    expect(LIVE_HEALTH_SIGNAL_KEYS).toEqual(
+      expect.arrayContaining([
+        'progress.heartbeatLagMs',
+        'cpu.psiSomePct',
+        'latency.eventLoopP95Ms',
+        'memory.workingSetGrowthBytesPerSec',
+        'memory.gcPauseP95Ms',
+        'memory.majorFaultsPerSec',
+        'memory.swapOutBytesPerSec',
+        'database.waitP95Ms',
+        'service.waitP95Ms',
+        'descriptor.openCount',
+        'socket.closeWaitCount',
+        'disk.freeBytes',
+        'network.rxBytesPerSec',
+        'provider.rateLimited',
+        'queue.writerLatencyP95Ms',
+        'governor.admissionLatencyP95Ms',
+      ]),
+    );
     expect(JSON.stringify(LIVE_HEALTH_SIGNAL_SPECS)).not.toMatch(/maxSimultaneous|pgPoolMax|capacityCeiling/i);
   });
 
   it('never turns unknown or non-finite evidence into a healthy zero', () => {
     const unknown = unknownLiveHealthReading({
-      key: 'memory.psiFullPct', writerId: 'monitor:1', observedAtMs: NOW, reason: 'unsupported-on-win32',
+      key: 'memory.psiFullPct',
+      writerId: 'monitor:1',
+      observedAtMs: NOW,
+      reason: 'unsupported-on-win32',
     });
     expect(unknown).toMatchObject({ state: 'unknown', value: null, confidence: 0, reason: 'unsupported-on-win32' });
 
@@ -91,10 +96,12 @@ describe('resource-governor live-health contract', () => {
     };
     expect(isLiveHealthFragment(good)).toBe(true);
     expect(isLiveHealthFragment({ ...good, writer: { ...good.writer, kind: 'queue' } })).toBe(false);
-    expect(isLiveHealthFragment({
-      ...good,
-      signals: { 'provider.rateLimited': { ...good.signals['provider.rateLimited'], unit: 'bytes' } },
-    })).toBe(false);
+    expect(
+      isLiveHealthFragment({
+        ...good,
+        signals: { 'provider.rateLimited': { ...good.signals['provider.rateLimited'], unit: 'bytes' } },
+      }),
+    ).toBe(false);
   });
 
   it('preserves every writer-scoped observation while the compact signal picks only the newest', () => {
@@ -137,7 +144,10 @@ describe('resource-governor live-health contract', () => {
       writer: owner,
       signals: {
         'provider.waitP95Ms': measuredLiveHealthReading({
-          key: 'provider.waitP95Ms', value: 900, writerId: owner.id, observedAtMs,
+          key: 'provider.waitP95Ms',
+          value: 900,
+          writerId: owner.id,
+          observedAtMs,
           window: liveHealthWindow('rolling', observedAtMs - 10_000, observedAtMs),
         }),
       },
@@ -145,7 +155,10 @@ describe('resource-governor live-health contract', () => {
     const signals = emptyLiveHealthSignals(NOW);
     mergeLiveHealthFragments(signals, {}, [fragment], NOW);
     expect(signals['provider.waitP95Ms']).toMatchObject({
-      state: 'stale', value: null, lastMeasuredAtMs: observedAtMs, reason: 'freshness-window-expired',
+      state: 'stale',
+      value: null,
+      lastMeasuredAtMs: observedAtMs,
+      reason: 'freshness-window-expired',
     });
   });
 });

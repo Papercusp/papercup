@@ -158,17 +158,17 @@ const PROCESS_START_PPID = process.ppid;
 // amplifier again if some other unlistened stream error ever reappears. There is
 // nothing left to read the output at this point, so nothing is lost by staying
 // quiet — and the durable file sinks (e.g. gatewayLogLine) are unaffected.
-process.on('unhandledRejection', (reason) => {
+process.on("unhandledRejection", (reason) => {
   if (stdioPeerGuard.peerGone()) return;
   console.error(
-    '[serve] non-fatal unhandledRejection in a detached boot/background task (continuing boot):',
+    "[serve] non-fatal unhandledRejection in a detached boot/background task (continuing boot):",
     reason instanceof Error ? (reason.stack ?? reason.message) : reason,
   );
 });
-process.on('uncaughtException', (err) => {
+process.on("uncaughtException", (err) => {
   if (stdioPeerGuard.peerGone()) return;
   console.error(
-    '[serve] non-fatal uncaughtException in a detached boot/background task (continuing boot):',
+    "[serve] non-fatal uncaughtException in a detached boot/background task (continuing boot):",
     err instanceof Error ? (err.stack ?? err.message) : err,
   );
 });
@@ -189,7 +189,8 @@ process.on('uncaughtException', (err) => {
 // stall) — see EI-13917. A process that already does the isolation-correct
 // thing (sets PAPERCUSP_HOME) now gets FULL isolation instead of only
 // half of it.
-const PAPERCUSP_DIR = process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp");
+const PAPERCUSP_DIR =
+  process.env.PAPERCUSP_HOME || join(homedir(), ".papercusp");
 const OPERATOR_JSON = join(PAPERCUSP_DIR, "operator.json");
 const EMBEDDED_PG_JSON = join(PAPERCUSP_DIR, "embedded-pg.json");
 const SUPERUSER_TOKEN = join(PAPERCUSP_DIR, "superuser-token");
@@ -394,7 +395,8 @@ export function startParentDeathWatch(
 
   const resolved = resolveExpectedParentPid();
   const originalPpid = opts.expectedPpid ?? resolved.pid;
-  const declaredByLauncher = opts.declaredByLauncher ?? resolved.declaredByLauncher;
+  const declaredByLauncher =
+    opts.declaredByLauncher ?? resolved.declaredByLauncher;
   const isAlive = opts.parentAlive ?? pidAlive;
   const readPpid = opts.currentPpid ?? (() => process.ppid);
   if (!(originalPpid > 0)) return;
@@ -1315,7 +1317,9 @@ async function ensurePostgres(): Promise<PgHandle | null> {
   // sweepOrphanPostgres() ran BEFORE our start, so a swept orphan's port is
   // already dead by now and this probe says "not live" ⇒ we publish as before.
   const foreignEndpointLive =
-    Number.isInteger(existingPort) && existingPort > 0 && existingPort !== pg.port
+    Number.isInteger(existingPort) &&
+    existingPort > 0 &&
+    existingPort !== pg.port
       ? await isPortAccepting(existingPort)
       : false;
   const verdict = _shouldPublishGlobalPgDiscovery({
@@ -1352,7 +1356,10 @@ async function ensurePostgres(): Promise<PgHandle | null> {
 }
 
 /** Read the current global embedded-pg advertisement, or null. Exported for tests. */
-export function readPgDiscoveryRecord(): { port?: unknown; pid?: unknown } | null {
+export function readPgDiscoveryRecord(): {
+  port?: unknown;
+  pid?: unknown;
+} | null {
   try {
     return JSON.parse(readFileSync(EMBEDDED_PG_JSON, "utf8"));
   } catch {
@@ -1414,18 +1421,24 @@ export function _shouldPublishGlobalPgDiscovery(args: {
   ourPid: number;
   foreignEndpointLive: boolean;
 }): { publish: boolean; reason: string } {
-  const { existingPort, existingPid, ourPort, ourPid, foreignEndpointLive } = args;
-  if (existingPort === null) return { publish: true, reason: "no prior advertisement" };
+  const { existingPort, existingPid, ourPort, ourPid, foreignEndpointLive } =
+    args;
+  if (existingPort === null)
+    return { publish: true, reason: "no prior advertisement" };
   // We just bound the port it already names — publishing REFRESHES the record
   // for an endpoint we now own (pid/url/startedAt), it does not redirect anyone.
-  if (existingPort === ourPort) return { publish: true, reason: "same endpoint, refreshing" };
+  if (existingPort === ourPort)
+    return { publish: true, reason: "same endpoint, refreshing" };
   // Our own stale record from a prior identity of this process.
   if (existingPid !== null && existingPid === ourPid)
     return { publish: true, reason: "our own prior record" };
   // A different port that no longer answers — a dead advertisement helps nobody.
   if (!foreignEndpointLive)
     return { publish: true, reason: `prior endpoint :${existingPort} is dead` };
-  return { publish: false, reason: `foreign endpoint :${existingPort} is live` };
+  return {
+    publish: false,
+    reason: `foreign endpoint :${existingPort} is live`,
+  };
 }
 
 export const SERVE_HELP_TEXT = `Usage: papercusp serve [--ensure] [--ui]

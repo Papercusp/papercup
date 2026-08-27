@@ -605,6 +605,7 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "plans:get",
   "plans:list",
   "plans:items",
+  "plans:search",
   // test-run history
   "testing:runs",
   // harness / fleet status snapshots
@@ -1242,6 +1243,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "dev:pg_query",
     "loop:arm",
     "plans:get",
+    "plans:search",
     "improvements:capture",
     "locks:acquire",
     "locks:queue",

@@ -18,88 +18,88 @@
 // (host-bootstrap → @papercusp/plugin-loader → MCP SDK → mem0 …) evaluates, so an
 // inconsistent checkout fails fast + named instead of crash-looping every worker on
 // MODULE_NOT_FOUND. See boot-integrity-first.ts / the 2026-06-25 incident.
-import './boot-integrity-first';
+import "./boot-integrity-first";
 // SECOND: pin the runtime flag-override store install into the module
 // evaluation order, BEFORE anything below resolves a flag (WI-4275 — bg-host
 // booted every time without the store, so runtime `flags:set` kill-switches
 // were silently invisible to background routines). See boot-flag-store.ts.
-import './boot-flag-store';
-import cluster from 'node:cluster';
-import { createAdaptorServer } from '@hono/node-server';
-import { listenWithEaddrinuseRetry } from '@papercusp/operator-core/lib/listen-with-eaddrinuse-retry';
-import { BOOT_INTEGRITY_EXIT_CODE } from '@papercusp/operator-core/lib/boot-integrity-preflight';
-import { runBootstrap, waitForBootMigrationGate } from './host-bootstrap';
-import { handler } from './host-handler';
-import { workspacePinWarning } from '@papercusp/operator-core/lib/workspace-pin-guard';
-import { scheduleTranscriptSearchWarmup } from '@papercusp/operator-core/lib/transcript-search-warmup';
+import "./boot-flag-store";
+import cluster from "node:cluster";
+import { createAdaptorServer } from "@hono/node-server";
+import { listenWithEaddrinuseRetry } from "@papercusp/operator-core/lib/listen-with-eaddrinuse-retry";
+import { BOOT_INTEGRITY_EXIT_CODE } from "@papercusp/operator-core/lib/boot-integrity-preflight";
+import { runBootstrap, waitForBootMigrationGate } from "./host-bootstrap";
+import { handler } from "./host-handler";
+import { workspacePinWarning } from "@papercusp/operator-core/lib/workspace-pin-guard";
+import { scheduleTranscriptSearchWarmup } from "@papercusp/operator-core/lib/transcript-search-warmup";
 import {
   startEventLoopLagMonitor,
   setLagPublishTarget,
-} from '@papercusp/operator-core/lib/event-loop-lag-monitor';
-import { startLoopPressureGovernor } from '@papercusp/operator-core/lib/loop-pressure-governor';
-import { FLAGS } from '@papercusp/flags';
-import { getFlag } from '@papercusp/flags/server';
+} from "@papercusp/operator-core/lib/event-loop-lag-monitor";
+import { startLoopPressureGovernor } from "@papercusp/operator-core/lib/loop-pressure-governor";
+import { FLAGS } from "@papercusp/flags";
+import { getFlag } from "@papercusp/flags/server";
 import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
   resolveMemoryWatchdogProactiveGcMb,
-} from '@papercusp/operator-core/lib/memory-watchdog';
-import { startEventLoopSentinel } from '@papercusp/operator-core/lib/event-loop-sentinel-host';
+} from "@papercusp/operator-core/lib/memory-watchdog";
+import { startEventLoopSentinel } from "@papercusp/operator-core/lib/event-loop-sentinel-host";
 import {
   gracefulHostRecycle,
   installGracefulShutdown,
   installFatalDiagnostics,
-} from '@papercusp/operator-core/lib/host-recycle';
-import { markShuttingDown } from '@papercusp/operator-core/lib/shutdown-state';
+} from "@papercusp/operator-core/lib/host-recycle";
+import { markShuttingDown } from "@papercusp/operator-core/lib/shutdown-state";
 // infra-fail-fast P-015 / D2 — canonical loopback-default bind host (locks P-027).
-import { resolveBindHost } from '@papercusp/operator-core/lib/resolve-bind-host';
-import { assertRemoteAuthReady } from '@papercusp/operator-core/lib/remote-auth-policy';
-import { startInfraLivenessAlarm } from '@papercusp/operator-core/lib/system-health/liveness-alarm';
-import { startConditionStalenessAlarm } from '@papercusp/operator-core/lib/system-health/condition-staleness-alarm';
-import { startEscalationAgingAlarm } from '@papercusp/operator-core/lib/overwatch/escalation-aging-alarm';
-import { startRoutineFireCancellationAlarm } from '@papercusp/operator-core/lib/dbos/routine-fire-cancellation-alarm';
-import { startLagSelfRestart } from '@papercusp/operator-core/lib/system-health/lag-self-restart';
+import { resolveBindHost } from "@papercusp/operator-core/lib/resolve-bind-host";
+import { assertRemoteAuthReady } from "@papercusp/operator-core/lib/remote-auth-policy";
+import { startInfraLivenessAlarm } from "@papercusp/operator-core/lib/system-health/liveness-alarm";
+import { startConditionStalenessAlarm } from "@papercusp/operator-core/lib/system-health/condition-staleness-alarm";
+import { startEscalationAgingAlarm } from "@papercusp/operator-core/lib/overwatch/escalation-aging-alarm";
+import { startRoutineFireCancellationAlarm } from "@papercusp/operator-core/lib/dbos/routine-fire-cancellation-alarm";
+import { startLagSelfRestart } from "@papercusp/operator-core/lib/system-health/lag-self-restart";
 import {
   startWorkerHeartbeat,
   startClusterLagWatchdog,
   clusterLagWatchdogArmed,
-} from '@papercusp/operator-core/lib/system-health/cluster-lag-watchdog';
+} from "@papercusp/operator-core/lib/system-health/cluster-lag-watchdog";
 import {
   startBootedHandlesBroadcaster,
   startWorkerBootedHandlesCache,
-} from '@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync';
-import { startBootedHandlesPgPublisher } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg';
+} from "@papercusp/operator-core/lib/sync/hyperbee/cluster-booted-handles-sync";
+import { startBootedHandlesPgPublisher } from "@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg";
 import {
   startWorkerStampPublisher,
   startWorkerStampReceiver,
   startPrimaryStampRelay,
-} from '@papercusp/operator-core/lib/agent-state-stamp-cluster';
-import nodeCluster from 'node:cluster';
-import { startSinglePrimaryGuard } from '@papercusp/operator-core/lib/system-health/single-primary-check';
-import { startPtyWsServer } from '@papercusp/operator-core/lib/pty-ws';
+} from "@papercusp/operator-core/lib/agent-state-stamp-cluster";
+import nodeCluster from "node:cluster";
+import { startSinglePrimaryGuard } from "@papercusp/operator-core/lib/system-health/single-primary-check";
+import { startPtyWsServer } from "@papercusp/operator-core/lib/pty-ws";
 import {
   ensureInvalidationListener,
   stopInvalidationListener,
-} from '@papercusp/operator-core/lib/sync-sse';
-import { ensureFlagChangeListener } from '@papercusp/operator-core/lib/flag-change-listener';
+} from "@papercusp/operator-core/lib/sync-sse";
+import { ensureFlagChangeListener } from "@papercusp/operator-core/lib/flag-change-listener";
 import {
   startCluster,
   resolveClusterWorkers,
   describeClusterWorkersSource,
   resolveExpectedOperatorProcs,
-} from '@papercusp/operator-core/lib/cluster-fork';
-import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profile';
-import { isBenignHostError } from './host-benign-errors';
-import { applyServerTimeouts } from './host-request-deadline';
-import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
-import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/spawner-socket-path';
-import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
-import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
-import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
-import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
-import { runLiveHealthMonitorMain } from '@papercusp/operator-core/lib/resource-governor/live-health-monitor-main';
-import { assertMobileJwtSecretDurableForCluster } from '@papercusp/operator-core/lib/device-jwt';
-import { installStdioPeerGuard } from '@papercusp/operator-core/lib/process-supervision/stdio-peer-guard';
+} from "@papercusp/operator-core/lib/cluster-fork";
+import { getResourceProfile } from "@papercusp/operator-core/lib/resource-profile";
+import { isBenignHostError } from "./host-benign-errors";
+import { applyServerTimeouts } from "./host-request-deadline";
+import { pinSubstrateSocketForCluster } from "@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path";
+import { pinSpawnerSocketForCluster } from "@papercusp/operator-core/lib/fleet/spawner-socket-path";
+import { runSubstrateSidecarServer } from "@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server";
+import { runSpawnerSidecarServer } from "@papercusp/operator-core/lib/fleet/spawner-sidecar-server";
+import { runGatewaySidecarMain } from "@papercusp/operator-core/lib/inference-gateway/sidecar-main";
+import { runEmbedSidecarServer } from "@papercusp/operator-core/lib/memory/embed-sidecar-server";
+import { runLiveHealthMonitorMain } from "@papercusp/operator-core/lib/resource-governor/live-health-monitor-main";
+import { assertMobileJwtSecretDurableForCluster } from "@papercusp/operator-core/lib/device-jwt";
+import { installStdioPeerGuard } from "@papercusp/operator-core/lib/process-supervision/stdio-peer-guard";
 
 // WI-41422: this entrypoint is also launched directly by desktop-dev/background
 // task supervision, bypassing serve.ts (and its stdio guard). If that supervisor
@@ -128,30 +128,36 @@ installFatalDiagnostics();
 // respawn — the all-day :3270 crash-loop that destabilized the substrate
 // primary (2026-07-09, EI-8810). Divert BEFORE any host boot side-effect; each
 // sidecar server keeps the process alive. Mirrors serve.ts main() exactly.
-const sidecarMode: 'substrate' | 'spawner' | 'gateway' | 'embed' | 'resource-health' | null =
-  process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === '1'
-    ? 'substrate'
-    : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === '1'
-      ? 'spawner'
-      : process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === '1'
-        ? 'gateway'
-        : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === '1'
-          ? 'embed'
-          : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === '1'
-            ? 'resource-health'
+const sidecarMode:
+  | "substrate"
+  | "spawner"
+  | "gateway"
+  | "embed"
+  | "resource-health"
+  | null =
+  process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === "1"
+    ? "substrate"
+    : process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === "1"
+      ? "spawner"
+      : process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1"
+        ? "gateway"
+        : process.env.PAPERCUSP_EMBED_SIDECAR_MODE === "1"
+          ? "embed"
+          : process.env.PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE === "1"
+            ? "resource-health"
             : null;
-if (sidecarMode === 'substrate') runSubstrateSidecarServer();
-if (sidecarMode === 'spawner') runSpawnerSidecarServer();
-if (sidecarMode === 'gateway') {
+if (sidecarMode === "substrate") runSubstrateSidecarServer();
+if (sidecarMode === "spawner") runSpawnerSidecarServer();
+if (sidecarMode === "gateway") {
   runGatewaySidecarMain().catch((e) => {
-    console.error('[inference-gateway] fatal:', e);
+    console.error("[inference-gateway] fatal:", e);
     process.exit(1);
   });
 }
-if (sidecarMode === 'embed') runEmbedSidecarServer();
-if (sidecarMode === 'resource-health') {
+if (sidecarMode === "embed") runEmbedSidecarServer();
+if (sidecarMode === "resource-health") {
   runLiveHealthMonitorMain().catch((e) => {
-    console.error('[resource-governor-health] fatal:', e);
+    console.error("[resource-governor-health] fatal:", e);
     process.exit(1);
   });
 }
@@ -167,26 +173,26 @@ if (sidecarMode === 'resource-health') {
 // request), so SWALLOW them; preserve fail-fast (exit) for everything else so
 // real host bugs still surface. Classification lives in host-benign-errors.ts
 // (unit-tested) so the predicate set is auditable, not buried inline.
-process.on('unhandledRejection', (reason) => {
+process.on("unhandledRejection", (reason) => {
   if (isBenignHostError(reason)) {
     console.warn(
-      '[hono-host] ignored benign client-caused error (request-scoped, host kept alive):',
+      "[hono-host] ignored benign client-caused error (request-scoped, host kept alive):",
       (reason as Error)?.message ?? reason,
     );
     return;
   }
-  console.error('[hono-host] fatal unhandledRejection — exiting:', reason);
+  console.error("[hono-host] fatal unhandledRejection — exiting:", reason);
   process.exit(1);
 });
-process.on('uncaughtException', (err) => {
+process.on("uncaughtException", (err) => {
   if (isBenignHostError(err)) {
     console.warn(
-      '[hono-host] ignored benign client-caused error (uncaught, host kept alive):',
+      "[hono-host] ignored benign client-caused error (uncaught, host kept alive):",
       err.message,
     );
     return;
   }
-  console.error('[hono-host] fatal uncaughtException — exiting:', err);
+  console.error("[hono-host] fatal uncaughtException — exiting:", err);
   process.exit(1);
 });
 
@@ -207,7 +213,9 @@ const hostname = resolveBindHost();
 // before its exact HTTPS origin policy exists. This runs before any listen().
 const remoteAuthPolicy = assertRemoteAuthReady(hostname);
 if (remoteAuthPolicy.remote) {
-  console.log(`[hono-host] remote auth policy armed for ${remoteAuthPolicy.origins.length} exact HTTPS origin(s)`);
+  console.log(
+    `[hono-host] remote auth policy armed for ${remoteAuthPolicy.origins.length} exact HTTPS origin(s)`,
+  );
 }
 
 // EI-18734124566158657: a straggling peer process that recently held this exact
@@ -225,8 +233,12 @@ if (remoteAuthPolicy.remote) {
 // (which still fails — just a few seconds later — with the SAME fatal
 // message callers already grep for, e.g. verify-tauri-headless.sh's own
 // `EADDRINUSE.*:$DEV_PORT` check).
-const LISTEN_RETRY_MAX_ATTEMPTS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRIES ?? 8);
-const LISTEN_RETRY_DELAY_MS = Number(process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRY_MS ?? 1000);
+const LISTEN_RETRY_MAX_ATTEMPTS = Number(
+  process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRIES ?? 8,
+);
+const LISTEN_RETRY_DELAY_MS = Number(
+  process.env.PAPERCUSP_LISTEN_EADDRINUSE_RETRY_MS ?? 1000,
+);
 
 /**
  * Start the request-serving plane: the HTTP server + per-process loop monitors +
@@ -297,7 +309,8 @@ function startRequestServers(): void {
   //      forever without anyone noticing.
   // PAPERCUSP_LOOP_PROFILER remains honored for tests/dev only (see the monitor).
   startEventLoopLagMonitor({
-    profileOnSaturation: () => getFlag(FLAGS.LOOP_STALL_PROFILER, 'operator-host'),
+    profileOnSaturation: () =>
+      getFlag(FLAGS.LOOP_STALL_PROFILER, "operator-host"),
     // WI-38449: request workers are the processes carrying the live memory growth
     // (1.7-2.8 GB PSS each across the release cluster), but heap sampling used to
     // be armed only by the background primary and substrate sidecar. Keep the safe,
@@ -306,7 +319,10 @@ function startRequestServers(): void {
     // Reuse the existing shared threshold override; 2 GB is above the small primary
     // baseline while still crossing before the observed workers reach 2.8+ GB.
     heapSamplingOnHighRss: true,
-    heapSamplingRssMb: Math.max(1, Number(process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB) || 2048),
+    heapSamplingRssMb: Math.max(
+      1,
+      Number(process.env.PAPERCUSP_HEAP_SNAPSHOT_RSS_MB) || 2048,
+    ),
   });
 
   // P5-2: closed-loop concurrency feedback. Reads the lag monitor's loopPressure()
@@ -320,14 +336,16 @@ function startRequestServers(): void {
   // read fails (e.g. PG not ready yet): the governor is safe always-on (bounded
   // under the user's cap, self-recovering), so a read error must not silently
   // disable it.
-  void getFlag(FLAGS.LOOP_PRESSURE_GOVERNOR, 'operator-host')
+  void getFlag(FLAGS.LOOP_PRESSURE_GOVERNOR, "operator-host")
     .then((on) => {
       if (on) startLoopPressureGovernor();
     })
     .catch(() => startLoopPressureGovernor());
 
   const onListening = (boundPort: number): void => {
-    console.log(`[hono-host] listening on http://${hostname}:${boundPort} (pid=${process.pid})`);
+    console.log(
+      `[hono-host] listening on http://${hostname}:${boundPort} (pid=${process.pid})`,
+    );
 
     // Guardrail: a stray PAPERCUSP_WORKSPACE_ID pin silently rebinds every
     // non-request path on this multi-workspace host. Warn loudly at boot — a bare
@@ -358,8 +376,10 @@ function startRequestServers(): void {
   // internally with no bind-retry); it now builds the same createAdaptorServer and
   // listens itself, byte-identical to serve()'s own listen(port, hostname, cb) except
   // for the retry wrapper.
-  const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({ fetch: handler });
-  const httpServer = server as unknown as import('node:http').Server;
+  const server: ReturnType<typeof createAdaptorServer> = createAdaptorServer({
+    fetch: handler,
+  });
+  const httpServer = server as unknown as import("node:http").Server;
 
   // WI-41422: dev:restart targets this ONE verified Linux desktop-dev Hono
   // child with SIGUSR2. Drain first, then take the existing no-native-teardown
@@ -368,13 +388,18 @@ function startRequestServers(): void {
   // child-only exit (only a signal to the wrapper itself stops it), so the
   // child's exit status is not the supervision contract. Keep this
   // desktop-only: SIGUSR2 has no restart meaning on release/staging hosts.
-  if (process.platform === 'linux' && process.env.DBOS__VMID === `desktop-dev-${port}`) {
+  if (
+    process.platform === "linux" &&
+    process.env.DBOS__VMID === `desktop-dev-${port}`
+  ) {
     let desktopDevRestartRequested = false;
-    process.on('SIGUSR2', () => {
+    process.on("SIGUSR2", () => {
       if (desktopDevRestartRequested) return;
       desktopDevRestartRequested = true;
       markShuttingDown();
-      console.log(`[hono-host] SIGUSR2 — draining then hard-exiting desktop-dev listener (pid=${process.pid})`);
+      console.log(
+        `[hono-host] SIGUSR2 — draining then hard-exiting desktop-dev listener (pid=${process.pid})`,
+      );
       gracefulHostRecycle({
         server: server as { close?: (cb?: () => void) => void },
         closeAdditionalResources: stopInvalidationListener,
@@ -385,7 +410,7 @@ function startRequestServers(): void {
         // Avoid process.exit's native-addon teardown (live exit 134). Exit 75
         // remains only the fallback if the self-SIGKILL unexpectedly throws.
         hardExitOnRecycle: true,
-        reason: 'a dev:restart desktop-dev SIGUSR2 recycle',
+        reason: "a dev:restart desktop-dev SIGUSR2 recycle",
       });
     });
   }
@@ -396,7 +421,7 @@ function startRequestServers(): void {
   // an uncaught exception). Retries are exhausted (or the error isn't
   // EADDRINUSE) by the time this fires, so the same message + exit code apply.
   const onListenFatal = (err: NodeJS.ErrnoException): void => {
-    console.error('[hono-host] fatal uncaughtException — exiting:', err);
+    console.error("[hono-host] fatal uncaughtException — exiting:", err);
     process.exit(1);
   };
   const listenOpts = {
@@ -413,7 +438,10 @@ function startRequestServers(): void {
       onListening: () => onListening(port),
     });
   } else {
-    listenWithEaddrinuseRetry(httpServer, { ...listenOpts, onListening: () => onListening(port) });
+    listenWithEaddrinuseRetry(httpServer, {
+      ...listenOpts,
+      onListening: () => onListening(port),
+    });
   }
 
   // B2 (infra-fail-fast-build-integrity P-006) — the "safe half": explicit inbound
@@ -422,13 +450,18 @@ function startRequestServers(): void {
   // Node 25 (they bound request RECEIPT, not handler runtime — the handler-deadline
   // middleware in host-handler.ts covers the wedge), but the knobs let ops tune the
   // slow-loris / stuck-body ceiling without a code change.
-  const appliedTimeouts = applyServerTimeouts(server as unknown as import('node:http').Server);
+  const appliedTimeouts = applyServerTimeouts(
+    server as unknown as import("node:http").Server,
+  );
   if (
     appliedTimeouts.requestTimeout !== undefined ||
     appliedTimeouts.headersTimeout !== undefined ||
     appliedTimeouts.keepAliveTimeout !== undefined
   ) {
-    console.log('[hono-host] applied inbound server timeouts (ms):', appliedTimeouts);
+    console.log(
+      "[hono-host] applied inbound server timeouts (ms):",
+      appliedTimeouts,
+    );
   }
 
   // PTY WebSocket data plane (opt-in via PAPERCUSP_PTY_WS_PORT — bin/dev sets
@@ -439,7 +472,7 @@ function startRequestServers(): void {
   // PTY is INCOMPATIBLE with multi-worker clustering (spawn + WS could land on
   // different workers). It's desktop/dev-only (off on the server cluster target),
   // so the two never coexist. Fail-soft on EADDRINUSE (a sibling already bound it).
-  const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? '');
+  const ptyWsPort = Number(process.env.PAPERCUSP_PTY_WS_PORT ?? "");
   if (Number.isFinite(ptyWsPort) && ptyWsPort > 0) {
     startPtyWsServer({
       port: ptyWsPort,
@@ -456,7 +489,7 @@ function startRequestServers(): void {
   // Recycle at a high-water mark BELOW the stall zone — drain in-flight HTTP, then
   // exit; the systemd unit's `Restart=always` (RestartSec=5s) brings up a fresh
   // low-RSS process. See lib/memory-watchdog.ts.
-  if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
+  if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== "0") {
     // Role-aware default (EI-1613, extended by EI-19484864948547581): the
     // dedicated BACKGROUND primary (the bg-host, BG=1) boots the substrate +
     // DBOS recovery and needs a far higher limit (12288) than a plain
@@ -478,7 +511,7 @@ function startRequestServers(): void {
     // watchdog runtime-enables `--expose-gc` if NODE_OPTIONS lacks it (fresh-box
     // correct). Kill-switch: PAPERCUSP_MEMORY_PROACTIVE_GC=0. An explicit
     // PAPERCUSP_MEMORY_PROACTIVE_GC_MB overrides the threshold.
-    const proactiveGcOff = process.env.PAPERCUSP_MEMORY_PROACTIVE_GC === '0';
+    const proactiveGcOff = process.env.PAPERCUSP_MEMORY_PROACTIVE_GC === "0";
     startMemoryWatchdog({
       rssLimitMb: limitMb,
       proactiveGcMb: proactiveGcOff
@@ -490,8 +523,8 @@ function startRequestServers(): void {
         // restart loop (WI-3042) — name the actual supervisor so a recycle in
         // either context reads correctly in the log.
         const supervisor = process.env.INVOCATION_ID
-          ? 'systemd will restart'
-          : 'expecting the spawning wrapper (dev-operator-ifneeded.sh restart loop) to restart';
+          ? "systemd will restart"
+          : "expecting the spawning wrapper (dev-operator-ifneeded.sh restart loop) to restart";
         console.warn(
           `[memory-watchdog] RSS high-water mark tripped — draining + recycling host (${supervisor})`,
           { rssMb, rssLimitMb: limitMb },
@@ -575,7 +608,7 @@ function startRequestServers(): void {
   // Napi::Error. The staging host reproduced it on a routine sanctioned restart
   // and remained in do_exit past TimeoutStopSec. Drain first, then SIGKILL self:
   // no native teardown runs and systemd already owns the restart.
-  if (process.env.PAPERCUSP_SIGTERM_DRAIN !== '0') {
+  if (process.env.PAPERCUSP_SIGTERM_DRAIN !== "0") {
     installGracefulShutdown({
       server: server as { close?: (cb?: () => void) => void },
       closeAdditionalResources: stopInvalidationListener,
@@ -637,7 +670,7 @@ function startRequestServers(): void {
         hardExitOnRecycle: true,
         // EI-16447: distinct from the memory-watchdog reason above — see its
         // comment for why this matters.
-        reason: 'an event-loop lag-self-restart recycle',
+        reason: "an event-loop lag-self-restart recycle",
       });
     },
   });
@@ -655,12 +688,17 @@ function startRequestServers(): void {
 // fleet and can't multiply past max_connections (the 2026-06-17 exhaustion).
 // ENABLING is owner-gated: cross-process sync-invalidate needs the pg-listen-hub on,
 // and it should be validated under the Tauri shell / a staging restart first.
-const clusterWorkers = resolveClusterWorkers(process.env, getResourceProfile().httpWorkers);
+const clusterWorkers = resolveClusterWorkers(
+  process.env,
+  getResourceProfile().httpWorkers,
+);
 // EI-8817/EI-8818: name the exact env var + value that drove this so a wrong
 // resolution (e.g. an unintended multi-worker fork storm) is one-glance diagnosable
 // from the boot log instead of ~30min of forensics re-deriving CLUSTER_WORKERS'
 // precedence over CLUSTER by hand.
-console.log(`[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(process.env)})`);
+console.log(
+  `[cluster] resolved ${clusterWorkers} worker(s) (source: ${describeClusterWorkersSource(process.env)})`,
+);
 // WI-38448: without a durable secret every reuse-port worker mints a different
 // key, so the pairing response works only when later requests happen to land on
 // its signer. Fail before forking. Sidecar re-execs do not serve device routes.
@@ -692,7 +730,9 @@ if (clusterWorkers > 1) {
 // to fall back to its OWN pid-keyed — nonexistent — socket path and the
 // dogfood-substrate-boot-history route always degraded to `source:'main-fallback'`
 // with an empty ring on every clustered host; found during P-059 / WI-1837).
-const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster(clusterWorkers);
+const substrateSocketWorkerEnv = sidecarMode
+  ? {}
+  : pinSubstrateSocketForCluster(clusterWorkers);
 // Same pin for the SPAWNER sidecar (plan spawner-sidecar-cluster-fanout-2026-08-12).
 // The substrate got this in WI-1879; the spawner did not, and paid far more for it:
 // its "already spawned" latch is module-scoped (per PROCESS), so each of N cluster
@@ -700,93 +740,98 @@ const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster
 // hono-host of its own. Measured 2026-08-12 at PAPERCUSP_CLUSTER=16: 16 sidecars,
 // 9.5GB, 0.004 cores each. Pinning makes every worker resolve the PRIMARY's path, so
 // the adoption probe in spawnSpawnerSidecar finds the sibling's sidecar and reuses it.
-const spawnerSocketWorkerEnv = sidecarMode ? {} : pinSpawnerSocketForCluster(clusterWorkers);
+const spawnerSocketWorkerEnv = sidecarMode
+  ? {}
+  : pinSpawnerSocketForCluster(clusterWorkers);
 // EI-8810: in sidecar mode the divert above already started the sidecar server
 // (which keeps the process alive) — the host boot below must not run at all.
-const clusterHandle = sidecarMode ? null : startCluster({
-  workers: clusterWorkers,
-  workerEnv: {
-    PAPERCUSP_BACKGROUND_WORKERS: '0',
-    PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
-    ...substrateSocketWorkerEnv,
-    ...spawnerSocketWorkerEnv,
-  },
-  onPrimary: () => {
-    // WI-6793: the clustered PRIMARY runs the background machinery (DBOS,
-    // routines, scout) but never startRequestServers — install the flag-change
-    // LISTEN here too, or exactly the process holding the scout's keying latch
-    // misses runtime flips. Idempotent with the worker-path call in single mode.
-    void ensureFlagChangeListener();
-    return runBootstrap(); // background machinery (single process in cluster mode)
-  },
-  onWorker: () => {
-    // A worker is request-only: runBootstrap with background gated off (fork env),
-    // then start the HTTP/loop servers. In single mode this is the same process as
-    // onPrimary, so runBootstrap no-ops the second call.
-    runBootstrap();
-    // WI-5441/WI-5764 (public-release boot-window federation-capture-hole guard):
-    // do NOT start accepting HTTP traffic until this process's own boot migrations
-    // have applied (a no-op wait on a request-only/cluster-worker host — see
-    // waitForBootMigrationGate's doc). Previously startRequestServers() ran
-    // unconditionally right here, immediately after the fire-and-forget
-    // runBootstrap() call, with NO ordering guarantee against the still-running
-    // migration IIFE it kicked off — so a write could land on a table whose
-    // federation-capture trigger a slow/large migration set hadn't created yet,
-    // permanently and silently never federating (su-72ce40f2's diagnosis, WI-5441
-    // post 53143). fire-and-forget here is intentional and safe: onWorker's
-    // declared return type is `() => void` and cluster-fork.ts never awaits it
-    // (see StartClusterOpts), and waitForBootMigrationGate degrades open on its
-    // own timeout, so this can never wedge boot.
-    void waitForBootMigrationGate().finally(() => {
-      startRequestServers();
-      // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
-      // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
-      // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
-      if (clusterWorkers > 1 && clusterLagWatchdogArmed()) startWorkerHeartbeat();
-      // EI-8816: cache the primary's periodic booted-handles broadcast so this
-      // request-only worker's substrate-status reads aren't a silent blind spot
-      // (the substrate boots only on the primary; this worker's own listBootedHandles()
-      // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
-      // opt-in perf feature (unlike the lag watchdog above).
-      if (clusterWorkers > 1) startWorkerBootedHandlesCache();
-      // EI-19327550671915579 (part 2 of EI-18735338283879820): also publish to the
-      // cross-SERVICE PG fallback, unconditionally (no clusterWorkers gate) — this is
-      // the leg that reaches a request-only host under the dedicated-bg-host topology
-      // (:3070/:3270, each a SEPARATE systemd service from papercup-bg-host, where
-      // node:cluster IPC can never apply at all). Runs in every single-process host
-      // (this closure executes inline here too — see the file-header comment above),
-      // and self-gates per-beat on isSubstrateOwnerProcess(), so a request-only host
-      // simply never writes.
-      startBootedHandlesPgPublisher({});
-      // WI-6594: publish this worker's P-009 stamp declarations to the primary and
-      // apply the ones it relays back from peers. Without this, an agent's
-      // coord:declare-intent and its work_items:claim land on DIFFERENT workers and
-      // no call can ever stamp both — measured live as intent_event_id and goal_ref
-      // never co-occurring, which red the fleet gate via lint:plane-ratchet.
-      // ALWAYS-ON when true-clustered: a correctness fix, like the cache above.
-      if (clusterWorkers > 1) {
-        startWorkerStampPublisher();
-        startWorkerStampReceiver();
-      }
+const clusterHandle = sidecarMode
+  ? null
+  : startCluster({
+      workers: clusterWorkers,
+      workerEnv: {
+        PAPERCUSP_BACKGROUND_WORKERS: "0",
+        PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
+        ...substrateSocketWorkerEnv,
+        ...spawnerSocketWorkerEnv,
+      },
+      onPrimary: () => {
+        // WI-6793: the clustered PRIMARY runs the background machinery (DBOS,
+        // routines, scout) but never startRequestServers — install the flag-change
+        // LISTEN here too, or exactly the process holding the scout's keying latch
+        // misses runtime flips. Idempotent with the worker-path call in single mode.
+        void ensureFlagChangeListener();
+        return runBootstrap(); // background machinery (single process in cluster mode)
+      },
+      onWorker: () => {
+        // A worker is request-only: runBootstrap with background gated off (fork env),
+        // then start the HTTP/loop servers. In single mode this is the same process as
+        // onPrimary, so runBootstrap no-ops the second call.
+        runBootstrap();
+        // WI-5441/WI-5764 (public-release boot-window federation-capture-hole guard):
+        // do NOT start accepting HTTP traffic until this process's own boot migrations
+        // have applied (a no-op wait on a request-only/cluster-worker host — see
+        // waitForBootMigrationGate's doc). Previously startRequestServers() ran
+        // unconditionally right here, immediately after the fire-and-forget
+        // runBootstrap() call, with NO ordering guarantee against the still-running
+        // migration IIFE it kicked off — so a write could land on a table whose
+        // federation-capture trigger a slow/large migration set hadn't created yet,
+        // permanently and silently never federating (su-72ce40f2's diagnosis, WI-5441
+        // post 53143). fire-and-forget here is intentional and safe: onWorker's
+        // declared return type is `() => void` and cluster-fork.ts never awaits it
+        // (see StartClusterOpts), and waitForBootMigrationGate degrades open on its
+        // own timeout, so this can never wedge boot.
+        void waitForBootMigrationGate().finally(() => {
+          startRequestServers();
+          // Heartbeat the primary so the cluster-lag-watchdog can detect a SYNCHRONOUS wedge
+          // (which freezes the worker-side lag-self-restart too) by heartbeat ABSENCE
+          // (EI-1598/1608). DEFAULT-OFF; only meaningful in a forked worker (process.send).
+          if (clusterWorkers > 1 && clusterLagWatchdogArmed())
+            startWorkerHeartbeat();
+          // EI-8816: cache the primary's periodic booted-handles broadcast so this
+          // request-only worker's substrate-status reads aren't a silent blind spot
+          // (the substrate boots only on the primary; this worker's own listBootedHandles()
+          // map is always empty). ALWAYS-ON when true-clustered — a correctness fix, not an
+          // opt-in perf feature (unlike the lag watchdog above).
+          if (clusterWorkers > 1) startWorkerBootedHandlesCache();
+          // EI-19327550671915579 (part 2 of EI-18735338283879820): also publish to the
+          // cross-SERVICE PG fallback, unconditionally (no clusterWorkers gate) — this is
+          // the leg that reaches a request-only host under the dedicated-bg-host topology
+          // (:3070/:3270, each a SEPARATE systemd service from papercup-bg-host, where
+          // node:cluster IPC can never apply at all). Runs in every single-process host
+          // (this closure executes inline here too — see the file-header comment above),
+          // and self-gates per-beat on isSubstrateOwnerProcess(), so a request-only host
+          // simply never writes.
+          startBootedHandlesPgPublisher({});
+          // WI-6594: publish this worker's P-009 stamp declarations to the primary and
+          // apply the ones it relays back from peers. Without this, an agent's
+          // coord:declare-intent and its work_items:claim land on DIFFERENT workers and
+          // no call can ever stamp both — measured live as intent_event_id and goal_ref
+          // never co-occurring, which red the fleet gate via lint:plane-ratchet.
+          // ALWAYS-ON when true-clustered: a correctness fix, like the cache above.
+          if (clusterWorkers > 1) {
+            startWorkerStampPublisher();
+            startWorkerStampReceiver();
+          }
+        });
+      },
+      // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
+      // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build
+      // (MODULE_NOT_FOUND / a boot-time throw the preflight manifest didn't enumerate) —
+      // halt the respawn storm and exit the primary with the integrity code. A clean,
+      // fast, distinct failure lets systemd/deploy-cli surface it and roll back to the
+      // last-good build, instead of flapping every worker for ~35 min (the all-pages
+      // outage). A worker that crashes AFTER serving still respawns normally.
+      onUnbootable: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
+        console.error(
+          `[hono-host] cluster UNBOOTABLE: ${consecutiveBootFailures} worker(s) failed to boot and none ` +
+            `stayed up (last exit code=${lastCode} signal=${lastSignal}). Exiting the primary (${BOOT_INTEGRITY_EXIT_CODE}) ` +
+            `so the supervisor/deploy rolls back to the last-good build rather than crash-looping. See the ` +
+            `[boot-integrity] line above for the likely missing module(s); run \`npm ci\` in this checkout if persistent.`,
+        );
+        process.exit(BOOT_INTEGRITY_EXIT_CODE);
+      },
     });
-  },
-  // Boot-failure backstop (2026-06-25 incident): if a whole generation of workers
-  // exits within the boot grace window and NONE ever stays up — an UNBOOTABLE build
-  // (MODULE_NOT_FOUND / a boot-time throw the preflight manifest didn't enumerate) —
-  // halt the respawn storm and exit the primary with the integrity code. A clean,
-  // fast, distinct failure lets systemd/deploy-cli surface it and roll back to the
-  // last-good build, instead of flapping every worker for ~35 min (the all-pages
-  // outage). A worker that crashes AFTER serving still respawns normally.
-  onUnbootable: ({ consecutiveBootFailures, lastCode, lastSignal }) => {
-    console.error(
-      `[hono-host] cluster UNBOOTABLE: ${consecutiveBootFailures} worker(s) failed to boot and none ` +
-        `stayed up (last exit code=${lastCode} signal=${lastSignal}). Exiting the primary (${BOOT_INTEGRITY_EXIT_CODE}) ` +
-        `so the supervisor/deploy rolls back to the last-good build rather than crash-looping. See the ` +
-        `[boot-integrity] line above for the likely missing module(s); run \`npm ci\` in this checkout if persistent.`,
-    );
-    process.exit(BOOT_INTEGRITY_EXIT_CODE);
-  },
-});
 
 // Graceful drain on shutdown.
 //  • The HTTP-serving processes — the single-process host AND each cluster WORKER —
@@ -795,7 +840,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
 //    drain, then exits so systemd restarts clean. Single-process is ALSO role 'primary'
 //    but serves HTTP, so it must NOT take this 2s-exit path (it would preempt the HTTP
 //    drain) — hence the `clusterWorkers > 1` guard.
-if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
+if (clusterHandle && clusterHandle.role === "primary" && clusterWorkers > 1) {
   // Cluster-lag watchdog (EI-1598/1608): the primary SIGKILLs a worker that stops
   // heart-beating (a synchronous wedge the worker-side lag-self-restart can't catch);
   // the startCluster exit handler then respawns it (respawn-budget-aware). DEFAULT-OFF
@@ -803,7 +848,9 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   const watchdog =
     clusterLagWatchdogArmed() && clusterHandle.workerById
       ? startClusterLagWatchdog({
-          cluster: nodeCluster as unknown as Parameters<typeof startClusterLagWatchdog>[0]['cluster'],
+          cluster: nodeCluster as unknown as Parameters<
+            typeof startClusterLagWatchdog
+          >[0]["cluster"],
           workerById: clusterHandle.workerById,
         })
       : undefined;
@@ -834,17 +881,21 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
   // tool calls are stamped from the same map.
   const stampRelay = clusterHandle.broadcast
     ? startPrimaryStampRelay({
-        cluster: nodeCluster as unknown as Parameters<typeof startPrimaryStampRelay>[0]['cluster'],
+        cluster: nodeCluster as unknown as Parameters<
+          typeof startPrimaryStampRelay
+        >[0]["cluster"],
         broadcast: clusterHandle.broadcast,
       })
     : undefined;
-  const shutdown = (sig: 'SIGTERM' | 'SIGINT'): void => {
+  const shutdown = (sig: "SIGTERM" | "SIGINT"): void => {
     // P-005: the true-cluster PRIMARY is the process that runs the auto-implement
     // dispatch loop (it owns the background machinery). It serves no HTTP, so it
     // does NOT go through installGracefulShutdown — mark the drain here too, so the
     // loop stops claiming new minutes-long workers as this primary exits.
     markShuttingDown();
-    console.log(`[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`);
+    console.log(
+      `[cluster] ${sig} — draining ${clusterHandle.workerCount} worker(s) + exiting primary`,
+    );
     watchdog?.stop(); // stop watching first so it doesn't fight the graceful drain
     bootedHandlesBroadcaster?.stop();
     bootedHandlesPgPublisher.stop();
@@ -854,8 +905,8 @@ if (clusterHandle && clusterHandle.role === 'primary' && clusterWorkers > 1) {
     // process.exit() after worker drain still runs their hazardous env teardown;
     // SIGKILL after the bounded drain leaves cleanup to the OS/systemd and cannot
     // throw through node-addon-api.
-    setTimeout(() => process.kill(process.pid, 'SIGKILL'), 2000).unref?.();
+    setTimeout(() => process.kill(process.pid, "SIGKILL"), 2000).unref?.();
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => shutdown("SIGINT"));
 }

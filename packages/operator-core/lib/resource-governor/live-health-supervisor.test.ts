@@ -19,7 +19,9 @@ describe('live-health managed-child topology', () => {
     });
 
     const bundled = buildLiveHealthMonitorSpawnPlan({
-      selfPath: '/app/sidecar/serve.mjs', execPath: '/app/sidecar/bin/node', spawnerPid: 43,
+      selfPath: '/app/sidecar/serve.mjs',
+      execPath: '/app/sidecar/bin/node',
+      spawnerPid: 43,
     });
     expect(bundled).toEqual({
       cmd: '/app/sidecar/bin/node',

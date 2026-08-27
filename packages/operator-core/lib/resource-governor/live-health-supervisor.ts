@@ -1,6 +1,6 @@
 /** Managed-child supervisor for the cross-platform live-health monitor. */
 
-import { spawn, type ChildProcess } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -13,6 +13,7 @@ import {
   respawnBudgetExhausted,
   type SidecarSpawnPlan,
 } from '../process-supervision/sidecar-spawn-shared';
+import { managedSpawn } from '../task-manager/managed-spawn';
 import { LIVE_HEALTH_MONITOR_READY_PREFIX } from './live-health-monitor-main';
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -29,21 +30,27 @@ interface SupervisorState {
   respawnTimer: ReturnType<typeof setTimeout> | null;
 }
 
-const state = pinModuleState('@papercusp/operator-core.resource-governor-live-health-supervisor', () => ({
-  child: null,
-  ready: false,
-  deliberateStop: false,
-  spawnInFlight: null,
-  respawnAttempts: [],
-  respawnTimer: null,
-} as SupervisorState));
+const state = pinModuleState(
+  '@papercusp/operator-core.resource-governor-live-health-supervisor',
+  () =>
+    ({
+      child: null,
+      ready: false,
+      deliberateStop: false,
+      spawnInFlight: null,
+      respawnAttempts: [],
+      respawnTimer: null,
+    }) as SupervisorState,
+);
 
-export function buildLiveHealthMonitorSpawnPlan(options: {
-  selfPath?: string;
-  execPath?: string;
-  moduleDirOverride?: string;
-  spawnerPid?: number;
-} = {}): SidecarSpawnPlan {
+export function buildLiveHealthMonitorSpawnPlan(
+  options: {
+    selfPath?: string;
+    execPath?: string;
+    moduleDirOverride?: string;
+    spawnerPid?: number;
+  } = {},
+): SidecarSpawnPlan {
   return resolveSidecarSpawnPlan({
     selfPath: options.selfPath ?? fileURLToPath(import.meta.url),
     devScriptPath: join(options.moduleDirOverride ?? moduleDir, 'live-health-monitor-bin.ts'),
@@ -56,15 +63,11 @@ export function buildLiveHealthMonitorSpawnPlan(options: {
 function scheduleRespawn(): void {
   if (state.deliberateStop || state.respawnTimer) return;
   const now = Date.now();
-  state.respawnAttempts = pruneRespawnWindow(
-    state.respawnAttempts,
-    now,
-    LIVE_HEALTH_MONITOR_RESPAWN_WINDOW_MS,
-  );
+  state.respawnAttempts = pruneRespawnWindow(state.respawnAttempts, now, LIVE_HEALTH_MONITOR_RESPAWN_WINDOW_MS);
   if (respawnBudgetExhausted(state.respawnAttempts, LIVE_HEALTH_MONITOR_MAX_RESPAWN_ATTEMPTS)) {
     console.error(
       `[resource-governor-health] ${LIVE_HEALTH_MONITOR_MAX_RESPAWN_ATTEMPTS} monitor crashes within ` +
-      `${LIVE_HEALTH_MONITOR_RESPAWN_WINDOW_MS / 1_000}s — auto-respawn paused until the next host boot`,
+        `${LIVE_HEALTH_MONITOR_RESPAWN_WINDOW_MS / 1_000}s — auto-respawn paused until the next host boot`,
     );
     return;
   }
@@ -88,11 +91,25 @@ async function spawnMonitor(): Promise<void> {
     state.respawnTimer = null;
   }
   const plan = buildLiveHealthMonitorSpawnPlan();
-  const child = spawn(plan.cmd, plan.args, {
-    env: { ...process.env, ...plan.env },
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: false,
-  });
+  const managed = await managedSpawn(
+    plan.cmd,
+    plan.args,
+    {
+      class: 'sidecar',
+      title: 'resource-governor live-health monitor',
+      argv: [plan.cmd, ...plan.args],
+      launchedBy: 'system:resource-governor-live-health-monitor',
+      detail: { mode: plan.mode },
+    },
+    {
+      spawnOptions: {
+        env: { ...process.env, ...plan.env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        detached: false,
+      },
+    },
+  );
+  const child = managed.child;
   state.child = child;
   state.ready = false;
 
@@ -107,7 +124,11 @@ async function spawnMonitor(): Promise<void> {
       else resolve();
     };
     const timeout = setTimeout(() => {
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* already gone */
+      }
       finish(new Error(`live-health monitor did not become ready within ${LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS}ms`));
     }, LIVE_HEALTH_MONITOR_READY_TIMEOUT_MS);
     timeout.unref?.();

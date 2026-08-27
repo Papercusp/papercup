@@ -2,7 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProcessLiveHealthPublisher } from './live-health-publisher';
 import type { LiveHealthPaths } from './live-health-monitor';
 
-const PATHS: LiveHealthPaths = { rootDir: '/tmp/health', fragmentsDir: '/tmp/health/fragments', snapshotPath: '/tmp/health/live-health.json' };
+const PATHS: LiveHealthPaths = {
+  rootDir: '/tmp/health',
+  fragmentsDir: '/tmp/health/fragments',
+  snapshotPath: '/tmp/health/live-health.json',
+};
 
 describe('ProcessLiveHealthPublisher', () => {
   it('publishes true process deltas, including negative working-set growth, with correct CPU units', async () => {
@@ -18,7 +22,15 @@ describe('ProcessLiveHealthPublisher', () => {
       pid: 77,
       readCounters: () => samples.shift()!,
       readDescriptorCount: async () => 12,
-      readLoopLag: () => ({ p50Ms: 1, p95Ms: 7, p99Ms: 9, maxMs: 10, sampleCount: 20, windowMs: 2_000, windowMature: true }),
+      readLoopLag: () => ({
+        p50Ms: 1,
+        p95Ms: 7,
+        p99Ms: 9,
+        maxMs: 10,
+        sampleCount: 20,
+        windowMs: 2_000,
+        windowMature: true,
+      }),
       writeFragment,
     });
     const first = await publisher.publishOnce();
