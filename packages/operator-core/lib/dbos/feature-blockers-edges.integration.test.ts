@@ -21,6 +21,15 @@ const migrationBase = resolve(
   '../../../../libs/papercusp/libs/db/sql/935-canonical-work-item-blocking-edges.sql',
 );
 const migration935 = readFileSync(existsSync(migrationBase) ? migrationBase : `${migrationBase}.DRAFT`, 'utf8');
+const migration991 = readFileSync(
+  resolve(here, '../../../../libs/papercusp/libs/db/sql/991-work-item-dependency-lifecycle-transition-guard.sql'),
+  'utf8',
+);
+const migration992Base = resolve(
+  here,
+  '../../../../libs/papercusp/libs/db/sql/992-work-item-dependency-satisfaction.sql',
+);
+const migration992 = readFileSync(existsSync(migration992Base) ? migration992Base : `${migration992Base}.DRAFT`, 'utf8');
 
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
@@ -28,6 +37,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 import { getFeatureBlockers, featureBlockEdges, syncFeatureBlockEdges } from './feature-blockers-edges';
+import { getWorkItemDepBlockers } from './work-item-deps-store';
 import { readFrontierFeatures } from './orchestrator-loop';
 
 let db: FreshPgDb;
@@ -54,6 +64,8 @@ beforeAll(async () => {
   // (replaces the old minimal-hfc table + work_items-view setup).
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple(); // the syncFeatureBlockEdges dual-write target
+  await db.sql.unsafe(migration991).simple();
+  await db.sql.unsafe(migration992).simple();
 }, 90_000);
 
 afterAll(async () => {
@@ -123,9 +135,93 @@ describe('EI-1 canonical edge blocking (real PG)', () => {
   it('the dispatch frontier derives each feature’s blockedBy from the coord_links edges', async () => {
     await seed([{ id: 'F-1', blockedBy: ['F-2'] }, { id: 'F-2' }, { id: 'F-3', blockedBy: ['F-1', 'F-2'] }]);
     const frontier = await readFrontierFeatures(db.sql as never, 'default', 'demo');
-    const norm = (fs: { id: string; blockedBy: readonly string[] }[]) =>
-      Object.fromEntries(fs.map((f) => [f.id, [...f.blockedBy].sort()]).sort());
+    const norm = (fs: { id: string; blockedBy: readonly (string | { id: string })[] }[]) =>
+      Object.fromEntries(
+        fs.map((f) => [f.id, f.blockedBy.map((blocker) => typeof blocker === 'string' ? blocker : blocker.id).sort()]).sort(),
+      );
     expect(norm(frontier)).toEqual({ 'F-1': ['F-2'], 'F-2': [], 'F-3': ['F-1', 'F-2'] });
+  });
+});
+
+describe('P-004 dependency satisfaction (real PG)', () => {
+  it('defaults to settled and updates satisfaction in place without changing edge identity', async () => {
+    await seedIds(['F-1', 'F-2']);
+    await syncFeatureBlockEdges('demo', 'F-1', ['F-2']);
+
+    const initial = await db.sql<{ id: string; satisfaction: string }[]>`
+      SELECT id::text, satisfaction FROM harness_shared.work_item_deps`;
+    expect(initial).toEqual([{ id: '1', satisfaction: 'settled' }]);
+    expect(await getWorkItemDepBlockers('demo')).toEqual(
+      new Map([['F-1', [{ id: 'F-2', satisfaction: 'settled' }]]]),
+    );
+
+    await syncFeatureBlockEdges('demo', 'F-1', ['F-2'], { satisfaction: 'success' });
+    expect(await db.sql<{ id: string; satisfaction: string }[]>`
+      SELECT id::text, satisfaction FROM harness_shared.work_item_deps`).toEqual([
+      { id: '1', satisfaction: 'success' },
+    ]);
+
+    await syncFeatureBlockEdges('demo', 'F-1', ['F-2'], { satisfaction: 'settled' });
+    expect(await db.sql<{ id: string; satisfaction: string }[]>`
+      SELECT id::text, satisfaction FROM harness_shared.work_item_deps`).toEqual([
+      { id: '1', satisfaction: 'settled' },
+    ]);
+    expect(await getFeatureBlockers('demo')).toEqual(new Map([['F-1', ['F-2']]]));
+  });
+
+  it.each([
+    ['feature', 'passed', false],
+    ['feature', 'done', false],
+    ['feature', 'deprecated', true],
+    ['feature', 'dropped', true],
+    ['issue', 'resolved', false],
+    ['issue', 'done', false],
+    ['issue', 'closed', true],
+    ['issue', 'dropped', true],
+  ] as const)('requires success for a %s blocker ending as %s (blocked=%s)', async (kind, status, expectedBlocked) => {
+    await seed([{ id: 'F-dependant' }]);
+    if (kind === 'feature') {
+      await seed([{ id: 'F-blocker', status }]);
+      await db.sql`
+        INSERT INTO harness_shared.work_item_deps
+          (blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+        VALUES ('feature', 'demo#F-dependant', 'feature', 'demo#F-blocker', 'blocks', 'success')`;
+    } else {
+      await seedFeature({ id: 'WI-blocker', itemKind: 'bug', status });
+      await db.sql`
+        INSERT INTO harness_shared.work_item_deps
+          (blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, satisfaction)
+        VALUES ('feature', 'demo#F-dependant', 'issue', 'WI-blocker', 'blocks', 'success')`;
+    }
+
+    expect(await db.sql<{ blocked: boolean }[]>`
+      SELECT harness_shared.work_item_is_blocked('demo', 'F-dependant', 'default') AS blocked`).toEqual([
+      { blocked: expectedBlocked },
+    ]);
+    expect(await db.sql<{ feature_id: string }[]>`
+      SELECT feature_id FROM harness_shared.work_item_blocked WHERE feature_id = 'F-dependant'`).toEqual(
+      expectedBlocked ? [{ feature_id: 'F-dependant' }] : [],
+    );
+  });
+
+  it('refuses active progress behind an unsuccessful blocker and abandonment behind a nonterminal success dependant', async () => {
+    await seed([{ id: 'F-dependant' }, { id: 'F-blocker' }]);
+    await syncFeatureBlockEdges('demo', 'F-dependant', ['F-blocker'], { satisfaction: 'success' });
+
+    await expect(db.sql`
+      UPDATE harness_shared.work_items SET status = 'wip'
+       WHERE harness_slug = 'demo' AND feature_id = 'F-dependant'`).rejects.toThrow(
+      /cannot move dependency dependant/,
+    );
+
+    await db.sql`
+      UPDATE harness_shared.work_items SET status = 'passed'
+       WHERE harness_slug = 'demo' AND feature_id = 'F-blocker'`;
+    await expect(db.sql`
+      UPDATE harness_shared.work_items SET status = 'deprecated'
+       WHERE harness_slug = 'demo' AND feature_id = 'F-blocker'`).rejects.toThrow(
+      /cannot make dependency blocker .* unsatisfied/,
+    );
   });
 });
 
