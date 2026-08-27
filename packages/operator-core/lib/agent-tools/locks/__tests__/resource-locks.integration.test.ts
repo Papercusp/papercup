@@ -49,6 +49,7 @@ const acq = (
   resource: string,
   mode: ResourceMode,
   ttlSec = 60,
+  queueOnConflict = false,
 ) =>
   inWorkspaceTxn(ws, owner, (tx) =>
     tryAcquireResource(tx, {
@@ -59,6 +60,7 @@ const acq = (
       ownerLabel: `res:${owner}`,
       reason: 'integration test',
       ttlSec,
+      queueOnConflict,
     }),
   );
 
@@ -183,7 +185,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(bWaited).toBeGreaterThanOrEqual(900); // actually waited ~1s, no instant give-up
 
     // C now queues an exclusive waiter behind B's still-present draining exclusive.
-    const c = await acq(ws, 'C', 'dev-server', 'exclusive');
+    const c = await acq(ws, 'C', 'dev-server', 'exclusive', 60, true);
     expect(c.ok).toBe(false);
     if (c.ok) return;
     expect(c.reason).toBe('held_exclusive'); // B's draining exclusive blocks C → C recorded as waiter
@@ -234,8 +236,8 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     if (!b.ok) return;
     expect(b.status).toBe('draining');
 
-    const c = await acq(ws, 'C', 'dev-server', 'exclusive');
-    const d = await acq(ws, 'D', 'dev-server', 'exclusive');
+    const c = await acq(ws, 'C', 'dev-server', 'exclusive', 60, true);
+    const d = await acq(ws, 'D', 'dev-server', 'exclusive', 60, true);
     expect(c.ok && d.ok).toBe(false);
     if (c.ok || d.ok) return;
     expect(c.queue_ticket).toBeDefined();
@@ -275,8 +277,8 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const a = await acq(ws, 'A', 'dev-server', 'exclusive');
     expect(a.ok).toBe(true);
     if (!a.ok) return;
-    expect((await acq(ws, 'B', 'dev-server', 'exclusive')).ok).toBe(false);
-    expect((await acq(ws, 'C', 'dev-server', 'exclusive')).ok).toBe(false);
+    expect((await acq(ws, 'B', 'dev-server', 'exclusive', 60, true)).ok).toBe(false);
+    expect((await acq(ws, 'C', 'dev-server', 'exclusive', 60, true)).ok).toBe(false);
 
     // B abandoned its request. Expiry GC must remove it so C becomes the head
     // when A releases, while agent_resource_waiters remains an independent
@@ -349,6 +351,31 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     if (!z.ok) expect(z.reason).toBe('held_exclusive');
   });
 
+  it.skipIf(!live)('does not late-grant a terminal exclusive conflict by default', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+    const holder = await acq(ws, 'holder', 'dev-server', 'exclusive');
+    expect(holder.ok).toBe(true);
+    if (!holder.ok) return;
+
+    // A caller that returns held_exclusive has no pending/grant contract. The
+    // default must therefore leave neither a durable ticket nor a waiter that
+    // could be promoted after this call has exited.
+    const refused = await acq(ws, 'terminal', 'dev-server', 'exclusive');
+    expect(refused.ok).toBe(false);
+    if (refused.ok) return;
+    expect(refused.reason).toBe('held_exclusive');
+    expect(refused.queue_ticket).toBeUndefined();
+    const beforeRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    expect(beforeRelease.queue).toEqual([]);
+
+    const released = await rel(ws, 'holder', holder.lock_id);
+    expect(released.waiters['dev-server'] ?? []).not.toContain('terminal');
+    const afterRelease = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    expect(afterRelease.queue).toEqual([]);
+    expect(afterRelease.holders.some((entry) => entry.owner === 'terminal')).toBe(false);
+  });
+
   it.skipIf(!live)('release reports the resources whose exclusive was released (for back-up broadcast)', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
@@ -394,7 +421,7 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     expect(x.ok).toBe(true);
     if (!x.ok) return;
     expect((await acq(ws, 'C', 'dev-server', 'shared')).ok).toBe(false); // exclusive_pending
-    expect((await acq(ws, 'D', 'dev-server', 'exclusive')).ok).toBe(false); // held_exclusive
+    expect((await acq(ws, 'D', 'dev-server', 'exclusive', 60, true)).ok).toBe(false); // held_exclusive
 
     // Releasing X's exclusive returns the waiters (the targeted back-up audience).
     const r = await rel(ws, 'X', x.lock_id);
