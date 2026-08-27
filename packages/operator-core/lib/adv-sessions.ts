@@ -2239,6 +2239,39 @@ export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Pro
 }
 
 /**
+ * How long an un-ended `adv_sessions` row may vouch for its owner's liveness.
+ *
+ * WI-42466. The rescue below exists for ONE narrow situation its own docstring
+ * names: a session inside its *bootstrap/orient window* — already running, not
+ * yet coord-dispatchable. That is a window measured in minutes. But the
+ * `live_adv` leg was bounded only by `ended_at IS NULL`, and `ended_at` is
+ * written by a session-end hook that SIGKILL, a crash, and an OOM all bypass —
+ * so a row whose hook never ran vouched for a dead process FOREVER, and the
+ * "freshly-launched" premise silently became "launched at any point in
+ * history".
+ *
+ * Its `live_spawn` sibling never had this hole: it requires a heartbeat inside
+ * 10 minutes. This is the same bound, for the same reason, on the same read.
+ *
+ * Why a bound rather than a pid probe: `probeProcessLiveness` refuses to guess
+ * across machines and so returns `null` unless it is handed a host that equals
+ * this one — and `adv_sessions` records no host column, while the presence row
+ * that WOULD carry pid+host is reaped on a shorter schedule than these rows
+ * live. Precisely when the rescue matters, the falsifier is unavailable. A
+ * freshness bound needs no host, no pid, and no new column, and it restores the
+ * window the docstring already claimed.
+ *
+ * Measured instance: goal `work-on-everything-070565` lost its holder
+ * (su-a2e93ef3, pid 2911661, SIGKILLed — `kill -0` → ESRCH, `ended_at` still
+ * NULL, presence reaped). The oracle read `recorded` ⇒ `holderCountsAsAlive`
+ * ⇒ the goal folded to `held` ⇒ its liveness alarm returned null and the
+ * owner-armed `GOAL_HOLDER_RESPAWN` respawner hit `continue` on all 113 of its
+ * ticks. Nothing was broken except this predicate, and nothing could ever have
+ * noticed.
+ */
+export const RECORDED_ADV_SESSION_FRESH_SEC = 10 * 60;
+
+/**
  * Batch: which of `coordOwnerIds` have POSITIVE live-session evidence even if
  * they have not registered an inbox-wake await yet. This is the read-side twin
  * of coord:presence's `recorded` state: a freshly-launched session in its
@@ -2246,10 +2279,16 @@ export async function listEndedAdvSessionsByOwners(coordOwnerIds: string[]): Pro
  *
  * Sources:
  *   - adv_sessions: an authoritative live interactive/terminal session row
- *     (`ended_at IS NULL`) keyed by coord_owner_id.
+ *     (`ended_at IS NULL`) started within `RECORDED_ADV_SESSION_FRESH_SEC`,
+ *     keyed by coord_owner_id.
  *   - spawned_agents: the nursery's running row, keyed by any alias the
  *     fleet_assignment view can expose (spawn_id/session_owner/run_id), with a
  *     fresh process heartbeat.
+ *
+ * BOTH legs are freshness-bounded on purpose (WI-42466): this is a rescue for a
+ * session that is booting, never a standing claim that an un-ended row means a
+ * live process. A genuinely healthy long-lived agent does not need it — it arms
+ * inbox waits and resolves through the wakeability leg instead.
  *
  * Positive-evidence by design. On query failure it returns empty so callers
  * degrade to the stricter wakeability-only behavior instead of fabricating
@@ -2269,6 +2308,7 @@ export async function recordedLiveOwnerIds(coordOwnerIds: string[]): Promise<Set
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ANY(${ids}::text[])
            AND ended_at IS NULL
+           AND started_at > now() - ${`${RECORDED_ADV_SESSION_FRESH_SEC} seconds`}::interval
       ),
       live_spawn AS (
         SELECT alias.owner_id
