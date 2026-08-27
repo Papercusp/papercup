@@ -23,6 +23,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   buildAnalyzeArgs,
+  buildAnalyzeInvocation,
   analyzeEnv,
   analyzeNodeArgs,
   analyzeCliPath,
@@ -224,6 +225,32 @@ describe('analyzeNodeArgs — the stack budget + argv order (P-004)', () => {
   });
 });
 
+describe('buildAnalyzeInvocation — host-wide heavy-work admission', () => {
+  it('wraps the analyze command with pc-heavy resolved from the integration root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-heavy-'));
+    const scripts = join(root, 'scripts');
+    mkdirSync(scripts);
+    const wrapper = join(scripts, 'pc-heavy.sh');
+    writeFileSync(wrapper, '#!/usr/bin/env bash\n');
+    const args = ['--stack-size=4096', '/cli.js', 'analyze', root];
+
+    expect(buildAnalyzeInvocation(root, '/usr/bin/node', args)).toEqual({
+      command: 'bash',
+      args: [wrapper, '--', '/usr/bin/node', ...args],
+    });
+  });
+
+  it('fails open to the direct command when the wrapper is absent', () => {
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-no-heavy-'));
+    const args = ['--stack-size=4096', '/cli.js', 'analyze', root];
+
+    expect(buildAnalyzeInvocation(root, '/usr/bin/node', args)).toEqual({
+      command: '/usr/bin/node',
+      args,
+    });
+  });
+});
+
 describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', () => {
   /**
    * The RUNNER's environment must not decide this verdict.
@@ -293,6 +320,41 @@ describe('runGitnexusAnalyze — scheduled task-manager isolation (WI-40213)', (
         GITNEXUS_LBUG_MAX_DB_SIZE: String(GITNEXUS_LBUG_MAX_DB_BYTES),
       }),
       detached: true,
+    });
+
+    child.emit('close', 0);
+    await expect(resultPromise).resolves.toEqual({ code: 0, stdout: '', stderr: '', timedOut: false });
+  });
+
+  it('admits the analyze through pc-heavy when the integration root provides it', async () => {
+    expect(process.env.NODE_OPTIONS, 'the runner-env scrub is not in effect').toBeUndefined();
+    const root = mkdtempSync(join(tmpdir(), 'gitnexus-managed-heavy-'));
+    const scripts = join(root, 'scripts');
+    mkdirSync(scripts);
+    const wrapper = join(scripts, 'pc-heavy.sh');
+    writeFileSync(wrapper, '#!/usr/bin/env bash\n');
+    const child = fakeManagedChild();
+    taskManager.managedSpawn.mockResolvedValue({ child, taskId: 'task-gitnexus-heavy' });
+    const repoName = 'papercusp';
+    const timeoutMs = 61_001;
+    const directCommand = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
+    const directArgs = analyzeNodeArgs(analyzeCliPath(), root, repoName);
+
+    const resultPromise = runGitnexusAnalyze(root, repoName, timeoutMs);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(taskManager.managedSpawn).toHaveBeenCalledTimes(1);
+    const [command, args, spec] = taskManager.managedSpawn.mock.calls[0] as [
+      string,
+      string[],
+      Record<string, unknown>,
+    ];
+    expect(command).toBe('bash');
+    expect(args).toEqual([wrapper, '--', directCommand, ...directArgs]);
+    expect(spec).toMatchObject({
+      argv: ['bash', wrapper, '--', directCommand, ...directArgs],
+      cwd: root,
+      launchedBy: 'system:gitnexus-reindex',
     });
 
     child.emit('close', 0);

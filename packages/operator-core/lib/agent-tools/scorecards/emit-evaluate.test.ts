@@ -219,6 +219,77 @@ describe('emitScorecard', () => {
     });
   });
 
+  it('refuses a spec-test-adequacy card without the evaluator rerun recipe', async () => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: RATINGS,
+        subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining('rerunRecipe'),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a non-plan subject kind', { kind: 'work-item', ref: 'WI-101' }],
+    ['a subject ref that differs from the evaluator selection', { kind: 'plan', ref: 'reconnect-plan#SPEC-003-02@1' }],
+  ])('refuses spec-test-adequacy with %s', async (_label, subject) => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: RATINGS,
+        rerunRecipe: RERUN_RECIPE,
+        subject,
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({
+      ok: false,
+      code: 'invalid_spec_test_adequacy_binding',
+      error: expect.stringContaining("kind:'plan'"),
+    });
+    expect(getRubricPlanRevisionM).not.toHaveBeenCalled();
+    expect(captureM).not.toHaveBeenCalled();
+  });
+
+  it('accepts and persists the evaluator-owned plan subject for spec-test-adequacy', async () => {
+    getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
+
+    const r = await emitScorecard(
+      {
+        rubricRef: 'spec-test-adequacy',
+        ratings: RATINGS,
+        rerunRecipe: RERUN_RECIPE,
+        subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+      },
+      { createdBy: 'su-1' },
+    );
+
+    expect(r).toMatchObject({ ok: true, created: true, issueId: 'ISS-1' });
+    expect(captureM.mock.calls[0][0]).toMatchObject({
+      payloadExtra: {
+        observation: {
+          rubricRef: 'spec-test-adequacy',
+          subject: { kind: 'plan', ref: 'reconnect-plan#SPEC-003-01@1' },
+          rerunRecipe: RERUN_RECIPE,
+        },
+      },
+    });
+  });
+
   it('uses a persisted rerun recipe in the latest-hash fallback for legacy rows without a stored fingerprint', async () => {
     listM.mockResolvedValue([
       {

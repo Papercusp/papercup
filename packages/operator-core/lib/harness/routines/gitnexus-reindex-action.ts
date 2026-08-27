@@ -361,6 +361,26 @@ export function analyzeCliPath(): string {
   );
 }
 
+/**
+ * Put the expensive graph rebuild behind the repository's existing host-wide
+ * heavy-work admission wrapper. The wrapper is resolved from the integration
+ * root rather than from the operator process's cwd, because routine fires can
+ * run from a package or service directory. A partial install or a repo-less
+ * harness must remain able to run the action, so an absent wrapper deliberately
+ * falls back to the original direct invocation.
+ */
+export function buildAnalyzeInvocation(
+  root: string,
+  command: string,
+  args: readonly string[],
+): { command: string; args: string[] } {
+  const pcHeavyPath = path.join(root, 'scripts', 'pc-heavy.sh');
+  if (!existsSync(pcHeavyPath)) {
+    return { command, args: [...args] };
+  }
+  return { command: 'bash', args: [pcHeavyPath, '--', command, ...args] };
+}
+
 // ---------------------------------------------------------------------------
 // CRASH-RESIDUE PREFLIGHT — one policy over the whole (db x shadow x wal) state space.
 //
@@ -988,15 +1008,16 @@ export interface AnalyzeRunResult {
 
 export function runGitnexusAnalyze(root: string, repoName: string, timeoutMs: number): Promise<AnalyzeRunResult> {
   return (async () => {
-    const command = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
-    const args = analyzeNodeArgs(analyzeCliPath(), root, repoName);
+    const directCommand = process.env.GITNEXUS_NODE_BIN ?? process.execPath;
+    const directArgs = analyzeNodeArgs(analyzeCliPath(), root, repoName);
+    const invocation = buildAnalyzeInvocation(root, directCommand, directArgs);
     const managed = await managedSpawn(
-      command,
-      args,
+      invocation.command,
+      invocation.args,
       {
         class: 'build',
         title: `gitnexus analyze ${repoName}`,
-        argv: [command, ...args],
+        argv: [invocation.command, ...invocation.args],
         cwd: root,
         launchedBy: 'system:gitnexus-reindex',
         memoryMaxBytes: GITNEXUS_ANALYZE_MEMORY_MAX_BYTES,

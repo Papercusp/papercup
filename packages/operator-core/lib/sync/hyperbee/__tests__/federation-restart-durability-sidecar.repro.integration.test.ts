@@ -74,6 +74,7 @@ import {
 import { type HyperswarmLike } from '../swarm';
 import type { OpEnvelope } from '../op-envelope-types';
 import { _resetBootHistoryForTests } from '../boot-history';
+import { getReplicationLiveness } from '../replication-liveness';
 import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
@@ -1496,11 +1497,19 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         : memberConnAttempts <= 1
           ? 'REJOIN — the escalation fired and logged, but the member never opened a second connection (memberConnAttempts is still 1). boot.ts logs that line immediately BEFORE `void swarmHandle?.forceRejoin()`, so this is what it looks like when forceRejoin is never actually invoked (an unset swarmHandle is swallowed by the `?.`) or resolves without dialing. Suspect swarm.ts forceRejoinNow / its eviction sweep, NOT the detector.'
           : 'REPLICATE — a fresh connection DID open after the escalation (memberConnAttempts > 1) yet content still never landed: the reconnect is not resuming core replication (core likely still bound to the dead muxer). Suspect the admit -> addRemoteCore -> session.replicate(muxer) re-attach path.';
+      const livenessSnapshot = getReplicationLiveness({
+        workspaceId: WORKSPACE_ID,
+        harnessSlug: MEMBER_SLUG,
+        graceMs: GRACE_MS,
+        connectedNeverReplicatedGraceMs: GRACE_MS,
+      });
       expect(
         landed,
         `F-zombie never landed on the member within 30s ` +
           `(memberConnAttempts=${memberConnAttempts}, forceRejoinFired=${forceRejoinFired}, elapsed=${Date.now() - t0}ms).\n` +
           `stalledStage: ${stalledStage}\n` +
+          `memberLiveConnections=${member.handle.swarm?.liveConnectionCount ?? 'no-swarm'}\n` +
+          `replicationLiveness=${JSON.stringify(livenessSnapshot)}\n` +
           `last swarm/replication console.info lines:\n  ${infoTrace.slice(-25).join('\n  ') || '(none captured)'}`,
       ).toMatchObject({ feature_id: 'F-zombie', origin: 'remote', title: 'Authored while member zombied' });
       expect(

@@ -293,6 +293,17 @@ function clipWithTruncationPointer(value: string, maxChars: number, msgId: unkno
   return value.slice(0, maxChars - pointer.length) + pointer;
 }
 
+/** Keep the actionable tail of a long message body visible. `body` is the
+ * flattened projection of the ordered sections, and senders conventionally
+ * put the request in the final section. Prefix the recovery pointer because
+ * the omitted content is now the head, rather than appending it after a head
+ * excerpt that would hide the request. */
+function clipBodyWithTruncationPointer(value: string, maxChars: number, msgId: unknown): string {
+  const pointer = truncationPointer(msgId);
+  if (!pointer || pointer.length >= maxChars) return value.slice(-maxChars);
+  return pointer + value.slice(-(maxChars - pointer.length));
+}
+
 /** Bound the COMBINED `text` across one entry's `sections[]` to a single shared
  *  `maxChars` budget, preserving every other section key. Returns null when there
  *  is nothing to do (not an array, or already within budget) so the caller can
@@ -314,28 +325,39 @@ function boundSectionsText(
   }
   if (fullChars <= maxChars) return null;
   // Reserve the pointer before distributing text across sections. Without this
-  // reservation, an early section could consume all but a few characters of the
-  // budget and leave the later clipped section with no room to identify the
+  // reservation, a retained section could consume all but a few characters of
+  // the budget and leave the clipped section with no room to identify the
   // recovery path at all.
   const pointer = truncationPointer(msgId);
-  const pointerChars = pointer && pointer.length < maxChars ? pointer.length : 0;
+  const usablePointer = pointer && pointer.length < maxChars ? pointer : null;
+  const pointerChars = usablePointer?.length ?? 0;
   let remaining = maxChars - pointerChars;
   let truncated = false;
-  const sections = raw.map((s) => {
-    if (!s || typeof s !== "object") return s;
+  // Spend the shared budget from the tail. A coord:send body commonly puts the
+  // actionable request in its final section; front-biased allocation can leave
+  // that section as an empty shell while preserving only explanatory context.
+  // Keep the original array order in the result, but retain later sections
+  // before earlier ones are clipped.
+  const sections = raw.slice();
+  for (let i = raw.length - 1; i >= 0; i -= 1) {
+    const s = raw[i];
+    if (!s || typeof s !== "object") continue;
     const rec = s as Record<string, unknown>;
     const t = rec["text"];
-    if (typeof t !== "string") return s;
-    if (truncated) return { ...rec, text: "" };
+    if (typeof t !== "string") continue;
+    if (truncated) {
+      sections[i] = { ...rec, text: "" };
+      continue;
+    }
     if (t.length <= remaining) {
       remaining -= t.length;
-      return s;
+      continue;
     }
-    const kept = t.slice(0, remaining) + (pointer ?? "");
+    const kept = t.slice(0, remaining) + (usablePointer ?? "");
     remaining = 0;
     truncated = true;
-    return { ...rec, text: kept };
-  });
+    sections[i] = { ...rec, text: kept };
+  }
   return { sections, fullChars };
 }
 
@@ -355,10 +377,13 @@ function boundSectionsText(
  *  arg is the documented lever for "read many entries cheaply", it failed in the
  *  worst direction — you reach for it when you already know the read is large.
  *
- *  Structural keys (premises / forYouBecause / youMayNotKnow / couldNotDetermine /
- *  clarify) are PRESERVED rather than stripped: authoredFieldsMarker runs AFTER
- *  bounding and derives its marker from them, so dropping `sections` outright —
- *  the cheaper fix — would silently drop that marker instead. */
+ *  The body and sections are tail-biased: the flattened body keeps its
+ *  actionable suffix, while the ordered sections spend their shared budget
+ *  from the final section backward. Structural keys (premises / forYouBecause /
+ *  youMayNotKnow / couldNotDetermine / clarify) are PRESERVED rather than
+ *  stripped: authoredFieldsMarker runs AFTER bounding and derives its marker
+ *  from them, so dropping `sections` outright — the cheaper fix — would
+ *  silently drop that marker instead. */
 export function boundInboxEntries<T extends Record<string, unknown>>(
   entries: readonly T[],
   maxChars: number,
@@ -372,7 +397,10 @@ export function boundInboxEntries<T extends Record<string, unknown>>(
       if (typeof v === "string" && v.length > maxChars) {
         out = {
           ...out,
-          [field]: clipWithTruncationPointer(v, maxChars, e["msg_id"]),
+          [field]:
+            field === "body"
+              ? clipBodyWithTruncationPointer(v, maxChars, e["msg_id"])
+              : clipWithTruncationPointer(v, maxChars, e["msg_id"]),
           [`${field}_truncated`]: true,
           [`${field}_full_chars`]: v.length,
         };

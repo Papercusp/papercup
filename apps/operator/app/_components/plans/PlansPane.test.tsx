@@ -90,6 +90,7 @@ vi.mock("nuqs", () => ({
   ],
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
   parseAsBoolean: { withDefault: (d: unknown) => ({ _d: d }) },
+  parseAsStringEnum: () => ({ withDefault: (d: unknown) => ({ _d: d }) }),
 }));
 vi.mock("@papercusp/sync", () => ({
   onSyncBusEvent: () => () => {},
@@ -179,12 +180,18 @@ vi.mock("./PlanPopupModal", () => ({
   default: ({
     planSlug,
     origin,
+    ownerIdentity,
   }: {
     planSlug: string | null;
     origin?: "scout" | null;
+    ownerIdentity?: PlanListRow["ownerIdentity"] | null;
   }) =>
     planSlug ? (
-      <div data-testid="popup-open" data-origin={origin ?? "outside-blender"}>
+      <div
+        data-testid="popup-open"
+        data-origin={origin ?? "user"}
+        data-owner={ownerIdentity?.handle ?? "User"}
+      >
         {planSlug}
       </div>
     ) : null,
@@ -226,6 +233,7 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     // `over`, so a field omitted here is silently dropped and a test that sets it
     // asserts against undefined while looking correct.
     origin: over.origin,
+    ownerIdentity: over.ownerIdentity,
     triggered: over.triggered,
     triggerSources: over.triggerSources,
   } as PlanListRow;
@@ -320,6 +328,7 @@ describe("PlansPane", () => {
     expect(filters).toBeTruthy();
     expect(screen.getByTestId("plans-pane-finished-toggle")).toBeTruthy();
     expect(screen.getByRole("button", { name: "triggered" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Plan source" })).toBeTruthy();
     expect(screen.queryByTestId("plans-pane-filter-toggle")).toBeNull();
     // …and nothing else claims to control it either (a leftover aria-controls
     // pointing at the row would mean some collapsed trigger survived).
@@ -407,57 +416,144 @@ describe("PlansPane", () => {
     expect(setters.plq).toHaveBeenCalledWith(null);
   });
 
-  it("labels every row Blender or Outside Blender without inferring creator identity", () => {
+  it("labels every row Blender or with the resolved plan-owner handle", () => {
     planListData.value = {
       plans: [
         plan({ slug: "p-blender", title: "Blender plan", origin: "scout" }),
-        plan({ slug: "p-agent", title: "Agent-ideated plan" }),
-        plan({ slug: "p-human", title: "Human plan" }),
+        plan({
+          slug: "p-agent",
+          title: "Agent-authored plan",
+          ownerIdentity: {
+            id: "agent-rin",
+            handle: "Rin",
+            kind: "agent",
+            verified: true,
+          },
+        }),
+        plan({
+          slug: "p-human",
+          title: "Human plan",
+          ownerIdentity: {
+            id: "avi",
+            handle: "Avi",
+            kind: "human",
+            verified: true,
+          },
+        }),
+        plan({ slug: "p-fallback", title: "Unresolved owner plan" }),
       ],
     };
 
     render(<PlansPane />);
-    const badges = screen.getAllByTestId("plans-pane-blender-badge");
-    const outside = screen.getAllByTestId("plans-pane-outside-blender-badge");
-    expect(badges).toHaveLength(1);
-    expect(outside).toHaveLength(2);
+    const sourceBadges = screen.getAllByTestId("plans-pane-source-badge");
+    const blender = sourceBadges.filter(
+      (badge) => badge.getAttribute("data-plan-provenance") === "blender",
+    );
+    const user = sourceBadges.filter(
+      (badge) => badge.getAttribute("data-plan-provenance") === "user",
+    );
+    expect(blender).toHaveLength(1);
+    expect(user).toHaveLength(3);
     // The owner asked for a BLENDER glyph specifically and for it to be hard to
     // miss, so both halves are pinned: an inline svg (lucide ships no blender, so
     // this is hand-drawn and a refactor could silently drop it) and the visible
     // word. Asserting only the testid would let either regress unnoticed.
-    expect(badges[0].querySelector("svg")).toBeTruthy();
-    expect(badges[0].textContent).toContain("Blender");
+    expect(blender[0].querySelector("svg")).toBeTruthy();
+    expect(blender[0].textContent).toContain("Blender");
     // Assert WHICH row carries it — a single badge on the wrong row would also
     // satisfy a bare length check.
     expect(
-      screen.getByTestId("plans-pane-row-p-blender").contains(badges[0]),
+      screen.getByTestId("plans-pane-row-p-blender").contains(blender[0]),
     ).toBe(true);
     expect(screen.getByTestId("plans-pane-row-p-agent").textContent).toContain(
-      "Outside Blender",
+      "Rin",
     );
     expect(screen.getByTestId("plans-pane-row-p-human").textContent).toContain(
-      "Outside Blender",
+      "Avi",
     );
-    expect(outside.map((badge) => badge.textContent)).toEqual([
-      "Outside Blender",
-      "Outside Blender",
-    ]);
-    expect(outside.map((badge) => badge.textContent).join(" ")).not.toMatch(
-      /user|agent/i,
+    expect(
+      screen.getByTestId("plans-pane-row-p-fallback").textContent,
+    ).toContain("User");
+    expect(user.map((badge) => badge.getAttribute("aria-label"))).toEqual(
+      expect.arrayContaining([
+        "Plan source: Rin (User)",
+        "Plan source: Avi (User)",
+        "Plan source: User",
+      ]),
     );
   });
 
-  it("passes the same canonical provenance into a deep-linked popup", () => {
+  it("passes the same canonical source and owner into a deep-linked popup", () => {
+    planListData.value = {
+      plans: [
+        plan({
+          slug: "p-user",
+          title: "User plan",
+          ownerIdentity: {
+            id: "avi",
+            handle: "Avi",
+            kind: "human",
+            verified: true,
+          },
+        }),
+      ],
+    };
+    nuqs.pplan = "p-user";
+    render(<PlansPane />);
+    expect(screen.getByTestId("popup-open").getAttribute("data-origin")).toBe(
+      "user",
+    );
+    expect(screen.getByTestId("popup-open").getAttribute("data-owner")).toBe(
+      "Avi",
+    );
+  });
+
+  it("filters by the URL-owned All / User / Blender source facet", () => {
+    planListData.value = {
+      plans: [
+        plan({ slug: "p-blender", title: "Blender plan", origin: "scout" }),
+        plan({
+          slug: "p-user",
+          title: "User plan",
+          ownerIdentity: {
+            id: "avi",
+            handle: "Avi",
+            kind: "human",
+            verified: true,
+          },
+        }),
+      ],
+    };
+    nuqs.plSource = "user";
+
+    render(<PlansPane />);
+
+    expect(screen.getByText("User plan")).toBeTruthy();
+    expect(screen.queryByText("Blender plan")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "User" }).getAttribute("aria-pressed"),
+    ).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Blender" }));
+    expect(setters.plSource).toHaveBeenCalledWith("blender");
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(setters.plSource).toHaveBeenCalledWith(null);
+  });
+
+  it("uses a filter-specific empty state when the source facet excludes every plan", () => {
     planListData.value = {
       plans: [
         plan({ slug: "p-blender", title: "Blender plan", origin: "scout" }),
       ],
     };
-    nuqs.pplan = "p-blender";
+    nuqs.plSource = "user";
+
     render(<PlansPane />);
-    expect(screen.getByTestId("popup-open").getAttribute("data-origin")).toBe(
-      "scout",
-    );
+
+    expect(
+      screen.getByText("No plans match the current filters."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/everything is finished/i)).toBeNull();
   });
 
   it("renders active plans with needs-you, live, and progress badges", () => {

@@ -32,15 +32,15 @@
  *
  * State lives in the URL (nuqs) so the pane is deep-linkable and
  * agent-driveable: `?plq` search, `?plf` show-finished, `?plTrigger` trigger
- * facet, `?plSort` sort order, `?opcln` clean-up run, `?pplan` popup plan, and
- * `?ppv` popup tab (see PlanPopupModal).
+ * facet, `?plSource` source facet, `?plSort` sort order, `?opcln` clean-up run,
+ * `?pplan` popup plan, and `?ppv` popup tab (see PlanPopupModal).
  *
  * The filter row is ALWAYS OPEN (owner ask 2026-08-23, WI-40982). The old
- * `?plFilters` disclosure and its "Filters" toggle button are GONE: a two-facet
- * filter set costs less to show than a button that hides it, and the toolbar
- * slot the toggle vacated is exactly where the sort picker belongs — a fixed
- * position that cannot drift as facet chips wrap. A stale `?plFilters=…` deep
- * link is inert (the row it used to reveal is already open).
+ * `?plFilters` disclosure and its "Filters" toggle button are GONE: the compact
+ * filter set costs less to show than a button that hides it, and the toolbar slot
+ * the toggle vacated is exactly where the sort picker belongs — a fixed position
+ * that cannot drift as facet chips wrap. A stale `?plFilters=…` deep link is
+ * inert (the row it used to reveal is already open).
  */
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
@@ -86,7 +86,12 @@ import { useWorkspaceId } from "@/lib/use-workspace-id";
 import { useFlag } from "@/lib/flag-hooks";
 import { FLAGS } from "@papercusp/flags";
 import PlanPopupModal from "./PlanPopupModal";
-import PlanProvenanceBadge from "./PlanProvenanceBadge";
+import PlanProvenanceBadge, {
+  matchesPlanSource,
+  PLAN_SOURCE_FILTERS,
+  planSourceFilterLabel,
+  type PlanSourceFilter,
+} from "./PlanProvenanceBadge";
 import { PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
 import PlanCleanupEntryButton from "./PlanCleanupEntryButton";
 import PlansCleanupStrip from "./PlansCleanupStrip";
@@ -276,6 +281,7 @@ export function buildGlanceRows(opts: {
   needsYouByPlan: ReadonlyMap<string, number>;
   liveByPlan: ReadonlyMap<string, number>;
   triggerFilter?: PlanTriggerFilter;
+  sourceFilter?: PlanSourceFilter;
   sort?: PlansPaneSort;
 }): PlanGlanceRow[] {
   const q = opts.query.trim().toLowerCase();
@@ -286,6 +292,7 @@ export function buildGlanceRows(opts: {
     if (!opts.showFinished && !ACTIVE_BUCKETS.has(bucket)) continue;
     if (opts.triggerFilter === "triggered" && plan.triggered !== true) continue;
     if (opts.triggerFilter === "one-time" && plan.triggered === true) continue;
+    if (!matchesPlanSource(plan, opts.sourceFilter ?? "all")) continue;
     if (q) {
       const hay = `${plan.title ?? ""} ${plan.slug}`.toLowerCase();
       if (!hay.includes(q)) continue;
@@ -326,6 +333,12 @@ export default function PlansPane() {
   const [triggerFilter, setTriggerFilter] = useQueryState(
     "plTrigger",
     parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault(
+      "all",
+    ),
+  );
+  const [sourceFilter, setSourceFilter] = useQueryState(
+    "plSource",
+    parseAsStringEnum<PlanSourceFilter>([...PLAN_SOURCE_FILTERS]).withDefault(
       "all",
     ),
   );
@@ -425,6 +438,7 @@ export default function PlansPane() {
         needsYouByPlan,
         liveByPlan,
         triggerFilter,
+        sourceFilter,
         sort,
       }),
     [
@@ -434,6 +448,7 @@ export default function PlansPane() {
       needsYouByPlan,
       liveByPlan,
       triggerFilter,
+      sourceFilter,
       sort,
     ],
   );
@@ -453,6 +468,7 @@ export default function PlansPane() {
       query: debouncedQuery.trim() || null,
       showFinished,
       trigger: triggerFilter,
+      source: sourceFilter,
       sort,
       shownCount: cleanupPlanSlugs.length,
     }),
@@ -460,6 +476,7 @@ export default function PlansPane() {
       debouncedQuery,
       showFinished,
       triggerFilter,
+      sourceFilter,
       sort,
       cleanupPlanSlugs.length,
     ],
@@ -682,6 +699,26 @@ export default function PlansPane() {
               </button>
             ))}
           </div>
+          <div
+            className="plans-pane__source-filter"
+            role="group"
+            aria-label="Plan source"
+            data-testid="plans-pane-source-filter"
+          >
+            {PLAN_SOURCE_FILTERS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`plans-pane__source-chip${sourceFilter === value ? " is-on" : ""}`}
+                aria-pressed={sourceFilter === value}
+                onClick={() =>
+                  void setSourceFilter(value === "all" ? null : value)
+                }
+              >
+                {planSourceFilterLabel(value)}
+              </button>
+            ))}
+          </div>
         </div>
       </section>
 
@@ -697,18 +734,20 @@ export default function PlansPane() {
           <span>
             {debouncedQuery.trim()
               ? "No plans match the search."
-              : !plans || plans.length === 0
-                ? // Feed not yet hydrated (or a genuinely empty workspace) — NEVER
-                  // the celebratory "all finished" here. On a cold/slow load
-                  // `plans` is briefly empty (sometimes with loading already
-                  // false), which used to flash "everything is finished 🎉" over
-                  // ~466 real active plans before the list populated (WI-5338).
-                  planList.loading
-                  ? "Loading plans…"
-                  : "No plans yet."
-                : showFinished
-                  ? "No plans yet."
-                  : "No active plans — everything is finished. 🎉"}
+              : triggerFilter !== "all" || sourceFilter !== "all"
+                ? "No plans match the current filters."
+                : !plans || plans.length === 0
+                  ? // Feed not yet hydrated (or a genuinely empty workspace) — NEVER
+                    // the celebratory "all finished" here. On a cold/slow load
+                    // `plans` is briefly empty (sometimes with loading already
+                    // false), which used to flash "everything is finished 🎉" over
+                    // ~466 real active plans before the list populated (WI-5338).
+                    planList.loading
+                    ? "Loading plans…"
+                    : "No plans yet."
+                  : showFinished
+                    ? "No plans yet."
+                    : "No active plans — everything is finished. 🎉"}
           </span>
         </div>
       ) : (
@@ -851,11 +890,8 @@ export default function PlansPane() {
                       ) : null}
                       <PlanProvenanceBadge
                         origin={plan.origin}
-                        testId={
-                          plan.origin === "scout"
-                            ? "plans-pane-blender-badge"
-                            : "plans-pane-outside-blender-badge"
-                        }
+                        ownerIdentity={plan.ownerIdentity}
+                        testId="plans-pane-source-badge"
                       />
                       {needsYou > 0 ? (
                         <span
@@ -969,7 +1005,8 @@ export default function PlansPane() {
         planSlug={popupPlan}
         harnessSlug={popupRow?.harness ?? null}
         planTitle={popupRow?.title ?? popupPlan}
-        origin={popupRow?.origin ?? null}
+        origin={popupRow ? (popupRow.origin ?? null) : undefined}
+        ownerIdentity={popupRow ? (popupRow.ownerIdentity ?? null) : undefined}
         onClose={() => void setPopupPlan(null)}
       />
     </div>

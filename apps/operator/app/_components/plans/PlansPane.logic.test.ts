@@ -30,6 +30,8 @@ function plan(over: Partial<PlanListRow> & { slug: string }): PlanListRow {
     itemCounts: over.itemCounts,
     harness: over.harness ?? 'papercusp',
     startStatus: over.startStatus,
+    origin: over.origin,
+    ownerIdentity: over.ownerIdentity,
     triggered: over.triggered,
     triggerSources: over.triggerSources,
   } as PlanListRow;
@@ -125,6 +127,32 @@ describe('buildGlanceRows', () => {
       'old-server',
       'plain',
     ]);
+  });
+
+  it('filters a mixed plan corpus with the same binary source rule as the badge', () => {
+    const plans = [
+      plan({
+        slug: 'blender-even-with-owner',
+        origin: 'scout',
+        ownerIdentity: { id: 'avi', handle: 'Avi', kind: 'human', verified: true },
+      }),
+      plan({
+        slug: 'standard-agent',
+        ownerIdentity: { id: 'agent-1', handle: 'Rin', kind: 'agent', verified: true },
+      }),
+      plan({ slug: 'legacy-user-without-identity' }),
+    ];
+    const common = { plans, query: '', showFinished: false, needsYouByPlan: EMPTY, liveByPlan: EMPTY };
+    const slugs = (sourceFilter: 'all' | 'user' | 'blender') =>
+      buildGlanceRows({ ...common, sourceFilter }).map((row) => row.plan.slug).sort();
+
+    expect(slugs('all')).toEqual([
+      'blender-even-with-owner',
+      'legacy-user-without-identity',
+      'standard-agent',
+    ]);
+    expect(slugs('user')).toEqual(['legacy-user-without-identity', 'standard-agent']);
+    expect(slugs('blender')).toEqual(['blender-even-with-owner']);
   });
 });
 

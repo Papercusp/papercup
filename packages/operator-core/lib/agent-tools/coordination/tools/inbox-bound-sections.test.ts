@@ -102,14 +102,39 @@ describe("boundInboxEntries — sections[].text (EI-19423034419710126)", () => {
     expect(row!["sections_full_chars"]).toBe(3800);
   });
 
-  it("spends the budget in order: earlier sections keep text, later ones empty", () => {
+  it("spends the budget from the actionable tail: later sections keep text first", () => {
     const entry = {
       sections: [{ text: "aaaaa" }, { text: "bbbbb" }, { text: "ccccc" }],
     };
     const [row] = boundInboxEntries([entry], 7);
     const texts = sectionsOf(row!).map((s) => s["text"]);
-    expect(texts).toEqual(["aaaaa", "bb", ""]);
+    expect(texts).toEqual(["", "bb", "ccccc"]);
     expect(totalSectionChars(row!)).toBe(7);
+  });
+
+  it("preserves a final actionable section when earlier context fills the cap", () => {
+    const actionText = "Please take the next step.";
+    const actionFields = { relation: "owns", ref: "EI-21616634841649510" };
+    const [row] = boundInboxEntries(
+      [
+        {
+          msg_id: "m-action-tail",
+          body: `${"context ".repeat(40)}\n\n${actionText}`,
+          sections: [
+            { text: "context ".repeat(40) },
+            { text: actionText, forYouBecause: actionFields },
+          ],
+        },
+      ],
+      actionText.length,
+    );
+    const sections = sectionsOf(row!);
+
+    expect(row!["body"]).toBe(actionText);
+    expect(sections[0]!["text"]).toBe("");
+    expect(sections[1]!["text"]).toBe(actionText);
+    expect(sections[1]!["forYouBecause"]).toEqual(actionFields);
+    expect(totalSectionChars(row!)).toBeLessThanOrEqual(actionText.length);
   });
 
   it("PRESERVES structural keys so authoredFieldsMarker still sees them", () => {
@@ -208,9 +233,11 @@ describe("boundInboxEntries — sections[].text (EI-19423034419710126)", () => {
     );
     const sections = sectionsOf(row!);
 
-    expect(sections[0]!["text"]).toHaveLength(600);
+    // The preserved tail section consumes four characters of the shared
+    // budget, so the clipped earlier section carries the remaining 596.
+    expect(sections[0]!["text"]).toHaveLength(596);
     expect(sections[0]!["text"]).toContain('coord:read { msg_id: "m-sections" }');
-    expect(sections[1]!["text"]).toBe("");
+    expect(sections[1]!["text"]).toBe("tail");
     expect(row!["sections_truncated"]).toBe(true);
     expect(row!["sections_full_chars"]).toBe(704);
   });

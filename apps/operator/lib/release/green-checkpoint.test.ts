@@ -126,6 +126,7 @@ import {
   failingFilesUncommitted,
   detectSplitSourceTestPairs,
   sourceTestSiblingPaths,
+  QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES,
   type GateLineage,
   type CheckpointDeps,
   type CheckpointExec,
@@ -10739,6 +10740,55 @@ describe("quiet-cut — never judge a tip younger than the quiet window (2026-07
         siblingCommit: tip,
       },
     ]);
+  });
+
+  it("bounds the diagnostic on a wide change while judging the candidate normally", async () => {
+    const base = await datedCommit("README.md", "base", 600);
+    await git(repo, ["branch", "ready", base]);
+
+    process.env.GIT_COMMITTER_DATE = new Date(
+      Date.now() - 300 * 1000,
+    ).toISOString();
+    try {
+      for (
+        let i = 0;
+        i < QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES + 1;
+        i += 1
+      ) {
+        const path = join(repo, "lib", `wide-${i}.ts`);
+        mkdirSync(join(path, ".."), { recursive: true });
+        writeFileSync(path, `export const value${i} = ${i};\n`);
+      }
+      await git(repo, ["add", "-A"]);
+      await git(repo, ["commit", "--no-verify", "-q", "-m", "wide candidate"]);
+    } finally {
+      delete process.env.GIT_COMMITTER_DATE;
+    }
+    const candidate = await revParse(repo, "HEAD");
+    await commit("fresh-tip.txt", "tip\n", "fresh tip");
+
+    const { deps } = stubDeps(true);
+    const lines: string[] = [];
+    deps.log = (line) => lines.push(line);
+    deps.detectSplitSourceTestPairs = (input) =>
+      detectSplitSourceTestPairs({ repo, ...input });
+
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(result).toMatchObject({
+      advanced: true,
+      candidate,
+      green: true,
+    });
+    expect(
+      lines.some((line) =>
+        line.includes(
+          `quiet-cut split-pair detector skipped (changed-file radius ${
+            QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES + 1
+          } exceeds diagnostic cap ${QUIET_CUT_SPLIT_PAIR_DIAGNOSTIC_MAX_CHANGED_FILES}`,
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("stamps a quiet-cut red with the split pair so triage does not fix or quarantine the old test", async () => {

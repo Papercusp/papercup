@@ -423,6 +423,14 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
             slug: args.slug,
             parentDir,
             repoRemote: 'local-only',
+            // A template materialization already carries its complete build
+            // knowledge in GUIDE.md/PROTOCOL.md. Seeding the generic coding
+            // pack here blocks the actual overlay on embedding calls (measured
+            // beyond pot:create's 900s timeout) and can strand a registered,
+            // empty pot before a single template file lands. Keep normal
+            // pot:create defaults unchanged; only this composition door skips
+            // the unrelated creation-time seed.
+            knowledgePack: 'none',
           });
         } catch (e) {
           // pot:create THREW rather than returning a result — so we cannot know how far

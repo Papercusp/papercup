@@ -225,6 +225,11 @@
 #                                promises not to sit unattended past that). Set to
 #                                a huge value to disable reclaiming and only skip,
 #                                as before.
+#   VERIFY_TAURI_DISPLAY_LOCK_DIR
+#                               directory for per-display advisory locks that
+#                                serialize candidate selection across concurrent
+#                                verifier launchers (default:
+#                                $TMPDIR/papercusp-tauri-display-locks; EI-21617008171422271).
 #   PAPERCUSP_SID                required tracked agent/session identity. The
 #                                verifier refuses to hand back an unattributed
 #                                bridge when this is unset; this is the provenance
@@ -715,6 +720,48 @@ reap_stale_display_if_abandoned() {
 # this display number, instead of walking past it forever.
 STALE_DISPLAY_MAX_AGE="${VERIFY_TAURI_STALE_DISPLAY_MAX_AGE_SEC:-3600}"
 
+# EI-21617008171422271: the old picker performed an ss/X11 probe, then released
+# the candidate before Xvfb started. Two concurrent launchers could therefore
+# both observe :90 as free, reserve different ports, and then both try to
+# initialize GTK on the same display. Hold a per-display kernel flock from the
+# post-selection recheck through teardown. A lock file may remain after a crash;
+# flock ownership is the state, so a stale inode never blocks a later run.
+DISPLAY_LOCK_DIR="${VERIFY_TAURI_DISPLAY_LOCK_DIR:-${TMPDIR:-/tmp}/papercusp-tauri-display-locks}"
+DISPLAY_LOCK_FD=""
+DISPLAY_LOCK_PATH=""
+command -v flock >/dev/null 2>&1 || {
+  echo "FATAL: flock is required for concurrent verifier display safety" >&2
+  exit 1
+}
+mkdir -p "$DISPLAY_LOCK_DIR" || {
+  echo "FATAL: cannot create verifier display lock directory $DISPLAY_LOCK_DIR" >&2
+  exit 1
+}
+
+display_lock_release() {
+  if [ -n "${DISPLAY_LOCK_FD:-}" ]; then
+    eval "exec ${DISPLAY_LOCK_FD}>&-" || true
+    DISPLAY_LOCK_FD=""
+    DISPLAY_LOCK_PATH=""
+  fi
+}
+
+display_lock_try_acquire() {
+  local n="$1" fd path
+  path="$DISPLAY_LOCK_DIR/display-$n.lock"
+  exec {fd}>"$path" || {
+    echo "FATAL: cannot open verifier display lock $path" >&2
+    return 2
+  }
+  if ! flock -n "$fd"; then
+    eval "exec ${fd}>&-"
+    return 1
+  fi
+  DISPLAY_LOCK_FD="$fd"
+  DISPLAY_LOCK_PATH="$path"
+  return 0
+}
+
 # A display is TAKEN if a live server answers there, OR its socket file exists,
 # OR its lock file exists — all three block a bind, and testing fewer than all
 # three is how the picker hands out a number Xvfb will refuse.
@@ -724,20 +771,61 @@ x_display_taken() {
   [ -f "/tmp/.X$1-lock" ] && return 0
   return 1
 }
+
+# Acquire the candidate's reservation FIRST, then repeat the X11/socket/lock
+# check while nobody else can select this display. If a stale blocker is
+# reclaimed, the final check still decides whether the candidate is usable.
+# Returning 1 means another launcher owns the candidate or it remains occupied;
+# returning 2 is an infrastructure error that must not turn into an endless
+# walk through display numbers.
+reserve_display() {
+  local n="$1" lock_rc
+  display_lock_try_acquire "$n"
+  lock_rc=$?
+  [ "$lock_rc" -eq 0 ] || return "$lock_rc"
+
+  if x_display_taken "$n"; then
+    reap_stale_display_if_abandoned "$n" || true
+    reap_orphaned_x_lock "$n" || true
+    if x_display_taken "$n"; then
+      display_lock_release
+      return 1
+    fi
+  fi
+  return 0
+}
+
 DISPLAY_NUM="${VERIFY_TAURI_DISPLAY_NUM:-}"
+DISPLAY_AUTO_PICK=0
 if [ -z "$DISPLAY_NUM" ]; then
+  DISPLAY_AUTO_PICK=1
   DISPLAY_NUM=90
-  while x_display_taken "$DISPLAY_NUM"; do
-    # Attempt every reclaim, then RE-TEST rather than trusting a reaper's own
-    # success. A reaper that clears one blocker while another remains (a socket
-    # reaped with the lock still present) previously `break`ed straight onto a
-    # display that still could not be bound.
-    reap_stale_display_if_abandoned "$DISPLAY_NUM" || true
-    reap_orphaned_x_lock "$DISPLAY_NUM" || true
-    x_display_taken "$DISPLAY_NUM" || break
-    DISPLAY_NUM=$((DISPLAY_NUM + 1))
-  done
 fi
+while :; do
+  if [ "$DISPLAY_AUTO_PICK" -eq 1 ]; then
+    while x_display_taken "$DISPLAY_NUM"; do
+      # Attempt every reclaim, then RE-TEST rather than trusting a reaper's own
+      # success. A reaper that clears one blocker while another remains (a socket
+      # reaped with the lock still present) previously `break`ed straight onto a
+      # display that still could not be bound.
+      reap_stale_display_if_abandoned "$DISPLAY_NUM" || true
+      reap_orphaned_x_lock "$DISPLAY_NUM" || true
+      x_display_taken "$DISPLAY_NUM" || break
+      DISPLAY_NUM=$((DISPLAY_NUM + 1))
+    done
+  fi
+
+  reserve_display "$DISPLAY_NUM"
+  display_rc=$?
+  [ "$display_rc" -eq 0 ] && break
+  if [ "$DISPLAY_AUTO_PICK" -eq 0 ] || [ "$display_rc" -gt 1 ]; then
+    echo "FATAL: could not reserve verifier display :$DISPLAY_NUM (already in use or reserved by another launcher)" >&2
+    exit 1
+  fi
+  # A peer may have won the reservation between our probe and reserve_display;
+  # walk forward and repeat the same locked recheck for the next candidate.
+  DISPLAY_NUM=$((DISPLAY_NUM + 1))
+done
 [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
 
 # EI-20227529270079601 / EI-9748 Route A: `setsid` creates a new session and
@@ -1266,6 +1354,9 @@ teardown() {
   [ -n "${BRIDGE_PID:-}" ] && rm -f -- "${TMPDIR:-/tmp}/tauri-dev-bridge-$BRIDGE_PID.token"
   wait_owned_ports_free   # EI-11559: hold the advisory lock until our sidecar releases the port
   fed_release_port_locks
+  # EI-21617008171422271: only release the per-display reservation after Xvfb,
+  # the app, and both derived ports have finished teardown.
+  display_lock_release
   # EI-10387: the isolated-DB datadir can be sizeable (a full migrated cluster) —
   # remove it now rather than leaking it into $TMPDIR across repeated runs. Best
   # effort: stop.sh above already SIGTERM'd the postmaster.
@@ -2398,7 +2489,10 @@ if [ "${1:-}" = "--boot-only" ]; then
   # app (WI-4975 safe); the caller's stop.sh does the killing.
   ( trap - EXIT INT TERM
     while kill -0 "$XVFB_PID" 2>/dev/null; do sleep 2; done
-    wait_owned_ports_free ) &
+    wait_owned_ports_free
+    # The parent exits after handing this child the open display-lock fd. Keep
+    # the reservation until the display and its derived ports are both free.
+    display_lock_release ) &
   PORT_LOCK_KEEPER_PID=$!
   write_run_marker "$PORT_LOCK_KEEPER_PID" || {
     echo "FATAL: could not transfer verifier ownership marker to boot-only keeper under $WORK" >&2

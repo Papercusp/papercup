@@ -3,10 +3,16 @@ import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { NuqsTestingAdapter } from "nuqs/adapters/testing";
+import type { AuthorIdentity } from "@/app/admin/plans/plans-api";
 
 const { planRows, planListState, usePlanList } = vi.hoisted(() => ({
   planRows: {
-    value: [] as Array<{ slug: string; harness: string; origin?: "scout" }>,
+    value: [] as Array<{
+      slug: string;
+      harness: string;
+      origin?: "scout";
+      ownerIdentity?: AuthorIdentity;
+    }>,
   },
   planListState: {
     loading: false,
@@ -57,7 +63,10 @@ afterEach(() => {
   cleanup();
 });
 
-const renderPopup = (origin: "scout" | null | undefined) =>
+const renderPopup = (
+  origin: "scout" | null | undefined,
+  ownerIdentity?: AuthorIdentity | null,
+) =>
   render(
     <NuqsTestingAdapter searchParams="">
       <PlanPopupModal
@@ -65,6 +74,7 @@ const renderPopup = (origin: "scout" | null | undefined) =>
         harnessSlug="papercusp"
         planTitle="Provenance plan"
         origin={origin}
+        ownerIdentity={ownerIdentity}
         onClose={() => {}}
       />
     </NuqsTestingAdapter>,
@@ -72,36 +82,75 @@ const renderPopup = (origin: "scout" | null | undefined) =>
 
 describe("PlanPopupModal provenance", () => {
   it.each([
-    ["scout", "Blender", "blender"],
-    [null, "Outside Blender", "outside-blender"],
+    ["scout", undefined, "Blender", "blender", "Plan source: Blender"],
+    [
+      null,
+      { id: "avi", handle: "Avi", kind: "human", verified: true },
+      "Avi",
+      "user",
+      "Plan source: Avi (User)",
+    ],
   ] as const)(
     "renders %s as %s in the popup header",
-    (origin, label, dataValue) => {
-      renderPopup(origin);
+    (origin, ownerIdentity, label, dataValue, ariaLabel) => {
+      renderPopup(origin, ownerIdentity);
       const badge = screen.getByTestId("plan-popup-provenance-badge");
       expect(badge.textContent).toBe(label);
       expect(badge.getAttribute("data-plan-provenance")).toBe(dataValue);
-      expect(badge.getAttribute("aria-label")).toBe(`Plan source: ${label}`);
+      expect(badge.getAttribute("aria-label")).toBe(ariaLabel);
     },
   );
 
   it("resolves an omitted origin from the canonical scoped plans.list row", () => {
     planRows.value = [
-      { slug: "provenance-plan", harness: "papercusp", origin: "scout" },
+      {
+        slug: "provenance-plan",
+        harness: "papercusp",
+        ownerIdentity: {
+          id: "avi",
+          handle: "Avi",
+          kind: "human",
+          verified: true,
+        },
+      },
       { slug: "provenance-plan", harness: "other" },
     ];
 
     renderPopup(undefined);
 
     const badge = screen.getByTestId("plan-popup-provenance-badge");
-    expect(badge.textContent).toBe("Blender");
-    expect(badge.getAttribute("data-plan-provenance")).toBe("blender");
+    expect(badge.textContent).toBe("Avi");
+    expect(badge.getAttribute("data-plan-provenance")).toBe("user");
     expect(usePlanList).toHaveBeenCalledWith({
       includeArchived: true,
       includeLegacy: true,
       harness_slugs: ["papercusp"],
       enabled: true,
     });
+  });
+
+  it("resolves a missing owner identity even when User provenance is explicit", () => {
+    planRows.value = [
+      {
+        slug: "provenance-plan",
+        harness: "papercusp",
+        ownerIdentity: {
+          id: "avi",
+          handle: "Avi",
+          kind: "human",
+          verified: true,
+        },
+      },
+    ];
+
+    renderPopup(null, undefined);
+
+    const badge = screen.getByTestId("plan-popup-provenance-badge");
+    expect(badge.textContent).toBe("Avi");
+    expect(badge.getAttribute("aria-label")).toBe("Plan source: Avi (User)");
+    expect(usePlanList).toHaveBeenCalledWith(
+      expect.objectContaining({ enabled: true }),
+    );
   });
 
   it.each([

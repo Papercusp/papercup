@@ -152,7 +152,11 @@ describe('composeNewApp', () => {
     const sent = calls.find((c) => c.name === 'agent_chats:send_message')!;
     expect(sent.args.content).toContain('read PROTOCOL.md first, then GUIDE.md');
     expect(sent.args.content).toContain('MUST: ship a homepage.');
-    expect(calls[0].args).toMatchObject({ slug: 'my-app', repoRemote: 'local-only' });
+    expect(calls[0].args).toMatchObject({
+      slug: 'my-app',
+      repoRemote: 'local-only',
+      knowledgePack: 'none',
+    });
   });
 
   it('passes through a source-resolution error', async () => {

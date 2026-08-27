@@ -75,7 +75,7 @@ const FRAMEWORK_PREREQS_DDL = `
       CREATE ROLE harness_admin LOGIN SUPERUSER PASSWORD 'harness_admin_pwd';
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'harness_zero') THEN
-      CREATE ROLE harness_zero LOGIN REPLICATION SUPERUSER PASSWORD 'harness_zero_pwd';
+      CREATE ROLE harness_zero LOGIN REPLICATION NOSUPERUSER BYPASSRLS PASSWORD 'harness_zero_pwd';
     END IF;
   END $pg$;
   CREATE EXTENSION IF NOT EXISTS pgcrypto;

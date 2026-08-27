@@ -24,7 +24,7 @@ import { useMemo, useRef } from "react";
 import { parseAsStringEnum, useQueryState } from "nuqs";
 import { Modal } from "@/app/harness/Modal";
 import PlanDetail from "@/app/admin/plans/PlanDetail";
-import { usePlanList } from "@/app/admin/plans/plans-api";
+import { usePlanList, type AuthorIdentity } from "@/app/admin/plans/plans-api";
 import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
 import PlanSessionsTab from "./PlanSessionsTab";
 import PlanProvenanceBadge from "./PlanProvenanceBadge";
@@ -41,6 +41,7 @@ export default function PlanPopupModal({
   harnessSlug,
   planTitle,
   origin,
+  ownerIdentity,
   onClose,
 }: {
   /** The open plan — null renders nothing (closed). */
@@ -53,6 +54,9 @@ export default function PlanPopupModal({
    *  already hold the row pass it; global URL-driven callers omit it and this
    *  lazy boundary resolves the same canonical row itself. */
   origin?: "scout" | null;
+  /** Resolved plan-owner identity from the same plans.list row. Omitted global
+   * callers resolve it alongside origin inside this lazy boundary. */
+  ownerIdentity?: AuthorIdentity | null;
   onClose: () => void;
 }) {
   const [view, setView] = useQueryState(
@@ -64,30 +68,41 @@ export default function PlanPopupModal({
 
   // `wppop` carries only the stable scoped identity (`harness::slug`). The
   // router-root ChatRefPopupHost must stay tiny, so it cannot eagerly import
-  // plans.list just to decorate this lazy popup. Resolve the missing field
+  // plans.list just to decorate this lazy popup. Resolve the missing fields
   // here, inside the chunk that already owns the heavy plan data stack. An
-  // explicit null is authoritative Outside Blender; only undefined means the
-  // caller did not have a row and needs this lookup.
-  const needsOriginLookup = origin === undefined && planSlug !== null;
+  // explicit null is authoritative User provenance / absent owner; only
+  // undefined means the caller did not have that part of the row. Blender does
+  // not need an owner lookup because its visible label is fixed.
+  const needsProvenanceLookup =
+    planSlug !== null &&
+    (origin === undefined ||
+      (origin !== "scout" && ownerIdentity === undefined));
   const planList = usePlanList({
     includeArchived: true,
     includeLegacy: true,
     harness_slugs: harnessSlug ? [harnessSlug] : undefined,
-    enabled: needsOriginLookup,
+    enabled: needsProvenanceLookup,
   });
   const provenancePlan = useMemo(
     () =>
-      needsOriginLookup
+      needsProvenanceLookup
         ? ((planList.data?.plans ?? []).find(
             (plan) =>
               plan.slug === planSlug &&
               (!harnessSlug || plan.harness === harnessSlug),
           ) ?? null)
         : null,
-    [harnessSlug, needsOriginLookup, planList.data, planSlug],
+    [harnessSlug, needsProvenanceLookup, planList.data, planSlug],
   );
-  const provenanceResolved = origin !== undefined || provenancePlan !== null;
+  const provenanceResolved =
+    origin === "scout" ||
+    (origin !== undefined && ownerIdentity !== undefined) ||
+    provenancePlan !== null;
   const resolvedOrigin = origin !== undefined ? origin : provenancePlan?.origin;
+  const resolvedOwnerIdentity =
+    ownerIdentity !== undefined
+      ? ownerIdentity
+      : (provenancePlan?.ownerIdentity ?? null);
 
   const open = planSlug !== null;
 
@@ -140,6 +155,7 @@ export default function PlanPopupModal({
               {provenanceResolved ? (
                 <PlanProvenanceBadge
                   origin={resolvedOrigin ?? null}
+                  ownerIdentity={resolvedOwnerIdentity}
                   testId="plan-popup-provenance-badge"
                 />
               ) : null}
