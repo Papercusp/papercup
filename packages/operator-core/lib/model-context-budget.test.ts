@@ -7,6 +7,7 @@ import * as modelContextBudget from './model-context-budget.mjs';
 const {
   buildContextBudget,
   formatCodexLaunchContextSection,
+  listCodexInstalledModels,
   normalizeCodexCliModel,
   readLaunchContextText,
   resolveModelContextWindow,
@@ -225,5 +226,89 @@ describe('codex extended-window launch config', () => {
       window: 1_000_000,
       source: 'codex-official-1m-policy',
     });
+  });
+});
+
+/**
+ * WI-126377 — LISTING the same registry `codexModelRecord` has been reading one
+ * model at a time. psu's resume picker could offer only three hardcoded aliases
+ * until this existed, so an installed gpt-5.5 had to be typed from memory.
+ */
+describe('listCodexInstalledModels', () => {
+  const home = (models: unknown[], label: string) => {
+    const dir = mkdtempSync(join(tmpdir(), `psu-codex-list-${label}-`));
+    mkdirSync(join(dir, '.codex'), { recursive: true });
+    writeFileSync(join(dir, '.codex', 'models_cache.json'), JSON.stringify({ models }));
+    return dir;
+  };
+
+  it('drops the registry\'s own hidden entries rather than a hand-kept exclusion list', () => {
+    // Measured on this box 2026-08-27: gpt-reserve and codex-auto-review ship
+    // with visibility 'hide'. They are real models, but not what a human means
+    // by "the model list".
+    const dir = home(
+      [
+        { slug: 'gpt-5.5', visibility: 'list', priority: 7 },
+        { slug: 'gpt-reserve', visibility: 'hide', priority: 3 },
+      ],
+      'hidden',
+    );
+    expect(listCodexInstalledModels({ home: dir }).map((m) => m.id)).toEqual(['gpt-5.5']);
+  });
+
+  it('orders by the registry\'s OWN priority, so a new model needs no code change to rank', () => {
+    const dir = home(
+      [
+        { slug: 'gpt-5.4', priority: 16 },
+        { slug: 'gpt-5.6-sol', priority: 1 },
+        { slug: 'gpt-5.5', priority: 7 },
+      ],
+      'priority',
+    );
+    expect(listCodexInstalledModels({ home: dir }).map((m) => m.id)).toEqual(['gpt-5.6-sol', 'gpt-5.5', 'gpt-5.4']);
+  });
+
+  it('flattens each model\'s supported reasoning levels to bare effort strings', () => {
+    const dir = home(
+      [
+        {
+          slug: 'gpt-5.5',
+          display_name: 'GPT-5.5',
+          default_reasoning_level: 'medium',
+          context_window: 272_000,
+          max_context_window: 272_000,
+          supported_reasoning_levels: [
+            { effort: 'low', description: 'Fast responses' },
+            { effort: 'high', description: 'Greater depth' },
+          ],
+        },
+      ],
+      'efforts',
+    );
+    expect(listCodexInstalledModels({ home: dir })[0]).toEqual({
+      id: 'gpt-5.5',
+      label: 'GPT-5.5',
+      description: null,
+      efforts: ['low', 'high'],
+      defaultEffort: 'medium',
+      contextWindow: 272_000,
+      maxContextWindow: 272_000,
+    });
+  });
+
+  it('returns [] — never throws — when the cache is missing or unparseable', () => {
+    // The caller must degrade to its alias rows, not lose the picker.
+    const missing = mkdtempSync(join(tmpdir(), 'psu-codex-list-missing-'));
+    expect(listCodexInstalledModels({ home: missing })).toEqual([]);
+
+    const broken = mkdtempSync(join(tmpdir(), 'psu-codex-list-broken-'));
+    mkdirSync(join(broken, '.codex'), { recursive: true });
+    writeFileSync(join(broken, '.codex', 'models_cache.json'), '{ not json');
+    expect(listCodexInstalledModels({ home: broken })).toEqual([]);
+  });
+
+  it('skips a record with no usable id instead of emitting a blank row', () => {
+    const dir = home([{ display_name: 'nameless' }, { slug: 'gpt-5.5' }], 'blank');
+    expect(listCodexInstalledModels({ home: dir }).map((m) => m.id)).toEqual(['gpt-5.5']);
   });
 });
