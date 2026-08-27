@@ -169,24 +169,100 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(projection).not.toContain('wi.*');
     expect(projection).toContain('wi.feature_id');
     expect(projection).toContain('wi.payload');
-    // The observation-lane floor reads the generated column after the CTE is
-    // re-aliased as `wi`; omitting it makes work_items:claimable fail with
-    // "column wi.lane does not exist" even though the base table has the column.
-    expect(projection).toContain('wi.lane');
-    // Completion and per-claim cooldown floors also read columns after the CTE is
-    // re-aliased as `wi`; keep the narrow projection complete for every outer floor.
-    expect(projection).toContain('wi.author_pubkey');
-    expect(projection).toContain('wi.admission');
-    expect(projection).toContain('wi.terminal_owner');
-    expect(projection).toContain('wi.terminal_completion_ref');
-    expect(projection).toContain('wi.authority');
-    expect(projection).toContain('wi.last_released_by');
-    expect(projection).toContain('wi.last_released_at');
-    expect(projection).toContain('wi.updated_ts');
-    expect(projection).toContain('wi.source_plan_item_ids');
+    // Narrowness is the POINT of this projection — the 80-column row is what it
+    // exists to avoid materializing. Completeness is asserted separately (and
+    // DERIVED, not enumerated) by the sibling test below.
     expect(projection).not.toContain('wi.summary');
     expect(projection).not.toContain('wi._search');
     expect(projection).not.toContain('wi.embedding');
+  });
+
+  // Derivation under test, extracted so the control case below can feed it a
+  // deliberately-broken query and prove it actually reports a missing column.
+  // Split at the CTE boundary, collect every `wi.<col>` the OUTER query reads,
+  // and subtract what the CTE projects.
+  function missingProjectedColumns(materialization: string): string[] {
+    const cteEnd = materialization.indexOf(') SELECT');
+    if (cteEnd < 0) return [];
+    const cols = (segment: string) =>
+      new Set([...segment.matchAll(/\bwi\.([a-z_][a-z0-9_]*)/gi)].map((m) => m[1].toLowerCase()));
+    const projected = cols(materialization.slice(0, cteEnd));
+    return [...cols(materialization.slice(cteEnd))].filter((c) => !projected.has(c)).sort();
+  }
+
+  // FALSIFIABILITY CONTROL. The assertion above passes today, which on its own
+  // is indistinguishable from a check that can never fail — the exact way the
+  // enumerated list it replaced stayed green while `wi.lane` was missing. These
+  // two synthetic queries are permanent controls: one omits a projected column
+  // and MUST be reported, one is complete and MUST come back clean. Without the
+  // second, "reports something" would also be satisfied by a broken derivation
+  // that flags everything.
+  const SYNTHETIC_OUTER = `) SELECT (wi.lane IS DISTINCT FROM 'observation') AS ok_observation,
+             wi.feature_id AS id FROM filtered_claim_candidates wi`;
+  it('EI-21578114931113813: the derivation reports a column the CTE fails to project (control)', () => {
+    const broken = `WITH filtered_claim_candidates AS MATERIALIZED (
+        SELECT wi.feature_id, wi.payload FROM harness_shared.work_items wi WHERE TRUE
+      ${SYNTHETIC_OUTER}`;
+    // `lane` is read by the outer floor but never projected — this is the shape
+    // that produced `column wi.lane does not exist` (42703) against live PG.
+    expect(missingProjectedColumns(broken)).toEqual(['lane']);
+
+    const complete = `WITH filtered_claim_candidates AS MATERIALIZED (
+        SELECT wi.feature_id, wi.payload, wi.lane FROM harness_shared.work_items wi WHERE TRUE
+      ${SYNTHETIC_OUTER}`;
+    // Calibration: the same derivation must go quiet once the column is present,
+    // so the result above is a real detection and not a constant.
+    expect(missingProjectedColumns(complete)).toEqual([]);
+  });
+
+  // EI-21578114931113813. This guard used to be a HAND-ENUMERATED list of
+  // `expect(projection).toContain('wi.<col>')` lines — and every entry on it was
+  // added REACTIVELY, after the missing column had already taken
+  // `work_items:claimable` down in production with `column wi.<col> does not
+  // exist` (42703). `wi.lane` was merely the most recent: the base table has the
+  // column, so nothing fails until PostgreSQL resolves the name against the
+  // narrow CTE at runtime. Vitest cannot catch it either, because the projection
+  // and the outer floors are assembled from different modules and only meet in
+  // the generated SQL string.
+  //
+  // A hand-maintained list of "columns the outer query reads" is a second copy
+  // of a truth the SQL already owns (CLAUDE.md, derived-truth ladder rung 1), so
+  // it drifts by construction: the NEXT exclusion helper that starts reading a
+  // new column strands exactly the same way, and the list only learns about it
+  // after the next outage. Derive the requirement from the query instead — then
+  // a new column is covered the moment it is referenced, with nobody having to
+  // remember this file exists.
+  it('EI-21578114931113813: every wi.<column> the outer floors read is present in the CTE projection (derived, not enumerated)', async () => {
+    const pg = makePool();
+    await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
+
+    const materialization = pg.queries[0] ?? '';
+    const cteEnd = materialization.indexOf(') SELECT');
+    expect(cteEnd).toBeGreaterThan(-1);
+    const cteProjection = materialization.slice(0, cteEnd);
+    const outerQuery = materialization.slice(cteEnd);
+
+    // Soundness precondition: `wi` must mean the materialized CTE throughout the
+    // outer query. If some inner subquery ever re-aliases a real table to `wi`,
+    // its column references are NOT the CTE's and the derivation below would
+    // report them as false positives — fail loudly here instead of silently
+    // widening the projection to satisfy a shadowed alias.
+    expect(outerQuery).not.toMatch(/\bharness_shared\.\w+\s+(?:AS\s+)?wi\b/i);
+
+    const referenced = [...outerQuery.matchAll(/\bwi\.([a-z_][a-z0-9_]*)/gi)].map((m) => m[1]);
+    expect(referenced.length).toBeGreaterThan(0); // positive control: we really parsed SQL
+
+    const missing = missingProjectedColumns(materialization);
+
+    expect(
+      missing,
+      `The outer claimability floors read ${missing.length} column(s) the narrow CTE does not ` +
+        `project: ${missing.join(', ')}. PostgreSQL resolves these against ` +
+        `filtered_claim_candidates, not harness_shared.work_items, so work_items:claimable ` +
+        `will fail at runtime with 'column wi.<name> does not exist' even though the base ` +
+        `table has them. Add each to the claimability-snapshot projection in ` +
+        `scheduler/get-next.ts.`,
+    ).toEqual([]);
   });
 
   it('WI-6673: the admitted COMPOSITION is read in the same snapshot as the count it describes — never a separate checkout', async () => {
