@@ -167,6 +167,28 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
     }));
   }
 
+  async releaseClaim(
+    receiptId: string,
+    leaseId: string,
+    actualDemand: DurableAdmissionRecord['demand'] | undefined,
+    nowMs: number,
+  ) {
+    return this.leaseMutation(receiptId, leaseId, (record) => ({
+      ...record,
+      state: 'completed',
+      updatedAtMs: nowMs,
+      decision: {
+        generation: record.decision.generation + 1,
+        atMs: nowMs,
+        reason: 'resources-released',
+        evidence: { actualDemandReported: actualDemand !== undefined },
+      },
+      lease: undefined,
+      ...(actualDemand ? { actualDemand } : {}),
+      releasedAtMs: nowMs,
+    }));
+  }
+
   async supersede(receiptId: string, replacementReceiptId: string, nowMs: number) {
     const stored = this.byReceipt(receiptId);
     if (!stored) return null;
@@ -266,5 +288,61 @@ describe('WorkItemAdmissionQueueDriver', () => {
     expect(await api.cancel('new', 'operator stopped it')).toMatchObject({ cancelled: true, state: 'cancelled' });
     expect(await api.cancel('new')).toMatchObject({ cancelled: false, state: 'cancelled' });
     expect((old as { context: AdmissionContext }).context.rootRequestId).toBeTruthy();
+  });
+
+  it('propagates receipt lineage and records exact actual-cost release once', async () => {
+    const clock = { now: 1_000 };
+    const store = new MemoryQueueStore();
+    const feedback: unknown[] = [];
+    let request = 0;
+    let lease = 0;
+    const driver = new WorkItemAdmissionQueueDriver(store, {
+      namespace: 'test',
+      now: () => clock.now,
+      leaseIdFactory: () => `lease-${++lease}`,
+      onActualDemand: (input) => void feedback.push(input),
+    });
+    const api = new Governor(driver, { now: () => clock.now, idFactory: () => `request-${++request}` });
+
+    const parent = await api.admit({ idempotencyKey: 'parent', admissionClass: 'agent', demand: { cpuWeight: 2 } });
+    const child = await api.admit({
+      idempotencyKey: 'child',
+      admissionClass: 'database',
+      demand: { databaseConnections: 1 },
+      parent: parent.context,
+    });
+    expect(parent.context).toMatchObject({ receiptId: 'WI-1', rootRequestId: 'request-1' });
+    expect(child.context).toMatchObject({
+      receiptId: 'WI-2',
+      parentReceiptId: 'WI-1',
+      parentRequestId: 'request-1',
+      rootRequestId: 'request-1',
+      demand: { databaseConnections: 1 },
+    });
+
+    const parentClaim = await driver.leaseNext({ owner: 'worker', ttlMs: 1_000 });
+    const childClaim = await driver.leaseNext({ owner: 'worker', ttlMs: 1_000 });
+    const claim = [parentClaim, childClaim].find((item) => item?.record.idempotencyKey === 'child');
+    if (!claim) throw new Error('expected child lease');
+    clock.now = 1_100;
+    await expect(api.release(claim.context, { databaseConnections: 2 })).resolves.toEqual({
+      requestId: 'request-2',
+      released: true,
+    });
+    await expect(api.release(claim.context, { databaseConnections: 3 })).resolves.toEqual({
+      requestId: 'request-2',
+      released: false,
+    });
+    await expect(api.status('child')).resolves.toMatchObject({
+      state: 'completed',
+      context: { receiptId: 'WI-2', parentReceiptId: 'WI-1', rootRequestId: 'request-1' },
+    });
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0]).toMatchObject({
+      receiptId: 'WI-2',
+      plannedDemand: { databaseConnections: 1 },
+      actualDemand: { databaseConnections: 2 },
+      releasedAtMs: 1_100,
+    });
   });
 });

@@ -48,6 +48,10 @@ export interface AdmissionContext {
   readonly requestId: string;
   readonly rootRequestId: string;
   readonly parentRequestId: string | null;
+  /** Canonical durable receipt for this request, populated by durable drivers. */
+  readonly receiptId?: string;
+  /** Parent's canonical durable receipt when this is a nested claim. */
+  readonly parentReceiptId?: string | null;
   readonly idempotencyKey: string;
   readonly admissionClass: AdmissionClass;
   readonly priority: number;
@@ -137,6 +141,8 @@ export interface AdmissionStatus {
   readonly state: QueueReceiptState | 'admitted' | 'bypass' | 'unknown';
   readonly receipt?: QueueReceipt;
   readonly resultRef?: string;
+  /** Durable lineage for tracing this receipt to its root/parent receipt. */
+  readonly context?: AdmissionContext;
 }
 
 export interface AdmissionCancellation {
@@ -330,6 +336,7 @@ export class Governor {
       requestId,
       rootRequestId: request.parent?.rootRequestId ?? requestId,
       parentRequestId: request.parent?.requestId ?? null,
+      parentReceiptId: request.parent?.receiptId ?? null,
       idempotencyKey: request.idempotencyKey,
       admissionClass: request.admissionClass,
       priority: request.priority,

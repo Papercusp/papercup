@@ -18,6 +18,7 @@ import {
   type QueueReceiptState,
   type ResourceDemand,
 } from './admission';
+import type { HealthResource } from './health-analysis';
 
 export const RESOURCE_GOVERNOR_PAYLOAD_KEY = 'resource_governor';
 export const RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION = 1 as const;
@@ -65,6 +66,8 @@ export interface DurableAdmissionRecord {
   readonly cancellationReason?: string;
   readonly supersededByReceiptId?: string;
   readonly resultRef?: string;
+  readonly actualDemand?: Readonly<ResourceDemand>;
+  readonly releasedAtMs?: number;
 }
 
 export interface StoredAdmissionRecord {
@@ -79,6 +82,25 @@ export interface QueueMutationResult extends StoredAdmissionRecord {
 export interface AdmissionQueueLeaseClaim extends StoredAdmissionRecord {
   readonly context: AdmissionContext;
   readonly lease: AdmissionLease & { readonly owner: string };
+}
+
+export interface QueueLeaseClassPolicy {
+  readonly admissionClass: string;
+  /** Weighted fair-service clock; lower values are served first. */
+  readonly virtualTime: number;
+  readonly weight: number;
+  /** Live controller feedback for this class, used to prefer other resource shapes. */
+  readonly constrainedResources: readonly HealthResource[];
+}
+
+/** Transient controller policy for one lease selection. It is never a capacity ceiling. */
+export interface QueueLeaseSelection {
+  readonly classes: readonly QueueLeaseClassPolicy[];
+  readonly releasedResources: readonly HealthResource[];
+  readonly agingIntervalMs: number;
+  readonly deadlineHorizonMs: number;
+  readonly resourceAffinityBonus: number;
+  readonly constrainedResourcePenalty: number;
 }
 
 export interface DurableAdmissionQueueStore {
@@ -96,6 +118,7 @@ export interface DurableAdmissionQueueStore {
     leaseId: string,
     ttlMs: number,
     nowMs: number,
+    selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null>;
   markRunning(receiptId: string, leaseId: string, nowMs: number): Promise<QueueMutationResult | null>;
   complete(
@@ -105,6 +128,12 @@ export interface DurableAdmissionQueueStore {
     nowMs: number,
   ): Promise<QueueMutationResult | null>;
   releaseLease(receiptId: string, leaseId: string, nowMs: number): Promise<QueueMutationResult | null>;
+  releaseClaim(
+    receiptId: string,
+    leaseId: string,
+    actualDemand: Readonly<ResourceDemand> | undefined,
+    nowMs: number,
+  ): Promise<QueueMutationResult | null>;
   supersede(receiptId: string, replacementReceiptId: string, nowMs: number): Promise<QueueMutationResult | null>;
 }
 
@@ -227,12 +256,32 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
 
   constructor(
     private readonly store: DurableAdmissionQueueStore,
-    options: { namespace?: string; now?: () => number; leaseIdFactory?: () => string } = {},
+    options: {
+      namespace?: string;
+      now?: () => number;
+      leaseIdFactory?: () => string;
+      onActualDemand?: (input: {
+        readonly receiptId: string;
+        readonly context: AdmissionContext;
+        readonly plannedDemand: Readonly<ResourceDemand>;
+        readonly actualDemand: Readonly<ResourceDemand>;
+        readonly releasedAtMs: number;
+      }) => void | Promise<void>;
+    } = {},
   ) {
     this.namespace = options.namespace?.trim() || 'operator';
     this.now = options.now ?? (() => Date.now());
     this.leaseIdFactory = options.leaseIdFactory ?? (() => randomUUID());
+    this.onActualDemand = options.onActualDemand;
   }
+
+  private readonly onActualDemand: ((input: {
+    readonly receiptId: string;
+    readonly context: AdmissionContext;
+    readonly plannedDemand: Readonly<ResourceDemand>;
+    readonly actualDemand: Readonly<ResourceDemand>;
+    readonly releasedAtMs: number;
+  }) => void | Promise<void>) | undefined;
 
   async admit(request: NormalizedAdmissionRequest, context: AdmissionContext): Promise<AdmissionOutcome> {
     const nowMs = this.now();
@@ -265,7 +314,11 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     if (stored.record.requestFingerprint !== candidate.requestFingerprint) {
       throw new AdmissionIdempotencyConflictError(request.idempotencyKey);
     }
-    return { kind: 'queued', context: stored.record.context, receipt: queueReceipt(stored) };
+    return {
+      kind: 'queued',
+      context: Object.freeze({ ...stored.record.context, receiptId: stored.receiptId }),
+      receipt: queueReceipt(stored),
+    };
   }
 
   async status(idempotencyKey: string): Promise<AdmissionStatus> {
@@ -275,6 +328,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       idempotencyKey,
       state: stored.record.state,
       receipt: queueReceipt(stored),
+      context: Object.freeze({ ...stored.record.context, receiptId: stored.receiptId }),
       ...(stored.record.resultRef ? { resultRef: stored.record.resultRef } : {}),
     };
   }
@@ -285,11 +339,22 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     return { idempotencyKey, cancelled: result.changed, state: result.record.state };
   }
 
-  async leaseNext(input: { owner: string; ttlMs: number }): Promise<AdmissionQueueLeaseClaim | null> {
+  async leaseNext(input: {
+    owner: string;
+    ttlMs: number;
+    selection?: QueueLeaseSelection;
+  }): Promise<AdmissionQueueLeaseClaim | null> {
     const owner = input.owner.trim();
     if (!owner) throw new Error('queue lease owner must be non-empty');
     if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) throw new Error('queue lease ttlMs must be positive');
-    const result = await this.store.leaseNext(this.namespace, owner, this.leaseIdFactory(), input.ttlMs, this.now());
+    const result = await this.store.leaseNext(
+      this.namespace,
+      owner,
+      this.leaseIdFactory(),
+      input.ttlMs,
+      this.now(),
+      input.selection,
+    );
     if (!result?.record.lease) return null;
     const lease = result.record.lease;
     return {
@@ -297,6 +362,7 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       record: result.record,
       context: {
         ...result.record.context,
+        receiptId: result.receiptId,
         decisionGeneration: result.record.decision.generation,
         leaseId: lease.leaseId,
       },
@@ -326,11 +392,24 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     return this.store.supersede(receiptId, replacementReceiptId, this.now());
   }
 
-  async release(context: AdmissionContext): Promise<AdmissionRelease> {
+  async release(context: AdmissionContext, actualDemand?: ResourceDemand): Promise<AdmissionRelease> {
     if (!context.leaseId) return { requestId: context.requestId, released: false };
     const stored = await this.store.find(this.namespace, context.idempotencyKey);
     if (!stored) return { requestId: context.requestId, released: false };
-    const released = await this.store.releaseLease(stored.receiptId, context.leaseId, this.now());
+    if (context.receiptId && context.receiptId !== stored.receiptId) {
+      return { requestId: context.requestId, released: false };
+    }
+    const releasedAtMs = this.now();
+    const released = await this.store.releaseClaim(stored.receiptId, context.leaseId, actualDemand, releasedAtMs);
+    if (released?.changed && actualDemand && this.onActualDemand) {
+      await this.onActualDemand({
+        receiptId: stored.receiptId,
+        context,
+        plannedDemand: stored.record.demand,
+        actualDemand,
+        releasedAtMs,
+      });
+    }
     return { requestId: context.requestId, released: released?.changed === true };
   }
 }
@@ -521,6 +600,7 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
     leaseId: string,
     ttlMs: number,
     nowMs: number,
+    selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null> {
     return this.transaction(async (tx) => {
       await tx`
@@ -572,23 +652,125 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
            AND jsonb_typeof(payload->'resource_governor'->'deadlineAtMs') = 'number'
            AND (payload->'resource_governor'->>'deadlineAtMs')::double precision <= ${nowMs}`;
 
-      const rows = await tx<QueueDbRow[]>`
-        SELECT feature_id, payload, status, taken_by, created_ts
-          FROM harness_shared.work_items
-         WHERE workspace_id = ${this.workspaceId}
-           AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
-           AND payload->'resource_governor'->>'namespace' = ${namespace}
-           AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
-           AND (taken_by IS NULL OR btrim(taken_by) = '')
-         ORDER BY CASE
-                    WHEN jsonb_typeof(payload->'resource_governor'->'priority') = 'number'
-                    THEN (payload->'resource_governor'->>'priority')::double precision
-                    ELSE 0
-                  END DESC,
-                  created_ts ASC,
-                  feature_id ASC
-         FOR UPDATE SKIP LOCKED
-         LIMIT 1`;
+      let rows: QueueDbRow[];
+      if (!selection) {
+        rows = await tx<QueueDbRow[]>`
+          SELECT feature_id, payload, status, taken_by, created_ts
+            FROM harness_shared.work_items
+           WHERE workspace_id = ${this.workspaceId}
+             AND payload->'resource_governor'->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+             AND payload->'resource_governor'->>'namespace' = ${namespace}
+             AND payload->'resource_governor'->>'state' IN ('queued', 'eligible')
+             AND (taken_by IS NULL OR btrim(taken_by) = '')
+           ORDER BY CASE
+                      WHEN jsonb_typeof(payload->'resource_governor'->'priority') = 'number'
+                      THEN (payload->'resource_governor'->>'priority')::double precision
+                      ELSE 0
+                    END DESC,
+                    created_ts ASC,
+                    feature_id ASC
+           FOR UPDATE SKIP LOCKED
+           LIMIT 1`;
+      } else {
+        if (selection.classes.length === 0) return null;
+        const policies = JSON.stringify(
+          selection.classes.map((item) => ({
+            admission_class: item.admissionClass,
+            virtual_time: Number.isFinite(item.virtualTime) ? Math.max(0, item.virtualTime) : 0,
+            weight: Number.isFinite(item.weight) && item.weight > 0 ? item.weight : 1,
+            constrained_resources: item.constrainedResources,
+          })),
+        );
+        const releasedResources = JSON.stringify(selection.releasedResources);
+        const agingIntervalMs = Math.max(1, Math.floor(selection.agingIntervalMs));
+        const deadlineHorizonMs = Math.max(1, Math.floor(selection.deadlineHorizonMs));
+        const resourceAffinityBonus = Math.max(0, selection.resourceAffinityBonus);
+        const constrainedResourcePenalty = Math.max(0, selection.constrainedResourcePenalty);
+        rows = await tx<QueueDbRow[]>`
+          SELECT item.feature_id, item.payload, item.status, item.taken_by, item.created_ts
+            FROM harness_shared.work_items AS item
+            CROSS JOIN LATERAL (
+              SELECT item.payload->'resource_governor' AS record
+            ) AS governor
+            JOIN LATERAL (
+              SELECT policy.*
+                FROM jsonb_to_recordset(${policies}::text::jsonb) AS policy(
+                  admission_class text,
+                  virtual_time double precision,
+                  weight double precision,
+                  constrained_resources jsonb
+                )
+               WHERE policy.admission_class = governor.record->>'admissionClass'
+               LIMIT 1
+            ) AS class_policy ON true
+            CROSS JOIN LATERAL (
+              SELECT
+                (
+                  SELECT count(*)
+                    FROM jsonb_array_elements_text(COALESCE(class_policy.constrained_resources, '[]'::jsonb)) AS resource(value)
+                   WHERE CASE resource.value
+                           WHEN 'cpu' THEN COALESCE((governor.record->'demand'->>'cpuWeight')::double precision, 0)
+                           WHEN 'memory' THEN COALESCE((governor.record->'demand'->>'memoryBytes')::double precision, 0)
+                           WHEN 'database' THEN COALESCE((governor.record->'demand'->>'databaseConnections')::double precision, 0)
+                           WHEN 'provider' THEN COALESCE((governor.record->'demand'->>'providerRequests')::double precision, 0)
+                           ELSE COALESCE(
+                             (governor.record->'demand'->'custom'->>('resource:' || resource.value))::double precision,
+                             (governor.record->'demand'->'custom'->>resource.value)::double precision,
+                             0
+                           )
+                         END > 0
+                      OR governor.record->'metadata'->>'resourceAffinity' = resource.value
+                ) AS constrained_count,
+                (
+                  SELECT count(*)
+                    FROM jsonb_array_elements_text(${releasedResources}::text::jsonb) AS resource(value)
+                   WHERE CASE resource.value
+                           WHEN 'cpu' THEN COALESCE((governor.record->'demand'->>'cpuWeight')::double precision, 0)
+                           WHEN 'memory' THEN COALESCE((governor.record->'demand'->>'memoryBytes')::double precision, 0)
+                           WHEN 'database' THEN COALESCE((governor.record->'demand'->>'databaseConnections')::double precision, 0)
+                           WHEN 'provider' THEN COALESCE((governor.record->'demand'->>'providerRequests')::double precision, 0)
+                           ELSE COALESCE(
+                             (governor.record->'demand'->'custom'->>('resource:' || resource.value))::double precision,
+                             (governor.record->'demand'->'custom'->>resource.value)::double precision,
+                             0
+                           )
+                         END > 0
+                      OR governor.record->'metadata'->>'resourceAffinity' = resource.value
+                ) AS affinity_count
+            ) AS resource_score
+           WHERE item.workspace_id = ${this.workspaceId}
+             AND governor.record->>'schemaVersion' = ${String(RESOURCE_GOVERNOR_QUEUE_SCHEMA_VERSION)}
+             AND governor.record->>'namespace' = ${namespace}
+             AND governor.record->>'state' IN ('queued', 'eligible')
+             AND (item.taken_by IS NULL OR btrim(item.taken_by) = '')
+           ORDER BY class_policy.virtual_time ASC,
+                    (
+                      CASE
+                        WHEN jsonb_typeof(governor.record->'priority') = 'number'
+                        THEN (governor.record->>'priority')::double precision
+                        ELSE 0
+                      END
+                      + floor(
+                          GREATEST(0, ${nowMs} - (governor.record->>'enqueuedAtMs')::double precision)
+                          / ${agingIntervalMs}
+                        )
+                      + CASE
+                          WHEN jsonb_typeof(governor.record->'deadlineAtMs') = 'number'
+                          THEN GREATEST(
+                            0,
+                            ${deadlineHorizonMs}
+                              - GREATEST(0, (governor.record->>'deadlineAtMs')::double precision - ${nowMs})
+                          ) / ${agingIntervalMs}
+                          ELSE 0
+                        END
+                      + resource_score.affinity_count * ${resourceAffinityBonus}
+                      - resource_score.constrained_count * ${constrainedResourcePenalty}
+                    ) DESC,
+                    (governor.record->>'enqueuedAtMs')::double precision ASC,
+                    item.feature_id ASC
+           FOR UPDATE OF item SKIP LOCKED
+           LIMIT 1`;
+      }
       if (!rows[0]) return null;
       const stored = storedFromRow(rows[0]);
       const generation = stored.record.decision.generation + 1;
@@ -670,6 +852,33 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
       () => null,
     ).then((result) =>
       result && result.changed && result.record.state !== 'queued' ? { ...result, changed: false } : result,
+    );
+  }
+
+  releaseClaim(
+    receiptId: string,
+    leaseId: string,
+    actualDemand: Readonly<ResourceDemand> | undefined,
+    nowMs: number,
+  ): Promise<QueueMutationResult | null> {
+    return this.leaseTransition(
+      receiptId,
+      leaseId,
+      nowMs,
+      (record) => {
+        if (record.state !== 'leased' && record.state !== 'running') return record;
+        return {
+          ...nextDecision(record, 'completed', nowMs, 'resources-released', {
+            actualDemandReported: actualDemand !== undefined,
+          }),
+          lease: undefined,
+          ...(actualDemand ? { actualDemand } : {}),
+          releasedAtMs: nowMs,
+        };
+      },
+      () => null,
+    ).then((result) =>
+      result && result.changed && result.record.state !== 'completed' ? { ...result, changed: false } : result,
     );
   }
 

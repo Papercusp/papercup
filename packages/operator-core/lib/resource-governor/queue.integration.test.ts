@@ -172,4 +172,103 @@ describe('PgWorkItemAdmissionQueueStore', () => {
       state: 'expired',
     });
   });
+
+  it('persists nested receipt lineage and exact actual-cost release across restart', async () => {
+    const clock = { now: 40_000 };
+    const producer = instance('producer', () => clock.now);
+    const parent = await producer.governor.admit({
+      idempotencyKey: 'lineage-parent',
+      admissionClass: 'agent',
+      demand: { cpuWeight: 2 },
+    });
+    const child = await producer.governor.admit({
+      idempotencyKey: 'lineage-child',
+      admissionClass: 'database',
+      demand: { databaseConnections: 1 },
+      parent: parent.context,
+    });
+    expect(child.context).toMatchObject({ receiptId: 'WI-2', parentReceiptId: 'WI-1' });
+
+    await producer.driver.leaseNext({ owner: 'worker', ttlMs: 1_000 });
+    const childClaim = await producer.driver.leaseNext({ owner: 'worker', ttlMs: 1_000 });
+    if (!childClaim || childClaim.record.idempotencyKey !== 'lineage-child') throw new Error('expected child lease');
+    clock.now += 10;
+    await expect(producer.governor.release(childClaim.context, { databaseConnections: 3 })).resolves.toMatchObject({
+      released: true,
+    });
+    await expect(producer.governor.release(childClaim.context, { databaseConnections: 4 })).resolves.toMatchObject({
+      released: false,
+    });
+
+    const row = await db.sql<Array<{ record: Record<string, unknown> }>>`
+      SELECT payload->'resource_governor' AS record
+        FROM harness_shared.work_items
+       WHERE feature_id = 'WI-2'`;
+    expect(row[0]?.record).toMatchObject({
+      state: 'completed',
+      actualDemand: { databaseConnections: 3 },
+      releasedAtMs: clock.now,
+      context: { parentReceiptId: 'WI-1', parentRequestId: 'producer-request-1' },
+    });
+    await expect(instance('reader', () => clock.now).governor.status('lineage-child')).resolves.toMatchObject({
+      state: 'completed',
+      context: { receiptId: 'WI-2', parentReceiptId: 'WI-1', rootRequestId: 'producer-request-1' },
+    });
+  });
+
+  it('orders policy leases by class virtual time, then durable row scheduling evidence', async () => {
+    const nowMs = 100_000;
+    const enqueue = async (
+      idempotencyKey: string,
+      admissionClass: string,
+      enqueuedAtMs: number,
+      options: {
+        priority?: number;
+        deadlineAtMs?: number;
+        demand?: { memoryBytes?: number; databaseConnections?: number };
+      } = {},
+    ) => {
+      await instance(`producer-${idempotencyKey}`, () => enqueuedAtMs).governor.admit({
+        idempotencyKey,
+        admissionClass,
+        ...options,
+      });
+    };
+
+    await enqueue('agent-first-by-class-clock', 'agent', nowMs, { priority: 0 });
+    await enqueue('build-released-affinity', 'build', nowMs, { demand: { databaseConnections: 1 } });
+    await enqueue('build-deadline', 'build', nowMs, { deadlineAtMs: nowMs + 10_000 });
+    await enqueue('build-aged', 'build', nowMs - 8_000);
+    await enqueue('build-priority', 'build', nowMs, { priority: 7 });
+    await enqueue('build-constrained', 'build', nowMs, { priority: 100, demand: { memoryBytes: 1 } });
+
+    const worker = instance('policy-worker', () => nowMs);
+    const selection = {
+      classes: [
+        { admissionClass: 'agent', virtualTime: 0, weight: 1, constrainedResources: [] },
+        { admissionClass: 'build', virtualTime: 10, weight: 1, constrainedResources: ['memory'] },
+      ],
+      releasedResources: ['database'],
+      agingIntervalMs: 1_000,
+      deadlineHorizonMs: 20_000,
+      resourceAffinityBonus: 20,
+      constrainedResourcePenalty: 200,
+    } as const;
+
+    const leased: string[] = [];
+    for (let index = 0; index < 6; index += 1) {
+      const claim = await worker.driver.leaseNext({ owner: 'policy-worker', ttlMs: 10_000, selection });
+      if (!claim) throw new Error(`expected policy lease ${index + 1}`);
+      leased.push(claim.record.idempotencyKey);
+    }
+
+    expect(leased).toEqual([
+      'agent-first-by-class-clock',
+      'build-released-affinity',
+      'build-deadline',
+      'build-aged',
+      'build-priority',
+      'build-constrained',
+    ]);
+  });
 });
