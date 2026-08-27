@@ -60,10 +60,10 @@ describe('capability:read', () => {
     const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
     process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
     try {
-      const r = (await readTool.handler!(
-        { file_path: relativePath, offset: 1, limit: 1 },
-        { ...baseCtx, projectDir: phantom } as never,
-      )) as { content: Array<{ text: string }>; isError?: boolean };
+      const r = (await readTool.handler!({ file_path: relativePath, offset: 1, limit: 1 }, {
+        ...baseCtx,
+        projectDir: phantom,
+      } as never)) as { content: Array<{ text: string }>; isError?: boolean };
 
       expect(r.isError).not.toBe(true);
       expect(r.content[0].text).toContain(canonicalFile);
@@ -84,10 +84,10 @@ describe('capability:read', () => {
     const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
     process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
     try {
-      const r = (await readTool.handler!(
-        { file_path: relativePath, raw: true },
-        { ...baseCtx, projectDir: requested } as never,
-      )) as { content: Array<{ text: string }>; isError?: boolean };
+      const r = (await readTool.handler!({ file_path: relativePath, raw: true }, {
+        ...baseCtx,
+        projectDir: requested,
+      } as never)) as { content: Array<{ text: string }>; isError?: boolean };
 
       expect(r.isError).not.toBe(true);
       expect(r.content[0].text).toBe('requested\n');
@@ -104,10 +104,10 @@ describe('capability:read', () => {
     const previousIntegrationRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
     process.env.PAPERCUSP_INTEGRATION_ROOT = canonical;
     try {
-      const r = (await readTool.handler!(
-        { file_path: 'still-missing.ts' },
-        { ...baseCtx, projectDir: requested } as never,
-      )) as { content: Array<{ text: string }>; isError?: boolean };
+      const r = (await readTool.handler!({ file_path: 'still-missing.ts' }, {
+        ...baseCtx,
+        projectDir: requested,
+      } as never)) as { content: Array<{ text: string }>; isError?: boolean };
 
       expect(r.isError).toBe(true);
       expect(parse(r)).toMatchObject({ reason: 'read_failed' });
@@ -138,6 +138,74 @@ describe('capability:read', () => {
     expect(r.content[0].text).not.toContain(`${f} (`);
   });
 
+  it('redacts credential-bearing config line reads and refuses exact read modes', async () => {
+    const f = join(DIR, 'config.toml');
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    writeFileSync(
+      f,
+      ['[mcp_servers.papercusp-su]', `http_headers = { Authorization = "Bearer ${NEVER_EMIT_MARKER}" }`, 'model = "gpt-5"'].join(
+        '\n',
+      ),
+    );
+
+    const lineRead = (await readTool.handler!({ file_path: f }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(lineRead.isError).not.toBe(true);
+    expect(lineRead.content[0].text).toContain('[redacted]');
+    expect(lineRead.content[0].text).not.toContain(NEVER_EMIT_MARKER);
+
+    const rawRead = (await readTool.handler!({ file_path: f, raw: true }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(rawRead.isError).toBe(true);
+    expect(parse(rawRead)).toMatchObject({ ok: false, reason: 'sensitive_file' });
+    expect(rawRead.content[0].text).not.toContain(NEVER_EMIT_MARKER);
+
+    const byteRead = (await readTool.handler!({ file_path: f, byte_offset: 0, byte_limit: 512 }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    expect(byteRead.isError).toBe(true);
+    expect(parse(byteRead)).toMatchObject({ ok: false, reason: 'sensitive_file' });
+    expect(byteRead.content[0].text).not.toContain(NEVER_EMIT_MARKER);
+  });
+
+  it('keeps exact reads available for ordinary files named like configs when no exact secret surface is requested', async () => {
+    const f = join(DIR, 'plain-config.toml');
+    const original = 'model = "gpt-5"\n';
+    writeFileSync(f, original);
+    const r = (await readTool.handler!({ file_path: f, raw: true }, ctx)) as { content: Array<{ text: string }> };
+    expect(r.content[0].text).toBe(original);
+  });
+
+  it('refuses structured reads before parsing a credential-bearing scratch reference', async () => {
+    const f = join(DIR, 'config.toml');
+    const NEVER_EMIT_MARKER = 'never-emit-me';
+    writeScratchReference({
+      filePath: f,
+      payload: JSON.stringify({
+        content: [{ type: 'text', text: JSON.stringify({ Authorization: `Bearer ${NEVER_EMIT_MARKER}` }) }],
+      }),
+      workspaceId: 'ws-1',
+      mediaType: 'application/json',
+      evidence: [{ evidenceClass: 'event', contentIndex: 0, jsonPointers: ['/Authorization'] }],
+    });
+    const readCtx = { ...baseCtx, workspaceId: 'ws-1' } as never;
+
+    for (const args of [{ content_indexes: [0] }, { evidence_class: 'event' }]) {
+      const result = (await readTool.handler!({ file_path: f, ...args } as never, readCtx)) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      expect(result.isError).toBe(true);
+      expect(parse(result)).toMatchObject({ ok: false, reason: 'sensitive_file' });
+      expect(result.content[0].text).not.toContain(NEVER_EMIT_MARKER);
+    }
+  });
+
   it('preserves exact delimiters for raw line windows', async () => {
     const f = join(DIR, 'r-raw-window.txt');
     writeFileSync(f, 'first\nsecond\nthird');
@@ -152,10 +220,7 @@ describe('capability:read', () => {
   it('rejects raw text mode mixed with exact byte pages', async () => {
     const f = join(DIR, 'r-raw-mixed.txt');
     writeFileSync(f, 'alpha\n');
-    const r = (await readTool.handler!(
-      { file_path: f, raw: true, byte_offset: 0, byte_limit: 32 } as never,
-      ctx,
-    )) as {
+    const r = (await readTool.handler!({ file_path: f, raw: true, byte_offset: 0, byte_limit: 32 } as never, ctx)) as {
       content: Array<{ text: string }>;
       isError?: boolean;
     };
@@ -167,7 +232,9 @@ describe('capability:read', () => {
   it('honors offset + limit', async () => {
     const f = join(DIR, 'r2.txt');
     writeFileSync(f, Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join('\n'));
-    const r = (await readTool.handler!({ file_path: f, offset: 4, limit: 2 }, ctx)) as { content: Array<{ text: string }> };
+    const r = (await readTool.handler!({ file_path: f, offset: 4, limit: 2 }, ctx)) as {
+      content: Array<{ text: string }>;
+    };
     const text = r.content[0].text;
     expect(text).toContain('line4');
     expect(text).toContain('line5');
@@ -184,11 +251,14 @@ describe('capability:read', () => {
     let byteOffset = 0;
     let eof = false;
     while (!eof) {
-      const r = (await readTool.handler!({
-        file_path: f,
-        byte_offset: byteOffset,
-        byte_limit: 997,
-      }, ctx)) as { content: Array<{ text: string }> };
+      const r = (await readTool.handler!(
+        {
+          file_path: f,
+          byte_offset: byteOffset,
+          byte_limit: 997,
+        },
+        ctx,
+      )) as { content: Array<{ text: string }> };
       const page = parse(r) as {
         encoding: string;
         data: string;
@@ -245,21 +315,27 @@ describe('capability:read', () => {
       audience: 'workspace',
       mediaType: 'text/plain',
     });
-    const r = (await readTool.handler!({
-      file_path: f,
-      byte_offset: 0,
-      byte_limit: 512,
-    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    const r = (await readTool.handler!(
+      {
+        file_path: f,
+        byte_offset: 0,
+        byte_limit: 512,
+      },
+      { ...baseCtx, workspaceId: 'ws-1' } as never,
+    )) as { content: Array<{ text: string }> };
     const page = parse(r) as { data: string; reference: { workspaceId: string; sha256: string } };
     expect(Buffer.from(page.data, 'base64').toString('utf8')).toBe('first line\nsecond line\n');
     expect(page.reference.workspaceId).toBe('ws-1');
     expect(page.reference.sha256).toMatch(/^[a-f0-9]{64}$/);
 
-    const lines = (await readTool.handler!({
-      file_path: f,
-      offset: 2,
-      limit: 1,
-    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    const lines = (await readTool.handler!(
+      {
+        file_path: f,
+        offset: 2,
+        limit: 1,
+      },
+      { ...baseCtx, workspaceId: 'ws-1' } as never,
+    )) as { content: Array<{ text: string }> };
     expect(lines.content[0].text).toContain('second line');
     expect(lines.content[0].text).not.toContain('first line');
   });
@@ -286,10 +362,13 @@ describe('capability:read', () => {
       uiClientId: 'su-owner',
       isSuperuser: true,
     };
-    const selected = (await readTool.handler!({
-      file_path: f,
-      content_indexes: [2, 1, 2],
-    }, ownerCtx as never)) as { content: Array<{ text: string }> };
+    const selected = (await readTool.handler!(
+      {
+        file_path: f,
+        content_indexes: [2, 1, 2],
+      },
+      ownerCtx as never,
+    )) as { content: Array<{ text: string }> };
     expect(parse(selected)).toMatchObject({
       selected_indexes: [2, 1],
       total_content_items: 3,
@@ -299,11 +378,14 @@ describe('capability:read', () => {
       ],
     });
 
-    const denied = (await readTool.handler!({
-      file_path: f,
-      byte_offset: 0,
-      byte_limit: 512,
-    }, { ...ownerCtx, uiClientId: 'su-other' } as never)) as {
+    const denied = (await readTool.handler!(
+      {
+        file_path: f,
+        byte_offset: 0,
+        byte_limit: 512,
+      },
+      { ...ownerCtx, uiClientId: 'su-other' } as never,
+    )) as {
       content: Array<{ text: string }>;
       isError?: boolean;
     };
@@ -325,10 +407,13 @@ describe('capability:read', () => {
         { evidenceClass: 'fleet', contentIndex: 0, jsonPointers: ['/fleet'] },
       ],
     });
-    const selected = (await readTool.handler!({
-      file_path: f,
-      evidence_class: 'event',
-    }, { ...baseCtx, workspaceId: 'ws-1' } as never)) as { content: Array<{ text: string }> };
+    const selected = (await readTool.handler!(
+      {
+        file_path: f,
+        evidence_class: 'event',
+      },
+      { ...baseCtx, workspaceId: 'ws-1' } as never,
+    )) as { content: Array<{ text: string }> };
     expect(parse(selected)).toMatchObject({
       ok: true,
       evidence_class: 'event',
@@ -356,7 +441,9 @@ describe('capability:read', () => {
       expect(evidenceBranch?.properties?.[field]?.not, `evidence_class branch must exclude ${field}`).toBeDefined();
     }
 
-    const byteBranch = branches.find((branch) => branch.required?.includes('byte_offset') && branch.required?.includes('byte_limit'));
+    const byteBranch = branches.find(
+      (branch) => branch.required?.includes('byte_offset') && branch.required?.includes('byte_limit'),
+    );
     expect(byteBranch?.properties?.evidence_class?.not).toBeDefined();
     expect(byteBranch?.properties?.tail?.not).toBeDefined();
 
@@ -394,9 +481,9 @@ describe('capability:read', () => {
     const argsSchema = readTool.args as unknown as {
       safeParse: (value: unknown) => { success: boolean };
     };
-    expect(
-      argsSchema.safeParse({ file_path: '/tmp/checkpoint.log', evidence_class: 'event', tail: 10 }).success,
-    ).toBe(false);
+    expect(argsSchema.safeParse({ file_path: '/tmp/checkpoint.log', evidence_class: 'event', tail: 10 }).success).toBe(
+      false,
+    );
 
     const f = join(DIR, 'evidence-mixed-window.json');
     writeFileSync(f, '{}');
@@ -414,7 +501,10 @@ describe('capability:read', () => {
   });
 
   it('rejects a non-scratch URI instead of resolving it under the project directory', async () => {
-    const r = (await readTool.handler!({ uri: 'papercusp://not-scratch/file', byte_offset: 0, byte_limit: 512 }, ctx)) as {
+    const r = (await readTool.handler!(
+      { uri: 'papercusp://not-scratch/file', byte_offset: 0, byte_limit: 512 },
+      ctx,
+    )) as {
       content: Array<{ text: string }>;
       isError?: boolean;
     };
@@ -446,7 +536,10 @@ describe('capability:read', () => {
   });
 
   it('errors on a missing file', async () => {
-    const r = (await readTool.handler!({ file_path: join(DIR, 'nope.txt') }, ctx)) as { content: Array<{ text: string }>; isError?: boolean };
+    const r = (await readTool.handler!({ file_path: join(DIR, 'nope.txt') }, ctx)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('read_failed');
   });
@@ -496,34 +589,37 @@ describe('capability:read', () => {
 describe('capability:write', () => {
   it('creates a file', async () => {
     const f = join(DIR, 'sub/w.txt');
-    const r = (await writeTool.handler!({ file_path: f, content: 'hi there\n' }, ctx)) as { content: Array<{ text: string }> };
+    const r = (await writeTool.handler!({ file_path: f, content: 'hi there\n' }, ctx)) as {
+      content: Array<{ text: string }>;
+    };
     expect(parse(r).ok).toBe(true);
     expect(readFileSync(f, 'utf8')).toBe('hi there\n');
   });
 
-  it.each([
-    'sub/*.test.ts',
-    'sub/**/scorecard*',
-    'sub/scorecard?.ts',
-    'sub/[scorecard].ts',
-  ])('rejects a glob-shaped destination before creating a literal file (%s)', async (relativePath) => {
-    const f = join(DIR, relativePath);
-    const r = (await writeTool.handler!({ file_path: f, content: '{"name":"work_items:get","args":{}}\n' }, ctx)) as {
-      content: Array<{ text: string }>;
-      isError?: boolean;
-    };
-    expect(r.isError).toBe(true);
-    expect(parse(r)).toMatchObject({ ok: false, reason: 'invalid_path' });
-    expect(parse(r).message).toContain('concrete destination path');
-    expect(() => readFileSync(f, 'utf8')).toThrow();
-  });
+  it.each(['sub/*.test.ts', 'sub/**/scorecard*', 'sub/scorecard?.ts', 'sub/[scorecard].ts'])(
+    'rejects a glob-shaped destination before creating a literal file (%s)',
+    async (relativePath) => {
+      const f = join(DIR, relativePath);
+      const r = (await writeTool.handler!({ file_path: f, content: '{"name":"work_items:get","args":{}}\n' }, ctx)) as {
+        content: Array<{ text: string }>;
+        isError?: boolean;
+      };
+      expect(r.isError).toBe(true);
+      expect(parse(r)).toMatchObject({ ok: false, reason: 'invalid_path' });
+      expect(parse(r).message).toContain('concrete destination path');
+      expect(() => readFileSync(f, 'utf8')).toThrow();
+    },
+  );
 });
 
 describe('capability:edit', () => {
   it('replaces a unique string', async () => {
     const f = join(DIR, 'e.txt');
     writeFileSync(f, 'const x = 1;\nconst y = 2;\n');
-    const r = (await editTool.handler!({ file_path: f, old_string: 'const x = 1;', new_string: 'const x = 42;' }, ctx)) as { content: Array<{ text: string }> };
+    const r = (await editTool.handler!(
+      { file_path: f, old_string: 'const x = 1;', new_string: 'const x = 42;' },
+      ctx,
+    )) as { content: Array<{ text: string }> };
     expect(parse(r).ok).toBe(true);
     expect(readFileSync(f, 'utf8')).toContain('const x = 42;');
   });
@@ -531,7 +627,10 @@ describe('capability:edit', () => {
   it('errors when old_string is absent', async () => {
     const f = join(DIR, 'e2.txt');
     writeFileSync(f, 'hello\n');
-    const r = (await editTool.handler!({ file_path: f, old_string: 'missing', new_string: 'x' }, ctx)) as { isError?: boolean; content: Array<{ text: string }> };
+    const r = (await editTool.handler!({ file_path: f, old_string: 'missing', new_string: 'x' }, ctx)) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('not_found');
   });
@@ -539,11 +638,17 @@ describe('capability:edit', () => {
   it('errors on a non-unique match unless replace_all', async () => {
     const f = join(DIR, 'e3.txt');
     writeFileSync(f, 'dup\ndup\n');
-    const bad = (await editTool.handler!({ file_path: f, old_string: 'dup', new_string: 'x' }, ctx)) as { isError?: boolean; content: Array<{ text: string }> };
+    const bad = (await editTool.handler!({ file_path: f, old_string: 'dup', new_string: 'x' }, ctx)) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
     expect(bad.isError).toBe(true);
     expect(parse(bad).reason).toBe('not_unique');
 
-    const ok = (await editTool.handler!({ file_path: f, old_string: 'dup', new_string: 'x', replace_all: true }, ctx)) as { content: Array<{ text: string }> };
+    const ok = (await editTool.handler!(
+      { file_path: f, old_string: 'dup', new_string: 'x', replace_all: true },
+      ctx,
+    )) as { content: Array<{ text: string }> };
     expect(parse(ok).ok).toBe(true);
     expect(readFileSync(f, 'utf8')).toBe('x\nx\n');
   });
@@ -551,7 +656,10 @@ describe('capability:edit', () => {
   it('rejects a no-op edit', async () => {
     const f = join(DIR, 'e4.txt');
     writeFileSync(f, 'same\n');
-    const r = (await editTool.handler!({ file_path: f, old_string: 'same', new_string: 'same' }, ctx)) as { isError?: boolean; content: Array<{ text: string }> };
+    const r = (await editTool.handler!({ file_path: f, old_string: 'same', new_string: 'same' }, ctx)) as {
+      isError?: boolean;
+      content: Array<{ text: string }>;
+    };
     expect(r.isError).toBe(true);
     expect(parse(r).reason).toBe('no_op');
   });
@@ -565,7 +673,7 @@ describe('capability:edit', () => {
   describe('new_string containing JS String.replace special patterns lands verbatim', () => {
     const dollarCases: Array<[label: string, newString: string]> = [
       ['$&  (whole match)', 'prefix $& suffix'],
-      ["$` (backtick — everything before the match)", 'prefix $` suffix'],
+      ['$` (backtick — everything before the match)', 'prefix $` suffix'],
       ["$' (everything after the match)", "prefix $' suffix"],
       ['$1  (capture group, no regex used)', 'prefix $1 suffix'],
       ['$$  (literal dollar escape)', 'prefix $$ suffix'],
@@ -576,7 +684,10 @@ describe('capability:edit', () => {
         const f = join(DIR, `e-dollar-${i}.txt`);
         const before = 'HEADER\nconst anchor = 1;\nFOOTER\n';
         writeFileSync(f, before);
-        const r = (await editTool.handler!({ file_path: f, old_string: 'const anchor = 1;', new_string: newString }, ctx)) as {
+        const r = (await editTool.handler!(
+          { file_path: f, old_string: 'const anchor = 1;', new_string: newString },
+          ctx,
+        )) as {
           content: Array<{ text: string }>;
           isError?: boolean;
         };
@@ -593,7 +704,10 @@ describe('capability:edit', () => {
         const f = join(DIR, `e-dollar-all-${i}.txt`);
         const before = 'anchor\nanchor\n';
         writeFileSync(f, before);
-        const r = (await editTool.handler!({ file_path: f, old_string: 'anchor', new_string: newString, replace_all: true }, ctx)) as {
+        const r = (await editTool.handler!(
+          { file_path: f, old_string: 'anchor', new_string: newString, replace_all: true },
+          ctx,
+        )) as {
           content: Array<{ text: string }>;
         };
         expect(parse(r).ok).toBe(true);
