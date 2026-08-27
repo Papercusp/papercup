@@ -106,6 +106,20 @@ describe('resource governor enforcement lint', () => {
     expect(scanActiveInventory(files)).toEqual([]);
   });
 
+  it('rejects a stale exact bypass entry once its registered path no longer has that finding', () => {
+    const files: Array<[string, string]> = [
+      [
+        'packages/operator-core/lib/agent-tools/plans/audit.ts',
+        `export const head = 'already supplied';`,
+      ],
+    ];
+    expect(
+      scanInventory(files, { migrations: ['P-014'], validateRegistry: true }),
+    ).toContain(
+      'stale-bypass-registry:packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission:finding-absent',
+    );
+  });
+
   it('executes the real blocking CLI over the tracked tree', () => {
     const output = execFileSync(process.execPath, ['scripts/check-resource-governor-enforcement.mjs'], {
       cwd: ROOT,

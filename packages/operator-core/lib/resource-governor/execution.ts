@@ -1,6 +1,13 @@
 /** Durable receipt-to-process lifecycle used by subsystem migrations. */
 import { randomUUID } from 'node:crypto';
-import { Governor, type AdmissionContext, type AdmissionRequest, type ResourceDemand } from './admission';
+import {
+  Governor,
+  type AdmissionClass,
+  type AdmissionContext,
+  type AdmissionMetadataValue,
+  type AdmissionRequest,
+  type ResourceDemand,
+} from './admission';
 import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim } from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
@@ -16,6 +23,69 @@ export interface GovernedExecution {
 export interface GovernedExecutionDeps {
   readonly governor: Governor;
   readonly driver: WorkItemAdmissionQueueDriver;
+}
+
+/**
+ * Run one bounded unit behind the durable admission lifecycle.
+ *
+ * Subsystem migrations used to repeat the same begin/try/finish/cancel shape at
+ * every process boundary. Apart from being noisy, that made the failure path the
+ * easiest part to forget. Keep the actual resource start inside `run`: a normal
+ * result exact-releases the durable lease, while a thrown spawn/runtime failure
+ * cancels the visible receipt before the error escapes.
+ */
+export async function withGovernedExecution<T>(
+  request: AdmissionRequest,
+  input: { owner: string; leaseTtlMs?: number },
+  deps: GovernedExecutionDeps,
+  run: (context: AdmissionContext) => Promise<T>,
+): Promise<T> {
+  const execution = await beginGovernedExecution(request, input, deps);
+  try {
+    const result = await run(execution.context);
+    await execution.finish();
+    return result;
+  } catch (error) {
+    await execution.cancel(
+      `governed execution failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    throw error;
+  }
+}
+
+export interface GovernedOperationInput {
+  readonly workspaceId: string;
+  readonly namespace: string;
+  readonly owner: string;
+  readonly admissionClass: AdmissionClass;
+  readonly demand?: ResourceDemand;
+  readonly payloadRef?: string;
+  readonly parent?: AdmissionContext;
+  readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
+  readonly idempotencyKey?: string;
+  readonly leaseTtlMs?: number;
+}
+
+/** Workspace-scoped convenience seam used by request/tool subprocess writers. */
+export function runGovernedOperation<T>(
+  input: GovernedOperationInput,
+  run: (context: AdmissionContext) => Promise<T>,
+): Promise<T> {
+  const namespace = input.namespace.trim();
+  if (!namespace) throw new Error('governed operation namespace must be non-empty');
+  return withGovernedExecution(
+    {
+      idempotencyKey: input.idempotencyKey?.trim() || `${namespace}:${randomUUID()}`,
+      admissionClass: input.admissionClass,
+      demand: input.demand,
+      payloadRef: input.payloadRef,
+      parent: input.parent,
+      metadata: input.metadata,
+    },
+    { owner: input.owner, leaseTtlMs: input.leaseTtlMs },
+    governedExecutionRuntime(input.workspaceId, namespace),
+    run,
+  );
 }
 
 export async function beginGovernedExecution(

@@ -21,6 +21,8 @@ import { resolvePhasedProject, harnessDir } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
 import { STATE_FILES_FOR_RESET } from '../../../harness-state-files';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 /** Extracted for direct testability (WI-5381 / WI-4995 part b) — was inline
  *  `getLegacyClient(slug).prepare(...).run(...)`, a direct connection outside
@@ -51,7 +53,15 @@ const archiveOnly = defineTool({
     const archiveName = `${ts}.tar.gz`;
     const archivePath = join(archivesDir, archiveName);
 
-    return new Promise<Response>((resolve) => {
+    return runGovernedOperation({
+      workspaceId: activeWorkspaceId(),
+      namespace: 'harness-archive',
+      owner: `harness:${project.slug}:archive`,
+      admissionClass: 'process',
+      demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+      payloadRef: `harness:${project.slug}:archive:${archiveName}`,
+      metadata: { harness: project.slug, operation: 'archive' },
+    }, async () => new Promise<Response>((resolve) => {
       execFile('tar', ['czf', archivePath, '-C', dir, '--exclude=archives', '--exclude=./archives', '.'], {
         cwd: project.path,
         maxBuffer: 8 * 1024 * 1024,
@@ -84,7 +94,7 @@ const archiveOnly = defineTool({
         try { sizeBytes = statSync(archivePath).size; } catch {}
         resolve(Response.json({ ok: true, id: archiveName, sizeBytes, reset: !!body.reset, resetRemoved }));
       });
-    });
+    }));
   },
 });
 
@@ -113,7 +123,15 @@ const restoreArchive = defineTool({
 
     const dir = harnessDir(project);
     const preSnapName = `${Date.now()}-pre-restore.tar.gz`;
-    return new Promise<Response>((resolve) => {
+    return runGovernedOperation({
+      workspaceId: activeWorkspaceId(),
+      namespace: 'harness-archive-restore',
+      owner: `harness:${project.slug}:archive-restore`,
+      admissionClass: 'process',
+      demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+      payloadRef: `harness:${project.slug}:archive-restore:${id}`,
+      metadata: { harness: project.slug, operation: 'restore' },
+    }, async () => new Promise<Response>((resolve) => {
       execFile('tar', ['czf', join(dir, 'archives', preSnapName), '-C', dir, '--exclude=archives', '--exclude=./archives', '.'], {
         cwd: project.path,
         maxBuffer: 8 * 1024 * 1024,
@@ -144,7 +162,7 @@ const restoreArchive = defineTool({
           });
         })();
       });
-    });
+    }));
   },
 });
 

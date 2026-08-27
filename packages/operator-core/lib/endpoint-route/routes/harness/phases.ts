@@ -21,6 +21,8 @@ import { phasePhaseLabel, phasePath, ALL_PHASES, type Phase } from '../../../har
 import { harnessPath } from '../../../harness-paths';
 import type { ProjectEntry } from '../../../harness-registry';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 interface PhaseInfo {
   phase: Phase;
@@ -162,7 +164,18 @@ const setupPhases = defineTool({
     const script = harnessPath('bin', 'setup-phases.sh');
     if (!existsSync(script)) return Response.json({ error: 'setup-phases.sh missing' }, { status: 500 });
     try {
-      const out = execFileSync('bash', [script, project.path], { encoding: 'utf8', timeout: 30_000 });
+      const out = await runGovernedOperation(
+        {
+          workspaceId: activeWorkspaceId(),
+          namespace: 'harness-phase-setup',
+          owner: `harness:${project.slug}:phases`,
+          admissionClass: 'process',
+          demand: { cpuWeight: 0.5, memoryBytes: 128 * 1024 * 1024, fileDescriptors: 3 },
+          payloadRef: `harness:${project.slug}:phase-setup`,
+          metadata: { harness: project.slug },
+        },
+        async () => execFileSync('bash', [script, project.path], { encoding: 'utf8', timeout: 30_000 }),
+      );
       return Response.json({ ok: true, output: out });
     } catch (e: any) {
       return Response.json({ error: String(e?.stderr ?? e?.message ?? e) }, { status: 500 });

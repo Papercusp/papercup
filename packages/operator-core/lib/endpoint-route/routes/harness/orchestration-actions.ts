@@ -23,6 +23,8 @@ import { resolveProject, resolvePhasedProject, harnessDir } from '../../../harne
 import { phasePhaseLabel } from '../../../harness-phases';
 import { harnessPath } from '../../../harness-paths';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const runSmokeTest = defineTool({
   method: 'POST',
@@ -33,17 +35,28 @@ const runSmokeTest = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const scriptPath = harnessPath('bin', 'service-smoke-test.sh');
     if (!existsSync(scriptPath)) return Response.json({ error: 'smoke-test script not found' }, { status: 500 });
-    return new Promise<Response>((resolve) => {
-      let stdout = '';
-      const p = spawn('bash', [scriptPath], {
-        env: { ...process.env, PROJECT_DIR: project.path, STATE_DIR: join(project.path, '.papercusp') },
-      });
-      p.stdout.on('data', (d) => { stdout += d.toString(); });
-      p.stderr.on('data', (d) => { stdout += d.toString(); });
-      p.on('close', (code) => {
-        resolve(Response.json({ ok: code === 0, rc: code, output: stdout }));
-      });
-    });
+    return runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'harness-smoke-test',
+        owner: `harness:${project.slug}:smoke-test`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 0.5, memoryBytes: 128 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `harness:${project.slug}:smoke-test`,
+        metadata: { harness: project.slug },
+      },
+      async () => new Promise<Response>((resolve) => {
+        let stdout = '';
+        const p = spawn('bash', [scriptPath], {
+          env: { ...process.env, PROJECT_DIR: project.path, STATE_DIR: join(project.path, '.papercusp') },
+        });
+        p.stdout.on('data', (d) => { stdout += d.toString(); });
+        p.stderr.on('data', (d) => { stdout += d.toString(); });
+        p.on('close', (code) => {
+          resolve(Response.json({ ok: code === 0, rc: code, output: stdout }));
+        });
+      }),
+    );
   },
 });
 

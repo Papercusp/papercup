@@ -21,6 +21,7 @@ import { harnessPath } from '../../../harness-paths';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { GREEN_CHECKPOINT_ESCALATION_PHASES } from '../../../harness/improvements/watchdog';
 import { defineTool } from '@papercusp/agent-mcp';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const supervisor = defineTool({
   method: 'POST',
@@ -35,20 +36,31 @@ const supervisor = defineTool({
     if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
     const script = harnessPath('bin', 'supervisor.sh');
     if (!existsSync(script)) return Response.json({ error: 'supervisor.sh not found' }, { status: 500 });
-    return new Promise<Response>((resolve) => {
-      execFile('bash', [script], {
-        cwd: project.path,
-        maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' },
-      }, (err, stdout, stderr) => {
-        if (err) {
-          resolve(Response.json({ ok: false, error: String(err.message || err), stderr: stderr?.toString() ?? '', stdout: stdout?.toString() ?? '' }, { status: 500 }));
-          return;
-        }
-        const last = (stdout?.toString() ?? '').trim().split('\n').reverse().find((l) => l.startsWith('SUPERVISOR:')) ?? '';
-        resolve(Response.json({ ok: true, outcome: last, stdout: stdout?.toString(), stderr: stderr?.toString() }));
-      });
-    });
+    return runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'harness-supervisor',
+        owner: `harness:${project.slug}:supervisor`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `harness:${project.slug}:supervisor`,
+        metadata: { harness: project.slug },
+      },
+      async () => new Promise<Response>((resolve) => {
+        execFile('bash', [script], {
+          cwd: project.path,
+          maxBuffer: 4 * 1024 * 1024,
+          env: { ...process.env, CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p' },
+        }, (err, stdout, stderr) => {
+          if (err) {
+            resolve(Response.json({ ok: false, error: String(err.message || err), stderr: stderr?.toString() ?? '', stdout: stdout?.toString() ?? '' }, { status: 500 }));
+            return;
+          }
+          const last = (stdout?.toString() ?? '').trim().split('\n').reverse().find((l) => l.startsWith('SUPERVISOR:')) ?? '';
+          resolve(Response.json({ ok: true, outcome: last, stdout: stdout?.toString(), stderr: stderr?.toString() }));
+        });
+      }),
+    );
   },
 });
 

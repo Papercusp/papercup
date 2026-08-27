@@ -24,6 +24,8 @@ import { STATE_FILES_FOR_BACKUP } from '../../../harness-state-files';
 import { invokeScoperBackground } from '../../../harness-scoper';
 import { recordUserAction } from '../../../user-actions';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const dbcFor = (slug: string) => getLegacyClient(slug);
 
@@ -97,41 +99,51 @@ const replan = defineTool({
     const instEnv = await (async (): Promise<Record<string, string>> => {
       try {
         const { instanceConfigEnv } = await import('../../../deployment/instance-config');
-        const { activeWorkspaceId } = await import('../../../workspace-registry');
         return await instanceConfigEnv(project.slug, activeWorkspaceId());
       } catch { return {}; }
     })();
-    return new Promise<Response>((resolve) => {
-      execFile('bash', ['-c', `MAX_ITERATIONS=0 node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
-        cwd: project.path,
-        env: {
-          ...process.env,
-          ...instEnv,
-          AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-          CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
-          HARNESS_DIR: harnessPackageDir(),
-          PROJECT_DIR: project.path,
-          HARNESS_SLUG: project.slug,
-        },
-        maxBuffer: 1024 * 1024,
-        timeout: 5 * 60_000,
-      }, async (err: any, stdout, stderr) => {
-        const produced = (await parseFeatures(project)).length > 0;
-        if (err && !produced) {
-          resolve(Response.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, { status: 500 }));
-          return;
-        }
-        resolve(Response.json({
-          ok: true,
-          mode: 'initial',
-          produced,
-          logPath,
-          stdout: stdout.toString().slice(-2048),
-          stderr: stderr.toString().slice(-1024),
-          backupDir,
-        }));
-      });
-    });
+    return runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'harness-scoper-replan',
+        owner: `harness:${project.slug}:replan`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `harness:${project.slug}:replan`,
+        metadata: { harness: project.slug, mode: 'initial' },
+      },
+      async () => new Promise<Response>((resolve) => {
+        execFile('bash', ['-c', `MAX_ITERATIONS=0 node ${tsxBin()} ${orchBin} >> ${logPath} 2>&1; echo "DONE rc=$?"`], {
+          cwd: project.path,
+          env: {
+            ...process.env,
+            ...instEnv,
+            AGENT_CMD: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+            CLAUDE: process.env.AGENT_CMD ?? process.env.CLAUDE ?? 'omp -p',
+            HARNESS_DIR: harnessPackageDir(),
+            PROJECT_DIR: project.path,
+            HARNESS_SLUG: project.slug,
+          },
+          maxBuffer: 1024 * 1024,
+          timeout: 5 * 60_000,
+        }, async (err: any, stdout, stderr) => {
+          const produced = (await parseFeatures(project)).length > 0;
+          if (err && !produced) {
+            resolve(Response.json({ ok: false, error: String(err.message || err).slice(0, 400), stderr, logPath }, { status: 500 }));
+            return;
+          }
+          resolve(Response.json({
+            ok: true,
+            mode: 'initial',
+            produced,
+            logPath,
+            stdout: stdout.toString().slice(-2048),
+            stderr: stderr.toString().slice(-1024),
+            backupDir,
+          }));
+        });
+      }),
+    );
   },
 });
 
