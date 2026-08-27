@@ -18,6 +18,7 @@ import { assignmentPayloadPatch, assignCohort, type PilotCandidate } from './pil
 import { boundedOrgTxn } from './pg-bounded-txn';
 import { devDeployState } from './dev-deploy-state';
 import { classifyReleaseParity } from './release-parity';
+import { ALL_SUCCESSFUL_STATUSES } from './work-item-blocking';
 
 export const PILOT_MATERIALIZATION_COHORT_SIZE = 21;
 
@@ -276,8 +277,10 @@ function assertRowsMatchFrozen(
 }
 
 function armBProofFrom(probe: PilotArmBProbeRow, release: CurrentReleasePin): PilotArmBProofReceipt {
-  if (probe.status !== 'passed') throw new Error('arm-B gate probe is not terminal-passed');
-  const proof = record(probe.payload.pilotArmBGateProbe);
+  if (!ALL_SUCCESSFUL_STATUSES.has(probe.status)) {
+    throw new Error('arm-B gate probe is not terminal-successful');
+  }
+  const proof = record(record(probe.payload.out).pilotArmBGateProbe);
   if (proof.status !== 'passed' || proof.judgementPersisted !== true) {
     throw new Error('arm-B gate probe lacks status=passed and judgementPersisted=true');
   }

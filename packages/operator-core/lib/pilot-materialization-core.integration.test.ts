@@ -138,16 +138,18 @@ beforeEach(async () => {
   await db.sql.unsafe(
     'INSERT INTO harness_shared.work_items ' +
       '(workspace_id, harness_slug, feature_id, status, kind, updated_ts, payload) ' +
-      "VALUES ($1, $2, 'WI-PROBE', 'passed', 'task', 500, $3::text::jsonb)",
+      "VALUES ($1, $2, 'WI-PROBE', 'done', 'task', 500, $3::text::jsonb)",
     [
       WORKSPACE,
       HARNESS,
       JSON.stringify({
-        pilotArmBGateProbe: {
-          status: 'passed',
-          judgementPersisted: true,
-          testedSha: SHA,
-          deployedSha: SHA,
+        out: {
+          pilotArmBGateProbe: {
+            status: 'passed',
+            judgementPersisted: true,
+            testedSha: SHA,
+            deployedSha: SHA,
+          },
         },
       }),
     ],
@@ -214,7 +216,7 @@ async function auditRows(): Promise<Array<{ action: string; details: Record<stri
 }
 
 describe('pilot materialization production Postgres adapter', () => {
-  it('atomically materializes exactly 21 rows and persists the success audit', async () => {
+  it('atomically materializes exactly 21 rows from an issue-family done + payload.out proof', async () => {
     const result = await materializePilotCohort(await currentInput(), dependencies());
 
     expect(result.ok).toBe(true);

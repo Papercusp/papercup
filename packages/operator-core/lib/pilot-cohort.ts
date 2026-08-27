@@ -20,6 +20,7 @@ import {
 import { buildPilotReport, type ArmObservation, type PilotReport } from './pilot-metrics.js';
 import { listScorecards, type ListScorecardsFilter, type ScorecardRow } from './scorecards.js';
 import { getWorkItem, TERMINAL_WORK_ITEM_STATES, type WorkItem } from './work-items.js';
+import { ALL_SUCCESSFUL_STATUSES } from './work-item-blocking.js';
 import {
   materializePilotCohort as materializePilotCohortAtomic,
   createPgPilotMaterializationStore,
@@ -238,12 +239,12 @@ function terminal(item: WorkItem): boolean {
 }
 
 /**
- * The probe's structured output is written by work_items:complete under payload.out.
+ * The successful terminal probe's structured output is written by work_items:complete under payload.out.
  * Requiring tested===deployed closes the stale-process loophole: a local passing test
  * against staging is not proof that the live completion verb ran the gate.
  */
 export function readArmBGateProbeProof(item: WorkItem | null): ArmBGateProbeProof | null {
-  if (!item || !terminal(item)) return null;
+  if (!item || !ALL_SUCCESSFUL_STATUSES.has(item.state)) return null;
   const out = record(record(item.payload)?.out);
   const proof = record(out?.pilotArmBGateProbe);
   const testedSha = typeof proof?.testedSha === 'string' ? proof.testedSha.trim() : '';

@@ -137,14 +137,16 @@ class FakeMaterializationStore implements PilotMaterializationStore {
   readonly audits: PilotMaterializationAuditInput[] = [];
   probe: PilotArmBProbeRow = {
     id: 'WI-PROBE',
-    status: 'passed',
+    status: 'done',
     updatedTs: 5,
     payload: {
-      pilotArmBGateProbe: {
-        status: 'passed',
-        judgementPersisted: true,
-        testedSha: CURRENT_SHA,
-        deployedSha: CURRENT_SHA,
+      out: {
+        pilotArmBGateProbe: {
+          status: 'passed',
+          judgementPersisted: true,
+          testedSha: CURRENT_SHA,
+          deployedSha: CURRENT_SHA,
+        },
       },
     },
   };
@@ -491,7 +493,7 @@ describe('pilot cohort collection integration', () => {
 });
 
 describe('arm-B probe proof', () => {
-  it('requires a terminal item, persisted judgement, and tested/deployed SHA parity', () => {
+  it('requires a successful terminal item, persisted judgement, and tested/deployed SHA parity', () => {
     const proof = item('WI-PROBE', {
       state: 'done',
       closedAt: new Date().toISOString(),
@@ -527,5 +529,8 @@ describe('arm-B probe proof', () => {
         },
       }),
     ).toBeNull();
+    for (const state of ['dropped', 'deprecated', 'closed', 'wip']) {
+      expect(readArmBGateProbeProof({ ...proof, state })).toBeNull();
+    }
   });
 });

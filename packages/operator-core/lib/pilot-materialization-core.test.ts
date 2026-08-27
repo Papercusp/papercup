@@ -29,14 +29,16 @@ class FakeStore implements PilotMaterializationStore {
   readonly blocked = new Set<string>();
   probe: PilotArmBProbeRow = {
     id: 'WI-PROBE',
-    status: 'passed',
+    status: 'done',
     updatedTs: 5,
     payload: {
-      pilotArmBGateProbe: {
-        status: 'passed',
-        judgementPersisted: true,
-        testedSha: SHA_A,
-        deployedSha: SHA_A,
+      out: {
+        pilotArmBGateProbe: {
+          status: 'passed',
+          judgementPersisted: true,
+          testedSha: SHA_A,
+          deployedSha: SHA_A,
+        },
       },
     },
   };
@@ -194,7 +196,7 @@ function dependencies(store: FakeStore, overrides: Partial<PilotMaterializationD
 }
 
 describe('pilot materialization core', () => {
-  it('materializes exactly 21 rows with all seven keys and an exact current-pin receipt', async () => {
+  it('materializes exactly 21 rows from an issue-family done + payload.out proof', async () => {
     const rows = fixtureRows();
     const store = new FakeStore(rows);
     const result = await materializePilotCohort(fixtureInput(rows), dependencies(store));
@@ -214,6 +216,49 @@ describe('pilot materialization core', () => {
       expect(row.payload.untouched).toMatch(/^row-/);
     }
     expect(store.audits.map((audit) => audit.action)).toEqual(['pilot.materialize']);
+  });
+
+  it.each(['passed', 'resolved'] as const)(
+    'accepts legacy successful terminal probe state %s with the canonical payload.out proof',
+    async (status) => {
+      const rows = fixtureRows();
+      const store = new FakeStore(rows);
+      store.probe = { ...store.probe, status };
+
+      const result = await materializePilotCohort(fixtureInput(rows), dependencies(store));
+
+      expect(result.ok).toBe(true);
+    },
+  );
+
+  it.each(['dropped', 'deprecated', 'closed', 'wip'] as const)(
+    'rejects non-successful probe state %s even when it carries a passing proof',
+    async (status) => {
+      const rows = fixtureRows();
+      const store = new FakeStore(rows);
+      store.probe = { ...store.probe, status };
+
+      const result = await materializePilotCohort(fixtureInput(rows), dependencies(store));
+
+      expect(result.ok).toBe(false);
+      expect([...store.rows.values()]).toEqual(rows);
+      if (!result.ok) expect(result.receipt.reason).toContain('not terminal-successful');
+    },
+  );
+
+  it('rejects the retired top-level proof shape', async () => {
+    const rows = fixtureRows();
+    const store = new FakeStore(rows);
+    store.probe = {
+      ...store.probe,
+      payload: (store.probe.payload.out ?? {}) as Record<string, unknown>,
+    };
+
+    const result = await materializePilotCohort(fixtureInput(rows), dependencies(store));
+
+    expect(result.ok).toBe(false);
+    expect([...store.rows.values()]).toEqual(rows);
+    if (!result.ok) expect(result.receipt.reason).toContain('lacks status=passed');
   });
 
   it('fails closed on one stale row version and leaves every row byte-exact', async () => {
