@@ -1,4 +1,4 @@
-'use client';
+"use client";
 
 /**
  * PlansPane (owner-plans-single-pane-2026-07-17 P-001/P-002) — the simplified
@@ -42,7 +42,7 @@
  * position that cannot drift as facet chips wrap. A stale `?plFilters=…` deep
  * link is inert (the row it used to reveal is already open).
  */
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   Archive,
   ArrowUpDown,
@@ -53,16 +53,21 @@ import {
   Pencil,
   Search,
   X,
-} from 'lucide-react';
-import { parseAsBoolean, parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { useVirtualizer } from '@tanstack/react-virtual';
-import { toast } from 'sonner';
-import { useSyncQuery } from '@papercusp/sync';
-import { Select } from '@/app/harness/Select';
-import { Tooltip } from '@/app/harness/Tooltip';
-import { useDebouncedValue } from '@/app/harness/picker-kit';
-import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
-import { preloadVditor } from '@/app/_components/MarkdownEditor';
+} from "lucide-react";
+import {
+  parseAsBoolean,
+  parseAsString,
+  parseAsStringEnum,
+  useQueryState,
+} from "nuqs";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { toast } from "sonner";
+import { useSyncQuery } from "@papercusp/sync";
+import { Select } from "@/app/harness/Select";
+import { Tooltip } from "@/app/harness/Tooltip";
+import { useDebouncedValue } from "@/app/harness/picker-kit";
+import { useConfirmDialog } from "@/app/harness/useConfirmDialog";
+import { preloadVditor } from "@/app/_components/MarkdownEditor";
 import {
   bucketOf,
   setPlanArchived,
@@ -70,31 +75,35 @@ import {
   usePlanList,
   type PlanBucket,
   type PlanListRow,
-} from '@/app/admin/plans/plans-api';
+} from "@/app/admin/plans/plans-api";
 import {
   PLAN_TRIGGER_FILTERS,
   type PlanTriggerFilter,
-} from '@/app/admin/plans/plan-filtering';
-import { comparePlans, type PlanSort } from '@/app/admin/plans/plan-sorting';
-import { effectiveTier, useInboxAttention } from '../inbox/use-inbox-pending';
-import { useWorkspaceId } from '@/lib/use-workspace-id';
+} from "@/app/admin/plans/plan-filtering";
+import { comparePlans, type PlanSort } from "@/app/admin/plans/plan-sorting";
+import { effectiveTier, useInboxAttention } from "../inbox/use-inbox-pending";
+import { useWorkspaceId } from "@/lib/use-workspace-id";
 import { useFlag } from "@/lib/flag-hooks";
 import { FLAGS } from "@papercusp/flags";
-import PlanPopupModal from './PlanPopupModal';
-import PlanProvenanceBadge from './PlanProvenanceBadge';
-import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
-import PlanCleanupEntryButton from './PlanCleanupEntryButton';
+import PlanPopupModal from "./PlanPopupModal";
+import PlanProvenanceBadge from "./PlanProvenanceBadge";
+import { PLAN_DASHBOARD_PARAM } from "./PlanDashboardHost";
+import PlanCleanupEntryButton from "./PlanCleanupEntryButton";
 import PlansCleanupStrip from "./PlansCleanupStrip";
 import {
   PLAN_CLEANUP_RUN_PARAM,
   usePlanCleanupRun,
 } from "./use-plan-cleanup-run";
-import { encodeScopedRef } from '../chat/chat-ref-popup-params';
-import './plans-pane.css';
-import { advRosterArgs } from '@/lib/adv-roster-args';
+import { encodeScopedRef } from "../chat/chat-ref-popup-params";
+import "./plans-pane.css";
+import { advRosterArgs } from "@/lib/adv-roster-args";
 
 /** Buckets shown by default — "not started + started", never the finished. */
-const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'running']);
+const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set([
+  "draft",
+  "ready",
+  "running",
+]);
 
 /** An active plan with no real activity for this long reads as "stale" — a
  *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
@@ -129,9 +138,9 @@ export const WORK_HOT_MS = 60 * 60 * 1000;
 
 /** Shared bucket logic behind both ago-label forms. */
 function agoFromDelta(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (!Number.isFinite(ms) || ms < 0) return "—";
   const m = Math.floor(ms / 60_000);
-  if (m < 1) return 'now';
+  if (m < 1) return "now";
   if (m < 60) return `${m}m`;
   const h = Math.round(m / 60);
   if (h < 48) return `${h}h`;
@@ -140,32 +149,37 @@ function agoFromDelta(ms: number): string {
 
 /** Compact relative recency — same local convention as the roster/backup panes. */
 export function agoLabel(iso: string | null | undefined): string {
-  if (!iso) return '—';
+  if (!iso) return "—";
   return agoFromDelta(Date.now() - Date.parse(iso));
 }
 
 /** `agoLabel` over an epoch-ms number (the planWorkActivity.list wire form). */
-export function agoLabelMs(ms: number | null | undefined, now = Date.now()): string {
-  if (ms == null || !Number.isFinite(ms)) return '—';
+export function agoLabelMs(
+  ms: number | null | undefined,
+  now = Date.now(),
+): string {
+  if (ms == null || !Number.isFinite(ms)) return "—";
   return agoFromDelta(now - ms);
 }
 
 /** "2m" → "2m ago", "now" → "just now" — for the hover titles. */
 function agoPhrase(label: string): string {
-  return label === 'now' ? 'just now' : `${label} ago`;
+  return label === "now" ? "just now" : `${label} ago`;
 }
 
 /** done / total-open+done item progress from the list row's itemCounts. */
-export function progressOf(row: Pick<PlanListRow, 'itemCounts'>): { done: number; total: number } | null {
+export function progressOf(
+  row: Pick<PlanListRow, "itemCounts">,
+): { done: number; total: number } | null {
   const c = row.itemCounts;
   if (!c) return null;
   let done = 0;
   let total = 0;
   for (const [k, v] of Object.entries(c)) {
     const n = v ?? 0;
-    if (k === 'unknown') continue;
+    if (k === "unknown") continue;
     total += n;
-    if (k === 'done') done += n;
+    if (k === "done") done += n;
   }
   return total > 0 ? { done, total } : null;
 }
@@ -186,11 +200,11 @@ export interface PlanGlanceRow {
  * undated-sorts-last and stable-tiebreak rules come along for free).
  */
 const DELEGATED_SORTS = [
-  'updated-desc',
-  'updated-asc',
-  'created-desc',
-  'progress',
-  'title',
+  "updated-desc",
+  "updated-asc",
+  "created-desc",
+  "progress",
+  "title",
 ] as const;
 type DelegatedSort = (typeof DELEGATED_SORTS)[number];
 
@@ -199,22 +213,27 @@ type DelegatedSort = (typeof DELEGATED_SORTS)[number];
 const _DELEGATED_ARE_PLAN_SORTS: readonly PlanSort[] = DELEGATED_SORTS;
 void _DELEGATED_ARE_PLAN_SORTS;
 
-export type PlansPaneSort = 'needs' | 'live' | DelegatedSort;
+export type PlansPaneSort = "needs" | "live" | DelegatedSort;
 
-export const PLANS_PANE_SORTS: ReadonlyArray<{ id: PlansPaneSort; label: string }> = [
-  { id: 'needs', label: 'Needs you' },
-  { id: 'live', label: 'Live agents' },
-  { id: 'updated-desc', label: 'Recently updated' },
-  { id: 'updated-asc', label: 'Oldest updated' },
-  { id: 'created-desc', label: 'Recently created' },
-  { id: 'progress', label: 'Progress' },
-  { id: 'title', label: 'Title A–Z' },
+export const PLANS_PANE_SORTS: ReadonlyArray<{
+  id: PlansPaneSort;
+  label: string;
+}> = [
+  { id: "needs", label: "Needs you" },
+  { id: "live", label: "Live agents" },
+  { id: "updated-desc", label: "Recently updated" },
+  { id: "updated-asc", label: "Oldest updated" },
+  { id: "created-desc", label: "Recently created" },
+  { id: "progress", label: "Progress" },
+  { id: "title", label: "Title A–Z" },
 ];
 
-export const PLANS_PANE_SORT_IDS: PlansPaneSort[] = PLANS_PANE_SORTS.map((s) => s.id);
+export const PLANS_PANE_SORT_IDS: PlansPaneSort[] = PLANS_PANE_SORTS.map(
+  (s) => s.id,
+);
 
 /** The default order — needs-you first, then most recently active. */
-export const DEFAULT_PLANS_PANE_SORT: PlansPaneSort = 'needs';
+export const DEFAULT_PLANS_PANE_SORT: PlansPaneSort = "needs";
 
 export function plansPaneSortLabel(sort: PlansPaneSort): string {
   return PLANS_PANE_SORTS.find((s) => s.id === sort)?.label ?? sort;
@@ -226,15 +245,17 @@ export function compareGlanceRows(
 ): (a: PlanGlanceRow, b: PlanGlanceRow) => number {
   // Shared tail for the two pane-local orders: within an equal rank, the most
   // recently active plan reads first (what the pane has always done).
-  const byRecency = comparePlans('updated-desc');
+  const byRecency = comparePlans("updated-desc");
   switch (sort) {
-    case 'needs':
+    case "needs":
       return (a, b) => b.needsYou - a.needsYou || byRecency(a.plan, b.plan);
-    case 'live':
+    case "live":
       // Busiest plans first; a tie falls back to the needs-you read, so the
       // "does this need me?" signal is never buried by a quiet plan.
       return (a, b) =>
-        b.liveAgents - a.liveAgents || b.needsYou - a.needsYou || byRecency(a.plan, b.plan);
+        b.liveAgents - a.liveAgents ||
+        b.needsYou - a.needsYou ||
+        byRecency(a.plan, b.plan);
     default: {
       const cmp = comparePlans(sort);
       return (a, b) => cmp(a.plan, b.plan);
@@ -263,10 +284,10 @@ export function buildGlanceRows(opts: {
     if (plan.archived || plan.isLegacy) continue;
     const bucket = bucketOf(plan);
     if (!opts.showFinished && !ACTIVE_BUCKETS.has(bucket)) continue;
-    if (opts.triggerFilter === 'triggered' && plan.triggered !== true) continue;
-    if (opts.triggerFilter === 'one-time' && plan.triggered === true) continue;
+    if (opts.triggerFilter === "triggered" && plan.triggered !== true) continue;
+    if (opts.triggerFilter === "one-time" && plan.triggered === true) continue;
     if (q) {
-      const hay = `${plan.title ?? ''} ${plan.slug}`.toLowerCase();
+      const hay = `${plan.title ?? ""} ${plan.slug}`.toLowerCase();
       if (!hay.includes(q)) continue;
     }
     rows.push({
@@ -291,19 +312,24 @@ interface PlanWorkActivityRow {
 }
 
 export default function PlansPane() {
-  const [query, setQuery] = useQueryState('plq', parseAsString.withDefault(''));
-  const [showFinished, setShowFinished] = useQueryState('plf', parseAsBoolean.withDefault(false));
+  const [query, setQuery] = useQueryState("plq", parseAsString.withDefault(""));
+  const [showFinished, setShowFinished] = useQueryState(
+    "plf",
+    parseAsBoolean.withDefault(false),
+  );
   const [sort, setSort] = useQueryState(
-    'plSort',
+    "plSort",
     parseAsStringEnum<PlansPaneSort>([...PLANS_PANE_SORT_IDS]).withDefault(
       DEFAULT_PLANS_PANE_SORT,
     ),
   );
   const [triggerFilter, setTriggerFilter] = useQueryState(
-    'plTrigger',
-    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault('all'),
+    "plTrigger",
+    parseAsStringEnum<PlanTriggerFilter>([...PLAN_TRIGGER_FILTERS]).withDefault(
+      "all",
+    ),
   );
-  const [popupPlan, setPopupPlan] = useQueryState('pplan', parseAsString);
+  const [popupPlan, setPopupPlan] = useQueryState("pplan", parseAsString);
   // P-006: the selected clean-up RUN is URL-owned. A reload or copied link
   // resumes against the persisted phase instead of resetting to local idle.
   const [cleanupRunId, setCleanupRunId] = useQueryState(
@@ -343,7 +369,7 @@ export default function PlansPane() {
   // `endedLimit`, and an omitted field is a different query key even though the
   // resolver defaults it to the same value. advRosterArgs makes it true.
   const roster = useSyncQuery<RosterPayloadRow>({
-    queryName: 'advRoster.list',
+    queryName: "advRoster.list",
     args: advRosterArgs(workspaceId),
   });
 
@@ -351,7 +377,7 @@ export default function PlansPane() {
     const m = new Map<string, number>();
     for (const i of attentionItems) {
       if (!i.planSlug) continue;
-      if (effectiveTier(i) !== 'decision') continue;
+      if (effectiveTier(i) !== "decision") continue;
       m.set(i.planSlug, (m.get(i.planSlug) ?? 0) + 1);
     }
     return m;
@@ -372,13 +398,17 @@ export default function PlansPane() {
   // Joined client-side by slug exactly like needsYouByPlan / liveByPlan.
   // A plan absent from the map was simply never worked (dim em-dash).
   const workActivity = useSyncQuery<PlanWorkActivityRow>({
-    queryName: 'planWorkActivity.list',
+    queryName: "planWorkActivity.list",
     args: { workspaceId },
   });
   const lastWorkByPlan = useMemo(() => {
     const m = new Map<string, number>();
     for (const r of workActivity.data ?? []) {
-      if (typeof r?.slug === 'string' && r.slug && typeof r.lastWorkAtMs === 'number') {
+      if (
+        typeof r?.slug === "string" &&
+        r.slug &&
+        typeof r.lastWorkAtMs === "number"
+      ) {
         m.set(r.slug, r.lastWorkAtMs);
       }
     }
@@ -397,7 +427,15 @@ export default function PlansPane() {
         triggerFilter,
         sort,
       }),
-    [plans, debouncedQuery, showFinished, needsYouByPlan, liveByPlan, triggerFilter, sort],
+    [
+      plans,
+      debouncedQuery,
+      showFinished,
+      needsYouByPlan,
+      liveByPlan,
+      triggerFilter,
+      sort,
+    ],
   );
 
   // Plans clean-up acts on the EXACT rows above — after every pane filter and
@@ -418,10 +456,18 @@ export default function PlansPane() {
       sort,
       shownCount: cleanupPlanSlugs.length,
     }),
-    [debouncedQuery, showFinished, triggerFilter, sort, cleanupPlanSlugs.length],
+    [
+      debouncedQuery,
+      showFinished,
+      triggerFilter,
+      sort,
+      cleanupPlanSlugs.length,
+    ],
   );
 
-  const popupRow = popupPlan ? (plans ?? []).find((p) => p.slug === popupPlan) ?? null : null;
+  const popupRow = popupPlan
+    ? ((plans ?? []).find((p) => p.slug === popupPlan) ?? null)
+    : null;
 
   // Stale-plan sweep (P-008 / EI-15304): archive a stale plan in one click,
   // behind a confirm. Archiving flips the PG-canonical harness_plans.archived
@@ -437,21 +483,29 @@ export default function PlansPane() {
   const onArchive = useCallback(
     async (plan: PlanListRow) => {
       const ok = await askConfirm({
-        title: 'Archive this plan?',
+        title: "Archive this plan?",
         body: `“${plan.title ?? plan.slug}” will drop out of your plan lists. You can restore it later — archiving is reversible and never deletes anything.`,
-        confirmLabel: 'Archive',
+        confirmLabel: "Archive",
       });
       if (!ok) return;
       try {
-        const res = await setPlanArchived({ slug: plan.slug, archived: true, harness: plan.harness });
+        const res = await setPlanArchived({
+          slug: plan.slug,
+          archived: true,
+          harness: plan.harness,
+        });
         if ((res as { ok?: boolean }).ok === false) {
-          toast.error(`Could not archive: ${(res as { error?: string }).error ?? 'unknown error'}`);
+          toast.error(
+            `Could not archive: ${(res as { error?: string }).error ?? "unknown error"}`,
+          );
           return;
         }
         toast.success(`Archived “${plan.title ?? plan.slug}”.`);
         planList.refresh();
       } catch (e) {
-        toast.error(`Could not archive: ${e instanceof Error ? e.message : 'unknown error'}`);
+        toast.error(
+          `Could not archive: ${e instanceof Error ? e.message : "unknown error"}`,
+        );
       }
     },
     [askConfirm, planList],
@@ -477,17 +531,24 @@ export default function PlansPane() {
           <ClipboardList size={20} />
         </span>
         <span className="plans-pane__masthead-copy">
+          <span className="plans-pane__masthead-eyebrow">Plan workspace</span>
           <strong>Plans</strong>
-          <span>
+          <span className="plans-pane__masthead-subtitle">
             Track active work, decisions, and live progress in one place.
           </span>
         </span>
         <span
           className="plans-pane__masthead-count"
-          aria-label={`${rows.length} plans shown`}
+          aria-label={`${rows.length} ${rows.length === 1 ? "plan" : "plans"} shown`}
           data-testid="plans-pane-count"
         >
-          {rows.length}
+          <span
+            className="plans-pane__masthead-count-value"
+            data-testid="plans-pane-count-value"
+          >
+            {rows.length}
+          </span>
+          <span className="plans-pane__masthead-count-label">shown</span>
         </span>
       </header>
 
@@ -507,102 +568,122 @@ export default function PlansPane() {
         />
       ) : null}
 
-      <div className="plans-pane__toolbar">
-        <label className="plans-pane__search-shell">
-          <Search
-            size={14}
-            className="plans-pane__search-icon"
-            aria-hidden="true"
-          />
-          <input
-            type="search"
-            className="plans-pane__search"
-            placeholder="Search plans…"
-            value={query}
-            onChange={(e) => void setQuery(e.target.value || null)}
-            aria-label="Search plans"
-            data-testid="plans-pane-search"
-          />
-          {query ? (
-            <button
-              type="button"
-              className="plans-pane__search-clear"
-              aria-label="Clear plan search"
-              onClick={() => void setQuery(null)}
-            >
-              <X size={12} aria-hidden="true" />
-            </button>
-          ) : null}
-        </label>
-        {/* Sort picker — the shared Radix Select (native <select> is banned by
-            _lints/design-primitives). It sits in the slot the deleted "Filters"
-            toggle vacated, so it holds a FIXED position: parking it in the
-            filter row below would let it drift sideways as facet chips wrap. */}
-        <Select
-          value={sort}
-          onChange={(v) =>
-            void setSort(
-              v === DEFAULT_PLANS_PANE_SORT ? null : (v as PlansPaneSort),
-            )
-          }
-          options={PLANS_PANE_SORTS.map((s) => ({ value: s.id, label: s.label }))}
-          ariaLabel="Sort plans"
-          testId="plans-pane-sort"
-          triggerClassName="plans-pane__sort"
-          align="end"
-          triggerChildren={
-            <>
-              <ArrowUpDown size={13} aria-hidden="true" />
-              <span className="plans-pane__sort-label">
-                {plansPaneSortLabel(sort)}
-              </span>
-              <ChevronDown size={11} aria-hidden="true" />
-            </>
-          }
-        />
-      </div>
-
-      {/* Always open (WI-40982) — no disclosure, no toggle. */}
-      <div
-        id="plans-pane-filters"
-        className="plans-pane__filters"
-        data-testid="plans-pane-filters"
+      <section
+        className="plans-pane__controls"
+        aria-label="Plan search and filters"
       >
-        <Tooltip
-          label={
-            showFinished
-              ? "Hide finished plans"
-              : "Also show shipped / superseded plans"
-          }
-        >
-          <button
-            type="button"
-            className={`plans-pane__finished-toggle${showFinished ? " is-on" : ""}`}
-            onClick={() => void setShowFinished(showFinished ? null : true)}
-            aria-pressed={showFinished}
-            data-testid="plans-pane-finished-toggle"
+        <div className="plans-pane__controls-head">
+          <span className="plans-pane__controls-label">Find and focus</span>
+          <span
+            className="plans-pane__controls-scope"
+            data-testid="plans-pane-visible-scope"
           >
-            Finished
-          </button>
-        </Tooltip>
-        <div
-          className="plans-pane__trigger-filter"
-          role="group"
-          aria-label="Plan trigger type"
-        >
-          {PLAN_TRIGGER_FILTERS.map((value) => (
-            <button
-              key={value}
-              type="button"
-              className={`plans-pane__trigger-chip${triggerFilter === value ? " is-on" : ""}`}
-              aria-pressed={triggerFilter === value}
-              onClick={() => void setTriggerFilter(value === "all" ? null : value)}
-            >
-              {value}
-            </button>
-          ))}
+            {rows.length} shown ·{" "}
+            {showFinished ? "active + finished" : "active only"}
+          </span>
         </div>
-      </div>
+        <div className="plans-pane__toolbar">
+          <label className="plans-pane__search-shell">
+            <Search
+              size={14}
+              className="plans-pane__search-icon"
+              aria-hidden="true"
+            />
+            <input
+              type="search"
+              className="plans-pane__search"
+              placeholder="Search plans…"
+              value={query}
+              onChange={(e) => void setQuery(e.target.value || null)}
+              aria-label="Search plans"
+              data-testid="plans-pane-search"
+            />
+            {query ? (
+              <button
+                type="button"
+                className="plans-pane__search-clear"
+                aria-label="Clear plan search"
+                onClick={() => void setQuery(null)}
+              >
+                <X size={12} aria-hidden="true" />
+              </button>
+            ) : null}
+          </label>
+          {/* Sort picker — the shared Radix Select (native <select> is banned by
+              _lints/design-primitives). It sits in the slot the deleted "Filters"
+              toggle vacated, so it holds a FIXED position: parking it in the
+              filter row below would let it drift sideways as facet chips wrap. */}
+          <Select
+            value={sort}
+            onChange={(v) =>
+              void setSort(
+                v === DEFAULT_PLANS_PANE_SORT ? null : (v as PlansPaneSort),
+              )
+            }
+            options={PLANS_PANE_SORTS.map((s) => ({
+              value: s.id,
+              label: s.label,
+            }))}
+            ariaLabel="Sort plans"
+            testId="plans-pane-sort"
+            triggerClassName="plans-pane__sort"
+            align="end"
+            triggerChildren={
+              <>
+                <ArrowUpDown size={13} aria-hidden="true" />
+                <span className="plans-pane__sort-label">
+                  {plansPaneSortLabel(sort)}
+                </span>
+                <ChevronDown size={11} aria-hidden="true" />
+              </>
+            }
+          />
+        </div>
+
+        {/* Always open (WI-40982) — no disclosure, no toggle. */}
+        <div
+          id="plans-pane-filters"
+          className="plans-pane__filters"
+          data-testid="plans-pane-filters"
+        >
+          <Tooltip
+            label={
+              showFinished
+                ? "Hide finished plans"
+                : "Also show shipped / superseded plans"
+            }
+          >
+            <button
+              type="button"
+              className={`plans-pane__finished-toggle${showFinished ? " is-on" : ""}`}
+              onClick={() => void setShowFinished(showFinished ? null : true)}
+              aria-pressed={showFinished}
+              data-testid="plans-pane-finished-toggle"
+            >
+              Finished
+            </button>
+          </Tooltip>
+          <div
+            className="plans-pane__trigger-filter"
+            role="group"
+            aria-label="Plan trigger type"
+          >
+            {PLAN_TRIGGER_FILTERS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className={`plans-pane__trigger-chip${triggerFilter === value ? " is-on" : ""}`}
+                aria-pressed={triggerFilter === value}
+                onClick={() =>
+                  void setTriggerFilter(value === "all" ? null : value)
+                }
+              >
+                {value}
+              </button>
+            ))}
+          </div>
+        </div>
+      </section>
 
       {planList.loading && !plans ? (
         <div className="plans-pane__empty">Loading plans…</div>
@@ -654,7 +735,8 @@ export default function PlansPane() {
               const workHot =
                 lastWorkAtMs != null && Date.now() - lastWorkAtMs < WORK_HOT_MS;
               const stale =
-                !showFinished && isStale({ updated: plan.updated, lastWorkAtMs });
+                !showFinished &&
+                isStale({ updated: plan.updated, lastWorkAtMs });
               // WI-5365: left-accent priority — needs-you (red) outranks live (green).
               const accent =
                 needsYou > 0
@@ -690,7 +772,9 @@ export default function PlansPane() {
                       // parse, which the dashboard does not render (the popup
                       // path — now the dashboard's "Open full plan" — still
                       // times itself end-to-end via the ?wppop host).
-                      void setDashPlan(encodeScopedRef(plan.harness, plan.slug));
+                      void setDashPlan(
+                        encodeScopedRef(plan.harness, plan.slug),
+                      );
                     }}
                     data-testid={`plans-pane-row-${plan.slug}`}
                   >
@@ -767,9 +851,11 @@ export default function PlansPane() {
                       ) : null}
                       <PlanProvenanceBadge
                         origin={plan.origin}
-                        testId={plan.origin === 'scout'
-                          ? 'plans-pane-blender-badge'
-                          : 'plans-pane-outside-blender-badge'}
+                        testId={
+                          plan.origin === "scout"
+                            ? "plans-pane-blender-badge"
+                            : "plans-pane-outside-blender-badge"
+                        }
                       />
                       {needsYou > 0 ? (
                         <span
@@ -836,8 +922,8 @@ export default function PlansPane() {
                       appearance="row"
                       active={Boolean(
                         cleanup.isRunning &&
-                          cleanup.run?.seedRefs.length === 1 &&
-                          cleanup.run.seedRefs[0] === plan.slug,
+                        cleanup.run?.seedRefs.length === 1 &&
+                        cleanup.run.seedRefs[0] === plan.slug,
                       )}
                       onRunStarted={(runId) => void setCleanupRunId(runId)}
                     />
@@ -856,7 +942,10 @@ export default function PlansPane() {
                         aria-label={`Archive ${plan.title ?? plan.slug}`}
                         data-testid={`plans-pane-archive-${plan.slug}`}
                       >
-                        <span className="plans-pane__row-action-icon" aria-hidden="true">
+                        <span
+                          className="plans-pane__row-action-icon"
+                          aria-hidden="true"
+                        >
                           <Archive size={12} />
                         </span>
                       </button>
