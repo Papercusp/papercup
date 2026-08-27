@@ -7468,23 +7468,36 @@ async function runGreenCheckpointInner(
       return localQueue;
     }
   };
+  // WI-42350 — stamp the judged-red marker so the next tick can skip a byte-identical tree.
+  //
+  // ⚠ There is NO single point every terminal red passes through, and assuming there was is
+  // how this feature first shipped inert. A red leaves this function by TWO exits: the
+  // frozen-repair early resolution (`emitTerminalRed`, reachable only when the three
+  // frozen-repair deps are wired) and the ordinary red fallthrough far below. The ordinary
+  // one is the common case, so stamping only in `emitTerminalRed` left the marker unset on
+  // nearly every real red and the gate kept re-judging the same sha — the exact deadlock this
+  // item exists to break. Both exits call this; it is idempotent so the paths may overlap.
+  //
+  // It is deliberately NOT reachable from the infra-fault arm, which returns before either
+  // exit. An infra-fault red (deleted module cache, materialization failure, a killed run)
+  // means the code was never actually judged; stamping there would make the next tick skip a
+  // candidate nobody ever tested, converting a transient host fault into a permanently
+  // unexamined sha. That is the one way this optimization could hide a real regression.
+  let judgedRedStamped = false;
+  const stampJudgedRed = async (sha: string): Promise<void> => {
+    // A pinned diagnostic run is an investigation, not a verdict: it must never be able to
+    // suppress a future real judgement of this sha.
+    if (diagnosticOnly || judgedRedStamped) return;
+    judgedRedStamped = true;
+    await deps.recordJudgedRed?.(cfg.integrationRoot, sha);
+  };
   // EI-21149610271281506: frozen-repair dispatch can resolve a terminal RED before the
   // ordinary red-path emitter below. Keep that short-circuit terminal path equivalent to
   // the normal verdict: wake both red subscribers, retire the mutually-exclusive green
   // waits, and clear the in-flight marker before the caller releases the run lock.
   const emitTerminalRed = async (result: CheckpointResult): Promise<void> => {
     if (diagnosticOnly) return;
-    // WI-42350 — stamp the judged-red marker HERE, and only here.
-    //
-    // This is the one point every GENUINE terminal red passes through, and it sits AFTER the
-    // infra-fault arm on purpose. An infra-fault red (deleted module cache, materialization
-    // failure, a killed run) means the code was never actually judged — stamping it would make
-    // the next tick skip a candidate nobody ever tested, converting a transient infra problem
-    // into a permanently unexamined sha. That is the one way this optimization could hide a real
-    // regression, so the marker is deliberately unreachable from that path.
-    //
-    // `diagnosticOnly` returns above, so a pinned diagnostic run cannot move the marker either.
-    await deps.recordJudgedRed?.(cfg.integrationRoot, result.candidate);
+    await stampJudgedRed(result.candidate);
     const pipeline = pipelineName(cfg.integrationRoot);
     const redSummary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
     const payload = {

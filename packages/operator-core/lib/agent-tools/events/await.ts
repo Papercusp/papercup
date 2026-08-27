@@ -47,6 +47,7 @@ import {
   liveSettledProbe,
   liveAssigneeProbe,
   liveWorkItemClaimableEventPayload,
+  type LiveBlockedStateProbe,
 } from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { hardText, softText, clampText, LIMITS } from '../limits';
@@ -782,13 +783,15 @@ export default defineTool({
     // time-bounded: an 'unknown' probe (unreadable item, ambiguous id) falls
     // through to a normal registration.
     const unblockedTarget = patternAwait ? undefined : /^work-item:unblocked:([^:]+)$/.exec(eventKey)?.[1];
+    let unblockedProbe: LiveBlockedStateProbe | null = null;
     if (unblockedTarget) {
       const probe = await withBoundedTimeout(liveBlockedState(unblockedTarget), {
-        fallback: 'unknown' as const,
+        fallback: { verdict: 'unknown' as const, dependencyState: 'unknown' as const },
         timeoutMs: 1_500,
         label: 'events-await:unblockedLatch',
       });
-      if (probe.value === 'unblocked' || probe.value === 'settled') {
+      unblockedProbe = probe.value;
+      if (probe.value.verdict === 'unblocked' || probe.value.verdict === 'settled') {
         return {
           content: [
             {
@@ -797,9 +800,11 @@ export default defineTool({
                 ok: true,
                 already_unblocked: true,
                 event: eventKey,
-                item_state: probe.value,
+                item_state: probe.value.verdict,
+                lifecycle_state: probe.value.lifecycleState,
+                dependency_state: probe.value.dependencyState,
                 advice:
-                  probe.value === 'settled'
+                  probe.value.verdict === 'settled'
                     ? `${unblockedTarget} is already SETTLED — "${eventKey}" will never fire. Do not wait on it.`
                     : `${unblockedTarget} has NO live blocker right now — it is ALREADY unblocked, so "${eventKey}" will not fire (it fires only on a future blocked→unblocked edge). Proceed with the blocked work now instead of waiting.`,
               }),
@@ -1216,6 +1221,13 @@ export default defineTool({
             ok: true,
             await_id: row.id,
             event: row.eventKey,
+            ...(unblockedProbe?.verdict === 'blocked' && unblockedProbe.lifecycleState
+              ? {
+                  item_state: unblockedProbe.lifecycleState,
+                  lifecycle_state: unblockedProbe.lifecycleState,
+                  dependency_state: unblockedProbe.dependencyState,
+                }
+              : {}),
             ...(supersededCount > 0
               ? {
                   superseded: supersededCount,

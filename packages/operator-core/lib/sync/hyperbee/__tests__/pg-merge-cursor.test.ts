@@ -151,6 +151,23 @@ describe('PgMergeCursorSeedCache (EI-20317490590418053 late admission)', () => {
     expect(store.loadBindings).toEqual([null]); // cache reuse — no second PG read
   });
 
+  it('reloads the durable seed set when the apply binding resolves after the first pass', async () => {
+    const store = fakeStore(new Map([['remote', 81_378]]), 'papercusp');
+    const seedCache = createPgMergeCursorSeedCache();
+    const cursor = createMergeCursor();
+
+    // The pre-rekey pass cannot see progress stamped for the eventual home.
+    await seedCache.seed(cursor, store, null, ['remote']);
+    expect(cursor.positions.has('remote')).toBe(false);
+    expect(store.loadBindings).toEqual([null]);
+
+    // Once the binding resolves, the cache must not keep treating the first
+    // empty load as authoritative for the rest of the boot.
+    await seedCache.seed(cursor, store, 'papercusp', ['remote']);
+    expect(cursor.positions.get('remote')).toBe(81_378);
+    expect(store.loadBindings).toEqual([null, 'papercusp']);
+  });
+
   it('never reuses or reloads cached progress after a real fold invalidation', async () => {
     const store = fakeStore(new Map([['remote', 62_256]]));
     const seedCache = createPgMergeCursorSeedCache();
@@ -160,7 +177,10 @@ describe('PgMergeCursorSeedCache (EI-20317490590418053 late admission)', () => {
 
     seedCache.invalidate();
     const afterReset = createMergeCursor();
-    await seedCache.seed(afterReset, store, null, ['remote']);
+    // Even a later binding change must not revive structurally-invalid fold
+    // state; boot explicitly distinguishes this from a binding-only rekey.
+    store.bindings.set('remote', 'papercusp');
+    await seedCache.seed(afterReset, store, 'papercusp', ['remote']);
     expect(afterReset.positions.has('remote')).toBe(false);
     expect(store.loadBindings).toEqual([null]);
   });

@@ -113,12 +113,16 @@ vi.mock("../../harness/git-sync/pipeline-events", () => ({
   findGreenCheckpointVerdictForCandidate: vi.fn(async () => null),
 }));
 
-// EI-13095: the work-item:await latches probe the live item — mocked here so the
-// rig stays hermetic (the real module pulls db-org). Default 'live'/'blocked' =
-// every existing case registers exactly as before.
+// EI-13095/P-006: the work-item:await latches probe the live item — mocked here
+// so the rig stays hermetic (the real module pulls db-org). Default
+// 'live'/structured 'blocked' = every existing case registers exactly as before.
 vi.mock("../../work-items-events", () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: "live" as const, itemState: "wip" })),
-  liveBlockedState: vi.fn(async () => "blocked" as const),
+  liveBlockedState: vi.fn(async () => ({
+    verdict: "blocked" as const,
+    lifecycleState: "blocked",
+    dependencyState: "unblocked" as const,
+  })),
 }));
 
 await import("./sugar");
@@ -854,16 +858,26 @@ describe("work-item:await registration latches (EI-13095 — the sugar used to b
   });
 
   it("state:'unblocked' on an item with no live blocker answers already_unblocked (the P-006 latch, now applied via sugar too)", async () => {
-    vi.mocked(liveBlockedState).mockResolvedValueOnce("unblocked");
+    vi.mocked(liveBlockedState).mockResolvedValueOnce({
+      verdict: "unblocked",
+      lifecycleState: "open",
+      dependencyState: "unblocked",
+    });
     const out = await callWi({ id: "WI-7", state: "unblocked" });
     expect(out).toMatchObject({ ok: true, already_unblocked: true, item_state: "unblocked" });
+    expect(out).toMatchObject({ lifecycle_state: "open", dependency_state: "unblocked" });
     expect(registerAwait).not.toHaveBeenCalled();
   });
 
   it("state:'unblocked' on a SETTLED item also latches (the key can never fire)", async () => {
-    vi.mocked(liveBlockedState).mockResolvedValueOnce("settled");
+    vi.mocked(liveBlockedState).mockResolvedValueOnce({
+      verdict: "settled",
+      lifecycleState: "resolved",
+      dependencyState: "not-applicable",
+    });
     const out = await callWi({ id: "WI-8", state: "unblocked" });
     expect(out).toMatchObject({ already_unblocked: true, item_state: "settled" });
+    expect(out).toMatchObject({ lifecycle_state: "resolved", dependency_state: "not-applicable" });
     expect(out.advice).toContain("never fire");
     expect(registerAwait).not.toHaveBeenCalled();
   });
@@ -872,6 +886,25 @@ describe("work-item:await registration latches (EI-13095 — the sugar used to b
     const out = await callWi({ id: "WI-9", state: "unblocked" });
     expect(out.already_unblocked).toBeUndefined();
     expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:unblocked:WI-9");
+  });
+
+  it("state:'unblocked' on a lifecycle-blocked item with no dependency edges stays registered and reports both states", async () => {
+    vi.mocked(liveBlockedState).mockResolvedValueOnce({
+      verdict: "blocked",
+      lifecycleState: "blocked",
+      dependencyState: "unblocked",
+    });
+    const out = await callWi({ id: "WI-42228", state: "unblocked" });
+    expect(out).toMatchObject({
+      ok: true,
+      await_ids: [99],
+      events: ["work-item:unblocked:WI-42228"],
+      item_state: "blocked",
+      lifecycle_state: "blocked",
+      dependency_state: "unblocked",
+    });
+    expect(out.already_unblocked).toBeUndefined();
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:unblocked:WI-42228");
   });
 
   it("state:'any' probes NOTHING (the general status key can always fire again)", async () => {

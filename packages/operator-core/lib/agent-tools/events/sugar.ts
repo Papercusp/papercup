@@ -35,7 +35,7 @@ import { startAwaitSweeper } from "../../events/await/engine";
 import { buildKey } from "../../events/await/catalog";
 import { clampText, LIMITS } from "../limits";
 import { devDeployState } from "../../dev-deploy-state";
-import { liveBlockedState, liveSettledProbe } from "../../work-items-events";
+import { liveBlockedState, liveSettledProbe, type LiveBlockedStateProbe } from "../../work-items-events";
 import { withBoundedTimeout } from "../../bounded-timeout";
 import { CHECKPOINT_MAX_RUNTIME_SEC } from "../../release-checkpoint-launch";
 import { readDeployInFlight } from "../../release-deploy-launch";
@@ -682,6 +682,7 @@ defineTool({
     // state:'unblocked' on an item with no live blocker / settled ⇒
     // already_unblocked (the P-006 edge-key latch). Best-effort + time-bounded —
     // an 'unknown' probe arms normally.
+    let unblockedProbe: LiveBlockedStateProbe | null = null;
     if (state === "done") {
       const probe = await withBoundedTimeout(liveSettledProbe(args.id), {
         fallback: { verdict: "unknown" as const },
@@ -699,31 +700,41 @@ defineTool({
       }
     } else if (state === "unblocked") {
       const probe = await withBoundedTimeout(liveBlockedState(args.id), {
-        fallback: "unknown" as const,
+        fallback: { verdict: "unknown" as const, dependencyState: "unknown" as const },
         timeoutMs: 1_500,
         label: "work-item-await:unblockedLatch",
       });
-      if (probe.value === "unblocked" || probe.value === "settled") {
+      unblockedProbe = probe.value;
+      if (probe.value.verdict === "unblocked" || probe.value.verdict === "settled") {
         return reply({
           ok: true,
           already_unblocked: true,
           event: key,
-          item_state: probe.value,
+          item_state: probe.value.verdict,
+          lifecycle_state: probe.value.lifecycleState,
+          dependency_state: probe.value.dependencyState,
           advice:
-            probe.value === "settled"
+            probe.value.verdict === "settled"
               ? `${args.id} is already SETTLED — "${key}" will never fire. Do not wait on it.`
               : `${args.id} has NO live blocker right now — "${key}" fires only on a future blocked→unblocked edge. Proceed with the blocked work now.`,
         });
       }
     }
-    return reply(
-      await armAwaits(
-        ctx,
-        [key],
-        args.note ?? `work-item:await ${args.id} (${state})`,
-        args.timeout_sec,
-      ),
+    const armed = await armAwaits(
+      ctx,
+      [key],
+      args.note ?? `work-item:await ${args.id} (${state})`,
+      args.timeout_sec,
     );
+    if (unblockedProbe?.verdict === "blocked" && unblockedProbe.lifecycleState) {
+      return reply({
+        ...armed,
+        item_state: unblockedProbe.lifecycleState,
+        lifecycle_state: unblockedProbe.lifecycleState,
+        dependency_state: unblockedProbe.dependencyState,
+      });
+    }
+    return reply(armed);
   },
 });
 

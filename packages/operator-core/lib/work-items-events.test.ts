@@ -950,7 +950,11 @@ describe('liveBlockedState (P-006 latch probe)', () => {
         getItem: vi.fn(async (id: string) => (id === 'WI-DEP' ? item : id === 'WI-B1' ? liveBlocker : null)) as never,
         listIn: vi.fn(async () => [edge('WI-B1', 'WI-DEP')]) as never,
       }),
-    ).resolves.toBe('blocked');
+    ).resolves.toEqual({
+      verdict: 'blocked',
+      lifecycleState: 'open',
+      dependencyState: 'blocked',
+    });
   });
 
   it("returns 'unblocked' when every blocker is settled (or none exist)", async () => {
@@ -963,13 +967,34 @@ describe('liveBlockedState (P-006 latch probe)', () => {
         ) as never,
         listIn: vi.fn(async () => [edge('WI-B1', 'WI-DEP')]) as never,
       }),
-    ).resolves.toBe('unblocked');
+    ).resolves.toEqual({
+      verdict: 'unblocked',
+      lifecycleState: 'open',
+      dependencyState: 'unblocked',
+    });
     await expect(
       liveBlockedState('WI-DEP', {
         getItem: vi.fn(async () => item) as never,
         listIn: vi.fn(async () => []) as never,
       }),
-    ).resolves.toBe('unblocked');
+    ).resolves.toEqual({
+      verdict: 'unblocked',
+      lifecycleState: 'open',
+      dependencyState: 'unblocked',
+    });
+  });
+
+  it("returns 'blocked' for a lifecycle-blocked target even when no dependency edges exist", async () => {
+    await expect(
+      liveBlockedState('WI-DEP', {
+        getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'blocked' })) as never,
+        listIn: vi.fn(async () => []) as never,
+      }),
+    ).resolves.toEqual({
+      verdict: 'blocked',
+      lifecycleState: 'blocked',
+      dependencyState: 'unblocked',
+    });
   });
 
   it("returns 'settled' for a target already in a terminal state (the key can never fire)", async () => {
@@ -978,7 +1003,11 @@ describe('liveBlockedState (P-006 latch probe)', () => {
         getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'resolved' })) as never,
         listIn: vi.fn(async () => []) as never,
       }),
-    ).resolves.toBe('settled');
+    ).resolves.toEqual({
+      verdict: 'settled',
+      lifecycleState: 'resolved',
+      dependencyState: 'not-applicable',
+    });
   });
 
   it("returns 'unknown' (never throws) when the item is unreadable — registration must proceed", async () => {
@@ -987,7 +1016,7 @@ describe('liveBlockedState (P-006 latch probe)', () => {
         getItem: vi.fn(async () => null) as never,
         listIn: vi.fn(async () => []) as never,
       }),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ verdict: 'unknown', dependencyState: 'unknown' });
     await expect(
       liveBlockedState('WI-DEP', {
         getItem: vi.fn(async () => wi({ id: 'WI-DEP', state: 'open' })) as never,
@@ -995,7 +1024,7 @@ describe('liveBlockedState (P-006 latch probe)', () => {
           throw new Error('pg down');
         }) as never,
       }),
-    ).resolves.toBe('unknown');
+    ).resolves.toEqual({ verdict: 'unknown', dependencyState: 'unknown' });
   });
 });
 

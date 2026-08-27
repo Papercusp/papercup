@@ -673,30 +673,65 @@ async function emitUnblockedForClearedEdges(
  * event fires only on a blocked→unblocked EDGE, so awaiting it for an item
  * that is ALREADY unblocked (or settled) registers a wait that can only time
  * out — the same stranding the EI-9270 announced-gate latch closes for
- * declared keys. Best-effort by contract: 'unknown' (unreadable / ambiguous
- * id, e.g. a feature id whose harness the key doesn't carry) must never block
- * a registration — callers treat it as "go ahead and register".
+ * declared keys. The reading keeps the target lifecycle and its dependency-edge
+ * state separate: a target can be lifecycle-blocked with no `blocks` edge. The
+ * old scalar result called that "unblocked" and advised proceeding through an
+ * explicit manual/owner boundary (EI-21581161723225407). Callers may
+ * short-circuit only when `verdict` is `unblocked` or `settled`.
+ *
+ * Best-effort by contract: 'unknown' (unreadable / ambiguous id, e.g. a feature
+ * id whose harness the key doesn't carry) must never block a registration —
+ * callers treat it as "go ahead and register".
  */
+export type LiveBlockedStateProbe =
+  | {
+      verdict: 'blocked' | 'unblocked' | 'settled';
+      lifecycleState: string;
+      dependencyState: 'blocked' | 'unblocked' | 'not-applicable';
+    }
+  | {
+      verdict: 'unknown';
+      lifecycleState?: string;
+      dependencyState: 'unknown';
+    };
+
+function isLifecycleBlockedState(state: string): boolean {
+  // `needs-human` is the other non-terminal lifecycle state that explicitly
+  // parks an item at an owner boundary. Keep the legacy underscore spelling
+  // fail-safe as well; normalized rows use the hyphenated token.
+  return state === 'blocked' || state === 'needs-human' || state === 'needs_human';
+}
+
 export async function liveBlockedState(
   id: string,
   deps: Pick<SettledEventsDeps, 'getItem' | 'listIn'> = {},
-): Promise<'blocked' | 'unblocked' | 'settled' | 'unknown'> {
+): Promise<LiveBlockedStateProbe> {
   const getItem = deps.getItem ?? getWorkItem;
   const listIn = deps.listIn ?? blockingEdgeReader.listIn;
   try {
     const item = await getItem(id, undefined).catch(() => null);
-    if (!item) return 'unknown';
-    if (isSettledWorkItem(item)) return 'settled';
+    if (!item) return { verdict: 'unknown', dependencyState: 'unknown' };
+    if (isSettledWorkItem(item)) {
+      return { verdict: 'settled', lifecycleState: item.state, dependencyState: 'not-applicable' };
+    }
     const edges = await listIn(workItemObjectRef(item), { rel: 'blocks' });
+    let dependencyState: 'blocked' | 'unblocked' = 'unblocked';
     for (const be of edges) {
       const src = workItemIdFromRef(be.src);
       if (!src) continue;
       const blocker = await getItem(src.id, src.harness).catch(() => null);
-      if (blocker && !isSettledWorkItem(blocker)) return 'blocked';
+      if (blocker && !isSettledWorkItem(blocker)) {
+        dependencyState = 'blocked';
+        break;
+      }
     }
-    return 'unblocked';
+    return {
+      verdict: isLifecycleBlockedState(item.state) || dependencyState === 'blocked' ? 'blocked' : 'unblocked',
+      lifecycleState: item.state,
+      dependencyState,
+    };
   } catch {
-    return 'unknown';
+    return { verdict: 'unknown', dependencyState: 'unknown' };
   }
 }
 

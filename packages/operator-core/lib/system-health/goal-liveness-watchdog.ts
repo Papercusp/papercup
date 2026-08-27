@@ -820,16 +820,31 @@ export async function runGoalLivenessSweepOnce(
   escalated: number;
   readinessEscalated: number;
   autoStarted: number;
+  wedgeEscalated: number;
   skipped: boolean;
 }> {
   const deps = sweepDeps(sql, overrides);
   if (!(await deps.flagEnabled())) {
-    return { scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: true };
+    return {
+      scanned: 0,
+      escalated: 0,
+      readinessEscalated: 0,
+      autoStarted: 0,
+      wedgeEscalated: 0,
+      skipped: true,
+    };
   }
 
   const { goals, holders } = await deps.readGoals();
   if (goals.length === 0) {
-    return { scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: false };
+    return {
+      scanned: 0,
+      escalated: 0,
+      readinessEscalated: 0,
+      autoStarted: 0,
+      wedgeEscalated: 0,
+      skipped: false,
+    };
   }
 
   // Only resolve holders that actually point at an active goal — the agent_modes

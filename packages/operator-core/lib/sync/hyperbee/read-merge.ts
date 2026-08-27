@@ -688,10 +688,12 @@ export interface MergeCursorStore {
  *
  * This cache separates the durable seed SET from the live admitted-log cursor:
  * it loads once, copies positions only for keys admitted in the current pass,
- * and remains reusable when another log is admitted later. A real fold
- * invalidation (removal, projection rebind, or truncation) disables it for the
- * remainder of the boot; reusing pre-invalidation progress after one of those
- * events would be the same unsafe skip the original one-shot latch avoided.
+ * and remains reusable when another log is admitted later. The durable set is
+ * binding-scoped, so resolving a different apply binding reloads it instead of
+ * treating the first (often empty) load as authoritative for the whole boot. A
+ * structural fold invalidation (removal, truncation, or lost deferred state)
+ * still disables it for the remainder of the boot; reusing progress after one
+ * of those events would be the same unsafe skip the original latch avoided.
  */
 export interface PgMergeCursorSeedCache {
   seed(
@@ -729,13 +731,15 @@ export function seedCursorFromPgCache(
  * fail-open (the caller logs it; folds start at zero), matching the old latch. */
 export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
   let saved: ReadonlyMap<string, number> | undefined;
+  let savedApplyBinding: string | null | undefined;
   let invalidated = false;
   return {
     async seed(cursor, store, applyBinding, admittedKeyHexes) {
       if (invalidated) return;
-      if (!saved) {
+      if (!saved || savedApplyBinding !== applyBinding) {
         try {
           saved = await store.load(applyBinding);
+          savedApplyBinding = applyBinding;
         } catch (error) {
           invalidated = true;
           throw error;
@@ -746,6 +750,7 @@ export function createPgMergeCursorSeedCache(): PgMergeCursorSeedCache {
     invalidate() {
       invalidated = true;
       saved = undefined;
+      savedApplyBinding = undefined;
     },
   };
 }

@@ -2141,6 +2141,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // → roster row lands → the pendingMemberContent drain fires. Checked + cleared UNDER
   // the merge gate (top of mergeOnePass), so it never races an in-flight pass.
   let forceReFold = false;
+  // A binding-changing rekey may reload durable progress stamped for the NEW
+  // binding after the cursor reset. Every structural reset (removed/truncated
+  // log or evicted deferred state) must still disable PG seeding for this boot.
+  let forceReFoldCanReloadPgSeed = false;
 
   // substrate-peer-log-compaction-2026-06-13 (design A, D-005) — FLAG-GATED.
   // WI-3370 (2026-07-10) split ONE boolean into two: (a) the READER —
@@ -3200,8 +3204,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // forceReFold on a hit so the SAME re-fold mechanism the rekey rebind already uses
       // re-encounters (and, for a still-relevant deferral, re-applies) the evicted op on the
       // very next pass instead of waiting on a restart.
-      if (rekeyDeps?.pending.consumeEvictionSignal()) forceReFold = true;
-      if (pendingMemberContent.consumeEvictionSignal()) forceReFold = true;
+      if (rekeyDeps?.pending.consumeEvictionSignal()) {
+        forceReFold = true;
+        forceReFoldCanReloadPgSeed = false;
+      }
+      if (pendingMemberContent.consumeEvictionSignal()) {
+        forceReFold = true;
+        forceReFoldCanReloadPgSeed = false;
+      }
 
       // Queued admissions land first so THIS pass merges them (P-022).
       await drainAdmissionQueue();
@@ -3341,8 +3351,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       // re-fold behaves identically to the log-removal reset path.
       if (forceReFold) {
         mergeCursor = createMergeCursor();
-        pgCursorSeedCache?.invalidate();
+        // A real apply-binding change selects an independent, scope-stamped PG
+        // seed set; the binding-aware cache below reloads it safely. Same-binding
+        // re-folds and every structural reset must start from zero instead.
+        if (!forceReFoldCanReloadPgSeed) pgCursorSeedCache?.invalidate();
         forceReFold = false;
+        forceReFoldCanReloadPgSeed = false;
       }
 
       // WI-2105 + EI-20317490590418053 (flag-gated, default ON): load PG once,
@@ -5297,6 +5311,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
         }
         if (next !== hiveHomeProjectionSlug) {
+          const previousApplyBinding = currentApplyBinding();
           hiveHomeProjectionSlug = next;
           scopedApply = buildScopedApply(next);
           // ── Re-key GATE LIFECYCLE (su-c2a63, Gate 3) ── A mid-session join resolves the
@@ -5331,6 +5346,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // defers forever. Force the next merge pass to re-fold all admitted logs through
           // the NEW binding so that op re-applies and lands. Driven by the mergeNow() below.
           forceReFold = true;
+          forceReFoldCanReloadPgSeed = previousApplyBinding !== currentApplyBinding();
         }
       } else if (process.env.PAPERCUSP_A003_TRACE === '1') {
 

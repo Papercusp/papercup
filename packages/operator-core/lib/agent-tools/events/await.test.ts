@@ -88,12 +88,16 @@ vi.mock('../coordination/messages', () => ({ getMessageById: vi.fn() }));
 vi.mock('../../events/await/installed-events', () => ({
   readInstalledUnitEvents: vi.fn(async () => []),
 }));
-// EI-13095: the done/unblocked registration latches probe the live item — mocked so
-// the rig stays hermetic (the real module pulls db-org). Defaults ('live'/'blocked')
-// make every existing case register exactly as before.
+// EI-13095/P-006: the done/unblocked registration latches probe the live item —
+// mocked so the rig stays hermetic (the real module pulls db-org). Defaults
+// ('live'/structured 'blocked') make every existing case register exactly as before.
 vi.mock('../../work-items-events', () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: 'live' as const, itemState: 'wip' })),
-  liveBlockedState: vi.fn(async () => 'blocked' as const),
+  liveBlockedState: vi.fn(async () => ({
+    verdict: 'blocked' as const,
+    lifecycleState: 'blocked',
+    dependencyState: 'unblocked' as const,
+  })),
   // EI-18731480441007330: the self-await deadlock guard's probe. Defaults to
   // 'live' with no assignee (never equal to the caller's own ownerId,
   // 'su-awaiter'), so every PRE-EXISTING test above still registers exactly
@@ -135,7 +139,7 @@ import { getMessageById } from '../coordination/messages';
 import { captureWakeHandleForOwner } from '../../events/await/handle';
 import { startAwaitSweeper } from '../../events/await/engine';
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
-import { liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
+import { liveBlockedState, liveSettledProbe, liveAssigneeProbe, liveWorkItemClaimableEventPayload } from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
@@ -993,6 +997,29 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
   it('non-done keys never probe (no per-registration tax on unrelated awaits)', async () => {
     await call({ event: 'lock:grant:t9' });
     expect(liveSettledProbe).not.toHaveBeenCalled();
+  });
+});
+
+describe('the unblocked-key registration LATCH (P-006 / EI-21581161723225407)', () => {
+  it('does not misclassify a lifecycle-blocked target with no dependency edges as already unblocked', async () => {
+    vi.mocked(liveBlockedState).mockResolvedValueOnce({
+      verdict: 'blocked',
+      lifecycleState: 'blocked',
+      dependencyState: 'unblocked',
+    });
+
+    const out = await call({ event: 'work-item:unblocked:WI-42218' });
+
+    expect(out).toMatchObject({
+      ok: true,
+      await_id: 99,
+      event: 'work-item:unblocked:WI-42218',
+      item_state: 'blocked',
+      lifecycle_state: 'blocked',
+      dependency_state: 'unblocked',
+    });
+    expect(out.already_unblocked).toBeUndefined();
+    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('work-item:unblocked:WI-42218');
   });
 });
 
