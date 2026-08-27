@@ -64,7 +64,7 @@ describe('persisted fleet launch profile recovery guard (D-004)', () => {
     account: 'default',
     headless: false,
     carry: 'warm' as const,
-    contextSize: 'full' as const,
+    contextSize: 'trimmed' as const,
     compactionLimit: 400_000,
   };
 
