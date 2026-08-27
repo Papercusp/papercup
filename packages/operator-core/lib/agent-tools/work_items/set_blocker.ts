@@ -51,11 +51,11 @@ export default defineTool({
   description:
     "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Returns activeBlockers, capabilityDispositions, and lifecycle.",
   guidance: {
-    when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy event/gate/runtime rows conservatively infer live-dependency and human rows infer product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
+    when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker.",
     chaining:
-      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition (await/obtain per capability; AUTO clears standing approval) → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind when ref identifies one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or removes the issue-family claim hold.',
+      'work_items:set_blocker {id,kind,capability,ref,…} → follow the returned capabilityDisposition → work_items:set_blocker {id,ref,clear:true,evidence}. A clear-only call infers kind from a ref naming one active blocker; pass kind when the ref is reused. Clearing the last blocker returns a feature blocked→todo or drops the issue-family claim hold.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
