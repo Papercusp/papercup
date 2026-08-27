@@ -74,6 +74,19 @@ function failSoft(scope: string, e: unknown): void {
 }
 
 /**
+ * Stamp a work-item lifecycle snapshot with the instant its payload was built.
+ * Lifecycle payload fields are emit-time snapshots and can be stale by the time
+ * a wake is delivered; this marker lets recipients age the snapshot explicitly.
+ * The optional timestamp keeps the helper deterministic for unit tests.
+ */
+export function workItemEventPayload<T extends Record<string, unknown>>(
+  payload: T,
+  observedAt = new Date().toISOString(),
+): T & { payloadObservedAt: string } {
+  return { ...payload, payloadObservedAt: observedAt };
+}
+
+/**
  * `work-item:claimed:<id>` — fired when an agent claims an item
  * (plugin-system-hive-port P-004: the work_items lifecycle fire-point set).
  * Awaited-event leg only: the claim travels through the `work_items:claim` /
@@ -87,12 +100,20 @@ export function emitWorkItemClaimedEvent(
   deps: Pick<SettledEventsDeps, 'emit'> = {},
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
+  const payload = workItemEventPayload({
+    id: wi.id,
+    state: wi.state,
+    kind: wi.kind,
+    harness: wi.harness,
+    assignee,
+    title: wi.title,
+  });
   void Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:claimed:${wi.id}`,
         summary: `${wi.id} claimed by ${assignee}: ${wi.title}`,
-        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, assignee, title: wi.title },
+        payload,
         source: 'work-items',
       }),
     )
@@ -116,7 +137,13 @@ export function emitWorkItemClaimedEvent(
  */
 export function emitWorkItemCreatedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
   const emit = deps.emit ?? emitAwaitedEvent;
-  const payload = { id: wi.id, kind: wi.kind, severity: wi.severity, harness: wi.harness, title: wi.title };
+  const payload = workItemEventPayload({
+    id: wi.id,
+    kind: wi.kind,
+    severity: wi.severity,
+    harness: wi.harness,
+    title: wi.title,
+  });
   const summary = `${wi.id} created (${wi.kind}${wi.severity ? `, ${wi.severity}` : ''}): ${wi.title}`;
   void Promise.resolve()
     .then(() => emit({ key: 'work-item:created', summary, payload, source: 'work-items' }))
@@ -195,7 +222,7 @@ export function workItemClaimableEventPayload(
   wi: WorkItem,
   reason?: 'created' | 'released' | 'unblocked' | 'requeued',
 ): Record<string, unknown> {
-  return {
+  return workItemEventPayload({
     id: wi.id,
     kind: wi.kind,
     severity: wi.severity,
@@ -218,7 +245,7 @@ export function workItemClaimableEventPayload(
     // SAME item as out-of-scope. Single-sourced with the claim-spec `tags` field
     // (staticTagsOfWorkItem) so the two agree exactly.
     tags: staticTagsOfWorkItem(wi),
-  };
+  });
 }
 
 /**
@@ -266,12 +293,19 @@ export async function emitClaimReleasedEventAwaited(
   deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
 ): Promise<void> {
   const emit = deps.emit ?? emitAwaitedEvent;
+  const payload = workItemEventPayload({
+    id: wi.id,
+    state: wi.state,
+    kind: wi.kind,
+    harness: wi.harness,
+    title: wi.title,
+  });
   await Promise.resolve()
     .then(() =>
       emit({
         key: `claim:released:${wi.id}`,
         summary: `${wi.id} claim released — back to the pool: ${wi.title}`,
-        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+        payload,
         source: 'work-items',
       }),
     )
@@ -344,12 +378,19 @@ export function __resetClaimableReleaseThrottleForTests(): void {
 export function emitWorkItemBlockedEvent(wi: WorkItem, deps: Pick<SettledEventsDeps, 'emit'> = {}): void {
   const emit = deps.emit ?? emitAwaitedEvent;
   const notify = wi.assignedBy && wi.assignedBy !== wi.assignee ? [wi.assignedBy] : [];
+  const payload = workItemEventPayload({
+    id: wi.id,
+    state: wi.state,
+    kind: wi.kind,
+    harness: wi.harness,
+    title: wi.title,
+  });
   void Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:blocked:${wi.id}`,
         summary: `${wi.id} is BLOCKED: ${wi.title}`,
-        payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+        payload,
         to: notify,
         source: 'work-items',
       }),
@@ -375,19 +416,20 @@ export function emitWorkItemStatusEvent(
   deps: Pick<SettledEventsDeps, 'emit'> & { announceClaimable?: boolean } = {},
 ): void {
   const emit = deps.emit ?? emitAwaitedEvent;
+  const payload = workItemEventPayload({
+    id: wi.id,
+    state: wi.state,
+    prevState,
+    kind: wi.kind,
+    harness: wi.harness,
+    title: wi.title,
+  });
   void Promise.resolve()
     .then(() =>
       emit({
         key: `work-item:status:${wi.id}`,
         summary: `${wi.id} ${prevState} → ${wi.state}: ${wi.title}`,
-        payload: {
-          id: wi.id,
-          state: wi.state,
-          prevState,
-          kind: wi.kind,
-          harness: wi.harness,
-          title: wi.title,
-        },
+        payload,
         source: 'work-items',
       }),
     )
@@ -647,7 +689,12 @@ async function emitUnblockedForClearedEdges(
     await emit({
       key: `work-item:unblocked:${dependent.id}`,
       summary: `${dependent.id} is UNBLOCKED — its last blocker (${clearedById}) cleared: ${dependent.title}`,
-      payload: { id: dependent.id, clearedBy: clearedById, harness: dependent.harness, title: dependent.title },
+      payload: workItemEventPayload({
+        id: dependent.id,
+        clearedBy: clearedById,
+        harness: dependent.harness,
+        title: dependent.title,
+      }),
       to: dependent.assignee ? [dependent.assignee] : [],
       source: 'work-items',
     });
@@ -880,7 +927,13 @@ async function emitFixDuplicateSettledNotify(
     await emit({
       key: `work-item:duplicate-settled:${wi.id}`,
       summary: `${wi.id} (the canonical item) settled → ${wi.state}: ${wi.title}`,
-      payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+      payload: workItemEventPayload({
+        id: wi.id,
+        state: wi.state,
+        kind: wi.kind,
+        harness: wi.harness,
+        title: wi.title,
+      }),
       to: [...dupAssignees],
       source: 'work-items',
     });
@@ -943,7 +996,13 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
     await emit({
       key: `work-item:done:${wi.id}`,
       summary: `${wi.id} settled → ${wi.state}: ${wi.title}`,
-      payload: { id: wi.id, state: wi.state, kind: wi.kind, harness: wi.harness, title: wi.title },
+      payload: workItemEventPayload({
+        id: wi.id,
+        state: wi.state,
+        kind: wi.kind,
+        harness: wi.harness,
+        title: wi.title,
+      }),
       to: [...notifyDone],
       source: 'work-items',
     });

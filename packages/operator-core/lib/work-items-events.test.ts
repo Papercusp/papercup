@@ -15,6 +15,7 @@ import {
   reconcileCriticalWorkItemAlert,
   selectCriticalWorkItemAlerts,
   workItemClaimableEventPayload,
+  workItemEventPayload,
   workItemIdFromRef,
 } from './work-items-events';
 import type { WorkItem } from './work-items';
@@ -68,6 +69,18 @@ const edgeRel = (srcId: string, dstId: string, rel: string) => ({
 });
 
 describe('helpers', () => {
+  it('stamps lifecycle payloads with their capture time without mutating the snapshot', () => {
+    const payload = { id: 'WI-OBS', state: 'open' };
+    const observedAt = '2026-08-27T10:00:00.000Z';
+
+    expect(workItemEventPayload(payload, observedAt)).toEqual({
+      id: 'WI-OBS',
+      state: 'open',
+      payloadObservedAt: observedAt,
+    });
+    expect(payload).toEqual({ id: 'WI-OBS', state: 'open' });
+  });
+
   it('isSettledWorkItem matches the per-family terminal sets', () => {
     expect(isSettledWorkItem({ family: 'issue', state: 'resolved' })).toBe(true);
     expect(isSettledWorkItem({ family: 'issue', state: 'done' })).toBe(true);
@@ -454,8 +467,10 @@ describe('emitClaimReleasedEvent (P-105)', () => {
     expect(emit.mock.calls[0][0]).toMatchObject({
       key: 'claim:released:WI-9',
       source: 'work-items',
-      payload: expect.objectContaining({ id: 'WI-9' }),
+      payload: expect.objectContaining({ id: 'WI-9', payloadObservedAt: expect.any(String) }),
     });
+    const observedAt = (emit.mock.calls[0][0].payload as { payloadObservedAt: string }).payloadObservedAt;
+    expect(Number.isNaN(Date.parse(observedAt))).toBe(false);
     expect(emit.mock.calls[0][0].to).toBeUndefined();
   });
 
