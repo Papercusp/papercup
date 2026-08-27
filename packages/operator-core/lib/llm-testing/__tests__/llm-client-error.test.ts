@@ -222,4 +222,20 @@ describe('llmCall priority default (EI-315: llm-testing lane starvation)', () =>
     // WI-5217: see the comment on the sibling assertion above — same narrowed-to-`undefined` quirk.
     expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.priority).toBe('gym');
   });
+
+  it('forwards a stable owner id to runAgentChat for gateway attribution', async () => {
+    events.length = 0;
+    events.push({ type: 'result', finalText: 'ok', tokensIn: 1, tokensOut: 1, costUsd: 0 });
+    lastRunAgentChatOpts = undefined;
+    const { llmCall } = await import('../llm-client');
+    await llmCall({
+      system: 's',
+      messages: [{ role: 'user', content: 'u' }],
+      model: 'claude-haiku-4-5-20251001',
+      ownerId: 'system:work-item-admission-bulk-dedup:run-1',
+    });
+    expect((lastRunAgentChatOpts as Record<string, unknown> | undefined)?.ownerId).toBe(
+      'system:work-item-admission-bulk-dedup:run-1',
+    );
+  });
 });

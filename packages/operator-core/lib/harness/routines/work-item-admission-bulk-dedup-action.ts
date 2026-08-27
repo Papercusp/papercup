@@ -4,6 +4,7 @@ import { getFlag } from '@papercusp/flags/server';
 import { gatewayLlmEnv } from '../../inference-gateway/spawn-env';
 import { notifySyncInvalidate } from '../../sync-sse';
 import {
+  BULK_DEDUP_ACTOR,
   runWorkItemAdmissionBulkDedup,
   WORK_ITEM_ADMISSION_BULK_DEDUP,
   type BulkDedupRunResult,
@@ -34,11 +35,17 @@ export interface AdmissionBulkDedupActionDeps {
   log: (message: string) => void;
 }
 
+/** Stable gateway owner for every model call belonging to one durable bulk run. */
+export function bulkDedupOwnerId(runId: string): string {
+  return `${BULK_DEDUP_ACTOR}:${runId}`;
+}
+
 async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> {
   if (process.env.VITEST) throw new Error('production bulk dedup action must not run from a unit test');
   const payload = ctx.payloadTemplate ?? {};
   const runId = typeof payload.runId === 'string' ? payload.runId.trim() : '';
   if (!runId) throw new Error('work-item admission bulk dedup action requires payload.runId');
+  const ownerId = bulkDedupOwnerId(runId);
   if (await getFlag(FLAGS.INFERENCE_GATEWAY, 'system')) {
     for (const [key, value] of Object.entries(gatewayLlmEnv(true))) {
       if (!process.env[key]) process.env[key] = value;
@@ -49,6 +56,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> 
     workspaceId: ctx.workspaceId,
     harnessSlug: ctx.installSlug,
     runId,
+    ownerId,
     maxStages: optionalPositiveInteger(payload.maxStages),
     pairsPerCall: optionalPositiveInteger(payload.pairsPerCall),
     shardConcurrency: optionalPositiveInteger(payload.shardConcurrency),

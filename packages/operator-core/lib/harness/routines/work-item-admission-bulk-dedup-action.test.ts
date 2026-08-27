@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { makeWorkItemAdmissionBulkDedupAction } from './work-item-admission-bulk-dedup-action';
+import { bulkDedupOwnerId, makeWorkItemAdmissionBulkDedupAction } from './work-item-admission-bulk-dedup-action';
 
 describe('work-item admission bulk dedup system action', () => {
+  it('derives a stable, run-scoped gateway owner id', () => {
+    expect(bulkDedupOwnerId('run-1')).toBe('system:work-item-admission-bulk-dedup:run-1');
+    expect(bulkDedupOwnerId('run-1')).toBe(bulkDedupOwnerId('run-1'));
+    expect(bulkDedupOwnerId('run-2')).not.toBe(bulkDedupOwnerId('run-1'));
+  });
+
   it('runs the durable bulk job, invalidates the shared ledger query, and logs convergence', async () => {
     const run = vi.fn(async () => ({
       runId: 'bulk-live-1',

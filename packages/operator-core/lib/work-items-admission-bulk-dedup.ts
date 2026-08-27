@@ -109,6 +109,8 @@ export interface BulkDedupRunOptions {
   shardConcurrency?: number;
   census?: Omit<AdmissionCensusRunOptions, 'workspaceId' | 'harnessSlug' | 'sql' | 'runId' | 'withinTransaction'>;
   now?: () => number;
+  /** Stable owner identity for gateway attribution across retries/replays. */
+  ownerId?: string;
   /** Dependency seam used by the real-PG recurrence guard to inject a census rise. */
   beforePostStageCensus?: (sql: OrgSql, stageIndex: number) => Promise<void>;
   runCensus?: CensusRunner;
@@ -301,19 +303,50 @@ async function beginBulkStage(
     ON CONFLICT (id) DO NOTHING`;
 }
 
+const MAX_BULK_ERROR_CAUSE_DEPTH = 8;
+
+/** Convert an Error.cause chain into JSON-safe evidence without losing the
+ * transport code/message nested under undici's generic `fetch failed`. */
+export function serializeBulkErrorCause(error: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
+  if (depth >= MAX_BULK_ERROR_CAUSE_DEPTH) return '[cause chain truncated]';
+  if (error === null || typeof error !== 'object') return error;
+  if (seen.has(error)) return '[circular cause]';
+  seen.add(error);
+  if (error instanceof Error) {
+    const out: Record<string, unknown> = { name: error.name, message: error.message };
+    const source = error as Error & { cause?: unknown; code?: unknown; status?: unknown; errno?: unknown; type?: unknown };
+    for (const key of ['code', 'status', 'errno', 'type'] as const) {
+      if (source[key] !== undefined) out[key] = source[key];
+    }
+    if (source.cause !== undefined) out.cause = serializeBulkErrorCause(source.cause, depth + 1, seen);
+    return out;
+  }
+  if (Array.isArray(error)) return error.slice(0, 32).map((entry) => serializeBulkErrorCause(entry, depth + 1, seen));
+  const out: Record<string, unknown> = {};
+  for (const key of Object.keys(error).slice(0, 32)) {
+    out[key] = serializeBulkErrorCause((error as Record<string, unknown>)[key], depth + 1, seen);
+  }
+  return out;
+}
+
 async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promise<void> {
   const message = error instanceof Error ? error.message : String(error);
+  const cause = error && typeof error === 'object' ? (error as { cause?: unknown }).cause : undefined;
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
            detail = COALESCE(detail, '{}'::jsonb) ||
-                    ${JSON.stringify({ status: 'failed', error: message })}::text::jsonb
+                    ${JSON.stringify({
+                      status: 'failed',
+                      error: message,
+                      ...(cause !== undefined ? { errorCause: serializeBulkErrorCause(cause) } : {}),
+                    })}::text::jsonb
      WHERE id = ${runId}`.catch(() => undefined);
 }
 
 async function judgeBulkPairs(
   input: BulkInput,
-  opts: { llmCall: PromoterLlmCall; pairsPerCall: number; shardConcurrency: number },
+  opts: { llmCall: PromoterLlmCall; pairsPerCall: number; shardConcurrency: number; ownerId?: string },
 ): Promise<{ judgements: PromoterJudgement[]; modelCalls: number; tokensIn: number; tokensOut: number }> {
   const byShard = new Map<number, PromoterPair[]>();
   for (const pair of input.pairs) {
@@ -347,6 +380,7 @@ async function judgeBulkPairs(
         messages: [{ role: 'user', content: prompt.user }],
         responseFormat: 'json',
         maxTokens: Math.min(8_000, 500 + batch.length * 180),
+        ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
       });
       const parsed = parsePromoterJudgements(responsePayload(response));
       const expected = new Set(batch.map((pair) => pair.pairKey));
@@ -463,7 +497,12 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
 
     const startedAt = now();
     try {
-      const judged = await judgeBulkPairs(input, { llmCall: opts.llmCall, pairsPerCall, shardConcurrency });
+      const judged = await judgeBulkPairs(input, {
+        llmCall: opts.llmCall,
+        pairsPerCall,
+        shardConcurrency,
+        ownerId: opts.ownerId,
+      });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);
       const plan = planPromoterDispositions(stageItems, input.pairs, judged.judgements);

@@ -356,6 +356,41 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     expect(stage[0]?.error).toMatch(/ratchet violated/);
   }, 60_000);
 
+  it('persists a nested transport Error.cause alongside the compatible error message', async () => {
+    await seed();
+    const nested = Object.assign(new Error('fetch failed'), {
+      cause: Object.assign(new Error('connect failed'), {
+        code: 'UND_ERR_CONNECT_TIMEOUT',
+        cause: { code: 'ETIMEDOUT', message: 'connect timed out' },
+      }),
+    });
+    await expect(
+      runWorkItemAdmissionBulkDedup({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-cause',
+        sql: db.sql,
+        census: { chunkCount: 2, targetTokens: 1_000 },
+        llmCall: async () => {
+          throw nested;
+        },
+      }),
+    ).rejects.toThrow('fetch failed');
+
+    const stage = await db.sql<Array<{ detail: { status: string; error: string; errorCause: Record<string, unknown> } }>>`
+      SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-cause-stage-1'`;
+    expect(stage[0]?.detail).toMatchObject({
+      status: 'failed',
+      error: 'fetch failed',
+      errorCause: {
+        name: 'Error',
+        message: 'connect failed',
+        code: 'UND_ERR_CONNECT_TIMEOUT',
+        cause: { code: 'ETIMEDOUT', message: 'connect timed out' },
+      },
+    });
+  }, 60_000);
+
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {
     await seed();
     await db.sql`

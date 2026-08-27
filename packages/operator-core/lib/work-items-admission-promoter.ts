@@ -241,6 +241,8 @@ export type PromoterLlmCall = (input: {
   messages: Array<{ role: 'user'; content: string }>;
   responseFormat: 'json';
   maxTokens: number;
+  /** Stable owner identity for gateway attribution of this durable run. */
+  ownerId?: string;
 }) => Promise<PromoterLlmResult>;
 
 interface WorkItemRow {
