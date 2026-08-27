@@ -73,6 +73,12 @@ const CORPUS = [
   'scheduler/readiness-reconcile.integration.test.ts',
   'scheduler/blocking-floor-single-source.test.ts',
   'dbos/work-item-deps-store.test.ts',
+  // P-011: the real-Postgres lifecycle matrix covers both serial orders for edge
+  // add/remove, blocker settle/reopen, dependant claim/progress/terminal, deletion,
+  // and re-home. The event test is the companion-side-effect half: final-edge
+  // removal must notify the holder rather than merely changing reachability.
+  'dbos/work-item-deps-lifecycle.integration.test.ts',
+  'work-items-events.test.ts',
   'dbos/feature-blockers-edges.integration.test.ts',
   'dbos/feature-blockers-acyclicity.test.ts',
   // P-012, the rename/re-home pair. They prove DIFFERENT halves of INV-03 and neither
@@ -128,8 +134,6 @@ const KNOWN_UNCOVERED: Record<string, string> = {
     'P-005/P-009 must prove rejected work-item and plan batches leave edges and every companion side effect unchanged before atomicity counts as covered.',
   'INV-18':
     'P-005/P-007 must prove one typed admission graph catches cross-family and cross-harness cycles while refusing inert cross-workspace edges.',
-  'INV-19':
-    'P-011 must exercise blocker add, remove, reopen, claim, wip, terminal, deletion, and re-home transitions through atomic reconciliation or refusal.',
   'INV-20':
     'P-013/P-014 must prove lint, monitoring, tools, and the dependency pane consume identical policy rows and preserve healthy-shape noise exclusions.',
 };

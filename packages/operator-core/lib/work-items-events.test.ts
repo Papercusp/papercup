@@ -158,6 +158,7 @@ describe('critical work-item alert reconciliation (EI-20271572335296930)', () =>
   });
 });
 
+// @covers INV-19
 describe('emitWorkItemSettledEvents', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -305,6 +306,7 @@ describe('emitWorkItemSettledEvents', () => {
 // WI-4034 DEFECT 1 (the unlink gap): unlinkWorkItem never re-checked whether
 // the edge it just removed was the dependent's LAST live blocker, so
 // work-item:unblocked never fired on an UNLINK — only on the blocker settling.
+// @covers INV-19
 describe('emitUnblockedOnEdgeRemoved (WI-4034)', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});

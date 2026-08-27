@@ -71,6 +71,20 @@ export interface WorkItemDependencyAdmissionFinding {
   readonly cycles: readonly DependencyStronglyConnectedComponent[];
   readonly endpointDefects: readonly DependencyEndpointDefect[];
   readonly stranded: readonly DependencyStrandedNode[];
+  readonly lifecycleConflicts?: readonly WorkItemDependencyLifecycleConflict[];
+}
+
+export interface WorkItemDependencyLifecycleConflict {
+  readonly edge: DependencyGraphEdgeInput;
+  readonly dependant: {
+    readonly identity: DependencyIdentity;
+    readonly status: string;
+    readonly takenBy: string | null;
+  };
+  readonly blocker: {
+    readonly identity: DependencyIdentity;
+    readonly status: string;
+  };
 }
 
 export interface WorkItemDependencyBatchResult {
@@ -105,6 +119,13 @@ export class WorkItemDependencyAdmissionError extends Error {
       ...finding.cycles.map((cycle) => `dependency cycle: ${cycle.cyclePath.map(identityLabel).join(' -> ')}`),
       ...finding.endpointDefects.map((defect) => defect.message),
       ...finding.stranded.flatMap((row) => row.paths.map((path) => path.path.map(identityLabel).join(' -> '))),
+      ...(finding.lifecycleConflicts ?? []).map(
+        (conflict) =>
+          `cannot add unresolved blocker ${identityLabel(conflict.blocker.identity)} ` +
+          `(status=${conflict.blocker.status}) behind active dependant ` +
+          `${identityLabel(conflict.dependant.identity)} (status=${conflict.dependant.status}, ` +
+          `taken_by=${conflict.dependant.takenBy ?? 'null'})`,
+      ),
     ]);
     super(`work_item_deps candidate rejected: ${details.join('; ') || 'dependency policy violation'}`);
     this.name = 'WorkItemDependencyAdmissionError';
@@ -120,11 +141,13 @@ interface WorkItemNodeRow {
   readonly harness_slug: string;
   readonly feature_id: string;
   readonly item_kind: string;
-  readonly status: string;
+  readonly status: string | null;
+  readonly taken_by: string | null;
 }
 
 const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
 const ISSUE_TERMINAL_STATUSES = new Set(['resolved', 'closed', 'done', 'dropped']);
+const ACTIVE_DEPENDANT_STATUSES = new Set(['wip', 'in_progress', 'validating']);
 
 function identityLabel(id: DependencyIdentity): string {
   return `${id.kind}:${id.ref}`;
@@ -176,6 +199,22 @@ function endpointBareId(endpoint: DependencyIdentity): string | null {
   return isQualifiedFeatureRef(endpoint.ref) ? endpoint.ref.slice(endpoint.ref.indexOf('#') + 1) : endpoint.ref;
 }
 
+function normalizedStatus(row: WorkItemNodeRow): string {
+  return (row.status ?? '').trim().toLowerCase();
+}
+
+function workItemRowIsTerminal(row: WorkItemNodeRow): boolean {
+  const status = normalizedStatus(row);
+  return ISSUE_ITEM_KINDS.has(row.item_kind) ? ISSUE_TERMINAL_STATUSES.has(status) : TERMINAL_STATUSES.has(status);
+}
+
+function workItemRowIsActivelyOwned(row: WorkItemNodeRow): boolean {
+  const holder = row.taken_by?.trim() ?? '';
+  return (
+    (holder !== '' && holder.toLowerCase() !== 'unassigned') || ACTIVE_DEPENDANT_STATUSES.has(normalizedStatus(row))
+  );
+}
+
 function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {
   const issueFamily = ISSUE_ITEM_KINDS.has(row.item_kind);
   const id: DependencyIdentity = issueFamily
@@ -194,7 +233,7 @@ function rowNode(row: WorkItemNodeRow): DependencyGraphNodeInput {
   return {
     id,
     aliases,
-    terminal: issueFamily ? ISSUE_TERMINAL_STATUSES.has(row.status) : TERMINAL_STATUSES.has(row.status),
+    terminal: workItemRowIsTerminal(row),
     scope: `${row.workspace_id}/${row.harness_slug}`,
   };
 }
@@ -203,7 +242,11 @@ async function loadDependencyNodes(
   tx: Sql,
   workspaceId: string,
   edges: readonly StoredDependencyEdge[],
-): Promise<{ nodes: DependencyGraphNodeInput[]; outOfScopeIdentityKeys: ReadonlySet<string> }> {
+): Promise<{
+  nodes: DependencyGraphNodeInput[];
+  lifecycleRows: WorkItemNodeRow[];
+  outOfScopeIdentityKeys: ReadonlySet<string>;
+}> {
   const bareIds = new Set<string>();
   for (const edge of edges) {
     for (const endpoint of [edge.blocked, edge.blocker]) {
@@ -211,25 +254,69 @@ async function loadDependencyNodes(
       if (id) bareIds.add(id);
     }
   }
-  if (bareIds.size === 0) return { nodes: [], outOfScopeIdentityKeys: new Set() };
+  if (bareIds.size === 0) return { nodes: [], lifecycleRows: [], outOfScopeIdentityKeys: new Set() };
   const ids = [...bareIds].sort();
   const rows = await tx<WorkItemNodeRow[]>`
-    SELECT workspace_id, harness_slug, feature_id, item_kind, status
+    SELECT workspace_id, harness_slug, feature_id, item_kind, status, taken_by
       FROM harness_shared.work_items
      WHERE feature_id = ANY(${ids}::text[])
      ORDER BY (workspace_id = ${workspaceId}) DESC, workspace_id, harness_slug, feature_id, item_kind`;
   const nodes: DependencyGraphNodeInput[] = [];
+  const lifecycleRows: WorkItemNodeRow[] = [];
   const outOfScopeIdentityKeys = new Set<string>();
   for (const row of rows) {
     const node = rowNode(row);
     if (row.workspace_id === workspaceId) {
       nodes.push(node);
+      lifecycleRows.push(row);
       continue;
     }
     outOfScopeIdentityKeys.add(dependencyIdentityKey(node.id));
     for (const alias of node.aliases ?? []) outOfScopeIdentityKeys.add(dependencyIdentityKey(alias));
   }
-  return { nodes, outOfScopeIdentityKeys };
+  return { nodes, lifecycleRows, outOfScopeIdentityKeys };
+}
+
+function newlyActiveDependantConflicts(
+  before: readonly StoredDependencyEdge[],
+  after: readonly StoredDependencyEdge[],
+  rows: readonly WorkItemNodeRow[],
+): WorkItemDependencyLifecycleConflict[] {
+  const existing = new Set(before.map(storedEdgeKey));
+  const rowsByIdentity = new Map(
+    rows.map((row) => {
+      const node = rowNode(row);
+      return [dependencyIdentityKey(node.id), { row, identity: node.id }] as const;
+    }),
+  );
+  const conflicts: WorkItemDependencyLifecycleConflict[] = [];
+
+  for (const edge of after) {
+    if (existing.has(storedEdgeKey(edge))) continue;
+    const dependant = rowsByIdentity.get(dependencyIdentityKey(edge.blocked));
+    const blocker = rowsByIdentity.get(dependencyIdentityKey(edge.blocker));
+    // Missing, ambiguous, and out-of-workspace endpoints are reported by the canonical
+    // graph analyser. Lifecycle admission must not replace that more precise diagnosis.
+    if (!dependant || !blocker) continue;
+    // A terminal dependant remains advisory history. A terminal blocker is already
+    // satisfied, so inserting that retained edge does not change reachability.
+    if (workItemRowIsTerminal(dependant.row) || workItemRowIsTerminal(blocker.row)) continue;
+    if (!workItemRowIsActivelyOwned(dependant.row)) continue;
+
+    conflicts.push({
+      edge,
+      dependant: {
+        identity: dependant.identity,
+        status: dependant.row.status ?? '',
+        takenBy: dependant.row.taken_by,
+      },
+      blocker: {
+        identity: blocker.identity,
+        status: blocker.row.status ?? '',
+      },
+    });
+  }
+  return conflicts;
 }
 
 async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<StoredDependencyEdge[]> {
@@ -442,13 +529,23 @@ export async function mutateWorkItemDependencies(
       await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
       const current = await loadStoredDependencyEdges(tx, input.workspaceId);
       const candidate = applyDependencyMutations(current, input.mutations);
-      const { nodes, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
+      const { nodes, lifecycleRows, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
         ...current,
         ...candidate,
       ]);
       const before = analyseStoredEdges(nodes, current);
       const after = analyseStoredEdges(nodes, candidate);
       const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
+      const lifecycleConflicts = newlyActiveDependantConflicts(current, candidate, lifecycleRows);
+      if (lifecycleConflicts.length > 0) {
+        findings.push({
+          policy: getDependencyPolicy('active-dependant-unreconciled')!,
+          cycles: [],
+          endpointDefects: [],
+          stranded: [],
+          lifecycleConflicts,
+        });
+      }
       if (findings.length > 0) throw new WorkItemDependencyAdmissionError(findings, before, after);
       const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
       return { ...diff, before, after };
