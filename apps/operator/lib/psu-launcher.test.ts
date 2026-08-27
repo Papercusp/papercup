@@ -1138,11 +1138,17 @@ describe("SU_CONTEXT_CHOICES (trimmed-only launch policy)", () => {
   it("labels embed the token estimates, in parity with the operator UI", () => {
     const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === "trimmed")!;
     expect(trimmed.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
-    // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
+    // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx),
+    // which is ALSO single-key — that is what makes this parity rather than a claim of it.
     // Re-measured 2026-07-02 post-Phase-3: 60.1k sonnet-fleet / ~76k power boot
     // (the P-018 '~83k' was pre-Phase-3, full persona).
+    //
+    // trimmed-only-agent-context-launch: this assertion is EXACT (toEqual, not
+    // toMatchObject) on purpose — a resurrected 'full' key here would mean the retired
+    // whole-catalog mode had been re-advertised in the picker label source, so this fails
+    // rather than tolerating it. Until 2026-08-27 it asserted the opposite, PINNING
+    // full:'~180k' in place so that removing the residue required editing a green test.
     expect(PSU_SU_CONTEXT_TOKEN_ESTIMATES).toEqual({
-      full: "~180k",
       trimmed: "~70k",
     });
   });

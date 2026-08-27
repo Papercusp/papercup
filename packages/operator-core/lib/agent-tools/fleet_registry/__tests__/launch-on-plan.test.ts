@@ -2393,12 +2393,24 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       }>((resolve) => {
         resolveVerification = resolve;
       });
-      launchTransaction.verify.mockReturnValue(verification);
+      let verificationStarted!: () => void;
+      const verifierStarted = new Promise<void>((resolve) => {
+        verificationStarted = resolve;
+      });
+      launchTransaction.verify.mockImplementation((..._args: unknown[]) => {
+        verificationStarted();
+        return verification;
+      });
 
       const responsePromise = invokeLaunchHandler(
         { name: 'Bounded Response Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
         {} as never,
       );
+      // The handler performs several asynchronous preflight steps before it calls the verifier.
+      // Let that promise chain reach the response race first; otherwise advancing the fake clock
+      // here moves time forward before the race's deadline timer is created, leaving the timer in
+      // the future and this test waiting forever when it is run with -t.
+      await verifierStarted;
       await vi.advanceTimersByTimeAsync(LAUNCH_RESPONSE_DEADLINE_MS);
 
       const response = await responsePromise;

@@ -362,6 +362,10 @@ export async function composeNewApp(args: NewAppArgs, inner: InnerCall, deps: Ne
   if ('error' in src) return fail(src.status, src.error);
 
   const parentDir = args.parentDir?.trim() || deps.defaultParentDir();
+  // `pot:create` expects its parent directory to exist. The default resolver
+  // creates it, but an explicit custom parentDir bypasses that resolver; make
+  // both input forms obey the same precondition before the durable create.
+  mkdirSync(parentDir, { recursive: true });
   // Resolved BEFORE any durable step so the answer is reported even when the
   // builder kickoff is skipped or fails — the caller still needs to know where
   // (or whether) this install's component packages can be linked from.

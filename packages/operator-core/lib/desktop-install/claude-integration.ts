@@ -173,12 +173,15 @@ export function buildClaudeMcpEntry(
       // superuser MCP advertises ONLY the spine (~9k vs the full ~165k catalog) — the fix for
       // claude-sonnet dying "Prompt is too long" on its 200k window (claude's native ToolSearch
       // defers only SCHEMAS, leaving all ~581 names+descriptions inline). Unset/empty ⇒ full
-      // catalog (parseToolsAllowlist treats empty as no-filter — zero regression for a bare claude
-      // or a full/omitted session). The long tail stays reachable via `tools:find` (in the spine).
+      // catalog (parseToolsAllowlist treats empty as no-filter — zero regression for a bare
+      // claude or any session that sets no allowlist). The long tail stays reachable via
+      // `tools:find` (in the spine).
       `&tools=\${PAPERCUSP_TOOLS:-}` +
-      // context-trimming-tiers D-004: the session PAYLOAD tier — psu exports
-      // PAPERCUSP_CONTEXT_TIER (trimmed by default, full for --context-size=full) and the
-      // server threads it to ctx.contextTier so defineTool `shape` projections apply.
+      // context-trimming-tiers D-004: the session PAYLOAD tier — a DIFFERENT axis from the
+      // retired --context-size mode. psu exports PAPERCUSP_CONTEXT_TIER='trimmed'
+      // unconditionally (no launch flag selects 'full'; ptool's PAPERCUSP_CONTEXT_TIER=full
+      // env override remains the one escape hatch for unshaped payloads) and the server
+      // threads it to ctx.contextTier so defineTool `shape` projections apply.
       // Unset/empty/invalid ⇒ 'full' (unshaped — byte-identical for a bare claude).
       `&ctx_tier=\${PAPERCUSP_CONTEXT_TIER:-}`,
     headers: { Authorization: `Bearer ${token}` },

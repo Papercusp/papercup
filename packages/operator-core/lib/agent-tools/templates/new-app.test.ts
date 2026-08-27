@@ -89,11 +89,14 @@ function baseDeps(
 }
 
 /** A mock inner that mimics pot:create (makes the pot home dir) + agent_chats. */
-function mockInner(opts: { failCreateChat?: boolean; blueprint?: string } = {}) {
+function mockInner(
+  opts: { failCreateChat?: boolean; blueprint?: string; beforeCreate?: (args: any) => void } = {},
+) {
   const calls: Array<{ name: string; args: any }> = [];
   const inner = vi.fn(async (name: string, args: any) => {
     calls.push({ name, args });
     if (name === 'pot:create') {
+      opts.beforeCreate?.(args);
       const path = join(args.parentDir ?? join(scratch, 'apps'), args.slug);
       // pot:create writes the hive (coding-pot) blueprint.yaml; overlay must
       // preserve it (PROTECTED_REL in overlayTemplateFiles).
@@ -177,6 +180,23 @@ describe('composeNewApp', () => {
     expect(payload.builder).toEqual({ spawned: false });
     expect(existsSync(join(scratch, 'apps', 'my-app', 'PROTOCOL.md'))).toBe(true);
     expect(calls.map((c) => c.name)).toEqual(['pot:create']);
+  });
+
+  it('creates an explicit missing parentDir before pot:create', async () => {
+    const customParent = join(scratch, 'nested', 'custom-parent');
+    const { inner } = mockInner({
+      beforeCreate: (args) => expect(existsSync(args.parentDir)).toBe(true),
+    });
+
+    const result = await composeNewApp(
+      baseArgs({ parentDir: customParent, kickoffBuilder: false }),
+      inner,
+      baseDeps(),
+    );
+    const payload = parse(result);
+
+    expect(payload.ok).toBe(true);
+    expect(existsSync(customParent)).toBe(true);
   });
 
   it('pins the pot release gate to the materialized host-independent check instead of a missing build script', async () => {

@@ -1235,10 +1235,11 @@ describe('MEMBER→OWNER content guard (WI-5481 scope-extension) — member-auth
  *      (mergePollMs>0, no manual mergeNow() anywhere, matching the
  *      ALTERNATING-SOAK test above).
  *
- * `replicationStallGraceMs` is shrunk from its 3-minute production default so
- * the detector fires in seconds, not minutes — this changes ONLY the wait, not
- * the code path (the exact same grace-then-escalate logic boot.ts runs in
- * production).
+ * `connectedNeverReplicatedGraceMs` is shrunk from its 3-minute production
+ * default so the detector fires in seconds, not minutes — this changes ONLY
+ * the wait, not the code path. WI-5686 deliberately split this zombie-axis
+ * grace from `replicationStallGraceMs`, so shortening the latter no longer
+ * affects this detector (and must not make the other liveness axes false-fire).
  */
 describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — a live swarm connection that genuinely never replicates, detected + evicted + recovered via the REAL repair ladder (no manual intervention)', () => {
   it(
@@ -1420,7 +1421,7 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         bootExtra: {
           announceIdentityOverride: idMember.override,
           mergePollMs: MERGE_POLL_MS,
-          replicationStallGraceMs: GRACE_MS,
+          connectedNeverReplicatedGraceMs: GRACE_MS,
           sidecarOffloadOverride,
         },
       });

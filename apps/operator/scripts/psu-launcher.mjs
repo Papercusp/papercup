@@ -3737,8 +3737,10 @@ export function linkOmpAgentDb(srcAgent, dstAgent) {
  * link, psu→omp sessions boot with an empty credential store and Grok/xAI
  * (and any other post-login provider) silently vanish from `/model`.
  *
- *   opts.discoveryOff   → flip OMP tool-discovery OFF (contextSize:'full' — whole catalog up-front
- *                         for a capable model).
+ *   opts.discoveryOff   → flip OMP tool-discovery OFF. NOT a whole-catalog switch (that mode is
+ *                         retired): it accompanies the trimmed SEED, because with discovery ON
+ *                         even tools:find/tools:invoke sit behind activation and a 0-match query
+ *                         strands the entire surface.
  *   opts.toolsAllowlist → advertise ONLY these MCP tools (weak-model trim; listing-only, the rest
  *                         stay callable via tools:find).
  *
@@ -3776,8 +3778,10 @@ export function writeOmpSessionConfigDir(
     const rel = join(".papercusp", "su-omp-homes", `session-${sessionId}`);
     const dstAgent = join(home, rel, "agent");
     mkdirSync(dstAgent, { recursive: true });
-    // config.yml — copy verbatim, optionally flipping discoveryMode off (full mode). String
-    // surgery on the stable installer-managed keys (a YAML parse/emit would risk reordering).
+    // config.yml — copy verbatim, optionally flipping discoveryMode off. That flip accompanies
+    // the trimmed SEED (see the discoveryOff note on this function); it is NOT the retired
+    // whole-catalog mode. String surgery on the stable installer-managed keys (a YAML
+    // parse/emit would risk reordering).
     let cfg = readFileSync(srcCfg, "utf8");
     if (discoveryOff) {
       cfg = cfg
@@ -3986,8 +3990,9 @@ export function writeOmpSessionConfigDir(
     // mcp.json — carry the papercusp-su server (else the relocated session has NO MCP at all).
     // A default trimmed launch also prunes the SERVER map to papercusp-su + optional context7;
     // otherwise every future server added to the user's global config silently joins every weak
-    // worker. Explicit --context-size=full and role launches omit toolsAllowlist, preserving the
-    // complete user-selected server map as their opt-out.
+    // worker. ROLE launches omit toolsAllowlist and so keep the complete user-selected server
+    // map. There is no longer a --context-size opt-out: 'full' is normalized to 'trimmed' at
+    // parse (see parseArgs), so an SU launch asking for it still gets the allowlist.
     const srcMcp = join(srcAgent, "mcp.json");
     if (existsSync(srcMcp)) {
       let mcpText = readFileSync(srcMcp, "utf8");
@@ -5455,14 +5460,16 @@ async function pickAgent() {
 // sonnet fleet member / ~66k fable fleet / ~76k full-persona power launch — the old
 // '~83k' (P-018, pre-Phase-3, full persona) over-stated by ~15-20k. '~70k' is the
 // honest mid; the preflight guard below does the exact per-launch math anyway.
-export const SU_CONTEXT_TOKEN_ESTIMATES = { full: "~180k", trimmed: "~70k" };
+export const SU_CONTEXT_TOKEN_ESTIMATES = { trimmed: "~70k" };
 
 // su-context-size-variants: the terminal-picker choices — the twin of the UI's
-// SU_CONTEXT_OPTIONS. Native maps to null (⇒ no --context-size flag ⇒ byte-identical
-// to the pre-feature launch); 'full'/'trimmed' match the flag values + the UI enum.
-// 'trimmed' is the picker's DEFAULT selection (core spine + native soft-trim keeps
-// initial context small without giving up on-demand discovery) — Native and Full are
-// still one keypress away for whoever wants the whole catalog or the pre-feature launch.
+// SU_CONTEXT_OPTIONS, which is likewise a single 'trimmed' row. 'trimmed' is the ONLY
+// live mode and therefore the only choice: 'full' is a RETIRED alias that
+// normalizeSuContextSize maps down to 'trimmed' at the flag boundary (see parseArgs),
+// and there is no Native/no-flag row — the picker forces a value. Do not re-add a
+// second entry here to "restore" the whole-catalog launch: the catalog stays fully
+// reachable from the trimmed seed via tools:find/tools:invoke, which is what made the
+// up-front load unnecessary rather than merely unfashionable.
 export const SU_CONTEXT_CHOICES = [
   {
     name: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES.trimmed}  (core spine, native soft-trim) (default)`,
@@ -5472,7 +5479,8 @@ export const SU_CONTEXT_CHOICES = [
 
 // su-context-size-variants: the picker's default SELECTION (highlighted row when the
 // prompt opens; Enter with no arrow keys picks this). Trimmed keeps initial context
-// small without giving up on-demand discovery. Native/Full remain one keypress away.
+// small without giving up on-demand discovery — and it is now also the only row, so
+// this is the value every interactive launch gets.
 export const SU_CONTEXT_DEFAULT = "trimmed";
 
 // ── Launch preflight guards (context-trimming-tiers P-016 / P-018) ──────────
@@ -5826,11 +5834,13 @@ export function preflightWindowGuard({
 
 /**
  * WI-39948: Codex's code-mode bridge serializes the advertised tool surface into
- * its per-call IPC request. With `contextSize:'full'`, Papercusp's full catalog
- * currently produces a ~128 MiB frame, above the bridge's hard 64 MiB limit, so
- * the session boots but EVERY tool call is rejected before execution. `--force`
- * cannot make that transport valid; fail before spawning and point at the
- * growable trimmed seed (tools:find/tools:invoke preserve full reachability).
+ * its per-call IPC request. Advertising Papercusp's whole catalog produced a
+ * ~128 MiB frame, above the bridge's hard 64 MiB limit, so the session booted but
+ * EVERY tool call was rejected before execution. `--force` cannot make that
+ * transport valid. Retiring the whole-catalog mode removed the ordinary route into
+ * this state — the guard remains as a backstop for any caller that reaches here with
+ * a non-trimmed size, and still points at the growable trimmed seed
+ * (tools:find/tools:invoke preserve full reachability).
  */
 export function assertCodexToolTransport({ agent = "claude", contextSize }) {
   const normalized = normalizeSuContextSize(contextSize);
@@ -5870,10 +5880,10 @@ export function runLaunchPreflight({
 }
 
 /** su-context-size-variants: choose the initial-context size for the SU session —
- *  the terminal-picker twin of the operator UI's Full/Trimmed toggle. Defaults to
- *  'trimmed' (core spine + the client's native soft-trim) — Native (null) skips the
- *  flag entirely (byte-identical to the pre-feature launch) and 'full' loads the whole
- *  tool catalog up-front; both remain explicit picker choices. Threads into
+ *  the terminal-picker twin of the operator UI's context select. 'trimmed' (core spine
+ *  + the client's native soft-trim) is the default AND the only choice: the whole-catalog
+ *  'full' mode is retired (normalized to 'trimmed' at the flag boundary) and there is no
+ *  Native/no-flag row, so this prompt has exactly one selectable value. Threads into
  *  args.contextSize, honored per-agent in the launch tail (claude ENABLE_TOOL_SEARCH,
  *  omp PI_CONFIG_DIR, codex/server via the bootstrap body's context_size). */
 async function pickContextSize() {
@@ -11859,11 +11869,11 @@ async function main() {
     // Honor any flags as preselections; prompt only for what was omitted.
     const p = presetsFromArgs(args);
     const agent = p.needAgent ? await pickAgent() : p.agent;
-    // su-context-size-variants: prompt for the context-size variant right after the
-    // agent (the terminal twin of the UI's Full/Trimmed toggle). A --context-size=
-    // flag preselects + skips this, mirroring --fleet/--account. Defaults to 'trimmed';
-    // Native (null) ⇒ no flag ⇒ byte-identical to the pre-feature launch, still one
-    // keypress away.
+    // su-context-size-variants: 'trimmed' is the only live context size, so there is
+    // nothing left to prompt for — assign it directly rather than opening a
+    // single-choice picker. A --context-size= flag has already set args.contextSize by
+    // here (parseArgs normalizes the retired 'full' down to 'trimmed'), so this only
+    // fills the unflagged case.
     if (!args.contextSize) args.contextSize = SU_CONTEXT_SIZE;
     const workspace = p.needWorkspace ? await pickWorkspace() : p.workspace;
     const harness = p.needHarness ? await pickHarness(workspace) : p.harness;
@@ -12128,13 +12138,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // CODEX_HOME, exempt.
   // su-context-size-variants + weak-model-tool-tier: OMP's per-session PI_CONFIG_DIR carries
   // a faithful copy of the config+model-registry with a rewritten mcp.json (home-relative —
-  // see writeOmpSessionConfigDir). Two triggers, mutually exclusive:
-  //   • contextSize:'full'  → discovery OFF, whole catalog up-front (a capable model that wants
-  //     no discovery dance).
-  //   • WEAK/local model (or explicit contextSize:'trimmed') → advertise ONLY the ~19-tool core
-  //     spine (the rest via tools:find), so a small model isn't handed ~580 tools it can't wield.
-  // The tier comes from the MODEL (explicit --model, else the config.yml default), NOT the client
-  // — OMP runs weak AND strong models. Fail-safe: null ⇒ OMP keeps its native default (no regression).
+  // see writeOmpSessionConfigDir). ONE trigger now that 'full' is retired: every session
+  // advertises ONLY the ~19-tool core spine (the rest via tools:find), so no model — weak or
+  // strong — is handed ~580 tools up front. Discovery is flipped OFF alongside it, which is
+  // NOT the old whole-catalog behaviour: it is required BECAUSE the surface is a seed (see the
+  // launch-tail comment — with discovery ON, the seed's own front doors sit behind activation).
+  // Fail-safe: null ⇒ OMP keeps its native default (no regression).
   let ompPiConfigDir = null;
   if (res.agent === "omp" || res.agent === "claude") {
     const parked = parkRoleScopedMcpJson(res.cwd);
@@ -12170,7 +12179,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // on demand (→ notifications/tools/list_changed → OMP re-fetches tools/list, VERIFIED
       // live), tools:invoke (also in the spine) calls anything by name, and the compact
       // capability map (MCP initialize instructions) preserves discoverability. ~165k→~10k
-      // tokens with the whole catalog still reachable. --context-size=full opts out.
+      // tokens with the whole catalog still reachable. There is no opt-out: the seed is the
+      // only mode, and --context-size=full is normalized to 'trimmed' at parse.
       //
       // discoveryOff is REQUIRED here, not optional (live-verified 2026-07-01 on ornith):
       // with OMP discovery ON, even the seed's front doors (tools:find / tools:invoke) sit
@@ -12319,8 +12329,8 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
       // everyone. Historical full inputs are normalized before this point.
       PAPERCUSP_CONTEXT_TIER: "trimmed",
       // su-context-size-variants + weak-model-tool-tier: OMP runs against a per-session config
-      // dir (home-relative) — 'full' with discovery off, or a WEAK model with the MCP surface
-      // trimmed to the core spine (materialized above; null for non-omp / frontier-model / failure).
+      // dir (home-relative) with the MCP surface trimmed to the core spine and discovery off
+      // (materialized above; null for non-omp / frontier-model / failure).
       // PI_CODING_AGENT_DIR must be PINNED alongside it (context-trimming-tiers P-031, 2026-07-02):
       // OMP treats that var as an agent-dir OVERRIDE that BEATS PI_CONFIG_DIR, and adv-console /
       // pty spawns export it (<stateDir>/pi-sessions — spawn-config.resolveContextEnv), so a psu
