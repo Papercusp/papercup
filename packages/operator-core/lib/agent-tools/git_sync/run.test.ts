@@ -6,8 +6,8 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const MAKE_CTX = (role = 'operator') =>
-  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role } as never);
+const MAKE_CTX = (role = 'operator', overrides: Record<string, unknown> = {}) =>
+  ({ log: vi.fn(), signal: new AbortController().signal, progress: vi.fn(), role, ...overrides } as never);
 
 function parse(result: { content: Array<{ text: string }> }): Record<string, unknown> {
   return JSON.parse(result.content[0].text);
@@ -24,6 +24,38 @@ afterEach(() => {
 });
 
 describe('git-sync:run', () => {
+  it('accepts an optional reason without rejecting the strict args schema', async () => {
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
+    const { default: tool } = await import('./run');
+    const parsed = tool.args.safeParse({ reason: 'gate red; commit the current staging tree' });
+
+    expect(parsed.success).toBe(true);
+    expect((parsed.data as { reason?: string }).reason).toBe('gate red; commit the current staging tree');
+    expect(tool.args.safeParse({ definitelyNotAnArg: 'x' }).success).toBe(false);
+  });
+
+  it('records a clamped fire reason once while preserving the existing response', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const metadata = vi.fn();
+    const reason = 'x'.repeat(5000);
+    const result = parse((await tool.handler({ reason }, MAKE_CTX('operator', { metadata }))) as never);
+
+    expect(fireSpy).toHaveBeenCalledExactlyOnceWith('papercusp', 'default', null);
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith({ fireReason: 'x'.repeat(1000) });
+    expect(result).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
+  });
+
   it('fires fireGitSyncNow with the resolved slug + workspace and reports it', async () => {
     const fireSpy = vi.fn(async () => undefined);
     vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
