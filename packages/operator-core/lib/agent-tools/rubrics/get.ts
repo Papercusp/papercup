@@ -8,7 +8,9 @@
  * Bulk by default (the house keyed-array contract): pass `rubricRef` for one or
  * `rubricRefs` for several → { ok, results:[{ ok, rubricId, rubric? | error }],
  * counts } — each result self-describes its rubricId, so a not-found id never
- * poisons the rest and the agent correlates by id (not array position).
+ * poisons the rest and the agent correlates by id (not array position). The
+ * generic read-tool `ref` spelling is accepted as a compatibility alias for
+ * the single-rubric form.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -21,7 +23,7 @@ export default defineTool({
   name: 'rubrics:get',
   profile: 'engineer',
   description:
-    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several. Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
+    "Read one OR many rubrics in full — each rubric's criteria (key + model + method + drift markers + optional rating scale), default rating scale, and method_ref runbook. Pass canonical `rubricRef` for one or `rubricRefs` for several; generic read callers may use `ref` as a compatibility alias for one (`rubricRef` wins when both are supplied). Grade against these: a structured observation's `ratings` is a Record keyed by criteria[].key here (ratings[criteriaKey] = { rating, evidence }). Returns { ok, results:[{ ok, rubricId, rubric? | error }], counts } — correlate by rubricId, not by position; a missing ref never fails the rest.",
   guidance: {
     when: 'You have one or more rubric refs (from rubrics:list/search) and need their full criteria to grade against — e.g. Kettle emitting the pot-coordination-health scorecard, or filing a structured observation. Pass every ref at once via `rubricRefs`.',
     notWhen: 'Scanning many — rubrics:list (summary rows).',
@@ -44,13 +46,20 @@ export default defineTool({
     .object({
       rubricRef: z.string().min(1).optional().describe('a single rubric ref/slug, e.g. "pot-coordination-health" (n=1 shorthand for rubricRefs:[ref])'),
       rubricRefs: z.array(z.string().min(1)).min(1).max(100).optional().describe('rubric refs/slugs to fetch (1–100)'),
+      ref: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Compatibility alias for rubricRef for generic read-tool callers; rubricRef wins when both are supplied.'),
     })
-    .refine((a) => Boolean(a.rubricRef) || (a.rubricRefs?.length ?? 0) > 0, {
-      message: 'pass `rubricRef` (one) or `rubricRefs` (many)',
+    .refine((a) => Boolean(a.rubricRef ?? a.ref) || (a.rubricRefs?.length ?? 0) > 0, {
+      message: 'pass `rubricRef`/`ref` (one) or `rubricRefs` (many)',
     }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const ids = mergeIds(args.rubricRef, args.rubricRefs);
+    // Keep the canonical field authoritative when a caller supplies both it and
+    // the generic compatibility alias (the same rule used by other aliased reads).
+    const ids = mergeIds(args.rubricRef ?? args.ref, args.rubricRefs);
     const env = await runBulk(
       ids,
       async (rubricId) => {

@@ -41,6 +41,47 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, rubricId: 'r-1', rubric: { id: 'r-1' } });
   });
 
+  it('accepts generic { ref } at projected dispatch as a single-rubric alias', async () => {
+    getM.mockResolvedValue({ id: 'r-1', criteria: [] } as never);
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected).toBeDefined();
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'rubrics:get',
+      { ref: 'r-1' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'rubrics-get-ref-alias-test',
+        isSuperuser: true,
+        uiClientId: 'su-rubrics-get-ref-alias-test',
+        role: 'su',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        contextTier: 'trimmed',
+        tx: {},
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    const payload = readJsonResult<{ results: Array<{ rubricId: string; ok: boolean }> }>(dispatched.result!);
+    expect(payload?.results).toEqual([{ ok: true, rubricId: 'r-1', rubric: { id: 'r-1', criteria: [] } }]);
+    expect(getM).toHaveBeenCalledWith('r-1');
+  });
+
+  it('prefers canonical rubricRef when ref is also supplied', async () => {
+    getM.mockImplementation(async (id: string) => ({ id } as never));
+    const b = await body(getTool, { rubricRef: 'canonical', ref: 'alias' });
+    expect(b.results.map((r: { rubricId: string }) => r.rubricId)).toEqual(['canonical']);
+    expect(getM).toHaveBeenCalledWith('canonical');
+    expect(getM).not.toHaveBeenCalledWith('alias');
+  });
+
   it('rubricRefs:[…] fetches many; a not-found item fails only itself', async () => {
     getM.mockImplementation(async (id: string) => (id === 'gone' ? null : ({ id } as never)));
     const b = await body(getTool, { rubricRefs: ['r-1', 'gone', 'r-2'] });
