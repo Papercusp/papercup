@@ -91,25 +91,45 @@ const BLOCKER_DIAGNOSIS_TIMEOUT_MS = 2_000;
  * transaction. Never throws — a diagnostic that itself fails must not mask the real
  * OrgTxnTimeoutError; returns undefined on any error or empty result.
  */
-async function describeContentionAtFailure(client: OrgSql): Promise<string | undefined> {
+async function describeContentionAtFailure(client: OrgSql, pool?: string): Promise<string | undefined> {
   try {
-    const rows = (await client.begin(async (tx) => {
-      await tx.unsafe(`SET LOCAL statement_timeout = ${BLOCKER_DIAGNOSIS_TIMEOUT_MS}`);
-      return tx.unsafe(
-        `SELECT a.pid,
-                EXTRACT(EPOCH FROM (now() - a.xact_start))::int AS age_s,
-                left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160) AS q,
-                cardinality(pg_blocking_pids(a.pid)) = 0 AS unblocked
-           FROM pg_stat_activity a
-          WHERE a.state <> 'idle' AND a.pid <> pg_backend_pid()
-            AND (a.wait_event_type = 'Lock' OR EXISTS (
-                  SELECT 1 FROM pg_stat_activity b
-                   WHERE b.pid <> a.pid AND a.pid = ANY (pg_blocking_pids(b.pid))
-                ))
-          ORDER BY a.xact_start NULLS LAST
-          LIMIT 25`,
-      );
-    })) as unknown as Array<{ pid: number; age_s: number | null; q: string | null; unblocked: boolean }>;
+    // This is a best-effort follow-up to a bounded write, but it still acquires a
+    // fresh pool connection. Without an acquisition deadline, a saturated or
+    // disconnected pool can leave the original checkpoint call pending until its
+    // MCP transport gives up with an unknown outcome (EI-21568779068866915).
+    const rows = (await withAcquisitionDeadline(
+      ({ disarm, expired }) =>
+        client.begin(async (tx) => {
+          // Promise.race does not cancel a late begin. If acquisition loses the
+          // deadline race, do not run the diagnostic query after the caller has
+          // already received the typed timeout result.
+          if (expired()) {
+            throw new DbCallDeadlineError(
+              'boundedOrgTxn:blocker-diagnosis',
+              BLOCKER_DIAGNOSIS_TIMEOUT_MS,
+              BLOCKER_DIAGNOSIS_TIMEOUT_MS,
+              pool,
+            );
+          }
+          disarm();
+          await tx.unsafe(`SET LOCAL statement_timeout = ${BLOCKER_DIAGNOSIS_TIMEOUT_MS}`);
+          return tx.unsafe(
+            `SELECT a.pid,
+                    EXTRACT(EPOCH FROM (now() - a.xact_start))::int AS age_s,
+                    left(regexp_replace(a.query, '\\s+', ' ', 'g'), 160) AS q,
+                    cardinality(pg_blocking_pids(a.pid)) = 0 AS unblocked
+               FROM pg_stat_activity a
+              WHERE a.state <> 'idle' AND a.pid <> pg_backend_pid()
+                AND (a.wait_event_type = 'Lock' OR EXISTS (
+                      SELECT 1 FROM pg_stat_activity b
+                       WHERE b.pid <> a.pid AND a.pid = ANY (pg_blocking_pids(b.pid))
+                    ))
+              ORDER BY a.xact_start NULLS LAST
+              LIMIT 25`,
+          );
+        }),
+      { ms: BLOCKER_DIAGNOSIS_TIMEOUT_MS, label: 'boundedOrgTxn:blocker-diagnosis', pool },
+    )) as unknown as Array<{ pid: number; age_s: number | null; q: string | null; unblocked: boolean }>;
     // The head blocker: itself not waiting on anyone (unblocked), oldest xact first.
     const head = rows.find((r) => r.unblocked);
     if (!head) return undefined;
@@ -217,7 +237,7 @@ export async function boundedOrgTxn<T>(
       // Best-effort attribution (EI-19404770733829453) — the failing txn's own
       // connection already aborted, so this runs on a fresh one and must never be
       // allowed to throw or hang in place of the real error.
-      const blockerHint = await describeContentionAtFailure(sql).catch(() => undefined);
+      const blockerHint = await describeContentionAtFailure(sql, acquirePool).catch(() => undefined);
       throw new OrgTxnTimeoutError(code, err, blockerHint);
     }
     throw err;

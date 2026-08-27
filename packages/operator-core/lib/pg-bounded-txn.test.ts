@@ -155,4 +155,30 @@ describe('boundedOrgTxn', () => {
       'operator write timed out waiting for a row/advisory lock (pg 55P03 lock_timeout) — retry shortly',
     );
   });
+
+  it('bounds fresh-connection acquisition for blocker diagnosis after a contention timeout', async () => {
+    let calls = 0;
+    const client = {
+      begin: async (cb: (tx: unknown) => Promise<unknown>) => {
+        calls++;
+        if (calls === 1) {
+          return cb((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([] as unknown[]));
+        }
+        // A saturated pool can leave the diagnostic's fresh connection queued
+        // indefinitely. The diagnosis must time out locally and preserve the
+        // original typed contention result instead of hanging the MCP call.
+        return new Promise<never>(() => {});
+      },
+    } as never;
+
+    const startedAt = Date.now();
+    const err = await boundedOrgTxn(async () => {
+      throw pgError('55P03');
+    }, { client }).catch((e) => e);
+
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+    expect(err).toBeInstanceOf(OrgTxnTimeoutError);
+    expect((err as OrgTxnTimeoutError).pgCode).toBe('55P03');
+    expect((err as OrgTxnTimeoutError).blockerHint).toBeUndefined();
+  });
 });
