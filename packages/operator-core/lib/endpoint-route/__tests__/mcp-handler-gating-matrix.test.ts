@@ -30,7 +30,7 @@ import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
-import { setEntityEnum } from '@papercusp/tooldef';
+import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS, setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
@@ -47,6 +47,8 @@ const h = vi.hoisted(() => {
   return {
     fakeTx,
     fakeSql,
+    /** EI-21641783475680586: deterministic getRubric seam for the nested transport test. */
+    rubricGet: vi.fn(async (_rubricRef: string): Promise<unknown> => null),
     /** scoped-superuser-workspace-clamp: dispatch tests toggle the flag via this. */
     scopedClampFlag: { value: false },
     /** Hive-tier resolver seam: maps a harness → its hive home slug (null = no hive). */
@@ -308,6 +310,12 @@ vi.mock('../../hive-federation', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, potHomeSlugForHarness: h.potHomeSlugForHarness };
 });
+// Keep this transport matrix PG-free while dispatching the registered
+// rubrics:get implementation through the real nested tools:invoke path.
+vi.mock('../../rubrics', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual, getRubric: h.rubricGet };
+});
 // P-017 workspace-tier clamp seam — only the foreign-workspace harness resolver
 // is stubbed; the rest of harness-core stays real (the wide agent-tools import graph).
 vi.mock('../../harness-core', async (importOriginal) => {
@@ -501,6 +509,26 @@ registerProjectedTool({
 const DOOR_TEST_BIG_TEXT = 'x'.repeat(20000);
 const FULL_SOURCE_CHECKPOINT_TAIL = 'CURRENT_CHECKPOINT_TAIL_EI_211604';
 const FULL_SOURCE_CHECKPOINT = `${DOOR_TEST_BIG_TEXT}${FULL_SOURCE_CHECKPOINT_TAIL}`;
+const NESTED_RUBRIC_ID = 'nested-rubric-result-door';
+const NESTED_RUBRIC = {
+  rubricId: NESTED_RUBRIC_ID,
+  workspaceId: 'ws-test',
+  kind: 'standard',
+  characteristic: 'nested result-door completeness',
+  title: 'Nested result-door completeness',
+  description: 'A deliberately large rubric fixture for the nested transport regression.',
+  methodRef: 'docs/methods/nested-result-door',
+  ratingScale: ['pass', 'weak', 'fail'],
+  criteria: Array.from({ length: 26 }, (_, i) => ({
+    key: `criterion-${i + 1}`,
+    title: `Criterion ${i + 1} ${'t'.repeat(120)}`,
+    model: `model-${i + 1} ${'m'.repeat(120)}`,
+    method: `method-${i + 1} ${'m'.repeat(140)}`,
+    driftMarkers: `drift-${i + 1} ${'d'.repeat(140)}`,
+    replication: `replication-${i + 1} ${'r'.repeat(140)}`,
+    instrumentKey: `instrument-${i + 1}`,
+  })),
+};
 defineTool({
   name: 'gatingtest:door_default',
   requirePrincipal: false,
@@ -671,6 +699,7 @@ beforeEach(() => {
   deltaRequested.length = 0;
   h.withWorkspaceCalls.length = 0;
   h.workspaceAcquireError = null;
+  h.rubricGet.mockResolvedValue(null);
   h.commitFailure = null;
   h.txEvents.length = 0;
   h.replayStores.length = 0;
@@ -894,6 +923,42 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     expect(textOf(res)).toContain(DOOR_TEST_BIG_TEXT);
   });
 
+  it('keeps the real rubrics:get criteria complete through nested tools:invoke', async () => {
+    const rubricJsonChars = JSON.stringify({
+      ok: true,
+      results: [{ ok: true, rubricId: NESTED_RUBRIC_ID, rubric: NESTED_RUBRIC }],
+      counts: { ok: 1, failed: 0 },
+    }).length;
+    expect(rubricJsonChars).toBeGreaterThan(PAYLOAD_TIER_RATCHET_CHARS);
+    expect(rubricJsonChars).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    h.rubricGet.mockResolvedValueOnce(NESTED_RUBRIC);
+
+    const res = await callTool(
+      'tools:invoke',
+      { name: 'rubrics:get', args: { rubricRef: NESTED_RUBRIC_ID } },
+      scoped('ws-test'),
+      { format: 'json' },
+    );
+
+    expect(res.isError).not.toBe(true);
+    expect(res._meta?.resultDoor).toBeUndefined();
+    expect(h.rubricGet).toHaveBeenCalledWith(NESTED_RUBRIC_ID);
+    const payload = JSON.parse(res.content[0]?.text ?? '') as {
+      results: Array<{
+        rubric: {
+          criteria: Array<{ key: string; model: string; method: string; driftMarkers: string }>;
+        };
+      }>;
+    };
+    expect(payload.results[0]?.rubric.criteria).toHaveLength(NESTED_RUBRIC.criteria.length);
+    expect(payload.results[0]?.rubric.criteria.map((criterion) => criterion.key)).toEqual(
+      NESTED_RUBRIC.criteria.map((criterion) => criterion.key),
+    );
+    expect(payload.results[0]?.rubric.criteria.every((criterion) =>
+      criterion.model.length > 100 && criterion.method.length > 100 && criterion.driftMarkers.length > 100,
+    )).toBe(true);
+  });
+
   it('projects an orient-shaped oversize-by-design target before carrying its outer exemption', async () => {
     const res = await callTool(
       'tools:invoke',
@@ -1059,6 +1124,24 @@ describe('tools:invoke re-dispatch — `projection` nested in the target call\'s
     expect(res.isError).not.toBe(true);
     expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
     expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+  });
+
+  it('materializes an explicit-full compact nested result as JSON before structured pick', async () => {
+    // An explicit target payloadTier is authoritative for shaping but must not
+    // force the intermediate projection source to remain compact TOON. This is
+    // the exact work_items:get shape reported by EI-21640976904886373.
+    const res = await callTool(
+      'tools:invoke',
+      {
+        name: 'gatingtest:invoke_target',
+        args: { payloadTier: 'full', projection: { pick: ['lines[0]'] } },
+      },
+      scoped('ws-test'),
+    );
+    expect(res.isError).not.toBe(true);
+    expect(JSON.parse((res.content[0] as { text: string }).text)).toEqual({ lines: ['alpha'] });
+    expect(res._meta?.resultProjection).toMatchObject({ applied: true });
+    expect(textOf(res)).not.toContain('pick SKIPPED');
   });
 
   it('applies a registered named view on a real nested target before the shared result door', async () => {
