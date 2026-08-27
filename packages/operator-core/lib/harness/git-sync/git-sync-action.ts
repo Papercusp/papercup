@@ -460,10 +460,26 @@ interface AcquireOutcome {
 async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
   for (const resource of acquired.reverse()) {
     try {
-      await inWorkspaceTxn(cd, owner, (tx) =>
-        tryReleaseResource(tx, { coordinationDomain: cd, owner, resource }));
-    } catch {
-      /* best-effort: TTL reaps it anyway */
+      // Releasing a lock takes the same workspace transaction/advisory lock as
+      // acquiring it. A transient 57014/55P03 here used to be swallowed, so the
+      // committed event could fire while the resource remained held until its
+      // ten-minute TTL. Retry the whole transaction with the shared bounded
+      // backoff; retrying the transaction (rather than only the callback) is
+      // required because a timed-out transaction is no longer usable.
+      await acquireWithContentionRetry(() =>
+        inWorkspaceTxn(cd, owner, (tx) =>
+          tryReleaseResource(tx, { coordinationDomain: cd, owner, resource })),
+      );
+    } catch (error) {
+      // A persistent contention or infrastructure fault must not prevent the
+      // remaining resources from being released. Keep the TTL as the final
+      // backstop, but make the missed release visible instead of silently
+      // claiming that the committed path is fully unlocked.
+      console.warn(
+        `[git-sync] lock release failed for ${resource} after ${
+          isWorkspaceContended(error) ? 'contention retries' : 'an infrastructure error'
+        }; lock will expire at TTL (${error instanceof Error ? error.message : String(error)})`,
+      );
     }
   }
 }

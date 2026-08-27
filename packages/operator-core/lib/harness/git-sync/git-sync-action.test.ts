@@ -161,9 +161,11 @@ vi.mock('./pipeline-events', () => ({
 }));
 
 const emitGitSyncLockRetryEventMock = vi.fn();
+const emitGitSyncCommittedEventMock = vi.fn();
 vi.mock('./git-sync-events', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./git-sync-events')>()),
   emitGitSyncLockRetryEvent: (...a: unknown[]) => emitGitSyncLockRetryEventMock(...a),
+  emitGitSyncCommittedEvent: (...a: unknown[]) => emitGitSyncCommittedEventMock(...a),
 }));
 
 const INVOKE_URL = 'http://127.0.0.1:3070/api/agents/invoke?role=merge-resolver';
@@ -437,6 +439,7 @@ beforeEach(() => {
   runGitSyncMock.mockReset();
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
+  emitGitSyncCommittedEventMock.mockReset();
   resolveLaunchTargetForEventMock.mockReset();
   loopbackFetchMock.mockReset();
   sendMessageMock.mockReset();
@@ -731,6 +734,43 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(txQueries.find((q) => q.text.includes('agent_resource_registry'))?.text)
       .toContain('ON CONFLICT (resource) DO NOTHING');
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
+  });
+
+  it('retries transient contention while releasing and completes all releases before the committed event', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    const contention = Object.assign(
+      new Error('workspace "ws-42" contended while releasing (pg 57014: lock/statement timeout)'),
+      { name: 'WorkspaceContendedError', pgCode: '57014' },
+    );
+    const sequence: string[] = [];
+    let releaseAttempts = 0;
+    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      sequence.push(`release:${resource}`);
+      releaseAttempts += 1;
+      if (releaseAttempts === 1) throw contention;
+      return { ok: true };
+    });
+    emitGitSyncCommittedEventMock.mockImplementation(() => {
+      sequence.push('committed-event');
+    });
+
+    await action(ctx);
+
+    expect(sequence).toEqual([
+      'release:libs-papercusp-submodule',
+      'release:libs-papercusp-submodule',
+      'release:git-sync',
+      'release:git-sync:papercup',
+      'committed-event',
+    ]);
+    expect(tryReleaseResourceMock).toHaveBeenCalledTimes(4);
+    expect(releasedResources()).toEqual([
+      'libs-papercusp-submodule',
+      'libs-papercusp-submodule',
+      'git-sync',
+      'git-sync:papercup',
+    ]);
   });
 
   it('EI-20744916065879285: passes live file-lock paths to the pure pipeline as protected exclusions', async () => {
