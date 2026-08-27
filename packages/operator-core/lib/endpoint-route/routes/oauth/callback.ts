@@ -197,6 +197,21 @@ export default defineTool({
               .map((source) => googleWorkspaceOAuthField(source.credentialRef)),
           ),
         ];
+        // The mismatch guard above only covers RECONNECT (it needs an `expected`
+        // account to compare against). An add-account flow carries no `expected`,
+        // so without this a consent screen that came back with the account that is
+        // already connected would be written under the freshly allocated field from
+        // oauth/start — a second credential slot pointing at the same mailbox, with
+        // no error surfaced to the owner. Refuse instead: the owner picked the wrong
+        // account in the chooser, and the honest repair is to run it again.
+        if (!expected && googlePreviousFields.length > 0) {
+          return redirectWith(
+            req.url,
+            returnPath,
+            'oauth_error',
+            'google_workspace_account_already_connected',
+          );
+        }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);
@@ -243,6 +258,22 @@ export default defineTool({
         const message = error instanceof Error ? error.message : String(error);
         return redirectWith(req.url, returnPath, 'oauth_error', message);
       }
+    }
+
+    // A brand-new Google account slot that arrives without a refresh token is
+    // already broken: the access token expires within the hour and there is
+    // nothing to renew it with. That is precisely what an authorize URL which
+    // lets Google skip re-consent produces, so fail loudly here instead of
+    // persisting a credential that dies quietly a while after the owner was
+    // told the connection succeeded. Reconnects are exempt — they legitimately
+    // keep the refresh token already stored for that account.
+    if (
+      googleOwner &&
+      !googleOwner.reconnectProviderAccountId &&
+      googlePreviousFields.length === 0 &&
+      !tokens.refreshToken
+    ) {
+      return redirectWith(req.url, returnPath, 'oauth_error', 'google_workspace_refresh_token_missing');
     }
 
     const patch: Record<string, unknown> = { [field]: tokens.accessToken };
