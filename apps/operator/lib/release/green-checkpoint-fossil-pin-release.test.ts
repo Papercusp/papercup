@@ -18,8 +18,14 @@
 import { describe, expect, it } from "vitest";
 
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
+import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
+import { DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS } from "@papercusp/operator-core/lib/release/frozen-candidate-repair-queue";
 
-import { frozenPinIsFossilized } from "./green-checkpoint";
+import {
+  FROZEN_REPAIR_STALL_MS,
+  frozenPinIsFossilized,
+  isJudgingPinnedActiveRepair,
+} from "./green-checkpoint";
 
 /** A fixed "now" so no assertion here depends on wall-clock time. */
 const NOW_MS = Date.UTC(2026, 7, 26, 19, 48, 0);
