@@ -431,7 +431,16 @@ describe('work_items:burn_down', () => {
         parker: 'su-park',
         age: { status: 'invalid', ageMs: null, bucket: 'unknown' },
         unparkCondition: { status: 'stated', text: 'release once P-003 lands' },
-        releaseLiveness: { status: 'tracked', findings: [] },
+        releaseLiveness: {
+          status: 'tracked',
+          contractPresent: true,
+          condition: 'P-003 lands',
+          owner: 'su-owner',
+          trigger: 'plan-item:done:P-003',
+          reachability: 'reachable',
+          evidence: 'work-queue-admission-and-bulk-dedup#P-003',
+          findings: [],
+        },
       },
       agentReview: { status: 'pending', submittedBy: 'su-filer', round: 2 },
       unattributedClaimHold: false,
@@ -447,7 +456,12 @@ describe('work_items:burn_down', () => {
           parker: null,
           age: { status: 'missing', ageMs: null, bucket: 'unknown' },
           unparkCondition: { status: 'missing', text: null },
-          releaseLiveness: { status: 'unverified' },
+          releaseLiveness: {
+            status: 'unverified',
+            contractPresent: false,
+            condition: null,
+            evidence: null,
+          },
         },
         unattributedClaimHold: true,
       },
@@ -459,12 +473,22 @@ describe('work_items:burn_down', () => {
         durablePark: {
           age: { status: 'invalid', bucket: 'unknown' },
           unparkCondition: { status: 'stated' },
-          releaseLiveness: { status: 'tracked', findings: [] },
+          releaseLiveness: {
+            status: 'tracked',
+            contractPresent: true,
+            condition: 'P-003 lands',
+            owner: 'su-owner',
+            trigger: 'plan-item:done:P-003',
+            reachability: 'reachable',
+            evidence: 'work-queue-admission-and-bulk-dedup#P-003',
+            findings: [],
+          },
         },
       },
     });
-    expect((tool as unknown as { result: { safeParse: (value: unknown) => { success: boolean } } })
-      .result.safeParse(result).success).toBe(true);
+    const resultSchema = (tool as unknown as { result: { safeParse: (value: unknown) => { success: boolean } } }).result;
+    expect(resultSchema.safeParse(result).success).toBe(true);
+    expect(resultSchema.safeParse(shaped).success).toBe(true);
   });
 
   it('parks needs-human and actively blocked rows instead of counting them unclaimed (WI-4759)', () => {

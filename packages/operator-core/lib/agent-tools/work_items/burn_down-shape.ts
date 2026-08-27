@@ -94,8 +94,10 @@ function projectQueueControl(value: unknown, textCap: number): JsonObject | unde
       parkedAt: stringOrNull(park.parkedAt), age: age(park.age),
       unparkCondition: condition ? { status: stringOrNull(condition.status), text: clip(condition.text, textCap) } : null,
       releaseLiveness: release ? {
-        status: stringOrNull(release.status), owner: stringOrNull(release.owner),
+        status: stringOrNull(release.status), contractPresent: release.contractPresent === true,
+        condition: stringOrNull(release.condition), owner: stringOrNull(release.owner),
         trigger: clip(release.trigger, textCap), reachability: stringOrNull(release.reachability),
+        evidence: clip(release.evidence, textCap),
         findings: Array.isArray(release.findings) ? release.findings.map(String) : [],
       } : null,
     } : null,
