@@ -17,6 +17,7 @@ const fetchGatewayHeadroomMock = vi.fn();
 const createFleetIfAbsentMock = vi.fn();
 const getFleetMock = vi.fn();
 const getFleetHeadcountTargetMock = vi.fn();
+const setFleetHeadcountTargetMock = vi.fn();
 const setFleetLeaderMock = vi.fn();
 const heartbeatPresenceMock = vi.fn();
 const setPresenceFleetMock = vi.fn();
@@ -118,6 +119,7 @@ vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
   getFleet: (...args: unknown[]) => getFleetMock(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
+  setFleetHeadcountTarget: (...args: unknown[]) => setFleetHeadcountTargetMock(...args),
   getFleetScheme: vi.fn(async () => ({ name: 'Ocean' })),
   // The P-005 idempotency guard (PG-backed, migration 484): default every handler test
   // to a WON slot; suppression semantics live in agent-fleets-store.integration.test.ts.
@@ -404,6 +406,8 @@ beforeEach(() => {
   launchTransaction.persist.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockReset();
   getFleetHeadcountTargetMock.mockResolvedValue(null);
+  setFleetHeadcountTargetMock.mockReset();
+  setFleetHeadcountTargetMock.mockResolvedValue(undefined);
   getFleetMock.mockReset();
   getFleetMock.mockResolvedValue(null);
   getClaimSpecMock.mockReset();
@@ -499,6 +503,63 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('persists the target and canonical boot recipe for a fresh homogeneous plan fleet', async () => {
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Fresh Profile Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        agent: 'claude',
+        model: 'sonnet:high',
+        account: 'default',
+        headless: true,
+        carry: 'cold',
+        role: 'su',
+        brief: 'drain the plan lane',
+        contextSize: 'trimmed',
+        compactionLimit: 200_000,
+        extraArgs: ['--safe-flag'],
+      } as never,
+      {} as never,
+      null,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      fleetSlug: 'fresh-profile-fleet',
+      target: 2,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        headless: true,
+        role: 'su',
+        brief: 'drain the plan lane',
+        contextSize: 'trimmed',
+        compactionLimit: 200_000,
+        carry: 'cold',
+        extraArgs: ['--safe-flag'],
+      },
+    });
+    expect(payload.headcountProfile).toMatchObject({
+      applied: true,
+      target: 2,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+      },
+    });
   });
 
   it('reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)', async () => {
