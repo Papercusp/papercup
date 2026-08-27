@@ -52,7 +52,13 @@ describe('readCodexAuth', () => {
   it('parses a valid chatgpt auth.json', async () => {
     await writeAuth({ access_token: 'at', refresh_token: 'rt', account_id: 'acc', id_token: 'id' });
     const a = await readCodexAuth(home);
-    expect(a).toMatchObject({ authMode: 'chatgpt', accessToken: 'at', refreshToken: 'rt', accountId: 'acc', idToken: 'id' });
+    expect(a).toMatchObject({
+      authMode: 'chatgpt',
+      accessToken: 'at',
+      refreshToken: 'rt',
+      accountId: 'acc',
+      idToken: 'id',
+    });
   });
   it('returns null for a missing file, malformed JSON, or no access_token', async () => {
     expect(await readCodexAuth(path.join(home, 'nope'))).toBeNull();
@@ -80,17 +86,43 @@ describe('jwtExpMs / accessTokenExpired', () => {
 describe('codexBackendUrl', () => {
   it('rewrites /v1/responses onto the chatgpt backend base, preserving the query', () => {
     expect(codexBackendUrl('/v1/responses')).toBe('https://chatgpt.com/backend-api/codex/responses');
-    expect(codexBackendUrl('/v1/responses?stream=true')).toBe('https://chatgpt.com/backend-api/codex/responses?stream=true');
+    expect(codexBackendUrl('/v1/responses?stream=true')).toBe(
+      'https://chatgpt.com/backend-api/codex/responses?stream=true',
+    );
   });
 });
 
 describe('normalizeCodexChatGptResponsesBody', () => {
+  it('splits a Papercusp effort suffix into the bare upstream model and reasoning effort', () => {
+    const result = normalizeCodexChatGptResponsesBody(
+      Buffer.from(
+        JSON.stringify({
+          model: 'gpt-5.6-sol:xhigh',
+          input: [{ role: 'user', content: [] }],
+          reasoning: { summary: 'auto' },
+          store: false,
+        }),
+      ),
+    );
+    expect(result.inputNormalized).toBe(false);
+    expect(JSON.parse(result.body.toString('utf8'))).toEqual({
+      model: 'gpt-5.6-sol',
+      input: [{ role: 'user', content: [] }],
+      reasoning: { summary: 'auto', effort: 'xhigh' },
+      store: false,
+    });
+  });
+
   it('expands public input:string into the canonical one-user-message list', () => {
-    const result = normalizeCodexChatGptResponsesBody(Buffer.from(JSON.stringify({
-      model: 'gpt-5.6-terra',
-      input: 'hello',
-      stream: true,
-    })));
+    const result = normalizeCodexChatGptResponsesBody(
+      Buffer.from(
+        JSON.stringify({
+          model: 'gpt-5.6-terra',
+          input: 'hello',
+          stream: true,
+        }),
+      ),
+    );
     expect(result.inputNormalized).toBe(true);
     expect(JSON.parse(result.body.toString('utf8'))).toEqual({
       model: 'gpt-5.6-terra',
@@ -126,7 +158,9 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
   }
 
   it('turns a public non-stream body into the ChatGPT streaming wire shape', () => {
-    const body = makeCodexNonStreamUpstreamBody(Buffer.from(JSON.stringify({ model: 'gpt-5.6', input: 'hello', stream: false })));
+    const body = makeCodexNonStreamUpstreamBody(
+      Buffer.from(JSON.stringify({ model: 'gpt-5.6', input: 'hello', stream: false })),
+    );
     expect(body && JSON.parse(body.toString('utf8'))).toEqual({
       model: 'gpt-5.6',
       input: 'hello',
@@ -163,11 +197,14 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
       `event: response.output_item.done\ndata: ${JSON.stringify({ type: 'response.output_item.done', output_index: 1, item: message })}\n\n` +
       `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: completed })}\n\n` +
       'data: [DONE]\n\n';
-    const result = await aggregateCodexNonStreamResponse(chunks('ev', 'ent: response.created\n', wire.slice('event: response.created\n'.length)), {
-      contentType: null,
-      maxBytes: 16 * 1024,
-      timeoutMs: 1_000,
-    });
+    const result = await aggregateCodexNonStreamResponse(
+      chunks('ev', 'ent: response.created\n', wire.slice('event: response.created\n'.length)),
+      {
+        contentType: null,
+        maxBytes: 16 * 1024,
+        timeoutMs: 1_000,
+      },
+    );
     expect(JSON.parse(result.toString('utf8'))).toEqual({
       ...completed,
       output: [reasoning, message],
@@ -196,11 +233,16 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
   });
 
   it('rejects an oversized response before retaining it', async () => {
-    await expect(aggregateCodexNonStreamResponse(chunks('data: {"type":"response.created"}\n\n', 'x'.repeat(64)), {
-      contentType: 'text/event-stream',
-      maxBytes: 32,
-      timeoutMs: 1_000,
-    })).rejects.toMatchObject({ code: 'size', name: 'CodexNonStreamAggregateError' } satisfies Partial<CodexNonStreamAggregateError>);
+    await expect(
+      aggregateCodexNonStreamResponse(chunks('data: {"type":"response.created"}\n\n', 'x'.repeat(64)), {
+        contentType: 'text/event-stream',
+        maxBytes: 32,
+        timeoutMs: 1_000,
+      }),
+    ).rejects.toMatchObject({
+      code: 'size',
+      name: 'CodexNonStreamAggregateError',
+    } satisfies Partial<CodexNonStreamAggregateError>);
   });
 
   it('times out a stalled source and invokes the transport abort hook', async () => {
@@ -217,12 +259,14 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
       },
     };
     const onTimeout = vi.fn();
-    await expect(aggregateCodexNonStreamResponse(stalled, {
-      contentType: 'text/event-stream',
-      maxBytes: 1_024,
-      timeoutMs: 10,
-      onTimeout,
-    })).rejects.toMatchObject({ code: 'timeout' });
+    await expect(
+      aggregateCodexNonStreamResponse(stalled, {
+        contentType: 'text/event-stream',
+        maxBytes: 1_024,
+        timeoutMs: 10,
+        onTimeout,
+      }),
+    ).rejects.toMatchObject({ code: 'timeout' });
     expect(onTimeout).toHaveBeenCalledOnce();
     expect(returned).toBe(true);
   });
@@ -255,7 +299,11 @@ describe('makeCodexNonStreamUpstreamBody / aggregateCodexNonStreamResponse', () 
 
 describe('buildCodexUpstreamHeaders', () => {
   it('injects the OAuth bearer + account id + codex signatures + identity encoding', () => {
-    const h = buildCodexUpstreamHeaders({ base: { 'content-type': 'application/json' }, accessToken: 'AT', accountId: 'ACC' });
+    const h = buildCodexUpstreamHeaders({
+      base: { 'content-type': 'application/json' },
+      accessToken: 'AT',
+      accountId: 'ACC',
+    });
     expect(h.authorization).toBe('Bearer AT');
     expect(h['chatgpt-account-id']).toBe('ACC');
     expect(h.originator).toBe('codex_cli_rs');
@@ -264,7 +312,11 @@ describe('buildCodexUpstreamHeaders', () => {
     expect(h['content-type']).toBe('application/json');
   });
   it('does NOT override an originator / OpenAI-Beta the codex CLI already sent', () => {
-    const h = buildCodexUpstreamHeaders({ base: { originator: 'codex_cli_rs_custom', 'OpenAI-Beta': 'responses=v9' }, accessToken: 'AT', accountId: null });
+    const h = buildCodexUpstreamHeaders({
+      base: { originator: 'codex_cli_rs_custom', 'OpenAI-Beta': 'responses=v9' },
+      accessToken: 'AT',
+      accountId: null,
+    });
     expect(h.originator).toBe('codex_cli_rs_custom');
     expect(h['OpenAI-Beta']).toBe('responses=v9');
     expect(h['chatgpt-account-id']).toBeUndefined(); // no account id → header omitted
@@ -279,8 +331,7 @@ describe('preflightCodexModel (EI-20362893066852316)', () => {
     async (phrase) => {
       const body = JSON.stringify({ detail: `The 'gpt-5.6' ${phrase} when using Codex with a ChatGPT account.` });
       const fetchImpl = vi.fn(
-        async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) =>
-          new Response(body, { status: 400 }),
+        async (_input: Parameters<typeof fetch>[0], _init?: RequestInit) => new Response(body, { status: 400 }),
       );
       const result = await preflightCodexModel('/tmp/codex', 'gpt-5.6', {
         fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -310,18 +361,30 @@ describe('preflightCodexModel (EI-20362893066852316)', () => {
   });
 
   it('fails open on transport errors and accepts a successful stream', async () => {
-    const transport = vi.fn(async () => { throw new Error('socket closed'); }) as unknown as typeof fetch;
-    await expect(preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: transport, resolveAuth }))
-      .resolves.toMatchObject({ verdict: 'unknown', detail: 'preflight transport: socket closed' });
+    const transport = vi.fn(async () => {
+      throw new Error('socket closed');
+    }) as unknown as typeof fetch;
+    await expect(
+      preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: transport, resolveAuth }),
+    ).resolves.toMatchObject({ verdict: 'unknown', detail: 'preflight transport: socket closed' });
 
     const ok = vi.fn(async () => new Response(null, { status: 200 })) as unknown as typeof fetch;
-    await expect(preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: ok, resolveAuth }))
-      .resolves.toEqual({ verdict: 'ok', status: 200 });
+    await expect(preflightCodexModel('/tmp/codex', 'gpt-5.6', { fetchImpl: ok, resolveAuth })).resolves.toEqual({
+      verdict: 'ok',
+      status: 200,
+    });
   });
 });
 
 describe('refreshCodexToken', () => {
-  const current: CodexAuth = { authMode: 'chatgpt', accessToken: 'old', refreshToken: 'rt-old', accountId: 'acc', idToken: 'id-old', lastRefresh: null };
+  const current: CodexAuth = {
+    authMode: 'chatgpt',
+    accessToken: 'old',
+    refreshToken: 'rt-old',
+    accountId: 'acc',
+    idToken: 'id-old',
+    lastRefresh: null,
+  };
 
   it('POSTs the refresh_token grant as form-urlencoded, persists the new tokens, returns fresh auth', async () => {
     await writeAuth({ access_token: 'old', refresh_token: 'rt-old', account_id: 'acc', id_token: 'id-old' });
@@ -332,7 +395,9 @@ describe('refreshCodexToken', () => {
       expect(params.get('grant_type')).toBe('refresh_token');
       expect(params.get('refresh_token')).toBe('rt-old');
       expect(params.get('client_id')).toBe('test-client');
-      return new Response(JSON.stringify({ access_token: 'new', refresh_token: 'rt-new', id_token: 'id-new' }), { status: 200 });
+      return new Response(JSON.stringify({ access_token: 'new', refresh_token: 'rt-new', id_token: 'id-new' }), {
+        status: 200,
+      });
     }) as unknown as typeof fetch;
     const next = await refreshCodexToken(home, current, { fetchImpl, clientId: 'test-client' });
     expect(next.accessToken).toBe('new');
@@ -347,7 +412,11 @@ describe('refreshCodexToken', () => {
   it('coalesces concurrent refreshes for the same home into ONE token call', async () => {
     await writeAuth({ access_token: 'old', refresh_token: 'rt-old', account_id: 'acc' });
     let calls = 0;
-    const fetchImpl = vi.fn(async () => { calls++; await new Promise((r) => setTimeout(r, 5)); return new Response(JSON.stringify({ access_token: 'new' }), { status: 200 }); }) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 5));
+      return new Response(JSON.stringify({ access_token: 'new' }), { status: 200 });
+    }) as unknown as typeof fetch;
     const [a, b, c] = await Promise.all([
       refreshCodexToken(home, current, { fetchImpl, clientId: 'x' }),
       refreshCodexToken(home, current, { fetchImpl, clientId: 'x' }),
@@ -369,7 +438,9 @@ describe('refreshCodexToken', () => {
   it('throws a clear error when the grant fails', async () => {
     await writeAuth({ access_token: 'old', refresh_token: 'rt-old' });
     const fetchImpl = vi.fn(async () => new Response('nope', { status: 400 })) as unknown as typeof fetch;
-    await expect(refreshCodexToken(home, current, { fetchImpl, clientId: 'x' })).rejects.toThrow(/token refresh failed 400/);
+    await expect(refreshCodexToken(home, current, { fetchImpl, clientId: 'x' })).rejects.toThrow(
+      /token refresh failed 400/,
+    );
   });
 });
 
@@ -384,7 +455,9 @@ describe('resolveCodexAccessToken', () => {
   });
   it('refreshes when the access token is expired', async () => {
     await writeAuth({ access_token: jwt(Date.now() / 1000 - 10), refresh_token: 'rt', account_id: 'acc' });
-    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ access_token: 'refreshed' }), { status: 200 })) as unknown as typeof fetch;
+    const fetchImpl = vi.fn(
+      async () => new Response(JSON.stringify({ access_token: 'refreshed' }), { status: 200 }),
+    ) as unknown as typeof fetch;
     const a = await resolveCodexAccessToken(home, { fetchImpl, clientId: 'x' });
     expect(a.accessToken).toBe('refreshed');
     expect(fetchImpl).toHaveBeenCalledTimes(1);

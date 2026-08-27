@@ -37,19 +37,18 @@
 import { promises as fs } from 'node:fs';
 import * as path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
+import { parseBridgeModel } from './codex-cli-bridge';
 
 /** The ChatGPT backend that serves codex Responses for ChatGPT-subscription auth. */
 export const CODEX_CHATGPT_BACKEND_BASE =
   process.env.CODEX_CHATGPT_BACKEND_BASE || 'https://chatgpt.com/backend-api/codex';
 
 /** OAuth token endpoint for the refresh_token grant. */
-export const CODEX_OAUTH_TOKEN_URL =
-  process.env.CODEX_OAUTH_TOKEN_URL || 'https://auth.openai.com/oauth/token';
+export const CODEX_OAUTH_TOKEN_URL = process.env.CODEX_OAUTH_TOKEN_URL || 'https://auth.openai.com/oauth/token';
 
 /** The codex CLI's public OAuth client_id (from the codex binary; well-known).
  *  Env-overridable because OpenAI can rotate it and it is undocumented. */
-export const CODEX_OAUTH_CLIENT_ID =
-  process.env.CODEX_OAUTH_CLIENT_ID || 'app_EMoamEEZ73f0CkXaXp7hrann';
+export const CODEX_OAUTH_CLIENT_ID = process.env.CODEX_OAUTH_CLIENT_ID || 'app_EMoamEEZ73f0CkXaXp7hrann';
 
 /** codex stamps this originator on every ChatGPT-backend request. */
 export const CODEX_ORIGINATOR = process.env.CODEX_ORIGINATOR || 'codex_cli_rs';
@@ -82,7 +81,10 @@ export function codexAuthPath(home: string): string {
  * unavailable account registry must not turn a launch diagnostic into a
  * launch blocker.
  */
-export async function resolveCodexPreflightHome(account: string | undefined, workspaceId: string): Promise<string | null> {
+export async function resolveCodexPreflightHome(
+  account: string | undefined,
+  workspaceId: string,
+): Promise<string | null> {
   try {
     const trimmed = account?.trim();
     if (!trimmed || trimmed === 'default') {
@@ -166,7 +168,8 @@ export function codexBackendUrl(incomingUrl: string): string {
 
 /**
  * Normalize public Responses API bodies for the proprietary ChatGPT subscription
- * backend, which accepts only the canonical input-item LIST and requires `store:false`.
+ * backend, which accepts only the canonical input-item LIST, requires `store:false`,
+ * and accepts a bare upstream model id rather than Papercusp's `:<effort>` spec.
  *
  * The public API defines a string as one user text message, so the expansion is
  * semantics-preserving. ChatGPT subscription requests cannot use API-side response
@@ -177,9 +180,7 @@ export function codexBackendUrl(incomingUrl: string): string {
  * the shorthand and its own storage semantics, while chatgpt.com rejects incompatible
  * bodies with `400 Input must be a list` / `400 Store must be set to false`.
  */
-export function normalizeCodexChatGptResponsesBody(
-  bodyBuf: Buffer,
-): { body: Buffer; inputNormalized: boolean } {
+export function normalizeCodexChatGptResponsesBody(bodyBuf: Buffer): { body: Buffer; inputNormalized: boolean } {
   if (!bodyBuf.length) return { body: bodyBuf, inputNormalized: false };
   try {
     const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
@@ -187,13 +188,26 @@ export function normalizeCodexChatGptResponsesBody(
       return { body: bodyBuf, inputNormalized: false };
     }
     const body = parsed as Record<string, unknown>;
+    const modelSpec = typeof body.model === 'string' ? body.model : null;
+    const parsedModel = modelSpec ? parseBridgeModel(modelSpec) : null;
+    const modelNormalized = parsedModel !== null && parsedModel.id !== modelSpec;
+    if (modelNormalized && parsedModel) {
+      body.model = parsedModel.id;
+      const reasoning =
+        body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)
+          ? (body.reasoning as Record<string, unknown>)
+          : {};
+      body.reasoning = { ...reasoning, effort: parsedModel.effort };
+    }
     const inputNormalized = typeof body.input === 'string';
     if (inputNormalized) {
       body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
     }
     const storeNormalized = body.store !== false;
     if (storeNormalized) body.store = false;
-    if (!inputNormalized && !storeNormalized) return { body: bodyBuf, inputNormalized: false };
+    if (!modelNormalized && !inputNormalized && !storeNormalized) {
+      return { body: bodyBuf, inputNormalized: false };
+    }
     return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };
   } catch {
     return { body: bodyBuf, inputNormalized: false };
@@ -347,7 +361,12 @@ export async function aggregateCodexNonStreamResponse(
     ) {
       completedOutputItems.set(event.output_index, event.item as Record<string, unknown>);
     }
-    if (event.type === 'response.completed' && event.response && typeof event.response === 'object' && !Array.isArray(event.response)) {
+    if (
+      event.type === 'response.completed' &&
+      event.response &&
+      typeof event.response === 'object' &&
+      !Array.isArray(event.response)
+    ) {
       const response = event.response as Record<string, unknown>;
       const responseOutput = Array.isArray(response.output) ? response.output : [];
       // The live ChatGPT backend sends each completed output item in its own SSE
@@ -355,9 +374,7 @@ export async function aggregateCodexNonStreamResponse(
       // A streaming Codex client reconstructs that state itself; this non-stream
       // compatibility endpoint must do the same or it returns HTTP 200 with no
       // assistant text (the second half of WI-284159).
-      const reconstructedOutput = [...completedOutputItems.entries()]
-        .sort(([a], [b]) => a - b)
-        .map(([, item]) => item);
+      const reconstructedOutput = [...completedOutputItems.entries()].sort(([a], [b]) => a - b).map(([, item]) => item);
       const output = responseOutput.length > 0 ? responseOutput : reconstructedOutput;
       const outputText = output
         .flatMap((item) => {
@@ -510,7 +527,11 @@ async function doRefresh(home: string, current: CodexAuth, opts: RefreshOpts): P
   const res = await fetchImpl(CODEX_OAUTH_TOKEN_URL, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: refreshToken, client_id: clientId }).toString(),
+    body: new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: refreshToken,
+      client_id: clientId,
+    }).toString(),
   });
   if (!res.ok) {
     const detail = await res.text().catch(() => '');
@@ -653,12 +674,23 @@ export async function preflightCodexModel(
     } as RequestInit);
     if (res.ok) {
       // Model accepted — the stream opened. Cancel it; the reply is irrelevant.
-      try { ac.abort(); } catch { /* settled */ }
+      try {
+        ac.abort();
+      } catch {
+        /* settled */
+      }
       void res.body?.cancel().catch(() => undefined);
       return { verdict: 'ok', status: res.status };
     }
     const bodyText = await res.text().catch(() => '');
-    if (res.status >= 400 && res.status < 500 && res.status !== 401 && res.status !== 403 && res.status !== 429 && MODEL_REFUSAL_RE.test(bodyText)) {
+    if (
+      res.status >= 400 &&
+      res.status < 500 &&
+      res.status !== 401 &&
+      res.status !== 403 &&
+      res.status !== 429 &&
+      MODEL_REFUSAL_RE.test(bodyText)
+    ) {
       return { verdict: 'refused', status: res.status, detail: bodyText.slice(0, 300) };
     }
     return { verdict: 'unknown', status: res.status, detail: bodyText.slice(0, 200) };
