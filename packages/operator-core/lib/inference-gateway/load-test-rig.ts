@@ -364,6 +364,7 @@ export interface GatewayLatencyCertificationReport {
   metrics: {
     samples: number;
     stageCoverage: number;
+    unclassifiedOutcomes: number;
     healthyAttemptsPerRequest: number;
     failoverRequestRate: number;
     gatewayAddedTtftP95Ms: number | null;
@@ -520,6 +521,16 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     reconciled,
     'all snapshots active=0 with exact request and outcome accounting',
   );
+  const unclassifiedOutcomes = snapshots.reduce(
+    (sum, snapshot) => sum + (snapshot?.outcomes.unclassified ?? 0),
+    0,
+  );
+  add(
+    'zero-unclassified-requests',
+    unclassifiedOutcomes === 0,
+    unclassifiedOutcomes,
+    '=0',
+  );
   add('queued-with-idle', input.queuedWithIdleViolations === 0, input.queuedWithIdleViolations, '=0');
 
   for (const concurrency of GATEWAY_LATENCY_CERT_CONCURRENCIES) {
@@ -617,6 +628,7 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     metrics: {
       samples: input.samples.length,
       stageCoverage,
+      unclassifiedOutcomes,
       healthyAttemptsPerRequest,
       failoverRequestRate,
       gatewayAddedTtftP95Ms,

@@ -12,7 +12,8 @@
  */
 import { test, beforeEach, expect } from 'vitest';
 import { resetGovernorRegistry, setGlobalConcurrencyCap } from '@papercusp/papercusp-shared/agent';
-import { runGatewayBurstRig, runGatewayLatencyCertRig } from './load-test-rig';
+import { certifyGatewayLatency, runGatewayBurstRig, runGatewayLatencyCertRig } from './load-test-rig';
+import { GatewayRequestTelemetry } from './request-stage-telemetry';
 
 beforeEach(() => {
   // The governor registry + fleet gate are process singletons — clear learned rpmFactor / windows and
@@ -122,6 +123,7 @@ test('P-006 matched-control battery certifies 30 direct+gateway samples at c1/c3
   expect(report.metrics).toMatchObject({
     samples: 186,
     stageCoverage: 1,
+    unclassifiedOutcomes: 0,
     queuedWithIdleViolations: 0,
     healthyAttemptsPerRequest: 1,
     failoverRequestRate: 0,
@@ -129,6 +131,28 @@ test('P-006 matched-control battery certifies 30 direct+gateway samples at c1/c3
   expect(report.metrics.gatewayAddedTtftP95Ms).not.toBeNull();
   expect(report.metrics.gatewayAddedTtftP95Ms!).toBeLessThanOrEqual(1_000);
 }, 30_000);
+
+test('P-012 battery fails closed when any request outcome remains unclassified', () => {
+  const telemetry = new GatewayRequestTelemetry();
+  telemetry
+    .begin({ provider: 'codex', protocol: 'openai-responses', transport: 'oauth-http' })
+    .finish('unclassified', null);
+
+  const report = certifyGatewayLatency({
+    samples: [],
+    telemetryByConcurrency: { 1: telemetry.snapshot() },
+    queuedWithIdleViolations: 0,
+  });
+
+  expect(report.gates.find((gate) => gate.id === 'zero-unclassified-requests')).toMatchObject({
+    passed: false,
+    actual: 1,
+    requirement: '=0',
+  });
+  expect(report.metrics.unclassifiedOutcomes).toBe(1);
+  expect(report.measurementVerdict).toBe('failed');
+  expect(report.shipReady).toBe(false);
+});
 
 test('P-006 battery fails closed on under-sampling, out-of-order rollout, a missing kill switch, and untracked fallback removal', async () => {
   const report = await runGatewayLatencyCertRig({
