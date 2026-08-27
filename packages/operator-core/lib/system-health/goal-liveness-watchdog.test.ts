@@ -316,7 +316,14 @@ describe('runGoalLivenessSweepOnce', () => {
         seen.push(a);
       },
     });
-    expect(r).toEqual({ scanned: 1, escalated: 1, readinessEscalated: 0, autoStarted: 0, skipped: false });
+    expect(r).toEqual({
+      scanned: 1,
+      escalated: 1,
+      readinessEscalated: 0,
+      autoStarted: 0,
+      wedgeEscalated: 0,
+      skipped: false,
+    });
     expect(seen[0]?.reason).toBe('abandoned');
   });
 
@@ -332,7 +339,14 @@ describe('runGoalLivenessSweepOnce', () => {
       }),
       escalate: async () => {},
     });
-    expect(r).toEqual({ scanned: 0, escalated: 0, readinessEscalated: 0, autoStarted: 0, skipped: true });
+    expect(r).toEqual({
+      scanned: 0,
+      escalated: 0,
+      readinessEscalated: 0,
+      autoStarted: 0,
+      wedgeEscalated: 0,
+      skipped: true,
+    });
     expect(called).toBe(false); // the kill-switch stops it BEFORE reading the DB
   });
 
@@ -1133,19 +1147,26 @@ describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
 
   // A degraded measurement costs SILENCE, never a wave of false wedges.
   it('survives a throwing productivity read and escalates nothing', async () => {
-    const escalateWedge = vi.fn();
-    const r = await runGoalLivenessSweepOnce(
-      sql,
-      wedgeDeps({
-        readHolderProductivity: async () => {
-          throw new Error('pg down');
-        },
-        escalateWedge,
-      }),
-    );
-    expect(r.wedgeEscalated).toBe(0);
-    expect(escalateWedge).not.toHaveBeenCalled();
-    expect(r.skipped).toBe(false);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const escalateWedge = vi.fn();
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        wedgeDeps({
+          readHolderProductivity: async () => {
+            throw new Error('pg down');
+          },
+          escalateWedge,
+        }),
+      );
+      expect(r.wedgeEscalated).toBe(0);
+      expect(escalateWedge).not.toHaveBeenCalled();
+      expect(r.skipped).toBe(false);
+      // Degraded, not silent-degraded: the sweep says so.
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('holder-productivity read failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('never measures when no goal is held — the ledger read is skipped entirely', async () => {
@@ -1162,17 +1183,23 @@ describe('the wedge leg inside runGoalLivenessSweepOnce', () => {
   });
 
   it('a failing wedge escalation does not cost the sweep', async () => {
-    const r = await runGoalLivenessSweepOnce(
-      sql,
-      wedgeDeps({
-        readHolderProductivity: async () => new Map([[KEY, 0]]),
-        escalateWedge: async () => {
-          throw new Error('escalation store down');
-        },
-      }),
-    );
-    expect(r.wedgeEscalated).toBe(0);
-    expect(r.scanned).toBe(1);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const r = await runGoalLivenessSweepOnce(
+        sql,
+        wedgeDeps({
+          readHolderProductivity: async () => new Map([[KEY, 0]]),
+          escalateWedge: async () => {
+            throw new Error('escalation store down');
+          },
+        }),
+      );
+      expect(r.wedgeEscalated).toBe(0);
+      expect(r.scanned).toBe(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('wedge escalate failed'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -1207,7 +1234,7 @@ describe('makeReadHolderProductivity', () => {
     const { tag, queries } = captureSql();
     await makeReadHolderProductivity(tag)([hold]);
     expect(queries).toHaveLength(1);
-    expect(queries[0]).toMatch(/call_origin\s+IS DISTINCT FROM\s+\?/);
+    expect(queries[0]).toMatch(/call_origin\s+IS DISTINCT FROM\s+'hook'/);
     expect(queries[0]).not.toMatch(/call_origin\s*<>/);
   });
 
