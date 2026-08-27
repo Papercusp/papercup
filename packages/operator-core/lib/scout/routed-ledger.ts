@@ -533,6 +533,20 @@ export async function countStalePendingIdeas(opts: {
        -- which is precisely what D-001 forbids. Unlike the other readers this
        -- one takes no origin option at all, so the filter has to be unconditional.
        AND origin <> ${SHADOW_VARIANT_ORIGIN}
+       -- WI-42483: agent-review enrollment rows have the SAME permanently-stuck
+       -- property and were missing this filter. The originClause helper above
+       -- already treats the two origins identically -- its docstring says the
+       -- 'all' origin means every ORDINARY learning origin, from which shadow
+       -- trial variants and agent-review enrollment rows are both excluded:
+       -- neither feeds production learning, and neither has a rail artifact
+       -- that can reach a terminal state, so their outcome/outcome_checked_at
+       -- stay NULL forever and they match the stale-pending predicate
+       -- permanently. Measured 2026-08-27 on papercusp-workspace: 745
+       -- agent-review rows, ALL never outcome-checked (vs shadow-variant's 20)
+       -- -- 37x the recurrence the line above exists to prevent, waiting to
+       -- fire the moment the ungraded frontier drains and the sweep reaches
+       -- its escalate step. Same reason, same unconditional form.
+       AND origin <> ${AGENT_REVIEW_LEDGER_ORIGIN}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}`;
   return Number(rows[0]?.c ?? 0);
 }
