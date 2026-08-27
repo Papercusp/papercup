@@ -53,6 +53,7 @@ vi.mock('../../memory/memory-pause', () => ({
   isMemoryPaused: vi.fn(async () => false),
   MEMORY_PAUSED_REFUSAL: { ok: false },
 }));
+vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 // The unit under test is the GUARD, not the registry lookup: the resolver has its
 // own semantics (member harness → its hive HOME slug) and its own tests.
 vi.mock('../../agent-facts/store', () => ({
@@ -64,6 +65,7 @@ import { getMemoryBackend } from '../../memory/backend';
 import { getSessionUserOrDefault } from '../../auth';
 import { journalPendingWrite } from '../../memory/write-journal';
 import { resolveFactFederationSlug } from '../../agent-facts/store';
+import { getFlag } from '@papercusp/flags/server';
 
 type Handler = { handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }> };
 const call = (args: Record<string, unknown>) =>
@@ -85,6 +87,7 @@ beforeEach(() => {
   vi.mocked(getSessionUserOrDefault).mockResolvedValue({ id: 'user-1', display_name: 'Test' } as never);
   vi.mocked(getMemoryBackend).mockReturnValue(backend as never);
   vi.mocked(resolveFactFederationSlug).mockResolvedValue(null);
+  vi.mocked(getFlag).mockResolvedValue(true);
 });
 
 /** The metadata the handler actually handed the store. */
@@ -98,6 +101,38 @@ const metadataOf = (): Record<string, unknown> | undefined => {
 };
 
 describe('memory:remember — shareable memories need a federation routing key (EI-10432)', () => {
+  it('REFUSES shareable writes before journaling when the federation flag is OFF', async () => {
+    vi.mocked(getFlag).mockResolvedValue(false);
+    const out = parse(await call({
+      content: 'a shareable project convention',
+      kind: 'project',
+      hive_slug: 'my-pot',
+      shareable: true,
+    }));
+
+    expect(out).toMatchObject({
+      ok: false,
+      stored: false,
+      reason: 'mem0_federation_disabled',
+    });
+    expect(journalPendingWrite).not.toHaveBeenCalled();
+    expect(backend.remember).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the federation flag cannot be resolved', async () => {
+    vi.mocked(getFlag).mockRejectedValue(new Error('flag store unavailable'));
+    const out = parse(await call({
+      content: 'a shareable project convention',
+      kind: 'project',
+      hive_slug: 'my-pot',
+      shareable: true,
+    }));
+
+    expect(out.reason).toBe('mem0_federation_disabled');
+    expect(journalPendingWrite).not.toHaveBeenCalled();
+    expect(backend.remember).not.toHaveBeenCalled();
+  });
+
   it('REFUSES a shareable PERSONAL memory — it has no hive to federate to', async () => {
     const out = parse(await call({ content: 'my dog is Rex', kind: 'user', shareable: true }));
     expect(out).toMatchObject({
@@ -143,6 +178,7 @@ describe('memory:remember — shareable memories need a federation routing key (
     expect(out.reason).not.toBe('shareable_memory_needs_federation_scope');
     expect(metadataOf()).not.toHaveProperty('fed_harness_slug');
     expect(resolveFactFederationSlug).not.toHaveBeenCalled();
+    expect(getFlag).not.toHaveBeenCalled();
     expect(backend.remember).toHaveBeenCalled();
   });
 
@@ -150,5 +186,6 @@ describe('memory:remember — shareable memories need a federation routing key (
     await call({ content: 'x', kind: 'user', shareable: false });
     expect(metadataOf()).not.toHaveProperty('fed_harness_slug');
     expect(resolveFactFederationSlug).not.toHaveBeenCalled();
+    expect(getFlag).not.toHaveBeenCalled();
   });
 });

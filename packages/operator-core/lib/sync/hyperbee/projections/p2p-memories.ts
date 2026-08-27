@@ -21,6 +21,7 @@
  * (EI-1698 transitivity-fixed), matching the agent-facts pattern.
  */
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
 import type postgres from 'postgres';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { bumpFederationRefusedOp } from '../federation-refused-op-counter';
@@ -78,6 +79,24 @@ export interface MemoriesProjectionOpts {
   harnessSlug: string;
   /** Test/multi-peer seam — write to THIS client instead of getOrgPg().sql. */
   sql?: postgres.Sql;
+  /** Test seam — the live dark gate (default: MEM0_FEDERATION_EGRESS). */
+  isFlagOn?: () => Promise<boolean>;
+}
+
+/**
+ * P-006/D-002: fail closed at the receive boundary too. A dark egress flag
+ * that only rejects new local writes still lets already-captured/replayed peer
+ * ops mutate PG, so OFF would not actually make memory federation inert.
+ * Resolve per op so an operator flag flip takes effect without a restart.
+ */
+async function flagOn(opts: MemoriesProjectionOpts): Promise<boolean> {
+  try {
+    if (opts.isFlagOn) return (await opts.isFlagOn()) === true;
+    const { getFlag } = await import('@papercusp/flags/server');
+    return (await getFlag(FLAGS.MEM0_FEDERATION_EGRESS, 'system')) === true;
+  } catch {
+    return false;
+  }
 }
 
 /** Matches memory_canonical federation identity: workspace_id/id */
@@ -118,6 +137,7 @@ async function writeToPg(
   row: MemoryWireRow,
   provenance: ProvenanceContext,
 ): Promise<void> {
+  if (!(await flagOn(opts))) return;
   if (row.harness_slug !== opts.harnessSlug) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const origin = provenance.origin;
@@ -209,6 +229,7 @@ async function deleteFromPg(
   delTs?: number,
   delHlc?: string,
 ): Promise<void> {
+  if (!(await flagOn(opts))) return;
   if (!key) return;
   const sql = opts.sql ?? getOrgPg().sql;
   const memoryId = key;

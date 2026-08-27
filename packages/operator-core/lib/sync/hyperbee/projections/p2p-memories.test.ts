@@ -59,7 +59,26 @@ describe('decodeValue — defensive on every field (malformed/invalid rows dropp
 });
 
 describe('writeToPg — H6 source partitioning + private-pot leak guard', () => {
-  const opts = (sql: postgres.Sql) => ({ workspaceId: 'ws', harnessSlug: 'papercusp', sql });
+  const opts = (sql: postgres.Sql) => ({
+    workspaceId: 'ws',
+    harnessSlug: 'papercusp',
+    sql,
+    isFlagOn: async () => true,
+  });
+
+  it('FLAG OFF: drops a remote put without issuing SQL', async () => {
+    const { sql, calls } = fakeSql();
+    await buildMemoriesProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      sql,
+      isFlagOn: async () => false,
+    }).writeToPg(row(), {
+      authorPubkey: 'stamped-source-log-key',
+      origin: 'remote',
+    } as never);
+    expect(calls).toHaveLength(0);
+  });
 
   it('drops ops for a foreign/non-admitted pot (demux guard) — no SQL issued, no leak', async () => {
     const { sql, calls } = fakeSql();
@@ -105,7 +124,12 @@ describe('writeToPg — H6 source partitioning + private-pot leak guard', () => 
 });
 
 describe('writeToPg — retraction-of-sharing guard (EI-10393)', () => {
-  const opts = (sql: postgres.Sql) => ({ workspaceId: 'ws', harnessSlug: 'papercusp', sql });
+  const opts = (sql: postgres.Sql) => ({
+    workspaceId: 'ws',
+    harnessSlug: 'papercusp',
+    sql,
+    isFlagOn: async () => true,
+  });
 
   it('a REMOTE put whose payload carries shareable:false issues the partition-scoped DELETE, never the upsert', async () => {
     const { sql, calls } = fakeSql();
@@ -152,12 +176,29 @@ describe('writeToPg — retraction-of-sharing guard (EI-10393)', () => {
 describe('deleteFromPg — local partition immunity', () => {
   it('issues the delete only for a non-blank key', async () => {
     const { sql, calls } = fakeSql();
-    const proj = buildMemoriesProjection({ workspaceId: 'ws', harnessSlug: 'papercusp', sql });
+    const proj = buildMemoriesProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      sql,
+      isFlagOn: async () => true,
+    });
     await proj.deleteFromPg!('11111111-1111-1111-1111-111111111111', 123, undefined);
     expect(calls.length).toBe(1);
     expect(calls[0]).toContain('11111111-1111-1111-1111-111111111111');
     await proj.deleteFromPg!('', undefined, undefined);
     expect(calls.length).toBe(1); // blank key = no-op
+  });
+
+  it('FLAG OFF: drops a remote delete without issuing SQL', async () => {
+    const { sql, calls } = fakeSql();
+    const proj = buildMemoriesProjection({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      sql,
+      isFlagOn: async () => false,
+    });
+    await proj.deleteFromPg!('11111111-1111-1111-1111-111111111111', 123, undefined);
+    expect(calls).toHaveLength(0);
   });
 
   it('registers with the echo-breaker + the right tag', () => {

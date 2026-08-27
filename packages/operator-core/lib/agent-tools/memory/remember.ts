@@ -19,6 +19,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { lexicalSimilarity } from '@papercusp/memory';
 import { getMemoryBackend, MemoryUnavailableError } from '../../memory/backend';
 import { MemoryTimeoutError, withMemoryToolTimeout, withMemoryWriteRetry, embedFailureReason } from '../../memory/op-deadline';
@@ -230,6 +232,31 @@ export default defineTool({
       return {
         content: [{ type: 'text', text: JSON.stringify(MEMORY_PAUSED_REFUSAL) }],
       };
+    }
+    // P-006/D-002: `shareable: true` is a federation EGRESS request, so the
+    // dark flag must guard the product path itself — registering the flag in
+    // DARK_FLAGS without reading it here leaves the supposedly-OFF feature
+    // fully live. Fail closed on both an explicit OFF and a flag-store error,
+    // and refuse BEFORE the write-ahead journal so a later replay cannot
+    // resurrect a federation request made while the feature was dark.
+    if (args.shareable === true) {
+      const federationEnabled = await getFlag(
+        FLAGS.MEM0_FEDERATION_EGRESS,
+        'system',
+      ).catch(() => false);
+      if (!federationEnabled) {
+        return {
+          content: [{ type: 'text', text: JSON.stringify({
+            ok: false,
+            stored: false,
+            reason: 'mem0_federation_disabled',
+            message:
+              'Shareable memory federation is disabled. Omit `shareable` to store ' +
+              'this memory privately, or enable papercusp-mem0-federation-egress ' +
+              'before retrying the federated write.',
+          }) }],
+        };
+      }
     }
     const backend = getMemoryBackend();
     const invalidateSuperseded = args.supersede
