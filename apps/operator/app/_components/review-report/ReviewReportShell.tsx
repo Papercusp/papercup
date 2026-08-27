@@ -198,6 +198,14 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
   recommended: "recommended",
 };
 
+/** Deliberate hover intent prevents a pointer sweeping a dense report from
+ * mounting a detail subscription for every crossed row. Keyboard focus never
+ * waits on this timer. */
+export const REVIEW_DETAIL_HOVER_INTENT_MS = 140;
+/** Keep the current row stable while the pointer travels into its inline
+ * controls or toward a neighboring row whose own intent timer is running. */
+export const REVIEW_DETAIL_EXIT_GRACE_MS = 180;
+
 /**
  * Row-scoped activation store for the report's hottest interaction path.
  *
@@ -211,6 +219,10 @@ class ReviewDetailController {
   private activeRowId: string | null = null;
   private hoveredRowId: string | null = null;
   private focusedRowId: string | null = null;
+  private openTimer: ReturnType<typeof setTimeout> | null = null;
+  private openTimerRowId: string | null = null;
+  private closeTimer: ReturnType<typeof setTimeout> | null = null;
+  private closeTimerRowId: string | null = null;
   private readonly listeners = new Map<string, Set<() => void>>();
 
   subscribe(rowId: string, listener: () => void): () => void {
@@ -229,31 +241,76 @@ class ReviewDetailController {
 
   pointerEnter(rowId: string): void {
     this.hoveredRowId = rowId;
-    this.activate(rowId);
+    if (this.activeRowId === rowId) {
+      if (this.closeTimerRowId === rowId) this.cancelClose();
+      return;
+    }
+    this.cancelOpen();
+    // A focused row owns the interactive detail until focus actually leaves;
+    // incidental mouse movement must never unmount a focused control.
+    if (this.focusedRowId !== null) return;
+    this.openTimerRowId = rowId;
+    this.openTimer = setTimeout(() => {
+      this.openTimer = null;
+      this.openTimerRowId = null;
+      if (this.hoveredRowId === rowId && this.focusedRowId === null) {
+        this.activate(rowId);
+      }
+    }, REVIEW_DETAIL_HOVER_INTENT_MS);
   }
 
   pointerLeave(rowId: string): void {
     if (this.hoveredRowId === rowId) this.hoveredRowId = null;
-    if (this.activeRowId === rowId) this.activate(this.focusedRowId);
+    if (this.openTimerRowId === rowId) this.cancelOpen();
+    if (this.activeRowId !== rowId || this.focusedRowId === rowId) return;
+    this.scheduleClose(rowId);
   }
 
   focusEnter(rowId: string): void {
     this.focusedRowId = rowId;
+    this.cancelOpen();
+    this.cancelClose();
     this.activate(rowId);
   }
 
   focusLeave(rowId: string): void {
     if (this.focusedRowId === rowId) this.focusedRowId = null;
-    if (this.activeRowId === rowId) this.activate(this.hoveredRowId);
+    if (this.activeRowId !== rowId) return;
+    this.cancelClose();
+    if (this.hoveredRowId === rowId) return;
+    // Focus movement is explicit, so it stays immediate. If the pointer is
+    // already resting on another row, transfer directly instead of flashing a
+    // blank gap between blur and the next focus/intent event.
+    this.activate(this.hoveredRowId);
   }
 
   clear(): void {
+    this.cancelOpen();
+    this.cancelClose();
     this.hoveredRowId = null;
     this.focusedRowId = null;
     this.activate(null);
   }
 
+  dispose(): void {
+    this.cancelOpen();
+    this.cancelClose();
+    this.listeners.clear();
+  }
+
   prune(presentRowIds: ReadonlySet<string>): void {
+    if (
+      this.openTimerRowId !== null &&
+      !presentRowIds.has(this.openTimerRowId)
+    ) {
+      this.cancelOpen();
+    }
+    if (
+      this.closeTimerRowId !== null &&
+      !presentRowIds.has(this.closeTimerRowId)
+    ) {
+      this.cancelClose();
+    }
     if (this.hoveredRowId !== null && !presentRowIds.has(this.hoveredRowId)) {
       this.hoveredRowId = null;
     }
@@ -261,8 +318,38 @@ class ReviewDetailController {
       this.focusedRowId = null;
     }
     if (this.activeRowId !== null && !presentRowIds.has(this.activeRowId)) {
+      this.cancelClose();
       this.activate(null);
     }
+  }
+
+  private scheduleClose(rowId: string): void {
+    if (this.closeTimerRowId === rowId) return;
+    this.cancelClose();
+    this.closeTimerRowId = rowId;
+    this.closeTimer = setTimeout(() => {
+      this.closeTimer = null;
+      this.closeTimerRowId = null;
+      if (
+        this.activeRowId === rowId &&
+        this.focusedRowId !== rowId &&
+        this.hoveredRowId !== rowId
+      ) {
+        this.activate(this.focusedRowId ?? this.hoveredRowId);
+      }
+    }, REVIEW_DETAIL_EXIT_GRACE_MS);
+  }
+
+  private cancelOpen(): void {
+    if (this.openTimer !== null) clearTimeout(this.openTimer);
+    this.openTimer = null;
+    this.openTimerRowId = null;
+  }
+
+  private cancelClose(): void {
+    if (this.closeTimer !== null) clearTimeout(this.closeTimer);
+    this.closeTimer = null;
+    this.closeTimerRowId = null;
   }
 
   private activate(nextRowId: string | null): void {
@@ -400,23 +487,32 @@ const ReviewReportRowView = memo(function ReviewReportRowView({
       </span>
       {detailOpen ? (
         <div
-          id={detailRegionId}
-          className="review-report__row-hover-detail"
-          data-testid={`review-row-detail-${row.id}`}
-          role="region"
-          aria-label={`Details for ${row.title}`}
+          className="review-report__row-detail-slot"
+          data-testid={`review-row-detail-slot-${row.id}`}
         >
-          <div className="review-report__detail-evidence">
-            <strong>Decision evidence</strong>
-            <ul>
-              {evidence.map((line, evidenceIndex) => (
-                <li key={`${row.id}-evidence-${evidenceIndex}`}>{line}</li>
-              ))}
-            </ul>
+          <div className="review-report__row-detail-clip">
+            <div
+              id={detailRegionId}
+              className="review-report__row-hover-detail"
+              data-testid={`review-row-detail-${row.id}`}
+              role="region"
+              aria-label={`Details for ${row.title}`}
+            >
+              <div className="review-report__detail-evidence">
+                <strong>Decision evidence</strong>
+                <ul>
+                  {evidence.map((line, evidenceIndex) => (
+                    <li key={`${row.id}-evidence-${evidenceIndex}`}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+              {row.detail != null ? (
+                <div className="review-report__detail-consumer">
+                  {row.detail}
+                </div>
+              ) : null}
+            </div>
           </div>
-          {row.detail != null ? (
-            <div className="review-report__detail-consumer">{row.detail}</div>
-          ) : null}
         </div>
       ) : null}
       {row.error != null ? (
@@ -478,6 +574,13 @@ export default function ReviewReportShell({
   } | null>(null);
   const restoreActionFocusAfterBusy = useRef<"apply" | "dismiss" | null>(null);
   const wasBusy = useRef(busy);
+
+  useLayoutEffect(
+    () => () => {
+      detailController.dispose();
+    },
+    [detailController],
+  );
 
   const pendingIds = useMemo(() => {
     const ids = new Set<string>();

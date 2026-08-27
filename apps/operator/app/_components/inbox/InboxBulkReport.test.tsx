@@ -2,6 +2,7 @@
 /** Grouped Inbox bulk-resolve report coverage (cleanup-report-flows P-008/P-011). */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -15,7 +16,10 @@ import {
   beginInteraction,
   getLatestMeasure,
 } from "../perf/perf-marks";
-import { partitionReviewRows } from "../review-report/ReviewReportShell";
+import {
+  partitionReviewRows,
+  REVIEW_DETAIL_HOVER_INTENT_MS,
+} from "../review-report/ReviewReportShell";
 
 const H = vi.hoisted(() => ({
   accept: vi.fn(),
@@ -242,6 +246,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.clearAllMocks();
   performance.clearMarks?.();
   performance.clearMeasures?.();
@@ -530,6 +535,7 @@ describe("<InboxBulkReport>", () => {
   });
 
   it("hydrates only one active hover/focus detail across 200 report rows", () => {
+    vi.useFakeTimers();
     const items = highCardinalityRunItems();
     for (const item of items) {
       H.details.set(item.itemId, attention(item.itemId));
@@ -552,11 +558,15 @@ describe("<InboxBulkReport>", () => {
     const secondId = items[1]!.itemId;
     const rowA = screen.getByTestId(`review-row-${firstId}`);
     fireEvent.pointerEnter(rowA);
+    expect(H.detail).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(REVIEW_DETAIL_HOVER_INTENT_MS));
     expect(screen.getByTestId(`review-row-detail-${firstId}`)).toBeTruthy();
     expect(screen.getByTestId(`recommendation-${firstId}`)).toBeTruthy();
     expect(H.detail).toHaveBeenLastCalledWith(firstId);
     expect(H.detail).toHaveBeenCalledTimes(1);
-    expect(screen.queryAllByTestId(/review-row-detail-/)).toHaveLength(1);
+    expect(
+      screen.queryAllByRole("region", { name: /^Details for / }),
+    ).toHaveLength(1);
 
     fireEvent.pointerLeave(rowA);
     fireEvent.focus(screen.getByTestId(`review-row-check-${secondId}`));
@@ -565,7 +575,9 @@ describe("<InboxBulkReport>", () => {
     expect(screen.getByTestId(`recommendation-${secondId}`)).toBeTruthy();
     expect(H.detail).toHaveBeenLastCalledWith(secondId);
     expect(H.detail).toHaveBeenCalledTimes(2);
-    expect(screen.queryAllByTestId(/review-row-detail-/)).toHaveLength(1);
+    expect(
+      screen.queryAllByRole("region", { name: /^Details for / }),
+    ).toHaveLength(1);
   });
 
   it("shows a terminal stale-item message instead of an endless loading state", () => {
@@ -574,7 +586,7 @@ describe("<InboxBulkReport>", () => {
       <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
     );
 
-    fireEvent.pointerEnter(screen.getByTestId("review-row-a"));
+    fireEvent.focus(screen.getByTestId("review-row-a"));
     expect(
       screen.getByText(/no longer available in the live Inbox/),
     ).toBeTruthy();
@@ -586,7 +598,7 @@ describe("<InboxBulkReport>", () => {
     render(
       <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
     );
-    fireEvent.pointerEnter(screen.getByTestId("review-row-a"));
+    fireEvent.focus(screen.getByTestId("review-row-a"));
     fireEvent.click(screen.getByTestId("inbox-bulk-reconcile-a"));
 
     await waitFor(() =>
@@ -655,7 +667,7 @@ describe("<InboxBulkReport>", () => {
       />,
     );
 
-    fireEvent.pointerEnter(screen.getByTestId("review-row-a"));
+    fireEvent.focus(screen.getByTestId("review-row-a"));
     fireEvent.click(screen.getByTestId("discuss-a"));
     expect(onOpenThread).toHaveBeenCalledWith(live);
 
