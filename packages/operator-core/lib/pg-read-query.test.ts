@@ -533,6 +533,16 @@ describe('buildTenantScopeAdvisory (P-005b — the wrong-tenant footgun)', () =>
     expect(calls).toHaveLength(0); // short-circuits before the schema read
   });
 
+  it('does not treat scope columns selected for output as a tenant predicate', async () => {
+    const { sql } = stubClient(TENANT_ROWS);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT workspace_id, harness_slug, plan_slug FROM harness_shared.harness_plans WHERE plan_slug = 'p'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('harness_shared.harness_plans');
+    expect(advisory).toContain('workspace_id + harness_slug');
+  });
+
   it("is silent for an unfiltered aggregate (no WHERE — usually a deliberate cross-tenant count)", async () => {
     const { sql, calls } = stubClient(TENANT_ROWS);
     expect(
@@ -674,6 +684,30 @@ describe('buildTenantScopeAdvisory — per-table overrides (EI-18669912007336072
     expect(advisory).not.toContain('harness_slug =');
     expect(advisory).toContain('work_items:get');
     expect(calls).toHaveLength(0); // the override captures the nullable federation column
+  });
+
+  it('requires only workspace scope for task_ledger because harness_slug is nullable provenance', async () => {
+    const { sql, calls } = stubClient([]);
+    const advisory = await buildTenantScopeAdvisory(
+      "SELECT task_id, workspace_id, harness_slug, state FROM harness_shared.task_ledger WHERE task_id = 'task-1'",
+      { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+    );
+    expect(advisory).toContain('task_ledger');
+    expect(advisory).toContain("workspace_id = 'papercusp-workspace'");
+    expect(advisory).not.toContain("harness_slug = 'papercusp'");
+    expect(advisory).toContain('processes:list');
+    expect(calls).toHaveLength(0); // semantic override, no schema read
+  });
+
+  it('accepts a workspace-scoped task_ledger lookup', async () => {
+    const { sql, calls } = stubClient([]);
+    expect(
+      await buildTenantScopeAdvisory(
+        "SELECT * FROM harness_shared.task_ledger WHERE task_id = 'task-1' AND workspace_id = 'papercusp-workspace'",
+        { client: sql, workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' },
+      ),
+    ).toBeNull();
+    expect(calls).toHaveLength(0);
   });
 });
 

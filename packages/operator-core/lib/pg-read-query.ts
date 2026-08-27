@@ -384,6 +384,20 @@ const TENANT_SCOPE_OVERRIDES: Record<string, TenantScopeOverride> = {
         : 'workspace_id = \'<workspace>\'',
     preferredTool: 'work_items:get { detail: true } (for work-item comment threads)',
   },
+  // The task ledger is workspace-tenanted, but harness_slug is optional task
+  // provenance: root/operator tasks and most current rows leave it NULL. Requiring
+  // the nullable column turns a valid workspace-scoped lookup into a false empty
+  // (EI-21574761320091331), while workspace_id is NOT NULL and is the actual
+  // isolation key used by task-manager/store.ts.
+  task_ledger: {
+    requiredColumns: ['workspace_id'],
+    keyDescription: 'workspace_id — harness_slug is nullable task provenance, not a required tenant key',
+    suggest: (opts) =>
+      opts.workspaceId
+        ? `workspace_id = '${opts.workspaceId.replaceAll("'", "''")}'`
+        : "workspace_id = '<workspace>'",
+    preferredTool: 'processes:list (task-ledger provenance inventory)',
+  },
 };
 
 /**
@@ -2071,6 +2085,23 @@ function realScopeValue(v?: string | null): string | undefined {
   return v && v !== '*' ? v : undefined;
 }
 
+/**
+ * A scope column in the SELECT list is not a tenant predicate. The old guard
+ * treated any mention as proof of scope, so `SELECT workspace_id, ... WHERE
+ * task_id = ...` bypassed the check while `SELECT * ... WHERE task_id = ...`
+ * was rejected. Keep this deliberately small and conservative: recognize a
+ * column used with a comparison/null/membership operator (or in JOIN USING),
+ * while leaving unusual SQL forms fail-closed to the advisory.
+ */
+function hasTenantPredicate(strippedSql: string, column: string): boolean {
+  const escaped = column.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const operator =
+    `\\b${escaped}\\b\\s*(?:::\\s*[A-Za-z_][A-Za-z0-9_.]*)*\\s*` +
+    `(?:=|<>|!=|>=|<=|>|<|\\bIS(?:\\s+NOT)?(?:\\s+DISTINCT\\s+FROM)?\\b|\\bIN\\s*\\(|\\bLIKE\\b|\\bILIKE\\b|\\bBETWEEN\\b)`;
+  if (new RegExp(operator, 'i').test(strippedSql)) return true;
+  return new RegExp(`\\bUSING\\s*\\([^)]*\\b${escaped}\\b`, 'i').test(strippedSql);
+}
+
 export async function buildTenantScopeAdvisory(
   rawSql: string,
   opts: { client?: OrgSql; workspaceId?: string | null; harnessSlug?: string | null } = {},
@@ -2090,8 +2121,8 @@ export async function buildTenantScopeAdvisory(
   // query can be perfectly tenant-scoped and still count the wrong population).
   const ungradedAdvisory = buildUngradedScopeAdvisory(stripped, tables);
 
-  const mentions = (col: string): boolean => new RegExp(`\\b${col}\\b`, 'i').test(stripped);
-  const genericMentioned = mentions('workspace_id') || mentions('harness_slug');
+  const hasPredicate = (col: string): boolean => hasTenantPredicate(stripped, col);
+  const genericMentioned = hasPredicate('workspace_id') || hasPredicate('harness_slug');
 
   // Tables with a hardcoded per-table override (a real tenancy key that
   // differs from the generic workspace_id/harness_slug heuristic) get their
@@ -2109,7 +2140,7 @@ export async function buildTenantScopeAdvisory(
   const overrideOffenders: Array<{ table: string; override: TenantScopeOverride }> = [];
   for (const t of overrideTables) {
     const override = TENANT_SCOPE_OVERRIDES[bareTableName(t)]!;
-    if (override.requiredColumns.some(mentions)) continue; // already correctly scoped
+    if (override.requiredColumns.some(hasPredicate)) continue; // already correctly scoped
     overrideOffenders.push({ table: t, override });
   }
 
