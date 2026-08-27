@@ -22,6 +22,7 @@
  */
 import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
+import { acquireWithContentionRetry } from './agent-tools/locks/contention-retry';
 import {
   asStructuredObservation,
   normalizeScorecardRatings,
@@ -44,6 +45,8 @@ import {
   resolveIssueWorkspace,
   type IssueOutLink,
 } from './issues-engineer';
+import { OrgTxnTimeoutError } from './pg-bounded-txn';
+import { boundedPgReadTxn } from './pg-read-query';
 import { getRubric, rubricInstrumentContract, type Rubric, type RubricStatus } from './rubrics';
 import { pgTimestampToIso } from './pg-timestamp';
 import {
@@ -772,6 +775,13 @@ interface ScorecardRowDb {
   superseded_by: string | null;
 }
 
+/** PG contention codes that can be retried without changing the read semantics. */
+function scorecardContentionPgCode(error: unknown): '55P03' | '57014' | null {
+  if (!error || typeof error !== 'object') return null;
+  const value = (error as { code?: unknown; pgCode?: unknown }).code ?? (error as { pgCode?: unknown }).pgCode;
+  return value === '55P03' || value === '57014' ? value : null;
+}
+
 // EI-18691099450966094: was `typeof v === 'string' ? v : ...` — a raw
 // Postgres-text timestamptz string (session-offset, no 'Z') passed straight
 // through unparsed. Delegate to the shared helper, which parses+re-emits any
@@ -790,9 +800,14 @@ const tsIso = pgTimestampToIso;
  * a NULL origin reads organic, the backfill default).
  */
 async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number): Promise<ScorecardRow[]> {
-  const { sql } = getOrgPg();
-
-  const rows = await sql<ScorecardRowDb[]>`
+  // EI-21592547181442895: the primary scorecard SELECT is a correctness read that
+  // can overlap grading/audit writes. Keep it in a READ ONLY transaction with a
+  // DB-side timeout, retry transient lock/statement contention, and only normalize
+  // an exhausted contention sequence after the shared retry helper gives up.
+  let rows: ScorecardRowDb[];
+  try {
+    rows = await acquireWithContentionRetry(() =>
+      boundedPgReadTxn<ScorecardRowDb[]>((tx) => tx<ScorecardRowDb[]>`
     SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
            (
              SELECT superseder.issue_id
@@ -808,20 +823,20 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
      WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
        AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'
        AND scorecard.payload -> 'observation' ->> 'rubricRef' IS NOT NULL
-       AND ${filter.rubricRef ? sql`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`}
-       AND ${filter.sourceHive ? sql`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
-       AND ${filter.subjectRef ? sql`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : sql`TRUE`}
-       AND ${filter.since ? sql`scorecard.created_at >= ${filter.since}` : sql`TRUE`}
+       AND ${filter.rubricRef ? tx`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : tx`TRUE`}
+       AND ${filter.sourceHive ? tx`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : tx`TRUE`}
+       AND ${filter.subjectRef ? tx`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : tx`TRUE`}
+       AND ${filter.since ? tx`scorecard.created_at >= ${filter.since}` : tx`TRUE`}
        AND ${
          filter.before
-           ? sql`(scorecard.created_at, scorecard.issue_id) < (${filter.before.createdAt}::timestamptz, ${filter.before.issueId}::text)`
-           : sql`TRUE`
+           ? tx`(scorecard.created_at, scorecard.issue_id) < (${filter.before.createdAt}::timestamptz, ${filter.before.issueId}::text)`
+           : tx`TRUE`
        }
-       AND ${filter.includeSynthesized ? sql`TRUE` : sql`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
+       AND ${filter.includeSynthesized ? tx`TRUE` : tx`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
        AND ${
          filter.includeSuperseded
-           ? sql`TRUE`
-           : sql`NOT EXISTS (
+           ? tx`TRUE`
+           : tx`NOT EXISTS (
          SELECT 1
            FROM harness_shared.engineer_issues AS superseder
           WHERE superseder.workspace_id = scorecard.workspace_id
@@ -830,9 +845,15 @@ async function listScorecardsAtLimit(filter: ListScorecardsFilter, limit: number
             AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
        )`
        }
-       AND ${filter.includeRetracted ? sql`TRUE` : sql`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
+       AND ${filter.includeRetracted ? tx`TRUE` : tx`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
      ORDER BY scorecard.created_at DESC, scorecard.issue_id DESC
-     LIMIT ${limit}`;
+     LIMIT ${limit}`),
+    );
+  } catch (error) {
+    const pgCode = scorecardContentionPgCode(error);
+    if (pgCode) throw new OrgTxnTimeoutError(pgCode, error);
+    throw error;
+  }
 
   // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):
   // its criterion keys (completeness) + its scale-aware score overrides (projection).

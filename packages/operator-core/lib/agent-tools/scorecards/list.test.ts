@@ -13,6 +13,7 @@ import {
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
 import { PAYLOAD_TIER_HARD_CEILING_CHARS, PAYLOAD_TIER_RATCHET_CHARS } from '@papercusp/tooldef';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import type { ScorecardRow } from '../../scorecards';
 
 vi.mock('../../scorecards', async (importOriginal) => {
@@ -124,5 +125,22 @@ describe('scorecards:list correctness payload', () => {
     expect(Object.keys(payload?.scorecards[0]?.ratings ?? {})).toHaveLength(7);
     expect(payload?.scorecards[0]?.missingKeys).toEqual([]);
     expect(payload?.scorecards[0]?.rerunRecipe).toEqual(rerunRecipe);
+  });
+
+  it('returns a typed retryable envelope when the bounded read exhausts contention retries', async () => {
+    listScorecardsM.mockRejectedValueOnce(new OrgTxnTimeoutError('55P03', new Error('lock timeout')));
+
+    const result = (await listTool.handler(
+      { subjectRef: 'EI-subject' } as never,
+      { isSuperuser: true, uiClientId: 'su-scorecards-list-test', workspaceId: 'default' } as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(result.data).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+    });
+    expect(result.data.message).toContain('retry shortly');
   });
 });

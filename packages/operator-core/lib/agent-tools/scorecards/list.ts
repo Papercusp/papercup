@@ -14,6 +14,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listScorecards } from '../../scorecards';
 
 export default defineTool({
@@ -79,21 +80,40 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const scorecards = await listScorecards({
-      rubricRef: args.rubricRef,
-      sourceHive: args.sourceHive,
-      subjectRef: args.subjectRef,
-      since: args.since,
-      limit: args.limit,
-      includeSynthesized: args.includeSynthesized,
-      includeSuperseded: args.includeSuperseded,
-      includeRetracted: args.includeRetracted,
-      // WI-6124: links are opt-IN. This tool returns whole rows to an agent, so it is a
-      // surfacing read — keep it true or agents silently see every scorecard as unlinked.
-      includeLinks: true,
-    });
-    return {
-      data: { ok: true, count: scorecards.length, scorecards },
-    };
+    try {
+      const scorecards = await listScorecards({
+        rubricRef: args.rubricRef,
+        sourceHive: args.sourceHive,
+        subjectRef: args.subjectRef,
+        since: args.since,
+        limit: args.limit,
+        includeSynthesized: args.includeSynthesized,
+        includeSuperseded: args.includeSuperseded,
+        includeRetracted: args.includeRetracted,
+        // WI-6124: links are opt-IN. This tool returns whole rows to an agent, so it is a
+        // surfacing read — keep it true or agents silently see every scorecard as unlinked.
+        includeLinks: true,
+      });
+      return {
+        data: { ok: true, count: scorecards.length, scorecards },
+      };
+    } catch (error) {
+      // EI-21592547181442895: an exhausted, transient read contention sequence is
+      // actionable to callers and must not degrade into generic handler_error.
+      if (error instanceof OrgTxnTimeoutError) {
+        return {
+          data: {
+            ok: false,
+            error: 'timeout',
+            retryable: true,
+            pgCode: error.pgCode,
+            message:
+              `scorecards:list read hit transient database contention: ${error.message}. ` +
+              'No scorecards were returned; retry shortly.',
+          },
+        };
+      }
+      throw error;
+    }
   },
 });
