@@ -53,6 +53,18 @@
 #                         budget is HALVED (default 5, the threshold
 #                         infra-liveness already alerts on). A box in reclaim
 #                         must not admit at its ceiling.
+#   PC_HEAVY_PSI_ADMISSION "1"(default)/"0" — after admission, keep sampling
+#                         memory PSI and cooperatively freeze the deterministic
+#                         lowest-priority/newest heavy root instead of killing
+#                         it. The release gate never enters this candidate set.
+#   PC_HEAVY_MEM_PSI_RECOVER / PC_HEAVY_MEM_PSI_RECOVERY_SEC
+#                         recovery watermark + sustained quiet window before
+#                         one frozen root is thawed (defaults 2 / 30s). A thaw
+#                         resets the shared window, preventing a restart stampede.
+#   PC_HEAVY_MEM_PSI_SAMPLE_SEC  post-admission sample cadence (default 2s).
+#   PC_HEAVY_MEM_PSI_OVERRIDE_FILE  dynamic test/operator override: its first
+#                         line is the numeric full-avg10 sample and takes
+#                         precedence over /proc and the scalar override.
 #   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE / PC_HEAVY_MEM_PSI_OVERRIDE  inject
 #                         MemAvailable-GiB / PSI for the clamp (tests — same
 #                         convention as PC_HEAVY_LOAD1_OVERRIDE).
@@ -276,6 +288,25 @@ _pc_heavy_proc_start_ticks() {
   printf '%s\n' "${20}"
 }
 
+# Read the integer part of Linux memory PSI `full avg10`. One reader serves the
+# admission-time clamp and the post-admission controller so their units and
+# override precedence cannot drift. The dynamic file is first for tests and for
+# a bounded operator probe that needs to model pressure -> recovery in one run.
+_pc_heavy_mem_psi_full_avg10() {
+  local _raw=''
+  if [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE_FILE:-}" ]; then
+    IFS= read -r _raw < "${PC_HEAVY_MEM_PSI_OVERRIDE_FILE}" 2>/dev/null || return 1
+  elif [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE:-}" ]; then
+    _raw="${PC_HEAVY_MEM_PSI_OVERRIDE}"
+  else
+    _raw="$(awk '/^full/ { for (i = 2; i <= NF; i++) if (substr($i, 1, 6) == "avg10=") { print substr($i, 7); exit } }' /proc/pressure/memory 2>/dev/null)"
+  fi
+  case "$_raw" in ''|*[!0-9.]*|*.*.*) return 1 ;; esac
+  _raw="${_raw%%.*}"
+  case "$_raw" in ''|*[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$_raw"
+}
+
 # Internal command runner used by EVERY ordinary slot holder, including a
 # coalescing leader. It is dispatched before the PC_HEAVY_BYPASS fast path so
 # the outer wrapper can keep its slot/cache responsibilities while this child
@@ -303,10 +334,25 @@ _pc_heavy_internal_preempt_run() {
   local _preempt_ready_max="${PC_HEAVY_PREEMPT_READY_MAX_SEC:-600}"
   local _preempt_caller_pid="${PC_HEAVY_CALLER_PID:-}"
   local _preempt_caller_start_ticks="${PC_HEAVY_CALLER_START_TICKS:-}"
+  local _preempt_exclusive="${PC_HEAVY_PREEMPT_EXCLUSIVE:-1}"
   local _preempt_wait_pid='' _preempt_child_pid='' _preempt_seen_at='' _preempt_free_since=''
   local _preempt_ready_seen_at=''
   local _preempt_now='' _preempt_start_deadline='' _preempt_term_deadline=''
   local _preempt_result_emitted=0
+  local _psi_enabled="${PC_HEAVY_PSI_ADMISSION:-1}"
+  local _psi_high="${PC_HEAVY_MEM_PSI_BACKOFF:-5}"
+  local _psi_recover="${PC_HEAVY_MEM_PSI_RECOVER:-2}"
+  local _psi_recovery_sec="${PC_HEAVY_MEM_PSI_RECOVERY_SEC:-30}"
+  local _psi_sample_sec="${PC_HEAVY_MEM_PSI_SAMPLE_SEC:-2}"
+  local _psi_priority="${PC_HEAVY_ADMISSION_PRIORITY:-10}"
+  local _psi_admission_dir="${PC_HEAVY_ADMISSION_DIR:-${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}/psi-admissions}"
+  local _psi_admission_id="${PC_HEAVY_ADMISSION_ID:-}"
+  local _psi_record_file='' _psi_recovery_file="$_psi_admission_dir/recovery-low-since"
+  local _psi_lock_file="$_psi_admission_dir/coordinator.lock"
+  local _psi_retry_handle='' _psi_admitted_at='' _psi_child_start_ticks=''
+  local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
+  local _psi_next_sample=0 _psi_last_undetermined=''
+  local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
 
   # Coalescing leaders route stdout/stderr through FIFOs whose readers belong
   # to the outer wrapper. If that wrapper is hard-killed, a diagnostic write to
@@ -448,6 +494,237 @@ _pc_heavy_internal_preempt_run() {
     fi
   }
 
+  _psi_field() {
+    local _file="$1" _key="$2"
+    awk -F= -v key="$_key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$_file" 2>/dev/null
+  }
+
+  _psi_child_cgroup_path() {
+    local _path=''
+    _path="$(awk -F: '$1 == "0" { print $3; exit }' "/proc/${_preempt_child_pid:-0}/cgroup" 2>/dev/null)"
+    case "$_path" in /*) printf '%s\n' "$_path" ;; *) return 1 ;; esac
+  }
+
+  _psi_child_memory_current_mib() {
+    local _raw=''
+    if [ -n "${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE:-}" ]; then
+      _raw="${PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE}"
+      case "$_raw" in ''|*[!0-9]*) return 1 ;; esac
+      printf '%s\n' "$_raw"
+      return 0
+    fi
+    [ -n "${_psi_cgroup_path:-}" ] || return 1
+    IFS= read -r _raw < "/sys/fs/cgroup${_psi_cgroup_path}/memory.current" 2>/dev/null || return 1
+    case "$_raw" in ''|*[!0-9]*) return 1 ;; esac
+    printf '%s\n' "$(( _raw / 1048576 ))"
+  }
+
+  _psi_write_record() {
+    local _state="$1" _tmp=''
+    [ "${_psi_enabled:-0}" = 1 ] || return 1
+    _psi_cgroup_path="$(_psi_child_cgroup_path 2>/dev/null)" || _psi_cgroup_path=''
+    _psi_memory_current_mib="$(_psi_child_memory_current_mib 2>/dev/null)" || _psi_memory_current_mib=''
+    _tmp="${_psi_record_file}.$$.part"
+    umask 077
+    if {
+      printf 'version=1\n'
+      printf 'admission_id=%s\n' "$_psi_admission_id"
+      printf 'pid=%s\n' "${_preempt_child_pid:-}"
+      printf 'start_ticks=%s\n' "${_psi_child_start_ticks:-}"
+      printf 'priority=%s\n' "$_psi_priority"
+      printf 'admitted_at=%s\n' "$_psi_admitted_at"
+      printf 'state=%s\n' "$_state"
+      printf 'cgroup_path=%s\n' "${_psi_cgroup_path:-unknown}"
+      printf 'memory_current_mib=%s\n' "${_psi_memory_current_mib:-unknown}"
+      printf 'retry_handle=%s\n' "$_psi_retry_handle"
+      printf 'updated_at=%s\n' "$(date +%s)"
+    } > "$_tmp" 2>/dev/null && mv -f "$_tmp" "$_psi_record_file" 2>/dev/null; then
+      _psi_state="$_state"
+      return 0
+    fi
+    rm -f "$_tmp" 2>/dev/null || true
+    return 1
+  }
+
+  _psi_remove_record() {
+    [ -n "${_psi_record_file:-}" ] && rm -f "${_psi_record_file:-}" 2>/dev/null || true
+  }
+
+  _psi_emit() {
+    local _status="$1" _reason="$2" _sample="${3:-unavailable}" _total="${4:-0}"
+    _preempt_notify "PC_HEAVY_ADMISSION status=$_status reason=$_reason priority=${_psi_priority:-unknown} psiFullAvg10=$_sample admittedCgroupMiB=$_total admissionId=${_psi_admission_id:-unknown} retryHandle=${_psi_retry_handle:-unknown}"
+  }
+
+  # Validate every persisted identity before it participates in election. A
+  # SIGKILL may leave a record behind, and PID reuse must never let that stale
+  # record freeze or thaw an unrelated process group.
+  _psi_scan_records() {
+    local _wanted="$1" _file='' _id='' _pid='' _ticks='' _live_ticks=''
+    local _priority='' _admitted='' _state='' _cgroup='' _memory=''
+    local _best_priority='' _best_admitted='' _best_id=''
+    local -A _seen_cgroups=()
+    _psi_selected_id=''
+    _psi_total_mib=0
+    _psi_record_count=0
+    _psi_unreadable_count=0
+    for _file in "$_psi_admission_dir"/*.state; do
+      [ -f "$_file" ] || continue
+      _id="$(_psi_field "$_file" admission_id)"
+      _pid="$(_psi_field "$_file" pid)"
+      _ticks="$(_psi_field "$_file" start_ticks)"
+      _priority="$(_psi_field "$_file" priority)"
+      _admitted="$(_psi_field "$_file" admitted_at)"
+      _state="$(_psi_field "$_file" state)"
+      _cgroup="$(_psi_field "$_file" cgroup_path)"
+      _memory="$(_psi_field "$_file" memory_current_mib)"
+      case "$_id" in ''|*[!A-Za-z0-9_.-]*) rm -f "$_file" 2>/dev/null || true; continue ;; esac
+      case "$_pid:$_ticks:$_priority:$_admitted" in *[!0-9:]*) rm -f "$_file" 2>/dev/null || true; continue ;; esac
+      _live_ticks="$(_pc_heavy_proc_start_ticks "$_pid" 2>/dev/null)" || {
+        rm -f "$_file" 2>/dev/null || true
+        continue
+      }
+      if [ "$_live_ticks" != "$_ticks" ]; then
+        rm -f "$_file" 2>/dev/null || true
+        continue
+      fi
+      _psi_record_count=$(( _psi_record_count + 1 ))
+      if [ -n "$_cgroup" ] && [ "$_cgroup" != unknown ] && [ -z "${_seen_cgroups[$_cgroup]+x}" ]; then
+        _seen_cgroups["$_cgroup"]=1
+        case "$_memory" in
+          ''|*[!0-9]*) _psi_unreadable_count=$(( _psi_unreadable_count + 1 )) ;;
+          *) _psi_total_mib=$(( _psi_total_mib + _memory )) ;;
+        esac
+      elif [ -z "$_cgroup" ] || [ "$_cgroup" = unknown ]; then
+        _psi_unreadable_count=$(( _psi_unreadable_count + 1 ))
+      fi
+      [ "$_state" = "$_wanted" ] || continue
+      if [ -z "$_best_id" ]; then
+        _best_id="$_id"; _best_priority="$_priority"; _best_admitted="$_admitted"
+        continue
+      fi
+      if [ "$_wanted" = active ]; then
+        if [ "$_priority" -lt "$_best_priority" ] ||
+           { [ "$_priority" -eq "$_best_priority" ] && [ "$_admitted" -gt "$_best_admitted" ]; } ||
+           { [ "$_priority" -eq "$_best_priority" ] && [ "$_admitted" -eq "$_best_admitted" ] && [[ "$_id" < "$_best_id" ]]; }; then
+          _best_id="$_id"; _best_priority="$_priority"; _best_admitted="$_admitted"
+        fi
+      else
+        if [ "$_priority" -gt "$_best_priority" ] ||
+           { [ "$_priority" -eq "$_best_priority" ] && [ "$_admitted" -lt "$_best_admitted" ]; } ||
+           { [ "$_priority" -eq "$_best_priority" ] && [ "$_admitted" -eq "$_best_admitted" ] && [[ "$_id" < "$_best_id" ]]; }; then
+          _best_id="$_id"; _best_priority="$_priority"; _best_admitted="$_admitted"
+        fi
+      fi
+    done
+    _psi_selected_id="$_best_id"
+  }
+
+  _psi_tick() {
+    [ "${_psi_enabled:-0}" = 1 ] || return 0
+    local _sample='' _lock_fd='' _now='' _low_since=''
+    _sample="$(_pc_heavy_mem_psi_full_avg10 2>/dev/null)" || {
+      if [ "$_psi_last_undetermined" != psi-unreadable ]; then
+        _psi_emit undetermined psi-unreadable unavailable 0
+        _psi_last_undetermined=psi-unreadable
+      fi
+      return 0
+    }
+    _psi_write_record "$_psi_state" || {
+      if [ "$_psi_last_undetermined" != record-unavailable ]; then
+        _psi_emit undetermined record-unavailable "$_sample" 0
+        _psi_last_undetermined=record-unavailable
+      fi
+      return 0
+    }
+    case "$_psi_last_undetermined" in psi-unreadable|record-unavailable) _psi_last_undetermined='' ;; esac
+    if ! { exec {_lock_fd}>>"$_psi_lock_file"; } 2>/dev/null; then return 0; fi
+    if ! flock -n "$_lock_fd" 2>/dev/null; then
+      eval "exec ${_lock_fd}>&-" 2>/dev/null || true
+      return 0
+    fi
+    _now=$(date +%s)
+    if [ "$_sample" -ge "$_psi_high" ]; then
+      rm -f "$_psi_recovery_file" 2>/dev/null || true
+      _psi_scan_records active
+      if [ "$_psi_unreadable_count" -gt 0 ]; then
+        if [ "$_psi_last_undetermined" != cgroup-memory-unreadable ]; then
+          _psi_emit undetermined cgroup-memory-unreadable "$_sample" "$_psi_total_mib"
+          _psi_last_undetermined=cgroup-memory-unreadable
+        fi
+      else
+        [ "$_psi_last_undetermined" = cgroup-memory-unreadable ] && _psi_last_undetermined=''
+      fi
+      if [ "$_psi_unreadable_count" -eq 0 ] && [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = active ]; then
+        if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+          _psi_write_record frozen || true
+          _psi_emit frozen memory-psi-high "$_sample" "$_psi_total_mib"
+        fi
+      fi
+    elif [ "$_sample" -le "$_psi_recover" ]; then
+      if [ -s "$_psi_recovery_file" ]; then
+        IFS= read -r _low_since < "$_psi_recovery_file" 2>/dev/null || _low_since=''
+      fi
+      case "$_low_since" in ''|*[!0-9]*)
+        printf '%s\n' "$_now" > "${_psi_recovery_file}.$$.part" 2>/dev/null &&
+          mv -f "${_psi_recovery_file}.$$.part" "$_psi_recovery_file" 2>/dev/null || true
+        _low_since="$_now"
+        ;;
+      esac
+      if [ $(( _now - _low_since )) -ge "$_psi_recovery_sec" ]; then
+        _psi_scan_records frozen
+        if [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = frozen ]; then
+          if kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+            _psi_write_record active || true
+            rm -f "$_psi_recovery_file" 2>/dev/null || true
+            _psi_emit thawed memory-psi-recovered "$_sample" "$_psi_total_mib"
+          fi
+        fi
+      fi
+    else
+      rm -f "$_psi_recovery_file" 2>/dev/null || true
+    fi
+    flock -u "$_lock_fd" 2>/dev/null || true
+    eval "exec ${_lock_fd}>&-" 2>/dev/null || true
+  }
+
+  _psi_init() {
+    case "$_psi_enabled" in 0|off|OFF|false|FALSE|no|NO) _psi_enabled=0; return 0 ;; *) _psi_enabled=1 ;; esac
+    case "$_psi_high" in ''|*[!0-9]*) _psi_high=5 ;; esac
+    case "$_psi_recover" in ''|*[!0-9]*) _psi_recover=2 ;; esac
+    case "$_psi_recovery_sec" in ''|*[!0-9]*) _psi_recovery_sec=30 ;; esac
+    case "$_psi_sample_sec" in ''|*[!0-9]*) _psi_sample_sec=2 ;; esac
+    case "$_psi_priority" in ''|*[!0-9]*) _psi_priority=10 ;; esac
+    if [ "$_psi_recover" -ge "$_psi_high" ]; then
+      [ "$_psi_high" -gt 0 ] && _psi_recover=$(( _psi_high - 1 )) || _psi_recover=0
+    fi
+    if ! mkdir -p "$_psi_admission_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
+      _psi_emit undetermined controller-unavailable unavailable 0
+      _psi_enabled=0
+      return 0
+    fi
+    _psi_child_start_ticks="$(_pc_heavy_proc_start_ticks "${_preempt_child_pid:-0}" 2>/dev/null)" || {
+      # A trivial child can publish its pid and finish before this first /proc
+      # read. That is completion, not an admission uncertainty.
+      if _preempt_leader_alive; then
+        _psi_emit undetermined child-identity-unavailable unavailable 0
+      fi
+      _psi_enabled=0
+      return 0
+    }
+    case "$_psi_admission_id" in ''|*[!A-Za-z0-9_.-]*) _psi_admission_id="${_preempt_child_pid:-0}-${_psi_child_start_ticks:-0}" ;; esac
+    _psi_retry_handle="psi-recovery:${_psi_admission_id}"
+    _psi_record_file="$_psi_admission_dir/${_psi_admission_id}.state"
+    # Nanoseconds make "newest" deterministic for roots admitted in the same
+    # wall-clock second. Epoch nanoseconds remain below signed 64-bit max on the
+    # supported Linux horizon, so Bash integer comparisons stay exact.
+    _psi_admitted_at=$(date +%s%N)
+    _psi_next_sample=0
+    _psi_write_record active || {
+      _psi_emit undetermined record-unavailable unavailable 0
+      _psi_enabled=0
+    }
+  }
+
   # NOTE (EI-21348799817176368): every expansion in the functions reachable from
   # the traps below is `:-` defaulted. Those handlers run on EXIT/TERM/INT/HUP,
   # and a trap can fire OUTSIDE this function's dynamic extent — at which point
@@ -492,6 +769,7 @@ _pc_heavy_internal_preempt_run() {
   # `<` would race the `[ -e ]` guard when no materializer has ever run.
   _preempt_writer_is_held() {
     local _probe_fd=''
+    case "${_preempt_exclusive:-1}" in 0|off|OFF|false|FALSE|no|NO) return 1 ;; esac
     if ! { exec {_probe_fd}>>"$_intent_path"; } 2>/dev/null; then return 1; fi
     if flock -s -n "$_probe_fd"; then
       eval "exec ${_probe_fd}>&-" 2>/dev/null || true
@@ -502,7 +780,11 @@ _pc_heavy_internal_preempt_run() {
   }
   _preempt_reap_group() {
     local _deadline=''
+    _psi_remove_record
     if _preempt_group_alive; then
+      # A frozen group cannot process TERM. CONT preserves the normal graceful
+      # cleanup boundary without changing process identity.
+      kill -CONT -- "-${_preempt_child_pid:-}" 2>/dev/null || true
       kill -TERM -- "-${_preempt_child_pid:-}" 2>/dev/null || true
       _deadline=$(( $(date +%s) + ${_preempt_term_grace:-30} ))
       while _preempt_group_alive && [ "$(date +%s)" -lt "$_deadline" ]; do
@@ -583,6 +865,7 @@ _pc_heavy_internal_preempt_run() {
       return 75
       ;;
   esac
+  _psi_init
 
   # The waitable leader defines COMMAND completion. A command may deliberately
   # daemonize a stdio-detached descendant; waiting for the whole process group
@@ -603,6 +886,11 @@ _pc_heavy_internal_preempt_run() {
       _preempt_emit_result undetermined caller-exited 143
       trap - EXIT TERM INT HUP
       return 143
+    fi
+    printf -v _preempt_now '%(%s)T' -1
+    if [ "${_psi_enabled:-0}" = 1 ] && [ "$_preempt_now" -ge "${_psi_next_sample:-0}" ]; then
+      _psi_tick
+      _psi_next_sample=$(( _preempt_now + _psi_sample_sec ))
     fi
     if _preempt_writer_is_held; then
       # Once the child has completed its irreversible derivation and published
@@ -666,6 +954,7 @@ _pc_heavy_internal_preempt_run() {
   wait "$_preempt_wait_pid"
   local _rc=$?
   rm -f "$_preempt_pid_file" 2>/dev/null || true
+  _psi_remove_record
   _preempt_cleanup_ready_marker
   trap - EXIT TERM INT HUP
   return "$_rc"
@@ -1225,11 +1514,7 @@ _mem_clamp_slots() {
   # PSI backoff. Reading avg10 (not avg60) so the clamp reacts within one
   # admission decision rather than a minute after the damage.
   local _psi
-  if [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE:-}" ]; then
-    _psi="${PC_HEAVY_MEM_PSI_OVERRIDE%%.*}"
-  else
-    _psi="$(awk '/^full/ { for (i = 2; i <= NF; i++) if (substr($i, 1, 6) == "avg10=") { print int(substr($i, 7)); exit } }' /proc/pressure/memory 2>/dev/null)"
-  fi
+  _psi="$(_pc_heavy_mem_psi_full_avg10 2>/dev/null)" || _psi=''
   local _backoff="${PC_HEAVY_MEM_PSI_BACKOFF:-5}"
   case "$_backoff" in ''|*[!0-9]*) _backoff=5 ;; esac
   case "$_psi" in
@@ -2265,11 +2550,30 @@ case "$_preempt_mode" in
     ;;
 esac
 # Focused verification owns an independent slot domain, so an exclusive
-# materializer cannot be blocked by its holder. Keep the default cooperative
-# preemption monitor off for that lane; an explicit PC_HEAVY_PREEMPTIBLE=1
-# remains an intentional caller opt-in.
+# materializer cannot be blocked by its holder. Keep the monitor alive for PSI
+# priority/hysteresis, but disable only exclusive-materializer preemption in
+# auto mode. An explicit PC_HEAVY_PREEMPTIBLE=1 still opts into both controls.
 if [ "$_focused_lane" = 1 ] && [ "$_preempt_mode" = auto ]; then
-  _preemptible=0
+  export PC_HEAVY_PREEMPT_EXCLUSIVE=0
+fi
+
+# The release gate exits through its authoritative bypass before this point and
+# can never become a PSI victim. Exclusive materialization owns the reciprocal
+# all-slots path and likewise never reaches this ordinary runner. Among admitted
+# roots, focused verification outranks ordinary work; ties are resolved by the
+# monitor from persisted admission time + stable id.
+_psi_admission_priority=10
+[ "$_focused_lane" = 1 ] && _psi_admission_priority=50
+export PC_HEAVY_ADMISSION_PRIORITY="$_psi_admission_priority"
+export PC_HEAVY_ADMISSION_DIR="$_dir/psi-admissions"
+if [ -z "${PC_HEAVY_ADMISSION_ID:-}" ]; then
+  export PC_HEAVY_ADMISSION_ID="pc-heavy-$$-$(date +%s%N)"
+fi
+if [ "$_preemptible" != 1 ]; then
+  case "${PC_HEAVY_PSI_ADMISSION:-1}" in
+    0|off|OFF|false|FALSE|no|NO) ;;
+    *) echo "[pc-heavy] PC_HEAVY_ADMISSION status=undetermined reason=unpreemptible priority=$_psi_admission_priority psiFullAvg10=unavailable admittedCgroupMiB=0 admissionId=$PC_HEAVY_ADMISSION_ID retryHandle=psi-recovery:$PC_HEAVY_ADMISSION_ID" >&2 ;;
+  esac
 fi
 
 # The after-ready barrier is opt-in and fail-closed. The wrapper owns only the
