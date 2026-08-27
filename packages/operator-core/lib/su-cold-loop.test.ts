@@ -136,6 +136,87 @@ describe('decideColdWake — the three-gate cold precondition', () => {
   });
 });
 
+describe('decideColdWake — a present human outranks the explicit opt-in (D-005, EI-21572316039386007)', () => {
+  const coldPayload = (wakeCount?: number) => ({ carry: 'cold', ...(wakeCount != null ? { wakeCount } : {}) });
+
+  // CALIBRATION: without the flag, this exact wake IS cold. Every assertion below is
+  // only meaningful against this control — it proves the cases that follow go warm
+  // because of the human-presence guard, not because the wake was ineligible anyway.
+  it('control: the identical opt-in wake colds when no human is present', () => {
+    expect(decideColdWake({ payload: coldPayload(3), coldEnabled: true, carryNote: 'note' })).toEqual({
+      cold: true,
+      mode: 'reset',
+      carryNote: 'note',
+    });
+  });
+
+  it('WARM on the EXPLICIT carry:cold opt-in when a human is mid-exchange — the regression', () => {
+    // This is the exact shape that reset a live session twice while its owner was typing:
+    // opt-in cold, master gate on, carry-note present. Every other precondition says COLD.
+    expect(
+      decideColdWake({
+        payload: coldPayload(3),
+        coldEnabled: true,
+        carryNote: 'note',
+        activeInteractiveExchange: true,
+      }),
+    ).toEqual({
+      cold: false,
+      reason: 'active interactive exchange (recent human input) — stays warm (D-005)',
+    });
+  });
+
+  it('WARM on a RECYCLE-cadence wake too — the guard is not cadence-dependent', () => {
+    expect(
+      decideColdWake({
+        payload: coldPayload(8),
+        coldEnabled: true,
+        carryNote: 'note',
+        activeInteractiveExchange: true,
+      }).cold,
+    ).toBe(false);
+  });
+
+  it('WARM on the P-021 verdict route as well — one guard covers both routes', () => {
+    expect(
+      decideColdWake({
+        payload: { wakeCount: 3, harness: 'h' },
+        coldEnabled: true,
+        carryNote: 'note',
+        classDefaultCold: true,
+        activeInteractiveExchange: true,
+      }).cold,
+    ).toBe(false);
+  });
+
+  it('absent/false is byte-identical to today — a headless session has no keystroke to report', () => {
+    const expected = { cold: true, mode: 'reset' as const, carryNote: 'note' };
+    expect(decideColdWake({ payload: coldPayload(3), coldEnabled: true, carryNote: 'note' })).toEqual(expected);
+    expect(
+      decideColdWake({
+        payload: coldPayload(3),
+        coldEnabled: true,
+        carryNote: 'note',
+        activeInteractiveExchange: false,
+      }),
+    ).toEqual(expected);
+  });
+
+  it('only a literal true engages it — a truthy non-boolean must not silently warm a fleet', () => {
+    // The dep is caller-resolved and fail-soft; an accidental truthy value (a Promise, a
+    // string) must not disable cold wakes fleet-wide, which is the blast radius of the
+    // opposite mistake to the one being fixed.
+    expect(
+      decideColdWake({
+        payload: coldPayload(3),
+        coldEnabled: true,
+        carryNote: 'note',
+        activeInteractiveExchange: 'yes' as unknown as boolean,
+      }).cold,
+    ).toBe(true);
+  });
+});
+
 describe('decideColdWake — P-021 verdict-gated cold-by-default (classDefaultCold)', () => {
   // The marker a WARM loop's fire now stamps: {wakeCount, harness}, NO carry.
   const warmLoopPayload = (wakeCount = 3) => ({ wakeCount, harness: 'papercusp' });
