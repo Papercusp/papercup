@@ -358,6 +358,92 @@ describe('GET /api/oauth/callback', () => {
     expect(response.headers.get('location')).toBe('http://x/settings/personal-vault?oauth_connected=google-workspace');
   });
 
+  it('WI-129473: fails closed when an ADD-account consent comes back with an already-connected account', async () => {
+    // The pre-existing mismatch guard compares against `reconnectProviderAccountId`,
+    // so it only protects a RECONNECT. An add-account flow has no expected account,
+    // and before this guard a consent screen answered with the already-connected
+    // mailbox was written under the fresh field oauth/start had just allocated —
+    // a second credential slot pointing at the SAME mailbox, reported to the owner
+    // as a successful connection. Nothing surfaced the collision.
+    sourceMocks.listOwned.mockResolvedValue([
+      {
+        id: '44444444-4444-4444-8444-444444444444',
+        workspaceId: 'workspace-1',
+        kind: 'gmail',
+        ownerUserId: '22222222-2222-4222-8222-222222222222',
+        // identical to what resolveGoogleAccount returns for this consent
+        providerAccountId: 'owner@example.com',
+        credentialRef: 'google-workspace:already-connected-field',
+        status: 'connected',
+        config: {},
+        cursor: { historyId: 'existing-cursor' },
+      },
+    ]);
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      // a full, healthy token response — the defect is the ACCOUNT, not the token
+      exchangeCode: async () => ({
+        accessToken: 'google-access',
+        refreshToken: 'google-refresh',
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=google_workspace_account_already_connected',
+    );
+    // the decisive assertion: nothing was provisioned, so no duplicate slot exists
+    expect(sourceMocks.provision).not.toHaveBeenCalled();
+  });
+
+  it('WI-129473: fails closed when a NEW Google account arrives without a refresh token', async () => {
+    // access_type=offline only yields a refresh_token on a genuine consent. If
+    // Google satisfies the request from an existing grant, the response carries an
+    // access token alone — which expires within the hour with nothing to renew it.
+    // Persisting that is strictly worse than refusing: the owner is told the
+    // account connected, and it stops working later for no visible reason.
+    sourceMocks.listOwned.mockResolvedValue([]);
+    providers.registerProvider({
+      id: 'google',
+      config: {
+        clientId: 'cid',
+        clientSecret: 'sec',
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+        tokenUrl: 'https://oauth2.googleapis.com/token',
+        redirectUri: 'http://localhost:3055/api/oauth/callback',
+      },
+      buildAuthorizeUrl: () => '',
+      exchangeCode: async () => ({
+        accessToken: 'google-access',
+        // no refreshToken — the incremental-auth outcome
+        expiresAt: Date.now() + 60 * 60 * 1000,
+        scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+      }),
+      refresh: async () => ({ accessToken: 'unused' }),
+    });
+
+    const response = await GET(new Request('http://x/api/oauth/callback?code=authorization-code&state=google.valid'));
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe(
+      'http://x/settings/personal-vault?oauth_error=google_workspace_refresh_token_missing',
+    );
+    expect(sourceMocks.provision).not.toHaveBeenCalled();
+  });
+
   it('adopts a canonical Google account identity in place for a provisional reconnect', async () => {
     sourceMocks.listOwned.mockResolvedValue([
       {
