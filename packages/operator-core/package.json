@@ -163,6 +163,8 @@
     "protomux": "^3.11.0",
     "rrule": "^2.8.1",
     "sodium-native": "^5.1.0",
+    "stream-chain": "^3.6.1",
+    "stream-json": "^2.1.0",
     "undici": "^7.24.7",
     "vscode-jsonrpc": "8.2.0",
     "yauzl": "^3.4.0",
