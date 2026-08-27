@@ -113,14 +113,6 @@ test('the rig surfaces BEE-FACING failures too — a harsh storm under a tight a
 test('P-006 matched-control battery certifies 30 direct+gateway samples at c1/c3/c5 and an ordered rollout', async () => {
   const report = await runGatewayLatencyCertRig({
     upstreamLatencyMs: 3,
-    rollout: {
-      killSwitch: 'PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM',
-      killSwitchRetained: true,
-      isolatedOwnerCompletedAt: '2026-08-27T00:00:00.000Z',
-      smallFleetCompletedAt: '2026-08-27T00:05:00.000Z',
-      fixedPathDefaultedOnAt: '2026-08-27T00:10:00.000Z',
-      legacyFallbackRemoved: false,
-    },
   });
 
   expect(report.gates.filter((gate) => !gate.passed)).toEqual([]);
@@ -145,6 +137,7 @@ test('P-006 battery fails closed on under-sampling, out-of-order rollout, a miss
     rollout: {
       killSwitch: '',
       killSwitchRetained: false,
+      fixedPathDefaultOn: false,
       isolatedOwnerCompletedAt: '2026-08-27T00:10:00.000Z',
       smallFleetCompletedAt: '2026-08-27T00:05:00.000Z',
       fixedPathDefaultedOnAt: '2026-08-27T00:00:00.000Z',

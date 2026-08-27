@@ -313,6 +313,7 @@ export const GATEWAY_LATENCY_CERT_THRESHOLDS = {
 
 export interface GatewayLatencyCertSample {
   pairId: string;
+  ownerId: string;
   route: GatewayLatencyCertRoute;
   concurrency: GatewayLatencyCertConcurrency;
   model: string;
@@ -332,6 +333,7 @@ export interface GatewayLatencyCertSample {
 export interface GatewayLatencyRolloutEvidence {
   killSwitch: string;
   killSwitchRetained: boolean;
+  fixedPathDefaultOn: boolean;
   isolatedOwnerCompletedAt: string;
   smallFleetCompletedAt: string;
   fixedPathDefaultedOnAt: string;
@@ -431,7 +433,8 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     matchedPairs++;
     const d = direct[0]!;
     const g = viaGateway[0]!;
-    identityParity &&= d.model === g.model && d.accountId === g.accountId && d.protocol === g.protocol;
+    identityParity &&=
+      d.model === g.model && d.accountId === g.accountId && d.protocol === g.protocol && d.ownerId === g.ownerId;
     protocolParity &&=
       !d.streaming &&
       !g.streaming &&
@@ -476,6 +479,20 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
     cancellationParity,
     cancellationGroups.size,
     'at least one direct+gateway cancelled pair at c1/c3/c5',
+  );
+
+  const ownerCounts = Object.fromEntries(
+    GATEWAY_LATENCY_CERT_CONCURRENCIES.map((concurrency) => [
+      concurrency,
+      new Set(gateway.filter((sample) => sample.concurrency === concurrency).map((sample) => sample.ownerId)).size,
+    ]),
+  ) as Record<GatewayLatencyCertConcurrency, number>;
+  const ownerShapePassed = ownerCounts[1] === 1 && ownerCounts[3] >= 3 && ownerCounts[5] >= 5;
+  add(
+    'rollout-owner-shape',
+    ownerShapePassed,
+    `c1=${ownerCounts[1]},c3=${ownerCounts[3]},c5=${ownerCounts[5]}`,
+    'one isolated owner at c1, then >=3 owners at c3 and >=5 owners at c5',
   );
 
   const snapshots = GATEWAY_LATENCY_CERT_CONCURRENCIES.map((concurrency) => input.telemetryByConcurrency[concurrency]);
@@ -573,6 +590,12 @@ export function certifyGatewayLatency(input: GatewayLatencyCertificationInput): 
       input.rollout.killSwitch || 'missing',
       'named kill switch retained through observation',
     );
+    add(
+      'rollout-default-on',
+      input.rollout.fixedPathDefaultOn,
+      input.rollout.fixedPathDefaultOn,
+      'corrected OAuth non-stream path is the default after the measurement gate passes',
+    );
     const deprecationOk =
       !input.rollout.legacyFallbackRemoved || Boolean(input.rollout.legacyFallbackDeprecationCriterionRef?.trim());
     add(
@@ -655,6 +678,70 @@ async function waitForNoActiveRequests(gateway: ReturnType<typeof createInferenc
   }
 }
 
+/** Verify the default-on and named fallback branches through the public gateway route. */
+async function probeCodexNonStreamMode(model: string, mode: 'default' | 'fallback'): Promise<boolean> {
+  const accountId = `latency-cert-${mode}-account`;
+  const accessToken = `latency-cert-${mode}-token`;
+  const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), `gateway-latency-cert-${mode}-`));
+  await fs.writeFile(
+    path.join(codexHome, 'auth.json'),
+    JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: accessToken, refresh_token: null, account_id: accountId },
+    }),
+  );
+  let oauthCalls = 0;
+  let cliCalls = 0;
+  const oauthFetch = (async () => {
+    oauthCalls++;
+    return new Response(
+      `data: ${JSON.stringify({
+        type: 'response.completed',
+        response: { id: `resp_latency_cert_${mode}`, object: 'response', model, output: [] },
+      })}\n\ndata: [DONE]\n\n`,
+      { status: 200, headers: { 'content-type': 'text/event-stream' } },
+    );
+  }) as typeof fetch;
+  const cliAccounts = [{ accountId, home: codexHome }];
+  const gw = createInferenceGateway({
+    accountId: 'latency-cert-claude-control',
+    token: async () => 'latency-cert-claude-token',
+    codexCliAccounts: () => cliAccounts,
+    codexCliPool: createFailoverPool([{ accountId, token: async () => '' }]),
+    codexCliRun: async () => {
+      cliCalls++;
+      return { text: 'legacy fallback probe', inputTokens: 1, outputTokens: 1 };
+    },
+    codexOAuthProxy: true,
+    ...(mode === 'fallback' ? { codexOAuthNonStream: false } : {}),
+    fetchImpl: oauthFetch,
+    codexConcurrency: 1,
+    aimd: { floor: 1 },
+    selfHeal: { enabled: false },
+    log: () => {},
+  });
+  try {
+    const port = await gw.listen(0);
+    const response = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-papercusp-owner': `latency-cert-${mode}-owner`,
+        [ACCOUNT_HEADER]: accountId,
+      },
+      body: JSON.stringify({ model, input: `${mode} mode probe`, stream: false, store: false }),
+    });
+    await response.arrayBuffer();
+    return (
+      response.status === 200 &&
+      (mode === 'default' ? oauthCalls === 1 && cliCalls === 0 : oauthCalls === 0 && cliCalls === 1)
+    );
+  } finally {
+    await gw.close();
+    await fs.rm(codexHome, { recursive: true, force: true });
+  }
+}
+
 /**
  * Deterministic no-spend P-006 certification run. It exercises the corrected ChatGPT-subscription
  * OAuth non-stream path (the P-005 replacement for per-request `codex exec`) through the REAL gateway.
@@ -670,6 +757,8 @@ export async function runGatewayLatencyCertRig(
   const samples: GatewayLatencyCertSample[] = [];
   const telemetryByConcurrency: GatewayLatencyCertificationInput['telemetryByConcurrency'] = {};
   let queuedWithIdleViolations = 0;
+  let isolatedOwnerCompletedAt = '';
+  let smallFleetCompletedAt = '';
 
   for (const concurrency of GATEWAY_LATENCY_CERT_CONCURRENCIES) {
     const accountId = `latency-cert-account-c${concurrency}`;
@@ -744,6 +833,11 @@ export async function runGatewayLatencyCertRig(
       cancelled = false,
     ): Promise<GatewayLatencyCertSample> => {
       const pairId = cancelled ? `latency-cert-c${concurrency}-cancel` : `latency-cert-c${concurrency}-${index}`;
+      const ownerId = cancelled
+        ? `latency-cert-c${concurrency}-cancel-owner`
+        : concurrency === 1
+          ? 'latency-cert-isolated-owner'
+          : `latency-cert-fleet-owner-${index % concurrency}`;
       const controller = new AbortController();
       let abortTimer: ReturnType<typeof setTimeout> | undefined;
       if (cancelled) abortTimer = setTimeout(() => controller.abort(), 1);
@@ -765,7 +859,7 @@ export async function runGatewayLatencyCertRig(
                 method: 'POST',
                 headers: {
                   'content-type': 'application/json',
-                  'x-papercusp-owner': pairId,
+                  'x-papercusp-owner': ownerId,
                   [ACCOUNT_HEADER]: accountId,
                 },
                 body: gatewayBody,
@@ -790,6 +884,7 @@ export async function runGatewayLatencyCertRig(
         }
         return {
           pairId,
+          ownerId,
           route,
           concurrency,
           model,
@@ -805,6 +900,7 @@ export async function runGatewayLatencyCertRig(
       } catch {
         return {
           pairId,
+          ownerId,
           route,
           concurrency,
           model,
@@ -846,17 +942,36 @@ export async function runGatewayLatencyCertRig(
       if (!snapshot)
         throw new Error(`latency certification c${concurrency}: gateway emitted no request-stage telemetry`);
       telemetryByConcurrency[concurrency] = snapshot;
-      const timelines = new Map(snapshot.recent.map((timeline) => [timeline.ownerId, timeline]));
-      for (const sample of viaGateway) sample.timeline = timelines.get(sample.pairId);
+      const standardTimelines = snapshot.recent.filter((timeline) => timeline.outcome !== 'cancelled');
+      for (const [index, sample] of viaGateway.entries()) sample.timeline = standardTimelines[index];
       for (const sample of cancelled.filter((candidate) => candidate.route === 'gateway')) {
-        sample.timeline = timelines.get(sample.pairId);
+        sample.timeline = snapshot.recent.find((timeline) => timeline.ownerId === sample.ownerId);
       }
       samples.push(...direct, ...viaGateway, ...cancelled);
+      if (concurrency === 1) isolatedOwnerCompletedAt = new Date().toISOString();
+      if (concurrency === 5) smallFleetCompletedAt = new Date().toISOString();
     } finally {
       await gw.close();
       await fs.rm(codexHome, { recursive: true, force: true });
     }
   }
 
-  return certifyGatewayLatency({ samples, telemetryByConcurrency, queuedWithIdleViolations, rollout: opts.rollout });
+  const input = { samples, telemetryByConcurrency, queuedWithIdleViolations };
+  if (opts.rollout) return certifyGatewayLatency({ ...input, rollout: opts.rollout });
+
+  const measurement = certifyGatewayLatency(input);
+  if (measurement.measurementVerdict === 'failed') return measurement;
+
+  const killSwitchRetained = await probeCodexNonStreamMode(model, 'fallback').catch(() => false);
+  const fixedPathDefaultOn = await probeCodexNonStreamMode(model, 'default').catch(() => false);
+  const rollout: GatewayLatencyRolloutEvidence = {
+    killSwitch: 'PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0',
+    killSwitchRetained,
+    fixedPathDefaultOn,
+    isolatedOwnerCompletedAt,
+    smallFleetCompletedAt,
+    fixedPathDefaultedOnAt: new Date().toISOString(),
+    legacyFallbackRemoved: false,
+  };
+  return certifyGatewayLatency({ ...input, rollout });
 }
