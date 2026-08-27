@@ -80,6 +80,25 @@ pub struct ModelTier {
     pub when: Option<String>,
     #[serde(default)]
     pub backend: Option<String>,
+    /// Server-side classification against the in-process Agent Chat loop.
+    /// `None` is retained for compatibility with older operators; current
+    /// `config:tiers-get` responses annotate every effective tier.
+    #[serde(default)]
+    pub loop_capability: Option<LoopModelCapability>,
+}
+
+/// The owned Agent Chat loop's executable boundary for one model tier. The
+/// generic tier menu may contain selectors understood only by an OMP
+/// subprocess; those rows remain visible but cannot be selected for Agent Chat.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LoopModelCapability {
+    #[serde(default)]
+    pub executable: bool,
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 /// "Don't send a model — let the server pick." `__`-prefixed so it can never
@@ -105,16 +124,32 @@ pub fn model_options(tiers: &[ModelTier], surface_default: Option<&str>) -> Vec<
         disabled: false,
     });
     for t in tiers {
+        let normal_hint = match (&t.when, &t.backend) {
+            (Some(w), Some(b)) => Some(format!("{w} · runs on {b}")),
+            (Some(w), None) => Some(w.clone()),
+            (None, Some(b)) => Some(format!("runs on {b}")),
+            (None, None) => None,
+        };
+        let (disabled, hint) = match t.loop_capability.as_ref() {
+            Some(capability) if !capability.executable => {
+                let reason = capability
+                    .reason
+                    .as_deref()
+                    .filter(|reason| !reason.is_empty())
+                    .unwrap_or("this tier is not executable by the Agent Chat loop");
+                let capability_hint = format!("not executable by Agent Chat loop: {reason}");
+                let hint = normal_hint
+                    .map(|guidance| format!("{capability_hint} · {guidance}"))
+                    .unwrap_or(capability_hint);
+                (true, Some(hint))
+            }
+            _ => (false, normal_hint),
+        };
         out.push(PickerOption {
             id: t.spec.clone(),
             label: format!("{} — {}", t.name, t.spec),
-            hint: match (&t.when, &t.backend) {
-                (Some(w), Some(b)) => Some(format!("{w} · runs on {b}")),
-                (Some(w), None) => Some(w.clone()),
-                (None, Some(b)) => Some(format!("runs on {b}")),
-                (None, None) => None,
-            },
-            disabled: false,
+            hint,
+            disabled,
         });
     }
     out
@@ -555,12 +590,18 @@ mod tests {
                 spec: "haiku".into(),
                 when: Some("trivial work".into()),
                 backend: None,
+                loop_capability: Some(LoopModelCapability {
+                    executable: true,
+                    provider: Some("gateway-anthropic".into()),
+                    reason: None,
+                }),
             },
             ModelTier {
                 name: "deep".into(),
                 spec: "opus[1m]:high".into(),
                 when: None,
                 backend: Some("codex".into()),
+                loop_capability: None,
             },
         ];
         let opts = model_options(&tiers, None);
@@ -569,6 +610,57 @@ mod tests {
         assert_eq!(opts[1].label, "quick — haiku");
         assert_eq!(opts[1].hint.as_deref(), Some("trivial work"));
         assert_eq!(opts[2].hint.as_deref(), Some("runs on codex"));
+    }
+
+    #[test]
+    fn model_menu_keeps_omp_only_rows_visible_but_disabled_with_the_server_reason() {
+        let tiers = vec![
+            ModelTier {
+                name: "omp-only".into(),
+                spec: "openrouter/stealth/ox-alpha:max".into(),
+                when: Some("special OMP models".into()),
+                backend: Some("omp".into()),
+                loop_capability: Some(LoopModelCapability {
+                    executable: false,
+                    provider: None,
+                    reason: Some("unsupported loop provider \"openrouter\"".into()),
+                }),
+            },
+            ModelTier {
+                name: "owned".into(),
+                spec: "sonnet[1m]".into(),
+                when: None,
+                backend: None,
+                loop_capability: Some(LoopModelCapability {
+                    executable: true,
+                    provider: Some("gateway-anthropic".into()),
+                    reason: None,
+                }),
+            },
+        ];
+        let opts = model_options(&tiers, None);
+        assert_eq!(opts.len(), 3, "unsupported rows remain visible for explanation");
+        assert!(opts[1].disabled);
+        assert!(opts[1]
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("unsupported loop provider \"openrouter\""));
+        assert!(opts[1].hint.as_deref().unwrap().contains("special OMP models"));
+        assert!(!opts[2].disabled);
+    }
+
+    #[test]
+    fn model_menu_tolerates_legacy_tiers_without_capability_metadata() {
+        let tiers = vec![ModelTier {
+            name: "legacy".into(),
+            spec: "sonnet".into(),
+            when: None,
+            backend: None,
+            loop_capability: None,
+        }];
+        let opts = model_options(&tiers, None);
+        assert!(!opts[1].disabled, "old operators did not send capability metadata");
     }
 
     #[test]
