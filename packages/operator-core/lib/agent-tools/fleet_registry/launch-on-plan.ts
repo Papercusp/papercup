@@ -3872,6 +3872,12 @@ export default defineTool({
       command: string;
     }> = [];
     const failed: Array<{ ownerId?: string; error: string; code: number }> = [];
+    let persistedLaunchRevision = priorLaunchTransaction
+      ? {
+          transactionId: priorLaunchTransaction.transactionId,
+          updatedAt: priorLaunchTransaction.updatedAt,
+        }
+      : null;
     const launchTransaction: FleetLaunchTransaction = {
       ...(resumedLaunchTransaction
         ? {
@@ -3926,15 +3932,39 @@ export default defineTool({
     const refreshLaunchRecovery = (): void => {
       const verified = new Set(launchTransaction.verifiedMemberIds);
       launchTransaction.recovery.retryOwnerIds = transactionRequestedMemberIds.filter((id) => !verified.has(id));
-      launchTransaction.updatedAt = Date.now();
+      launchTransaction.updatedAt = Math.max(
+        Date.now(),
+        persistedLaunchRevision?.transactionId === launchTransaction.transactionId
+          ? persistedLaunchRevision.updatedAt + 1
+          : launchTransaction.updatedAt,
+      );
     };
     const persistLaunchTransaction = async (): Promise<void> => {
       refreshLaunchRecovery();
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
+      const persisted = await setFleetLaunchTransaction({
+        workspaceId,
+        fleetSlug,
+        transaction: launchTransaction,
+        expectedRevision: persistedLaunchRevision,
+      });
+      if (persisted === false) {
+        throw new Error(
+          'the durable launch transaction changed concurrently; re-read fleet:status before retrying',
+        );
+      }
+      persistedLaunchRevision = {
+        transactionId: launchTransaction.transactionId,
+        updatedAt: launchTransaction.updatedAt,
+      };
     };
     try {
       await persistLaunchTransaction();
     } catch (e: any) {
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+      } catch {
+        /* compare-and-set release: a newer launch claim, if any, remains untouched */
+      }
       return err(
         `Failed to persist the fleet launch transaction before spawning (${e?.message ?? e}) — NO members were opened.`,
       );
