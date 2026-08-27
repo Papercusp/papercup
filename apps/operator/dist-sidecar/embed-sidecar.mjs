@@ -8561,23 +8561,5 @@ function runEmbedSidecarServer() {
   process.on("SIGINT", () => shutdown("SIGINT"));
 }
 
-// ../../packages/operator-core/lib/util/cli-entry.ts
-import { realpathSync } from "node:fs";
-import { fileURLToPath as fileURLToPath3, pathToFileURL } from "node:url";
-function isCliEntry(importMetaUrl) {
-  if (true) {
-    return false;
-  }
-  const argv1 = process.argv[1];
-  if (!argv1) return false;
-  if (importMetaUrl === pathToFileURL(argv1).href) return true;
-  try {
-    if (importMetaUrl === pathToFileURL(realpathSync(argv1)).href) return true;
-    return realpathSync(fileURLToPath3(importMetaUrl)) === realpathSync(argv1);
-  } catch {
-    return false;
-  }
-}
-
 // bin/embed-sidecar.ts
-if (isCliEntry(import.meta.url)) runEmbedSidecarServer();
+runEmbedSidecarServer();
