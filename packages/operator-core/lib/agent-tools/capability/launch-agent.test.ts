@@ -11,7 +11,8 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/capability/launch-agent.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { SpawnConsoleResult } from '../../console-spawn';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import type { SpawnChildExit, SpawnConsoleResult } from '../../console-spawn';
 import { PSU_LAUNCH_LOG_TAIL_CHARS } from '../../psu-launch-log.mjs';
 
 const assembleRolePromptMock = vi.hoisted(() => vi.fn());
@@ -108,8 +109,7 @@ const spawnConsoleMock = vi.fn(
     desktopEnvResolvedVia: 'active-seat',
   }),
 );
-const spawnHeadlessMock = vi.fn(
-  async (_opts: unknown): Promise<SpawnConsoleResult> => ({
+const headlessSpawnResult = (childExit?: Promise<SpawnChildExit>): SpawnConsoleResult => ({
     status: 'ok',
     pid: 777,
     terminal: 'headless',
@@ -118,7 +118,11 @@ const spawnHeadlessMock = vi.fn(
     child: {} as never,
     display: null,
     desktopEnvResolvedVia: null,
-  }),
+    ...(childExit ? { childExit } : {}),
+});
+const HEADLESS_RESUME_LOG_PATH = '/tmp/papercusp-ws/fleet-logs/judge.log';
+const spawnHeadlessMock = vi.fn(
+  async (_opts: unknown): Promise<SpawnConsoleResult> => headlessSpawnResult(),
 );
 const spawnGovernedAgentProcessMock = vi.fn(
   (_input: unknown, spawnProcess: (context: Record<string, unknown>) => Promise<SpawnConsoleResult>) =>
@@ -237,6 +241,7 @@ const spawnedEnv = (mock = spawnConsoleMock): Record<string, string> =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  rmSync(HEADLESS_RESUME_LOG_PATH, { force: true });
   assembleRolePromptMock.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/repo' } });
   readPsuLaunchLogTailMock.mockReturnValue(null);
   codexPreflightHomeMock.mockResolvedValue(null);
@@ -573,6 +578,93 @@ describe('headless composition (D-003: an ARG, not a separate tool)', () => {
       tasks: [{ taskId: 'task777', logPath: '/tmp/papercusp-ws/fleet-logs/judge.log', pid: 777, headless: true }],
     });
     expect(textOf(res)).toContain('EI-9748');
+  });
+});
+
+describe('headless in-place resume verification', () => {
+  const dead = {
+    ok: true as const,
+    sessionId: 'sid-dead',
+    ownerId: 'su-a1a71',
+    agent: 'claude',
+    cwd: '/repo',
+    endedAt: '2026-07-11T10:00:00.000Z',
+    live: false,
+    advSessionId: 11,
+  };
+
+  const resumeHeadless = (childExit: Promise<SpawnChildExit>) => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    spawnHeadlessMock.mockResolvedValueOnce(headlessSpawnResult(childExit));
+    return launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, headless: true, brief: 'continue the recovery' },
+      ctx,
+    );
+  };
+
+  it('classifies a nonzero persistent child exit as an observed resume failure', async () => {
+    const res = await resumeHeadless(Promise.resolve({ code: 1, signal: null }));
+
+    expect(verifyResumeStartedMock).toHaveBeenCalledWith(
+      'su-a1a71',
+      expect.objectContaining({ expectedSessionId: 'sid-dead' }),
+    );
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('HEADLESS RESUME TURN FAILED');
+    expect(textOf(res)).toContain('agent_crash');
+    expect(dataOf(res)?.launch).toMatchObject({
+      resumeVerified: false,
+      resumeVerification: {
+        expectedSessionId: 'sid-dead',
+        actualSessionId: null,
+        mismatch: false,
+        bootLogTail: null,
+      },
+    });
+  });
+
+  it('classifies an HTTP 400 in the bounded headless log and preserves its evidence', async () => {
+    mkdirSync('/tmp/papercusp-ws/fleet-logs', { recursive: true });
+    writeFileSync(HEADLESS_RESUME_LOG_PATH, 'resume failed: HTTP 400 Bad Request from provider\n');
+
+    const res = await resumeHeadless(Promise.resolve({ code: 1, signal: null }));
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('HEADLESS RESUME TURN FAILED');
+    expect(textOf(res)).toContain('HTTP 400 Bad Request');
+    expect(dataOf(res)?.launch).toMatchObject({
+      resumeVerified: false,
+      resumeVerification: {
+        bootLogTail: 'resume failed: HTTP 400 Bad Request from provider\n',
+      },
+    });
+  });
+
+  it('keeps a clean child exit unconfirmed instead of reporting a false failure', async () => {
+    const res = await resumeHeadless(Promise.resolve({ code: 0, signal: null }));
+
+    expect(isError(res)).toBe(false);
+    expect(textOf(res)).toContain('HEADLESS RESUME UNCONFIRMED');
+    expect(dataOf(res)?.launch).toMatchObject({
+      resumeVerified: null,
+      resumeVerification: { expectedSessionId: 'sid-dead', bootLogTail: null },
+    });
+  });
+
+  it('keeps a verifier deadline unconfirmed when the headless child has not exited', async () => {
+    verifyResumeStartedMock.mockResolvedValueOnce({
+      started: null,
+      waitedMs: 30_000,
+      expectedSessionId: 'sid-dead',
+      actualSessionId: null,
+      mismatch: false,
+    });
+
+    const res = await resumeHeadless(new Promise<SpawnChildExit>(() => {}));
+
+    expect(isError(res)).toBe(false);
+    expect(textOf(res)).toContain('RESUME UNCONFIRMED');
+    expect(dataOf(res)?.launch).toMatchObject({ resumeVerified: null });
   });
 });
 

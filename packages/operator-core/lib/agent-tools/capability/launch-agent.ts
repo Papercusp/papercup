@@ -169,6 +169,12 @@ function resumeBootLogNote(tail: string | null): string {
   return ` Per-owner psu boot log tail (bounded to ${PSU_LAUNCH_LOG_TAIL_CHARS} chars):\n${tail}`;
 }
 
+function headlessResumeLogNote(tail: string | null): string {
+  if (tail == null) return ' No headless resume log was available.';
+  if (tail.length === 0) return ' The headless resume log was present but empty.';
+  return ` Headless resume log tail (bounded to ${PSU_LAUNCH_LOG_TAIL_CHARS} chars):\n${tail}`;
+}
+
 function err(text: string) {
   return { content: [{ type: 'text' as const, text }], isError: true };
 }
@@ -1298,9 +1304,9 @@ export default defineTool({
     // Verify a live psu-pty host actually appears for the resumed identity (which
     // re-attaches its ORIGINAL ownerId) before calling the resume good. If none
     // appears inside the bounded window, report UNCONFIRMED without converting
-    // absence into failure (EI-21476169071856015). Scoped to a VISIBLE IN-PLACE resume:
-    // a fork mints a new identity we can't poll here, and a headless session hosts
-    // no window whose silent close is the symptom.
+    // absence into failure (EI-21476169071856015). A fork mints a new identity we
+    // can't poll here. Headless in-place resumes have no visible window, so they
+    // race the persistent child-exit observer against this verifier instead.
     let resumeVerifyFailed = false;
     let resumeVerified: boolean | null | undefined;
     let resumeVerification: {
@@ -1310,31 +1316,99 @@ export default defineTool({
       rollback: string | null;
       bootLogTail?: string | null;
     } | null = null;
-    if (isResume && !fork && !args.headless && resumeOwnerId && opened.length > 0) {
-      const verify = await verifyResumeStarted(resumeOwnerId, {
+    if (isResume && !fork && resumeOwnerId && opened.length > 0) {
+      const headlessResult = args.headless
+        ? opened.find((result) => result.status === 'ok' && result.childExit)
+        : undefined;
+      const childExit = headlessResult?.status === 'ok' ? headlessResult.childExit : undefined;
+      const verifyPromise = verifyResumeStarted(resumeOwnerId, {
         expectedSessionId: resumeSessionId,
         timeoutMs: RESUME_VERIFY_TIMEOUT_MS,
       });
-      if (verify.started === false) {
-        resumeVerifyFailed = true;
-        resumeVerified = false;
-        if (verify.mismatch) {
-          const rollback = await shutdownViaPty(resumeOwnerId, {
-            force: true,
-            reason: `resume UUID mismatch: requested ${verify.expectedSessionId ?? 'unknown'}, actual ${verify.actualSessionId ?? 'unknown'}`,
-          });
-          resumeVerification = {
-            expectedSessionId: verify.expectedSessionId,
-            actualSessionId: verify.actualSessionId,
-            mismatch: true,
-            rollback,
-          };
+      const observation = childExit
+        ? await Promise.race([
+            childExit.then((exit) => ({ kind: 'exit' as const, exit })),
+            verifyPromise.then((verify) => ({ kind: 'verify' as const, verify })),
+          ])
+        : { kind: 'verify' as const, verify: await verifyPromise };
+
+      if (observation.kind === 'exit') {
+        const classified = classifyHeadlessResumeExit(
+          observation.exit,
+          headlessResult?.status === 'ok' ? headlessResult.logPath : null,
+          resumeAgent,
+        );
+        const exitDescription = observation.exit.error
+          ? `spawn error: ${observation.exit.error.message}`
+          : observation.exit.signal
+            ? `signal ${observation.exit.signal}`
+            : `exit ${observation.exit.code ?? 0}`;
+        const bootLogTail = classified.logTail;
+        resumeVerification = {
+          expectedSessionId: resumeSessionId,
+          actualSessionId: null,
+          mismatch: false,
+          rollback: null,
+          bootLogTail,
+        };
+        if (classified.outcome.ok) {
+          // A clean headless child exit is compatible with a completed one-turn
+          // resume, but it does not attest that the matching managed host became
+          // live. Preserve the verifier's honest three-state contract.
+          resumeVerified = null;
           notes.push(
-            `✗ RESUME UUID MISMATCH — requested ${verify.expectedSessionId ?? '(unknown)'} but the live backend ` +
-              `actually resumed ${verify.actualSessionId ?? '(no attested UUID)'}. Success was REFUSED. ` +
-              `Rollback result for the newly launched wrong session: ${rollback}.`,
+            `⏳ HEADLESS RESUME UNCONFIRMED — the resumed process ${exitDescription} before a matching managed ` +
+              `host was observed. A clean exit is not proof of a live resumed turn; re-check coord:presence.` +
+              headlessResumeLogNote(bootLogTail),
           );
         } else {
+          resumeVerifyFailed = true;
+          resumeVerified = false;
+          notes.push(
+            `✗ HEADLESS RESUME TURN FAILED — the resumed process ${exitDescription}; ` +
+              `${classified.outcome.error.class}: ${classified.outcome.error.message}. ` +
+              `The persistent child-exit evidence is authoritative for this observed failure.` +
+              headlessResumeLogNote(bootLogTail),
+          );
+        }
+      } else {
+        const verify = observation.verify;
+        if (verify.started === false) {
+          resumeVerifyFailed = true;
+          resumeVerified = false;
+          if (verify.mismatch) {
+            const rollback = await shutdownViaPty(resumeOwnerId, {
+              force: true,
+              reason: `resume UUID mismatch: requested ${verify.expectedSessionId ?? 'unknown'}, actual ${verify.actualSessionId ?? 'unknown'}`,
+            });
+            resumeVerification = {
+              expectedSessionId: verify.expectedSessionId,
+              actualSessionId: verify.actualSessionId,
+              mismatch: true,
+              rollback,
+            };
+            notes.push(
+              `✗ RESUME UUID MISMATCH — requested ${verify.expectedSessionId ?? '(unknown)'} but the live backend ` +
+                `actually resumed ${verify.actualSessionId ?? '(no attested UUID)'}. Success was REFUSED. ` +
+                `Rollback result for the newly launched wrong session: ${rollback}.`,
+            );
+          } else {
+            const bootLogTail = readResumeBootLogTail(resumeOwnerId);
+            resumeVerification = {
+              expectedSessionId: verify.expectedSessionId,
+              actualSessionId: verify.actualSessionId,
+              mismatch: false,
+              rollback: null,
+              bootLogTail,
+            };
+            notes.push(
+              `✗ RESUME DID NOT START — an observed failure prevented ${resumeOwnerId} from registering a matching live agent. ` +
+                `Check the terminal window and bounded boot log before retrying.` +
+                resumeBootLogNote(bootLogTail),
+            );
+          }
+        } else if (verify.started === null) {
+          resumeVerified = null;
           const bootLogTail = readResumeBootLogTail(resumeOwnerId);
           resumeVerification = {
             expectedSessionId: verify.expectedSessionId,
@@ -1344,37 +1418,22 @@ export default defineTool({
             bootLogTail,
           };
           notes.push(
-            `✗ RESUME DID NOT START — an observed failure prevented ${resumeOwnerId} from registering a matching live agent. ` +
-              `Check the terminal window and bounded boot log before retrying.` +
+            `⏳ RESUME UNCONFIRMED — no matching managed-pty host was observed for ${resumeOwnerId} within ` +
+              `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s. The bounded verification window expired; ` +
+              `that is absence of evidence, not an observed no-op. A healthy exact Codex resume has registered ` +
+              `more than seven minutes later (EI-21476169071856015). Do NOT launch a fallback on this note alone: ` +
+              `re-check coord:presence / work_items:observe in a few minutes.` +
               resumeBootLogNote(bootLogTail),
           );
+        } else {
+          resumeVerified = true;
+          resumeVerification = {
+            expectedSessionId: verify.expectedSessionId,
+            actualSessionId: verify.actualSessionId,
+            mismatch: false,
+            rollback: null,
+          };
         }
-      } else if (verify.started === null) {
-        resumeVerified = null;
-        const bootLogTail = readResumeBootLogTail(resumeOwnerId);
-        resumeVerification = {
-          expectedSessionId: verify.expectedSessionId,
-          actualSessionId: verify.actualSessionId,
-          mismatch: false,
-          rollback: null,
-          bootLogTail,
-        };
-        notes.push(
-          `⏳ RESUME UNCONFIRMED — no matching managed-pty host was observed for ${resumeOwnerId} within ` +
-            `${Math.round(RESUME_VERIFY_TIMEOUT_MS / 1000)}s. The bounded verification window expired; ` +
-            `that is absence of evidence, not an observed no-op. A healthy exact Codex resume has registered ` +
-            `more than seven minutes later (EI-21476169071856015). Do NOT launch a fallback on this note alone: ` +
-            `re-check coord:presence / work_items:observe in a few minutes.` +
-            resumeBootLogNote(bootLogTail),
-        );
-      } else {
-        resumeVerified = true;
-        resumeVerification = {
-          expectedSessionId: verify.expectedSessionId,
-          actualSessionId: verify.actualSessionId,
-          mismatch: false,
-          rollback: null,
-        };
       }
     }
 
