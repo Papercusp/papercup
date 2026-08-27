@@ -7417,6 +7417,35 @@ async function retireLifecycleBindingsForWorkItem(
   }
 }
 
+/**
+ * A holder's auto-armed claim-release watch is meant to report an involuntary
+ * release (for example, session cleanup), not wake the same owner immediately
+ * after that owner deliberately releases the claim. Retire only the releasing
+ * holder's claim-bound watch, and only after the release UPDATE succeeded so a
+ * compare-and-release race cannot cancel a watch for a claim that remains held.
+ *
+ * The owner is explicit rather than inferred from expectedAssignee: internal
+ * reaper and claim-then-release callers also pass an expected holder, but must
+ * preserve the holder notification semantics.
+ */
+async function retireVoluntaryReleaseClaimWatch(
+  wi: Pick<WorkItem, 'id' | 'assignee'>,
+  releasingOwnerId: string | undefined,
+): Promise<void> {
+  const ownerId = releasingOwnerId?.trim();
+  if (!ownerId || !wi.assignee || wi.assignee !== ownerId) return;
+  try {
+    const { retireLifecycleBoundWatches } = await import('./events/await/store');
+    await retireLifecycleBoundWatches(
+      { kind: 'work-item-claim', ref: wi.id },
+      { ownerIds: [ownerId] },
+    );
+  } catch {
+    // A coordination-store failure must never fail a release or prevent the
+    // normal claim:released event from reaching other waiters.
+  }
+}
+
 export async function releaseWorkItem(
   id: string,
   opts: {
@@ -7440,6 +7469,13 @@ export async function releaseWorkItem(
      *  observable). Never fires when the row is not found — that is the `null`
      *  return. Fail-soft: a throwing callback must not break the release. */
     onPriorState?: (prior: { assignee: string | null; wasClaimed: boolean }) => void;
+    /**
+     * Identity of the owner deliberately releasing its own claim. When it
+     * matches the pre-release holder, that holder's claim-bound auto-arm is
+     * retired before `claim:released:<id>` is emitted. Omit for reaper and
+     * other involuntary/internal release paths so the holder is notified.
+     */
+    releasingOwnerId?: string;
   } = {},
 ): Promise<WorkItem | null> {
   const wi = await getWorkItem(id, opts.harness);
@@ -7465,6 +7501,7 @@ export async function releaseWorkItem(
   // events imports THIS module statically — the lazy import breaks the cycle).
   const emitReleased = async (released: WorkItem | null): Promise<void> => {
     if (released && wasClaimed) {
+      await retireVoluntaryReleaseClaimWatch(wi, opts.releasingOwnerId);
       // P-009: the agent has put this work DOWN — clear its goal stamp so later
       // calls are not attributed to a goal it no longer holds. Only when the
       // released item is the one currently stamped: a release of some OTHER item

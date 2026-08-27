@@ -312,6 +312,7 @@ export default defineTool({
           // Preserve that holder as the mutation CAS so a successor claim that races
           // the authorization can never be cleared.
           expectedAssignee: forced ? forced.holder : force ? undefined : ident.ownerId,
+          releasingOwnerId: ident.ownerId,
           onPriorState: (p) => {
             prior.assignee = p.assignee;
             prior.wasClaimed = p.wasClaimed;

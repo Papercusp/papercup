@@ -105,7 +105,10 @@ export default defineTool({
       { harness, workItemId: args.id, workspaceId: resolveConcreteWorkspaceId(c.workspaceId) },
       args.checkpoint,
     );
-    const released = await releaseWorkItem(args.id, { harness: harness ?? undefined });
+    const released = await releaseWorkItem(args.id, {
+      harness: harness ?? undefined,
+      releasingOwnerId: ident.ownerId,
+    });
     // Best-effort lifecycle note (never un-parks on failure).
     let noted = false;
     try {

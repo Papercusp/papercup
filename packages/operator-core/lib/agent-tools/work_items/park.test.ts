@@ -95,7 +95,10 @@ describe('work_items:park', () => {
   it('releases the claim and sends a best-effort lifecycle note', async () => {
     const ctx = { uiClientId: 'a1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' };
     await call({ id: 'WI-7', checkpoint: 'did x; left y for continuity', reason: 'higher-priority item' }, ctx);
-    expect(releaseWorkItem).toHaveBeenCalledWith('WI-7', { harness: 'papercup' });
+    expect(releaseWorkItem).toHaveBeenCalledWith('WI-7', {
+      harness: 'papercup',
+      releasingOwnerId: 'a1',
+    });
     expect(sendMessage).toHaveBeenCalled();
   });
 

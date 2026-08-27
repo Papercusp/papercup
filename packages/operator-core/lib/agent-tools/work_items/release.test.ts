@@ -89,13 +89,23 @@ describe('work_items:release handler (keyed-array)', () => {
     const b = await body({ id: 'WI-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1' } });
-    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-1', {
+      harness: undefined,
+      expectedAssignee: 'me',
+      releasingOwnerId: 'me',
+      onPriorState: expect.any(Function),
+    });
   });
 
   it('releases MANY via ids:[…]', async () => {
     const b = await body({ ids: ['WI-1', 'WI-2'], harness: 'h' });
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
-    expect(releaseM).toHaveBeenCalledWith('WI-2', { harness: 'h', expectedAssignee: 'me', onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-2', {
+      harness: 'h',
+      expectedAssignee: 'me',
+      releasingOwnerId: 'me',
+      onPriorState: expect.any(Function),
+    });
   });
 
   it('a not-found item (null) fails only itself', async () => {
@@ -148,7 +158,12 @@ describe('work_items:release holder guard (EI-7588)', () => {
     releaseM.mockResolvedValue(null as never); // the atomic compare-and-release matched 0 rows
     getM.mockResolvedValue({ id: 'WI-HELD', assignee: 'peer' } as never);
     const b = await body({ id: 'WI-HELD' });
-    expect(releaseM).toHaveBeenCalledWith('WI-HELD', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-HELD', {
+      harness: undefined,
+      expectedAssignee: 'me',
+      releasingOwnerId: 'me',
+      onPriorState: expect.any(Function),
+    });
     expect(b).toMatchObject({ ok: true, counts: { ok: 0, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-HELD', error: 'not_holder', holder: 'peer' });
     expect(b.results[0].hint).toMatch(/Held by peer, not you \(me\)/);
@@ -163,11 +178,13 @@ describe('work_items:release holder guard (EI-7588)', () => {
     expect(releaseM).toHaveBeenNthCalledWith(1, 'WI-1', {
       harness: undefined,
       expectedAssignee: undefined,
+      releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
     });
     expect(releaseM).toHaveBeenNthCalledWith(2, 'WI-2', {
       harness: undefined,
       expectedAssignee: 'me',
+      releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
     });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1' });
@@ -290,6 +307,7 @@ describe('work_items:release force guard (WI-4198)', () => {
     expect(releaseM).toHaveBeenCalledWith('WI-HELD', {
       harness: undefined,
       expectedAssignee: 'peer',
+      releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
     });
     expect(b.results[0]).toMatchObject({
@@ -349,6 +367,7 @@ describe('work_items:release force guard (WI-4198)', () => {
     expect(releaseM).toHaveBeenCalledWith('WI-EXPIRED', {
       harness: undefined,
       expectedAssignee: 'peer',
+      releasingOwnerId: 'me',
       onPriorState: expect.any(Function),
     });
     expect(releaseRequest.resolveWorkItemReleaseRequest).toHaveBeenCalledWith('WI-EXPIRED', {
@@ -381,7 +400,12 @@ describe('work_items:release force guard (WI-4198)', () => {
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(assessM).not.toHaveBeenCalled();
     expect(auditM).not.toHaveBeenCalled();
-    expect(releaseM).toHaveBeenCalledWith('WI-FREE', { harness: undefined, expectedAssignee: undefined, onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-FREE', {
+      harness: undefined,
+      expectedAssignee: undefined,
+      releasingOwnerId: 'me',
+      onPriorState: expect.any(Function),
+    });
     expect(b.results[0].forced).toBeUndefined();
   });
 
@@ -416,7 +440,12 @@ describe('work_items:release { claimHold } (WI-2797 claim-hold lever)', () => {
 
   it('claimHold:true releases AND applies a DURABLE park (parkedBy provenance, NOT a held_open lease), surfacing it in the result', async () => {
     const b = await body({ id: 'WI-1', claimHold: true, reason: 'umbrella item' });
-    expect(releaseM).toHaveBeenCalledWith('WI-1', { harness: undefined, expectedAssignee: 'me', onPriorState: expect.any(Function) });
+    expect(releaseM).toHaveBeenCalledWith('WI-1', {
+      harness: undefined,
+      expectedAssignee: 'me',
+      releasingOwnerId: 'me',
+      onPriorState: expect.any(Function),
+    });
     // WI-321 boomerang fix: park provenance goes in claim_hold_* (parkedBy), never held_open_*
     // — a held_open lease dies ~2h after the parker's session ends (WI-4531 reaper), which made
     // every ephemeral agent's park boomerang back into scheduler:get_next.

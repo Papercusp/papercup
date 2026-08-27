@@ -44,6 +44,7 @@ vi.mock('./workspace-registry', async () => {
 
 const rr = await import('./work-items-release-request');
 const workItems = await import('./work-items');
+const { registerAwait } = await import('./events/await/store');
 
 const H = 'papercup';
 const WS = 'default';
@@ -64,6 +65,16 @@ async function readPayload(id: string): Promise<Record<string, unknown> | null> 
   const rows = await db.sql<{ payload: Record<string, unknown> | null }[]>`
     SELECT payload FROM harness_shared.work_items WHERE workspace_id = ${WS} AND feature_id = ${id}`;
   return rows[0]?.payload ?? null;
+}
+
+async function readClaimReleaseAwaitStates(ids: number[]): Promise<
+  Array<{ id: number; subscriber_id: string; fired_at: Date | null; cancelled_at: Date | null }>
+> {
+  return db.sql`
+    SELECT id, subscriber_id, fired_at, cancelled_at
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${WS} AND id = ANY(${ids})
+     ORDER BY id`;
 }
 
 beforeAll(async () => {
@@ -410,6 +421,74 @@ describe('setWorkItemReleaseRequest + resolveWorkItemReleaseRequest (CAS)', () =
     });
     expect(await readPayload(id)).not.toHaveProperty('held_open_by');
     expect(await readPayload(id)).not.toHaveProperty('held_open_reason');
+  });
+});
+
+describe('EI-21585647336393798 — voluntary release does not self-wake the holder', () => {
+  it('retires the holder watch before emitting while still waking another waiter', async () => {
+    const id = 'WI-self-release-watch';
+    await seedIssue(id, { takenBy: 'holder' });
+    const binding = { kind: 'work-item-claim' as const, ref: id };
+    const holderAwait = await registerAwait({
+      subscriberId: 'holder',
+      eventKey: `claim:released:${id}`,
+      note: `claim-holder auto-arm for ${id}`,
+      boundTo: binding,
+    });
+    const otherAwait = await registerAwait({
+      subscriberId: 'other-waiter',
+      eventKey: `claim:released:${id}`,
+      note: `waiter for ${id}`,
+      boundTo: binding,
+    });
+
+    const released = await workItems.releaseWorkItem(id, {
+      harness: H,
+      expectedAssignee: 'holder',
+      releasingOwnerId: 'holder',
+    });
+
+    expect(released?.assignee).toBeNull();
+    const states = await readClaimReleaseAwaitStates([holderAwait.id, otherAwait.id]);
+    expect(states).toEqual([
+      expect.objectContaining({
+        id: holderAwait.id,
+        subscriber_id: 'holder',
+        fired_at: null,
+        cancelled_at: expect.any(Date),
+      }),
+      expect.objectContaining({
+        id: otherAwait.id,
+        subscriber_id: 'other-waiter',
+        fired_at: expect.any(Date),
+        cancelled_at: null,
+      }),
+    ]);
+  });
+
+  it('keeps the holder notification for an unmarked release path', async () => {
+    const id = 'WI-involuntary-release-watch';
+    await seedIssue(id, { takenBy: 'holder' });
+    const holderAwait = await registerAwait({
+      subscriberId: 'holder',
+      eventKey: `claim:released:${id}`,
+      note: `claim-holder auto-arm for ${id}`,
+      boundTo: { kind: 'work-item-claim', ref: id },
+    });
+
+    const released = await workItems.releaseWorkItem(id, {
+      harness: H,
+      expectedAssignee: 'holder',
+    });
+
+    expect(released?.assignee).toBeNull();
+    const [state] = await readClaimReleaseAwaitStates([holderAwait.id]);
+    expect(state).toMatchObject({
+      id: holderAwait.id,
+      subscriber_id: 'holder',
+      cancelled_at: null,
+    });
+    expect(state.fired_at).toBeInstanceOf(Date);
   });
 });
 
