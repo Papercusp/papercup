@@ -1,7 +1,7 @@
 /**
  * boot-all-eviction.test.ts — LAZY_SUBSTRATE_BOOT wiring in boot-all (P-008 /
- * WI-596): access tracking, the v1 fact-gathering boundary (swarmed/peered =
- * pinned), the race-guarded engine eviction, and reboot-on-access.
+ * WI-596): access tracking, the v2 live-peer boundary, the race-guarded engine
+ * eviction, and reboot-on-access.
  *
  * Uses fake handle injection — no PG, no corestore. The harness-registry import
  * is mocked so importing boot-all never touches PG.
@@ -58,6 +58,10 @@ function fakeHandle(
   return handle;
 }
 
+function fakeSwarm(liveConnectionCount = 0): SwarmHandle {
+  return { liveConnectionCount } as SwarmHandle;
+}
+
 /** A real RemoteBootedHarnessHandle over a stub RPC client — swarm=null and
  *  admitted=∅ by design (the engine lives in the sidecar), which is exactly
  *  the blindness the WI-1544 Leg-D pin must guard against. */
@@ -93,17 +97,27 @@ afterEach(() => {
 
 describe('gatherBootedHarnessFacts (v2 shared-harness boundary)', () => {
   it('reports an idle in-process swarmed harness as an eviction candidate', () => {
-    _setHandleForTests('ws', 'shared', fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle }));
+    _setHandleForTests('ws', 'shared', fakeHandle('ws', 'shared', { swarm: fakeSwarm() }));
     const facts = gatherBootedHarnessFacts(123);
     expect(facts).toHaveLength(1);
     expect(facts[0]).toMatchObject({ key: 'ws::shared', pinned: false, hasActivePeer: false });
   });
 
-  it('reports a swarmed harness with admitted remote peers as hasActivePeer', () => {
+  it('does not treat historically admitted remote logs as live peers', () => {
     _setHandleForTests(
       'ws',
       'peered',
-      fakeHandle('ws', 'peered', { swarm: {} as SwarmHandle, extraPeer: true }),
+      fakeHandle('ws', 'peered', { swarm: fakeSwarm(), extraPeer: true }),
+    );
+    const facts = gatherBootedHarnessFacts(123);
+    expect(facts[0]).toMatchObject({ key: 'ws::peered', pinned: false, hasActivePeer: false });
+  });
+
+  it('reports a swarmed harness with a live connection as hasActivePeer', () => {
+    _setHandleForTests(
+      'ws',
+      'peered',
+      fakeHandle('ws', 'peered', { swarm: fakeSwarm(1) }),
     );
     const facts = gatherBootedHarnessFacts(123);
     expect(facts[0]).toMatchObject({ key: 'ws::peered', pinned: false, hasActivePeer: true });
@@ -172,7 +186,7 @@ describe('evictBootedHarnessEngine (race-guarded)', () => {
     _setDefaultBindingResolverForTests(() => {
       throw new Error('pg unavailable');
     });
-    const handle = fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle });
+    const handle = fakeHandle('ws', 'shared', { swarm: fakeSwarm() });
     _setHandleForTests('ws', 'shared', handle);
     const did = await evictBootedHarnessEngine('ws::shared', { now: 2_000_000, idleMs: 1000 });
     expect(did).toBe(false);
@@ -199,7 +213,8 @@ describe('evictBootedHarnessEngine (race-guarded)', () => {
       hive_pubkey: Buffer.alloc(32, 5).toString('base64'),
     }));
 
-    const handle = fakeHandle('ws', 'shared', { swarm: {} as SwarmHandle });
+    const handle = fakeHandle('ws', 'shared', { swarm: fakeSwarm(), extraPeer: true });
+    expect(handle.admitted.size).toBe(2); // own + historical remote log
     (handle.close as unknown as { mockImplementation: (f: () => Promise<void>) => void })
       .mockImplementation(async () => {
         order.push('closed');
@@ -227,9 +242,10 @@ describe('evictBootedHarnessEngine (race-guarded)', () => {
     expect(substrateWakeKeepaliveStatus().armed).toEqual([]);
   });
 
-  it('SKIPS a harness with admitted remote peers', async () => {
+  it('SKIPS a harness with a live swarm connection', async () => {
     enableSubstrateEvictionTracking();
-    const handle = fakeHandle('ws', 'peered', { extraPeer: true });
+    const handle = fakeHandle('ws', 'peered', { swarm: fakeSwarm(1) });
+    expect(handle.admitted.size).toBe(1); // own log only; live connection is authoritative
     _setHandleForTests('ws', 'peered', handle);
     const did = await evictBootedHarnessEngine('ws::peered', { now: 2_000_000, idleMs: 1000 });
     expect(did).toBe(false);
