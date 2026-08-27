@@ -1,5 +1,14 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
+
+const launchCoreSql = vi.hoisted(() =>
+  vi.fn(async (_strings: TemplateStringsArray, ..._values: unknown[]) => [] as unknown[]),
+);
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: launchCoreSql }),
+}));
+
 import {
   buildAgentLaunchCommand,
   composeModelSpec,
@@ -8,6 +17,7 @@ import {
   injectKickoffAfterResume,
   memberLaunchCommand,
   nativeSessionIdFromHost,
+  probeFreshLaunchSessions,
   resolvedNativeSessionId,
   isStaleHeadlessAgentHost,
   restoreVisibleMayShutdown,
@@ -393,8 +403,44 @@ describe('resolveResumeTarget', () => {
     expect(resolvedNativeSessionId(null, 'owner-latest-uuid')).toBe('owner-latest-uuid');
 
     const source = readFileSync(new URL('./agent-launch-core.ts', import.meta.url), 'utf8');
-    expect(source).toContain('FROM harness_shared.session_turns');
+    expect(source).toContain('FROM harness_shared.session_turns t');
+    expect(source).toContain('candidate_session_id');
+    expect(source).toContain('t.ingested_at DESC');
     expect(source).toContain('coord_owner_id = (SELECT owner FROM indexed_owner)');
+  });
+});
+
+describe('probeFreshLaunchSessions', () => {
+  it('executes the probe and maps the nullable native session id from adv_sessions', async () => {
+    launchCoreSql.mockResolvedValueOnce([{
+      id: 123,
+      session_id: 'native-session-123',
+      coord_owner_id: 'su-probed',
+      successful_calls: 1,
+      scheduler_calls: 0,
+      successful_scheduler_calls: 0,
+      ms_since_last_signal: 25,
+      has_presence: true,
+      wake_source: null,
+      scheduler_disposition: null,
+      claimed_work_item_id: null,
+      launch_spec: {},
+      launch_argv: ['psu', '--headless'],
+    }]);
+
+    const sessions = await probeFreshLaunchSessions({
+      workspaceId: 'ws-probe',
+      launcherOwnerId: 'su-launcher',
+      since: 1_000,
+    });
+
+    expect(sessions).toMatchObject([{
+      advSessionId: 123,
+      sessionId: 'native-session-123',
+      ownerId: 'su-probed',
+    }]);
+    const query = String(launchCoreSql.mock.calls.at(-1)?.[0]?.join(' '));
+    expect(query).toContain('s.session_id');
   });
 });
 
