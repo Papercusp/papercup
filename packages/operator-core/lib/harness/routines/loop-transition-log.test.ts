@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
+  readLatestLoopTransition,
   recordLoopTransition,
   transitionRetentionDays,
   __resetPruneThrottleForTest,
@@ -15,7 +16,7 @@ import {
  */
 
 /** A postgres-js-shaped tagged-template fake that records the statements it was given. */
-function fakeSql(opts: { throwOn?: RegExp; code?: string } = {}) {
+function fakeSql(opts: { throwOn?: RegExp; code?: string; rows?: unknown[] } = {}) {
   const statements: { text: string; values: unknown[] }[] = [];
   const tag = (strings: TemplateStringsArray, ...values: unknown[]) => {
     const text = strings.join('?');
@@ -24,10 +25,85 @@ function fakeSql(opts: { throwOn?: RegExp; code?: string } = {}) {
       const err = Object.assign(new Error('simulated postgres failure'), opts.code ? { code: opts.code } : {});
       return Promise.reject(err);
     }
-    return Promise.resolve([] as any);
+    return Promise.resolve((opts.rows ?? []) as any);
   };
   return Object.assign(tag, { statements });
 }
+
+describe('readLatestLoopTransition', () => {
+  it('returns the newest transition with await-suppression cause intact', async () => {
+    const sql = fakeSql({
+      rows: [
+        {
+          at: '2026-08-27T03:08:18.952Z',
+          event: 'rearmed',
+          actor: 'await-suppression',
+          new_next_fire_at: '2026-08-27T03:17:32.159Z',
+          interval_sec: '60',
+          detail: {
+            via: 'await-suppression',
+            drivingEventKey: 'plan:stable:recovery-complete',
+          },
+        },
+      ],
+    });
+
+    const out = await readLatestLoopTransition(
+      {
+        workspaceId: 'ws-1',
+        installSlug: 'papercusp',
+        routineName: 'loop-su-70702',
+        targetOwnerId: 'su-70702',
+      },
+      { sql: sql as any },
+    );
+
+    expect(out).toEqual({
+      status: 'found',
+      transition: {
+        at: '2026-08-27T03:08:18.952Z',
+        event: 'rearmed',
+        actor: 'await-suppression',
+        newNextFireAt: '2026-08-27T03:17:32.159Z',
+        intervalSec: 60,
+        detail: {
+          via: 'await-suppression',
+          drivingEventKey: 'plan:stable:recovery-complete',
+        },
+      },
+    });
+    const select = sql.statements.find((s) => /SELECT at, event, actor/.test(s.text));
+    expect(select?.values).toEqual(['ws-1', 'papercusp', 'loop-su-70702', 'su-70702']);
+  });
+
+  it('distinguishes no transition from an unavailable transition read', async () => {
+    const empty = fakeSql();
+    await expect(
+      readLatestLoopTransition(
+        {
+          workspaceId: 'ws-1',
+          installSlug: 'papercusp',
+          routineName: 'loop-su-70702',
+          targetOwnerId: 'su-70702',
+        },
+        { sql: empty as any },
+      ),
+    ).resolves.toEqual({ status: 'none' });
+
+    const unavailable = fakeSql({ throwOn: /SELECT at, event, actor/ });
+    await expect(
+      readLatestLoopTransition(
+        {
+          workspaceId: 'ws-1',
+          installSlug: 'papercusp',
+          routineName: 'loop-su-70702',
+          targetOwnerId: 'su-70702',
+        },
+        { sql: unavailable as any },
+      ),
+    ).resolves.toEqual({ status: 'unknown' });
+  });
+});
 
 const PARK = {
   workspaceId: 'ws-1',

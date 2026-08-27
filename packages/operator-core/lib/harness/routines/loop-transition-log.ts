@@ -36,6 +36,7 @@
  * fire-and-forget and swallows its own errors.
  */
 import type { Sql } from 'postgres';
+import { getOrgPg } from '@papercusp/db-org';
 import os from 'node:os';
 
 /**
@@ -65,6 +66,95 @@ export interface LoopTransitionInput {
   newNextFireAt?: string | null;
   intervalSec?: number | null;
   detail?: Record<string, unknown> | null;
+}
+
+/** The latest durable lifecycle transition for one concrete loop routine. */
+export interface LoopTransitionSnapshot {
+  at: string;
+  event: string;
+  actor: string;
+  newNextFireAt: string | null;
+  intervalSec: number | null;
+  detail: Record<string, unknown> | null;
+}
+
+/**
+ * Tri-state diagnostic read. `unknown` is deliberately distinct from `none`: the
+ * transition table is an optional, fail-soft instrument during rolling deploys, so
+ * an unavailable read must never be reported as evidence that no transition exists.
+ */
+export type LatestLoopTransitionRead =
+  | { status: 'found'; transition: LoopTransitionSnapshot }
+  | { status: 'none' }
+  | { status: 'unknown' };
+
+function transitionTimestamp(value: Date | string | null | undefined): string | null {
+  if (value == null) return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+}
+
+/**
+ * Read the newest transition for the targeted loop. This is diagnostic-only and
+ * fails soft for the same reason the writer does: missing/temporarily unavailable
+ * instrumentation must not make `loop:status` itself fail.
+ */
+export async function readLatestLoopTransition(
+  input: {
+    workspaceId: string | null | undefined;
+    installSlug: string;
+    routineName: string;
+    targetOwnerId: string;
+  },
+  opts: { sql?: Sql } = {},
+): Promise<LatestLoopTransitionRead> {
+  if (!input.workspaceId || !input.installSlug || !input.routineName || !input.targetOwnerId) {
+    return { status: 'unknown' };
+  }
+  const sql = opts.sql ?? getOrgPg().sql;
+  try {
+    const rows = await sql<
+      Array<{
+        at: Date | string | null;
+        event: string | null;
+        actor: string | null;
+        new_next_fire_at: Date | string | null;
+        interval_sec: string | number | null;
+        detail: unknown;
+      }>
+    >`
+      SELECT at, event, actor, new_next_fire_at, interval_sec, detail
+        FROM harness_shared.routine_loop_transitions
+       WHERE workspace_id = ${input.workspaceId}
+         AND install_slug = ${input.installSlug}
+         AND routine_name = ${input.routineName}
+         AND target_owner_id = ${input.targetOwnerId}
+       ORDER BY at DESC
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return { status: 'none' };
+    const at = transitionTimestamp(row.at);
+    if (!at || !row.event || !row.actor) return { status: 'unknown' };
+    const interval = row.interval_sec == null ? NaN : Number(row.interval_sec);
+    const detail =
+      row.detail && typeof row.detail === 'object' && !Array.isArray(row.detail)
+        ? (row.detail as Record<string, unknown>)
+        : null;
+    return {
+      status: 'found',
+      transition: {
+        at,
+        event: row.event,
+        actor: row.actor,
+        newNextFireAt: transitionTimestamp(row.new_next_fire_at),
+        intervalSec: Number.isFinite(interval) ? interval : null,
+        detail,
+      },
+    };
+  } catch {
+    return { status: 'unknown' };
+  }
 }
 
 /**
