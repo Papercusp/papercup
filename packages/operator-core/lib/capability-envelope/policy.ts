@@ -23,7 +23,11 @@
  * B-18 per-role tuning seam.
  */
 
-import { AGENT_ROLES, testingFullAccess } from '@papercusp/agent-mcp';
+import { testingFullAccess } from '@papercusp/agent-mcp';
+// Keep the role registry on its leaf subpath. The barrel is commonly mocked by
+// lightweight tests; importing AGENT_ROLES from it makes an unrelated import
+// fail when that mock intentionally omits the registry (EI-21607945572265622).
+import { AGENT_ROLES } from '@papercusp/agent-mcp/role-config';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 
 /**
