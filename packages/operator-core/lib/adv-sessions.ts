@@ -217,7 +217,7 @@ export function fallbackCodexLaunchSpecFromAdvSession(
     workspaceId: row.workspaceId,
     harnessSlug: row.harnessSlug?.trim() || null,
     profile: 'engineer',
-    contextSize: null,
+    contextSize: 'trimmed',
     personaTier: null,
     model: null,
     planSlug: row.planSlug,
@@ -2698,13 +2698,14 @@ export async function advSessionsByTranscriptHandles(
         cwd: string | null;
         coord_owner_id: string | null;
         session_id: string | null;
+        launch_argv: string[] | null;
         started_at: string | Date;
         ended_at: string | Date | null;
         exit_code: number | null;
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
           OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))

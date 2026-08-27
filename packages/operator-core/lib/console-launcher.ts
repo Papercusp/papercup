@@ -38,6 +38,7 @@ import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-paper
 import { operatorHomeHarnessSlug } from './harness/operator-home-harness';
 import { resolveAgentMcpBaseUrl } from './mcp-base-url';
 import { advSessionsByTranscriptHandles } from './adv-sessions';
+import { wakeAccountRouteFromArgv } from './inference-gateway/spawn-env';
 import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import {
   resolveContextEnv,
@@ -487,6 +488,14 @@ export async function buildConsoleEnvelope(
     coordOwnerId = row?.coordOwnerId?.trim() || null;
     // The session's OWN agent wins; env is only a fallback when the row is gone.
     const backend = agentToBackend(row?.agent) ?? resolveBackend({ promptText: '' });
+    // A console fork is a new psu process, so it must carry the source session's
+    // explicit account route across the resume boundary. Without this, the
+    // envelope's default marker and psu's default resume choice silently undo an
+    // ACCOUNT-pill auto/pin selection (EI-21593716361630275).
+    const accountRoute = backend === 'claude-code'
+      ? wakeAccountRouteFromArgv(row?.launchArgv, coordOwnerId)
+      : null;
+    if (accountRoute) Object.assign(env, accountRoute.env);
     // BARE interactive binary for the backend — deliberately NOT resolveAgentBin
     // (that returns the operator's "-p"/automation-model AGENT_CMD).
     const bin = backend === 'omp' ? 'omp' : backend === 'codex' ? 'codex' : 'claude';
@@ -602,7 +611,11 @@ export async function buildConsoleEnvelope(
       // racing it (psu-launcher main(): headless at L7142, resume branch at L7161).
       // Appended LAST so a headed resume's greeting stays byte-identical to today's.
       const headlessFlag = opts.headless ? ' --headless' : '';
-      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}${headlessFlag}${modelFlag}`;
+      const accountValue = accountRoute
+        ? accountRoute.mode === 'pin' ? accountRoute.accountId : accountRoute.mode
+        : null;
+      const accountFlag = accountValue ? ` --account=${shellSafeAccount(accountValue)}` : '';
+      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}${headlessFlag}${modelFlag}${accountFlag}`;
     } else {
       // codex/omp: keep the bare interactive binary. The /login artifact is
       // claude-CLAUDE_CONFIG_DIR-specific; these backends authenticate from their
@@ -637,6 +650,15 @@ export function shellSafeId(id: string): string {
     throw new Error(`refusing to embed unsafe session id: ${id.slice(0, 32)}`);
   }
   return id;
+}
+
+/** Validate a persisted account selector before embedding it in a shell greeting. */
+export function shellSafeAccount(account: string): string {
+  const s = account.trim();
+  if (!s || !/^[A-Za-z0-9._:=@/,+-]+$/.test(s)) {
+    throw new Error(`refusing to embed unsafe account: ${account.slice(0, 40)}`);
+  }
+  return s;
 }
 
 /**

@@ -23,11 +23,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Resolve a row for the "found" session ids; [] for the "missing" one — so both
 // the happy path and the graceful-fallback path are exercised from one mock.
 vi.mock('./adv-sessions', async (orig) => ({ ...(await orig<typeof import('./adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
-  advSessionsByTranscriptHandles: vi.fn(async ({ sessionIds }: { sessionIds?: string[] }) =>
-    sessionIds?.[0] === 'ffffffff-0000-0000-0000-000000000000'
-      ? []
-      : [{ coordOwnerId: 'su-owner-1', cwd: process.cwd() }],
-  ),
+  advSessionsByTranscriptHandles: vi.fn(async ({ sessionIds }: { sessionIds?: string[] }) => {
+    const id = sessionIds?.[0];
+    if (id === 'ffffffff-0000-0000-0000-000000000000') return [];
+    const launchArgv = id === '11111111-0000-0000-0000-000000000000'
+      ? ['psu', '--account=auto']
+      : id === '22222222-0000-0000-0000-000000000000'
+        ? ['psu', '--account=acct-source']
+        : id === '33333333-0000-0000-0000-000000000000'
+          ? ['psu', '--account=acct;unsafe']
+          : null;
+    return [{ coordOwnerId: 'su-owner-1', cwd: process.cwd(), launchArgv }];
+  }),
 }));
 vi.mock('@papercusp/orchestrator/session-launch-dirs', () => ({
   sessionClaudeConfigDir: (owner: string) => `/tmp/session-claude/${owner}`,
@@ -49,6 +56,8 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
     const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8' });
     expect(env.env.CLAUDE_CONFIG_DIR).toBe('/tmp/session-claude/su-owner-1');
     expect(env.cwd).toBe(process.cwd());
+    expect(env.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('default');
+    expect(env.greetingCmd).not.toContain('--account=');
     expect(env.greetingCmd).toContain('psu --resume=3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8');
   });
 
@@ -65,6 +74,40 @@ describe('buildConsoleEnvelope resume launch-context (WI-3988/WI-3989)', () => {
     const env = await buildConsoleEnvelope({ ...BASE, resumeSessionId: '7a3f6064-4904-4c00-ab63-33a72e6c419d', fork: true });
     expect(env.env.CLAUDE_CONFIG_DIR).toBe('/tmp/session-claude/su-owner-1');
     expect(env.greetingCmd).toContain('--fork');
+  });
+
+  it('carries a source session auto route through a model fork', async () => {
+    const env = await buildConsoleEnvelope({
+      ...BASE,
+      resumeSessionId: '11111111-0000-0000-0000-000000000000',
+      fork: true,
+      resumeModel: 'sonnet[1m]:high',
+    });
+    expect(env.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('auto');
+    expect(env.env.ANTHROPIC_BASE_URL).toBe('http://127.0.0.1:8788');
+    expect(env.env.ANTHROPIC_AUTH_TOKEN).toBe('papercusp-gateway');
+    expect(env.env.ANTHROPIC_CUSTOM_HEADERS).toBe('x-papercusp-owner: su-owner-1');
+    expect(env.greetingCmd).toContain('--fork');
+    expect(env.greetingCmd).toContain("--model='sonnet[1m]:high'");
+    expect(env.greetingCmd).toContain('--account=auto');
+  });
+
+  it('carries a source session account pin through a fork', async () => {
+    const env = await buildConsoleEnvelope({
+      ...BASE,
+      resumeSessionId: '22222222-0000-0000-0000-000000000000',
+      fork: true,
+    });
+    expect(env.env.PAPERCUSP_ACCOUNT_ROUTING_MODE).toBe('pin');
+    expect(env.env.PAPERCUSP_ACCOUNT_ID).toBe('acct-source');
+    expect(env.greetingCmd).toContain('--account=acct-source');
+    expect(env.greetingCmd).toContain('--fork');
+  });
+
+  it('rejects an unsafe recorded account before embedding it in the resume command', async () => {
+    await expect(
+      buildConsoleEnvelope({ ...BASE, resumeSessionId: '33333333-0000-0000-0000-000000000000' }),
+    ).rejects.toThrow(/unsafe account/);
   });
 
   it('degrades to a bare psu --resume (no CLAUDE_CONFIG_DIR) when the session has no adv row', async () => {
