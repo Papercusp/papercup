@@ -2789,6 +2789,7 @@ async function makeWorktreeFixture(): Promise<{
   );
   const repo = join(base, 'papercusp'); // canonical staging tree (worktree guard default: <ws>/papercusp)
   await fs.mkdir(join(repo, '.git'), { recursive: true });
+  await fs.writeFile(join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
   return {
     workspace: base,
     repo,
@@ -3227,6 +3228,7 @@ describe('extractPathsFromToolInput (file-locking #2)', () => {
   it('keys sibling worktrees by the same repo-relative path (cross-worktree contention)', async () => {
     const repo2 = join(fx.workspace, 'papercup-topic');
     await fs.mkdir(join(repo2, '.git'), { recursive: true });
+    await fs.writeFile(join(repo2, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     const k1 = extractPathsFromToolInput('write', {
       path: join(repo, 'apps/foo.ts'),
     });
@@ -3237,14 +3239,16 @@ describe('extractPathsFromToolInput (file-locking #2)', () => {
     expect(k2).toEqual(['apps/foo.ts']); // same key → the two edits contend
   });
 
-  it('drops a git repo that is NOT a direct child of the workspace (e.g. a submodule)', async () => {
-    // Nearest `.git` is the nested repo, whose parent is not the
-    // workspace — left unguarded, matching the cc hook's gate.
+  it('retains a valid nested submodule and keys paths relative to it', async () => {
+    // The nested `.git` entry is a file, as it is for a real submodule. The
+    // enclosing canonical checkout owns worktree policy, while the nested
+    // repository owns the physical coordination domain.
     const nested = join(repo, 'libs', 'sub');
-    await fs.mkdir(join(nested, '.git'), { recursive: true });
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(join(nested, '.git'), 'gitdir: /nonexistent\n');
     expect(
       extractPathsFromToolInput('write', { path: join(nested, 'x.ts') }),
-    ).toEqual([]);
+    ).toEqual(['x.ts']);
   });
 
   it('returns [] for non-file-editing tools', () => {
@@ -3475,6 +3479,93 @@ describe('onToolCall / onToolResult (file-locking #2)', () => {
     expect(lockCalls()).toHaveLength(2);
   });
 
+  it('passes the physical nested-repository domain through acquire and release', async () => {
+    const nested = join(repo, 'libs', 'sub');
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(join(nested, '.git'), 'gitdir: /nonexistent\n');
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-nested', held: ['x.ts'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'write',
+      toolCallId: 'tc-nested-domain',
+      input: { path: join(nested, 'x.ts'), content: 'x' },
+    });
+    expect(r).toEqual({});
+    const lockCalls = () => calls.filter((call) => call.name.startsWith('locks:'));
+    expect(lockCalls()).toHaveLength(1);
+    expect(lockCalls()[0]).toMatchObject({
+      name: 'locks:acquire',
+      args: {
+        paths: ['x.ts'],
+        coordination_domain: await fs.realpath(nested),
+      },
+    });
+
+    await onToolResult({ type: 'tool_result', toolCallId: 'tc-nested-domain' });
+    expect(lockCalls()).toHaveLength(2);
+    expect(lockCalls()[1]).toMatchObject({
+      name: 'locks:release',
+      args: { lock_id: 'L-nested', coordination_domain: await fs.realpath(nested) },
+    });
+  });
+
+  it('omits coordination_domain when one edit spans mixed repository roots', async () => {
+    const nested = join(repo, 'libs', 'sub');
+    await fs.mkdir(nested, { recursive: true });
+    await fs.writeFile(join(nested, '.git'), 'gitdir: /nonexistent\n');
+    const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
+    global.fetch = (async (_url: unknown, init: { body: string }) => {
+      const body = JSON.parse(init.body) as {
+        params: { name: string; arguments: Record<string, unknown> };
+      };
+      calls.push({ name: body.params.name, args: body.params.arguments });
+      const payload = body.params.name === 'locks:acquire'
+        ? { ok: true, lock_id: 'L-mixed', held: ['a.ts', 'x.ts'] }
+        : { ok: true };
+      return {
+        ok: true,
+        text: async () => JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
+        }),
+      };
+    }) as unknown as typeof fetch;
+
+    const r = await onToolCall({
+      type: 'tool_call',
+      toolName: 'multi_edit',
+      toolCallId: 'tc-mixed-domain',
+      input: { paths: [join(repo, 'a.ts'), join(nested, 'x.ts')] },
+    });
+    expect(r).toEqual({});
+    const acquire = calls.find((call) => call.name === 'locks:acquire');
+    expect(acquire?.args.paths).toEqual(['a.ts', 'x.ts']);
+    expect(acquire?.args).not.toHaveProperty('coordination_domain');
+
+    await onToolResult({ type: 'tool_result', toolCallId: 'tc-mixed-domain' });
+    const release = calls.find((call) => call.name === 'locks:release');
+    expect(release?.args).not.toHaveProperty('coordination_domain');
+  });
+
   it('blocks with a formatted reason on busy', async () => {
     global.fetch = mockMcpResponse({
       ok: false,
@@ -3577,6 +3668,7 @@ describe('onToolCall worktree guard (single-tree discipline)', () => {
   it('denies an edit in a stray sibling worktree (e.g. papercup-staging)', async () => {
     const stray = join(fx.workspace, 'papercup-staging');
     await fs.mkdir(join(stray, '.git'), { recursive: true });
+    await fs.writeFile(join(stray, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     const r = await onToolCall({
       type: 'tool_call',
       toolName: 'write',
@@ -3605,6 +3697,7 @@ describe('onToolCall worktree guard (single-tree discipline)', () => {
     // pass (guarding them would break those roles).
     const iso = join(fx.repo, '.papercusp', 'worktrees', 'iso-1');
     await fs.mkdir(join(iso, '.git'), { recursive: true });
+    await fs.writeFile(join(iso, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     const r = await onToolCall({
       type: 'tool_call',
       toolName: 'write',
@@ -4407,6 +4500,7 @@ describe('detectSymlinkedPaths / formatSymlinkRefusal (file-locking #1)', () => 
     );
     root = join(wsBase, 'papercup');
     await fs.mkdir(join(root, '.git'), { recursive: true });
+    await fs.writeFile(join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n');
     await fs.mkdir(join(root, 'apps'), { recursive: true });
     await fs.writeFile(join(root, 'apps', 'real.ts'), 'x');
     process.env.PAPERCUSP_WORKSPACE_ROOT = wsBase;

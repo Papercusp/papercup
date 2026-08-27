@@ -1952,7 +1952,12 @@ export interface ToolResultEvent {
  * — no FS cache (the CC hooks needed one because each Pre/Post fired
  * as a separate subprocess). Cleared on tool_result.
  */
-const acquiredLocks = new Map<string, string>();
+interface AcquiredLock {
+  lockId: string;
+  coordinationDomain?: string;
+}
+
+const acquiredLocks = new Map<string, AcquiredLock>();
 
 // ── Fail-open health marker (file-locking #3) ────────────────────────
 
@@ -2169,6 +2174,18 @@ function workspaceRepoRoot(repoRoot: string, ws: string): string | null {
   return validGitEntry(candidate) ? candidate : null;
 }
 
+/** The one tree whose edits git-sync commits and deploys. Keep this helper
+ * shared by target extraction and the worktree guard so nested repositories
+ * use the same canonical-tree comparison in both paths. */
+function canonicalTreeRoot(ws: string): string {
+  const raw = process.env.PAPERCUSP_CANONICAL_TREE ?? join(ws, 'papercusp');
+  try {
+    return realpathSync(raw);
+  } catch {
+    return raw;
+  }
+}
+
 function isIsolationWorktree(repoRoot: string, canonicalTree: string): boolean {
   let realRoot: string;
   try {
@@ -2283,6 +2300,7 @@ export function extractLockTargets(
     }
   }
   const ws = workspaceRoot();
+  const canonicalTree = canonicalTreeRoot(ws);
   const out: LockTarget[] = [];
   for (const p of raw) {
     // Backslash: the server's validatePath rejects it outright. Skip
@@ -2293,17 +2311,26 @@ export function extractLockTargets(
     const root = findRepoRoot(abs);
     if (root === null) continue; // outside any git repo — not coordinated
     if (abs === root) continue; // never claim the repo root itself
-    // Coordinate only worktrees that are direct children of the
-    // papercup workspace (papercup, papercup-<topic>, …). A git repo
-    // elsewhere (a plain session editing an unrelated project) is left
-    // unguarded so we never lock foreign repos into papercusp_su.
-    let parent: string;
+    // A nested submodule has its own valid `.git` entry, but worktree policy
+    // belongs to the enclosing direct-child checkout. Retain nested roots
+    // only when that enclosing checkout is the canonical tree; a nested repo
+    // inside an independent sibling remains outside automatic coordination.
+    const scopeRoot = workspaceRepoRoot(root, ws);
+    if (scopeRoot === null) continue;
+    let realRoot: string;
     try {
-      parent = realpathSync(dirname(root));
+      realRoot = realpathSync(root);
     } catch {
-      parent = dirname(root);
+      realRoot = root;
     }
-    if (parent !== ws) continue;
+    let scopeReal: string;
+    try {
+      scopeReal = realpathSync(scopeRoot);
+    } catch {
+      scopeReal = scopeRoot;
+    }
+    if (isIsolationWorktree(root, canonicalTree)) continue;
+    if (scopeReal !== realRoot && scopeReal !== canonicalTree) continue;
     const rel = relative(root, abs);
     if (rel === '' || rel.startsWith('..')) continue;
     out.push({ root, rel });
@@ -4488,15 +4515,8 @@ export async function onToolCall(
   // foreign repos are likewise untouched. Mirrors the cc hook's guard;
   // fail-open on any error (a guard must never wedge an edit on its own bug).
   try {
-    const canonicalTree = (() => {
-      const raw =
-        process.env.PAPERCUSP_CANONICAL_TREE ?? join(workspaceRoot(), 'papercusp');
-      try {
-        return realpathSync(raw);
-      } catch {
-        return raw;
-      }
-    })();
+    const ws = workspaceRoot();
+    const canonicalTree = canonicalTreeRoot(ws);
     // WI-5031: best-effort `origin` fetch URL for ANY repo shape — ordinary
     // clone (.git dir), linked worktree (.git file → gitdir → commondir), or
     // submodule (.git file → gitdir with its own config). null on ANY failure.
@@ -4549,20 +4569,43 @@ export async function onToolCall(
       return m ? `${m[1]}/${m[2]}`.toLowerCase() : u.toLowerCase();
     };
     for (const t of targets) {
+      const scopeRoot = workspaceRepoRoot(t.root, ws);
+      if (scopeRoot === null) continue;
       let rr: string;
       try {
-        rr = realpathSync(t.root);
+        rr = realpathSync(scopeRoot);
       } catch {
-        rr = t.root;
+        rr = scopeRoot;
       }
       if (rr !== canonicalTree) {
+        const linkedMain = resolveWorktreeMainRoot(scopeRoot);
+        if (linkedMain !== null) {
+          let linkedMainReal: string;
+          try {
+            linkedMainReal = realpathSync(linkedMain);
+          } catch {
+            linkedMainReal = linkedMain;
+          }
+          if (linkedMainReal === canonicalTree) {
+            return {
+              block: true,
+              reason:
+                `worktree guard: refused — '${scopeRoot}' is a LINKED WORKTREE of ` +
+                `the canonical staging tree (${canonicalTree}), registered ` +
+                `outside it. Agents edit ONLY the canonical tree itself; work ` +
+                `left in any of its linked worktrees is never committed by ` +
+                `git-sync (it silently strands). cd into the canonical tree ` +
+                `and make this edit there.`,
+            };
+          }
+        }
         // WI-5031: a sibling is only a stranding hazard when it is a checkout
         // of the SAME project as the canonical tree — git-sync commits only
         // the canonical tree, so work left in same-project siblings dies. An
         // INDEPENDENT repo with a provably different origin remote is
         // legitimate to edit and falls through to normal lock coordination.
         // Unreadable origins keep the old refusal (conservative).
-        const sibOrigin = normalizeOriginUrl(repoOriginUrl(t.root));
+        const sibOrigin = normalizeOriginUrl(repoOriginUrl(scopeRoot));
         const canonOrigin = normalizeOriginUrl(repoOriginUrl(canonicalTree));
         if (sibOrigin !== null && canonOrigin !== null && sibOrigin !== canonOrigin) {
           continue;
@@ -4570,7 +4613,7 @@ export async function onToolCall(
         return {
           block: true,
           reason:
-            `worktree guard: refused — you are editing in '${t.root}', which ` +
+            `worktree guard: refused — you are editing in '${scopeRoot}', which ` +
             `is not the canonical staging tree. Agents edit ONLY the shared ` +
             `staging tree (${canonicalTree}); other worktrees are off-limits ` +
             `because work left in them never reaches the auto-committed tree. ` +
@@ -4632,6 +4675,22 @@ export async function onToolCall(
     return {};
   }
 
+  // The operator normally serves a different checkout than the one this hook
+  // is running in (:3070's release tree vs the staging tree). Preserve the
+  // physical repository domain for a single-root call so the lock store does
+  // not accidentally use the operator process's own checkout. Mixed-root
+  // calls intentionally omit it and let the operator use its default domain.
+  const coordinationDomains = new Set<string>();
+  for (const target of targets) {
+    try {
+      coordinationDomains.add(realpathSync(target.root));
+    } catch {
+      coordinationDomains.add(target.root);
+    }
+  }
+  const coordinationDomain =
+    coordinationDomains.size === 1 ? [...coordinationDomains][0] : undefined;
+
   const result = await callMcpTool(
     'locks:acquire',
     {
@@ -4639,6 +4698,7 @@ export async function onToolCall(
       intent: `tool_call:${event.toolName}`,
       ttl_sec: 1200,
       wait: { max_sec: 0 },
+      ...(coordinationDomain ? { coordination_domain: coordinationDomain } : {}),
     },
     // Without this a deterministic schema/argument rejection collapses to
     // `null` and is indistinguishable from "operator unreachable" — it then
@@ -4690,7 +4750,10 @@ export async function onToolCall(
   // Reaching here means the operator answered — a successful hook
   // call, whether the answer was ok or busy.
   if (r.ok === true && typeof r.lock_id === 'string') {
-    acquiredLocks.set(event.toolCallId, r.lock_id);
+    acquiredLocks.set(event.toolCallId, {
+      lockId: r.lock_id,
+      ...(coordinationDomain ? { coordinationDomain } : {}),
+    });
     await recordHookSuccess();
     return {};
   }
@@ -4703,12 +4766,17 @@ export async function onToolCall(
 }
 
 export async function onToolResult(event: ToolResultEvent): Promise<void> {
-  const lockId = acquiredLocks.get(event.toolCallId);
-  if (lockId === undefined) return;
+  const lock = acquiredLocks.get(event.toolCallId);
+  if (lock === undefined) return;
   acquiredLocks.delete(event.toolCallId);
   // Best-effort release. Missed releases are covered by the lock's
   // TTL (1200s) so a network blip does NOT leak a lock permanently.
-  await callMcpTool('locks:release', { lock_id: lockId });
+  await callMcpTool('locks:release', {
+    lock_id: lock.lockId,
+    ...(lock.coordinationDomain
+      ? { coordination_domain: lock.coordinationDomain }
+      : {}),
+  });
 }
 
 /** Test-only: reset the in-memory lock cache between cases. */

@@ -118,6 +118,38 @@ describe("cc PreToolUse hook — operator-independent paths", () => {
     );
   });
 
+  it("valid nested submodule edit reaches the operator instead of being silently skipped", () => {
+    const nested = join(repo, "libs", "papercusp");
+    fs.mkdirSync(nested, { recursive: true });
+    // A real submodule has a gitlink `.git` FILE, not a `.git` directory.
+    fs.writeFileSync(join(nested, ".git"), "gitdir: /nonexistent\n");
+    const owner = "nested-submodule-owner";
+    const marker = join(cache, `owner-${owner}-last-error.json`);
+    fs.rmSync(marker, { force: true });
+
+    const r = run(
+      payload({
+        tool_name: "Edit",
+        tool_input: { file_path: join(nested, "packages", "x.ts") },
+        tool_use_id: "nested-submodule",
+        session_id: "s",
+        cwd: repo,
+      }),
+      {
+        PAPERCUSP_OPERATOR_URL: "http://127.0.0.1:1",
+        PAPERCUSP_LOCK_SID: owner,
+      },
+    );
+    expect(r.status).toBe(0); // the unreachable operator still fails open
+    expect(r.stdout).toBe("");
+    // The marker proves the nested path passed the workspace scope gate and
+    // attempted locks:acquire; an old direct-child-only gate left no marker.
+    expect(fs.existsSync(marker)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(marker, "utf8")).handler).toBe(
+      "pretooluse",
+    );
+  });
+
   it("normalizes a full MCP endpoint before constructing hook routes", () => {
     const owner = "normalize-owner";
     const marker = join(cache, `owner-${owner}-last-error.json`);
