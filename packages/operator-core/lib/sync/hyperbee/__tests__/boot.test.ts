@@ -334,7 +334,7 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
       memoryFederationFlagOn: async () => enabled,
       applyOverride: async (op) => {
         if (op.table === MEMORY_TABLE && !enabled) return false;
-        applied.push(op.table);
+        applied.push(op.table!);
         return true;
       },
     });
@@ -370,7 +370,7 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
       memoryFederationFlagOn: async () => enabled,
       applyOverride: async (op) => {
         if (op.table === MEMORY_TABLE && !enabled) return false;
-        firstApplied.push(op.table);
+        firstApplied.push(op.table!);
         return true;
       },
     });
@@ -396,7 +396,7 @@ describe('bootHarnessSubstrate — WI-3985 memory gate cursor recovery', () => {
       mergeCursorStore: persisted.store,
       memoryFederationFlagOn: async () => enabled,
       applyOverride: async (op) => {
-        secondApplied.push(op.table);
+        secondApplied.push(op.table!);
         return true;
       },
     });
