@@ -132,8 +132,10 @@ import {
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
   passingTaskVerdictCacheEntry,
+  passingTaskVerdictCrossRunIdentityEnvironment,
   passingTaskVerdictDependencyProvenance,
   passingTaskVerdictIdentityEnvironment,
+  PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
   shouldStorePassingTaskVerdict,
@@ -3940,6 +3942,7 @@ function runCapturedTask(
     VITEST_MAX_THREADS: String(allocation.workers),
   };
   let cacheIdentity = null;
+  let crossRunCacheIdentity = null;
   let cacheDecision = null;
   // Only the initial, complete task invocation is reusable. A targeted/fresh retry is evidence
   // used to classify a failure from THIS candidate, never a new passing verdict for the whole
@@ -3959,7 +3962,10 @@ function runCapturedTask(
       } else if (childCacheGroup !== TASK_VERDICT_CACHE_GROUP) {
         cacheDecision = { hit: false, reason: "proof-group-mismatch" };
       } else {
-        cacheIdentity = buildPassingTaskVerdictIdentity({
+        // Everything in the identity EXCEPT the environment, which is the only component that
+        // differs between the per-run and cross-run identities. Shared so the two can never
+        // drift apart: a field added to one would otherwise silently weaken the other.
+        const cacheIdentitySpec = {
           taskKey: taskKey(context.t),
           command: {
             cmd,
@@ -3967,10 +3973,6 @@ function runCapturedTask(
             cwd,
             scriptText: spawnTask.ws.scripts[spawnTask.script] ?? null,
           },
-          // Hashing happens inside the helper; raw environment values (including credentials) are
-          // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
-          // variable cannot silently become relevant without invalidating reuse.
-          environment: cacheIdentityEnvironment,
           gateConfig: {
             ...taskVerdictGateConfig,
             batchTimeout: {
@@ -3980,6 +3982,13 @@ function runCapturedTask(
             },
           },
           dependencyHash: context.cacheProvenance.hash,
+        };
+        cacheIdentity = buildPassingTaskVerdictIdentity({
+          ...cacheIdentitySpec,
+          // Hashing happens inside the helper; raw environment values (including credentials) are
+          // never written to the cache. Keeping the COMPLETE env is conservative: an unfamiliar
+          // variable cannot silently become relevant without invalidating reuse.
+          environment: cacheIdentityEnvironment,
         });
         cacheDecision = decidePassingTaskVerdict({
           enabled: true,
@@ -4001,13 +4010,16 @@ function runCapturedTask(
         // of the task's whole dependency closure and which fails closed on any enumeration gap.
         // A hit therefore means "this exact task, same command and config, and not one byte it
         // reads has changed" — re-running it could not produce different information.
+        // Computed unconditionally, not just on a miss: a task that actually RUNS and passes has
+        // to be storable under the cross-run group, or the very first run would write nothing for
+        // the next one to reuse and the feature would be inert.
+        const { environment: crossRunEnvironment, cacheGroup: crossRunGroup } =
+          passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
+        crossRunCacheIdentity = buildPassingTaskVerdictIdentity({
+          ...cacheIdentitySpec,
+          environment: crossRunEnvironment,
+        });
         if (!cacheDecision.hit) {
-          const { environment: crossRunEnvironment, cacheGroup: crossRunGroup } =
-            passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
-          crossRunCacheIdentity = buildPassingTaskVerdictIdentity({
-            ...cacheIdentitySpec,
-            environment: crossRunEnvironment,
-          });
           const crossRunDecision = decidePassingTaskVerdict({
             enabled: true,
             cacheRead: taskVerdictCacheRead,
@@ -4047,6 +4059,7 @@ function runCapturedTask(
         __cacheStatus: "hit",
         __cacheReason: cacheDecision.reason,
         __cacheIdentity: cacheIdentity,
+        __crossRunCacheIdentity: crossRunCacheIdentity,
       });
     }
   }
@@ -4106,6 +4119,8 @@ function runCapturedTask(
               __cacheStatus: "miss",
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
+              __crossRunCacheIdentity: crossRunCacheIdentity,
+        __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
       };
@@ -4257,6 +4272,8 @@ function runCapturedTask(
               __cacheStatus: "miss",
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
+              __crossRunCacheIdentity: crossRunCacheIdentity,
+        __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
       };
@@ -4388,11 +4405,22 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
     // is retained. Node runs this synchronous critical section without interleaving callbacks;
     // same-directory rename keeps readers on either the old or new complete document.
     const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
-    const merged = mergePassingTaskVerdictUpdates(
+    const perRunMerged = mergePassingTaskVerdictUpdates(
       latest.cache,
       TASK_VERDICT_CACHE_GROUP,
       { [key]: passingTaskVerdictEntry(value.__cacheIdentity) },
     );
+    // EI-21577710345620735 — the same proof, also filed under the stable cross-run group so the
+    // NEXT gate run can reach it. Folded into this one atomic replace rather than a second write:
+    // two renames would let a reader observe a state where the task is proven for this run but
+    // not the next, and the whole point is that those two facts are the same fact.
+    const merged = value.__crossRunCacheIdentity
+      ? mergePassingTaskVerdictUpdates(
+          perRunMerged,
+          PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+          { [key]: passingTaskVerdictEntry(value.__crossRunCacheIdentity) },
+        )
+      : perRunMerged;
     writePassingTaskVerdictCacheAtomic(
       TASK_VERDICT_CACHE_PATH,
       merged,
