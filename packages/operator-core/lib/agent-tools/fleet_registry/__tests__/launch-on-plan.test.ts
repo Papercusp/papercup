@@ -2488,7 +2488,14 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
 
   it('refuses a relaunch when the fleet already has >= count LIVE members — no spawn at all', async () => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
+    getFleetMock.mockResolvedValueOnce({ leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } });
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1', 'm-2']);
+    admissionMocks.preflight.mockResolvedValueOnce({
+      ready: false,
+      status: 'refused',
+      reason: 'family-disagreement',
+      message: 'a drained no-op must never reach exact-plan admission',
+    });
     const res = await invokeLaunchHandler(
       { name: 'Alpha Fleet', plan: 'my-plan', harness: 'papercusp', count: 2 } as never,
       {} as never,
@@ -2499,6 +2506,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     expect(payload.opened).toEqual([]);
     expect(payload.message).toMatch(/already has 2 LIVE members/);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(admissionMocks.preflight).not.toHaveBeenCalled();
     // EI-20386584937642609: a suppressed no-op must leave an authored fleet claim
     // spec untouched; there is no launch wave that needs a new spec.
     expect(setClaimSpecMock).not.toHaveBeenCalled();
@@ -2508,6 +2516,7 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
   it('opens only the DEFICIT when some members are live (2 requested, 1 alive → 1 opened)', async () => {
     const { liveFleetMemberIds } = await import('../../../fleet/fleet-roster');
     const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    getFleetMock.mockResolvedValueOnce({ leaderOwnerId: 'owner-1', colorScheme: { name: 'Ocean' } });
     (liveFleetMemberIds as ReturnType<typeof vi.fn>).mockResolvedValue(['m-1']);
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
     const res = await invokeLaunchHandler(
@@ -2517,6 +2526,9 @@ describe('fleet:launch-on-plan handler — live-member deficit guard (2026-07-03
     const payload = JSON.parse((res as any).content[0].text);
     expect(payload.ok).toBe(true);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(admissionMocks.preflight).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedSeats: 1 }),
+    );
     expect(claimFleetLaunchSlot).toHaveBeenCalledWith(
       expect.objectContaining({
         count: 2,

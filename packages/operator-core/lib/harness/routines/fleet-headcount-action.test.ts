@@ -9,6 +9,7 @@ import {
   resolveProductiveCapacityFloor,
   resolveFleetHeadcountLaunchRole,
   resolveFleetHeadcountProfile,
+  supersedeLegacyHeadcountTransaction,
 } from './fleet-headcount-action';
 
 const workerAttestation = (ownerId: string, ready: boolean) => ({
@@ -194,6 +195,60 @@ describe('fleet headcount governor typed attestation policy (P-004)', () => {
       pruneCandidateIds: [],
       unverifiedMemberIds: ['su-legacy'],
     });
+  });
+
+  it('supersedes a legacy launch transaction without fabricating correlation or replaying live members', () => {
+    const legacy = transaction(['su-live-ready', 'su-live-unknown', 'su-gone'], {
+      launcherOwnerId: undefined,
+      verifiedMemberIds: ['su-live-ready', 'su-gone'],
+      workerReadyMemberIds: ['su-live-ready', 'su-gone'],
+      workerAttestations: [
+        workerAttestation('su-live-ready', true),
+        workerAttestation('su-gone', true),
+      ],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-live-ready', 'su-live-unknown', 'su-gone'],
+        attestationAttempts: { 'su-gone': 2 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    });
+
+    const normalized = supersedeLegacyHeadcountTransaction({
+      transaction: legacy,
+      liveMemberIds: ['su-live-ready', 'su-live-unknown'],
+      launcherOwnerId: 'su-current-leader',
+      now: 30_000,
+    });
+
+    expect(normalized).toMatchObject({
+      previousTransactionId: 'tx-1',
+      launcherOwnerId: 'su-current-leader',
+      requestedAt: 30_000,
+      requestedMemberIds: ['su-live-ready', 'su-live-unknown'],
+      openedMemberIds: [],
+      verifiedMemberIds: ['su-live-ready'],
+      workerReadyMemberIds: ['su-live-ready'],
+      unconfirmedMemberIds: [],
+      recovery: { retryOwnerIds: [] },
+      governor: { probeOwnerIds: [], attestationAttempts: {} },
+    });
+    expect(normalized.transactionId).not.toBe('tx-1');
+    expect(normalized.workerAttestations?.map((item) => item.ownerId)).toEqual(['su-live-ready']);
+    expect(normalized.governor?.history.at(-1)?.reason).toMatch(/superseded legacy launch transaction/);
+
+    // The two observed live members are never replayed. A target of three opens
+    // exactly the one real deficit, with the preserved typed-ready member still
+    // satisfying the productive-capacity floor.
+    expect(assessFleetHeadcountGovernor({
+      target: 3,
+      productiveCapacityFloor: 1,
+      liveMemberIds: ['su-live-ready', 'su-live-unknown'],
+      transaction: normalized,
+      now: 30_000,
+    })).toMatchObject({ action: 'spawn', spawnCount: 1, pendingOpenedMemberIds: [] });
   });
 
   it('prunes only after bounded repeated non-ready evidence plus verified agent start', () => {

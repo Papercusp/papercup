@@ -552,6 +552,87 @@ function transactionForGovernorVerdict(args: {
   };
 }
 
+/**
+ * Replace a pre-launcherOwnerId transaction with a truthful observation
+ * transaction. Legacy members cannot be correlated to a fabricated
+ * `--launched-by` value, so the new transaction deliberately adopts only the
+ * independently-live roster and any typed attestations already stored for it;
+ * its probe cohort is empty. A later refill wave gets a fresh transaction with
+ * the CURRENT leader correlation before any terminal opens.
+ *
+ * This is a supersession, never an in-place label patch: assigning the current
+ * leader to the legacy transaction would make verifyFreshLaunchStarted search
+ * for a launch marker those old processes never carried and could misclassify
+ * healthy members as failed. The new transaction also clears legacy opened ids,
+ * preventing them from looking like pending boots and suppressing a real
+ * deficit indefinitely.
+ */
+export function supersedeLegacyHeadcountTransaction(args: {
+  transaction: FleetLaunchTransaction;
+  liveMemberIds: readonly string[];
+  launcherOwnerId: string;
+  now: number;
+}): FleetLaunchTransaction {
+  if (args.transaction.launcherOwnerId) return args.transaction;
+
+  const liveMemberIds = [...new Set(args.liveMemberIds)];
+  const live = new Set(liveMemberIds);
+  const workerAttestations = (args.transaction.workerAttestations ?? []).filter(
+    (attestation) => attestation.ownerId != null && live.has(attestation.ownerId),
+  );
+  const workerReadyMemberIds = (args.transaction.workerReadyMemberIds ?? []).filter(
+    (ownerId) => live.has(ownerId),
+  );
+  const verifiedMemberIds = (args.transaction.verifiedMemberIds ?? []).filter(
+    (ownerId) => live.has(ownerId),
+  );
+  const priorHistory = args.transaction.governor?.history ?? [];
+  const supersessionEvent: FleetLaunchGovernorState['history'][number] = {
+    at: args.now,
+    action: 'observe',
+    transactionId: args.transaction.transactionId,
+    reason:
+      `superseded legacy launch transaction ${args.transaction.transactionId} without ` +
+      'fabricating a launcher correlation; adopted the independently-live roster as unprobed',
+  };
+  const history: FleetLaunchGovernorState['history'] = [
+    ...priorHistory,
+    supersessionEvent,
+  ].slice(-FLEET_HEADCOUNT_HISTORY_LIMIT);
+
+  return {
+    version: 1,
+    transactionId: randomUUID(),
+    previousTransactionId: args.transaction.transactionId,
+    launcherOwnerId: args.launcherOwnerId,
+    state: 'partial',
+    requestedAt: args.now,
+    updatedAt: args.now,
+    requestedMemberIds: liveMemberIds,
+    openedMemberIds: [],
+    verifiedMemberIds,
+    unconfirmedMemberIds: [],
+    ...(workerReadyMemberIds.length ? { workerReadyMemberIds } : {}),
+    ...(workerAttestations.length ? { workerAttestations } : {}),
+    failed: [],
+    waves: [],
+    recovery: {
+      retryOwnerIds: [],
+      nextAction: 'legacy launch transaction superseded; assess the live deficit before any refill',
+    },
+    governor: {
+      version: 1,
+      // These sessions predate a usable launcher correlation. Empty is
+      // intentional: only a newly opened refill wave is eligible for probing.
+      probeOwnerIds: [],
+      attestationAttempts: {},
+      retiredMemberIds: [...new Set(args.transaction.governor?.retiredMemberIds ?? [])],
+      history,
+      terminalVerdict: null,
+    },
+  };
+}
+
 function governorLaunchTransaction(args: {
   prior: FleetLaunchTransaction | null;
   liveMemberIds: readonly string[];
@@ -679,6 +760,20 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const now = Date.now();
     liveMemberIds = (await liveFleetMemberIds(fleetSlug, workspaceId, 'launch'))
       .filter((id) => id !== fleet.leaderOwnerId);
+
+    // Legacy launch records have no truthful --launched-by correlation. Adopt
+    // the independently-live roster into a fresh, unprobed transaction before
+    // attestation refresh; this removes the permanent wait while preserving the
+    // no-duplicate invariant (the deficit is still computed from live members).
+    if (transaction && !transaction.launcherOwnerId && fleet.leaderOwnerId) {
+      transaction = supersedeLegacyHeadcountTransaction({
+        transaction,
+        liveMemberIds,
+        launcherOwnerId: fleet.leaderOwnerId,
+        now,
+      });
+      await persistTransaction(transaction);
+    }
 
     if (transaction) {
       const refreshed = await refreshGovernorWorkerAttestation(transaction, workspaceId, now);

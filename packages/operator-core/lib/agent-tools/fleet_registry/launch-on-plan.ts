@@ -314,6 +314,7 @@ export function persistedFleetLaunchProfileConflicts(
       workspaceId: 'compat',
       fleetSlug: 'compat',
       target: 1,
+      enabled: true,
       config: saved,
       nextAttemptAt: null,
       backoffMs: 0,
@@ -350,6 +351,45 @@ export function computeFleetTopUpWave(
   const remainingDeficit = Math.max(0, target - live);
   const requestedOpenCount = Math.min(remainingDeficit, limit);
   return { remainingDeficit, requestedOpenCount, waveCapped: requestedOpenCount < remainingDeficit };
+}
+
+/**
+ * Read the runnable member population used by BOTH exact-plan admission and the
+ * later launch deficit guard. Keeping the population definition shared is
+ * load-bearing: admission judges the number of terminals this invocation can
+ * actually open, so it must subtract the same local/federated members that the
+ * launch path subtracts a few steps later.
+ */
+async function liveLaunchMemberIdsForSizing(args: {
+  fleetSlug: string;
+  workspaceId: string;
+  launcherOwnerId: string;
+  remotePlacement: boolean;
+}): Promise<string[]> {
+  const localLive = (await liveFleetMemberIds(args.fleetSlug, args.workspaceId, 'launch')).filter(
+    (id) => id !== args.launcherOwnerId,
+  );
+  if (!args.remotePlacement) return localLive;
+
+  // Remote members never register in local coord_presence. Their federated
+  // session-presence rows occupy the same launch seats, so union them here just
+  // as the launch deficit guard does. The federated read remains best-effort;
+  // the local roster plus the launch window still guards a transient miss.
+  try {
+    const federated = await listFederatedFleetMembers({
+      workspaceId: args.workspaceId,
+      fleetSlug: args.fleetSlug,
+      staleMs: PRESENCE_STALE_MS,
+    });
+    const federatedSeats = federated
+      .filter((member) => occupiesLaunchMemberSeat(member.fleetRole))
+      .map((member) => member.ownerId);
+    return [...new Set([...localLive, ...federatedSeats])].filter(
+      (id) => id !== args.launcherOwnerId,
+    );
+  } catch {
+    return localLive;
+  }
 }
 
 /**
@@ -2245,7 +2285,32 @@ export default defineTool({
       ReturnType<typeof import('../plans/plan-admission-preflight').preflightExactPlanAdmission>
     > | null = null;
     let admissionError: string | null = null;
-    if (planSlug) {
+    // `count` is an ABSOLUTE live-member target, not the number of terminals to
+    // open. Exact-plan admission used to compare that absolute target to the
+    // CURRENT executable frontier before computeFleetTopUpWave subtracted live
+    // members. A valid target=3/live=2/frontier=1 top-up was therefore refused as
+    // a three-seat request even though this invocation could open exactly one.
+    // Measure the same population as the later deficit guard and admit only the
+    // bounded deficit. A zero-deficit no-op skips admission entirely; it must be
+    // allowed to reach the authoritative relaunch-suppressed response even when
+    // the remaining plan lane has since drained or become family-discordant.
+    let admissionRequestedSeats = count;
+    if (existingFleet) {
+      try {
+        const preflightLiveMembers = await liveLaunchMemberIdsForSizing({
+          fleetSlug,
+          workspaceId,
+          launcherOwnerId: ownerId,
+          remotePlacement,
+        });
+        admissionRequestedSeats = computeFleetTopUpWave(count, preflightLiveMembers.length).requestedOpenCount;
+      } catch {
+        // A roster read failure keeps the historical fail-safe shape: judge the
+        // full target and let the launch-window guard prevent duplicate opens.
+        admissionRequestedSeats = count;
+      }
+    }
+    if (planSlug && admissionRequestedSeats > 0) {
       try {
         const { preflightExactPlanAdmission } = await import('../plans/plan-admission-preflight');
         admission = await preflightExactPlanAdmission({
@@ -2260,7 +2325,7 @@ export default defineTool({
           specId: `fleet-launch-${fleetSlug}-plan`,
           fleetSlug,
           claimKinds: args.claimKinds,
-          requestedSeats: args.count,
+          requestedSeats: admissionRequestedSeats,
         });
       } catch (error) {
         admissionError = (error as Error).message;
@@ -2435,8 +2500,8 @@ export default defineTool({
           // EI-21428116455038454: mirror the local launch population's role filter —
           // a remote LEADER/delegator row must not occupy a member seat either.
           const federatedSeats = federated
-            .filter((m) => occupiesLaunchMemberSeat(m.fleetRole))
-            .map((m) => m.ownerId);
+            .filter((member) => occupiesLaunchMemberSeat(member.fleetRole))
+            .map((member) => member.ownerId);
           live = [...new Set([...localLive, ...federatedSeats])].filter((id) => id !== ownerId);
         } catch {
           live = localLive;
