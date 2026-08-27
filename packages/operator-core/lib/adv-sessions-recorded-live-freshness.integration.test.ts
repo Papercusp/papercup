@@ -30,7 +30,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
 import { setupBaselineCoordFixture, type BaselineCoordFixture } from './_baseline-coord-fixture';
-import { RECORDED_ADV_SESSION_FRESH_SEC, recordedLiveOwnerIds } from './adv-sessions';
+import {
+  RECORDED_ADV_SESSION_FRESH_SEC,
+  listRecordedLiveSessions,
+  recordedLiveOwnerIds,
+} from './adv-sessions';
 
 let fx: BaselineCoordFixture;
 let admin: postgres.Sql;
@@ -73,6 +77,22 @@ describe('recordedLiveOwnerIds — the live_adv leg is freshness-bounded (WI-424
     await seedAdv({ coordOwnerId: BOOTING, startedAgoSec: 60 });
     const live = await recordedLiveOwnerIds([BOOTING]);
     expect(live.has(BOOTING)).toBe(true);
+  });
+
+  it('keeps the roster reader in parity with the recorded-live rescue cohort', async () => {
+    await seedAdv({ coordOwnerId: BOOTING, startedAgoSec: 60 });
+    await seedAdv({
+      coordOwnerId: ORPHANED,
+      startedAgoSec: RECORDED_ADV_SESSION_FRESH_SEC + 3600,
+    });
+
+    const [roster, rescue] = await Promise.all([
+      listRecordedLiveSessions({ workspaceId: WS }),
+      recordedLiveOwnerIds([BOOTING, ORPHANED]),
+    ]);
+
+    expect(roster.map((row) => row.coordOwnerId)).toEqual([BOOTING]);
+    expect([...rescue].sort()).toEqual([BOOTING]);
   });
 
   it('does NOT vouch for an un-ended row whose session-end hook never ran', async () => {

@@ -2124,10 +2124,12 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
   return out;
 }
 
-/** Default recency bound for the live-recorded-session leg of the roster. A
- *  session whose clean-exit `markAdvSessionEnded` never ran (killed/crashed
- *  process) ages out of the live leg after this, instead of lingering as an
- *  eternal `ended_at IS NULL` zombie. */
+/** Broad recency bound used by labelled-session, window, and coupling reads.
+ *  A session whose clean-exit `markAdvSessionEnded` never ran
+ *  (killed/crashed process) ages out of those reads after this, instead of
+ *  lingering as an eternal `ended_at IS NULL` zombie. The recorded roster's
+ *  bootstrap rescue uses the narrower `RECORDED_ADV_SESSION_FRESH_SEC` bound.
+ */
 export const RECORDED_LIVE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 /**
@@ -2144,7 +2146,9 @@ export const RECORDED_LIVE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
  * was invisible + undispatchable, worst for console/autonomous agents that
  * never heartbeat at all).
  *
- * Recency-bounded (`maxAgeMs`, default 12h) so an unreaped zombie ages out.
+ * Recency-bounded (`maxAgeMs`, default `RECORDED_ADV_SESSION_FRESH_SEC`, 10m)
+ * so an unreaped zombie ages out while the session is still in its bootstrap
+ * window. Callers with a different read contract may override `maxAgeMs`.
  * `DISTINCT ON (coord_owner_id)` most-recent row per owner (a resume reuses the
  * SID). Workspace-scoped when given. Best-effort → [] on any DB error: the
  * roster must render even if this leg fails.
@@ -2153,7 +2157,10 @@ export async function listRecordedLiveSessions(
   opts: { workspaceId?: string | null; maxAgeMs?: number; limit?: number } = {},
 ): Promise<AdvSessionRow[]> {
   const ws = opts.workspaceId ?? null;
-  const maxAgeSec = Math.max(1, Math.round((opts.maxAgeMs ?? RECORDED_LIVE_MAX_AGE_MS) / 1000));
+  const maxAgeSec = Math.max(
+    1,
+    Math.round((opts.maxAgeMs ?? RECORDED_ADV_SESSION_FRESH_SEC * 1000) / 1000),
+  );
   const limit = opts.limit ?? 500;
   try {
     const { sql } = getOrgPg();
