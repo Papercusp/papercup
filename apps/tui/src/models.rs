@@ -1153,7 +1153,8 @@ pub struct CreateProjectResponse {
 pub struct CupboardListing {
     #[serde(default)]
     pub id: String,
-    /// harness | blueprint | snapshot | plugin (D-005 listing kinds).
+    /// The live Cupboard listing kind. Older workers may send `tool-pack`; the
+    /// action/filter helpers below normalize that compatibility value to `pack`.
     #[serde(default)]
     pub listing_kind: String,
     #[serde(default)]
@@ -1191,9 +1192,55 @@ pub struct CupboardListing {
     /// absent the join flow derives it from topic/github/repo-id).
     #[serde(default)]
     pub harness_link: Option<String>,
+    /// App distribution discriminator. `bundle` is installable in this
+    /// workspace; `standalone` is a download-link handoff.
+    #[serde(default)]
+    pub delivery_type: Option<String>,
+    /// Standalone-app updater manifest URL. A missing URL means the row is
+    /// intentionally read-only until a release is published.
+    #[serde(default)]
+    pub latest_json_url: Option<String>,
 }
 
 impl CupboardListing {
+    /// Normalize the one legacy wire spelling still accepted by the worker.
+    pub fn normalized_kind(&self) -> &str {
+        if self.listing_kind == "tool-pack" {
+            "pack"
+        } else {
+            self.listing_kind.as_str()
+        }
+    }
+
+    /// Return the safe action affordance for this row, or `None` when the TUI
+    /// has no corresponding flow. Keeping unsupported kinds read-only is
+    /// important: an arm/confirm affordance must never end in a generic
+    /// "no action" error after the user confirms it.
+    pub fn action_label(&self) -> Option<&'static str> {
+        match self.normalized_kind() {
+            "harness" => self.join_link().as_deref().map(|_| "join"),
+            "blueprint"
+            | "plugin"
+            | "pack"
+            | "knowledge-pack"
+            | "template"
+            | "rubric"
+            | "plan"
+            | "recipe"
+            | "goal" => Some("install"),
+            "app" => match self.delivery_type.as_deref() {
+                Some("bundle") => Some("install"),
+                Some("standalone") | None => self
+                    .latest_json_url
+                    .as_deref()
+                    .filter(|url| !url.is_empty())
+                    .map(|_| "download"),
+                Some(_) => None,
+            },
+            _ => None,
+        }
+    }
+
     /// Display name: title > listing_ref > github repo > id.
     pub fn display_name(&self) -> &str {
         self.title
@@ -4120,6 +4167,41 @@ mod tests {
         assert!(legacy.next_cursor.is_none());
         assert!(legacy.total.is_none());
         assert!(legacy.kind_facets.is_empty());
+    }
+
+    #[test]
+    fn cupboard_listing_actions_cover_live_kinds_without_false_affordances() {
+        let template: CupboardListing = serde_json::from_str(
+            r#"{"id":"template-1","listing_kind":"template","listing_ref":"webapp"}"#,
+        )
+        .unwrap();
+        assert_eq!(template.normalized_kind(), "template");
+        assert_eq!(template.action_label(), Some("install"));
+
+        let legacy_pack: CupboardListing = serde_json::from_str(
+            r#"{"id":"pack-1","listing_kind":"tool-pack"}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy_pack.normalized_kind(), "pack");
+        assert_eq!(legacy_pack.action_label(), Some("install"));
+
+        let bundle: CupboardListing = serde_json::from_str(
+            r#"{"id":"app-1","listing_kind":"app","delivery_type":"bundle"}"#,
+        )
+        .unwrap();
+        assert_eq!(bundle.action_label(), Some("install"));
+
+        let standalone_without_release: CupboardListing = serde_json::from_str(
+            r#"{"id":"app-2","listing_kind":"app","delivery_type":"standalone"}"#,
+        )
+        .unwrap();
+        assert_eq!(standalone_without_release.action_label(), None);
+
+        let unknown: CupboardListing = serde_json::from_str(
+            r#"{"id":"future-1","listing_kind":"future-kind"}"#,
+        )
+        .unwrap();
+        assert_eq!(unknown.action_label(), None);
     }
 
     #[test]
