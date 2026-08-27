@@ -162,7 +162,15 @@ export default defineTool({
     // length — a count derived from a limited fetch restates `limit` as if it
     // were a measurement.
     const [rows, total] = await Promise.all([
-      listIssues({ ...filter, limit, includeBody: args.includeBody === true }),
+      // WI-42508: this tool never returns the issue payload, so do not make
+      // postgres-js parse it just to discard it while shaping the response.
+      // `includeBody` remains an explicit caller choice and is independent.
+      listIssues({
+        ...filter,
+        limit,
+        includeBody: args.includeBody === true,
+        includePayload: false,
+      }),
       countIssues(filter),
     ]);
 
