@@ -450,6 +450,31 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect((released.workItem as Record<string, unknown>).assignee).toBeNull();
   });
 
+  it('claim refusal exposes the canonical admission floor without mutating the issue (EI-21637135941119450)', async () => {
+    const created = await createOne({ kind: 'bug', title: 'born-pending claim diagnostic', harness: 'papercup' });
+    expect(created.ok).toBe(true);
+    const id = (created.workItem as Record<string, unknown>).id as string;
+
+    const refused = await claimOne({ id, harness: 'papercup' });
+
+    expect(refused).toMatchObject({
+      ok: false,
+      id,
+      error: 'not_claimable',
+      claimFloor: {
+        id,
+        admissible: false,
+        refusedBy: 'admission-pending',
+      },
+    });
+    expect((refused.claimFloor as Record<string, unknown>).detail).toMatch(/duplicate screening is pending/i);
+    expect(refused.hint).toMatch(/admission-pending/);
+
+    const [row] = await db.sql<{ admission: string | null; taken_by: string | null }[]>`
+      SELECT admission, taken_by FROM harness_shared.work_items WHERE feature_id = ${id}`;
+    expect(row).toEqual({ admission: 'pending', taken_by: null });
+  });
+
   it('link: a bug blocks a feature (cross-kind), and a non-blocks rel (relates) is accepted', async () => {
     const bug = await createOne({ kind: 'bug', title: 'blocker', harness: 'papercup' });
     const bugId = (bug.workItem as Record<string, unknown>).id as string;

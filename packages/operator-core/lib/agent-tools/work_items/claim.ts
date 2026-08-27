@@ -23,8 +23,10 @@ import {
   claimWorkItem,
   classifyClaimFailure,
   commentWorkItem,
+  explainIssueClaimFloors,
   getWorkItem,
   readUnresolvedDepBlockers,
+  type ClaimFloorAttribution,
   type UnresolvedDepBlocker,
 } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
@@ -861,12 +863,35 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
         : `Already claimed by ${failure.holder} — the item exists (get/observe/comment/complete resolve it). Coordinate with the holder via coord:send, or pick another item; if that agent is dead, the stale-claim reclaim lane frees it. Do not blind-retry with a different harness.`,
     };
   }
+  // EI-21637135941119450: a named issue claim can be refused by the same durable
+  // admission floor as self-select (most notably a born-pending duplicate screen),
+  // but the old response collapsed that refusal into an opaque `not_claimable`.
+  // Reuse the per-id oracle rather than re-deriving admission here. This is advisory
+  // and fail-soft: a diagnostic read must never change the refusal or turn a read
+  // outage into a fabricated floor.
+  let claimFloor: ClaimFloorAttribution | null = null;
+  if (current?.family === 'issue') {
+    const issueHarness = current.harness ?? it.harness;
+    if (issueHarness) {
+      try {
+        const [floor] = await explainIssueClaimFloors(issueHarness, [it.id], { assignee: claimer });
+        claimFloor = floor && !floor.admissible && floor.refusedBy ? floor : null;
+      } catch {
+        claimFloor = null;
+      }
+    }
+  }
+  const floorHint = claimFloor
+    ? ` The claim floor is ${claimFloor.refusedBy}: ${claimFloor.detail ?? 'the item is not claim-path admissible'}.`
+    : '';
   return {
     ok: false,
     id: it.id,
     error: 'not_claimable',
     workItem: current,
-    hint: 'Item exists but the claim was refused by a trust/admission gate, or it was released between the claim and this re-read — re-check with work_items:get / work_items:observe.',
+    ...(claimFloor ? { claimFloor } : {}),
+    hint:
+      `Item exists but the claim was refused by a trust/admission gate, or it was released between the claim and this re-read — re-check with work_items:get / work_items:observe.${floorHint}`,
   };
 }
 
@@ -886,7 +911,7 @@ export default defineTool({
   //     use (Bash/Read/vitest, zero platform calls) inside a >10–15min claim (EI-6772); call
   //     work_items:checkpoint partway, which is both a progress note and a liveness pulse.
   description:
-    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
+    'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available (issue-family refusals include typed `claimFloor` when the oracle can identify one). `force:true` on another agent\'s claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.',
   guidance: {
     when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
     notWhen:

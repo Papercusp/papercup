@@ -36,6 +36,7 @@ vi.mock('../../work-items', async (importOriginal) => ({
   claimWorkItem: vi.fn(),
   classifyClaimFailure: vi.fn(),
   commentWorkItem: vi.fn(),
+  explainIssueClaimFloors: vi.fn(),
   getWorkItem: vi.fn(),
 }));
 const releaseRequest = vi.hoisted(() => ({
@@ -67,7 +68,7 @@ vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
   persistPilotParticipantBindingReceipt: (...args: unknown[]) => pilotReceipts.persistBinding(...args),
 }));
 
-import { claimWorkItem, classifyClaimFailure, commentWorkItem, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, commentWorkItem, explainIssueClaimFloors, getWorkItem } from '../../work-items';
 import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
 import { assessForceRelease, notifyForceTransition, recordForceTransitionAudit } from './release-force-guard';
 import { mockResolvedTyped, mockReturnTyped } from '../../testing/typed-mock';
@@ -75,6 +76,7 @@ const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getM = vi.mocked(getWorkItem);
 const commentM = vi.mocked(commentWorkItem);
+const explainFloorsM = vi.mocked(explainIssueClaimFloors);
 const resolveReleaseRequestM = vi.mocked(resolveWorkItemReleaseRequest);
 const assessForceM = vi.mocked(assessForceRelease);
 const forceNotifyM = vi.mocked(notifyForceTransition);
@@ -95,6 +97,7 @@ beforeEach(() => {
   // zero-row read so the claimWorkItem mock remains the source of the result.
   getM.mockResolvedValue(null as never);
   commentM.mockResolvedValue({ id: 'post-1' } as never);
+  explainFloorsM.mockResolvedValue([] as never);
   releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
@@ -581,6 +584,38 @@ describe('work_items:claim handler (keyed-array)', () => {
     classifyM.mockReturnValue({ reason: 'not_found' } as never);
     const b = await body({ id: 'WI-404' });
     expect(b.results[0]).toEqual({ ok: false, id: 'WI-404', error: "work_item 'WI-404' not found" });
+  });
+
+  it('surfaces the canonical issue claim floor when the named claim is refused (EI-21637135941119450)', async () => {
+    claimM.mockResolvedValue(null as never);
+    getM.mockResolvedValue({
+      id: 'EI-PENDING', kind: 'bug', family: 'issue', harness: 'papercup', assignee: null,
+    } as never);
+    classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
+    explainFloorsM.mockResolvedValue([
+      {
+        id: 'EI-PENDING',
+        admissible: false,
+        refusedBy: 'admission-pending',
+        detail: 'duplicate screening is pending',
+      },
+    ] as never);
+
+    const b = await body({ id: 'EI-PENDING', harness: 'papercup' });
+
+    expect(explainFloorsM).toHaveBeenCalledWith('papercup', ['EI-PENDING'], { assignee: 'me' });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      id: 'EI-PENDING',
+      error: 'not_claimable',
+      claimFloor: {
+        id: 'EI-PENDING',
+        admissible: false,
+        refusedBy: 'admission-pending',
+        detail: 'duplicate screening is pending',
+      },
+    });
+    expect(b.results[0].hint).toMatch(/admission-pending.*duplicate screening is pending/);
   });
 
   // EI-9274: a literal `'self'` assignee must resolve to the caller, not be stored
