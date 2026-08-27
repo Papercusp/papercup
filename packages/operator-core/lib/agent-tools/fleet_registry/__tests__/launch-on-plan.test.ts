@@ -48,6 +48,19 @@ vi.mock('../../../console-spawn', () => ({
   spawnConsole: (...args: unknown[]) => spawnConsoleMock(...args),
   spawnHeadless: (...args: unknown[]) => spawnHeadlessMock(...args),
 }));
+vi.mock('../../../resource-governor/spawn-execution', () => ({
+  spawnGovernedAgentProcess: async (
+    input: { idempotencyKey: string },
+    spawnProcess: (context: Record<string, unknown>) => Promise<Record<string, unknown>>,
+  ) => {
+    const admissionContext = {
+      receiptId: `receipt:${input.idempotencyKey}`,
+      leaseId: `lease:${input.idempotencyKey}`,
+    };
+    const result = await spawnProcess(admissionContext);
+    return result.status === 'ok' ? { ...result, admissionContext } : result;
+  },
+}));
 
 vi.mock('@papercusp/orchestrator/role-prompt', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/orchestrator/role-prompt')>()),
@@ -279,9 +292,9 @@ const invokeLaunchHandler = (
   defaultHeadless: boolean | null = false,
 ) =>
   tool.handler(
-    defaultHeadless !== null && args.headless === undefined
+    (defaultHeadless !== null && args.headless === undefined
       ? { ...args, headless: defaultHeadless }
-      : args,
+      : args) as never,
     context as never,
   );
 
@@ -723,65 +736,22 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
-  it('rejects a fleet-wide Codex full-context recipe before every mutating launch seam (WI-39948)', async () => {
-    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
-    const claimSlot = claimFleetLaunchSlot as ReturnType<typeof vi.fn>;
-    claimSlot.mockClear();
-    launchTransaction.persist.mockClear();
+  it('exposes only trimmed context at both fleet-wide and per-member public schema boundaries', async () => {
+    const fleetWide = await standardValidate(tool.args, {
+      name: 'Retired Context Fleet',
+      plan: 'my-plan',
+      contextSize: 'full',
+    });
+    const perMember = await standardValidate(tool.args, {
+      name: 'Retired Member Context Fleet',
+      plan: 'my-plan',
+      members: [{ contextSize: 'full' }],
+    });
 
-    const res = await invokeLaunchHandler(
-      {
-        name: 'Unlaunchable Codex Fleet',
-        plan: 'my-plan',
-        harness: 'papercusp',
-        count: 1,
-        agent: 'codex',
-        contextSize: 'full',
-        headless: true,
-      } as never,
-      {} as never,
-    );
-
-    expect((res as any).isError).toBe(true);
-    expect((res as any).content[0].text).toContain("agent='codex' with contextSize='full'");
-    expect((res as any).content[0].text).toContain('NO plan items were promoted');
-    expect(promotePlanItemsMock).not.toHaveBeenCalled();
-    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
-    expect(setPresenceFleetMock).not.toHaveBeenCalled();
-    expect(claimSlot).not.toHaveBeenCalled();
-    expect(launchTransaction.persist).not.toHaveBeenCalled();
-    expect(spawnConsoleMock).not.toHaveBeenCalled();
-    expect(spawnHeadlessMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects a per-member Codex/full override before a safe fleet-wide recipe mutates state (WI-39948)', async () => {
-    const { claimFleetLaunchSlot } = await import('../../../agent-fleets-store');
-    const claimSlot = claimFleetLaunchSlot as ReturnType<typeof vi.fn>;
-    claimSlot.mockClear();
-    launchTransaction.persist.mockClear();
-
-    const res = await invokeLaunchHandler(
-      {
-        name: 'Mixed Context Fleet',
-        plan: 'my-plan',
-        harness: 'papercusp',
-        count: 2,
-        agent: 'codex',
-        contextSize: 'trimmed',
-        members: [{}, { contextSize: 'full' }],
-      } as never,
-      {} as never,
-    );
-
-    expect((res as any).isError).toBe(true);
-    expect((res as any).content[0].text).toContain('Member 2');
-    expect(promotePlanItemsMock).not.toHaveBeenCalled();
-    expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
-    expect(setPresenceFleetMock).not.toHaveBeenCalled();
-    expect(claimSlot).not.toHaveBeenCalled();
-    expect(launchTransaction.persist).not.toHaveBeenCalled();
-    expect(spawnConsoleMock).not.toHaveBeenCalled();
-    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(fleetWide.ok).toBe(false);
+    expect(perMember.ok).toBe(false);
+    if (!fleetWide.ok) expect(fleetWide.issues.some((issue) => issue.path?.includes('contextSize'))).toBe(true);
+    if (!perMember.ok) expect(perMember.issues.some((issue) => issue.path?.includes('contextSize'))).toBe(true);
   });
 
   it('installs caller-led control immediately after the presence role and reports its health', async () => {
@@ -1017,13 +987,10 @@ describe('memberLaunchCommand', () => {
     );
   });
 
-  it('threads --context-size=<variant> (full|trimmed) for every backend', () => {
+  it('threads the sole effective --context-size=trimmed value', () => {
     expect(
       memberLaunchCommand({ fleetSlug: 'f', agent: 'claude', harness: 'h', plan: 'p', contextSize: 'trimmed' }),
     ).toContain('--context-size=trimmed');
-    expect(
-      memberLaunchCommand({ fleetSlug: 'f', agent: 'omp', harness: 'h', plan: 'p', contextSize: 'full' }),
-    ).toContain('--context-size=full');
   });
 
   it('threads --seat=<ref> for a launch-from-seats member (P-005); omitted otherwise', () => {
@@ -2419,7 +2386,10 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.state).toBe('verified');
     expect(payload.launchTransaction.requestedMemberIds).toHaveLength(8);
     expect(new Set(payload.launchTransaction.requestedMemberIds).size).toBe(8);
-    expect(launchTransaction.verify.mock.calls[0][0].expectedAttestations[0]).toMatchObject({
+    const firstVerification = launchTransaction.verify.mock.calls[0][0] as {
+      expectedAttestations: Array<Record<string, unknown>>;
+    };
+    expect(firstVerification.expectedAttestations[0]).toMatchObject({
       effort: null,
       account: 'default',
       carry: 'warm',
@@ -3579,15 +3549,51 @@ function reservesLaneForLaunchingFleet(
       workspaceId: 'ws-1',
       harnessSlug: 'papercusp',
       planSlug: 'my-plan',
-      assignee: 'owner-1',
+      actor: 'owner-1',
       specId: 'fleet-launch-refused-admission-plan',
       fleetSlug: 'refused-admission',
     }));
+    expect(admissionMocks.preflight.mock.calls[0][0]).not.toHaveProperty('claimant');
     expect(promotePlanItemsMock).toHaveBeenCalledTimes(1);
     expect(createFleetIfAbsentMock).not.toHaveBeenCalled();
     expect(setClaimSpecMock).not.toHaveBeenCalled();
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('uses caller-neutral exact-plan admission after the leader releases the ready row', async () => {
+    admissionMocks.preflight.mockImplementationOnce(async (args: { actor: string; claimant?: string }) =>
+      args.claimant
+        ? {
+            ready: false,
+            status: 'refused',
+            reason: 'floor-gated',
+            message: `leader cooldown excluded the released row for ${args.claimant}`,
+          }
+        : {
+            ready: true,
+            status: 'ready',
+            reason: 'ready',
+            message: 'released row is available to the fleet population',
+          },
+    );
+
+    const res = await invokeLaunchHandler(
+      { name: 'Released Ready Handoff', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(admissionMocks.preflight).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actor: 'owner-1',
+        planSlug: 'my-plan',
+        fleetSlug: 'released-ready-handoff',
+      }),
+    );
+    expect(admissionMocks.preflight.mock.calls[0][0]).not.toHaveProperty('claimant');
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -42,6 +42,7 @@ import { defineTool, SU_ROLES, fuzzyEnumAsync } from '@papercusp/agent-mcp';
 import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
+import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveProjectDir } from '../../spawn-config';
@@ -299,7 +300,7 @@ export function persistedFleetLaunchProfileConflicts(
     role?: string;
     brief?: string;
     launchContext?: string;
-    contextSize?: 'full' | 'trimmed';
+    contextSize?: 'trimmed';
     compactionLimit?: number;
     extraArgs?: string[];
     members?: readonly unknown[];
@@ -403,35 +404,6 @@ export function memberSpecIndexForLaunch(liveMembers: number, waveIndex: number)
   const live = Number.isFinite(liveMembers) ? Math.max(0, Math.floor(liveMembers)) : 0;
   const wave = Number.isFinite(waveIndex) ? Math.max(0, Math.floor(waveIndex)) : 0;
   return live + wave;
-}
-
-/**
- * WI-39948: identify the first target member whose effective launch config asks
- * Codex to advertise the full Papercusp tool catalog. Codex's code-mode bridge
- * serializes that catalog into every tool-call frame; the measured frame is
- * ~128 MiB, above the bridge's hard 64 MiB limit. The psu child has a final
- * guard too, but fleet:launch-on-plan must refuse BEFORE it promotes plan items,
- * creates/joins a fleet, claims a launch slot, or pre-pins member identities.
- *
- * Keep the check on the folded effective config so a per-member override cannot
- * evade a safe fleet-wide default (or vice versa). `targetCount` is the
- * declarative fleet target at this pre-mutation point; checking its complete
- * recipe also prevents persisting an unlaunchable headcount profile for a later
- * top-up wave.
- */
-export function firstUnlaunchableCodexFullContextMember(
-  agent: string,
-  contextSize: 'full' | 'trimmed' | undefined,
-  members: readonly (MemberSpec | undefined)[] = [],
-  targetCount = 1,
-): number | null {
-  const count = Number.isFinite(targetCount) ? Math.max(0, Math.floor(targetCount)) : 0;
-  const base: FleetMemberDefaults = { agent, contextSize };
-  for (let i = 0; i < count; i += 1) {
-    const effective = foldMemberSpec(base, members[i]);
-    if (effective.agent === 'codex' && effective.contextSize === 'full') return i;
-  }
-  return null;
 }
 
 /**
@@ -1701,10 +1673,10 @@ export default defineTool({
       ),
     profile: z.string().optional().describe('psu --profile: launch profile name for each member.'),
     contextSize: z
-      .enum(['full', 'trimmed'])
+      .literal('trimmed')
       .optional()
       .describe(
-        "psu --context-size: initial-context size variant for EVERY member — 'full' (~180k, whole tool catalog loaded up-front, native soft-trim OFF) or 'trimmed' (~50k, core spine + the client's native soft-trim). Omit for each backend's native default (byte-identical to no flag).",
+        "psu --context-size for EVERY member. Only 'trimmed' is effective: it seeds the growable core tool surface, while tools:find/tools:invoke retain reachability to the full catalog.",
       ),
     compactionLimit: z
       .number()
@@ -2077,23 +2049,6 @@ export default defineTool({
     const { agent, model: memberModel } = agentResolution;
     const count = args.count ?? 1;
 
-    // WI-39948 — PRE-MUTATION transport preflight. The child-side psu guard is
-    // intentionally retained as defense in depth, but reaching it is already too
-    // late for this tool: promotion/fleet/launch-transaction state would exist and
-    // the pre-pinned member would boot unable to invoke a single tool. Refuse the
-    // complete declarative recipe here, before even the plan lookup can lead into
-    // promotion or fleet creation.
-    const unlaunchableMember = firstUnlaunchableCodexFullContextMember(agent, args.contextSize, args.members, count);
-    if (unlaunchableMember !== null) {
-      return err(
-        `Member ${unlaunchableMember + 1} resolves to agent='codex' with contextSize='full', which is not launchable: ` +
-          "the full Papercusp tool catalog produces a ~128 MiB code-mode IPC frame above the bridge's hard 64 MiB limit, " +
-          "so every tool call would fail before execution. Use contextSize='trimmed' (tools:find/tools:invoke retain full " +
-          'capability reachability). NO plan items were promoted, NO fleet was created or joined, NO launch slot or member ' +
-          'identity was reserved, and NO terminal was opened (WI-39948).',
-      );
-    }
-
     // P-003: `plan` is optional. A pure claim-spec fleet launches with no plan — its
     // members self-pull by `claimKinds`, so require a lane when no plan is given (else
     // the fleet would drain the whole harness backlog under the empty DEFAULT_CLAIM_SPEC).
@@ -2296,7 +2251,11 @@ export default defineTool({
           workspaceId: planWorkspaceId,
           harnessSlug: planHarnessSlug,
           planSlug,
-          assignee: ownerId,
+          actor: ownerId,
+          // Fleet members are different claimants from the launching leader. A
+          // population read deliberately omits caller-relative release cooldowns;
+          // otherwise a just-released ready row yields claimable=0 for the leader
+          // even though the launched member can take it immediately.
           specId: `fleet-launch-${fleetSlug}-plan`,
           fleetSlug,
           claimKinds: args.claimKinds,
@@ -4035,24 +3994,39 @@ export default defineTool({
         launchContext: leaderCtxPath,
       }), ownerId).command;
       const leaderLabel = `${fleetSlug} · LEADER (${planSlug ?? 'claim-spec'})`;
-      const leaderResult = args.headless
-        ? await spawnHeadless({
-            envelope: { ...base, greetingCmd: leaderCommand, cwd: base.cwd },
-            label: leaderLabel,
-            logDir: headlessLogDir,
-            launchedBy: ownerId,
-            fleetSlug,
-            coordOwnerId: spawnedLeaderOwnerId,
-          })
-        : await spawnConsole({
-            envelope: { ...base, greetingCmd: leaderCommand, cwd: base.cwd },
-            label: leaderLabel,
-            writeMcpJson: false,
-            scheme,
-            allowDesktopBridge: true,
-            displayOverride: args.display,
-            preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
-          });
+      const leaderResult = await spawnGovernedAgentProcess(
+        {
+          workspaceId,
+          idempotencyKey: `fleet-spawn:${fleetSlug}:${launchRequestedAt}:leader`,
+          owner: spawnedLeaderOwnerId,
+          payloadRef: `fleet:${fleetSlug}:leader`,
+          metadata: { launchedBy: ownerId, targetOwnerId: spawnedLeaderOwnerId, fleetSlug, role: 'leader' },
+        },
+        (admissionContext) => {
+          const governedBase = {
+            ...base,
+            env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+          };
+          return args.headless
+            ? spawnHeadless({
+                envelope: { ...governedBase, greetingCmd: leaderCommand, cwd: base.cwd },
+                label: leaderLabel,
+                logDir: headlessLogDir,
+                launchedBy: ownerId,
+                fleetSlug,
+                coordOwnerId: spawnedLeaderOwnerId,
+              })
+            : spawnConsole({
+                envelope: { ...governedBase, greetingCmd: leaderCommand, cwd: base.cwd },
+                label: leaderLabel,
+                writeMcpJson: false,
+                scheme,
+                allowDesktopBridge: true,
+                displayOverride: args.display,
+                preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+              });
+        },
+      );
       if (leaderResult.status !== 'ok') {
         // Nothing else has opened yet, so release the launch slot — an immediate, legitimate
         // retry must not be suppressed for the whole 5-minute window by a launch that
@@ -4132,26 +4106,44 @@ export default defineTool({
             await persistLaunchTransaction();
 
             const waveResults = await Promise.all(
-              indices.map((i) =>
-                args.headless
-                  ? spawnHeadless({
-                      envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                      label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                      logDir: headlessLogDir,
-                      launchedBy: ownerId,
-                      fleetSlug,
-                      coordOwnerId: requestedMemberIds[i],
-                    })
-                  : spawnConsole({
-                      envelope: { ...base, greetingCmd: memberCommands[i], cwd: base.cwd },
-                      label: `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`,
-                      writeMcpJson: false,
-                      scheme,
-                      allowDesktopBridge: true,
-                      displayOverride: args.display,
-                      preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
-                    }),
-              ),
+              indices.map((i) => {
+                const memberOwnerId = requestedMemberIds[i];
+                const memberLabel = `${fleetSlug} · member ${i + 1}/${openCount} (${planSlug ?? 'claim-spec'})`;
+                return spawnGovernedAgentProcess(
+                  {
+                    workspaceId,
+                    idempotencyKey: `fleet-spawn:${fleetSlug}:${launchRequestedAt}:member:${i}`,
+                    owner: memberOwnerId,
+                    payloadRef: `fleet:${fleetSlug}:member:${memberOwnerId}`,
+                    parent: leaderResult.status === 'ok' ? leaderResult.admissionContext : undefined,
+                    metadata: { launchedBy: ownerId, targetOwnerId: memberOwnerId, fleetSlug, role: 'member' },
+                  },
+                  (admissionContext) => {
+                    const governedBase = {
+                      ...base,
+                      env: { ...base.env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+                    };
+                    return args.headless
+                      ? spawnHeadless({
+                          envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                          label: memberLabel,
+                          logDir: headlessLogDir,
+                          launchedBy: ownerId,
+                          fleetSlug,
+                          coordOwnerId: memberOwnerId,
+                        })
+                      : spawnConsole({
+                          envelope: { ...governedBase, greetingCmd: memberCommands[i], cwd: base.cwd },
+                          label: memberLabel,
+                          writeMcpJson: false,
+                          scheme,
+                          allowDesktopBridge: true,
+                          displayOverride: args.display,
+                          preferProcessPerWindow: VISIBLE_FLEET_AGENT_REQUIRES_PROCESS_PER_WINDOW,
+                        });
+                  },
+                );
+              }),
             );
             const openedThisWave: string[] = [];
             waveResults.forEach((result, offset) => {
