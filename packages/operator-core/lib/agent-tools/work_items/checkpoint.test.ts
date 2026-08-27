@@ -196,6 +196,25 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('EI-21631530729522909: lifts a flattened executable tool probe into the nested probe field', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    const parsed = parse({
+      id: 'WI-7',
+      checks: [{ claim: 'gate is green', ...probe }],
+    }) as { checks: Array<Record<string, unknown>> };
+
+    expect(parsed.checks[0]).toEqual({ claim: 'gate is green', probe });
+    // `kind` is the executable discriminator here, not a legacy claim alias;
+    // the old `{kind, command, result}` compatibility path remains covered below.
+    expect(parsed.checks[0]).not.toHaveProperty('kind');
+  });
+
   it("keys the checkpoint by the ITEM's harness (looked up), disambiguated by the ctx hint", async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
@@ -1300,6 +1319,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).not.toContain('ignored command');
       expect(stored).not.toContain('ignored result');
     });
+
+    it('persists a flattened executable probe after normalizing it to the canonical nested shape', async () => {
+      withPrior(null);
+      const probe = {
+        kind: 'tool' as const,
+        tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+        args: { value: 'green' },
+        schemaRevision: continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!,
+        expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+      };
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'flattened executable probe compatibility',
+        checks: [{ claim: 'gate is green', ...probe }],
+      });
+
+      expect(r).toMatchObject({ ok: true, checks: 1 });
+      const stored = await lastStored();
+      expect(splitCarryNoteChecks(stored).checks).toEqual([
+        { claim: 'gate is green', probe, sinceMs: expect.any(Number) },
+      ]);
+    });
+
     it('EI-21268881673610011: accepts a bare-string shorthand checks list through the handler', async () => {
       withPrior(null);
       const r = await one({

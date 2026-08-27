@@ -163,7 +163,7 @@ import {
   withCarryNoteChecks,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
-import { continuityProbeSchema } from '../../continuity-probes';
+import { continuityPredicateSchema, continuityProbeSchema } from '../../continuity-probes';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -448,6 +448,48 @@ function dependsOnSpec() {
  * SUCCESSOR inherits — the reader least able to tell an asserted claim from a
  * checked one.
  */
+/**
+ * EI-21631530729522909: accept the flattened executable-probe envelope that
+ * callers naturally construct from a check row, e.g.
+ * `{ claim, kind: 'tool', tool, args, schemaRevision, expect }`.
+ *
+ * `coerceCarryRowShape` also treats `kind` as the legacy structured-check
+ * claim alias, so this lift must happen first and only for a COMPLETE
+ * executable envelope. Incomplete rows and ordinary `{kind, command, result}`
+ * rows keep their existing validation/compatibility behavior; a nested probe
+ * is canonical and always wins. The lifted fields are removed from the row so
+ * the strict row schema cannot retain a second, ambiguous copy of them.
+ */
+function normalizeFlattenedContinuityProbeRow(row: unknown): unknown {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+  const source = row as Record<string, unknown>;
+  if (source.probe !== undefined) return row;
+
+  const kind = source.kind;
+  const targetKey = kind === 'tool' ? 'tool' : kind === 'state-cell' ? 'cell' : null;
+  if (!targetKey) return row;
+
+  // These are the required fields for both discriminated probe variants;
+  // `args`, `projection`, and `as` are optional on their respective shapes.
+  const requiredKeys = [targetKey, 'schemaRevision', 'expect'];
+  if (!requiredKeys.every((key) => Object.prototype.hasOwnProperty.call(source, key))) return row;
+
+  const lifted = { kind } as Record<string, unknown>;
+  const probeKeys =
+    kind === 'tool'
+      ? ['tool', 'args', 'projection', 'schemaRevision', 'expect']
+      : ['cell', 'as', 'schemaRevision', 'expect'];
+  const normalized = { ...source };
+  for (const key of probeKeys) {
+    if (!Object.prototype.hasOwnProperty.call(normalized, key)) continue;
+    lifted[key] = normalized[key];
+    delete normalized[key];
+  }
+  delete normalized.kind;
+  normalized.probe = lifted;
+  return normalized;
+}
+
 function checksSpec() {
   return z
     .preprocess(
@@ -456,7 +498,10 @@ function checksSpec() {
       // row so the whole checkpoint is not rejected; `true` only becomes VERIFIED
       // when an accompanying evidence string exists, while false/evidence-free true
       // remain PREDICTED. This is the same lossless repair used by loop:checkpoint.
-      (v) => (Array.isArray(v) ? v.map((row, i) => coerceCarryRowShape(row, `checks[${i}]`, [])) : v),
+      (v) =>
+        Array.isArray(v)
+          ? v.map((row, i) => coerceCarryRowShape(normalizeFlattenedContinuityProbeRow(row), `checks[${i}]`, []))
+          : v,
       z
         .array(
           z.object({
@@ -510,6 +555,37 @@ function checksSpec() {
               .describe(
                 'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; use `schemaRevision:"live"` as a writer-only shorthand for the current target revision; persisted probes retain the concrete revision; `recheck` remains the human explanation.',
               ),
+            // EI-21631530729522909: the preprocessor above lifts these
+            // flattened executable-probe fields into `probe`. They must still
+            // be present in the published row schema because some clients
+            // validate the manifest before invoking the server-side parser.
+            tool: z.string().min(1).max(160).optional().describe('Compatibility field for a flattened tool probe.'),
+            args: z
+              .record(z.string(), z.unknown())
+              .optional()
+              .describe('Compatibility field for flattened tool-probe arguments.'),
+            projection: z.unknown().optional().describe('Compatibility field for a flattened tool-probe projection.'),
+            schemaRevision: z
+              .string()
+              .min(1)
+              .max(160)
+              .optional()
+              .describe('Compatibility field for a flattened probe revision.'),
+            expect: continuityPredicateSchema
+              .optional()
+              .describe('Compatibility field for a flattened probe predicate.'),
+            cell: z
+              .string()
+              .min(1)
+              .max(120)
+              .optional()
+              .describe('Compatibility field for a flattened state-cell probe.'),
+            as: z
+              .string()
+              .min(1)
+              .max(200)
+              .optional()
+              .describe('Compatibility field for a flattened state-cell reader.'),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),
