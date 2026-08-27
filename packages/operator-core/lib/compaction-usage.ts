@@ -115,6 +115,38 @@ export interface EstimateContextDeps {
   findCodexRollout?: typeof findCodexRolloutPath;
 }
 
+/**
+ * A codex rollout is written as `rollout-<ts>-<nativeSessionId>.jsonl`, so the
+ * trailing uuid IS the session the file belongs to. Extracting it is what lets a
+ * resolved path be checked against the ref it was resolved FOR — see
+ * {@link codexSnapshotForRef}. Null when the name does not parse (a test fixture,
+ * a renamed file); callers must treat null as "cannot check", never as a mismatch.
+ */
+export function codexRolloutSessionId(rolloutPath: string): string | null {
+  const base = rolloutPath.slice(rolloutPath.lastIndexOf('/') + 1);
+  const m = /^rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f]{8}(?:-[0-9a-f]+)+)\.jsonl$/.exec(base);
+  return m ? m[1] : null;
+}
+
+/**
+ * EI-21595542328480968 — a rollout that names a DIFFERENT session AND has not
+ * been written in this long is a dead predecessor's file, not this session's.
+ *
+ * Both conditions are required, and the second is what makes the gate safe. A
+ * MISMATCH ALONE IS NOT ENOUGH: `findCodexRolloutPath` deliberately takes
+ * newest-by-mtime because a resumed session may open a second rollout, so a
+ * freshly-written file whose uuid the ref has not caught up with is still this
+ * session's real transcript — rejecting it would disarm the backstop on a
+ * healthy session, which is far worse than the bug being fixed. Requiring
+ * staleness too means we only ever reject a file nothing is writing.
+ *
+ * 10 minutes: measured 2026-08-27 over 8 live active codex sessions, every
+ * healthy rollout had an mtime age ≤0.4min and the one broken session's was
+ * 71.5min — the gap is ~2 orders of magnitude, so the threshold is not delicate.
+ * It also matches the watchdog's own 10-minute presence-freshness window.
+ */
+const CODEX_ROLLOUT_STALE_MS = 10 * 60 * 1000;
+
 async function codexSnapshotForRef(
   ref: SessionRef,
   deps: EstimateContextDeps = {},
@@ -122,7 +154,32 @@ async function codexSnapshotForRef(
   if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
   try {
     const rollout = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
-    return rollout ? codexContextSnapshotFromRollout(rollout) : null;
+    if (!rollout) return null;
+    // EI-21595542328480968: the codex home is keyed by the adv-session ROW id, and
+    // an owner can hold more than one live row, so this path can resolve to a home
+    // whose newest rollout belongs to a session that already died. Its final
+    // token_count is frozen — and frozen ABOVE the limit by construction, since the
+    // predecessor respawned precisely because it was over. The watchdog then fires
+    // carry-respawn forever, never observes recovery, and SUPPRESSES itself,
+    // leaving a live session over-limit with the force rung disarmed (observed:
+    // "CARRY-RESPAWN LOOP detected — 3 respawns fired without recovery").
+    //
+    // Returning null instead is the honest reading: the dark-telemetry path
+    // already absorbs a null WITHOUT cutting the session, whereas a confident
+    // wrong number actively burns it. This does not RECOVER the real estimate for
+    // such an owner — that needs the upstream fix to stop leaving two live adv
+    // rows — but it stops the loop.
+    const rolloutSessionId = codexRolloutSessionId(rollout);
+    if (ref.sessionId && rolloutSessionId && rolloutSessionId !== ref.sessionId) {
+      let ageMs: number;
+      try {
+        ageMs = Date.now() - fs.statSync(rollout).mtimeMs;
+      } catch {
+        return null; // unreadable: cannot establish freshness, so cannot trust it
+      }
+      if (ageMs > CODEX_ROLLOUT_STALE_MS) return null;
+    }
+    return codexContextSnapshotFromRollout(rollout);
   } catch {
     return null;
   }
