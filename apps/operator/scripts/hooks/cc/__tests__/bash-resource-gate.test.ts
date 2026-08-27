@@ -3369,6 +3369,15 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     );
   });
 
+  it('allows the exact unquoted JavaScript arrow-function repro in node --eval', () => {
+    const command = `node -e "import('./scripts/check-declared-consumed.mjs').then(m=>console.log(Object.keys(m).join(' ')))"`;
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+
+  it('allows an unquoted JavaScript >= comparison in node --eval', () => {
+    expectAllow(runGate(bashCmd('node -e "console.log(1 >= 0)"', { cwd: CANON }), CANON_ENV));
+  });
+
   /**
    * EI-19301210652900510 — a quoted expansion with a path suffix is still an
    * unresolved redirect operand, not an empty span. If quote normalization
@@ -3425,6 +3434,15 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
       runGate(bashCmd('cp /tmp/x.ts apps/operator/foo.ts', { cwd: CANON }), CANON_ENV),
     );
     expect(reason).toMatch(/`cp`/);
+  });
+
+  it('allows a `cp` substring in an argument filename instead of treating the later port as its destination', () => {
+    const command =
+      "cat > /tmp/wi40939-cp-addendum.json <<'EOF'\n{}\nEOF\n"
+      + 'node scripts/mcp-call.mjs work_items:checkpoint '
+      + '--json-file /tmp/wi40939-cp-addendum.json '
+      + '--client su-830bbb98-6e38-4c2d-b780-537abe520690 --port 3170';
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
   });
 
   /**

@@ -3442,8 +3442,9 @@ _SCRATCH_REMEDY = (
 
 # EI-18760311552821358: a `NAME:PATH` target is a REMOTE/CONTAINER destination
 # (`docker cp local.sh container:/tmp/c.sh`, `scp`/`rsync` `host:/path` — the
-# `\bcp\b` scan above matches the `cp` inside `docker cp` too, so this leg
-# needs to recognize it), not a host path at all. Treating the bit after the
+# command-position `cp` scan below intentionally does not match the `cp` inside
+# `docker cp`, but this leg still documents the non-host-path shape for any
+# future widening), not a host path at all. Treating the bit after the
 # colon as a path and joining it against cwd resolves it INSIDE the tree
 # whenever cwd happens to be in the tree — a false positive, since the write
 # actually lands inside the container's filesystem and can never touch the
@@ -3882,7 +3883,10 @@ def _shell_write_guard():
     _saw_unresolvable_inplace_target = False
 
     # `>`/`>>` redirects. The lookahead excludes fd-duplication/comparison
-    # forms (`2>&1`, `>=`, `2>&2`) so those never get misread as file targets.
+    # forms (`2>&1`, `>=`, `2>&2`) and the lookbehind excludes a JavaScript
+    # fat-arrow (`=>`), so those never get misread as file targets. A real
+    # redirect may be adjacent to a command token (`cat>file`), so this only
+    # rejects the known comparison/arrow prefix rather than requiring whitespace.
     #
     # EI-18899608047558048: the gap between the operator and its target is
     # `[^\S\n]*` (same-LINE whitespace only), NOT `\s*`. `_strip_quotes_and_comments`
@@ -3900,7 +3904,7 @@ def _shell_write_guard():
     # match fail to find a target at all in that case — the correct fail-open,
     # matching this guard's existing "unsafe to resolve without actually
     # running the shell" policy for any other unresolvable target.
-    for _m in re.finditer(r'\d*(>{1,2})(?![&=])[^\S\n]*([^\s;&|()<>]+)', _clean):
+    for _m in re.finditer(r'(?<![=])\d*(>{1,2})(?![&=])[^\S\n]*([^\s;&|()<>]+)', _clean):
         if not _looks_like_redirect_path(_m.group(2)):
             continue
         _targets.append((_m.group(2), 'shell redirect (`%s`)' % _m.group(1), _m.start(2)))
@@ -3962,10 +3966,16 @@ def _shell_write_guard():
                 _targets.append((_tok, '`perl -i`/`ruby -i`', _m.start()))
 
     # `cp SRC... DEST` — the last positional (non-flag) token is the
-    # destination. Skipped for a recursive/archive copy (`-r`/`-R`/`-a`/
-    # `--recursive`/`--archive`): a directory copy has no single-file
-    # Edit/Write substitute, so there is nothing safe to redirect this to.
-    for _m in re.finditer(r'\bcp\b([^;&|\n]*)', _clean):
+    # destination. Match `cp` only at a shell command position (the start of
+    # the command or immediately after one or more unquoted shell separators),
+    # not as a free-floating substring in an argument such as
+    # `/tmp/wi40939-cp-addendum.json`. The old unanchored `\bcp\b` scan treated
+    # that filename as the command and then misread a later numeric option
+    # value (for example `--port 3170`) as an in-tree destination (EI-21568513340286684).
+    # Skipped for a recursive/archive copy (`-r`/`-R`/`-a`/`--recursive`/
+    # `--archive`): a directory copy has no single-file Edit/Write substitute,
+    # so there is nothing safe to redirect this to.
+    for _m in re.finditer(r'(?:^|[;&|\n]+[ \t]*)cp\b([^;&|\n]*)', _clean):
         if _segment_has_unsplittable_expansion(_m.group(1)):
             continue
         _toks = _m.group(1).split()
