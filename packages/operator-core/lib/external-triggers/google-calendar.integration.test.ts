@@ -4,10 +4,7 @@ import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import { getDatatype, upsertDatatype } from '../datatype-registry-store';
 import { syncGoogleCalendarSource } from './google-calendar';
 import { ingestExternalTriggerEvent } from './ingestion';
-import {
-  createOwnedExternalTriggerSource,
-  getExternalTriggerSource,
-} from './source-store';
+import { createOwnedExternalTriggerSource, getExternalTriggerSource } from './source-store';
 
 const WS = 'google-calendar-adapter-test';
 const NOW = new Date('2026-08-22T12:00:00.000Z');
@@ -93,33 +90,46 @@ describe('Google Calendar adapter with the real delivery ledger and Personal Vau
         ingestExternalTriggerEvent(db, input, { emit }),
     };
 
-    await expect(syncGoogleCalendarSource(sql, source, 'access-token', {}, deps))
-      .resolves.toMatchObject({ mode: 'full', created: 1, upcoming: 1, syncToken: 'sync-1' });
+    await expect(syncGoogleCalendarSource(sql, source, 'access-token', {}, deps)).resolves.toMatchObject({
+      mode: 'full',
+      created: 1,
+      upcoming: 1,
+      syncToken: 'sync-1',
+    });
     const advanced = await getExternalTriggerSource(sql, WS, source.id);
     expect(advanced).toMatchObject({
       status: 'connected',
       cursor: { syncToken: 'sync-1', lastSyncAt: NOW.toISOString() },
     });
-    await expect(syncGoogleCalendarSource(sql, advanced!, 'access-token', {}, deps))
-      .resolves.toMatchObject({ mode: 'incremental', created: 0, updated: 0, upcoming: 1, syncToken: 'sync-2' });
+    await expect(syncGoogleCalendarSource(sql, advanced!, 'access-token', {}, deps)).resolves.toMatchObject({
+      mode: 'incremental',
+      created: 0,
+      updated: 0,
+      upcoming: 1,
+      syncToken: 'sync-2',
+    });
 
-    const documents = await sql<Array<{
-      source: string;
-      kind: string;
-      external_id: string;
-      title: string;
-      participants: string[];
-    }>>`
+    const documents = await sql<
+      Array<{
+        source: string;
+        kind: string;
+        external_id: string;
+        title: string;
+        participants: string[];
+      }>
+    >`
       SELECT source, kind, external_id, title, participants
         FROM harness_shared.personal_documents
        WHERE workspace_id = ${WS} AND user_id = ${userId}`;
-    expect(documents).toEqual([expect.objectContaining({
-      source: 'calendar',
-      kind: 'event',
-      external_id: 'meeting-1',
-      title: 'Launch review',
-      participants: expect.arrayContaining(['owner@example.com', 'ada@example.com']),
-    })]);
+    expect(documents).toEqual([
+      expect.objectContaining({
+        source: 'calendar',
+        kind: 'event',
+        external_id: 'meeting-1',
+        title: 'Launch review',
+        participants: expect.arrayContaining(['owner@example.com', 'ada@example.com']),
+      }),
+    ]);
 
     const deliveries = await sql<Array<{ event_key: string; sink_kind: string; attempts: number }>>`
       SELECT event_key, sink_kind, attempts
@@ -127,10 +137,9 @@ describe('Google Calendar adapter with the real delivery ledger and Personal Vau
        WHERE workspace_id = ${WS} AND source_id = ${source.id}::uuid
        ORDER BY event_key, sink_kind`;
     expect(deliveries).toHaveLength(6);
-    expect(deliveries.map((row) => row.event_key)).toEqual(expect.arrayContaining([
-      'ext:gcal:event-created',
-      'ext:gcal:event-upcoming',
-    ]));
+    expect(deliveries.map((row) => row.event_key)).toEqual(
+      expect.arrayContaining(['ext:gcal:event-created', 'ext:gcal:event-upcoming']),
+    );
     expect(deliveries.every((row) => row.attempts === 1)).toBe(true);
     expect(emit).toHaveBeenCalledTimes(2);
   });
