@@ -190,6 +190,27 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     ]);
   });
 
+  it('marks a linked work-item parked by claim hold as blocked for claimability readers', async () => {
+    await insertIssue({ id: 'WI-held', state: 'open', plan: 'p1', item: 'P-001c' });
+    await rootSql`
+      UPDATE harness_shared.work_items
+         SET payload = COALESCE(payload, '{}'::jsonb) || '{"_claimHold":true}'::jsonb
+       WHERE workspace_id = ${WS} AND feature_id = 'WI-held'`;
+    await edge({ plan: 'p1', item: 'P-001c', srcRef: 'WI-held' });
+
+    const cov = await getAllPlanItemCoverage();
+    expect(cov.get(planItemRef('p1', 'P-001c'))?.links).toEqual([
+      {
+        workItemId: 'WI-held',
+        rel: 'relates',
+        terminal: false,
+        blocked: true,
+        activity: 'free',
+        holder: null,
+      },
+    ]);
+  });
+
   it('a resolved/terminal stamped issue rolls up to level "complete"', async () => {
     await insertIssue({ id: 'WI-done', state: 'resolved', plan: 'p1', item: 'P-002' });
     const cov = await getAllPlanItemCoverage();

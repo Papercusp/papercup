@@ -178,7 +178,7 @@ export interface CoverageWorkLink {
   rel: string;
   /** The linked work-item is in a terminal (done) state. */
   terminal: boolean;
-  /** The linked work-item is explicitly blocked and cannot be claimed. */
+  /** The linked work-item is blocked or durably parked out of self-select. */
   blocked?: true;
   /** Activity from the fleet view ('free' when no claim row exists). */
   activity: ItemActivity;
@@ -387,6 +387,7 @@ interface StampCoverageRow {
   updated_ts: string | number | null;
   plan_slug: string;
   item_id: string;
+  claim_hold: string | null;
 }
 
 interface CoverageLinkRow {
@@ -397,6 +398,8 @@ interface CoverageLinkRow {
   issue_state: string | null;
   feature_status: string | null;
   feature_id: string | null;
+  issue_claim_hold: string | null;
+  feature_claim_hold: string | null;
   /** Newest update on the joined work-item row (issue or feature side). */
   src_updated_at: Date | string | null;
 }
@@ -471,7 +474,9 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   const linkRows = await sql<CoverageLinkRow[]>`
     SELECT l.dst_ref, l.rel, l.src_kind, l.src_ref,
            i.state      AS issue_state,
+           i.payload ->> '_claimHold' AS issue_claim_hold,
            f.status     AS feature_status,
+           f.payload ->> '_claimHold' AS feature_claim_hold,
            f.feature_id AS feature_id,
            GREATEST(i.updated_at,
                     to_timestamp((f.updated_ts::numeric / 1000.0)::double precision))
@@ -533,7 +538,14 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
     const live = wiActivity.get(workItemId);
     const activity: ItemActivity = live?.activity ?? 'free';
     const holder = isLiveActivity(activity) ? (live?.holder ?? null) : null;
-    const blocked = row.issue_state === 'blocked' || row.feature_status === 'blocked';
+    // A durable claim hold is the same self-select exclusion floor as a blocked
+    // work-item. `plans:items { actionable:true }` consumes this one coverage flag
+    // to avoid advertising the linked plan lane while its work-item is parked.
+    const blocked =
+      row.issue_state === 'blocked' ||
+      row.feature_status === 'blocked' ||
+      row.issue_claim_hold === 'true' ||
+      row.feature_claim_hold === 'true';
     const arr = byRef.get(row.dst_ref) ?? [];
     arr.push({
       workItemId,
@@ -580,6 +592,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   // CHECK constraint makes a non-object payload unstorable.
   const stampRows = await sql<StampCoverageRow[]>`
     SELECT feature_id AS work_item_id, item_kind, status, updated_ts,
+           payload ->> '_claimHold' AS claim_hold,
            payload->'plan_item'->>'plan_slug' AS plan_slug,
            payload->'plan_item'->>'item_id'  AS item_id
       FROM harness_shared.work_items
@@ -600,7 +613,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
       workItemId: row.work_item_id,
       rel: STAMP_ONLY_REL,
       terminal,
-      ...(row.status === 'blocked' ? { blocked: true as const } : {}),
+      ...(row.status === 'blocked' || row.claim_hold === 'true' ? { blocked: true as const } : {}),
       activity,
       holder,
     });
