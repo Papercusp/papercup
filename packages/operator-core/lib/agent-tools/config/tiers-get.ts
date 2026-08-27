@@ -16,6 +16,7 @@ import {
   defaultCompactionLimitForTier,
   modelWindowForTier,
 } from '../../agent-config-constants';
+import { classifyLoopModelSpec } from '../../agent-loop/model-selection';
 
 export default defineTool({
   name: 'config:tiers-get',
@@ -42,6 +43,7 @@ export default defineTool({
       modelWindow: modelWindowForTier(t),
       effectiveCompactionLimit: t.compactionLimit ?? defaultCompactionLimitForTier(t),
       compactionLimitSource: t.compactionLimit != null ? ('explicit' as const) : ('model-default' as const),
+      loopCapability: classifyLoopModelSpec(t.spec),
     }));
     return {
       data: {

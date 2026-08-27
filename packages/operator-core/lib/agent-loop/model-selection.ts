@@ -71,6 +71,19 @@ export interface LoopModelSelection {
   providerMetadata: ModelsDevProvider | null;
 }
 
+/**
+ * The capability of one model spec on the in-process Agent Chat loop.
+ *
+ * Tier configuration is intentionally backend-neutral and may contain models
+ * that only an OMP subprocess understands (for example an `openrouter/...`
+ * selector).  The loop has a narrower executable boundary than that generic
+ * menu.  Keep the classification next to the resolver so route validation and
+ * menu annotations cannot grow independent provider allow-lists.
+ */
+export type LoopModelCapability =
+  | { executable: true; provider: LoopProviderId }
+  | { executable: false; reason: string };
+
 let cachedCatalog: { value: ModelsDevCatalog; expiresAt: number } | null = null;
 let catalogInFlight: Promise<ModelsDevCatalog> | null = null;
 
@@ -340,4 +353,24 @@ export function resolveLoopModelSpec(
     `cannot resolve provider for model ${JSON.stringify(undecorated)}; ` +
     'use <provider>/<model> (for example openai/gpt-5.4) or a psu Claude/Codex alias',
   );
+}
+
+/**
+ * Classify a tier/model spec against the owned loop's executable boundary.
+ *
+ * This deliberately uses a null catalog: models.dev enriches known provider
+ * metadata, but it must not be required to decide whether the provider syntax
+ * is executable.  The result is therefore stable during catalog outages and
+ * carries the resolver's loud failure reason for UI/route consumers.
+ */
+export function classifyLoopModelSpec(spec: string): LoopModelCapability {
+  try {
+    const selection = resolveLoopModelSpec(spec, null);
+    return { executable: true, provider: selection.provider };
+  } catch (error) {
+    return {
+      executable: false,
+      reason: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
