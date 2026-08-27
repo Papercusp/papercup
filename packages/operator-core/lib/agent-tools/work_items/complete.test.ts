@@ -2806,6 +2806,26 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(coerceCompletionShape(good)).toEqual(good);
     });
 
+    it('strips the known server-generated checkpoint metadata while preserving other fields', () => {
+      const out = coerceCompletionShape({
+        summary: 'retry stored evidence',
+        testsRun: 'focused completion test',
+        checkpointChecksCarried: [{ claim: 'the checkpoint was checked' }],
+      }) as Record<string, unknown>;
+
+      expect(out).toEqual({ summary: 'retry stored evidence', testsRun: 'focused completion test' });
+      expect(out).not.toHaveProperty('checkpointChecksCarried');
+    });
+
+    it('does not strip an unrelated unknown completion field', () => {
+      const out = coerceCompletionShape({ summary: 's', unrelatedField: 'keep for strict validation' }) as Record<
+        string,
+        unknown
+      >;
+
+      expect(out.unrelatedField).toBe('keep for strict validation');
+    });
+
     it('passes a non-string, non-object value through untouched', () => {
       expect(coerceCompletionShape(42)).toBe(42);
       expect(coerceCompletionShape(null)).toBe(null);
@@ -3148,6 +3168,38 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
       expect(message.toLowerCase()).toContain('unrecognized');
       expect(message).toContain('note');
+    });
+
+    it('accepts persisted checkpoint metadata on retry but still rejects unrelated completion keys (EI-21582975345203826)', () => {
+      const retry = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean; data?: any } }
+      ).safeParse({
+        id: 'EI-21582975345203826',
+        completion: {
+          summary: 'retry stored evidence',
+          testsRun: 'focused completion test',
+          checkpointChecksCarried: [{ claim: 'the checkpoint was checked' }],
+        },
+      });
+      expect(retry.success).toBe(true);
+      expect(retry.data.completion).toMatchObject({
+        summary: 'retry stored evidence',
+        testsRun: 'focused completion test',
+      });
+      expect(retry.data.completion).not.toHaveProperty('checkpointChecksCarried');
+
+      const unrelated = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } }
+      ).safeParse({
+        id: 'EI-21582975345203826',
+        completion: {
+          summary: 'retry stored evidence',
+          unrelatedField: 'must remain rejected',
+        },
+      });
+      expect(unrelated.success).toBe(false);
+      expect(unrelated.error?.issues.map((issue) => issue.message).join(' ').toLowerCase()).toContain('unrecognized');
+      expect(unrelated.error?.issues.map((issue) => issue.message).join(' ')).toContain('unrelatedField');
     });
   });
 

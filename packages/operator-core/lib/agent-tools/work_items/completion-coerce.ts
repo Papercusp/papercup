@@ -65,6 +65,19 @@ export const COMPLETION_FIELDS: readonly string[] = [
   'selfReview',
 ];
 
+/**
+ * Server-generated fields that can be returned alongside caller-owned completion
+ * evidence by `work_items:get`. Keep these out of `CompletionRecordSchema`: they
+ * are narrative metadata, not caller-provided verification. Strip only the fields
+ * we explicitly know are generated so a read→retry of stored evidence can succeed
+ * without weakening strict rejection for unrelated keys.
+ *
+ * EI-21582975345203826: `checkpointChecksCarried` is folded into persisted
+ * `_completionEvidence` immediately before terminal checkpoint cleanup, so it can
+ * appear in `terminalCompletionEvidence` even though it is not a completion input.
+ */
+const SERVER_GENERATED_COMPLETION_FIELDS = ['checkpointChecksCarried'] as const;
+
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
   '{ summary: "what changed", testsRun: "npm run test:file -- path/to.test.ts", testResult: "passed", ' +
@@ -278,6 +291,7 @@ export function coerceCompletionShape(raw: unknown): unknown {
   if (!isPlainObject(raw)) return raw;
 
   const out: Record<string, unknown> = { ...raw };
+  for (const field of SERVER_GENERATED_COMPLETION_FIELDS) delete out[field];
 
   // The public completion contract exposes the same verification aliases both at the
   // top level and under `verification`. Normalize the nested object before the strict
