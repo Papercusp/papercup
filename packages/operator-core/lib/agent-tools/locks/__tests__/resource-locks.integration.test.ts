@@ -219,6 +219,102 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     await _resetForTests();
   });
 
+  it.skipIf(!live)('admits queued exclusive requests in FIFO order after each prior grant releases', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+
+    const a = await acq(ws, 'A', 'dev-server', 'shared');
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+
+    // B becomes the active draining exclusive. C and D are refused but retain
+    // durable tickets; a retry by D must not jump ahead of C after B releases.
+    const b = await acq(ws, 'B', 'dev-server', 'exclusive');
+    expect(b.ok).toBe(true);
+    if (!b.ok) return;
+    expect(b.status).toBe('draining');
+
+    const c = await acq(ws, 'C', 'dev-server', 'exclusive');
+    const d = await acq(ws, 'D', 'dev-server', 'exclusive');
+    expect(c.ok && d.ok).toBe(false);
+    if (c.ok || d.ok) return;
+    expect(c.queue_ticket).toBeDefined();
+    expect(d.queue_ticket).toBeDefined();
+    expect(c.queue_position).toBe(1);
+    expect(d.queue_position).toBe(2);
+
+    const queued = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    expect(queued.queue?.map((entry) => entry.owner)).toEqual(['C', 'D']);
+
+    // Releasing the last shared holder makes B effective, but does not admit C
+    // until B itself releases. The queue remains ordered while B is held.
+    await rel(ws, 'A', a.lock_id);
+    expect((await status(b.lock_id)).status).toBe('held');
+    expect((await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' })).queue?.map((entry) => entry.owner)).toEqual(['C', 'D']);
+
+    // B's release promotes only C, leaving D pending behind it.
+    await rel(ws, 'B', b.lock_id);
+    const afterB = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const cHolder = afterB.holders.find((holder) => holder.owner === 'C' && holder.mode === 'exclusive');
+    expect(cHolder?.status).toBe('held');
+    expect(afterB.queue?.map((entry) => entry.owner)).toEqual(['D']);
+
+    // C's release then promotes D; no later retry can have leapfrogged C.
+    await rel(ws, 'C', cHolder!.lock_id);
+    const afterC = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const dHolder = afterC.holders.find((holder) => holder.owner === 'D' && holder.mode === 'exclusive');
+    expect(dHolder?.status).toBe('held');
+    expect(afterC.queue).toEqual([]);
+    await rel(ws, 'D', dHolder!.lock_id);
+  });
+
+  it.skipIf(!live)('garbage-collects expired exclusive tickets before promoting the next head', async () => {
+    await ensureBootstrap();
+    const ws = uniqueWs();
+
+    const a = await acq(ws, 'A', 'dev-server', 'exclusive');
+    expect(a.ok).toBe(true);
+    if (!a.ok) return;
+    expect((await acq(ws, 'B', 'dev-server', 'exclusive')).ok).toBe(false);
+    expect((await acq(ws, 'C', 'dev-server', 'exclusive')).ok).toBe(false);
+
+    // B abandoned its request. Expiry GC must remove it so C becomes the head
+    // when A releases, while agent_resource_waiters remains an independent
+    // notification ledger.
+    await getTxPool()`
+      UPDATE agent_resource_exclusive_queue
+         SET expires_ts = clock_timestamp() - interval '1 second'
+       WHERE coordination_domain = ${ws}
+         AND resource = 'dev-server'
+         AND owner = 'B'
+    `;
+
+    const waiterRowsBeforeRelease = await getTxPool()`
+      SELECT owner
+        FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws}
+         AND resource = 'dev-server'
+    `;
+    expect(waiterRowsBeforeRelease.map((row) => row.owner).sort()).toEqual(['B', 'C']);
+
+    await rel(ws, 'A', a.lock_id);
+
+    const q = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    expect(q.queue).toEqual([]);
+    expect(q.holders.find((holder) => holder.owner === 'C' && holder.mode === 'exclusive')?.status).toBe('held');
+    // The existing owner-keyed waiter ledger is consumed by the release's
+    // targeted back-up broadcast; queue-ticket GC must not replace that
+    // ledger, and the release still clears it as before.
+    const waiterRowsAfterRelease = await getTxPool()`
+      SELECT owner
+        FROM agent_resource_waiters
+       WHERE coordination_domain = ${ws}
+         AND resource = 'dev-server'
+    `;
+    expect(waiterRowsAfterRelease).toEqual([]);
+    await rel(ws, 'C', q.holders.find((holder) => holder.owner === 'C')!.lock_id);
+  });
+
   it.skipIf(!live)('refuses an in-place upgrade: a shared holder requesting exclusive gets holds_shared', async () => {
     await ensureBootstrap();
     const ws = uniqueWs();
@@ -304,6 +400,15 @@ describe('resource-locks (named, shared/exclusive, drain)', async () => {
     const r = await rel(ws, 'X', x.lock_id);
     expect(r.exclusiveResources).toContain('dev-server');
     expect([...(r.waiters['dev-server'] ?? [])].sort()).toEqual(['C', 'D']);
+
+    // The queued D request is promoted by X's release. Release that promoted
+    // lease before checking a fresh request, so this A4 assertion does not
+    // bypass the FIFO admission rule under test elsewhere.
+    const afterX = await readResourceQueue(getTxPool(), { coordinationDomain: ws, resource: 'dev-server' });
+    const dHolder = afterX.holders.find((holder) => holder.owner === 'D' && holder.mode === 'exclusive');
+    expect(dHolder?.status).toBe('held');
+    if (!dHolder) return;
+    await rel(ws, 'D', dHolder.lock_id);
 
     // …and clears them — a second exclusive's release re-reads no waiters.
     const x2 = await acq(ws, 'X', 'dev-server', 'exclusive');
