@@ -6,7 +6,9 @@
  * behind, and reciprocal disjoint writers may not both commit. A mock would
  * merely restate the intended interleaving and cannot prove any of those.
  *
- * @covers INV-16 INV-17 INV-18
+ * These are P-005 seam proofs, not yet registry-wide `@covers` claims. INV-16
+ * becomes true only after P-006 routes every writer; INV-17 also needs companion
+ * state/event rollback proofs; INV-18's every-door claim needs the P-007 matrix.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
@@ -180,6 +182,41 @@ describe('canonical dependency batch admission', () => {
     expect(await storedEdges()).toEqual([]);
   });
 
+  it('rejects one cycle spanning both work-item families and two harnesses', async () => {
+    const otherHarness = 'other-harness';
+    await seedItem('F-A', { kind: 'feature', harness: H });
+    await seedItem('EI-B', { harness: otherHarness });
+
+    const error = await admissionError(
+      mutate([
+        { op: 'add', blocked: feature('F-A', H), blocker: issue('EI-B') },
+        { op: 'add', blocked: issue('EI-B'), blocker: feature('F-A', H) },
+      ]),
+    );
+
+    const cycle = error.findings.find((finding) => finding.policy.code === 'cycle')!.cycles[0]!;
+    expect(new Set(cycle.members.map((node) => `${node.kind}:${node.ref}`))).toEqual(
+      new Set([`feature:${H}#F-A`, 'issue:EI-B']),
+    );
+    expect(await storedEdges()).toEqual([]);
+  });
+
+  it('rejects an endpoint that exists only in another item workspace', async () => {
+    await seedItem('EI-dependent');
+    await seedItem('EI-other-workspace', { workspaceId: 'tenant-b' });
+
+    const error = await admissionError(
+      mutate([{ op: 'add', blocked: issue('EI-dependent'), blocker: issue('EI-other-workspace') }]),
+    );
+
+    const crossWorkspace = error.findings.find((finding) => finding.policy.code === 'cross-workspace-inert-edge');
+    expect(crossWorkspace?.endpointDefects).toMatchObject([
+      { code: 'missing', role: 'blocker', declared: { kind: 'issue', ref: 'EI-other-workspace' } },
+    ]);
+    expect(error.findings.some((finding) => finding.policy.code === 'executable-endpoint-missing')).toBe(false);
+    expect(await storedEdges()).toEqual([]);
+  });
+
   it('permits a monotonic repair of a pre-existing legacy cycle', async () => {
     await seedItem('EI-A');
     await seedItem('EI-B');
@@ -218,6 +255,18 @@ describe('canonical dependency batch admission', () => {
     const rejected = outcomes.find((outcome) => outcome.status === 'rejected');
     expect(rejected).toMatchObject({ status: 'rejected' });
     expect((rejected as PromiseRejectedResult).reason).toBeInstanceOf(WorkItemDependencyAdmissionError);
+    expect(await storedEdges()).toHaveLength(1);
+  });
+
+  it('keeps concurrent identical adds idempotent and reports the one actual insert', async () => {
+    await seedItem('EI-dependent');
+    await seedItem('EI-blocker');
+    const mutation = [{ op: 'add', blocked: issue('EI-dependent'), blocker: issue('EI-blocker') }] as const;
+
+    const results = await Promise.all([mutate(mutation), mutate(mutation)]);
+
+    expect(results.map((result) => result.inserted).sort()).toEqual([0, 1]);
+    expect(results.every((result) => result.removed === 0)).toBe(true);
     expect(await storedEdges()).toHaveLength(1);
   });
 });

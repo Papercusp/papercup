@@ -192,7 +192,7 @@ async function loadDependencyNodes(
   tx: Sql,
   workspaceId: string,
   edges: readonly StoredDependencyEdge[],
-): Promise<DependencyGraphNodeInput[]> {
+): Promise<{ nodes: DependencyGraphNodeInput[]; outOfScopeIdentityKeys: ReadonlySet<string> }> {
   const bareIds = new Set<string>();
   for (const edge of edges) {
     for (const endpoint of [edge.blocked, edge.blocker]) {
@@ -200,15 +200,25 @@ async function loadDependencyNodes(
       if (id) bareIds.add(id);
     }
   }
-  if (bareIds.size === 0) return [];
+  if (bareIds.size === 0) return { nodes: [], outOfScopeIdentityKeys: new Set() };
   const ids = [...bareIds].sort();
   const rows = await tx<WorkItemNodeRow[]>`
     SELECT workspace_id, harness_slug, feature_id, item_kind, status
       FROM harness_shared.work_items
-     WHERE workspace_id = ${workspaceId}
-       AND feature_id = ANY(${ids}::text[])
-     ORDER BY harness_slug, feature_id, item_kind`;
-  return rows.map(rowNode);
+     WHERE feature_id = ANY(${ids}::text[])
+     ORDER BY (workspace_id = ${workspaceId}) DESC, workspace_id, harness_slug, feature_id, item_kind`;
+  const nodes: DependencyGraphNodeInput[] = [];
+  const outOfScopeIdentityKeys = new Set<string>();
+  for (const row of rows) {
+    const node = rowNode(row);
+    if (row.workspace_id === workspaceId) {
+      nodes.push(node);
+      continue;
+    }
+    outOfScopeIdentityKeys.add(dependencyIdentityKey(node.id));
+    for (const alias of node.aliases ?? []) outOfScopeIdentityKeys.add(dependencyIdentityKey(alias));
+  }
+  return { nodes, outOfScopeIdentityKeys };
 }
 
 async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<StoredDependencyEdge[]> {
@@ -260,6 +270,7 @@ function newlyRejectedFindings(
   after: DependencyGraphAnalysis,
   beforeEdges: readonly StoredDependencyEdge[],
   afterEdges: readonly StoredDependencyEdge[],
+  outOfScopeIdentityKeys: ReadonlySet<string>,
 ): WorkItemDependencyAdmissionFinding[] {
   const beforeCycles = new Set(before.stronglyConnectedComponents.map(cycleSignature));
   const cycles = after.stronglyConnectedComponents.filter((component) => !beforeCycles.has(cycleSignature(component)));
@@ -276,7 +287,19 @@ function newlyRejectedFindings(
   if (cycles.length > 0) {
     findings.push({ policy: getDependencyPolicy('cycle')!, cycles, endpointDefects: [], stranded: [] });
   }
-  const missing = endpointDefects.filter((defect) => defect.code === 'missing');
+  const crossWorkspace = endpointDefects.filter((defect) =>
+    outOfScopeIdentityKeys.has(dependencyIdentityKey(defect.declared)),
+  );
+  const crossWorkspaceSet = new Set(crossWorkspace);
+  if (crossWorkspace.length > 0) {
+    findings.push({
+      policy: getDependencyPolicy('cross-workspace-inert-edge')!,
+      cycles: [],
+      endpointDefects: crossWorkspace,
+      stranded: [],
+    });
+  }
+  const missing = endpointDefects.filter((defect) => defect.code === 'missing' && !crossWorkspaceSet.has(defect));
   if (missing.length > 0) {
     findings.push({
       policy: getDependencyPolicy('executable-endpoint-missing')!,
@@ -285,7 +308,9 @@ function newlyRejectedFindings(
       stranded: [],
     });
   }
-  const identityDefects = endpointDefects.filter((defect) => defect.code !== 'missing');
+  const identityDefects = endpointDefects.filter(
+    (defect) => defect.code !== 'missing' && !crossWorkspaceSet.has(defect),
+  );
   if (identityDefects.length > 0) {
     findings.push({
       policy: getDependencyPolicy('endpoint-identity-mismatch')!,
@@ -360,13 +385,14 @@ export async function mutateWorkItemDependencies(
     async (tx) => {
       const current = await loadStoredDependencyEdges(tx, input.workspaceId);
       const candidate = applyDependencyMutations(current, input.mutations);
-      const nodes = await loadDependencyNodes(tx, input.itemWorkspaceId ?? input.workspaceId, [
-        ...current,
-        ...candidate,
-      ]);
+      const { nodes, outOfScopeIdentityKeys } = await loadDependencyNodes(
+        tx,
+        input.itemWorkspaceId ?? input.workspaceId,
+        [...current, ...candidate],
+      );
       const before = analyseStoredEdges(nodes, current);
       const after = analyseStoredEdges(nodes, candidate);
-      const findings = newlyRejectedFindings(before, after, current, candidate);
+      const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);
       if (findings.length > 0) throw new WorkItemDependencyAdmissionError(findings, before, after);
       const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
       return { ...diff, before, after };
