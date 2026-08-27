@@ -431,6 +431,10 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
     expect(out.text).toContain('## The deploy pipeline is ASYNC');
+    expect(out.text).toContain('DEFAULT implementation and plan-item acceptance plane');
+    expect(out.text).toContain('reserved ONLY for final promotion and shipment verification');
+    expect(out.text).toContain('held or red green-checkpoint gate does NOT block non-final work');
+    expect(out.text).toContain('explicitly names the deployed-only property');
     expect(out.text).toContain('dev:pipeline_position');
     expect(out.text).toContain(':3070 serves GREEN `main`');
     // owner-directed reframe (2026-06-23): a RED gate is everyone's job to fix — no owner-ask, even out of lane

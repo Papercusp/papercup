@@ -614,8 +614,12 @@ describe('installPapercuspFiles', () => {
     const playbook = await fs.readFile(result.playbookPath, 'utf8');
 
     // the canonical DEPLOY_PIPELINE_NOTE is projected in, incl. the owner-directed
-    // "a RED gate is everyone's job to FIX, no owner-ask" directive...
+    // staging-first acceptance contract and "a RED gate is everyone's job to FIX" directive...
     expect(playbook).toContain('## The deploy pipeline is ASYNC');
+    expect(playbook).toContain('DEFAULT implementation and plan-item acceptance plane');
+    expect(playbook).toContain('reserved ONLY for final promotion and shipment verification');
+    expect(playbook).toContain('held or red green-checkpoint gate does NOT block non-final work');
+    expect(playbook).toContain('explicitly names the deployed-only property');
     expect(playbook).toContain('do NOT ask the owner');
     expect(playbook).toContain('even if it is not your lane');
     // ...exactly once (one source, one projection)...
