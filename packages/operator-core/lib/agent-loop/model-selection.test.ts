@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  classifyLoopModelSpec,
   loadModelsDevCatalog,
   resetModelsDevCatalogCache,
   resolveLoopModelSpec,
@@ -100,6 +101,32 @@ describe('resolveLoopModelSpec', () => {
 
   it('fails closed for an unknown unqualified provider id', () => {
     expect(() => resolveLoopModelSpec('mystery-model', null)).toThrow(/use <provider>\/<model>/);
+  });
+});
+
+describe('classifyLoopModelSpec', () => {
+  it('marks subscription gateway and AI SDK provider specs executable without a catalog', () => {
+    expect(classifyLoopModelSpec('sonnet[1m]:high')).toEqual({
+      executable: true,
+      provider: 'gateway-anthropic',
+    });
+    expect(classifyLoopModelSpec('openai/gpt-5.4:max')).toEqual({
+      executable: true,
+      provider: 'openai',
+    });
+  });
+
+  it('marks OMP-only provider selectors unavailable and preserves the resolver reason', () => {
+    expect(classifyLoopModelSpec('openrouter/stealth/ox-alpha:max')).toEqual({
+      executable: false,
+      reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+    });
+  });
+
+  it('fails closed for unknown bare ids instead of guessing a provider', () => {
+    const capability = classifyLoopModelSpec('mystery-model');
+    expect(capability.executable).toBe(false);
+    if (!capability.executable) expect(capability.reason).toMatch(/use <provider>\/\<model>/);
   });
 });
 

@@ -83,7 +83,14 @@ describe('config:tiers-set', () => {
       contextWindow: 1_048_576,
       compactionLimit: 400_000,
     }]);
-    expect(out.data.tiers[0]).toMatchObject({ modelWindow: 1_048_576, effectiveCompactionLimit: 400_000 });
+    expect(out.data.tiers[0]).toMatchObject({
+      modelWindow: 1_048_576,
+      effectiveCompactionLimit: 400_000,
+      loopCapability: {
+        executable: false,
+        reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+      },
+    });
   });
 });
 
@@ -119,5 +126,9 @@ describe('config:tiers-get', () => {
     });
     const out = (await getTool.handler({}, {} as never)) as ToolOut;
     expect(out.data.tiers[0]).toMatchObject({ modelWindow: 1_048_576, effectiveCompactionLimit: 400_000 });
+    expect(out.data.tiers[0].loopCapability).toMatchObject({
+      executable: false,
+      reason: expect.stringContaining('unsupported loop provider "openrouter"'),
+    });
   });
 });
