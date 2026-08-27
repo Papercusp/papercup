@@ -1025,6 +1025,14 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // Keep the client outside the transport cap so tools:invoke returns the
   // structured log instead of an ambiguous MCP -32001.
   ['activity:tool-log', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  // EI-21394759701293947: sessions:search hydrates session windows and
+  // provenance after its lexical/vector fan-out. Several concurrent deferred
+  // calls can legitimately outlive the ordinary 30s ptool deadline even when
+  // the server-side embed budget degrades cleanly and the search keeps
+  // progressing. Keep the client outside the MCP transport cap so the typed
+  // search result (or its structured server-side failure) wins over an
+  // ambiguous -32001 outcome.
+  ['sessions:search', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
   // EI-21386877660531420: release:deploy status fans out through the release
   // pipeline and has a 20s server-side status bound. The dispatch queue and
   // projection overhead can consume the ordinary 30s client budget when it
