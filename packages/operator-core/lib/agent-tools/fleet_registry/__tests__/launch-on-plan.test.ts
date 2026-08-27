@@ -2462,10 +2462,12 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     }
   });
 
-  it('P-008: a partial maximum-size wave preserves its exact boundary inside a 50-member target', async () => {
-    // The target is deliberately larger than the 12-terminal per-call safety
-    // ceiling. The launch transaction owns THIS bounded wave; the response's
-    // fleet shortfall separately owns the still-unopened target remainder.
+  it('P-008: a capless full-deficit launch preserves its exact batch/retry boundary inside a 50-member target', async () => {
+    // The target is deliberately larger than the retired 12-terminal local ceiling.
+    // P-013 makes the launch path capless upward: the transaction owns the full
+    // requested cohort, while governed dispatch admission remains the only
+    // legitimate capacity clamp. A spawn failure still stops later batches and
+    // leaves an exact retry set.
     let spawn = 0;
     spawnConsoleMock.mockImplementation(() => {
       spawn += 1;
@@ -2485,8 +2487,8 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     const verifiedIds = tx.verifiedMemberIds as string[];
     const retryIds = tx.recovery.retryOwnerIds as string[];
 
-    expect(requestedIds).toHaveLength(12);
-    expect(new Set(requestedIds).size).toBe(12);
+    expect(requestedIds).toHaveLength(50);
+    expect(new Set(requestedIds).size).toBe(50);
     // Canary + two verified 3-member waves + one partial 3-member wave.
     expect(spawnConsoleMock).toHaveBeenCalledTimes(10);
     expect(tx.waves.map((wave: { ownerIds: string[] }) => wave.ownerIds.length)).toEqual([1, 3, 3, 3]);
@@ -2503,8 +2505,9 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(tx.state).toBe('partial');
     expect(tx.waves.at(-1)?.state).toBe('partial');
     expect(verifiedIds).toHaveLength(9);
-    // One failed terminal + two unattempted members remain in this 12-id wave.
-    expect(retryIds).toHaveLength(3);
+    // The failed terminal plus the 40 members in later, unattempted batches
+    // remain in the full 50-id cohort's exact retry set.
+    expect(retryIds).toHaveLength(41);
     expect(new Set([...verifiedIds, ...retryIds])).toEqual(new Set(requestedIds));
     expect(retryIds).toContain(payload.failed[0].ownerId);
     expect(payload.fleetComplete).toBe(false);
