@@ -102,8 +102,15 @@ export function nodeSweepIo(logger: (message: string) => void = console.info): S
 export function sweepHost(
   run: (io: SweepIo) => { scanned: number; reaped: number[]; raced: number[]; kept: number },
   logger?: (message: string) => void,
+  /**
+   * The io factory, injectable ONLY so the fail-closed refusal below is reachable
+   * from a test without a real /proc and /tmp. Production always takes the default.
+   * Without this seam the guard that prevents reaping every bus on an unreadable
+   * /tmp had no executable coverage at all (WI-42400 measurement).
+   */
+  makeIo: (logger?: (message: string) => void) => SweepIo = nodeSweepIo,
 ): { scanned: number; reaped: number[]; raced: number[]; kept: number } | null {
-  const io = nodeSweepIo(logger);
+  const io = makeIo(logger);
   if (io.liveDisplays().size === 0) {
     io.log('[a11y-bus-sweep] no X display locks visible — refusing to sweep (fail-closed)');
     return null;
