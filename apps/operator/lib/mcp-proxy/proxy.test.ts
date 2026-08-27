@@ -11,6 +11,8 @@ import {
   shouldRetry,
   createMcpProxy,
   prepareForward,
+  forwardingResultForUpstreamFailure,
+  MCP_PROXY_FORWARDING_RESULTS,
   postConnectRetryable,
   READ_ONLY_TOOLS,
   MAX_POST_CONNECT_RETRIES,
@@ -58,6 +60,22 @@ describe("shouldRetry — refused-only + in-window (no double-execution)", () =>
   });
   it("does NOT retry past the window even if still refused", () => {
     expect(shouldRetry(false, 46_000, 45_000)).toBe(false);
+  });
+});
+
+describe("forwarding result vocabulary — explicit mutation outcome semantics", () => {
+  it("pins the four MCP proxy result states", () => {
+    expect(MCP_PROXY_FORWARDING_RESULTS).toEqual({
+      notForwarded: "not_forwarded",
+      queued: "queued",
+      applied: "applied",
+      outcomeUnknown: "outcome_unknown",
+    });
+  });
+
+  it("classifies refused/pre-connect failures as not_forwarded and post-connect failures as outcome_unknown", () => {
+    expect(forwardingResultForUpstreamFailure(false)).toBe("not_forwarded");
+    expect(forwardingResultForUpstreamFailure(true)).toBe("outcome_unknown");
   });
 });
 
@@ -1161,6 +1179,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       await listen(proxy);
       const r = await request(port(proxy));
       expect(r.status).toBe(503);
+      expect(JSON.parse(r.body).forwardingResult).toBe("not_forwarded");
       // The exhaustion (previously invisible in tool_invocations) must be durably recorded.
       const recs = fs
         .readFileSync(logFile, "utf8")
@@ -1171,6 +1190,7 @@ describe("createMcpProxy — forwarding + restart recovery", () => {
       const rec = recs.find((x) => x.kind === "exhausted_refused");
       expect(rec).toBeTruthy();
       expect(rec.status).toBe(503);
+      expect(rec.forwardingResult).toBe("not_forwarded");
       expect(typeof rec.ts).toBe("string");
       expect(rec.attempts).toBeGreaterThanOrEqual(1);
       fs.rmSync(logFile, { force: true });

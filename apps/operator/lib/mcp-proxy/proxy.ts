@@ -540,6 +540,25 @@ function isValidIdemKey(v: unknown): v is string {
  *                   server-side instead of double-applying the write.
  *  - 'opaque'     — a tools/call with no usable key → NEVER replay (write-safety default). */
 export type ForwardClass = "idempotent" | "readonly" | "keyed" | "opaque";
+export type McpProxyForwardingResult =
+  | "not_forwarded"
+  | "queued"
+  | "applied"
+  | "outcome_unknown";
+export const MCP_PROXY_FORWARDING_RESULTS = {
+  notForwarded: "not_forwarded",
+  queued: "queued",
+  applied: "applied",
+  outcomeUnknown: "outcome_unknown",
+} as const satisfies Record<string, McpProxyForwardingResult>;
+
+export function forwardingResultForUpstreamFailure(
+  connected: boolean,
+): McpProxyForwardingResult {
+  return connected
+    ? MCP_PROXY_FORWARDING_RESULTS.outcomeUnknown
+    : MCP_PROXY_FORWARDING_RESULTS.notForwarded;
+}
 
 export interface PreparedForward {
   body: Buffer;
@@ -2238,6 +2257,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               ok: false,
               error: "mcp_proxy_overloaded",
               retryable: true,
+              forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
               detail: `proxy ${admissionClass} class already has ${classInFlight} request(s) in flight (class max ${admissionCeiling}, total ${inFlightNow}, normal hard max ${maxInFlight}) — shed before forwarding`,
               retryAfterSec,
             }),
@@ -2258,6 +2278,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             reservedControlPlaneInFlight,
             reservedControlPlane,
             retryAfterSec,
+            forwardingResult: "not_forwarded",
           });
           return;
         }
@@ -2309,6 +2330,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 ok: false,
                 error: "mcp_proxy_critical_continuation_queue_full",
                 retryable: true,
+                forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
                 detail: `proxy critical-continuation FIFO already has ${criticalContinuationQueueLength()} waiter(s) (queue max ${maxCriticalContinuationQueue})`,
                 retryAfterSec,
                 traceId: requestTraceId,
@@ -2328,6 +2350,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
               retryAfterSec,
+              forwardingResult: "not_forwarded",
             });
             return;
           }
@@ -2430,6 +2453,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
               maxCriticalContinuationQueueWaitMs,
+              forwardingResult: "queued",
             });
           });
           clearQueuedWaitTimer(queuedCriticalContinuation);
@@ -2453,6 +2477,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   ok: false,
                   error: "mcp_proxy_critical_continuation_queue_dwell",
                   retryable: true,
+                  forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
                   detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${maxCriticalContinuationQueueWaitMs}ms)`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
@@ -2468,6 +2493,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 criticalContinuationInFlight,
                 queueLength: criticalContinuationQueueLength(),
                 maxCriticalContinuationQueueWaitMs,
+                forwardingResult: "not_forwarded",
               });
             }
             return;
@@ -2875,6 +2901,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   postConnectRetries,
                   klass: fwd.klass,
                   elapsedMs: Date.now() - started,
+                  forwardingResult: "applied",
                   ...rpcTrace,
                 });
               }
@@ -2890,6 +2917,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   attempts,
                   elapsedMs: Date.now() - started,
                   connection: (ures.headers["connection"] as string) ?? null,
+                  forwardingResult: "applied",
                 });
               }
               return;
@@ -2986,6 +3014,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               error: refused
                 ? "mcp_proxy_upstream_unavailable"
                 : "mcp_proxy_upstream_error",
+              forwardingResult: forwardingResultForUpstreamFailure(
+                Boolean(last?.connected),
+              ),
               detail: String(last?.err?.message ?? last?.err ?? "unknown"),
               attempts,
               windowMs: retryWindowMs,
@@ -3009,6 +3040,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             klass: fwd.klass,
             elapsedMs: Date.now() - started,
             detail: String(last?.err?.message ?? last?.err ?? "unknown"),
+            forwardingResult: forwardingResultForUpstreamFailure(
+              Boolean(last?.connected),
+            ),
             ...rpcTrace,
           });
         } finally {
