@@ -208,6 +208,28 @@ export function countPendingInterrupts(entries: readonly InterruptEnvelopeLike[]
  */
 export const CONTINUATION_CEILING_PCT = 60;
 
+/**
+ * Render the cold-carry retune with the fields loop:arm needs on a fresh or
+ * schema-strict call. The active-loop values are included when the caller has
+ * them; otherwise the agent is directed to read loop:status before invoking
+ * the command so it does not copy an incomplete carry-only example.
+ */
+function coldLoopRetuneCommand(
+  intervalSec: number | null | undefined,
+  goal: string | null | undefined,
+): string {
+  if (
+    typeof intervalSec === 'number' &&
+    Number.isFinite(intervalSec) &&
+    intervalSec >= 60 &&
+    typeof goal === 'string' &&
+    goal.trim().length > 0
+  ) {
+    return 'loop:arm { intervalSec: ' + intervalSec + ', goal: ' + JSON.stringify(goal) + ", carry: 'cold' }";
+  }
+  return "read loop:status, then call loop:arm { intervalSec: <status.intervalSec>, goal: <status.goal>, carry: 'cold' }";
+}
+
 export interface ContinuationGateInputs {
   /** Rounded context usage percent (contextUsagePct(presence)); null when uncomputable. */
   contextPct: number | null | undefined;
@@ -244,6 +266,9 @@ export interface ContinuationGateInputs {
    * guidance.
    */
   fleetWindDownLoopEndAuthorized?: boolean | null;
+  /** Current active-loop values used to make the warm-to-cold retune executable. */
+  activeLoopIntervalSec?: number | null;
+  activeLoopGoal?: string | null;
 }
 
 export interface ContinuationVerdict {
@@ -304,6 +329,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   const fleetWindDownLoopEndAuthorized = inputs.fleetWindDownLoopEndAuthorized ?? null;
+  const coldRetune = coldLoopRetuneCommand(inputs.activeLoopIntervalSec, inputs.activeLoopGoal);
   let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
@@ -391,7 +417,8 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ The guaranteed next wake is WARM and will retain this over-ceiling context. ` +
       `Write loop:checkpoint { did, left, insight, next }, then retune the existing loop with ` +
-      `loop:arm { carry: 'cold' } and end the turn; the cold wake starts from that durable carry-note. ` +
+      coldRetune +
+      " and end the turn; the cold wake starts from that durable carry-note. " +
       (selfCompactionAvailable === false
         ? `Do not call session:request-compaction: this session has no live psu-pty host and it would refuse with no_live_pty_host.`
         : `A host-backed session may alternatively use session:request-compaction.`);
@@ -424,6 +451,8 @@ export function continuationGateFromReads(args: {
   nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
   fleetWindDownLoopEndAuthorized?: boolean | null;
+  activeLoopIntervalSec?: number | null;
+  activeLoopGoal?: string | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
     contextPct: contextUsagePct(args.contextTokens, args.compactionLimit),
@@ -433,5 +462,7 @@ export function continuationGateFromReads(args: {
     nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,
     fleetWindDownLoopEndAuthorized: args.fleetWindDownLoopEndAuthorized,
+    activeLoopIntervalSec: args.activeLoopIntervalSec,
+    activeLoopGoal: args.activeLoopGoal,
   });
 }

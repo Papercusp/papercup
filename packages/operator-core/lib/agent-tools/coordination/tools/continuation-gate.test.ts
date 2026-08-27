@@ -152,14 +152,31 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
       rewakeGuaranteed: true,
       nextWakeFresh: false,
       selfCompactionAvailable: false,
+      activeLoopIntervalSec: 300,
+      activeLoopGoal: 'drain the lane',
     });
     expect(v.shouldContinue).toBe(false);
     expect(v.nextWakeFresh).toBe(false);
     expect(v.guidance).toMatch(/next wake is WARM/);
     expect(v.guidance).toMatch(/loop:checkpoint/);
-    expect(v.guidance).toMatch(/carry: 'cold'/);
+    expect(v.guidance).toContain(
+      "loop:arm { intervalSec: 300, goal: \"drain the lane\", carry: 'cold' }",
+    );
     expect(v.guidance).toMatch(/no_live_pty_host/);
     expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
+  });
+
+  it('requires a status read before rendering a cold retune when active-loop values are unavailable', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 91,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: false,
+    });
+    expect(v.guidance).toContain('read loop:status');
+    expect(v.guidance).toContain('intervalSec: <status.intervalSec>');
+    expect(v.guidance).toContain('goal: <status.goal>');
   });
 
   it('a guaranteed COLD wake keeps the ordinary settle path', () => {
