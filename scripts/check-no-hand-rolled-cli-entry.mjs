@@ -48,7 +48,6 @@ const SKIP_DIRS = new Set([
  * Entries are `${repo-relative-path}|${guard-kind}` -> count.
  */
 const ALLOW_COUNTS = new Map([
-  ['apps/operator/bin/embed-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/bin/serve.ts|path-to-file-url', 2],
   ['apps/operator/bin/spawner-sidecar.ts|path-to-file-url', 2],
   ['apps/operator/bin/substrate-sidecar.ts|path-to-file-url', 2],

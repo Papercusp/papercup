@@ -25,10 +25,10 @@
  */
 
 import { runEmbedSidecarServer } from '@papercusp/operator-core/lib/memory/embed-sidecar-server';
-import { isCliEntry } from '@papercusp/operator-core/lib/util/cli-entry';
 
-// Auto-run only when invoked directly (dev: tsx apps/operator/bin/embed-sidecar.ts).
-// The packaged path calls runEmbedSidecarServer() from serve.ts instead.
-// isCliEntry keeps that direct-run + symlink behavior while returning false
-// when this module is inlined into a host bundle.
-if (isCliEntry(import.meta.url)) runEmbedSidecarServer();
+// This file is the dedicated entrypoint in both supported shapes: direct dev
+// execution and the systemd-owned dist-sidecar/embed-sidecar.mjs bundle. It is
+// never imported by the packaged operator; serve.ts imports the server module
+// directly for its own sidecar-mode divert. Start unconditionally so the
+// bundle's CLI-entry define cannot turn the real entrypoint into a no-op.
+runEmbedSidecarServer();
