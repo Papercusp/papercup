@@ -1323,7 +1323,7 @@ export default defineTool({
               sessions: freshVerdict.sessions.map((session) => ({
                 ownerId: session.ownerId,
                 sessionId:
-                  (session as typeof session & { sessionId?: string | null }).sessionId ?? null,
+                  session.sessionId,
               })),
             },
           }
