@@ -1,8 +1,12 @@
 #!/usr/bin/env node
 /**
- * check-no-raw-block-edge.mjs — fail-loud guard against a NEW feature→feature
- * `rel='blocks'` edge write that bypasses the acyclicity policy
- * (work-item-dependency-edges-2026-08-02, P-007 / D-013).
+ * check-no-raw-block-edge.mjs — fail-loud guards against dependency writes that
+ * bypass either the historical feature-edge policy or canonical candidate admission.
+ *
+ * dependency-graph-admission-and-health-2026-08-26 P-006 extends the original guard to:
+ *   - raw work_item_deps INSERT/UPDATE/DELETE outside an exact capability list;
+ *   - the retired enforceAcyclicity:false escape hatch; and
+ *   - compatibility facades that stop calling mutateWorkItemDependencies.
  *
  * WHY THIS IS A BUILD GUARD AND NOT A TEST. A feature→feature `blocks` CYCLE
  * permanently deadlocks the dispatch frontier: every feature in the cycle is
@@ -89,6 +93,44 @@ export const ALLOWLIST = new Set([
  */
 export const BASELINE = new Set([]);
 
+/**
+ * Exact, capability-confined raw work_item_deps DML sites.
+ *
+ * This is intentionally a path map, not a directory exemption: a new migration or another
+ * goal writer must trip the guard and explain why it cannot use P-005. The reasons are part of
+ * the reviewed capability boundary and are asserted non-empty by the guard tests.
+ */
+export const RAW_WORK_ITEM_DEPS_CAPABILITIES = new Map([
+  [
+    'packages/operator-core/lib/dbos/work-item-deps-store.ts',
+    'Canonical P-005 store: applyStoredEdgeDiff is the sole normal-runtime physical DML site.',
+  ],
+  [
+    'packages/operator-core/lib/testing/dependency-fixture.ts',
+    'Test-only defect seeder: must mint malformed rows that canonical admission correctly refuses.',
+  ],
+  [
+    'packages/operator-core/test/_work-items-schema.ts',
+    'Test-only schema/trigger fixture used to stand up real-Postgres integration databases.',
+  ],
+  [
+    'packages/agent-mcp/src/tools/goals/goal-deps.ts',
+    'Goal-only graph policy: every DML predicate pins blocked_kind=goal; goals have distinct lifecycle semantics.',
+  ],
+  [
+    'libs/papercusp/libs/db/sql/370-backfill-work-item-deps.sql',
+    'Immutable one-time historical migration predating canonical admission.',
+  ],
+  [
+    'libs/papercusp/libs/db/sql/734-repoint-qualified-refs-on-rehome.sql',
+    'Topology-preserving re-home trigger: renames one feature identity in-place and cannot call TypeScript from PostgreSQL.',
+  ],
+  [
+    'libs/papercusp/libs/db/sql/935-canonical-work-item-blocking-edges.sql',
+    'Immutable one-time cutover migration that canonicalized historical coord_links rows.',
+  ],
+]);
+
 /** Vendored / generated / non-source / test files are never scanned. */
 export const isExcluded = (f) =>
   f.startsWith('_retired/') ||
@@ -103,11 +145,14 @@ export const isExcluded = (f) =>
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
   /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
-  !/\.(ts|mjs|cjs)$/.test(f);
+  !/\.(ts|mjs|cjs|sql)$/.test(f);
 
 /** Strip block + line comments so prose about blocks edges isn't flagged. */
 export function stripComments(text) {
-  return text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/--[^\n]*/g, '');
 }
 
 /**
@@ -145,6 +190,69 @@ export function writesRawBlocksEdge(text) {
   return WRITE_PRIMITIVE.test(t) && BLOCKS_LITERAL.test(t) && !SANCTIONED.test(t);
 }
 
+/** Physical canonical-table mutation — reads and DDL do not match. */
+const RAW_WORK_ITEM_DEPS_DML =
+  /\b(?:INSERT\s+INTO|DELETE\s+FROM|UPDATE)\s+(?:ONLY\s+)?harness_shared\.work_item_deps\b/i;
+
+/** A source file contains raw canonical dependency-table DML. */
+export function writesRawWorkItemDependency(text) {
+  return RAW_WORK_ITEM_DEPS_DML.test(stripComments(text));
+}
+
+/** The blanket bypass P-006 retired. Capability-confined migrations do not use this TS option. */
+export function usesDependencyAdmissionBypass(text) {
+  return /\benforceAcyclicity\s*:\s*false\b/.test(stripComments(text));
+}
+
+const CANONICAL_STORE_FACADES = [
+  'mirrorWorkItemBlockingEdge',
+  'removeMirroredWorkItemBlockingEdge',
+  'syncWorkItemDepEdges',
+];
+
+/**
+ * Extract one exported function through the next exported declaration. This intentionally checks
+ * a coarse source contract, just like writesRawBlocksEdge: the negative-control tests prove the
+ * detector can fire, while runtime/integration tests prove behavior.
+ */
+function functionSlice(text, name, exportedOnly = false) {
+  const prefix = exportedOnly ? 'export\\s+' : '(?:export\\s+)?';
+  const start = text.search(new RegExp(`\\b${prefix}async\\s+function\\s+${name}\\s*\\(`));
+  if (start < 0) return null;
+  const next = text.indexOf('\nexport ', start + 1);
+  return text.slice(start, next < 0 ? text.length : next);
+}
+
+/** Which required facades are missing or no longer submit to P-005. */
+export function canonicalFacadeRoutingOffenders(text) {
+  return CANONICAL_STORE_FACADES.filter((name) => {
+    const body = functionSlice(stripComments(text), name, true);
+    return body === null || !/\bmutateWorkItemDependencies\s*\(/.test(body);
+  });
+}
+
+/**
+ * A capability is narrower than a file allowlist. Prove the two runtime-capability files keep
+ * their DML inside the named function, and that the goal writer stays goal-only.
+ */
+function rawCapabilityScopeViolation(path, text) {
+  const stripped = stripComments(text);
+  if (path === 'packages/operator-core/lib/dbos/work-item-deps-store.ts') {
+    const body = functionSlice(stripped, 'applyStoredEdgeDiff');
+    if (body === null || !writesRawWorkItemDependency(body)) return 'canonical diff applier missing its DML';
+    if (writesRawWorkItemDependency(stripped.replace(body, ''))) return 'raw DML exists outside applyStoredEdgeDiff';
+  }
+  if (path === 'packages/agent-mcp/src/tools/goals/goal-deps.ts') {
+    const body = functionSlice(stripped, 'replaceGoalBlockedBy', true);
+    if (body === null || !writesRawWorkItemDependency(body)) return 'goal replace capability missing its DML';
+    if (writesRawWorkItemDependency(stripped.replace(body, ''))) return 'raw DML exists outside replaceGoalBlockedBy';
+    if (!/blocked_kind\s*=\s*\$\{GOAL_DEP_KIND\}/.test(body) || !/\$\{GOAL_DEP_KIND\}/.test(body)) {
+      return 'goal DML is no longer pinned to GOAL_DEP_KIND';
+    }
+  }
+  return null;
+}
+
 /**
  * Scan the tracked tree for offenders. Enumerates via `listTrackedFiles`, which
  * recurses into submodules — a bare `git ls-files` emits one gitlink entry per
@@ -156,39 +264,69 @@ export function findOffenders() {
   const { files: tracked, unscanned } = listTrackedFiles(ROOT);
 
   const offenders = [];
+  const rawWorkItemDepsOffenders = [];
+  const bypassOffenders = [];
   for (const f of tracked) {
     if (isExcluded(f)) continue;
-    if (ALLOWLIST.has(f) || BASELINE.has(f)) continue;
     let text;
     try {
       text = readFileSync(new URL(f, `file://${ROOT}`), 'utf8');
     } catch {
       continue;
     }
-    if (writesRawBlocksEdge(text)) offenders.push(f);
+    if (!ALLOWLIST.has(f) && !BASELINE.has(f) && writesRawBlocksEdge(text)) offenders.push(f);
+    if (writesRawWorkItemDependency(text)) {
+      if (!RAW_WORK_ITEM_DEPS_CAPABILITIES.has(f)) {
+        rawWorkItemDepsOffenders.push(f);
+      } else {
+        const scopeViolation = rawCapabilityScopeViolation(f, text);
+        if (scopeViolation) rawWorkItemDepsOffenders.push(`${f} (${scopeViolation})`);
+      }
+    }
+    // The detector source necessarily spells the banned option inside its own regex.
+    if (f !== 'scripts/check-no-raw-block-edge.mjs' && usesDependencyAdmissionBypass(text)) {
+      bypassOffenders.push(f);
+    }
   }
-  return { offenders, unscanned };
+  const storePath = 'packages/operator-core/lib/dbos/work-item-deps-store.ts';
+  const storeText = readFileSync(new URL(storePath, `file://${ROOT}`), 'utf8');
+  const facadeRoutingOffenders = canonicalFacadeRoutingOffenders(storeText);
+  return { offenders, rawWorkItemDepsOffenders, bypassOffenders, facadeRoutingOffenders, unscanned };
 }
 
 function main() {
-  const { offenders, unscanned } = findOffenders();
-  if (offenders.length === 0) {
+  const { offenders, rawWorkItemDepsOffenders, bypassOffenders, facadeRoutingOffenders, unscanned } =
+    findOffenders();
+  if (
+    offenders.length === 0 &&
+    rawWorkItemDepsOffenders.length === 0 &&
+    bypassOffenders.length === 0 &&
+    facadeRoutingOffenders.length === 0
+  ) {
     console.log(
-      '✓ no feature→feature `blocks` edge write bypasses the acyclicity policy.' +
+      '✓ no dependency edge write bypasses canonical admission or its confined capabilities.' +
         describeUnscanned(unscanned),
     );
     process.exit(0);
   }
-  console.error('✗ blocks-edge write(s) bypassing the acyclicity policy:');
-  console.error('  A feature→feature `blocks` CYCLE permanently deadlocks the dispatch frontier —');
-  console.error('  every feature in the cycle is forever non-ready. Route the write through one of:');
-  console.error('    syncFeatureBlockEdges(harness, featureId, blockedBy)   — the authoritative writer');
-  console.error('    guardFeatureBlockEdgeAcyclic(srcRef, dstRef)           — for a single raw edge');
-  console.error('  both from packages/operator-core/lib/dbos/feature-blockers-edges.ts.\n');
-  for (const o of offenders) console.error('    ' + o);
-  console.error(
-    `\n  ${offenders.length} offender(s). See plan work-item-dependency-edges-2026-08-02 (P-007 / D-013).`,
-  );
+  if (offenders.length > 0) {
+    console.error('✗ coord_links blocks-edge write(s) bypassing the feature policy:');
+    for (const o of offenders) console.error('    ' + o);
+  }
+  if (rawWorkItemDepsOffenders.length > 0) {
+    console.error('✗ raw work_item_deps DML outside a named capability:');
+    for (const o of rawWorkItemDepsOffenders) console.error('    ' + o);
+    console.error('  Route normal runtime writes through a facade in dbos/work-item-deps-store.ts.');
+  }
+  if (bypassOffenders.length > 0) {
+    console.error('✗ retired enforceAcyclicity:false dependency-admission bypass:');
+    for (const o of bypassOffenders) console.error('    ' + o);
+  }
+  if (facadeRoutingOffenders.length > 0) {
+    console.error('✗ compatibility facade(s) no longer route through mutateWorkItemDependencies:');
+    for (const o of facadeRoutingOffenders) console.error('    ' + o);
+  }
+  console.error('\n  See dependency-graph-admission-and-health-2026-08-26 P-006.');
   process.exit(1);
 }
 

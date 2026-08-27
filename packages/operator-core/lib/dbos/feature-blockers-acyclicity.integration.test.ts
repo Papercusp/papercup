@@ -58,7 +58,14 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
-  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.work_items RESTART IDENTITY`;
+  await db.sql`TRUNCATE harness_shared.coord_links, harness_shared.work_item_deps, harness_shared.work_items RESTART IDENTITY`;
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, status, item_kind, created_ts, updated_ts, payload)
+    VALUES
+      ('default', ${H}, 'A', 'A', 'open', 'feature', 0, 0, '{}'::jsonb),
+      ('default', ${H}, 'B', 'B', 'open', 'feature', 0, 0, '{}'::jsonb),
+      ('default', ${H}, 'C', 'C', 'open', 'feature', 0, 0, '{}'::jsonb)`;
 });
 
 const sortMap = (m: Map<string, string[]>) =>
@@ -96,16 +103,8 @@ describe('syncFeatureBlockEdges enforces acyclicity (P-003 / F4) — real PG', (
     expect(sortMap(await getFeatureBlockers(H))).toEqual({ A: ['B'] });
   });
 
-  it('enforceAcyclicity:false bypasses the guard (the trusted-backfill escape hatch)', async () => {
-    await syncFeatureBlockEdges(H, 'A', ['B']);
-    // With the guard disabled, the cycle-closing edge IS written (used only for validated backfills).
-    await syncFeatureBlockEdges(H, 'B', ['A'], { enforceAcyclicity: false });
-    expect(sortMap(await getFeatureBlockers(H))).toEqual({ A: ['B'], B: ['A'] });
-    // And the read-only reconciliation helper now FLAGS the pre-existing cycle.
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const r = await detectFeatureBlockGraphCycle(H);
-    expect(r.hasCycle).toBe(true);
-    expect(r.cycleNodes.sort()).toEqual(['A', 'B']);
-    warn.mockRestore();
+  it('REJECTS a missing executable endpoint through canonical admission', async () => {
+    await expect(syncFeatureBlockEdges(H, 'A', ['MISSING'])).rejects.toThrow(/does not resolve|missing/i);
+    expect(sortMap(await getFeatureBlockers(H))).toEqual({});
   });
 });

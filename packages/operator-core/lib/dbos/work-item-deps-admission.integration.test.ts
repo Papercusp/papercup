@@ -15,7 +15,10 @@ import type { Sql } from 'postgres';
 import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, WORK_ITEM_DEPS_DDL } from '../../test/_work-items-schema';
 import {
+  mirrorWorkItemBlockingEdge,
   mutateWorkItemDependencies,
+  removeMirroredWorkItemBlockingEdge,
+  syncWorkItemDepEdges,
   WorkItemDependencyAdmissionError,
   type WorkItemDependencyBatchInput,
   type WorkItemDepEndpoint,
@@ -60,6 +63,12 @@ const mutate = (mutations: WorkItemDependencyBatchInput['mutations']) =>
       retry: { maxRetries: 8, baseDelayMs: 0, sleep: async () => {} },
     },
   );
+
+const writerOpts = () => ({
+  sql: db.sql as Sql,
+  itemWorkspaceId: ITEM_WS,
+  retry: { maxRetries: 8, baseDelayMs: 0, sleep: async () => {} },
+});
 
 async function admissionError(promise: Promise<unknown>): Promise<WorkItemDependencyAdmissionError> {
   try {
@@ -268,5 +277,45 @@ describe('canonical dependency batch admission', () => {
     expect(results.map((result) => result.inserted).sort()).toEqual([0, 1]);
     expect(results.every((result) => result.removed === 0)).toBe(true);
     expect(await storedEdges()).toHaveLength(1);
+  });
+
+  it('routes mirror + unlink facades through canonical admission', async () => {
+    await seedItem('EI-A');
+    await seedItem('EI-B');
+
+    await mirrorWorkItemBlockingEdge(issue('EI-A'), issue('EI-B'), writerOpts());
+    await expect(
+      mirrorWorkItemBlockingEdge(issue('EI-B'), issue('EI-A'), writerOpts()),
+    ).rejects.toBeInstanceOf(WorkItemDependencyAdmissionError);
+    expect(await storedEdges()).toEqual([
+      {
+        blocked_kind: 'issue',
+        blocked_ref: 'EI-B',
+        blocker_kind: 'issue',
+        blocker_ref: 'EI-A',
+      },
+    ]);
+
+    await removeMirroredWorkItemBlockingEdge(issue('EI-A'), issue('EI-B'), writerOpts());
+    expect(await storedEdges()).toEqual([]);
+  });
+
+  it('routes sync/replace through canonical admission and preserves the prior set on rejection', async () => {
+    await seedItem('F-dependent', { kind: 'feature' });
+    await seedItem('F-old', { kind: 'feature' });
+    await seedItem('F-new', { kind: 'feature' });
+
+    await syncWorkItemDepEdges(H, 'F-dependent', ['F-old'], writerOpts());
+    await expect(
+      syncWorkItemDepEdges(H, 'F-dependent', ['F-new', 'F-missing'], writerOpts()),
+    ).rejects.toBeInstanceOf(WorkItemDependencyAdmissionError);
+    expect(await storedEdges()).toEqual([
+      {
+        blocked_kind: 'feature',
+        blocked_ref: `${H}#F-dependent`,
+        blocker_kind: 'feature',
+        blocker_ref: `${H}#F-old`,
+      },
+    ]);
   });
 });

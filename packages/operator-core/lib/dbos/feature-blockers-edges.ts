@@ -19,7 +19,12 @@
  */
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { featureRef, FEATURE_KIND, isQualifiedFeatureRef } from '../issue-blocks-merge';
-import { getWorkItemDepBlockers, syncWorkItemDepEdges, wouldCreateCycle } from './work-item-deps-store';
+import {
+  getWorkItemDepBlockers,
+  syncWorkItemDepEdges,
+  wouldCreateCycle,
+  type WorkItemDependencyWriterOptions,
+} from './work-item-deps-store';
 import { detectDependencyCycle } from '../feature-deps';
 
 /**
@@ -40,18 +45,16 @@ export async function getFeatureBlockers(harnessSlug: string): Promise<Map<strin
  * ACYCLICITY (P-003, audit finding F4): this is the AUTHORITATIVE blocks-edge writer,
  * so the cycle guard lives HERE. A feature→feature `blocks` cycle silently DEADLOCKS the
  * dispatch frontier (every item in the cycle is forever non-ready — its blocker never
- * terminates), so a cycle-closing set is REJECTED (throws) rather than written. We load
- * the live blocks graph (getFeatureBlockers) and reuse `wouldCreateCycle` /
- * `detectDependencyCycle` — the SAME check work_item_deps enforces on its direct writes —
- * Pass
- * `enforceAcyclicity:false` ONLY for a trusted backfill where the source was already
- * validated.
+ * terminates), so a cycle-closing set is REJECTED (throws) rather than written. P-006 routes
+ * this facade through `mutateWorkItemDependencies`, whose full typed candidate analysis is the
+ * guarantee. The old `enforceAcyclicity:false` escape hatch is deliberately gone: a backfill is
+ * either admitted by the same policy or is an explicitly capability-confined SQL migration.
  */
 export async function syncFeatureBlockEdges(
   harnessSlug: string,
   featureId: string,
   blockedBy: readonly string[],
-  opts: { enforceAcyclicity?: boolean } = {},
+  opts: WorkItemDependencyWriterOptions = {},
 ): Promise<void> {
   await syncWorkItemDepEdges(harnessSlug, featureId, blockedBy, opts);
 }

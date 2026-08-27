@@ -69,8 +69,14 @@ async function seed(rows: { id: string; blockedBy?: string[]; status?: string }[
       INSERT INTO harness_shared.harness_features_consolidated
         (workspace_id, harness_slug, feature_id, status, item_kind, origin)
       VALUES ('default', 'demo', ${r.id}, ${r.status ?? 'todo'}, 'feature', 'local')`;
+  }
+  for (const r of rows) {
     if (r.blockedBy && r.blockedBy.length > 0) await syncFeatureBlockEdges('demo', r.id, r.blockedBy);
   }
+}
+
+async function seedIds(ids: readonly string[]) {
+  await seed(ids.map((id) => ({ id })));
 }
 
 const sortMap = (m: Map<string, string[]>) =>
@@ -88,6 +94,7 @@ describe('featureBlockEdges (pure)', () => {
 
 describe('EI-1 canonical edge blocking (real PG)', () => {
   it('syncFeatureBlockEdges writes/replaces/clears a feature’s blocker edges; getFeatureBlockers reads them', async () => {
+    await seedIds(['F-1', 'F-2', 'F-3', 'F-4']);
     await syncFeatureBlockEdges('demo', 'F-1', ['F-2', 'F-3']);
     expect(sortMap(await getFeatureBlockers('demo'))).toEqual({ 'F-1': ['F-2', 'F-3'] });
     const physical = await db.sql<{ blocked_ref: string; blocker_ref: string }[]>`
@@ -106,6 +113,7 @@ describe('EI-1 canonical edge blocking (real PG)', () => {
   });
 
   it('getFeatureBlockers drops self-edges + dedups, scoped within the harness', async () => {
+    await seedIds(['F-1', 'F-2', 'F-3']);
     await syncFeatureBlockEdges('demo', 'F-3', ['F-1', 'F-2', 'F-3']); // self-edge dropped at write
     expect(sortMap(await getFeatureBlockers('demo'))).toEqual({ 'F-3': ['F-1', 'F-2'] });
   });

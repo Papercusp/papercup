@@ -1254,9 +1254,7 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     await edge({ plan, item: 'P-001', srcKind: 'feature', srcRef: 'sheets#F-old' });
     await edge({ plan, item: 'P-002', srcKind: 'feature', srcRef: 'sheets#F-new' });
     await edge({ plan, item: 'P-003', srcKind: 'feature', srcRef: 'sheets#F-target' });
-    await syncFeatureBlockEdges('sheets', 'F-target', ['F-old', 'F-manual'], {
-      enforceAcyclicity: false,
-    });
+    await syncFeatureBlockEdges('sheets', 'F-target', ['F-old', 'F-manual']);
     h3.getPlanRow.mockResolvedValue({
       items: [
         { id: 'P-001', status: 'todo', blockedBy: [] },

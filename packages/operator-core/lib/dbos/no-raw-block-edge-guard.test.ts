@@ -18,7 +18,13 @@
 import { describe, it, expect } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { writesRawBlocksEdge } from '../../../../scripts/check-no-raw-block-edge.mjs';
+import {
+  RAW_WORK_ITEM_DEPS_CAPABILITIES,
+  canonicalFacadeRoutingOffenders,
+  usesDependencyAdmissionBypass,
+  writesRawBlocksEdge,
+  writesRawWorkItemDependency,
+} from '../../../../scripts/check-no-raw-block-edge.mjs';
 
 describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
   describe('FLAGS a bypassing write — the direction the guard exists for', () => {
@@ -148,5 +154,51 @@ describe('no-raw-block-edge guard predicate (P-007 / D-013)', () => {
     expect(writesRawBlocksEdge("await linkWorkItem(id, dst, 'relates');\nconst label = 'blocks';")).toBe(
       true,
     );
+  });
+});
+
+describe('P-006 canonical work_item_deps admission guard', () => {
+  it('flags physical INSERT, DELETE, and UPDATE DML but not a read', () => {
+    expect(
+      writesRawWorkItemDependency('await sql`INSERT INTO harness_shared.work_item_deps (workspace_id) VALUES (ws)`;'),
+    ).toBe(true);
+    expect(
+      writesRawWorkItemDependency("await sql`DELETE FROM harness_shared.work_item_deps WHERE dep_type = 'blocks'`;"),
+    ).toBe(true);
+    expect(writesRawWorkItemDependency('await sql`UPDATE harness_shared.work_item_deps SET blocked_ref = ref`;')).toBe(
+      true,
+    );
+    expect(writesRawWorkItemDependency('await sql`SELECT * FROM harness_shared.work_item_deps`;')).toBe(false);
+  });
+
+  it('does not mistake TS or SQL comments for a physical write', () => {
+    expect(writesRawWorkItemDependency('// INSERT INTO harness_shared.work_item_deps\nconst x = 1;')).toBe(false);
+    expect(writesRawWorkItemDependency('-- DELETE FROM harness_shared.work_item_deps\nSELECT 1')).toBe(false);
+  });
+
+  it('detects the retired blanket acyclicity bypass', () => {
+    expect(usesDependencyAdmissionBypass('syncFeatureBlockEdges(h, id, deps, { enforceAcyclicity: false })')).toBe(
+      true,
+    );
+    expect(usesDependencyAdmissionBypass('syncFeatureBlockEdges(h, id, deps)')).toBe(false);
+  });
+
+  it('requires every compatibility facade to submit through mutateWorkItemDependencies', () => {
+    const routed = [
+      'export async function mirrorWorkItemBlockingEdge() { await mutateWorkItemDependencies(input); }',
+      'export async function removeMirroredWorkItemBlockingEdge() { await mutateWorkItemDependencies(input); }',
+      'export async function syncWorkItemDepEdges() { await mutateWorkItemDependencies(input); }',
+    ].join('\n');
+    expect(canonicalFacadeRoutingOffenders(routed)).toEqual([]);
+    expect(
+      canonicalFacadeRoutingOffenders(
+        routed.replace('await mutateWorkItemDependencies(input);', 'await sql`INSERT INTO x VALUES (1)`;'),
+      ),
+    ).toEqual(['mirrorWorkItemBlockingEdge']);
+  });
+
+  it('every raw-DML capability carries a reviewable reason', () => {
+    expect(RAW_WORK_ITEM_DEPS_CAPABILITIES.size).toBeGreaterThan(0);
+    expect([...RAW_WORK_ITEM_DEPS_CAPABILITIES.values()].every((reason) => reason.trim().length >= 40)).toBe(true);
   });
 });
