@@ -230,7 +230,7 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
        ORDER BY cs.created_at ASC
        LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
     `;
-    const pending: PendingObligation[] = [];
+    const obligations: PendingObligation[] = [];
     for (const r of rows) {
       const requester = (r.requester_id ?? '').trim();
       const responder = (r.responder_id ?? '').trim();
@@ -248,7 +248,7 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
       const iAmRequester = requester === self;
       const counterpart = iAmRequester ? responder : requester;
       if (counterpart === self) continue;
-      pending.push({
+      obligations.push({
         ownerId: counterpart,
         // The requester is OWED the reply; the responder OWES it. Direction is read off
         // which side of the stored pair the caller sits on — never inferred from state.
@@ -258,11 +258,11 @@ export async function fetchConsultObligations(selfOwnerId: string): Promise<Obli
         handle,
       });
     }
-    if (pending.length === 0) return [];
+    if (obligations.length === 0) return [];
     // P-011 — one BATCHED oracle call for every counterpart, after the loop rather than
     // inside it. Per-edge resolution would issue N point-reads on a hot presence path.
-    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
-    return pending.map((p) => ({
+    const liveness = await resolveCounterpartLiveness(obligations.map((p) => p.ownerId));
+    return obligations.map((p) => ({
       ...p,
       counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
     }));
@@ -403,7 +403,7 @@ export async function fetchGradingObligations(
        ORDER BY created_ts ASC
        LIMIT ${COUPLING_OBLIGATION_ROW_CAP}
     `;
-    const pending: PendingObligation[] = [];
+    const obligations: PendingObligation[] = [];
     for (const r of rows) {
       const grader = (r.grader ?? '').trim();
       const author = (r.author ?? '').trim();
@@ -415,7 +415,7 @@ export async function fetchGradingObligations(
       const iAmAuthor = author === self;
       const counterpart = iAmAuthor ? grader : author;
       if (counterpart === self) continue;
-      pending.push({
+      obligations.push({
         ownerId: counterpart,
         // The AUTHOR owes the response to a grade; the grader is owed it.
         direction: iAmAuthor ? 'i-owe' : 'owes-me',
@@ -424,9 +424,9 @@ export async function fetchGradingObligations(
         handle,
       });
     }
-    if (pending.length === 0) return [];
-    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
-    return pending.map((p) => ({
+    if (obligations.length === 0) return [];
+    const liveness = await resolveCounterpartLiveness(obligations.map((p) => p.ownerId));
+    return obligations.map((p) => ({
       ...p,
       counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
     }));
@@ -490,7 +490,7 @@ export async function fetchFleetSupervision(
       return typeof t === 'number' && Number.isFinite(t) && nowMs - t <= SUPERVISION_MEMBERSHIP_HORIZON_MS;
     };
     if (!withinHorizon(me.heartbeatAt)) return [];
-    const pending: PendingObligation[] = [];
+    const obligations: PendingObligation[] = [];
     for (const [ownerId, peer] of rows) {
       if (ownerId === self) continue;
       if (peer.fleetSlug !== me.fleetSlug) continue;
@@ -504,7 +504,7 @@ export async function fetchFleetSupervision(
       // null covers member↔member AND leader↔leader AND any unrecognised role — all of
       // which are co-membership, not supervision.
       if (!direction) continue;
-      pending.push({
+      obligations.push({
         ownerId,
         direction,
         what: 'supervision of this fleet lane',
@@ -514,9 +514,9 @@ export async function fetchFleetSupervision(
         handle: me.fleetSlug,
       });
     }
-    if (pending.length === 0) return [];
-    const liveness = await resolveCounterpartLiveness(pending.map((p) => p.ownerId));
-    return pending.map((p) => ({
+    if (obligations.length === 0) return [];
+    const liveness = await resolveCounterpartLiveness(obligations.map((p) => p.ownerId));
+    return obligations.map((p) => ({
       ...p,
       counterpartLiveness: liveness.get(p.ownerId) ?? 'unknown',
     }));

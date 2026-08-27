@@ -19,6 +19,8 @@ import { existsSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { readRecording, type LoadedRecording, type RecordedFrame } from './trajectory-recorder';
 import { scrubExecEnv } from '../capability/exec-sandbox';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { runGovernedOperation } from '../../resource-governor/execution';
 
 export type ExportFormat = 'webm' | 'gif';
 
@@ -96,12 +98,27 @@ export function webmCommand(outBasename: string): FfmpegCommand {
   return {
     bin: 'ffmpeg',
     args: [
-      '-hide_banner', '-loglevel', 'error', '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
       ...CONCAT_INPUT,
-      '-fps_mode', 'vfr',
-      '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2',
-      '-c:v', 'libvpx-vp9', '-pix_fmt', 'yuv420p', '-b:v', '0', '-crf', '34', '-row-mt', '1',
-      '-an', outBasename,
+      '-fps_mode',
+      'vfr',
+      '-vf',
+      'scale=trunc(iw/2)*2:trunc(ih/2)*2',
+      '-c:v',
+      'libvpx-vp9',
+      '-pix_fmt',
+      'yuv420p',
+      '-b:v',
+      '0',
+      '-crf',
+      '34',
+      '-row-mt',
+      '1',
+      '-an',
+      outBasename,
     ],
   };
 }
@@ -116,9 +133,13 @@ export function gifPaletteCommand(): FfmpegCommand {
   return {
     bin: 'ffmpeg',
     args: [
-      '-hide_banner', '-loglevel', 'error', '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
       ...CONCAT_INPUT,
-      '-vf', `scale='min(${GIF_MAX_WIDTH},iw)':-2:flags=lanczos,palettegen=stats_mode=diff`,
+      '-vf',
+      `scale='min(${GIF_MAX_WIDTH},iw)':-2:flags=lanczos,palettegen=stats_mode=diff`,
       PALETTE_BASENAME,
     ],
   };
@@ -128,11 +149,17 @@ export function gifCommand(outBasename: string): FfmpegCommand {
   return {
     bin: 'ffmpeg',
     args: [
-      '-hide_banner', '-loglevel', 'error', '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-y',
       ...CONCAT_INPUT,
-      '-i', PALETTE_BASENAME,
-      '-lavfi', `scale='min(${GIF_MAX_WIDTH},iw)':-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3`,
-      '-loop', '0',
+      '-i',
+      PALETTE_BASENAME,
+      '-lavfi',
+      `scale='min(${GIF_MAX_WIDTH},iw)':-2:flags=lanczos[x];[x][1:v]paletteuse=dither=bayer:bayer_scale=3`,
+      '-loop',
+      '0',
       outBasename,
     ],
   };
@@ -160,32 +187,44 @@ export const EXPORT_TIMEOUT_MS = 180_000;
 
 export function createFfmpegExec(timeoutMs = EXPORT_TIMEOUT_MS): ExportExec {
   return (bin, args, opts) =>
-    new Promise((resolveExec, reject) => {
-      const child = spawn(bin, args, {
-        cwd: opts.cwd,
-        env: scrubExecEnv(process.env),
-        ...(opts.signal ? { signal: opts.signal } : {}),
-      });
-      const err: Buffer[] = [];
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill('SIGKILL');
-      }, timeoutMs);
-      child.stderr?.on('data', (d: Buffer) => err.push(d));
-      child.on('error', (e) => {
-        clearTimeout(timer);
-        reject(e);
-      });
-      child.on('close', (status) => {
-        clearTimeout(timer);
-        const stderr = Buffer.concat(err).toString();
-        resolveExec({
-          status: status ?? 1,
-          stderr: timedOut ? `${stderr}\n(killed after ${timeoutMs}ms)` : stderr,
-        });
-      });
-    });
+    runGovernedOperation(
+      {
+        workspaceId: activeWorkspaceId(),
+        namespace: 'computer-trajectory-export',
+        owner: 'computer:record',
+        admissionClass: 'process',
+        demand: { cpuWeight: 1, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `computer:record:${bin}`,
+        metadata: { binary: bin, timeoutMs },
+      },
+      async () =>
+        new Promise((resolveExec, reject) => {
+          const child = spawn(bin, args, {
+            cwd: opts.cwd,
+            env: scrubExecEnv(process.env),
+            ...(opts.signal ? { signal: opts.signal } : {}),
+          });
+          const err: Buffer[] = [];
+          let timedOut = false;
+          const timer = setTimeout(() => {
+            timedOut = true;
+            child.kill('SIGKILL');
+          }, timeoutMs);
+          child.stderr?.on('data', (d: Buffer) => err.push(d));
+          child.on('error', (e) => {
+            clearTimeout(timer);
+            reject(e);
+          });
+          child.on('close', (status) => {
+            clearTimeout(timer);
+            const stderr = Buffer.concat(err).toString();
+            resolveExec({
+              status: status ?? 1,
+              stderr: timedOut ? `${stderr}\n(killed after ${timeoutMs}ms)` : stderr,
+            });
+          });
+        }),
+    );
 }
 
 export interface ExportResult {
@@ -230,7 +269,9 @@ export async function exportRecording(dir: string, opts: ExportOpts): Promise<Ex
   for (const cmd of exportCommands(format, outBasename)) {
     const r = await opts.exec(cmd.bin, cmd.args, { cwd: dir, ...(opts.signal ? { signal: opts.signal } : {}) });
     if (r.status !== 0) {
-      throw new Error(`computer:record — ffmpeg failed (exit ${r.status}) exporting ${format}: ${r.stderr.slice(0, 400)}`);
+      throw new Error(
+        `computer:record — ffmpeg failed (exit ${r.status}) exporting ${format}: ${r.stderr.slice(0, 400)}`,
+      );
     }
   }
 

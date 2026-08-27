@@ -46,6 +46,7 @@ import { scrubExecEnv } from '../capability/exec-sandbox';
 import { snapshotA11yTree } from './a11y-snapshot';
 import { recordAction, renderLedgerLine, type ActionLedgerEntry, type ObservedAs } from './action-ledger';
 import { isRecording, noteRecordedAction } from './trajectory-recorder';
+import { runGovernedOperation } from '../../resource-governor/execution';
 
 /** The canonical computer-use resolution (best model grounding accuracy). */
 const DEFAULT_W = 1024;
@@ -66,33 +67,45 @@ export type ComputerExec = (
 ) => Promise<ComputerExecResult>;
 
 const realExec: ComputerExec = (bin, args, opts) =>
-  new Promise((resolveExec, reject) => {
-    const child = spawn(bin, args, {
-      // ISOLATION (2026-06-19 keystroke-leak fix + EI-1617 secrets-leak fix):
-      // scrubExecEnv is an ALLOWLIST (strictly narrower than the old
-      // stripHostX-only denylist) — it drops the operator's host X session
-      // (DISPLAY=:0 / gdm XAUTHORITY, same as before: neither is allowlisted)
-      // AND every operator secret (DB creds, webhook/JWT secrets, session
-      // keys, …) that a desktop-driving xdotool/import call has no business
-      // seeing. opts.env (the leased sandbox DISPLAY) is spread AFTER, so it
-      // always wins regardless of the allowlist.
-      env: { ...scrubExecEnv(process.env), ...(opts.env ?? {}) },
-      ...(opts.signal ? { signal: opts.signal } : {}),
-    });
-    const out: Buffer[] = [];
-    const err: Buffer[] = [];
-    const timer = setTimeout(() => child.kill('SIGKILL'), EXEC_TIMEOUT_MS);
-    child.stdout?.on('data', (d: Buffer) => out.push(d));
-    child.stderr?.on('data', (d: Buffer) => err.push(d));
-    child.on('error', (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on('close', (status) => {
-      clearTimeout(timer);
-      resolveExec({ status, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() });
-    });
-  });
+  runGovernedOperation(
+    {
+      workspaceId: activeWorkspaceId(),
+      namespace: 'computer-command',
+      owner: 'capability:computer',
+      admissionClass: 'process',
+      demand: { cpuWeight: 0.25, memoryBytes: 64 * 1024 * 1024, fileDescriptors: 3 },
+      payloadRef: `computer-command:${bin}`,
+      metadata: { binary: bin },
+    },
+    async () =>
+      new Promise((resolveExec, reject) => {
+        const child = spawn(bin, args, {
+          // ISOLATION (2026-06-19 keystroke-leak fix + EI-1617 secrets-leak fix):
+          // scrubExecEnv is an ALLOWLIST (strictly narrower than the old
+          // stripHostX-only denylist) — it drops the operator's host X session
+          // (DISPLAY=:0 / gdm XAUTHORITY, same as before: neither is allowlisted)
+          // AND every operator secret (DB creds, webhook/JWT secrets, session
+          // keys, …) that a desktop-driving xdotool/import call has no business
+          // seeing. opts.env (the leased sandbox DISPLAY) is spread AFTER, so it
+          // always wins regardless of the allowlist.
+          env: { ...scrubExecEnv(process.env), ...(opts.env ?? {}) },
+          ...(opts.signal ? { signal: opts.signal } : {}),
+        });
+        const out: Buffer[] = [];
+        const err: Buffer[] = [];
+        const timer = setTimeout(() => child.kill('SIGKILL'), EXEC_TIMEOUT_MS);
+        child.stdout?.on('data', (d: Buffer) => out.push(d));
+        child.stderr?.on('data', (d: Buffer) => err.push(d));
+        child.on('error', (e) => {
+          clearTimeout(timer);
+          reject(e);
+        });
+        child.on('close', (status) => {
+          clearTimeout(timer);
+          resolveExec({ status, stdout: Buffer.concat(out), stderr: Buffer.concat(err).toString() });
+        });
+      }),
+  );
 
 let execImpl: ComputerExec = realExec;
 /** The live executor, shared with the accessibility tools so both honour the same
@@ -294,7 +307,10 @@ export async function captureScreenshotPng(target: DesktopTarget, signal?: Abort
 }
 
 /** Capture the sandbox screen → an MCP image content block (base64 PNG). */
-async function screenshot(target: DesktopTarget, signal?: AbortSignal): Promise<{ type: 'image'; data: string; mimeType: string }> {
+async function screenshot(
+  target: DesktopTarget,
+  signal?: AbortSignal,
+): Promise<{ type: 'image'; data: string; mimeType: string }> {
   const png = await captureScreenshotPng(target, signal);
   return { type: 'image', data: png.toString('base64'), mimeType: 'image/png' };
 }
@@ -302,17 +318,32 @@ async function screenshot(target: DesktopTarget, signal?: AbortSignal): Promise<
 const computerArgs = z.object({
   action: z
     .enum([
-      'screenshot', 'cursor_position', 'mouse_move',
-      'left_click', 'right_click', 'middle_click', 'double_click', 'triple_click',
-      'left_click_drag', 'left_mouse_down', 'left_mouse_up',
-      'type', 'key', 'hold_key', 'scroll', 'wait',
+      'screenshot',
+      'cursor_position',
+      'mouse_move',
+      'left_click',
+      'right_click',
+      'middle_click',
+      'double_click',
+      'triple_click',
+      'left_click_drag',
+      'left_mouse_down',
+      'left_mouse_up',
+      'type',
+      'key',
+      'hold_key',
+      'scroll',
+      'wait',
     ])
     .describe('The computer-use action (canonical Anthropic vocabulary).'),
   coordinate: z
     .tuple([z.number(), z.number()])
     .optional()
-    .describe('[x, y] in the screenshot\'s pixel space — for move/click-at/drag/scroll-at.'),
-  text: z.string().optional().describe('For `type` (text to type) and `key`/`hold_key` (an xdotool keysym/chord, e.g. "Return", "ctrl+s").'),
+    .describe("[x, y] in the screenshot's pixel space — for move/click-at/drag/scroll-at."),
+  text: z
+    .string()
+    .optional()
+    .describe('For `type` (text to type) and `key`/`hold_key` (an xdotool keysym/chord, e.g. "Return", "ctrl+s").'),
   scroll_direction: z.enum(['up', 'down', 'left', 'right']).optional().describe('For `scroll`.'),
   scroll_amount: z.number().int().positive().optional().describe('For `scroll` — wheel clicks (default 3).'),
   duration: z.number().positive().optional().describe('For `wait`/`hold_key` — seconds.'),
@@ -422,10 +453,7 @@ async function noteFrame(
  * The capability:computer handler — extracted + exported so it unit-tests
  * directly (with an injected exec seam) without the dispatch layer or a live X.
  */
-export async function runComputerAction(
-  args: ComputerArgs,
-  ctx: ComputerCtx = {},
-): Promise<ComputerToolResult> {
+export async function runComputerAction(args: ComputerArgs, ctx: ComputerCtx = {}): Promise<ComputerToolResult> {
   const target = await resolveBoundDisplay(ctx); // throws loudly if no lease / refuses :0
   const signal = ctx.signal;
   const input = args as ComputerActionInput;
@@ -473,12 +501,8 @@ export async function runComputerAction(
     action: input.action,
     ...(input.coordinate ? { coordinate: [input.coordinate[0], input.coordinate[1]] as const } : {}),
     // Typed text is recorded by LENGTH only — never echoed (see action-ledger.ts).
-    ...(input.action === 'type' && typeof input.text === 'string'
-      ? { typedChars: input.text.length }
-      : {}),
-    ...((input.action === 'key' || input.action === 'hold_key') && input.text
-      ? { keys: input.text }
-      : {}),
+    ...(input.action === 'type' && typeof input.text === 'string' ? { typedChars: input.text.length } : {}),
+    ...((input.action === 'key' || input.action === 'hold_key') && input.text ? { keys: input.text } : {}),
   };
 
   if (r.status !== 0) {
@@ -520,11 +544,11 @@ export default defineTool({
   guidance: {
     when: 'A task needs a GUI app that has no CLI/API — clicking buttons, reading what is on screen, operating a desktop program. Call `screenshot` (or computer:observe) first to see, then act on what you see.',
     notWhen:
-      'Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent\'s leased sandbox desktop.',
+      "Anything scriptable (create files, run a program, hit an API) → capability:bash. A web page → a browser tool (DOM automation is more reliable + cheaper than pixel-clicking). Never use this to operate the host machine — it only drives the agent's leased sandbox desktop.",
     chaining:
       'screenshot once to orient → then act, reading the tree that comes back with each action → screenshot again only when the tree cannot answer (a canvas, a video, a plain X11 client like xterm, or anything about pixels/layout/colour). Set `observe` per action: "image" when you must see pixels, "none" when you do not need to check the effect.',
     returns:
-      'A one-line result (`#7 left_click (412,388) ok · tree`) plus, by default, this desktop\'s compressed accessibility tree. The line is the action ledger: one line per step, never re-emitted, so your transcript accumulates the trajectory for free. `observe` picks what follows it — auto (tree when the desktop exposes one, else a screenshot), image (~1049 tokens at 1024x768), tree (the tree or a loud refusal, never a silent image), none (the line only). The tree costs ~89 tokens on the same screen — 11.79x cheaper, measured — and every observation stays in your context for the rest of the task, so a 40-step job is roughly 4k tokens of trees against 42k of screenshots. The `screenshot` action always returns pixels regardless of `observe`. A trailing `· refs-only` tag means this toolkit reports unusable screen coordinates: activate via computer:click_element by #ref, not by pixel.',
+      "A one-line result (`#7 left_click (412,388) ok · tree`) plus, by default, this desktop's compressed accessibility tree. The line is the action ledger: one line per step, never re-emitted, so your transcript accumulates the trajectory for free. `observe` picks what follows it — auto (tree when the desktop exposes one, else a screenshot), image (~1049 tokens at 1024x768), tree (the tree or a loud refusal, never a silent image), none (the line only). The tree costs ~89 tokens on the same screen — 11.79x cheaper, measured — and every observation stays in your context for the rest of the task, so a 40-step job is roughly 4k tokens of trees against 42k of screenshots. The `screenshot` action always returns pixels regardless of `observe`. A trailing `· refs-only` tag means this toolkit reports unusable screen coordinates: activate via computer:click_element by #ref, not by pixel.",
     seeAlso: [
       'computer:observe (read the tree without acting — same cheap view, on demand)',
       'computer:click_element (activate by #ref from the tree; no coordinates, no pixels)',

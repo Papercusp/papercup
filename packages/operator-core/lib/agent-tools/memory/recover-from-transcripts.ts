@@ -117,7 +117,7 @@ export async function mineTranscript(file: string): Promise<RecoveryCandidate[]>
     return [];
   }
   const session = path.basename(file, '.jsonl');
-  const pending = new Map<string, { name: string; input: Record<string, unknown>; ts: string }>();
+  const openCalls = new Map<string, { name: string; input: Record<string, unknown>; ts: string }>();
   const failed: RecoveryCandidate[] = [];
   const succeeded: string[] = [];
 
@@ -135,14 +135,14 @@ export async function mineTranscript(file: string): Promise<RecoveryCandidate[]>
     for (const block of msg.content as Array<Record<string, unknown>>) {
       if (!block || typeof block !== 'object') continue;
       if (block.type === 'tool_use' && typeof block.name === 'string' && TOOL_PAT.test(block.name)) {
-        pending.set(String(block.id), {
+        openCalls.set(String(block.id), {
           name: block.name,
           input: (block.input ?? {}) as Record<string, unknown>,
           ts,
         });
-      } else if (block.type === 'tool_result' && pending.has(String(block.tool_use_id))) {
-        const call = pending.get(String(block.tool_use_id))!;
-        pending.delete(String(block.tool_use_id));
+      } else if (block.type === 'tool_result' && openCalls.has(String(block.tool_use_id))) {
+        const call = openCalls.get(String(block.tool_use_id))!;
+        openCalls.delete(String(block.tool_use_id));
         const rc = block.content;
         const text = Array.isArray(rc)
           ? rc.map((c) => (c && typeof c === 'object' ? String((c as { text?: unknown }).text ?? '') : '')).join(' ')

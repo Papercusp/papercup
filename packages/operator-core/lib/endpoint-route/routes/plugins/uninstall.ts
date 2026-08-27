@@ -7,18 +7,31 @@ import { triggerSnapshotEvent } from '../../../backup';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { resolvePapercuspCli } from '../../../papercusp-cli';
 import { defineTool } from '@papercusp/agent-mcp';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 const PAPERCUSP_BIN = resolvePapercuspCli();
 
 function run(cmd: string, args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve) => {
-    const child = spawn(cmd, args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-    let stdout = '', stderr = '';
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
-    child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
-  });
+  return runGovernedOperation(
+    {
+      workspaceId: activeWorkspaceId(),
+      namespace: 'plugin-uninstall-cli',
+      owner: 'plugins:uninstall',
+      admissionClass: 'process',
+      demand: { cpuWeight: 0.5, memoryBytes: 128 * 1024 * 1024, fileDescriptors: 3 },
+      payloadRef: 'plugins:uninstall:cli',
+      metadata: { binary: cmd },
+    },
+    async () =>
+      new Promise((resolve) => {
+        const child = spawn(cmd, args, { env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+        let stdout = '', stderr = '';
+        child.stdout.on('data', (d) => (stdout += d.toString()));
+        child.stderr.on('data', (d) => (stderr += d.toString()));
+        child.on('error', (e) => resolve({ code: -1, stdout, stderr: stderr + String(e) }));
+        child.on('close', (code) => resolve({ code: code ?? -1, stdout, stderr }));
+      }),
+  );
 }
 
 function isValidSlug(s: string): boolean {

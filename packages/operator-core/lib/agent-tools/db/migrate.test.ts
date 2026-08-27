@@ -65,6 +65,13 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('node:child_process', () => ({ execFile: h.execFile, spawnSync: h.spawnSync }));
+vi.mock('../../resource-governor/execution', () => ({
+  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+}));
+vi.mock('../../workspace-registry', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../workspace-registry')>()),
+  activeWorkspaceId: () => 'default',
+}));
 // Keep the real fs surface for transitive imports (self-describing-store uses
 // existsSync while locating the repository root); only replace migration-file reads.
 vi.mock('node:fs', async (importOriginal) => ({
@@ -121,8 +128,9 @@ const ORIGINAL_INTEGRATION_ROOT = process.env.PAPERCUSP_INTEGRATION_ROOT;
 
 beforeEach(() => {
   h.spawnSync.mockReset().mockReturnValue({ status: 0, stdout: '', stderr: '' });
-  h.execFile.mockReset().mockImplementation(
-    (cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
+  h.execFile
+    .mockReset()
+    .mockImplementation((cmd: string, args: string[], opts: { encoding: 'utf8' }, callback: ExecFileCallback) => ({
       stdin: {
         end: (input?: string) => {
           const result = h.spawnSync(cmd, args, {
@@ -141,8 +149,7 @@ beforeEach(() => {
           });
         },
       },
-    }),
-  );
+    }));
   h.readFileSync.mockReset().mockReturnValue('CREATE TABLE foo (id int);\n');
   h.checkResourceAction.mockReset().mockResolvedValue({ applied: false });
   h.recordResourceAction.mockReset().mockResolvedValue(undefined);
@@ -217,8 +224,11 @@ describe('db:migrate — dry run', () => {
 
 describe('db:migrate — canonical staging-root resolution (EI-21413636618986324)', () => {
   const handler = (a: Record<string, unknown>) =>
-    (migrateTool as never as { handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }> })
-      .handler(a, CTX);
+    (
+      migrateTool as never as {
+        handler: (args: unknown, ctx: unknown) => Promise<{ content: Array<{ text: string }> }>;
+      }
+    ).handler(a, CTX);
   const REL = 'libs/papercusp/libs/db/sql/953-canon.sql';
   let root: string;
 
@@ -263,7 +273,12 @@ describe('db:migrate — canonical staging-root resolution (EI-21413636618986324
       throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
     });
     const out = parse(await handler({ file: '954-missing.sql' }));
-    expect(out).toMatchObject({ ok: false, applied: false, reason: 'migration_file_unreadable', file: '954-missing.sql' });
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      reason: 'migration_file_unreadable',
+      file: '954-missing.sql',
+    });
     expect(out.attempted_locations).toEqual([
       path.join(root, '954-missing.sql'),
       path.join(root, 'libs/papercusp/libs/db/sql/954-missing.sql'),
@@ -556,9 +571,7 @@ describe('db:migrate — lock-timeout retry on a hot table (EI-9417)', () => {
     expect(out.attempts).toBe(1);
     const script = (h.spawnSync.mock.calls[0][2] as { input: string }).input;
     expect(script).toContain("SET LOCAL lock_timeout = '10s';");
-    expect(script).toContain(
-      `SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));`,
-    );
+    expect(script).toContain(`SELECT pg_advisory_xact_lock(hashtext('${BACKUP_MIGRATION_ADVISORY_LOCK_KEY}'));`);
     for (const applicationName of BACKUP_APPLICATION_NAMES) {
       expect(script).toContain(`'${applicationName}'`);
     }

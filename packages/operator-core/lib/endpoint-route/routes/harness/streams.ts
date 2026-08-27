@@ -717,28 +717,28 @@ const slugStream = defineTool({
           if (chunk) emitLogText(chunk);
         } catch { /* no log file yet */ }
 
-        let pendingLiveLines: string[] = [];
-        let pendingLiveBytes = 0;
+        let liveLineBatch: string[] = [];
+        let liveLineBatchBytes = 0;
         let liveFlushTimer: ReturnType<typeof setTimeout> | null = null;
         const flushLiveLines = () => {
           if (liveFlushTimer) {
             clearTimeout(liveFlushTimer);
             liveFlushTimer = null;
           }
-          if (pendingLiveLines.length === 0) return;
-          const lines = pendingLiveLines;
-          pendingLiveLines = [];
-          pendingLiveBytes = 0;
+          if (liveLineBatch.length === 0) return;
+          const lines = liveLineBatch;
+          liveLineBatch = [];
+          liveLineBatchBytes = 0;
           emitLogLines(lines);
         };
         const queueLiveLine = (line: string) => {
           if (sink.closed) return;
           const text = line.endsWith('\n') ? line : `${line}\n`;
-          pendingLiveLines.push(text);
-          pendingLiveBytes += utf8ByteLength(text);
+          liveLineBatch.push(text);
+          liveLineBatchBytes += utf8ByteLength(text);
           if (
-            pendingLiveLines.length >= HARNESS_STREAM_LOG_BATCH_LINES ||
-            pendingLiveBytes >= HARNESS_STREAM_LOG_BATCH_BYTES
+            liveLineBatch.length >= HARNESS_STREAM_LOG_BATCH_LINES ||
+            liveLineBatchBytes >= HARNESS_STREAM_LOG_BATCH_BYTES
           ) {
             flushLiveLines();
           } else if (!liveFlushTimer) {

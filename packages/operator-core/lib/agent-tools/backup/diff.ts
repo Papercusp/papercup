@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { deriveRepoPassword } from '../../backup';
 import { activeWorkspaceId, workspacesRoot } from '../../workspace-registry';
+import { runGovernedOperation } from '../../resource-governor/execution';
 
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 
@@ -21,9 +22,7 @@ export default defineTool({
   guidance: {
     when: `Diff current state vs a backup snapshot — what would change if we restored. Read-only.`,
     notWhen: `For applying the diff, use \`backup:restore\`. diff is the dry-run view.`,
-    seeAlso: [
-      'backup:restore (apply the diff — this is the dry-run view)',
-    ],
+    seeAlso: ['backup:restore (apply the diff — this is the dry-run view)'],
   },
   requirePrincipal: false,
   // EI-18803497769946984: shells out to diff snapshots and never reads ctx.tx — holding
@@ -46,9 +45,17 @@ export default defineTool({
       KOPIA_LOG_DIR: join(backupsDir, 'logs'),
       KOPIA_CACHE_DIRECTORY: join(backupsDir, 'cache'),
     };
-    const out = await runKopia(
-      ['diff', args.fromSnapshotId, args.toSnapshotId],
-      env,
+    const out = await runGovernedOperation(
+      {
+        workspaceId,
+        namespace: 'backup-diff',
+        owner: 'backup:diff',
+        admissionClass: 'process',
+        demand: { cpuWeight: 0.5, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 3 },
+        payloadRef: `backup:diff:${args.fromSnapshotId}:${args.toSnapshotId}`,
+        metadata: { command: 'kopia diff' },
+      },
+      async () => runKopia(['diff', args.fromSnapshotId, args.toSnapshotId], env),
     );
     return {
       content: [{ type: 'text', text: JSON.stringify({ diff: out }) }],
