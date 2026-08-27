@@ -35,6 +35,95 @@ const CTX = {
 };
 
 describe('google-gmail-poll system action', () => {
+  it('full-backfills a cursorless mailbox before establishing its watch', async () => {
+    const fresh: ExternalTriggerSourceRow = {
+      ...source('source-new', 'new@example.com'),
+      cursor: {},
+    };
+    let persisted = fresh;
+    const order: string[] = [];
+    const syncSource = vi.fn(async (_sql, current: ExternalTriggerSourceRow) => {
+      order.push('sync');
+      expect(current.cursor).not.toHaveProperty('historyId');
+      persisted = {
+        ...current,
+        cursor: {
+          emailAddress: 'new@example.com',
+          historyId: 'history-after-full',
+          lastSyncAt: '2026-08-27T12:00:00.000Z',
+        },
+      };
+      return {
+        mode: 'full' as const,
+        messages: 7,
+        historyPages: 0,
+        messagePages: 1,
+        historyId: 'history-after-full',
+      };
+    });
+    const getSource = vi.fn(async () => {
+      order.push('reload');
+      return persisted;
+    });
+    const ensureWatch = vi.fn(async (_sql, current: ExternalTriggerSourceRow) => {
+      order.push('watch');
+      expect(current.cursor).toMatchObject({
+        emailAddress: 'new@example.com',
+        historyId: 'history-after-full',
+        lastSyncAt: '2026-08-27T12:00:00.000Z',
+      });
+      return {
+        renewed: true,
+        emailAddress: 'new@example.com',
+        historyId: 'history-after-full',
+        expiration: '2026-09-03T12:00:00.000Z',
+        source: {
+          ...current,
+          cursor: {
+            ...current.cursor,
+            watchExpiration: '2026-09-03T12:00:00.000Z',
+          },
+        },
+      };
+    });
+
+    const result = await runGoogleGmailPoll(CTX, {
+      sql: {} as never,
+      listSources: vi.fn(async () => [fresh]),
+      getSource,
+      resolveAccessToken: vi.fn(async () => 'token-new'),
+      provision: vi.fn(async () => ({
+        projectId: 'project',
+        subscriptionId: 'subscription',
+        topicName: 'projects/project/topics/shared',
+        subscriptionName: 'projects/project/subscriptions/subscription',
+        topic: 'existing' as const,
+        subscription: 'existing' as const,
+        publisherGrant: 'existing' as const,
+      })),
+      ensureWatch,
+      ensureFlagshipBinding: vi.fn(),
+      pull: vi.fn(async () => []),
+      acknowledge: vi.fn(async () => 0),
+      syncSource,
+    });
+
+    expect(order).toEqual(['sync', 'reload', 'watch']);
+    expect(syncSource).toHaveBeenCalledTimes(1);
+    expect(getSource).toHaveBeenCalledWith(expect.anything(), 'papercusp-workspace', 'source-new');
+    expect(result).toEqual({
+      sources: 1,
+      succeeded: 1,
+      failed: 0,
+      renewed: 1,
+      pulled: 0,
+      acknowledged: 0,
+      messages: 7,
+      fullResyncs: 1,
+      failures: [],
+    });
+  });
+
   it('renews watches, reconciles matching mailboxes, and drains irrelevant broadcast doorbells', async () => {
     const sources = [source('source-a', 'a@example.com'), source('source-b', 'b@example.com')];
     const acknowledged: string[][] = [];

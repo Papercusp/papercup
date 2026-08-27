@@ -149,7 +149,7 @@ function assertSource(source: ExternalTriggerSourceRow, accessToken: string): vo
   if (!accessToken.trim()) throw new Error('google_gmail_access_token_required');
 }
 
-function sourceHistoryId(source: ExternalTriggerSourceRow): string | null {
+export function googleGmailSourceHistoryId(source: ExternalTriggerSourceRow): string | null {
   return nonEmpty(source.cursor.historyId) ?? nonEmpty(source.cursor.history_id);
 }
 
@@ -263,7 +263,7 @@ export async function ensureGoogleGmailWatch(
   if (!Number.isFinite(renewBeforeMs) || renewBeforeMs < 0) {
     throw new Error('google_gmail_renew_before_ms_invalid');
   }
-  const currentHistoryId = sourceHistoryId(source);
+  const currentHistoryId = googleGmailSourceHistoryId(source);
   const currentExpiration = watchExpiration(source);
   const currentEmail = googleGmailSourceEmail(source);
   const shouldRenew =
@@ -713,7 +713,7 @@ export async function syncGoogleGmailSource(
   const now = (provided.now ?? (() => new Date()))();
   if (!Number.isFinite(now.getTime())) throw new Error('google_gmail_now_invalid');
   let workingSource = source;
-  let historyId = sourceHistoryId(source);
+  let historyId = googleGmailSourceHistoryId(source);
   let mode: GoogleGmailSyncResult['mode'] = historyId ? 'incremental' : 'full';
   let messages = 0;
   let historyPages = 0;

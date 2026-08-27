@@ -5,6 +5,7 @@ import {
   decodeGoogleGmailNotification,
   ensureGoogleGmailWatch,
   googleGmailSourceEmail,
+  googleGmailSourceHistoryId,
   syncGoogleGmailSource,
   type GoogleGmailSyncResult,
   type GoogleGmailWatchResult,
@@ -19,6 +20,7 @@ import {
 } from '../../external-triggers/google-pubsub';
 import {
   type ExternalTriggerSourceRow,
+  getExternalTriggerSource,
   listPollableExternalTriggerSources,
   updateExternalTriggerSourceSyncState,
 } from '../../external-triggers/source-store';
@@ -49,6 +51,7 @@ export interface GoogleGmailPollResult {
 export interface GoogleGmailPollDeps {
   sql?: postgres.Sql;
   listSources?: typeof listPollableExternalTriggerSources;
+  getSource?: typeof getExternalTriggerSource;
   resolveAccessToken?: (source: ExternalTriggerSourceRow, installSlug: string) => Promise<string>;
   provision?: (workspaceId: string) => Promise<GooglePubSubProvisionResult>;
   pull?: (workspaceId: string, maxMessages: number) => Promise<GooglePubSubReceivedMessage[]>;
@@ -99,6 +102,7 @@ export async function runGoogleGmailPoll(
 ): Promise<GoogleGmailPollResult> {
   const sql = provided.sql ?? getOrgPg().sql;
   const listSources = provided.listSources ?? listPollableExternalTriggerSources;
+  const getSource = provided.getSource ?? getExternalTriggerSource;
   const resolveAccessToken = provided.resolveAccessToken ?? resolveGoogleWorkspaceAccessToken;
   const provision = provided.provision ?? ((workspaceId) => provisionGoogleGmailPubSub({ workspaceId }));
   const pull =
@@ -164,7 +168,16 @@ export async function runGoogleGmailPoll(
         source.ownerUserId ? `owner:${source.ownerUserId}` : null,
       );
       const accessToken = await resolveAccessToken(source, ctx.installSlug);
-      const watched = await ensureWatch(sql, source, accessToken, pubsub.topicName, { renewBeforeMs });
+      let current = source;
+      if (!googleGmailSourceHistoryId(current)) {
+        const initial = await syncSource(sql, current, accessToken);
+        result.messages += initial.messages;
+        if (initial.mode === 'full') result.fullResyncs += 1;
+        const persisted = await getSource(sql, ctx.workspaceId, current.id);
+        if (!persisted) throw new Error(`google_gmail_source_missing_after_initial_sync:${current.id}`);
+        current = persisted;
+      }
+      const watched = await ensureWatch(sql, current, accessToken, pubsub.topicName, { renewBeforeMs });
       const readySource =
         watched.source.status === 'connected'
           ? watched.source
