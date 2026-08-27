@@ -120,6 +120,26 @@ const defaultClassDefaultCold = async (host: {
   }
 };
 
+/**
+ * EI-21572316039386007: the human-presence resolver the wake-executor consults on EVERY
+ * cold route — including the explicit `carry:'cold'` opt-in, which (unlike the P-021
+ * verdict route above, per that resolver's own doc) never read a presence signal at all.
+ * A cold-armed loop therefore reset live sessions mid-conversation while their owner was
+ * typing. Same lazy-import + fail-soft-false shape as its sibling; false means "no human
+ * observed", which is both today's behavior and what every headless session resolves to.
+ */
+const defaultActiveInteractiveExchange = async (host: {
+  bridgeTty?: boolean | null;
+  lastInputAt?: number | null;
+}): Promise<boolean> => {
+  try {
+    const { activeInteractiveExchangeForWake } = await import('../../su-cold-by-default');
+    return activeInteractiveExchangeForWake(host);
+  } catch {
+    return false;
+  }
+};
+
 /** Resume-spawn cap per pump tick (a wake = a turn = tokens — pace mass unblocks). */
 function maxResumesPerTick(): number {
   const n = Number(process.env.PAPERCUSP_AWAIT_MAX_RESUMES_PER_TICK ?? 3);
@@ -1019,6 +1039,10 @@ export async function pumpWakeDeliveries(workspaceId?: string, deps: ExecuteWake
         // only read on a no-carry loop marker behind the master gate. Resolved HERE
         // (like coldAutoEnabled) so wake-executor stays flag-system-free.
         classDefaultCold: deps.classDefaultCold ?? defaultClassDefaultCold,
+        // EI-21572316039386007: human-presence guard for BOTH cold routes (D-005). The
+        // opt-in route bypasses classDefaultCold entirely, so this is the only thing
+        // standing between a cold-armed loop and resetting a session someone is talking to.
+        activeInteractiveExchange: deps.activeInteractiveExchange ?? defaultActiveInteractiveExchange,
       });
 
       if (outcome.kind === 'delivered') {
