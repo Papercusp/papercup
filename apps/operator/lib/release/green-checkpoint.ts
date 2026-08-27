@@ -1284,7 +1284,8 @@ function defaultPidAlive(pid: number): boolean {
 }
 
 /** A checkpoint run is bounded by the routine's suite timeout
- *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in harness/routines/release-actions.ts — 120m), so a
+ *  (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in
+ *  packages/operator-core/lib/release/green-checkpoint-schedule.ts — 115m), so a
  *  lock held longer than THIS is DEFINITIVELY stale and is reclaimed even if its recorded
  *  pid still looks alive. Without this, a run that hung past its timeout / crashed without
  *  releasing / left a lock whose pid got RECYCLED to an unrelated live process wedged
@@ -1296,9 +1297,9 @@ function defaultPidAlive(pid: number): boolean {
  *  suite and OOMs the box. Raised 45m→65m in lock-step with the 25m→55m timeout bump
  *  (green-checkpoint-timeout-vs-forks-2026-06-27), then 65m→190m with the 55m→120m bump
  *  (EI-7553: under full-fleet load the multi-pass suite measured 60–90m, so the 55m/65m pair
- *  killed healthy runs pre-verdict; 190m sits above BOTH the 120m timeout and the 180m
+ *  killed healthy runs pre-verdict; 190m sits above BOTH the 115m timeout and the 180m
  *  self-watchdog, making the full chain coherent for the first time:
- *  timeout 120m < self-watchdog 180m < stale-reclaim 190m). The dead-pid check still
+ *  timeout 115m < self-watchdog 180m < stale-reclaim 190m). The dead-pid check still
  *  reclaims a crashed run's lock immediately; THIS threshold only gates the recycled-pid
  *  case, so the longer window costs nothing in the common crash path. */
 export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;

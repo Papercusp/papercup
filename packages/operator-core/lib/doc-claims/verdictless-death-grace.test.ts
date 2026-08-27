@@ -22,10 +22,13 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_VERDICTLESS_GRACE_MS } from '../release/green-stall-watchdog';
+import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from '../dbos/dbos-executor-reaper';
+import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '../release/green-checkpoint-schedule';
 
 // lib/doc-claims → lib → operator-core → packages → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const GREEN_CHECKPOINT = join(ROOT, 'apps/operator/lib/release/green-checkpoint.ts');
+const GREEN_CHECKPOINT_SCHEDULE = join(ROOT, 'packages/operator-core/lib/release/green-checkpoint-schedule.ts');
 
 /**
  * Pull `export const SELF_WATCHDOG_MS = <expr>;` out of source and evaluate the arithmetic.
@@ -36,8 +39,8 @@ const GREEN_CHECKPOINT = join(ROOT, 'apps/operator/lib/release/green-checkpoint.
  * digits, `_` separators, `*`, `+`, whitespace and parens are accepted; anything else
  * (an identifier, a call) is refused rather than evaluated.
  */
-export function readSelfWatchdogMs(source: string): number | null {
-  const m = /export\s+const\s+SELF_WATCHDOG_MS\s*(?::\s*number\s*)?=\s*([^;]+);/.exec(source);
+export function readNumericExport(source: string, name: string): number | null {
+  const m = new RegExp(`export\\s+const\\s+${name}\\s*(?::\\s*number\\s*)?=\\s*([^;]+);`).exec(source);
   if (!m) return null;
   const expr = (m[1] ?? '').trim();
   if (!/^[\d_+*()\s]+$/.test(expr)) return null;
@@ -48,6 +51,10 @@ export function readSelfWatchdogMs(source: string): number | null {
   } catch {
     return null;
   }
+}
+
+export function readSelfWatchdogMs(source: string): number | null {
+  return readNumericExport(source, 'SELF_WATCHDOG_MS');
 }
 
 describe('verdict-less-death grace is pinned to the gate’s own self-watchdog deadline', () => {
@@ -79,6 +86,13 @@ describe('verdict-less-death grace is pinned to the gate’s own self-watchdog d
       expect(readSelfWatchdogMs('export const SELF_WATCHDOG_MS = computeDeadline();')).toBeNull();
       expect(readSelfWatchdogMs('export const SELF_WATCHDOG_MS = OTHER_CONST * 2;')).toBeNull();
     });
+
+    it('reads a named exported numeric expression and refuses a missing declaration', () => {
+      expect(readNumericExport('export const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;', 'CHECKPOINT_LOCK_STALE_MS')).toBe(
+        11_400_000,
+      );
+      expect(readNumericExport('const CHECKPOINT_LOCK_STALE_MS = 190 * 60_000;', 'CHECKPOINT_LOCK_STALE_MS')).toBeNull();
+    });
   });
 
   describe('the live claim', () => {
@@ -99,6 +113,30 @@ describe('verdict-less-death grace is pinned to the gate’s own self-watchdog d
           'deadline. Raising the watchdog without raising the grace makes the alarm fire on ' +
           'runs that are still legitimately working; lowering it blinds the alarm. Change both.',
       ).toBe(readSelfWatchdogMs(source));
+    });
+
+    it('pins the timeout-chain comment to the live constants and their source file', () => {
+      const scheduleSource = readFileSync(GREEN_CHECKPOINT_SCHEDULE, 'utf8');
+      const suiteTimeout = readNumericExport(scheduleSource, 'GREEN_CHECKPOINT_SUITE_TIMEOUT_MS');
+      const selfWatchdog = readSelfWatchdogMs(source);
+      const staleReclaim = readNumericExport(source, 'CHECKPOINT_LOCK_STALE_MS');
+
+      expect(suiteTimeout).toBe(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+      expect(suiteTimeout).not.toBeNull();
+      expect(selfWatchdog).not.toBeNull();
+      expect(staleReclaim).not.toBeNull();
+      if (suiteTimeout === null || selfWatchdog === null || staleReclaim === null) return;
+
+      expect(suiteTimeout).toBeLessThan(selfWatchdog);
+      expect(selfWatchdog).toBeLessThan(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS);
+      expect(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS).toBeLessThan(staleReclaim);
+      expect(source).toMatch(
+        /GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in\s+packages\/operator-core\/lib\/release\/green-checkpoint-schedule\.ts — 115m/,
+      );
+      const minutes = (ms: number) => Math.round(ms / 60_000);
+      expect(source).toContain(
+        `timeout ${minutes(suiteTimeout)}m < self-watchdog ${minutes(selfWatchdog)}m < stale-reclaim ${minutes(staleReclaim)}m`,
+      );
     });
   });
 });
