@@ -347,6 +347,46 @@ describe('attention bulk-run store (real PG)', () => {
     expect(settled!.phase).toBe('review');
   });
 
+  it('admits owner acceptance only in review and never rewrites an executing or handled row', async () => {
+    const run = await createRun({ items: seed('owner-accept-rail') });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-resolver' });
+    await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-resolver',
+      outcomes: [
+        {
+          itemId: 'work-item-needs-human:owner-accept-rail-2',
+          outcome: 'recommended',
+          actionId: 'answer',
+          draftAnswer: 'Use key A',
+        },
+      ],
+    });
+
+    expect(await markItemAccepted({
+      runId: run.runId,
+      itemId: 'work-item-needs-human:owner-accept-rail-2',
+      actionId: 'answer',
+    })).toBeNull();
+    expect((await getRunItems(run.runId)).find((row) => row.itemId.endsWith('-2'))?.outcome).toBe('recommended');
+
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-resolver' });
+    expect(await markItemAccepted({
+      runId: run.runId,
+      itemId: 'work-item-needs-human:owner-accept-rail-2',
+      actionId: 'answer',
+    })).toMatchObject({ outcome: 'auto_resolved', actionId: 'answer' });
+    expect(await markItemAccepted({
+      runId: run.runId,
+      itemId: 'work-item-needs-human:owner-accept-rail-2',
+      actionId: 'drop',
+    })).toBeNull();
+    expect((await getRunItems(run.runId)).find((row) => row.itemId.endsWith('-2'))).toMatchObject({
+      outcome: 'auto_resolved',
+      actionId: 'answer',
+    });
+  });
+
   it('selectively resumes unresolved review rows without widening membership or resetting handled rows', async () => {
     const run = await createRun({ items: seed('resume-review') });
     await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-prior' });

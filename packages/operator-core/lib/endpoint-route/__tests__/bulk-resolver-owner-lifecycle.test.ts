@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   restartRun: vi.fn(),
   resumeReviewRun: vi.fn(),
   markItemAccepted: vi.fn(),
+  markItemDismissed: vi.fn(),
   setRunPhase: vi.fn(),
   settleRunPhase: vi.fn(),
   markCleanupFindingAccepted: vi.fn(),
@@ -43,6 +44,7 @@ vi.mock('../../attention/bulk-run-store', () => {
     restartRun: (...args: unknown[]) => h.restartRun(...args),
     resumeReviewRun: (...args: unknown[]) => h.resumeReviewRun(...args),
     markItemAccepted: (...args: unknown[]) => h.markItemAccepted(...args),
+    markItemDismissed: (...args: unknown[]) => h.markItemDismissed(...args),
     setRunPhase: (...args: unknown[]) => h.setRunPhase(...args),
     settleRunPhase: (...args: unknown[]) => h.settleRunPhase(...args),
   };
@@ -145,6 +147,9 @@ beforeEach(() => {
     phase: input.phase,
     resolverOwner: input.resolverOwner ?? null,
   }));
+  h.markItemAccepted.mockResolvedValue({ itemId: 'item-1', outcome: 'auto_resolved' });
+  h.markItemDismissed.mockResolvedValue({ itemId: 'item-1', outcome: 'dismissed' });
+  h.settleRunPhase.mockResolvedValue({ ...baseRun, phase: 'review' });
   h.notifyBulkRunChanged.mockResolvedValue(undefined);
   h.notifyPlanCleanupRunChanged.mockResolvedValue(undefined);
   h.buildPlanCleanupSystemCall.mockReturnValue(vi.fn());
@@ -224,6 +229,80 @@ describe('Inbox bulk-resolver owner lifecycle', () => {
     const owner = spawnedOwner();
     expect(h.resumeReviewRun).toHaveBeenCalledWith({ runId: 'run-1', itemIds: ['item-1'], resolverOwner: owner });
     expect(h.resumeReviewRun.mock.invocationCallOrder[0]).toBeLessThan(h.spawnHeadless.mock.invocationCallOrder[0]!);
+  });
+
+  it('dismisses one unresolved review row, then re-settles the run', async () => {
+    h.settleRunPhase.mockResolvedValueOnce({ ...baseRun, phase: 'complete' });
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'dismiss-item',
+        runId: 'run-1',
+        itemId: 'item-1',
+        note: 'Owner deliberately declined this row',
+      }),
+      ctx(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.markItemDismissed).toHaveBeenCalledWith({
+      runId: 'run-1',
+      itemId: 'item-1',
+      note: 'Owner deliberately declined this row',
+    });
+    expect(h.markItemDismissed.mock.invocationCallOrder[0]).toBeLessThan(
+      h.settleRunPhase.mock.invocationCallOrder[0]!,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      itemId: 'item-1',
+      phase: 'complete',
+      dismissed: true,
+    });
+  });
+
+  it('reconciles a successful hand resolution through the accepted outcome, then re-settles', async () => {
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'reconcile-item',
+        runId: 'run-1',
+        itemId: 'item-1',
+      }),
+      ctx(),
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.markItemAccepted).toHaveBeenCalledWith({
+      runId: 'run-1',
+      itemId: 'item-1',
+      actionId: 'manual',
+      note: 'Owner rechecked the live source after resolving it manually',
+    });
+    expect(h.markItemAccepted.mock.invocationCallOrder[0]).toBeLessThan(
+      h.settleRunPhase.mock.invocationCallOrder[0]!,
+    );
+    await expect(response.json()).resolves.toMatchObject({
+      ok: true,
+      itemId: 'item-1',
+      reconciled: true,
+    });
+  });
+
+  it('does not settle when a row-level owner operation names no actionable review row', async () => {
+    h.markItemDismissed.mockResolvedValueOnce(null);
+    const response = await handler(
+      post('/api/admin/attention-bulk-resolve', {
+        op: 'dismiss-item',
+        runId: 'run-1',
+        itemId: 'already-handled',
+      }),
+      ctx(),
+    );
+
+    expect(response.status).toBe(409);
+    expect(h.settleRunPhase).not.toHaveBeenCalled();
+    await expect(response.json()).resolves.toMatchObject({
+      error: { code: 'review_item_not_actionable' },
+    });
   });
 });
 

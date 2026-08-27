@@ -27,6 +27,8 @@
  * one sync invalidation — a separate route per verb would duplicate all three:
  *   { op:'stop',    runId }                     → settle the run where it stands
  *   { op:'accept',  runId, itemId, actionId }   → record an accepted recommendation
+ *   { op:'reconcile-item', runId, itemId }       → record a verified hand resolution
+ *   { op:'dismiss-item', runId, itemId }         → deliberately dismiss one review row
  *   { op:'dismiss', runId }                     → close the run without acting
  *
  * `accept` RECORDS ONLY. The resolution itself is dispatched CLIENT-side through
@@ -56,6 +58,7 @@ import {
   restartRun,
   resumeReviewRun,
   markItemAccepted,
+  markItemDismissed,
   setRunPhase,
   settleRunPhase,
   type BulkRunLaunchSnapshot,
@@ -506,11 +509,61 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, itemId, phase: run?.phase ?? null, accepted: true });
     }
 
+    if (op === 'reconcile-item' || op === 'dismiss-item') {
+      const itemId = typeof body.itemId === 'string' ? body.itemId.trim() : '';
+      if (!itemId) {
+        return Response.json(
+          {
+            error: {
+              code: 'missing_review_item_id',
+              message: `op "${op}" requires itemId`,
+            },
+          },
+          { status: 400 },
+        );
+      }
+      const note = typeof body.note === 'string' ? body.note.slice(0, 2000) : null;
+      // Both operations are BOOKKEEPING for an explicit owner decision. A hand
+      // resolution has already succeeded on the source surface before
+      // `reconcile-item` is offered; `dismiss-item` deliberately declines only
+      // this unresolved review row. Neither path dispatches a source action.
+      const item = op === 'dismiss-item'
+        ? await markItemDismissed({ runId, itemId, note })
+        : await markItemAccepted({
+            runId,
+            itemId,
+            actionId: 'manual',
+            note: note ?? 'Owner rechecked the live source after resolving it manually',
+          });
+      if (!item) {
+        return Response.json(
+          {
+            error: {
+              code: 'review_item_not_actionable',
+              message: `item ${itemId} is not an unresolved review row in run ${runId}`,
+            },
+          },
+          { status: 409 },
+        );
+      }
+      // This row can be the final owner obligation. Settlement must happen
+      // AFTER its durable disposition or the run can remain stranded in review.
+      const run = await settleRunPhase({ runId });
+      await invalidateBulkRun();
+      return Response.json({
+        ok: true,
+        runId,
+        itemId,
+        phase: run?.phase ?? null,
+        ...(op === 'dismiss-item' ? { dismissed: true } : { reconciled: true }),
+      });
+    }
+
     return Response.json(
       {
         error: {
           code: 'unknown_op',
-          message: `op must be one of start | stop | restart | resume | accept | dismiss (got "${op}")`,
+          message: `op must be one of start | stop | restart | resume | accept | reconcile-item | dismiss-item | dismiss (got "${op}")`,
         },
       },
       { status: 400 },
@@ -564,7 +617,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   // — `start` (spawns an agent) and `accept` (takes a terminal action on the
   // owner's behalf) — is ACTING, and stays gated. Nothing is lost by gating
   // `accept`: every recommended item remains resolvable by hand in the pane.
-  const STOP_OPS = new Set(['stop', 'dismiss']);
+  const STOP_OPS = new Set(['stop', 'dismiss', 'reconcile-item', 'dismiss-item']);
   if (!STOP_OPS.has(op)) {
     const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
     if (gated) return gated;

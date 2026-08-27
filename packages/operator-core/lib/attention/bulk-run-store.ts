@@ -1217,20 +1217,35 @@ export async function markItemAccepted(input: {
 }): Promise<BulkRunItemRow | null> {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
-  const rows = await sql<RawItemRow[]>`
-    UPDATE harness_shared.attention_bulk_run_items
-       SET outcome = 'auto_resolved',
-           action_id = ${input.actionId},
-           rationale = COALESCE(${input.note ?? null}, rationale),
-           decided_at = now(),
-           updated_at = now()
-     WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
-    RETURNING ${sql.unsafe(ITEM_COLUMNS)}
-  `;
-  if (!rows[0]) return null;
-  // Keep the run counters honest after an owner-side acceptance.
-  await reportCountersOnly(input.runId, ws);
-  return mapItem(rows[0]);
+  return await sql.begin(async (tx) => {
+    // Owner review writes are admitted only while the run is actually awaiting
+    // owner work. Without the shared row lock a late/manual reconciliation can
+    // rewrite an executing generation or an already-settled audit record.
+    const runs = await tx<Array<{ phase: BulkRunPhase; run_kind: BulkRunKind | null }>>`
+      SELECT phase, run_kind
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!runs[0] || runs[0].phase !== 'review' || (runs[0].run_kind ?? DEFAULT_RUN_KIND) !== 'inbox-resolve') {
+      return null;
+    }
+    const rows = await tx<RawItemRow[]>`
+      UPDATE harness_shared.attention_bulk_run_items
+         SET outcome = 'auto_resolved',
+             action_id = ${input.actionId},
+             rationale = COALESCE(${input.note ?? null}, rationale),
+             decided_at = now(),
+             updated_at = now()
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${input.itemId}
+         AND outcome NOT IN ('auto_resolved', 'dismissed')
+      RETURNING ${tx.unsafe(ITEM_COLUMNS)}
+    `;
+    if (!rows[0]) return null;
+    // Keep the run counters honest in the same transaction as the disposition.
+    await recomputeCounters(tx, input.runId, ws);
+    return mapItem(rows[0]);
+  });
 }
 
 /**
