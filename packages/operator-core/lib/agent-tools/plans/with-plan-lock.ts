@@ -21,12 +21,18 @@
 
 import { withWorkspace } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
+import { parsePlan } from '@papercusp/plan-parser';
 import {
   getActivationAuditEditNotice,
   type ActivationAuditEditNotice,
 } from '../../plan-audits';
 import { hashPlanContent } from './content-hash';
 import { summarizeForcedPast } from './forced-past-stamp';
+import {
+  invalidPlanDependenciesValue,
+  validatePlanCandidateDependencies,
+  type PlanCandidateDependencyDiagnostic,
+} from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
 import { PLAN_ADVISORY_LOCK_NAMESPACE, planAdvisoryLockKey } from './plan-lock-key';
 import {
@@ -77,6 +83,8 @@ async function capturePlanPartsForWrite(
 export interface PlanWriteMeta {
   version: number;
   contentHash: string;
+  /** Operational lifecycle read under the same lock as the candidate body. */
+  opStatus: string | null;
   /**
    * The plan's live structured columns, read INSIDE the lock (P-004). A mutator that
    * must validate against the plan's declared schema needs the schema as of this
@@ -220,6 +228,13 @@ export interface AppliedResult<T> {
    * second per-verb implementation.
    */
   activationAudit?: ActivationAuditEditNotice;
+  /**
+   * Candidate-graph evidence from the central write seam. An allowed missing
+   * ref on a non-started draft is surfaced as `invalid-draft`; hard findings
+   * accompany a non-writing `invalid_plan_dependencies` domain refusal.
+   * Also copied onto object-shaped `value` payloads.
+   */
+  dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
 }
 
 export type WithPlanLockResult<T> = AppliedResult<T> | BusyError;
@@ -312,9 +327,10 @@ export async function withPlanLock<T>(
         template_data: unknown;
         input_schema: unknown;
         output_schema: unknown;
+        op_status: string | null;
       }[]
     >`
-      SELECT content, version, content_hash, template_data, input_schema, output_schema
+      SELECT content, version, content_hash, template_data, input_schema, output_schema, op_status
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
          AND plan_slug = ${slug}
@@ -325,6 +341,7 @@ export async function withPlanLock<T>(
       ? {
           version: curVersion,
           contentHash: cur.content_hash,
+          opStatus: cur.op_status ?? null,
           templateData: cur.template_data ?? null,
           inputSchema: cur.input_schema ?? null,
           outputSchema: cur.output_schema ?? null,
@@ -335,6 +352,36 @@ export async function withPlanLock<T>(
       cur?.content ?? null,
       meta,
     );
+
+    // P-008: dependency validity belongs at the one locked body-write seam, not
+    // in selected verbs. The mutator has produced the complete post-write body
+    // and op_status was read under this same lock, so no structured writer can
+    // bypass the verdict and no concurrent lifecycle flip can stale it.
+    let dependencyDiagnostics: PlanCandidateDependencyDiagnostic[] | undefined;
+    if (newBody !== null) {
+      const candidate = parsePlan(newBody, { filePath });
+      const verdict = validatePlanCandidateDependencies(candidate, cur?.op_status ?? null);
+      if (verdict.state === 'rejected') {
+        return {
+          kind: 'applied',
+          value: invalidPlanDependenciesValue(slug, verdict) as T,
+          filePath,
+          version: curVersion,
+          scope: { workspaceId, harnessSlug },
+          dependencyDiagnostics: verdict.diagnostics,
+          writtenBody: null,
+          writtenTemplateData: cur?.template_data ?? null,
+          priorBody: cur?.content ?? null,
+        } satisfies AppliedResult<T> & {
+          writtenBody: string | null;
+          writtenTemplateData: unknown;
+          priorBody: string | null;
+        };
+      }
+      if (verdict.state === 'invalid-draft') {
+        dependencyDiagnostics = verdict.diagnostics;
+      }
+    }
 
     // P-004: ONE content-write chokepoint covers set-plan-status, raw
     // set-content/edit/frontmatter writes, and direct creation as ready/active.
@@ -584,6 +631,7 @@ export async function withPlanLock<T>(
       filePath,
       version: newVersion,
       scope: { workspaceId, harnessSlug },
+      ...(dependencyDiagnostics ? { dependencyDiagnostics } : {}),
       writtenBody,
       writtenTemplateData,
       // P-010: the PRE-edit content, threaded to the post-commit per-part capture
@@ -634,17 +682,26 @@ export async function withPlanLock<T>(
       if (writtenBody !== null) {
         await capturePlanPartsForWrite(workspaceId, harnessSlug, slug, priorBody, writtenBody);
       }
-      if (!activationAudit) return applied;
+      const dependencyDiagnostics = applied.dependencyDiagnostics;
+      if (!activationAudit && !dependencyDiagnostics?.length) return applied;
 
       // Most plans:* writers return an object and spread it into their response.
-      // Copying the central notice onto that value closes those paths without
-      // duplicating DB reads or materiality wording in every handler. Callers
-      // that shape fields individually can read result.activationAudit.
+      // Copying central notices onto that value closes those paths without
+      // duplicating the policy in every handler. Primitive values retain the
+      // diagnostics/notices on the AppliedResult envelope.
       const value =
         typeof applied.value === 'object' && applied.value !== null && !Array.isArray(applied.value)
-          ? ({ ...applied.value, activationAudit } as T)
+          ? ({
+              ...applied.value,
+              ...(dependencyDiagnostics?.length ? { dependencyDiagnostics } : {}),
+              ...(activationAudit ? { activationAudit } : {}),
+            } as T)
           : applied.value;
-      return { ...applied, value, activationAudit };
+      return {
+        ...applied,
+        value,
+        ...(activationAudit ? { activationAudit } : {}),
+      };
     }
     return result;
   }).catch((err: unknown) => {
