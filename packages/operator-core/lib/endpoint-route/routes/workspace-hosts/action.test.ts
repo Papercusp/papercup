@@ -93,14 +93,30 @@ function harness() {
       },
     ],
   }));
+  const startLifecycle = vi.fn<WorkspaceHostActionRouteDependencies['startLifecycle']>(async (input) => ({
+    status: 'succeeded',
+    operationId: input.operationId ?? 'op-lifecycle-1',
+    hostId: input.action === 'restore' ? input.desired!.hostId : input.hostId,
+    plan: {
+      planId: `plan-${input.action}-1`,
+      operationId: input.operationId ?? 'op-lifecycle-1',
+      target: 'gcp',
+      hostId: input.action === 'restore' ? input.desired!.hostId : input.hostId,
+      generatedAt: '2026-08-25T00:00:00.000Z',
+      steps: [],
+      warnings: [],
+    },
+    checkpoints: [],
+  }));
   const dependencies: WorkspaceHostActionRouteDependencies = {
     activeWorkspaceId: () => 'workspace_1',
     provisioningAvailable: () => true,
     readTarget,
     readConnection,
     startDestroy,
+    startLifecycle,
   };
-  return { dependencies, readTarget, readConnection, startDestroy };
+  return { dependencies, readTarget, readConnection, startDestroy, startLifecycle };
 }
 
 async function post(dependencies: WorkspaceHostActionRouteDependencies, body: unknown): Promise<Response> {
@@ -171,5 +187,61 @@ describe('POST /workspace-hosts/action destroy', () => {
     await expect(response.json()).resolves.toMatchObject({
       error: 'workspace host already has an operation in progress',
     });
+  });
+});
+
+describe('POST /workspace-hosts/action existing-host lifecycle', () => {
+  it.each(['start', 'stop', 'restart', 'repair', 'snapshot'] as const)(
+    'admits %s through the stored connection and durable lifecycle workflow',
+    async (action) => {
+      const { dependencies, startLifecycle } = harness();
+      const response = await post(dependencies, { action, workspaceId: 'host-1', operationId: `op-${action}-1` });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toMatchObject({
+        ok: true,
+        status: 'succeeded',
+        operationId: `op-${action}-1`,
+        hostId: 'host-1',
+      });
+      expect(startLifecycle).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action,
+          workspaceId: 'workspace_1',
+          hostId: 'host-1',
+          operationId: `op-${action}-1`,
+          connection: expect.objectContaining({ target: 'gcp', scope: desired.scope }),
+        }),
+      );
+    },
+  );
+
+  it('threads explicit upgrade and restore inputs without inventing provider defaults', async () => {
+    const { dependencies, startLifecycle } = harness();
+    const image = { id: 'projects/images/global/images/papercusp-v2', version: '2' };
+    const upgrade = await post(dependencies, {
+      action: 'upgrade',
+      workspaceId: 'host-1',
+      image,
+      rollbackImage: desired.image,
+    });
+    expect(upgrade.status).toBe(200);
+    expect(startLifecycle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'upgrade', image, rollbackImage: desired.image }),
+    );
+
+    const restored = { ...desired, hostId: 'host-restored-1' };
+    const snapshot = { target: 'gcp', providerId: 'snapshot-1', hostId: 'host-1' };
+    const restore = await post(dependencies, {
+      action: 'restore',
+      workspaceId: 'host-1',
+      snapshot,
+      desired: restored,
+    });
+    expect(restore.status).toBe(200);
+    await expect(restore.json()).resolves.toMatchObject({ hostId: 'host-restored-1' });
+    expect(startLifecycle).toHaveBeenLastCalledWith(
+      expect.objectContaining({ action: 'restore', snapshot, desired: restored }),
+    );
   });
 });

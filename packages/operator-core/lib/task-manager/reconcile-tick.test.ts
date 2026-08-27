@@ -116,13 +116,14 @@ describe('reconcileTick — happy path', () => {
         [`/sys/fs/cgroup${dir}/memory.current`]: '5242880',
         [`/sys/fs/cgroup${dir}/cpu.stat`]: 'usage_usec 1234\n',
         [`/sys/fs/cgroup${dir}/pids.current`]: '3',
+        [`/sys/fs/cgroup${dir}/pids.events`]: 'max 8\n',
       }),
     });
     expect(out.summary.alive).toBe(1);
     expect(store.touched[0]).toMatchObject({
       taskId: 'aaa111',
       pid: 10,
-      metrics: { lastMemoryBytes: 5242880, cpuUsec: 1234, pidsCurrent: 3 },
+      metrics: { lastMemoryBytes: 5242880, cpuUsec: 1234, pidsCurrent: 3, pidsEventsMax: 8 },
     });
     expect(out.degraded).toBe(false);
   });

@@ -216,6 +216,7 @@ export async function reconcileTick(deps: ReconcileTickDeps = {}): Promise<Recon
               peakMemoryBytes: sample.peakMemoryBytes,
               cpuUsec: sample.cpuUsec,
               pidsCurrent: sample.pidsCurrent ?? a.pidsSeen,
+              pidsEventsMax: sample.pidsEventsMax,
             }
           : { pidsCurrent: a.pidsSeen },
       };

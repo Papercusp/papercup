@@ -62,6 +62,14 @@
 #                         recovery watermark + sustained quiet window before
 #                         one frozen root is thawed (defaults 2 / 30s). A thaw
 #                         resets the shared window, preventing a restart stampede.
+#   PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC
+#                         maximum time a root may remain frozen while PSI stays
+#                         high (default 300s). Expiry terminates that root's
+#                         process group with explicit timeout evidence so a
+#                         permanently high-PSI episode cannot suspend a task
+#                         indefinitely. Set PC_HEAVY_PSI_ADMISSION=0 to disable
+#                         the controller entirely; 0 means expire on the next
+#                         high-PSI sample, not an unbounded wait.
 #   PC_HEAVY_MEM_PSI_SAMPLE_SEC  post-admission sample cadence (default 2s).
 #   PC_HEAVY_MEM_PSI_OVERRIDE_FILE  dynamic test/operator override: its first
 #                         line is the numeric full-avg10 sample and takes
@@ -345,6 +353,7 @@ _pc_heavy_internal_preempt_run() {
   local _psi_high="${PC_HEAVY_MEM_PSI_BACKOFF:-5}"
   local _psi_recover="${PC_HEAVY_MEM_PSI_RECOVER:-2}"
   local _psi_recovery_sec="${PC_HEAVY_MEM_PSI_RECOVERY_SEC:-30}"
+  local _psi_max_freeze_sec="${PC_HEAVY_MEM_PSI_MAX_FREEZE_SEC:-300}"
   local _psi_sample_sec="${PC_HEAVY_MEM_PSI_SAMPLE_SEC:-2}"
   local _psi_priority="${PC_HEAVY_ADMISSION_PRIORITY:-10}"
   local _psi_admission_dir="${PC_HEAVY_ADMISSION_DIR:-${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}/psi-admissions}"
@@ -353,6 +362,7 @@ _pc_heavy_internal_preempt_run() {
   local _psi_lock_file="$_psi_admission_dir/coordinator.lock"
   local _psi_retry_handle='' _psi_admitted_at='' _psi_child_start_ticks=''
   local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
+  local _psi_frozen_since=0
   local _psi_next_sample=0 _psi_last_undetermined=''
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
 
@@ -631,7 +641,7 @@ _pc_heavy_internal_preempt_run() {
 
   _psi_tick() {
     [ "${_psi_enabled:-0}" = 1 ] || return 0
-    local _sample='' _lock_fd='' _now='' _low_since=''
+    local _sample='' _lock_fd='' _now='' _low_since='' _expire_frozen=0
     _sample="$(_pc_heavy_mem_psi_full_avg10 2>/dev/null)" || {
       if [ "$_psi_last_undetermined" != psi-unreadable ]; then
         _psi_emit undetermined psi-unreadable unavailable 0
@@ -663,7 +673,19 @@ _pc_heavy_internal_preempt_run() {
       # thaws it. Stale identities are purged by this scan, so they cannot pin
       # the latch forever.
       _psi_scan_records frozen
-      if [ -z "$_psi_selected_id" ]; then
+      if [ -n "$_psi_selected_id" ] &&
+         [ "$_psi_selected_id" = "$_psi_admission_id" ] &&
+         [ "$_psi_state" = frozen ] &&
+         [ $(( _now - _psi_frozen_since )) -ge "$_psi_max_freeze_sec" ]; then
+        # Low PSI is the normal recovery path, but it may never arrive. The
+        # elected root has already consumed the one-victim episode lease; once
+        # that lease expires, terminate its process group and return an
+        # explicit undetermined result instead of leaving affected-tests
+        # suspended until its much later outer watchdog fires.
+        _psi_write_record expired || true
+        _psi_emit expired memory-psi-high-timeout "$_sample" "$_psi_total_mib"
+        _expire_frozen=1
+      elif [ -z "$_psi_selected_id" ]; then
         _psi_scan_records active
         if [ "$_psi_unreadable_count" -gt 0 ]; then
           if [ "$_psi_last_undetermined" != cgroup-memory-unreadable ]; then
@@ -675,7 +697,9 @@ _pc_heavy_internal_preempt_run() {
         fi
         if [ "$_psi_unreadable_count" -eq 0 ] && [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = active ]; then
           if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
+            _psi_frozen_since="$_now"
             _psi_write_record frozen || true
+            _psi_state=frozen
             _psi_emit frozen memory-psi-high "$_sample" "$_psi_total_mib"
           fi
         fi
@@ -705,6 +729,12 @@ _pc_heavy_internal_preempt_run() {
     fi
     flock -u "$_lock_fd" 2>/dev/null || true
     eval "exec ${_lock_fd}>&-" 2>/dev/null || true
+    if [ "$_expire_frozen" = 1 ]; then
+      _preempt_reap_group
+      _preempt_emit_result undetermined memory-psi-high-timeout 75
+      trap - EXIT TERM INT HUP
+      return 75
+    fi
   }
 
   _psi_init() {
@@ -712,6 +742,7 @@ _pc_heavy_internal_preempt_run() {
     case "$_psi_high" in ''|*[!0-9]*) _psi_high=5 ;; esac
     case "$_psi_recover" in ''|*[!0-9]*) _psi_recover=2 ;; esac
     case "$_psi_recovery_sec" in ''|*[!0-9]*) _psi_recovery_sec=30 ;; esac
+    case "$_psi_max_freeze_sec" in ''|*[!0-9]*) _psi_max_freeze_sec=300 ;; esac
     case "$_psi_sample_sec" in ''|*[!0-9]*) _psi_sample_sec=2 ;; esac
     case "$_psi_priority" in ''|*[!0-9]*) _psi_priority=10 ;; esac
     if [ "$_psi_recover" -ge "$_psi_high" ]; then
@@ -911,6 +942,11 @@ _pc_heavy_internal_preempt_run() {
     printf -v _preempt_now '%(%s)T' -1
     if [ "${_psi_enabled:-0}" = 1 ] && [ "$_preempt_now" -ge "${_psi_next_sample:-0}" ]; then
       _psi_tick
+      local _psi_tick_rc=$?
+      if [ "$_psi_tick_rc" -ne 0 ]; then
+        trap - EXIT TERM INT HUP
+        return "$_psi_tick_rc"
+      fi
       _psi_next_sample=$(( _preempt_now + _psi_sample_sec ))
     fi
     if _preempt_writer_is_held; then

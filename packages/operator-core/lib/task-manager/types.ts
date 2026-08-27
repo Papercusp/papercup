@@ -143,6 +143,8 @@ export interface TaskMetrics {
   peakMemoryBytes?: number | null;
   cpuUsec?: number | null;
   pidsCurrent?: number | null;
+  /** Cumulative fork-refusal counter from cgroup v2 `pids.events`. */
+  pidsEventsMax?: number | null;
 }
 
 /**

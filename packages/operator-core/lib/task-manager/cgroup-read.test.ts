@@ -3,6 +3,7 @@ import {
   parseProcCgroup,
   parseCgroupProcs,
   parseCgroupInt,
+  parseCgroupPidsEventsMax,
   parseCpuStatUsageUsec,
   parseProcCmdline,
   sampleCgroup,
@@ -101,6 +102,22 @@ describe('parseCpuStatUsageUsec', () => {
   });
 });
 
+describe('parseCgroupPidsEventsMax', () => {
+  it('reads the cumulative max counter among the other pids events', () => {
+    expect(parseCgroupPidsEventsMax('max 17\n')).toBe(17);
+    expect(parseCgroupPidsEventsMax('max 0\n')).toBe(0);
+  });
+
+  it('returns null for an unavailable, malformed, or unsafe counter', () => {
+    expect(parseCgroupPidsEventsMax(null)).toBeNull();
+    expect(parseCgroupPidsEventsMax('')).toBeNull();
+    expect(parseCgroupPidsEventsMax('oom 2\n')).toBeNull();
+    expect(parseCgroupPidsEventsMax('max nope\n')).toBeNull();
+    expect(parseCgroupPidsEventsMax('max -1\n')).toBeNull();
+    expect(parseCgroupPidsEventsMax(`max ${Number.MAX_SAFE_INTEGER + 1}\n`)).toBeNull();
+  });
+});
+
 describe('parseProcCmdline', () => {
   it('joins NUL-separated args without a phantom trailing empty', () => {
     expect(parseProcCmdline('node\0vitest\0run\0')).toBe('node vitest run');
@@ -119,12 +136,14 @@ describe('sampleCgroup', () => {
       '/cg/memory.peak': '4096',
       '/cg/cpu.stat': 'usage_usec 900\n',
       '/cg/pids.current': '7',
+      '/cg/pids.events': 'max 11\n',
     });
     expect(sampleCgroup('/cg', fs)).toEqual({
       memoryBytes: 2048,
       peakMemoryBytes: 4096,
       cpuUsec: 900,
       pidsCurrent: 7,
+      pidsEventsMax: 11,
     });
   });
 
@@ -137,6 +156,7 @@ describe('sampleCgroup', () => {
       peakMemoryBytes: null,
       cpuUsec: null,
       pidsCurrent: 1,
+      pidsEventsMax: null,
     });
   });
 });

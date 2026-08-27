@@ -96,6 +96,24 @@ export function parseCgroupInt(content: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * `/pids.events` -> the cumulative number of fork attempts refused by the
+ * cgroup's pids controller. Unlike `pids.current`, this high-water signal stays
+ * available after the workload drains, which is what lets terminal diagnosis
+ * attribute a later exit to historical fork pressure.
+ */
+export function parseCgroupPidsEventsMax(content: string | null): number | null {
+  if (content == null) return null;
+  for (const line of content.split('\n')) {
+    const [key, value, ...extra] = line.trim().split(/\s+/);
+    if (key !== 'max' || extra.length > 0) continue;
+    if (!/^\d+$/.test(value ?? '')) return null;
+    const count = Number(value);
+    return Number.isSafeInteger(count) && count >= 0 ? count : null;
+  }
+  return null;
+}
+
 /** `cpu.stat` -> usage_usec. Returns null when the field is absent rather than 0. */
 export function parseCpuStatUsageUsec(content: string | null): number | null {
   if (content == null) return null;
@@ -123,6 +141,7 @@ export interface CgroupSample {
   peakMemoryBytes: number | null;
   cpuUsec: number | null;
   pidsCurrent: number | null;
+  pidsEventsMax: number | null;
 }
 
 /** Sample one cgroup directory. Every field independently degrades to null. */
@@ -132,6 +151,7 @@ export function sampleCgroup(absDir: string, fs: CgroupFs = nodeCgroupFs): Cgrou
     peakMemoryBytes: parseCgroupInt(fs.readFile(`${absDir}/memory.peak`)),
     cpuUsec: parseCpuStatUsageUsec(fs.readFile(`${absDir}/cpu.stat`)),
     pidsCurrent: parseCgroupInt(fs.readFile(`${absDir}/pids.current`)),
+    pidsEventsMax: parseCgroupPidsEventsMax(fs.readFile(`${absDir}/pids.events`)),
   };
 }
 

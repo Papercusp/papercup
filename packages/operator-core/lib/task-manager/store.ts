@@ -60,6 +60,12 @@ function jsonObject(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function detailNonNegativeInteger(detail: Record<string, unknown>, key: string): number | null {
+  const raw = detail[key];
+  const value = typeof raw === 'number' || typeof raw === 'string' ? Number(raw) : NaN;
+  return Number.isSafeInteger(value) && value >= 0 ? value : null;
+}
+
 /** Postgres row -> TaskRow. Kept explicit (not a spread-rename) so a column added
  *  to the table without a mapping here fails review rather than silently vanishing. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -106,6 +112,7 @@ function toRow(r: any): TaskRow {
     peakMemoryBytes: num(r.peak_memory_bytes),
     cpuUsec: num(r.cpu_usec),
     pidsCurrent: num(r.pids_current),
+    pidsEventsMax: detailNonNegativeInteger(detail, 'pidsEventsMax'),
     logPath: r.log_path ?? null,
     detail,
   };
@@ -409,6 +416,7 @@ export async function touchAlive(
     last_memory_bytes: u.metrics?.lastMemoryBytes ?? null,
     cpu_usec: u.metrics?.cpuUsec ?? null,
     pids_current: u.metrics?.pidsCurrent ?? null,
+    pids_events_max: u.metrics?.pidsEventsMax ?? null,
   }));
   const rows = await sql`
     UPDATE harness_shared.task_ledger t
@@ -422,15 +430,35 @@ export async function touchAlive(
              COALESCE(t.peak_memory_bytes, 0), COALESCE(u.last_memory_bytes, 0)
            ),
            cpu_usec = COALESCE(u.cpu_usec, t.cpu_usec),
-           pids_current = COALESCE(u.pids_current, t.pids_current)
+           pids_current = COALESCE(u.pids_current, t.pids_current),
+           -- pids.events is cumulative, so preserve the largest observed value
+           -- in the existing detail bag rather than adding a schema column.
+           detail = CASE
+             WHEN u.pids_events_max IS NULL THEN detail
+             ELSE jsonb_set(
+               detail,
+               '{pidsEventsMax}',
+               to_jsonb(GREATEST(
+                 CASE
+                   WHEN jsonb_typeof(detail->'pidsEventsMax') = 'number'
+                        AND (detail->>'pidsEventsMax') ~ '^[0-9]+$'
+                     THEN (detail->>'pidsEventsMax')::bigint
+                   ELSE 0::bigint
+                 END,
+                 u.pids_events_max
+               )),
+               true
+             )
+           END
       FROM (
         SELECT (x->>'task_id')::text AS task_id,
                (x->>'pid')::int AS pid,
                (x->>'process_identity')::text AS process_identity,
                (x->>'last_memory_bytes')::bigint AS last_memory_bytes,
                (x->>'cpu_usec')::bigint AS cpu_usec,
-               (x->>'pids_current')::int AS pids_current
-          FROM jsonb_array_elements(${JSON.stringify(payload)}::jsonb) AS x
+               (x->>'pids_current')::int AS pids_current,
+               (x->>'pids_events_max')::bigint AS pids_events_max
+          FROM jsonb_array_elements(${JSON.stringify(payload)}::text::jsonb) AS x
       ) u
      WHERE t.task_id = u.task_id
        AND t.ended_at IS NULL
