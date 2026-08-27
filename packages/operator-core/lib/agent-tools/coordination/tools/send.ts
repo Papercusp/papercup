@@ -150,6 +150,8 @@ function idempotentCoordMsgId(
 interface SendMsg {
   to: string[];
   summary: string;
+  /** Explicit per-message harness scope (or the bulk form's item override). */
+  harness?: string;
   /** P-032 / D-064, as amended by **D-104**: an ARRAY of sections carrying the
    *  four AUTHORED per-section fields. A plain string is REFUSED at the tool
    *  boundary (`messageBodyArg`) — D-064's "plain string is the n=1 case" was
@@ -395,6 +397,15 @@ const scopeArg = z
     "Federation scope of THIS message (cross-machine-coord-parity P-001). Omitted = auto: a harness-scoped sender stamps its harness; an un-scoped (SU/operator) sender in a workspace with EXACTLY ONE shared Hive stamps that Hive's home (the message federates to the Hive's other machines); otherwise the message stays machine-local. 'hive' FORCES the shared-Hive scope — errors loudly (no_hive_scope / ambiguous_hive_scope + candidates) instead of silently staying local. 'local' keeps the message on this machine only. Every result reports `federated:` so a local-only send is never mistaken for cross-machine delivery.",
   );
 
+const messageHarnessArg = z
+  .string()
+  .min(1)
+  .max(120)
+  .optional()
+  .describe(
+    'Per-message harness federation scope. In items:[…], this overrides the top-level `harness` default; in a single send it names the harness directly. A concrete harness-scoped session keeps its own ctx harness authoritative unless `scope:\'local\'` opts out.',
+  );
+
 const hiveArg = z
   .string()
   .min(1)
@@ -518,6 +529,7 @@ const fieldProvenanceArg = z
 export const itemSpec = z.object({
   to: toArg,
   summary: summaryArg,
+  harness: messageHarnessArg,
   body: messageBodyArg,
   // P-032 / D-064, reopened by D-070: the ENVELOPE half of the split. These
   // cannot vary per section — `blocking` because a scheduler acts on a message
@@ -1843,6 +1855,8 @@ async function sendOne(
  * federation scope for one message. Precedence:
  *   scope:'local'  → none (explicit machine-local, wins over everything);
  *   ctx harness    → the sender's own harness (pipeline roles — unchanged);
+ *   message harness → the explicit per-message/bulk-item harness when the
+ *                    sender is unscoped;
  *   scope:'hive'   → the workspace's shared Hive — `hive` picks WHICH one on a
  *                    multi-hive workspace (WI-5445; mirrors resource:offers' /
  *                    fleet:request_remote_spawn's own disambiguator), else the
@@ -1856,6 +1870,7 @@ async function sendOne(
  */
 async function effectiveFederationScope(
   msgScope: 'hive' | 'local' | undefined,
+  msgHarness: string | undefined,
   ctxHarness: string | undefined,
   workspaceId: string | null | undefined,
   to: string[],
@@ -1866,6 +1881,11 @@ async function effectiveFederationScope(
   // write seam's own AUTO default (undefined → resolve) must not re-decide it.
   if (msgScope === 'local') return { harnessSlug: null };
   if (ctxHarness) return { harnessSlug: ctxHarness };
+  // An explicit per-message/item harness is available to unscoped senders,
+  // while the concrete ctx harness above remains authoritative for scoped
+  // pipeline roles. This prevents a nested bulk field from widening a scoped
+  // sender's harness boundary.
+  if (msgHarness) return { harnessSlug: msgHarness };
   if (!workspaceId || workspaceId === '*') {
     if (msgScope === 'hive') {
       return {
@@ -2193,6 +2213,7 @@ export default defineTool({
     // 1 element(s)" zod default on these two required fields.
     to: toArg.optional(),
     summary: summaryArg.optional(),
+    harness: messageHarnessArg,
     body: messageBodyArg,
     // P-032 / D-064 envelope half — see itemSpec for why these two cannot be
     // per-section.
@@ -2231,7 +2252,9 @@ export default defineTool({
       .min(1)
       .max(100)
       .optional()
-      .describe('send many DISTINCT messages at once — each { to, summary, expects, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? } — `expects` is required on EVERY item'),
+      .describe(
+        'send many DISTINCT messages at once — each { to, summary, expects, harness?, body?, files?, plan_slug?, related_msg_id?, wake?, wakeOnReply?, endTurn? }; a top-level `harness` is the default for items that omit it — `expects` is required on EVERY item',
+      ),
   })),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -2286,6 +2309,11 @@ export default defineTool({
     const list: SendMsg[] = args.items?.length
       ? args.items.map((it) => ({
           ...it,
+          // A top-level harness is the batch default; an item-level harness
+          // remains authoritative for that distinct message.
+          ...(args.harness !== undefined && it.harness === undefined
+            ? { harness: args.harness }
+            : {}),
           // Keep the envelope-level wake as the default for each distinct
           // message, while an item-level wake remains authoritative. Without
           // this, a valid top-level `wake` is accepted and then silently
@@ -2380,6 +2408,7 @@ export default defineTool({
         msg.to = bcast.to;
         const scoped = await effectiveFederationScope(
           msg.scope,
+          msg.harness,
           ctxHarness,
           identity.workspaceId,
           msg.to,

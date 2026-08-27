@@ -246,6 +246,28 @@ describe('WI-6522 — regression pins that must not be traded away', () => {
     ).toBe(true);
   });
 
+  describe('EI-21579316360433950 — per-message harness federation scope', () => {
+    const base = { to: ['peer'], summary: 'hi', expects: 'none' as const };
+
+    it('accepts harness on both the single form and an items[] entry', () => {
+      expect(sendTool.args.safeParse({ ...base, harness: 'target-harness' }).success).toBe(true);
+      expect(
+        sendTool.args.safeParse({ items: [{ ...base, harness: 'target-harness' }] }).success,
+      ).toBe(true);
+    });
+
+    it('accepts a top-level harness default alongside items[]', () => {
+      expect(
+        sendTool.args.safeParse({ harness: 'default-harness', items: [base] }).success,
+      ).toBe(true);
+    });
+
+    it('still refuses an empty harness value', () => {
+      expect(sendTool.args.safeParse({ ...base, harness: '' }).success).toBe(false);
+      expect(sendTool.args.safeParse({ items: [{ ...base, harness: '' }] }).success).toBe(false);
+    });
+  });
+
   // P-013 — expectEffect. The schema is the ONLY place an uninterpretable expectation
   // can be stopped: once stamped on the envelope it is read back by a probe that must
   // either produce a verdict or skip the row, and a silently-skipped expectation is

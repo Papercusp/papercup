@@ -1375,6 +1375,44 @@ describe('coord:send federation scope (cross-machine-coord-parity P-001)', () =>
     // WI-3653: the local item resolves to explicit null, not undefined (see above).
     expect(second.harnessSlug).toBeNull();
   });
+
+  it('an un-scoped sender can choose an explicit harness without workspace auto-resolution', async () => {
+    const b = await body({ to: ['bee-1'], summary: 'send in this harness', harness: 'target-harness' });
+    expect(fedScopeM).not.toHaveBeenCalled();
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBe('target-harness');
+    expect(b.results[0]).toMatchObject({ ok: true, federated: true, federationScope: 'target-harness' });
+  });
+
+  it('a top-level harness defaults bulk items while an item harness overrides it', async () => {
+    const b = await body({
+      harness: 'default-harness',
+      items: [
+        { to: ['bee-1'], summary: 'use the batch default' },
+        { to: ['bee-2'], summary: 'use the item override', harness: 'item-harness' },
+        { to: ['bee-3'], summary: 'local wins', harness: 'ignored-by-local', scope: 'local' },
+      ],
+    });
+    expect(fedScopeM).not.toHaveBeenCalled();
+    expect(b.counts).toEqual({ ok: 3, failed: 0 });
+    expect(b.results[0]).toMatchObject({ federated: true, federationScope: 'default-harness' });
+    expect(b.results[1]).toMatchObject({ federated: true, federationScope: 'item-harness' });
+    expect(b.results[2]).toMatchObject({ federated: false });
+    expect((sendM.mock.calls[0][1] as { harnessSlug?: string | null }).harnessSlug).toBe('default-harness');
+    expect((sendM.mock.calls[1][1] as { harnessSlug?: string | null }).harnessSlug).toBe('item-harness');
+    expect((sendM.mock.calls[2][1] as { harnessSlug?: string | null }).harnessSlug).toBeNull();
+  });
+
+  it('a concrete ctx harness remains authoritative over an explicit message harness', async () => {
+    const b = await bodyWithCtx(
+      { to: ['bee-1'], summary: 'keep the sender scope', harness: 'other-harness' },
+      { harnessSlug: 'sender-harness' },
+    );
+    expect(fedScopeM).not.toHaveBeenCalled();
+    const opts = sendM.mock.calls[0][1] as { harnessSlug?: string };
+    expect(opts.harnessSlug).toBe('sender-harness');
+    expect(b.results[0]).toMatchObject({ federated: true, federationScope: 'sender-harness' });
+  });
 });
 
 describe('coord:send delivery receipts (P-008)', () => {
