@@ -330,6 +330,10 @@ const BYPASS_CALL = /\b(getCellUnchecked|listCellsUnchecked)\s*\(/;
  */
 const CALL_SITE_ALLOWLIST: Record<string, string> = {
   'packages/operator-core/lib/cell-registry.ts': 'defines them',
+  // Continuity-probe validation checks only that a persisted state-cell probe names a
+  // registered poll cell; it reads registration metadata and never serves the cell value.
+  'packages/operator-core/lib/continuity-probes.ts':
+    'validates state-cell probe registration and poll-signal metadata; never reads or serves a cell value',
   // `deriveCellReread` (P-001) must find a spec by its (tool, path) change-signal BEFORE
   // it has anyone to check it against — the identity that matters is the WATCH ROW'S
   // (ownerId/role/harness), not the caller's, because a hand-rolled watch:create on the
