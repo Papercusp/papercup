@@ -20,6 +20,7 @@ import {
   evaluateSpecTestAdequacy,
   requiredProofFloor,
   SPEC_TEST_ADEQUACY_RUBRIC_REF,
+  specTestAdequacySubjectRef,
   type PlanClassRubricRef,
   type SpecTestAdequacyResult,
 } from '../plans/spec-test-adequacy';
@@ -151,9 +152,10 @@ function ratingVerdictsMatch(card: ScorecardRow, result: SpecTestAdequacyResult)
 }
 
 function scorecardMatches(card: ScorecardRow, result: SpecTestAdequacyResult): boolean {
+  const expectedSubjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);
   return (
     card.subject?.kind === 'plan' &&
-    card.subject.ref === result.scorecardDraft.subject.ref &&
+    card.subject.ref === expectedSubjectRef &&
     card.rubricResolved &&
     card.missingKeys.length === 0 &&
     card.extraKeys.length === 0 &&
@@ -294,9 +296,10 @@ export async function specTestAdequacyCompletionGate(
       failures.push(`${label}: ${result.verdict} [${result.wouldBlock.join(', ') || 'no passing verdict'}]`);
       continue;
     }
+    const subjectRef = specTestAdequacySubjectRef(result.planSlug, result.specId, result.specRevision);
     const cards = await listCards({
       rubricRef: SPEC_TEST_ADEQUACY_RUBRIC_REF,
-      subjectRef: result.scorecardDraft.subject.ref,
+      subjectRef,
       limit: 20,
     });
     if (!cards.some((card) => scorecardMatches(card, result))) {

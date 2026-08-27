@@ -252,7 +252,12 @@ function riskFloorRating(
   };
 }
 
-function compactSubjectRef(planSlug: string, specId: string, revision: number): string {
+/**
+ * Return the stable subject reference used by every spec-test-adequacy surface.
+ * Keep the truncation deterministic so the write boundary and completion gate
+ * cannot disagree about a long plan/spec identifier.
+ */
+export function specTestAdequacySubjectRef(planSlug: string, specId: string, revision: number): string {
   const exact = `${planSlug}#${specId}@${revision}`;
   return exact.length <= 200 ? exact : `${planSlug.slice(0, 120)}#${specId.slice(0, 60)}@${revision}`;
 }
@@ -478,8 +483,12 @@ export function evaluateSpecTestAdequacy(input: {
       ? 'unknown'
       : 'pass';
   const evidenceRefs = [...new Set(evidence.map((row) => row.evidenceRef))].sort();
-  const subjectRef = compactSubjectRef(clause.planSlug, clause.specId, clause.revision);
   const rerunRecipe = rerunRecipeFor(clause, evidence, input.current);
+  const subjectRef = specTestAdequacySubjectRef(
+    rerunRecipe.selection.planSlug,
+    rerunRecipe.selection.specId,
+    rerunRecipe.selection.specRevision,
+  );
   const rawRefs = evidenceRefs.join(', ') || '(none)';
   const bodyRefs = rawRefs.length <= 7_000 ? rawRefs : `${rawRefs.slice(0, 6_980)}… (see evidenceRefs for the full set)`;
   return {

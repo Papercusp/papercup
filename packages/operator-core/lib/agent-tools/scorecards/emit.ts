@@ -41,6 +41,7 @@ import { emitScorecardEmitted } from '../../scorecard-emitted-events';
 import { evaluateCriterionTestChecks, evaluateCriterionCoverageChecks } from '../../rubrics-criterion-checks';
 import { resolveHarnessPaths } from '../../resolve-harness-paths';
 import { resolvePlanHarnessSlug } from '../plans/source';
+import { SPEC_TEST_ADEQUACY_RUBRIC_REF, specTestAdequacySubjectRef } from '../plans/spec-test-adequacy';
 
 /**
  * The `planTouched` reverse map: every implementing file the subject plan's work-items
@@ -217,6 +218,54 @@ export const scorecardEmitArgs = z
   })
   .strict();
 
+type SpecTestAdequacyBindingError = {
+  code: 'invalid_spec_test_adequacy_binding';
+  error: string;
+};
+
+/**
+ * The completion gate can only match a spec-test-adequacy card to the exact
+ * clause revision selected by the evaluator. Refuse malformed or mismatched
+ * bindings at the write boundary so an unmatchable card never enters history.
+ */
+function validateSpecTestAdequacyBinding(
+  args: z.infer<typeof scorecardEmitArgs>,
+): SpecTestAdequacyBindingError | undefined {
+  if (args.rubricRef !== SPEC_TEST_ADEQUACY_RUBRIC_REF) return undefined;
+
+  if (!args.rerunRecipe) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires the evaluator's rerunRecipe from ` +
+        "plans:evaluate-spec-test-adequacy, including its exact selection; do not emit a hand-built adequacy card",
+    };
+  }
+
+  const parsedRecipe = specTestAdequacyRerunRecipeSchema.safeParse(args.rerunRecipe);
+  if (!parsedRecipe.success) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires a valid evaluator rerunRecipe from ` +
+        'plans:evaluate-spec-test-adequacy',
+    };
+  }
+
+  const selection = parsedRecipe.data.selection;
+  const expectedRef = specTestAdequacySubjectRef(selection.planSlug, selection.specId, selection.specRevision);
+  if (args.subject?.kind !== 'plan' || args.subject.ref !== expectedRef) {
+    return {
+      code: 'invalid_spec_test_adequacy_binding',
+      error:
+        `rubric '${SPEC_TEST_ADEQUACY_RUBRIC_REF}' requires subject:{ kind:'plan', ref:'${expectedRef}' } ` +
+        'matching rerunRecipe.selection (the evaluator-owned clause revision)',
+    };
+  }
+
+  return undefined;
+}
+
 export async function cleanupAcceptanceGraderTasks(
   rubricRef: string,
   input: { workspaceId?: string } = {},
@@ -327,6 +376,8 @@ export async function emitScorecard(
         're-propose a new active rubric revision if genuinely new review work is required.',
     };
   }
+  const specTestAdequacyBindingError = validateSpecTestAdequacyBinding(args);
+  if (specTestAdequacyBindingError) return { ok: false as const, ...specTestAdequacyBindingError };
   try {
     // Bind every scorecard to the exact rubric plan-row revision used for grading.
     // A failed read remains unrecorded; historical cards must not be back-filled
