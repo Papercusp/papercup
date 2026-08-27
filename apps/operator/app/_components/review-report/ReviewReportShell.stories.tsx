@@ -199,6 +199,32 @@ const inbox: ReviewReportGroup[] = [
   },
 ];
 
+const performanceGroups: ReviewReportGroup[] = Array.from(
+  { length: 12 },
+  (_, groupIndex) => ({
+    id: `stress-group-${groupIndex}`,
+    title: `Review cohort ${groupIndex + 1}`,
+    description: "20 realistic rows for interaction profiling",
+    rows: Array.from({ length: 20 }, (_, rowIndex) => {
+      const ordinal = groupIndex * 20 + rowIndex + 1;
+      return {
+        id: `stress-${groupIndex}-${rowIndex}`,
+        title: `Recommendation ${ordinal}`,
+        sourceLabel: `source-${String(ordinal).padStart(3, "0")}`,
+        referenceLabel: `P-${String(ordinal).padStart(3, "0")}`,
+        transition: { from: "pending", to: "done" },
+        evidence: [
+          `Completion evidence ${ordinal} is current and independently verified`,
+          `Work-item ${ordinal} retains its full audit trail`,
+          `No live claim or unresolved dependency blocks recommendation ${ordinal}`,
+        ],
+        confidence: ordinal % 5 === 0 ? "recommended" : "provable",
+        detail: `Open recommendation ${ordinal} to inspect its canonical completion record.`,
+      } satisfies ReviewReportGroup["rows"][number];
+    }),
+  }),
+);
+
 const shared = {
   defaultSelected: "pending" as const,
   onApply: () => undefined,
@@ -237,5 +263,17 @@ export const InboxBulkResolve: Story = {
     const canvas = within(canvasElement);
     await userEvent.hover(canvas.getByTestId("review-row-i1"));
     await expect(canvas.getByTestId("review-row-detail-i1")).toBeVisible();
+  },
+};
+
+export const Performance240Rows: Story = {
+  args: {
+    ...shared,
+    title: "Review performance fixture",
+    icon: <BrushCleaning size={19} />,
+    subtitle: "240 recommendations across 12 report groups",
+    groups: performanceGroups,
+    footer:
+      "Deterministic production-scale fixture for browser interaction profiling.",
   },
 };
