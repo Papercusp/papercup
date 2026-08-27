@@ -126,7 +126,6 @@ import FleetLaunchRow, {
   describeLaunchOutcome,
 } from './FleetLaunchRow';
 import { MODEL_SELECT_DEFAULT, OMP_MODEL_OPTIONS, modelBackend } from '@/app/adv/sessions/NewSessionLauncher';
-import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-constants';
 
 /**
  * A real claude-backed model id taken from the SHARED menu rather than a
@@ -162,24 +161,15 @@ function firstLaunch(): Record<string, any> {
 }
 
 describe('clampMemberCount', () => {
-  it('bounds to 1..FLEET_MAX_MEMBERS and never returns a fraction or NaN', () => {
+  it('bounds to positive integers and never returns a fraction or NaN', () => {
     expect(clampMemberCount(0)).toBe(1);
     expect(clampMemberCount(-5)).toBe(1);
     expect(clampMemberCount(3)).toBe(3);
     expect(clampMemberCount(3.7)).toBe(3);
-    expect(clampMemberCount(FLEET_MAX_MEMBERS + 40)).toBe(FLEET_MAX_MEMBERS);
+    expect(clampMemberCount(1_000)).toBe(1_000);
     expect(clampMemberCount(Number.NaN)).toBe(1);
   });
 
-  /**
-   * The ceiling must come from the shared constant, not a literal copy. If
-   * `fleet:launch-on-plan` raises its `.max()` and the UI keeps its own 12, the
-   * row silently refuses counts the tool would accept — the drift class WI-6300
-   * and WI-6321 were both filed for.
-   */
-  it('tracks the same ceiling the launcher enforces', () => {
-    expect(clampMemberCount(1_000)).toBe(FLEET_MAX_MEMBERS);
-  });
 });
 
 describe('describeLaunchOutcome', () => {
@@ -265,11 +255,11 @@ describe('FleetLaunchRow — the owner’s five options are all present', () => 
     expect(WINDOW_MODE_OPTIONS.map((o) => o.value)).toEqual([HEADED_VALUE, HEADLESS_VALUE]);
   });
 
-  it('bounds the count input to the launcher’s real range', () => {
+  it('enforces only the positive count floor', () => {
     renderRow(<FleetLaunchRow />);
     const count = screen.getByLabelText('Members') as HTMLInputElement;
     expect(count.min).toBe('1');
-    expect(count.max).toBe(String(FLEET_MAX_MEMBERS));
+    expect(count.max).toBe('');
   });
 });
 
@@ -342,12 +332,12 @@ describe('FleetLaunchRow — launching', () => {
     expect(firstLaunch().slug).toBe('otherness');
   });
 
-  it('clamps an over-max count before it reaches the launcher', async () => {
+  it('passes large governed counts through to the launcher', async () => {
     renderRow(<FleetLaunchRow />);
     fillRequired();
     fireEvent.change(screen.getByLabelText('Members'), { target: { value: '99' } });
     fireEvent.click(screen.getByTestId('fleet-launch-submit'));
-    await waitFor(() => expect(launchCalls.length).toBe(FLEET_MAX_MEMBERS));
+    await waitFor(() => expect(launchCalls.length).toBe(99));
   });
 
   it('defaults to one headed member on the system account', async () => {
