@@ -12,6 +12,20 @@ cargo clippy          # lint; the bar is 0 warnings
 cargo test -- --ignored --nocapture   # live smokes (need a running operator)
 ```
 
+## Install/update contract
+
+The single supported local install/update path is:
+
+```bash
+./apps/tui/scripts/install-update.sh
+```
+
+It builds `pui` and `pui-companion.wasm` from one source generation, embeds the
+generation in both, writes `~/.papercusp/pui-install.json`, and runs `pui doctor`.
+It never stops a process or zellij session. Doctor detects stale long-lived PUI
+panes and prints a pane/session-scoped relaunch instruction. The old plugin-only
+`apps/pui-zellij-plugin/scripts/build-install.sh` path delegates to this script.
+
 `cargo test` is fully offline (no operator, no network) and is what CI/`test:affected`
 should run. The `#[ignore]`d live smokes require the operator running (an
 `~/.papercusp/endpoint-ipc.json` socket present) and exercise the real wire.
@@ -67,6 +81,10 @@ should run. The `#[ignore]`d live smokes require the operator running (an
   pane-close → topology prune. The status-bar indicator render is in the `ui.rs`
   tests. The live process spawn + duplex is covered by the plugin crate's live
   smoke (see below), not here.
+- **`install.rs` / `tests/install_contract.rs` — artifact generation (P-021).**
+  Manifest/hash/source-generation checks, selected-operator source comparison,
+  safe stale-pane guidance, the binary+WASM single-installer contract, and a
+  source guard that forbids process/session-kill commands in the installer.
 
 ## Live smokes (`-- --ignored`, need a running operator)
 

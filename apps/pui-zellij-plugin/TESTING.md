@@ -18,8 +18,9 @@ cargo clippy --all-targets                      # native lints, 0 warnings
 cargo build --release --target wasm32-wasip1    # → target/wasm32-wasip1/release/pui_companion.wasm
 cargo clippy --release --target wasm32-wasip1    # 0 warnings
 
-# Build + install where pui looks for it (~/.papercusp/pui-companion.wasm):
-./scripts/build-install.sh
+# Build + install the matched native pui + companion generation (the old
+# plugin-only script delegates to this canonical path):
+../tui/scripts/install-update.sh
 
 # Live duplex smoke (needs zellij installed; spins up its OWN isolated session):
 python3 scripts/live-smoke.py                   # exit 0 = all live checks passed
@@ -78,4 +79,4 @@ python3 scripts/dock-verbs-smoke.py             # exit 0 = all dock-verb checks 
 `cargo test` + `cargo clippy --all-targets` (native) AND
 `cargo build --release --target wasm32-wasip1` + its clippy (0 warnings). If you
 touched the protocol or the plugin's event/command handling, re-run
-`scripts/build-install.sh && python3 scripts/live-smoke.py`.
+`../tui/scripts/install-update.sh && python3 scripts/live-smoke.py`.

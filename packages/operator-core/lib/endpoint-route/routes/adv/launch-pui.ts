@@ -88,7 +88,7 @@ const launchPui = defineTool({
         {
           status: 'error',
           code: 'pui_not_installed',
-          error: '`pui` not found — install the TUI workbench (cd apps/tui && cargo install --path .)',
+          error: '`pui` not found — install the matched TUI + companion generation (./apps/tui/scripts/install-update.sh)',
         },
         200,
       );

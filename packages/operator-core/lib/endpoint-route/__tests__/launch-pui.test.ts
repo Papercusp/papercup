@@ -161,6 +161,7 @@ describe('launch-pui', () => {
     const json = await res.json();
     expect(json.status).toBe('error');
     expect(json.code).toBe('pui_not_installed');
+    expect(json.error).toContain('./apps/tui/scripts/install-update.sh');
     expect(spawnMock).not.toHaveBeenCalled();
   });
 
