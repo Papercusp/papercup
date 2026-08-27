@@ -1688,6 +1688,21 @@ describe('spawnHeadless boot receipt — a member that dies AFTER the probe (EI-
     expect(r.status).toBe('error');
     expect((r as { error: string }).error).toMatch(/exit 0/);
   }, 10_000);
+
+  it('exposes a persistent child-exit promise after the receipt window, catching a later nonzero psu exit', async () => {
+    spawnMock.mockImplementation(() => fakeChild(6005));
+    const r = await spawnHeadless({
+      envelope,
+      spawnCommandProbes: { platform: 'linux', hasSystemdRun: () => false },
+      bootProbes: { readLog: () => '', sleep: TICK, windowMs: 60 },
+    });
+    expect(r.status).toBe('ok');
+    const childExit = (r as { childExit?: Promise<{ code: number | null; signal: string | null }> }).childExit;
+    expect(childExit).toBeInstanceOf(Promise);
+    const child = spawnMock.mock.results[0]?.value as EventEmitter;
+    queueMicrotask(() => child.emit('exit', 2, null));
+    await expect(childExit).resolves.toMatchObject({ code: 2, signal: null });
+  }, 10_000);
 });
 
 describe('macHasGuiSession (EI-19311623077693508)', () => {

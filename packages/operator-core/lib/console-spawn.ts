@@ -1115,8 +1115,31 @@ export type SpawnConsoleResult =
        * Callers should flag 'socket-scan' loudly.
        */
       desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
+      /**
+       * A persistent observation of the detached child after the initial spawn
+       * probe. Headless callers use this to catch a psu that exits shortly after
+       * spawnHeadless returns (the initial probe/receipt window cannot cover an
+       * arbitrarily slow bootstrap). It resolves on either `exit` or spawn-level
+       * `error`; it never rejects.
+       */
+      childExit?: Promise<SpawnChildExit>;
     }
   | { status: 'error'; error: string; code: number };
+
+/** Detached-child lifecycle evidence exposed after a spawn result is returned. */
+export interface SpawnChildExit {
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}
+
+/** Keep observing a detached child after the bounded early-exit probe ends. */
+function observeChildExit(child: ChildProcess): Promise<SpawnChildExit> {
+  return new Promise((resolve) => {
+    child.once('exit', (code, signal) => resolve({ code, signal }));
+    child.once('error', (error) => resolve({ code: null, signal: null, error }));
+  });
+}
 
 /**
  * EI-19330040718883562: poll `receiptPath` for the greeting-failure sentinel —
@@ -2174,6 +2197,10 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       // live wrong-answer, not a hypothetical one.
       env: scrubTerminalContextEnv({ ...process.env, ...envelope.env }),
     });
+    // Keep a second, persistent observer before the bounded boot probes remove
+    // their own listeners. The consult reviver consumes this promise to turn a
+    // post-return status-2 exit into a truthful failed revival.
+    const childExit = observeChildExit(child);
     child.unref();
     completeSyncEnrolment(
       // EI-19366263067183489: record the unit the spawn ACTUALLY used, not just the enrolled
@@ -2286,6 +2313,7 @@ export async function spawnHeadless(opts: SpawnHeadlessOpts): Promise<SpawnConso
       taskId: enrolment.taskId,
       logPath,
       child,
+      childExit,
       display: null,
       desktopEnvResolvedVia: null,
     };

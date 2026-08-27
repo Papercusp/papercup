@@ -144,6 +144,25 @@ describe('reviveConsultResponder', () => {
     expect(r.detail).toContain('NOT a failure');
   });
 
+  it('a delayed nonzero child exit overrides the unconfirmed host window', async () => {
+    const { deps } = makeFakes({
+      spawnHeadless: async () => ({
+        status: 'ok',
+        pid: 42,
+        terminal: 'headless',
+        logPath: '/logs/x.log',
+        child: null,
+        display: null,
+        childExit: Promise.resolve({ code: 2, signal: null }),
+      }),
+      verifyResumeStarted: () => new Promise(() => {}),
+    });
+    const r = await reviveConsultResponder(OPTS, CTX, deps);
+    expect(r).toMatchObject({ spawned: false, verified: false });
+    expect(r.detail).toMatch(/status 2/);
+    expect(r.detail).toContain('not successful');
+  });
+
   it('NEVER throws: a throwing seam resolves as spawned:false', async () => {
     const { deps } = makeFakes({
       buildConsoleEnvelope: async () => {

@@ -32,7 +32,7 @@ import {
   verifyResumeStarted,
 } from '../agent-launch-core';
 import { buildConsoleEnvelope } from '../console-launcher';
-import { spawnHeadless } from '../console-spawn';
+import { spawnHeadless, type SpawnChildExit } from '../console-spawn';
 import { resolveSpawnHostOperatorBaseUrl } from '../mcp-base-url';
 import { papercuspPathForWorkspace } from '../papercusp-root';
 
@@ -67,6 +67,17 @@ export interface ConsultReviveDeps {
   buildConsoleEnvelope: typeof buildConsoleEnvelope;
   spawnHeadless: typeof spawnHeadless;
   verifyResumeStarted: typeof verifyResumeStarted;
+}
+
+/** Nonzero/signal child termination is concrete evidence that a spawned
+ * headless revival did not survive to become a responder. */
+function childExitFailure(exit: SpawnChildExit): string | null {
+  if (exit.error) return `headless resume spawn errored after return: ${exit.error.message}`;
+  if (exit.signal) return `headless resume process exited on signal ${exit.signal}`;
+  if (exit.code != null && exit.code !== 0) {
+    return `headless resume process exited with status ${exit.code}`;
+  }
+  return null;
 }
 
 /**
@@ -150,7 +161,40 @@ export async function reviveConsultResponder(
           `no recorded coord identity to verify against — the cascade expiry guards the reply.`,
       };
     }
-    const verify = await d.verifyResumeStarted(target.ownerId, { timeoutMs: REVIVE_VERIFY_TIMEOUT_MS });
+    // A headless spawn can outlive both the early-exit and receipt probes, then
+    // have psu refuse the resume and exit nonzero. Race that durable child
+    // observation against host registration so the result cannot say
+    // spawned:true / verified:null for a process that has already died. The
+    // verification promise is intentionally not cancelled when it loses: its
+    // injected/production implementation has no side effects after resolution,
+    // and the detached child remains owned by the launcher process.
+    const verifyPromise = d.verifyResumeStarted(target.ownerId, { timeoutMs: REVIVE_VERIFY_TIMEOUT_MS });
+    let verify: Awaited<ReturnType<typeof d.verifyResumeStarted>>;
+    if (spawn.childExit) {
+      const winner = await Promise.race([
+        verifyPromise.then((result) => ({ kind: 'verify' as const, result })),
+        spawn.childExit.then((exit) => ({ kind: 'exit' as const, exit })),
+      ]);
+      if (winner.kind === 'exit') {
+        const failure = childExitFailure(winner.exit);
+        if (failure) {
+          return {
+            spawned: false,
+            verified: false,
+            detail:
+              `${failure} before ${target.ownerId} registered a live host; ` +
+              `the revival was not successful (log ${spawn.logPath ?? '?'})`,
+          };
+        }
+        // A clean exit is not the targeted status-2 failure, but it also cannot
+        // establish liveness; retain the existing three-state host verdict.
+        verify = await verifyPromise;
+      } else {
+        verify = winner.result;
+      }
+    } else {
+      verify = await verifyPromise;
+    }
     return {
       spawned: true,
       verified: verify.started ? true : null,
