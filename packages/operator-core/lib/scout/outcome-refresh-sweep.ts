@@ -16,12 +16,15 @@
  * counting — the fix here is the same shape: a routines-tick sweep
  * independent of the thing it used to be coupled to.
  *
- * (a) DECOUPLE: this sweep calls refreshScoutOutcomes for both the Scout and
- *     su-ideate origin partitions in every started pot's workspace on its own
- *     in-process-throttled cadence (default 15min — much cheaper than a full
- *     Scout cycle, so a much shorter floor is safe), wholly independent of
- *     whether Scout is currently cycling.
- * (b) ESCALATE: after a refresh, count routed ideas whose outcome is STILL
+ * (a) DECOUPLE: this sweep runs on its own in-process-throttled cadence
+ *     (default 15min), wholly independent of whether Scout is cycling.
+ * (b) FRONTIER: the canonical ungraded census is the priority phase. Only when
+ *     that frontier drains does the sweep spend a bounded slice verifying
+ *     pending outcomes, selected by value/age/id and resumed from a durable
+ *     operator-settings checkpoint. New grading work preempts verification.
+ *     The existing routed ledger, authoritative Change-Feed joins, and lens
+ *     weights remain the only outcome substrate — no parallel queue/store.
+ * (c) ESCALATE: after a verification step, count routed ideas whose outcome is STILL
  *     NULL/'pending' with a stale (or absent) `outcome_checked_at` — a refresh
  *     running does not itself guarantee an idea resolves (e.g. an abandoned
  *     draft that never reached ANY rail terminal). When that count is > 0 and
@@ -42,7 +45,20 @@ import {
   listBlenderMaintenanceScopes,
   listBlenderMaintenanceWorkspaceIds,
 } from '../pot/started';
-import { refreshScoutOutcomes, countStalePendingIdeas } from './routed-ledger';
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  refreshScoutOutcomes,
+  countStalePendingIdeas,
+  readPendingOutcomeCandidates,
+  type RefreshedIdeaOutcomeEvidence,
+} from './routed-ledger';
+import { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY } from './ungraded-scope';
+import {
+  decodePortfolioFrontierCheckpoint,
+  finishPortfolioFrontierStep,
+  planPortfolioFrontierStep,
+  type PortfolioFrontierCheckpoint,
+} from './portfolio-frontier';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
@@ -73,6 +89,69 @@ export function scoutOutcomeStalePendingThresholdSec(): number {
   return Number.isFinite(n) ? n : 86_400;
 }
 
+/** Max routed ideas whose authoritative fate one drained wake may verify. */
+export function scoutPortfolioFrontierItemBudget(): number {
+  const n = Number(process.env.PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_ITEMS ?? 25);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 25;
+}
+
+/** Observable wall-clock budget for one outcome-verification batch. */
+export function scoutPortfolioFrontierTimeBudgetMs(): number {
+  const n = Number(process.env.PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_MS ?? 5_000);
+  return Number.isFinite(n) ? Math.max(0, Math.floor(n)) : 5_000;
+}
+
+export const SCOUT_PORTFOLIO_FRONTIER_CANDIDATE_CAP = 5_000;
+
+/** Existing workspace-scoped KV store; no parallel portfolio/checkpoint table. */
+export function portfolioFrontierCheckpointKey(workspaceId: string): string {
+  return `scout_portfolio_frontier:${workspaceId}`;
+}
+
+export async function readPortfolioFrontierCheckpoint(
+  workspaceId: string,
+): Promise<PortfolioFrontierCheckpoint | null> {
+  const { sql } = getOrgPg();
+  const rows = await sql<Array<{ value: string | null }>>`
+    SELECT value FROM harness_shared.operator_settings
+     WHERE key = ${portfolioFrontierCheckpointKey(workspaceId)}
+     LIMIT 1`;
+  const raw = rows[0]?.value;
+  if (!raw) return null;
+  try {
+    return decodePortfolioFrontierCheckpoint(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+export async function writePortfolioFrontierCheckpoint(
+  workspaceId: string,
+  checkpoint: PortfolioFrontierCheckpoint,
+): Promise<void> {
+  const { sql } = getOrgPg();
+  await sql`
+    INSERT INTO harness_shared.operator_settings
+      (key, value, description, updated_at, workspace_id)
+    VALUES
+      (${portfolioFrontierCheckpointKey(workspaceId)}, ${JSON.stringify(checkpoint)},
+       'Bounded Scout/Blender portfolio-frontier checkpoint', ${Date.now()}, ${workspaceId})
+    ON CONFLICT (key) DO UPDATE SET
+      value = EXCLUDED.value,
+      description = EXCLUDED.description,
+      updated_at = EXCLUDED.updated_at,
+      workspace_id = EXCLUDED.workspace_id`;
+}
+
+export async function readPortfolioGradingBacklog(workspaceId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const breakdown = await readUngradedBreakdown(sql, {
+    workspaceId,
+    policy: DEFAULT_UNGRADED_EPOCH_POLICY,
+  });
+  return breakdown.actionable;
+}
+
 // ── pure decider (unit-tested with no DB) ──────────────────────────────────────
 
 /** PURE: should the sweep run this tick? (in-process throttle, mirrors
@@ -96,6 +175,8 @@ export interface OutcomeRefreshSweepResult {
   eligibleBacklogCount: number;
   stalePendingCount: number;
   alerted: boolean;
+  /** Persisted DBOS/operator-settings cold-resume state for this workspace. */
+  frontier: PortfolioFrontierCheckpoint | null;
   reason: string;
 }
 
@@ -122,6 +203,10 @@ export interface OutcomeRefreshSweepDeps {
   listBlenderMaintenanceWorkspaceIds?: typeof listBlenderMaintenanceWorkspaceIds;
   refreshScoutOutcomes?: typeof refreshScoutOutcomes;
   countStalePendingIdeas?: typeof countStalePendingIdeas;
+  readPendingOutcomeCandidates?: typeof readPendingOutcomeCandidates;
+  readPortfolioGradingBacklog?: typeof readPortfolioGradingBacklog;
+  readPortfolioFrontierCheckpoint?: typeof readPortfolioFrontierCheckpoint;
+  writePortfolioFrontierCheckpoint?: typeof writePortfolioFrontierCheckpoint;
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
@@ -129,12 +214,12 @@ export interface OutcomeRefreshSweepDeps {
 }
 
 /**
- * The decoupled outcome-refresh sweep. For each registered Blender scope's WORKSPACE
- * (de-duped — refreshScoutOutcomes' corpus read is already workspace-wide,
- * EI-10520, so refreshing once per workspace avoids N redundant refreshes on
- * a multi-pot workspace): refresh outcomes, then count+alert on stale-pending
- * ideas. Never throws — a sweep that crashes its host routine tick guards
- * nothing. Kill switch: PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC <= 0.
+ * The decoupled, phase-aware outcome-refresh sweep. For each registered Blender
+ * scope's WORKSPACE (de-duped — the corpus is workspace-wide, EI-10520): let a
+ * non-empty grading frontier preempt; otherwise verify a bounded pending-outcome
+ * batch, persist its checkpoint, then count+alert on stale-pending ideas. Never
+ * throws — a sweep that crashes its host routine tick guards nothing. Kill
+ * switch: PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC <= 0.
  */
 export async function scoutOutcomeRefreshSweep(
   deps: OutcomeRefreshSweepDeps = {},
@@ -182,6 +267,7 @@ export async function scoutOutcomeRefreshSweep(
             eligibleBacklogCount: stalePendingCount,
             stalePendingCount,
             alerted: false,
+            frontier: null,
             reason,
           },
         ];
@@ -195,17 +281,84 @@ export async function scoutOutcomeRefreshSweep(
       if (seenWorkspaces.has(workspaceId)) continue;
       seenWorkspaces.add(workspaceId);
       try {
+        const startedAt = Date.now();
         const refresh = deps.refreshScoutOutcomes ?? refreshScoutOutcomes;
-        // EI-20200291159802681: the default origin is 'scout'. Calling only the
-        // default here left every su-ideate row permanently unchecked even
-        // though this cadence-independent sweep kept the Scout partition fresh.
-        // The two origin partitions are disjoint, so refresh them together. The
-        // routed-ledger's D-003 guard ensures the su pass updates only its idea
-        // cache and can never write Scout lens weights.
-        await Promise.all([
-          refresh({ workspaceId, harnessSlug: installSlug }),
-          refresh({ workspaceId, harnessSlug: installSlug, origin: 'su-ideate' }),
-        ]);
+        const previous = await (
+          deps.readPortfolioFrontierCheckpoint ?? readPortfolioFrontierCheckpoint
+        )(workspaceId);
+        const gradingBacklog = await (
+          deps.readPortfolioGradingBacklog ?? readPortfolioGradingBacklog
+        )(workspaceId);
+        const pending = await (
+          deps.readPendingOutcomeCandidates ?? readPendingOutcomeCandidates
+        )({ workspaceId, limit: SCOUT_PORTFOLIO_FRONTIER_CANDIDATE_CAP });
+        let planned = planPortfolioFrontierStep({
+          gradingBacklog,
+          pending,
+          previous,
+          itemBudget: scoutPortfolioFrontierItemBudget(),
+          timeBudgetMs: scoutPortfolioFrontierTimeBudgetMs(),
+          nowMs: now,
+        });
+
+        // Re-read at the write boundary. A route can become grade-eligible
+        // after the initial census but before the bounded batch starts; that
+        // transition must preempt this very step, not wait for the next 15m
+        // cadence. The prior outcome cursor is preserved by replanning from
+        // `previous` rather than the speculative outcome checkpoint above.
+        if (planned.selected.length > 0) {
+          const latestGradingBacklog = await (
+            deps.readPortfolioGradingBacklog ?? readPortfolioGradingBacklog
+          )(workspaceId);
+          if (latestGradingBacklog > 0) {
+            planned = planPortfolioFrontierStep({
+              gradingBacklog: latestGradingBacklog,
+              pending,
+              previous,
+              itemBudget: scoutPortfolioFrontierItemBudget(),
+              timeBudgetMs: scoutPortfolioFrontierTimeBudgetMs(),
+              nowMs: now,
+            });
+          }
+        }
+
+        const evidence: RefreshedIdeaOutcomeEvidence[] = [];
+        if (planned.selected.length > 0) {
+          // EI-20200291159802681: Scout and su-ideate are disjoint learning
+          // partitions. Refresh only the ids the bounded frontier selected;
+          // the routed-ledger still computes/persists Scout lens weights from
+          // the whole authoritative report, while the su pass remains isolated.
+          const scoutIds = planned.selected
+            .filter((candidate) => candidate.origin === 'scout')
+            .map((candidate) => candidate.ideaId);
+          const suIds = planned.selected
+            .filter((candidate) => candidate.origin === 'su-ideate')
+            .map((candidate) => candidate.ideaId);
+          const reports = await Promise.all([
+            ...(scoutIds.length > 0
+              ? [refresh({ workspaceId, harnessSlug: installSlug, ideaIds: scoutIds })]
+              : []),
+            ...(suIds.length > 0
+              ? [refresh({ workspaceId, harnessSlug: installSlug, origin: 'su-ideate', ideaIds: suIds })]
+              : []),
+          ]);
+          for (const report of reports) evidence.push(...(report.refreshed ?? []));
+        }
+
+        const lastEvidence = evidence.at(-1);
+        const frontier = finishPortfolioFrontierStep(planned.checkpoint, {
+          elapsedMs: Math.max(0, Date.now() - startedAt),
+          evidenceSource: lastEvidence
+            ? {
+                kind: lastEvidence.sourceKind,
+                ref: lastEvidence.sourceRef ?? lastEvidence.routedRef,
+              }
+            : planned.checkpoint.evidenceSource,
+          nowMs: Date.now(),
+        });
+        await (
+          deps.writePortfolioFrontierCheckpoint ?? writePortfolioFrontierCheckpoint
+        )(workspaceId, frontier);
 
         let stalePendingCount = 0;
         let alerted = false;
@@ -214,7 +367,9 @@ export async function scoutOutcomeRefreshSweep(
             workspaceId,
             staleBeforeMs: now - thresholdSec * 1_000,
           });
-          if (stalePendingCount > 0) {
+          // A live grading frontier preempts this budget by design. Do not page
+          // that intentional phase as though outcome verification had run.
+          if (stalePendingCount > 0 && frontier.phase !== 'grading') {
             const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
             const firedRecently =
               (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
@@ -226,8 +381,8 @@ export async function scoutOutcomeRefreshSweep(
             if (!firedRecently) {
               const reason =
                 `${stalePendingCount} routed idea(s) in workspace '${workspaceId}' have sat ` +
-                `outcome NULL/'pending' past the ${windowHours}h staleness threshold, even after an ` +
-                `independent (Scout-cadence-decoupled) refresh — their rail artifact likely never ` +
+                `outcome NULL/'pending' past the ${windowHours}h staleness threshold, even after a ` +
+                `bounded authoritative outcome-verification step — their rail artifact likely never ` +
                 `reaches a terminal (an abandoned/never-disposed draft), or the refresh itself is ` +
                 `failing silently. Investigate via readRoutedIdeas / the ledger's outcome_checked_at.`;
               console.warn(`[scout-outcome-refresh] ALERT: ${reason}`);
@@ -253,13 +408,17 @@ export async function scoutOutcomeRefreshSweep(
           outcome: 'refreshed',
           evaluatedWorkspaceCount,
           evaluatedScopeCount,
-          eligibleBacklogCount: stalePendingCount,
+          eligibleBacklogCount:
+            frontier.phase === 'grading' ? frontier.gradingBacklog : stalePendingCount,
           stalePendingCount,
           alerted,
+          frontier,
           reason:
-            stalePendingCount > 0
-              ? `${stalePendingCount} stale-pending${alerted ? ' (alerted)' : ' (debounced)'}`
-              : 'refreshed, no stale-pending',
+            frontier.phase === 'grading'
+              ? `grading frontier preempted outcome verification (${frontier.gradingBacklog} actionable)`
+              : stalePendingCount > 0
+                ? `${frontier.consumedItems} verified; ${stalePendingCount} stale-pending${alerted ? ' (alerted)' : ' (debounced)'}`
+                : `${frontier.consumedItems} verified; no stale-pending`,
         });
       } catch (e) {
         results.push({
@@ -271,6 +430,7 @@ export async function scoutOutcomeRefreshSweep(
           eligibleBacklogCount: 0,
           stalePendingCount: 0,
           alerted: false,
+          frontier: null,
           reason: e instanceof Error ? e.message : String(e),
         });
       }

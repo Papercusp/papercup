@@ -14,6 +14,7 @@ vi.mock('../pot/started', () => ({
 vi.mock('./routed-ledger', () => ({
   refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] })),
   countStalePendingIdeas: vi.fn(async () => 0),
+  readPendingOutcomeCandidates: vi.fn(async () => []),
 }));
 vi.mock('../pot/watchdog', () => ({
   recentWatchdogFires: vi.fn(async () => 0),
@@ -25,6 +26,8 @@ import {
   shouldRefreshNow,
   scoutOutcomeRefreshIntervalSec,
   scoutOutcomeStalePendingThresholdSec,
+  scoutPortfolioFrontierItemBudget,
+  scoutPortfolioFrontierTimeBudgetMs,
   scoutOutcomeRefreshSweep,
   __resetOutcomeRefreshThrottleForTests,
 } from './outcome-refresh-sweep';
@@ -56,16 +59,22 @@ describe('shouldRefreshNow — the in-process throttle', () => {
 });
 
 describe('env tunables', () => {
-  it('default the refresh interval to 900s and the stale-pending threshold to 24h', () => {
+  it('defaults the cadence, staleness threshold, and bounded frontier budgets', () => {
     expect(scoutOutcomeRefreshIntervalSec()).toBe(900);
     expect(scoutOutcomeStalePendingThresholdSec()).toBe(86_400);
+    expect(scoutPortfolioFrontierItemBudget()).toBe(25);
+    expect(scoutPortfolioFrontierTimeBudgetMs()).toBe(5_000);
   });
 
   it('read the env override', () => {
     vi.stubEnv('PAPERCUSP_SCOUT_OUTCOME_REFRESH_SEC', '60');
     vi.stubEnv('PAPERCUSP_SCOUT_OUTCOME_STALE_PENDING_SEC', '3600');
+    vi.stubEnv('PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_ITEMS', '3');
+    vi.stubEnv('PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_MS', '750');
     expect(scoutOutcomeRefreshIntervalSec()).toBe(60);
     expect(scoutOutcomeStalePendingThresholdSec()).toBe(3_600);
+    expect(scoutPortfolioFrontierItemBudget()).toBe(3);
+    expect(scoutPortfolioFrontierTimeBudgetMs()).toBe(750);
   });
 });
 
@@ -74,6 +83,10 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     listBlenderMaintenanceScopes: vi.fn(async () => [{ workspaceId: 'ws1', installSlug: 'papercusp' }]),
     refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] }) as never),
     countStalePendingIdeas: vi.fn(async () => 0),
+    readPendingOutcomeCandidates: vi.fn(async () => []),
+    readPortfolioGradingBacklog: vi.fn(async () => 0),
+    readPortfolioFrontierCheckpoint: vi.fn(async () => null),
+    writePortfolioFrontierCheckpoint: vi.fn(async () => undefined),
     recentWatchdogFires: vi.fn(async () => 0),
     recordFire: vi.fn(async () => undefined),
     openEscalation: vi.fn(async () => ({}) as never),
@@ -81,7 +94,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     ...over,
   });
 
-  it('refreshes Scout and su-ideate outcomes for every started workspace and reports no stale-pending when clean', async () => {
+  it('records a drained checkpoint and reports no stale-pending when the whole portfolio is empty', async () => {
     const d = deps();
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toEqual([
@@ -94,16 +107,15 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
         eligibleBacklogCount: 0,
         stalePendingCount: 0,
         alerted: false,
-        reason: 'refreshed, no stale-pending',
+        frontier: expect.objectContaining({ phase: 'drained', consumedItems: 0 }),
+        reason: '0 verified; no stale-pending',
       },
     ]);
-    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(2);
-    expect(d.refreshScoutOutcomes).toHaveBeenNthCalledWith(1, { workspaceId: 'ws1', harnessSlug: 'papercusp' });
-    expect(d.refreshScoutOutcomes).toHaveBeenNthCalledWith(2, {
-      workspaceId: 'ws1',
-      harnessSlug: 'papercusp',
-      origin: 'su-ideate',
-    });
+    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
+    expect(d.writePortfolioFrontierCheckpoint).toHaveBeenCalledWith(
+      'ws1',
+      expect.objectContaining({ phase: 'drained' }),
+    );
     expect(d.recordFire).not.toHaveBeenCalled();
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
@@ -117,7 +129,79 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     });
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toHaveLength(1);
+    expect(d.readPendingOutcomeCandidates).toHaveBeenCalledTimes(1);
+    expect(d.writePortfolioFrontierCheckpoint).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes only the bounded selected ids in both learning partitions', async () => {
+    const d = deps({
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'scout-a', origin: 'scout', routedRef: 'plan:a', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'su-b', origin: 'su-ideate', routedRef: 'wi:b', routedAtMs: NOW + 1, humanGrade: 4 },
+      ]),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(results[0]?.frontier).toMatchObject({ phase: 'outcome-verification', consumedItems: 2 });
     expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(2);
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      harnessSlug: 'papercusp',
+      ideaIds: ['scout-a'],
+    });
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      harnessSlug: 'papercusp',
+      origin: 'su-ideate',
+      ideaIds: ['su-b'],
+    });
+  });
+
+  it('preempts outcome verification while any grading row is actionable and preserves the cursor', async () => {
+    const d = deps({
+      readPortfolioGradingBacklog: vi.fn(async () => 2),
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'pending', origin: 'scout', routedRef: 'plan:p', routedAtMs: NOW, humanGrade: 5 },
+      ]),
+      readPortfolioFrontierCheckpoint: vi.fn(async () => ({
+        version: 1 as const,
+        phase: 'outcome-verification' as const,
+        cursorIdeaId: 'resume-after',
+        cursorGrade: 4,
+        cursorRoutedAtMs: NOW - 2_000,
+        currentIdeaId: null,
+        itemBudget: 25,
+        timeBudgetMs: 5_000,
+        consumedItems: 1,
+        elapsedMs: 10,
+        gradingBacklog: 0,
+        pendingOutcomes: 1,
+        evidenceSource: { kind: 'plan-run', ref: 'plan:last' },
+        updatedAt: new Date(NOW - 1_000).toISOString(),
+      })),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(results[0]).toMatchObject({
+      eligibleBacklogCount: 2,
+      alerted: false,
+      frontier: { phase: 'grading', cursorIdeaId: 'resume-after', consumedItems: 0 },
+    });
+    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
+    expect(d.openEscalation).not.toHaveBeenCalled();
+  });
+
+  it('rechecks at the write boundary and preempts a grading route that arrived after selection', async () => {
+    const readBacklog = vi.fn(async () => 0);
+    readBacklog.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+    const d = deps({
+      readPortfolioGradingBacklog: readBacklog,
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'pending', origin: 'scout', routedRef: 'plan:p', routedAtMs: NOW, humanGrade: 5 },
+      ]),
+    });
+    const results = await scoutOutcomeRefreshSweep(d);
+    expect(readBacklog).toHaveBeenCalledTimes(2);
+    expect(results[0]?.frontier).toMatchObject({ phase: 'grading', gradingBacklog: 1, consumedItems: 0 });
+    expect(d.refreshScoutOutcomes).not.toHaveBeenCalled();
   });
 
   it('alerts (both channels) when ideas sit stale-pending and no recent fire exists', async () => {
@@ -151,6 +235,9 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
 
   it('is fail-soft per workspace — a refresh error is recorded, never thrown', async () => {
     const d = deps({
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'a', origin: 'scout', routedRef: 'plan:a', routedAtMs: NOW, humanGrade: 5 },
+      ]),
       refreshScoutOutcomes: vi.fn(async () => {
         throw new Error('pg down');
       }),

@@ -29,6 +29,9 @@ export interface PortfolioFrontierCheckpoint {
   version: typeof PORTFOLIO_FRONTIER_CHECKPOINT_VERSION;
   phase: PortfolioFrontierPhase;
   cursorIdeaId: string | null;
+  /** Stable ordering boundary retained even if cursorIdeaId becomes terminal. */
+  cursorGrade: number | null;
+  cursorRoutedAtMs: number | null;
   currentIdeaId: string | null;
   itemBudget: number;
   timeBudgetMs: number;
@@ -60,6 +63,14 @@ export function decodePortfolioFrontierCheckpoint(value: unknown): PortfolioFron
     version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
     phase: row.phase as PortfolioFrontierPhase,
     cursorIdeaId: typeof row.cursorIdeaId === 'string' && row.cursorIdeaId ? row.cursorIdeaId : null,
+    cursorGrade:
+      row.cursorGrade == null || !Number.isFinite(Number(row.cursorGrade))
+        ? null
+        : Number(row.cursorGrade),
+    cursorRoutedAtMs:
+      row.cursorRoutedAtMs == null || !Number.isFinite(Number(row.cursorRoutedAtMs))
+        ? null
+        : Number(row.cursorRoutedAtMs),
     currentIdeaId: typeof row.currentIdeaId === 'string' && row.currentIdeaId ? row.currentIdeaId : null,
     itemBudget: finiteNonNegative(row.itemBudget, 0),
     timeBudgetMs: finiteNonNegative(row.timeBudgetMs, 0),
@@ -81,13 +92,15 @@ export function decodePortfolioFrontierCheckpoint(value: unknown): PortfolioFron
 export function orderPortfolioCandidates(
   candidates: readonly PortfolioOutcomeCandidate[],
 ): PortfolioOutcomeCandidate[] {
-  return [...candidates].sort((a, b) => {
-    const gradeA = a.humanGrade ?? Number.NEGATIVE_INFINITY;
-    const gradeB = b.humanGrade ?? Number.NEGATIVE_INFINITY;
-    if (gradeA !== gradeB) return gradeB - gradeA;
-    if (a.routedAtMs !== b.routedAtMs) return a.routedAtMs - b.routedAtMs;
-    return a.ideaId.localeCompare(b.ideaId);
-  });
+  return [...candidates].sort(comparePortfolioCandidates);
+}
+
+function comparePortfolioCandidates(a: PortfolioOutcomeCandidate, b: PortfolioOutcomeCandidate): number {
+  const gradeA = a.humanGrade ?? Number.NEGATIVE_INFINITY;
+  const gradeB = b.humanGrade ?? Number.NEGATIVE_INFINITY;
+  if (gradeA !== gradeB) return gradeB - gradeA;
+  if (a.routedAtMs !== b.routedAtMs) return a.routedAtMs - b.routedAtMs;
+  return a.ideaId.localeCompare(b.ideaId);
 }
 
 /**
@@ -116,6 +129,8 @@ export function planPortfolioFrontierStep(args: {
         version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
         phase: 'grading',
         cursorIdeaId: previousCursor,
+        cursorGrade: args.previous?.cursorGrade ?? null,
+        cursorRoutedAtMs: args.previous?.cursorRoutedAtMs ?? null,
         currentIdeaId: null,
         itemBudget,
         timeBudgetMs,
@@ -136,6 +151,8 @@ export function planPortfolioFrontierStep(args: {
         version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
         phase: ordered.length === 0 ? 'drained' : 'outcome-verification',
         cursorIdeaId: previousCursor,
+        cursorGrade: args.previous?.cursorGrade ?? null,
+        cursorRoutedAtMs: args.previous?.cursorRoutedAtMs ?? null,
         currentIdeaId: null,
         itemBudget,
         timeBudgetMs,
@@ -150,19 +167,39 @@ export function planPortfolioFrontierStep(args: {
   }
 
   const cursorIndex = previousCursor ? ordered.findIndex((candidate) => candidate.ideaId === previousCursor) : -1;
-  const start = cursorIndex >= 0 ? (cursorIndex + 1) % ordered.length : 0;
+  let start = cursorIndex >= 0 ? (cursorIndex + 1) % ordered.length : 0;
+  if (
+    cursorIndex < 0 &&
+    previousCursor &&
+    args.previous?.cursorRoutedAtMs != null
+  ) {
+    const boundary: PortfolioOutcomeCandidate = {
+      ideaId: previousCursor,
+      origin: '',
+      routedRef: '',
+      routedAtMs: args.previous.cursorRoutedAtMs,
+      humanGrade: args.previous.cursorGrade,
+    };
+    const afterBoundary = ordered.findIndex((candidate) => comparePortfolioCandidates(candidate, boundary) > 0);
+    start = afterBoundary >= 0 ? afterBoundary : 0;
+  }
   const selected: PortfolioOutcomeCandidate[] = [];
   const count = Math.min(itemBudget, ordered.length);
   for (let offset = 0; offset < count; offset += 1) {
     selected.push(ordered[(start + offset) % ordered.length]!);
   }
+  const lastSelected = selected.at(-1);
 
   return {
     selected,
     checkpoint: {
       version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
       phase: 'outcome-verification',
-      cursorIdeaId: selected.at(-1)?.ideaId ?? previousCursor,
+      cursorIdeaId: lastSelected?.ideaId ?? previousCursor,
+      cursorGrade: lastSelected ? lastSelected.humanGrade : (args.previous?.cursorGrade ?? null),
+      cursorRoutedAtMs: lastSelected
+        ? lastSelected.routedAtMs
+        : (args.previous?.cursorRoutedAtMs ?? null),
       currentIdeaId: selected[0]?.ideaId ?? null,
       itemBudget,
       timeBudgetMs,

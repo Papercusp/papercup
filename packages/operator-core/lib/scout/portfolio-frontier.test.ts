@@ -27,6 +27,8 @@ const checkpoint = (over: Partial<PortfolioFrontierCheckpoint> = {}): PortfolioF
   version: 1,
   phase: 'outcome-verification',
   cursorIdeaId: null,
+  cursorGrade: null,
+  cursorRoutedAtMs: null,
   currentIdeaId: null,
   itemBudget: 2,
   timeBudgetMs: 5_000,
@@ -109,11 +111,30 @@ describe('planPortfolioFrontierStep', () => {
     expect(result.checkpoint.cursorIdeaId).toBe('a');
   });
 
-  it('restarts deterministically at the ordered head when a terminal/removal invalidates the cursor', () => {
+  it('continues after the stored ordering boundary when the cursor row becomes terminal', () => {
+    const result = planPortfolioFrontierStep({
+      gradingBacklog: 0,
+      pending: [
+        candidate('a', { humanGrade: 5, routedAtMs: NOW }),
+        candidate('c', { humanGrade: 5, routedAtMs: NOW + 2 }),
+      ],
+      previous: checkpoint({
+        cursorIdeaId: 'b-now-terminal',
+        cursorGrade: 5,
+        cursorRoutedAtMs: NOW + 1,
+      }),
+      itemBudget: 1,
+      timeBudgetMs: 5_000,
+      nowMs: NOW,
+    });
+    expect(result.selected.map((row) => row.ideaId)).toEqual(['c']);
+  });
+
+  it('restarts at the ordered head for a legacy checkpoint with no ordering boundary', () => {
     const result = planPortfolioFrontierStep({
       gradingBacklog: 0,
       pending: [candidate('b'), candidate('a')],
-      previous: checkpoint({ cursorIdeaId: 'already-terminal' }),
+      previous: checkpoint({ cursorIdeaId: 'legacy-missing' }),
       itemBudget: 1,
       timeBudgetMs: 5_000,
       nowMs: NOW,

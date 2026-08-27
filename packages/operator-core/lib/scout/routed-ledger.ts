@@ -37,6 +37,7 @@ import {
 import { CREATIVE_LENSES, type CreativeLens, type SuIdeationLens } from './types';
 import { SHADOW_VARIANT_ORIGIN, type ShadowVariantOrigin } from './shadow-variant-origin';
 import { trackDetached } from '../detached-imports';
+import type { PortfolioOutcomeCandidate } from './portfolio-frontier';
 
 /**
  * Routing-only provenance used by the agent-review lifecycle. It is deliberately
@@ -148,6 +149,8 @@ export interface ScoutLedgerOpts {
   potSlug?: string;
   cycleId?: string;
   limit?: number;
+  /** Optional exact idea-id filter for bounded, cursor-selected reads. */
+  ideaIds?: readonly string[];
   /**
    * ORIGIN filter (su-loop-capability-parity P-005 / D-009). DEFAULT 'scout' — so every
    * existing lens-weight / outcome / cadence reader stays byte-identical (all pre-migration
@@ -534,6 +537,45 @@ export async function countStalePendingIdeas(opts: {
   return Number(rows[0]?.c ?? 0);
 }
 
+interface PendingOutcomeCandidateRow {
+  idea_id: string;
+  origin: string;
+  routed_ref: string;
+  routed_at: string | number;
+  human_grade: number | string | null;
+}
+
+/**
+ * The bounded portfolio selector's pending population. This is deliberately a
+ * ledger read, not a second queue: the cached outcome remains the canonical
+ * pending marker and the two production learning origins remain the scope the
+ * existing independent refresh sweep already owns.
+ */
+export async function readPendingOutcomeCandidates(opts: {
+  workspaceId: string;
+  harnessSlug?: string;
+  limit?: number;
+}): Promise<PortfolioOutcomeCandidate[]> {
+  const { sql } = getOrgPg();
+  const limit = Math.max(1, Math.min(10_000, Math.floor(opts.limit ?? 5_000)));
+  const rows = await sql<PendingOutcomeCandidateRow[]>`
+    SELECT idea_id, origin, routed_ref, routed_at, human_grade
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id = ${opts.workspaceId}
+       AND origin = ANY(${['scout', 'su-ideate']}::text[])
+       AND (outcome IS NULL OR outcome = 'pending')
+       ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
+     ORDER BY human_grade DESC NULLS LAST, routed_at ASC, idea_id ASC
+     LIMIT ${limit}`;
+  return rows.map((row) => ({
+    ideaId: row.idea_id,
+    origin: row.origin,
+    routedRef: row.routed_ref,
+    routedAtMs: Number(row.routed_at),
+    humanGrade: row.human_grade == null ? null : Number(row.human_grade),
+  }));
+}
+
 /**
  * Last-routed instant per lens (ms epoch), workspace-scoped, origin='scout' by
  * default (D-009 lens-learning isolation) and deliberately NOT harness-filtered
@@ -572,6 +614,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
        ${originClause(sql, opts.origin)}
        ${opts.harnessSlug ? sql`AND harness_slug = ${opts.harnessSlug}` : sql``}
        ${opts.cycleId ? sql`AND cycle_id = ${opts.cycleId}` : sql``}
+       ${opts.ideaIds ? sql`AND idea_id = ANY(${[...opts.ideaIds]}::text[])` : sql``}
      ORDER BY routed_at DESC
      LIMIT ${limit}`;
   // WI-4769: reuse the generic typed-edge ledger for explicit feedback→revision
@@ -1290,9 +1333,26 @@ export async function getScoutLensWeights(
  * `scout_lens_weights` — su lens learning is read-time only (D-003), so su
  * rows can never skew Scout's diversity floor.
  */
+export interface RefreshedIdeaOutcomeEvidence {
+  ideaId: string;
+  origin: string;
+  routedRef: string;
+  /** `unknown` is the typed frontier view of the ledger's persisted `pending`. */
+  status: 'won' | 'lost' | 'unknown';
+  sourceKind: string;
+  sourceRef: string | null;
+  observedAt: string;
+  reason: string;
+}
+
+export type RefreshScoutOutcomesResult = LensOutcomeReport & {
+  /** Present only for a bounded `ideaIds` refresh. */
+  refreshed?: RefreshedIdeaOutcomeEvidence[];
+};
+
 export async function refreshScoutOutcomes(
-  opts: ScoutLedgerOpts & { weights?: LensWeightOptions } = {},
-): Promise<LensOutcomeReport> {
+  opts: ScoutLedgerOpts & { weights?: LensWeightOptions; ideaIds?: readonly string[] } = {},
+): Promise<RefreshScoutOutcomesResult> {
   const { sql } = getOrgPg();
   const ws = opts.workspaceId ?? activeWorkspaceId();
   // EI-10520: the Scout lens-weight corpus is a SINGLE per-workspace bucket. The
@@ -1308,16 +1368,33 @@ export async function refreshScoutOutcomes(
   // origin) ONLY — opts.harnessSlug is still used below to resolve the WEIGHT
   // PERSIST scope, which is correct. Mirrors readIdeaQueueStatus's wsCoordOn
   // harness-drop ("one brain sees the whole pipeline").
-  const corpusOpts = { ...opts, harnessSlug: undefined };
-  const [provenance, completions] = await Promise.all([
+  const corpusOpts = {
+    ...opts,
+    harnessSlug: undefined,
+    // The full report remains the lens-learning corpus. A bounded frontier read
+    // addresses its selected ids separately below, so an old/high-value route
+    // cannot disappear behind this newest-first report's ordinary limit.
+    ideaIds: undefined,
+  };
+  const [provenance, completions, boundedProvenance] = await Promise.all([
     readRoutedIdeas(corpusOpts),
     gatherCompletionsForOrigin(opts.origin, corpusOpts),
+    opts.ideaIds
+      ? readRoutedIdeas({
+          ...corpusOpts,
+          ideaIds: opts.ideaIds,
+          limit: Math.max(1, opts.ideaIds.length),
+        })
+      : Promise.resolve(null),
   ]);
 
-  if (provenance.length > 0) {
+  const selectedProvenance = boundedProvenance ?? provenance;
+  let refreshed: RefreshedIdeaOutcomeEvidence[] | undefined;
+
+  if (selectedProvenance.length > 0) {
     const byRef = new Map(completions.map((e) => [e.ref, e]));
-    const ids = provenance.map((p) => p.ideaId);
-    const outcomes = provenance.map((p) => classifyIdeaOutcome(p, byRef) as string);
+    const ids = selectedProvenance.map((p) => p.ideaId);
+    const outcomes = selectedProvenance.map((p) => classifyIdeaOutcome(p, byRef) as string);
     const now = Date.now();
     // One batched UPDATE … FROM unnest(…) — no per-row serial loop.
     await sql`
@@ -1327,6 +1404,27 @@ export async function refreshScoutOutcomes(
           SELECT * FROM unnest(${ids}::text[], ${outcomes}::text[]) AS u(idea_id, outcome)
         ) AS d
        WHERE t.idea_id = d.idea_id AND t.workspace_id = ${ws}`;
+
+    if (opts.ideaIds) {
+      const observedAt = new Date(now).toISOString();
+      refreshed = selectedProvenance.map((idea, index) => {
+        const entry = byRef.get(idea.routedRef);
+        const outcome = outcomes[index];
+        const status = outcome === 'won' || outcome === 'lost' ? outcome : 'unknown';
+        return {
+          ideaId: idea.ideaId,
+          origin: opts.origin ?? 'scout',
+          routedRef: idea.routedRef,
+          status,
+          sourceKind: entry?.kind ?? 'none',
+          sourceRef: entry?.ref ?? null,
+          observedAt,
+          reason: entry
+            ? `authoritative ${entry.kind} terminal matched ${entry.ref}`
+            : 'no attributable authoritative terminal record; outcome remains unknown',
+        };
+      });
+    }
   }
 
   const report = computeLensOutcomes(provenance, completions, opts.weights);
@@ -1335,7 +1433,11 @@ export async function refreshScoutOutcomes(
   // A su-ideate / 'all' refresh stops here — outcome cache written, weights
   // untouched.
   if ((opts.origin ?? 'scout') !== 'scout') {
-    return { ...report, generatedAt: new Date().toISOString() };
+    return {
+      ...report,
+      generatedAt: new Date().toISOString(),
+      ...(refreshed ? { refreshed } : {}),
+    };
   }
 
   // P-033: persist the per-lens weights the ideators read back next cycle.
@@ -1369,5 +1471,9 @@ export async function refreshScoutOutcomes(
     );
   }
 
-  return { ...report, generatedAt: new Date().toISOString() };
+  return {
+    ...report,
+    generatedAt: new Date().toISOString(),
+    ...(refreshed ? { refreshed } : {}),
+  };
 }
