@@ -20,13 +20,20 @@
 // run that verified nothing. Each rail below is written in that direction, and
 // `related-tests.test.ts` pins them.
 
-import { readdirSync, readFileSync, statSync } from 'node:fs';
-import path from 'node:path';
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import path from "node:path";
 
 /** Extensions we index. */
 const SOURCE_RE = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
 const TEST_RE = /\.(test|spec)\.(ts|tsx|mts|mjs|js|jsx)$/;
-const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', '.next']);
+const SKIP_DIRS = new Set([
+  "node_modules",
+  "dist",
+  "build",
+  ".git",
+  "coverage",
+  ".next",
+]);
 
 /** `import x from 's'` / `export … from 's'` / `import('s')` / `import 's'` / `require('s')`. */
 const SPECIFIER_RE =
@@ -38,10 +45,10 @@ export function isTestFile(file) {
 
 /** Config basenames Playwright is allowed to declare its ownership in. */
 const PLAYWRIGHT_CONFIG_NAMES = [
-  'playwright.config.ts',
-  'playwright.config.mts',
-  'playwright.config.js',
-  'playwright.config.mjs',
+  "playwright.config.ts",
+  "playwright.config.mts",
+  "playwright.config.js",
+  "playwright.config.mjs",
 ];
 
 /**
@@ -73,7 +80,7 @@ const PLAYWRIGHT_CONFIG_NAMES = [
  * @returns {(absFile: string) => boolean} true when Playwright — not Vitest — owns the file
  */
 export function playwrightOwnedTest(rootDir, { readFile } = {}) {
-  const read = readFile ?? ((p) => readFileSync(p, 'utf8'));
+  const read = readFile ?? ((p) => readFileSync(p, "utf8"));
   let source = null;
   for (const name of PLAYWRIGHT_CONFIG_NAMES) {
     try {
@@ -86,20 +93,42 @@ export function playwrightOwnedTest(rootDir, { readFile } = {}) {
   if (source == null) return () => false;
 
   const dirMatch = /\btestDir\s*:\s*['"]([^'"]+)['"]/.exec(source);
-  const matchMatch = /\btestMatch\s*:\s*\/((?:[^/\\\n]|\\.)+)\/([a-z]*)/.exec(source);
+  const matchMatch = /\btestMatch\s*:\s*\/((?:[^/\\\n]|\\.)+)\/([a-z]*)/.exec(
+    source,
+  );
   if (!dirMatch || !matchMatch) return () => false;
 
   const testDir = path.resolve(rootDir, dirMatch[1]);
   let testMatch;
   try {
     // Strip `g`/`y`: a stateful `lastIndex` would make `.test()` alternate per call.
-    testMatch = new RegExp(matchMatch[1], matchMatch[2].replace(/[gy]/g, ''));
+    testMatch = new RegExp(matchMatch[1], matchMatch[2].replace(/[gy]/g, ""));
   } catch {
     return () => false;
   }
 
   return (absFile) =>
-    (absFile === testDir || absFile.startsWith(testDir + path.sep)) && testMatch.test(absFile);
+    (absFile === testDir || absFile.startsWith(testDir + path.sep)) &&
+    testMatch.test(absFile);
+}
+
+/**
+ * Whether Vitest's default UNIT config universally excludes this test path.
+ *
+ * Keep this contract byte-for-byte aligned with `LAYERED_TEST_FILE` and the unit-layer
+ * exclusion globs in `libs/test-config/src/vitest-config.ts`. A related selection is handed
+ * to the unit `test`/lane scripts as positional filters; allowing an integration or browser
+ * test through makes the unit config reject the entire invocation before any test runs.
+ *
+ * This deliberately does NOT classify every `.spec.*` file. Some workspaces own Vitest specs
+ * through a custom config, while the integration/browser suffixes are excluded by the shared
+ * unit config everywhere.
+ *
+ * @param {string} file test path, absolute or relative
+ * @returns {boolean} true when the unit Vitest layer excludes the file
+ */
+export function unitExcludedVitestTest(file) {
+  return /\.(?:integration|browser)\.test\.[cm]?[jt]sx?$/.test(file);
 }
 
 /**
@@ -111,9 +140,10 @@ export function playwrightOwnedTest(rootDir, { readFile } = {}) {
  * full-suite run.
  */
 export function classifySpecifier(spec) {
-  if (spec.startsWith('.')) return 'relative';
-  if (spec.startsWith('@/') || spec.startsWith('~/') || spec.startsWith('#')) return 'alias';
-  return 'bare';
+  if (spec.startsWith(".")) return "relative";
+  if (spec.startsWith("@/") || spec.startsWith("~/") || spec.startsWith("#"))
+    return "alias";
+  return "bare";
 }
 
 function defaultFs() {
@@ -139,7 +169,7 @@ function defaultFs() {
     },
     read(p) {
       try {
-        return readFileSync(p, 'utf8');
+        return readFileSync(p, "utf8");
       } catch {
         return null;
       }
@@ -157,16 +187,31 @@ function defaultFs() {
 /** Candidate on-disk paths for a resolved-but-extensionless specifier target. */
 function candidatesFor(base) {
   const out = [base];
-  for (const ext of ['.ts', '.tsx', '.mts', '.cts', '.mjs', '.cjs', '.js', '.jsx']) {
+  for (const ext of [
+    ".ts",
+    ".tsx",
+    ".mts",
+    ".cts",
+    ".mjs",
+    ".cjs",
+    ".js",
+    ".jsx",
+  ]) {
     out.push(base + ext);
   }
-  for (const idx of ['index.ts', 'index.tsx', 'index.mts', 'index.mjs', 'index.js']) {
+  for (const idx of [
+    "index.ts",
+    "index.tsx",
+    "index.mts",
+    "index.mjs",
+    "index.js",
+  ]) {
     out.push(path.join(base, idx));
   }
   // A `./x.js` specifier in TS-land usually means `./x.ts` on disk.
-  const swapped = base.replace(/\.(js|mjs|cjs|jsx)$/, '');
+  const swapped = base.replace(/\.(js|mjs|cjs|jsx)$/, "");
   if (swapped !== base) {
-    for (const ext of ['.ts', '.tsx', '.mts', '.cts']) out.push(swapped + ext);
+    for (const ext of [".ts", ".tsx", ".mts", ".cts"]) out.push(swapped + ext);
   }
   return out;
 }
@@ -218,9 +263,9 @@ export function buildIndex({ rootDir, aliases = {}, fs = defaultFs() } = {}) {
 
   const resolve = (fromFile, spec) => {
     const kind = classifySpecifier(spec);
-    if (kind === 'bare') return { kind, target: null };
+    if (kind === "bare") return { kind, target: null };
     let base;
-    if (kind === 'relative') {
+    if (kind === "relative") {
       base = path.resolve(path.dirname(fromFile), spec);
     } else {
       // Alias: try each configured prefix mapping.
@@ -327,7 +372,8 @@ export function transitiveDeps(index) {
     const from = componentOf.get(file);
     for (const target of targets) {
       const to = componentOf.get(target);
-      if (from !== undefined && to !== undefined && from !== to) componentDeps[from].add(to);
+      if (from !== undefined && to !== undefined && from !== to)
+        componentDeps[from].add(to);
     }
   }
   const componentMemo = new Map();
@@ -384,15 +430,22 @@ export function selectRelatedTests({
   const total = testFiles.length;
 
   if (total === 0) {
-    return { mode: 'full', selected: [], total: 0, reason: 'no-test-files' };
+    return { mode: "full", selected: [], total: 0, reason: "no-test-files" };
   }
 
   // Only changed paths INSIDE this root can be resolved against this index. A
   // change elsewhere (another package) that made this workspace affected cannot be
   // narrowed here — run everything.
-  const inScope = changedPaths.filter((p) => p.startsWith(rootDir + path.sep) || p === rootDir);
+  const inScope = changedPaths.filter(
+    (p) => p.startsWith(rootDir + path.sep) || p === rootDir,
+  );
   if (inScope.length === 0) {
-    return { mode: 'full', selected: [], total, reason: 'no-changed-paths-in-scope' };
+    return {
+      mode: "full",
+      selected: [],
+      total,
+      reason: "no-changed-paths-in-scope",
+    };
   }
 
   const changedSet = new Set(inScope);
@@ -423,11 +476,11 @@ export function selectRelatedTests({
   if (selected.size === 0) {
     // An in-scope change that reaches NO test is far more likely to be a graph gap
     // than genuine proof that nothing covers it. Run everything.
-    return { mode: 'full', selected: [], total, reason: 'empty-selection' };
+    return { mode: "full", selected: [], total, reason: "empty-selection" };
   }
   if (selected.size >= total * threshold) {
     return {
-      mode: 'full',
+      mode: "full",
       selected: [],
       total,
       reason: `over-threshold(${selected.size}/${total})`,
@@ -435,9 +488,9 @@ export function selectRelatedTests({
   }
 
   return {
-    mode: 'related',
+    mode: "related",
     selected: [...selected].sort(),
     total,
-    reason: 'ok',
+    reason: "ok",
   };
 }
