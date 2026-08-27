@@ -121,6 +121,12 @@ vi.mock('../../console-spawn', () => ({
   spawnConsole: (o: unknown) => spawnConsoleMock(o),
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
 }));
+vi.mock('../../resource-governor/spawn-execution', () => ({
+  spawnGovernedAgentProcess: (
+    _input: unknown,
+    spawnProcess: (context: Record<string, unknown>) => Promise<SpawnConsoleResult>,
+  ) => spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
+}));
 
 const latestFleetMembershipMock = vi.hoisted(() => vi.fn());
 vi.mock('../../fleet-membership-store', () => ({
