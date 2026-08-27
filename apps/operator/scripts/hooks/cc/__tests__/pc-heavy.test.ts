@@ -3392,6 +3392,61 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     }
   });
 
+  it('EI-21599206021092018: scoped test:affected --changed-paths uses the independent lane', async () => {
+    plantLock(liveOwner());
+    const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(gateEnv),
+      cwd: dir,
+      detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const focused = spawn(
+      'bash',
+      [
+        PC_HEAVY,
+        'bash',
+        '-c',
+        'sleep 10; echo scoped-affected-ok',
+        'scripts/affected-tests.mjs',
+        '--changed-paths',
+        'packages/operator-core/lib/harness/git-sync/completion-settlement-reconciler.test.ts',
+      ],
+      {
+        env: baseEnv({
+          ...gateEnv,
+          PC_HEAVY_DEBUG: '1',
+          PC_HEAVY_TIMEOUT_SEC: '2',
+          PC_HEAVY_FOCUSED_SLOTS: '1',
+        }),
+        cwd: dir,
+      },
+    );
+    const focusedOut = createTextCollector(focused.stdout);
+    const focusedErr = createTextCollector(focused.stderr);
+    const focusedExited = new Promise<number>((res) => focused.on('exit', (c) => res(c ?? -1)));
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the ordinary holder taking the slot');
+      await untilStderr(
+        focused,
+        focusedErr,
+        (t) => t.includes('slot acquired'),
+        'scoped test:affected taking its independent lane',
+      );
+
+      expect(heldSlotCount(dir, 1)).toBe(1);
+      expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
+      expect(focusedErr.peek()).toContain('focused=1');
+
+      killGroup(focused);
+      expect(await focusedExited).toBe(143);
+      expect(focusedOut.text()).not.toContain('scoped-affected-ok');
+    } finally {
+      killGroup(holder);
+      if (focused) killGroup(focused);
+    }
+  });
+
   it('EI-21239272593686546: scoped lint:tsc uses the independent bounded lane while the gate clamps the ordinary pool', async () => {
     plantLock(liveOwner());
     const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };

@@ -1660,24 +1660,30 @@ fi
 # path during the gate's classifier phases or an exclusive materialization, but
 # the reserve clamp applies to every ordinary heavy command. On a saturated host
 # that leaves one shared slot; an unrelated holder can therefore starve the
-# exact-file test or typecheck the guard just prescribed. Give test-files.mjs and
-# explicit `lint:tsc* --files=…` runs one small, independent lane while either
-# critical path is live. The lane is intentionally bounded (default one slot) and
-# only exists for scoped runners; broad sweeps continue to use the protected
-# ordinary pool.
+# exact-file test or typecheck the guard just prescribed. Give test-files.mjs,
+# `affected-tests.mjs --changed-paths …`, and explicit `lint:tsc* --files=…` runs
+# one small, independent lane while either critical path is live. The lane is
+# intentionally bounded (default one slot) and only exists for scoped runners;
+# broad sweeps continue to use the protected ordinary pool.
 _is_focused_test=0
+_is_affected_test=0
 _is_scoped_tsc=0
 _has_explicit_scope=0
+_has_changed_paths=0
 for _arg in "$@"; do
   case "$_arg" in
     scripts/test-files.mjs|*/scripts/test-files.mjs) _is_focused_test=1 ;;
+    scripts/affected-tests.mjs|*/scripts/affected-tests.mjs) _is_affected_test=1 ;;
     scripts/lint-tsc*.mjs|*/scripts/lint-tsc*.mjs) _is_scoped_tsc=1 ;;
     lint:tsc|lint:tsc:*) _is_scoped_tsc=1 ;;
     --files=*|--files-from=*) _has_explicit_scope=1 ;;
+    --changed-paths|--changed-paths=*) _has_changed_paths=1 ;;
   esac
 done
 _is_focused_command=0
-if [ "$_is_focused_test" = 1 ] || { [ "$_is_scoped_tsc" = 1 ] && [ "$_has_explicit_scope" = 1 ]; }; then
+if [ "$_is_focused_test" = 1 ] ||
+   { [ "$_is_affected_test" = 1 ] && [ "$_has_changed_paths" = 1 ]; } ||
+   { [ "$_is_scoped_tsc" = 1 ] && [ "$_has_explicit_scope" = 1 ]; }; then
   _is_focused_command=1
 fi
 _focused_lane=0
