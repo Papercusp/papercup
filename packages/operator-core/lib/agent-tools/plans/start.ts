@@ -519,7 +519,8 @@ export default defineTool({
             workspaceId: startWorkspaceId,
             harnessSlug,
             planSlug: slug,
-            assignee: ownerId,
+            actor: ownerId,
+            claimant: ownerId,
             specId: `plans-start-${slug}`,
             // The starter may already hold the plan's sole ready row. That is a
             // successful start, not a floor-gated admission failure; fleet launch
