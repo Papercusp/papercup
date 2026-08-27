@@ -42,9 +42,9 @@
  *    coord:presence / fleet:status / leader-brief). Hand-rolling a heartbeat
  *    comparison here would reintroduce exactly the per-surface divergence
  *    presence-derivation-unification-2026-07-17 removed.
- *  - REPORTS, never relaunches. Auto-spawning an agent against a stale goal is a
- *    different and much larger authority question; "nothing notices" is the
- *    defect being fixed, and an escalation fixes it. Deliberate scope choice.
+ *  - REPORTS by default. Explicit `launch_settings.autoStart` is the one
+ *    exception: the readiness leg dispatches through the existing activation
+ *    primitive, so an opted-in goal is not stranded waiting for an offer.
  *  - Dedup is delegated to openEscalation's (dedupKind, subjectSignature) PG
  *    dedup — cluster-safe, no new state surface.
  *
@@ -53,9 +53,10 @@
  * on — two more conditions:
  *  - BECAME-READY: a goal with blocked-by edges whose blockers are now all
  *    satisfied, with nobody alive on it. Readiness at goal level is an
- *    ACTIVATION gate, never dispatch (D-003): becoming ready produces this
- *    surfaced OFFER, and a human or the parent goal's agent decides to start
- *    it. The watchdog never auto-starts.
+ *    ACTIVATION gate; becoming ready produces a surfaced OFFER by default.
+ *    A goal explicitly opted into `launch_settings.autoStart` is dispatched
+ *    through the existing activation primitive (P-020); otherwise a human or
+ *    the parent goal's agent decides to start it.
  *  - PREMISE-INVALIDATED: a goal with a KILLED goal-blocker (D-002 — killed
  *    invalidates the dependent's premise and never silently unblocks). Fired
  *    regardless of holder liveness: a live holder needs the review too.
@@ -275,8 +276,11 @@ export type GoalHolderLivenessFold = 'held' | 'unheld' | 'lost' | 'unknown';
  * PURE: classify one goal's DAG readiness into a report, or null.
  *
  * Rules (D-002/D-003):
- *  - No edges ⇒ nothing to say: a goal that never declared prerequisites was
- *    always startable, so "became ready" would be noise for every plain goal.
+ *  - No edges ⇒ nothing to say for an ordinary goal: a goal that never
+ *    declared prerequisites was always startable, so "became ready" would be
+ *    noise for every plain goal. An explicit `launch_settings.autoStart` opt-in
+ *    is the exception; its synthetic empty readiness is an actionable launch
+ *    signal.
  *  - PREMISE-INVALIDATED wins over everything: a killed blocker needs review
  *    whether or not somebody is on the goal, so holder liveness is ignored.
  *  - BECAME-READY only when every blocker is satisfied AND nobody is alive on
@@ -289,7 +293,12 @@ export function classifyGoalReadiness(
   readiness: GoalReadiness | undefined,
   holderLiveness: GoalHolderLivenessFold,
 ): GoalReadinessAlert | null {
-  if (!readiness || readiness.blockers.length === 0) return null;
+  if (
+    !readiness ||
+    (readiness.blockers.length === 0 && goal.launchSettings?.autoStart !== true)
+  ) {
+    return null;
+  }
   if (readiness.premiseInvalidated) {
     return {
       goalId: goal.goalId,
@@ -339,7 +348,9 @@ export interface GoalLivenessSweepDeps {
   escalate: (alert: GoalLivenessAlert) => Promise<void>;
   /**
    * P-005: each goal's DAG readiness, keyed `workspaceId:goalId` (the
-   * `blockerStatusKey` colon convention). Goals with NO edges may be absent.
+   * `blockerStatusKey` colon convention). Ordinary goals with NO edges may be
+   * absent; explicit `launchSettings.autoStart` goals are included with a
+   * synthetic empty readiness result.
    */
   readReadiness: (goals: readonly GoalRowLike[]) => Promise<Map<string, GoalReadiness>>;
   escalateReadiness: (alert: GoalReadinessAlert) => Promise<void>;
@@ -448,6 +459,13 @@ function makeReadReadiness(sql: Sql): GoalLivenessSweepDeps['readReadiness'] {
     for (const [workspaceId, wsGoals] of byWorkspace) {
       try {
         const edges = await readGoalBlockedByEdges(tag, workspaceId);
+        // Plain no-edge goals stay absent so the readiness leg remains quiet;
+        // an explicit autoStart opt-in earns a synthetic actionable result.
+        for (const g of wsGoals) {
+          if ((edges.get(g.goalId) ?? []).length === 0 && g.launchSettings?.autoStart === true) {
+            out.set(goalReadinessKey(g), goalReadiness([]));
+          }
+        }
         const withEdges = wsGoals.filter((g) => (edges.get(g.goalId) ?? []).length > 0);
         if (withEdges.length === 0) continue;
         // One status resolve over the union — goal cardinality is tiny (D-006).

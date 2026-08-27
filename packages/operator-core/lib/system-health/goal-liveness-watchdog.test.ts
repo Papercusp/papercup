@@ -419,6 +419,15 @@ describe('classifyGoalReadiness (P-005)', () => {
     expect(classifyGoalReadiness(goal(), ready([]), 'unheld')).toBeNull();
   });
 
+  it('offers an edge-less goal only when it explicitly opts into autoStart', () => {
+    const g = goal({ launchSettings: { autoStart: true } });
+    expect(classifyGoalReadiness(g, ready([]), 'unheld')).toMatchObject({
+      kind: 'became-ready',
+      blockers: [],
+    });
+    expect(classifyGoalReadiness(g, ready([]), 'lost')?.kind).toBe('became-ready');
+  });
+
   it('stays silent while a blocker is merely PENDING — waiting is the intended state', () => {
     expect(
       classifyGoalReadiness(goal(), ready([bv({ status: 'active', verdict: 'pending' })]), 'unheld'),
@@ -493,7 +502,7 @@ describe('runGoalLivenessSweepOnce — the readiness leg (P-005)', () => {
     warn.mockRestore();
   });
 
-  it('an empty readiness map escalates nothing — the leg is inert for edge-less goals', async () => {
+  it('an empty readiness map escalates nothing — ordinary edge-less goals stay quiet', async () => {
     const r = await runGoalLivenessSweepOnce(sql, {
       ...base(),
       readReadiness: async () => new Map(),
@@ -502,6 +511,47 @@ describe('runGoalLivenessSweepOnce — the readiness leg (P-005)', () => {
       },
     });
     expect(r.readinessEscalated).toBe(0);
+  });
+
+  it('default readiness synthesizes [] for autoStart and leaves a plain no-edge goal quiet', async () => {
+    const auto = goal({
+      goalId: 'auto-start-no-edges',
+      updatedAtMs: NOW - 60_000,
+      launchSettings: { autoStart: true },
+    });
+    const plain = goal({
+      goalId: 'plain-no-edges',
+      updatedAtMs: NOW - 60_000,
+    });
+    // The default reader only needs an empty edge query for this regression.
+    const sql = vi.fn(async () => []) as never;
+    const startGoal = vi.fn(async () => ({
+      ok: true as const,
+      goalId: auto.goalId,
+      ownerId: 'su-auto-held-no-edge',
+      warnings: [],
+      startBlockedOverride: null,
+    }));
+    const escalateReadiness = vi.fn(async () => {});
+    const r = await runGoalLivenessSweepOnce(sql, {
+      readGoals: async () => ({ goals: [auto, plain], holders: [] }),
+      resolveLiveness: async () => new Map(),
+      escalate: async () => {},
+      escalateReadiness,
+      startGoal,
+      flagEnabled: async () => true,
+      now: () => NOW,
+      graceMs: GOAL_LIVENESS_GRACE_MS,
+    });
+
+    expect(r.autoStarted).toBe(1);
+    expect(r.readinessEscalated).toBe(0);
+    expect(startGoal).toHaveBeenCalledWith({
+      workspaceId: auto.workspaceId,
+      goalId: auto.goalId,
+      launcherOwnerId: 'goal-liveness-watchdog:auto-start',
+    });
+    expect(escalateReadiness).not.toHaveBeenCalled();
   });
 });
 
