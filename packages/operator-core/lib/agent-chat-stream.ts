@@ -39,9 +39,7 @@ setAgentConfigBootstrap(async () => applyToProcessEnv(await readAgentConfig()));
  *  rate-limit / backend-failure case) deterministically, with no real model. */
 export const FAKE_LLM_ERROR_SENTINEL = '__FAKE_LLM_ERROR__';
 
-async function* fakeRunAgentChat(
-  opts: RunAgentChatOptions,
-): AsyncGenerator<ChatEvent, void, void> {
+async function* fakeRunAgentChat(opts: RunAgentChatOptions): AsyncGenerator<ChatEvent, void, void> {
   const prompt = opts.promptText || '';
   if (prompt.includes(FAKE_LLM_ERROR_SENTINEL)) {
     await new Promise((r) => setTimeout(r, 5));
@@ -67,9 +65,7 @@ async function* fakeRunAgentChat(
   };
 }
 
-export async function* runAgentChat(
-  opts: RunAgentChatOptions,
-): AsyncGenerator<ChatEvent, void, void> {
+export async function* runAgentChat(opts: RunAgentChatOptions): AsyncGenerator<ChatEvent, void, void> {
   if (process.env.PAPERCUSP_FAKE_LLM === '1') {
     yield* fakeRunAgentChat(opts);
     return;
