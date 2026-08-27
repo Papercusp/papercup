@@ -22,7 +22,7 @@ describe('work-item admission daily digest system action', () => {
 
     await action({ workspaceId: 'ws', installSlug: 'papercusp', triggerConfig: {}, payloadTemplate: {} });
 
-    expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws', harnessSlug: 'papercusp' }));
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws', installSlug: 'papercusp' }));
     expect(invalidate).toHaveBeenCalledOnce();
     expect(log).toHaveBeenCalledWith(expect.stringContaining('corpus=42'));
     expect(log).toHaveBeenCalledWith(expect.stringContaining('umbrellas=2 links=8'));
