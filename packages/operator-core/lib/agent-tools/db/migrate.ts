@@ -30,6 +30,10 @@ import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-f
 import { openEscalation } from '../coordination/escalations';
 import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
 import {
+  managedSetInterval,
+  type ManagedHandle,
+} from '@papercusp/scheduled-registry';
+import {
   BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   BACKUP_APPLICATION_NAMES,
   HOST_BACKUP_APPLICATION_NAME,
@@ -265,29 +269,31 @@ const runPsql: PsqlRunner = (cmd, args, opts) =>
   new Promise((resolve, reject) => {
     const startedAt = Date.now();
     let settled = false;
-    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatTimer: ManagedHandle | undefined;
     const finish = (result: PsqlResult) => {
       if (settled) return;
       settled = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer?.stop();
+      heartbeatTimer = undefined;
       resolve(result);
     };
     const fail = (error: unknown) => {
       if (settled) return;
       settled = true;
-      if (heartbeatTimer) clearInterval(heartbeatTimer);
+      heartbeatTimer?.stop();
+      heartbeatTimer = undefined;
       reject(error);
     };
 
     if (opts.onHeartbeat) {
-      heartbeatTimer = setInterval(() => {
+      heartbeatTimer = managedSetInterval('db-migrate-psql-progress', PSQL_PROGRESS_INTERVAL_MS, () => {
         if (settled) return;
         try {
           opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000));
         } catch {
           // Progress is advisory; a disconnected transport must not abort psql.
         }
-      }, PSQL_PROGRESS_INTERVAL_MS);
+      }, { category: 'lifecycle', classification: 'must-sample' });
     }
 
     try {

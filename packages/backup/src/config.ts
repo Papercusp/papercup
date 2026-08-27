@@ -22,6 +22,22 @@ export interface BackupMigrationLock {
   release: () => Promise<void>;
 }
 
+/** Handle returned by the optional host-owned recurring timer seam. */
+export interface BackupIntervalHandle {
+  stop: () => void;
+}
+
+/**
+ * Host-owned scheduler for package timers. The package passes a stable name so
+ * an embedding host can register the timer in its own inventory without making
+ * the host-agnostic backup package depend on that registry at runtime.
+ */
+export type BackupIntervalScheduler = (
+  name: string,
+  intervalMs: number,
+  callback: () => void | Promise<void>,
+) => BackupIntervalHandle;
+
 /**
  * Host seam for `@papercusp/backup`.
  *
@@ -54,6 +70,11 @@ export interface BackupHost {
    * standalone backup behavior is unchanged.
    */
   acquireMigrationLock?: () => Promise<BackupMigrationLock | undefined>;
+  /**
+   * Optional named interval scheduler for lifecycle heartbeats. When absent,
+   * the package uses its dependency-free unref'd timeout fallback.
+   */
+  scheduleInterval?: BackupIntervalScheduler;
   /**
    * Optional, workspace-scoped rendezvous consulted immediately before a due
    * interval snapshot mutates scheduler state. Throwing, malformed, and

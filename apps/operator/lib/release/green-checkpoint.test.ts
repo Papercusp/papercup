@@ -844,6 +844,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     });
     expect(renewals).toBeGreaterThanOrEqual(2);
     expect(calls).not.toContain("runGreen");
+
+    const renewalsAfterSettlement = renewals;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(renewals).toBe(renewalsAfterSettlement);
   });
 
   it("requeues a queue-authorized fixer when the frozen patch mismatches staging, then promotes only the aligned head", async () => {

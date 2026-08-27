@@ -18,6 +18,7 @@ import { activeWorkspaceId, workspacesRoot } from '../workspace-registry';
 import { getHarnessAdminUrlWithSource } from '../embedded-pg-discovery';
 import { shouldRun } from '../search/battery-policy';
 import { configureBackup } from '@papercusp/backup';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   WORKSPACE_BACKUP_APPLICATION_NAME,
@@ -48,6 +49,13 @@ configureBackup({
   // every host seam on this object stays lazy so no partial mock of a source
   // module can throw while this side-effect import is being evaluated.
   getHarnessAdminUrl: () => getHarnessAdminUrlWithSource(),
+  // Keep the extracted backup package host-agnostic while making its
+  // lifecycle heartbeat visible in the operator's named timer inventory.
+  scheduleInterval: (name, intervalMs, callback) =>
+    managedSetInterval(name, intervalMs, callback, {
+      category: 'lifecycle',
+      classification: 'must-sample',
+    }),
   /**
    * Keep the rendezvous on a dedicated max:1 postgres-js session. The normal
    * org handle is pooled, so an advisory lock acquired through it could land

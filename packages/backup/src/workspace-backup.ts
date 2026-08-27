@@ -18,7 +18,11 @@
 import { spawn } from 'node:child_process';
 import { mkdir, access, rename, writeFile, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { backupHost, backupStepRunner } from './config';
+import {
+  backupHost,
+  backupStepRunner,
+  type BackupIntervalHandle,
+} from './config';
 import { deriveRepoPassword } from './password';
 import { runPreSnapshotHook } from './hook';
 import { decryptDestConfig, syncArgsFor, type DestinationType } from './destinations';
@@ -38,6 +42,51 @@ import { IGNORE_PATTERNS, SELF_EXCLUSION_RULES, diffPolicyIgnores } from './poli
 const KOPIA_BIN = process.env.KOPIA_BIN ?? 'kopia';
 const SNAPSHOT_HEARTBEAT_INTERVAL_MS = 30_000;
 const SNAPSHOT_ROW_TAG_KEY = 'papercusp-backup-row-id';
+
+/**
+ * Keep standalone @papercusp/backup usable without importing the operator's
+ * timer registry. Embeddings provide scheduleInterval for named inventory;
+ * this dependency-free fallback preserves the old unref'd heartbeat behavior
+ * when the package is used on its own.
+ */
+function fallbackInterval(
+  callback: () => void | Promise<void>,
+  intervalMs: number,
+): BackupIntervalHandle {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  const schedule = () => {
+    if (stopped) return;
+    timer = setTimeout(() => {
+      timer = undefined;
+      if (stopped) return;
+      let result: void | Promise<void>;
+      try {
+        result = callback();
+      } catch {
+        schedule();
+        return;
+      }
+      if (result && typeof result.then === 'function') {
+        void Promise.resolve(result).catch(() => undefined).finally(schedule);
+      } else {
+        schedule();
+      }
+    }, intervalMs);
+    timer.unref?.();
+  };
+
+  schedule();
+  return {
+    stop: () => {
+      if (stopped) return;
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    },
+  };
+}
 
 export interface SnapshotReceiptReconciliation {
   snapshotId: number;
@@ -349,10 +398,13 @@ export class WorkspaceBackup {
     // orphan cleanup can distinguish a slow live producer from a dead one.
     // Event writes are best-effort and the timer is unref'd so telemetry can
     // neither fail a snapshot nor keep a worker process alive.
-    const heartbeat = setInterval(() => {
-      void this.event(snapshotRowId, 'progress', { phase: 'heartbeat' }).catch(() => {});
-    }, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
-    heartbeat.unref?.();
+    const heartbeatTick = () =>
+      this.event(snapshotRowId, 'progress', { phase: 'heartbeat' }).catch(() => {});
+    const heartbeat = backupHost().scheduleInterval?.(
+      `backup-snapshot-heartbeat:${this.workspaceId}`,
+      SNAPSHOT_HEARTBEAT_INTERVAL_MS,
+      heartbeatTick,
+    ) ?? fallbackInterval(heartbeatTick, SNAPSHOT_HEARTBEAT_INTERVAL_MS);
 
     try {
       await this.event(snapshotRowId, 'progress', { phase: 'started', sources });
@@ -483,7 +535,7 @@ export class WorkspaceBackup {
         throw err;
       }
     } finally {
-      clearInterval(heartbeat);
+      heartbeat.stop();
     }
     } finally {
       try {

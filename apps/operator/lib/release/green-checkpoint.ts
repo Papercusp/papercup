@@ -57,6 +57,10 @@ import {
   GREEN_CHECKPOINT_SIGKILL_GRACE_MS,
   GREEN_CHECKPOINT_SUITE_TIMEOUT_MS,
 } from "@papercusp/operator-core/lib/release/green-checkpoint-schedule";
+import {
+  managedSetInterval,
+  type ManagedHandle,
+} from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
@@ -7343,12 +7347,12 @@ async function runGreenCheckpointInner(
     let reservationLost = false;
     let reservationLoss: unknown = null;
     let renewalChain: Promise<void> = Promise.resolve();
-    let renewalTimer: ReturnType<typeof setInterval> | null = null;
+    let renewalTimer: ManagedHandle | null = null;
     if (
       hasFrozenRepairDispatchReservation &&
       renewFrozenRepairFixerReservation
     ) {
-      const renew = () => {
+      const renew = (): Promise<void> => {
         renewalChain = renewalChain.then(async () => {
           if (reservationLost) return;
           try {
@@ -7364,6 +7368,7 @@ async function runGreenCheckpointInner(
             reservationLoss = error;
           }
         });
+        return renewalChain;
       };
       const intervalMs =
         deps.frozenRepairReservationHeartbeatMs ??
@@ -7371,8 +7376,12 @@ async function runGreenCheckpointInner(
           1_000,
           Math.floor(FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS / 3),
         );
-      renewalTimer = setInterval(renew, intervalMs);
-      renewalTimer.unref?.();
+      renewalTimer = managedSetInterval(
+        `green-checkpoint-frozen-repair-reservation:${dispatchQueue.dispatchReservation?.token ?? dispatchQueue.candidate}`,
+        intervalMs,
+        renew,
+        { category: "watchdog", classification: "timeout-reaper", allowInTest: true },
+      );
     }
 
     let fired: FrozenRepairDispatchResult | null = null;
@@ -7386,7 +7395,8 @@ async function runGreenCheckpointInner(
     } catch (error) {
       dispatchError = error;
     } finally {
-      if (renewalTimer) clearInterval(renewalTimer);
+      renewalTimer?.stop();
+      renewalTimer = null;
       await renewalChain;
     }
 
