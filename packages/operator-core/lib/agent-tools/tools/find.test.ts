@@ -15,6 +15,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import releaseTrace from '../release/trace';
+import plansAudit from '../plans/audit';
 import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
@@ -198,6 +199,16 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
   });
 
+  it('keeps plans:audit auditedSha completion-only guidance in compact discovery output', () => {
+    expect(plansAudit.name).toBe('plans:audit');
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('plans:audit'));
+
+    expect(compact).toContain(
+      'auditedSha?:string(7-64) Completion phase only: commit audited against; resolved from the local tree when omitted.',
+    );
+  });
+
   it('projects root anyOf and oneOf branches with their required-key hint', () => {
     for (const keyword of ['anyOf', 'oneOf'] as const) {
       const compact = compactSchemaForResult({
@@ -264,7 +275,13 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     // EI-21563626901112953: the recursive verification shape is larger than
     // the nested segment budget, but its field name/type must remain visible;
     // otherwise discovery advertises only the legacy top-level coverage alias.
-    expect(compact).toContain('verification?:object');
+    // EI-21646294277891760: retain the canonical nested coverage path and its
+    // residue bucket on the bounded fallback. Runtime universal-verification
+    // enforcement reads completion.verification.coverage, not the legacy
+    // completion.coverage sibling that follows it.
+    expect(compact).toContain(
+      'verification?:object{coverage?:object{population:array(≥1)<string>,checked?:array<string>,notChecked?:array<string>,notApplicable?:array<string>,residue?:array<string>}}',
+    );
     expect(compact?.length ?? 0).toBeLessThanOrEqual(2_200);
   });
 

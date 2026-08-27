@@ -200,6 +200,35 @@ function nestedObjectProperties(
  */
 const NESTED_FIELDS_SEGMENT_MAX_CHARS = 320;
 
+/**
+ * When a nested object is too wide for its parent's bounded segment, keep one
+ * of its own nested-object fields attached to the parent. Prefer the first
+ * bounded child in schema order with its structural fields expanded; this
+ * preserves a contract path such as `completion.verification.coverage` and
+ * its residue bucket without allowing a large recursive evidence record to
+ * consume the whole discovery result.
+ */
+const NESTED_OBJECT_HINT_MAX_CHARS = 180;
+
+function nestedObjectFieldHint(node: JsonSchemaNode, depth: number): string {
+  const nested = nestedObjectProperties(node);
+  if (!nested) return '';
+  const fields = Object.entries(nested.properties).filter(([, raw]) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    return nestedObjectProperties(raw as JsonSchemaNode) != null;
+  });
+  for (const [name, raw] of fields) {
+    const child = raw as JsonSchemaNode;
+    const shape = schemaShape(child, depth, false, true);
+    const rendered = `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+    if (rendered.length <= NESTED_OBJECT_HINT_MAX_CHARS) return `{${rendered}}`;
+  }
+  const [name, raw] = fields[0] ?? [];
+  if (!name || !raw || typeof raw !== 'object' || Array.isArray(raw)) return '';
+  const shape = schemaType(raw as JsonSchemaNode);
+  return `{${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}}`;
+}
+
 function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptions = true): string {
   if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
   const nested = nestedObjectProperties(node);
@@ -232,9 +261,18 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number, includeDescriptio
       // fallback preserves the callable field without changing aggregate
       // width or the explicit tail-elision marker.
       const [name, raw] = properties[index];
+      // Keep a shallow nested-object path on the fallback. Without this, a
+      // wide field such as completion.verification degraded to just
+      // `verification?:object`, while the legacy sibling completion.coverage
+      // remained visible and callers learned the wrong nesting from discovery.
       const fallback = renderEntry(name, raw, false, false);
-      const fallbackCandidate = `${body},${fallback}`;
-      if (fallback.length < entry.length && fallbackCandidate.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS) {
+      const nestedHint =
+        raw && typeof raw === 'object' && !Array.isArray(raw)
+          ? nestedObjectFieldHint(raw as JsonSchemaNode, depth)
+          : '';
+      const hintedFallback = nestedHint ? `${fallback}${nestedHint}` : fallback;
+      const fallbackCandidate = `${body},${hintedFallback}`;
+      if (hintedFallback.length < entry.length && fallbackCandidate.length <= NESTED_FIELDS_SEGMENT_MAX_CHARS) {
         body = fallbackCandidate;
         continue;
       }
@@ -263,6 +301,32 @@ function nestedDescription(node: JsonSchemaNode, depth: number): string {
       ? description
       : `${description.slice(0, COMPACT_NESTED_DESCRIPTION_MAX_CHARS - 1)}…`;
   return ` ${bounded}`;
+}
+
+/**
+ * Keep top-level field guidance in the compact result, but cap it separately
+ * from nested descriptions. A field's phase/usage restriction is part of the
+ * callable contract even when its type is already visible (for example,
+ * `plans:audit.auditedSha` is completion-phase only). When the complete
+ * projection is too large, descriptions without a constraint keyword are the
+ * first detail dropped; the structural shape and explicit restrictions remain.
+ */
+const COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS = 240;
+const COMPACT_CONTRACT_DESCRIPTION_PATTERN =
+  /\b(?:phase\s+only|only|required|must|requires?|forbidden|cannot|exact(?:ly)?)\b/i;
+
+function compactTopLevelDescription(node: JsonSchemaNode): { text: string; priority: number } | null {
+  if (typeof node.description !== 'string') return null;
+  const description = node.description.replace(/\s+/g, ' ').trim();
+  if (!description) return null;
+  const bounded =
+    description.length <= COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS
+      ? description
+      : `${description.slice(0, COMPACT_TOP_LEVEL_DESCRIPTION_MAX_CHARS - 1)}…`;
+  return {
+    text: ` ${bounded}`,
+    priority: COMPACT_CONTRACT_DESCRIPTION_PATTERN.test(description) ? 100 : 10,
+  };
 }
 
 function schemaShape(
@@ -358,17 +422,40 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   const root = inputSchema as JsonSchemaNode;
   const projection = topLevelSchemaProjection(root);
   if (!projection) return null;
-  const parts = projection.entries.map(([name, raw]) => {
+  const parts = projection.entries.map(([name, raw], index) => {
     const node = raw && typeof raw === 'object' ? (raw as JsonSchemaNode) : {};
     // Root unions commonly carry verbose branch descriptions (the completion
     // contract is one such schema). Keep their projection structural so a
     // late top-level contract field such as `assumptions` cannot be clipped
     // behind a nested prose description before the result budget is reached.
     const shape = schemaShape(node, 0, !projection.unionHint);
-    return `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+    return {
+      index,
+      base: `${name}${projection.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`,
+      description: compactTopLevelDescription(node),
+    };
   });
   if (parts.length === 0) return null;
-  const text = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}${parts.join('; ')}`;
+  const prefix = `${projection.unionHint ? `one-of:${projection.unionHint}; ` : ''}${projection.conditionalHint ? `${projection.conditionalHint}; ` : ''}`;
+  const withDescriptions = new Set(parts.filter((part) => part.description).map((part) => part.index));
+  const render = (includedDescriptions: ReadonlySet<number>): string =>
+    `${prefix}${parts
+      .map((part) => `${part.base}${includedDescriptions.has(part.index) ? part.description?.text ?? '' : ''}`)
+      .join('; ')}`;
+
+  let text = render(withDescriptions);
+  if (text.length > DISCOVERY_SCHEMA_MAX_CHARS && withDescriptions.size > 0) {
+    // Remove low-value prose first, preserving explicit contract restrictions
+    // such as "Completion phase only" for as long as the size budget allows.
+    const removable = [...parts]
+      .filter((part) => part.description)
+      .sort((a, b) => (a.description!.priority - b.description!.priority) || (a.index - b.index));
+    for (const part of removable) {
+      withDescriptions.delete(part.index);
+      text = render(withDescriptions);
+      if (text.length <= DISCOVERY_SCHEMA_MAX_CHARS) break;
+    }
+  }
   return text.length <= DISCOVERY_SCHEMA_MAX_CHARS ? text : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
 }
 
