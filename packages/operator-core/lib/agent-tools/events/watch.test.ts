@@ -63,13 +63,14 @@ vi.mock('../coordination/topics', () => ({ subscribeTopic: vi.fn(async (_id: unk
 vi.mock('../coordination/event-subscriptions', () => ({ subscribeEventKey: vi.fn(async (_id: unknown, key: string, opts: Record<string, unknown>) => ({ target_ref: key, delivery_mode: opts.mode ?? 'full', expires_ts: null })) }));
 
 import watch from './watch';
-import { lookupByMcpName } from '@papercusp/agent-mcp';
+import { lookupByMcpName, toArgsJsonSchema } from '@papercusp/agent-mcp';
 import { registerAwait, cancelAwait } from '../../events/await/store';
 import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
+import { compileJsonSchema } from '../../json-schema-validation';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof watch.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -187,15 +188,45 @@ describe('P-008 predicate watch routing', () => {
     const parsed = watch.args.safeParse({ pattern: 'backlog', targetKind: 'interest', wake: true, predicate });
     expect(parsed.success).toBe(false);
     if (!parsed.success) {
-      expect(parsed.error.issues).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            path: ['predicate'],
-            message: 'targetKind:"interest" and predicate are mutually exclusive (one watch, one matcher).',
-          }),
-        ]),
-      );
+      expect(parsed.error.issues[0]).toMatchObject({ code: 'invalid_union' });
     }
+  });
+
+  it('publishes matcher alternatives so conflicting predicate fields are unrepresentable', () => {
+    const published = toArgsJsonSchema('watch:create', watch.args as never) as {
+      anyOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { not?: unknown }>;
+      }>;
+      oneOf?: Array<{
+        required?: string[];
+        properties?: Record<string, { not?: unknown }>;
+      }>;
+    };
+    const branches = published.anyOf ?? published.oneOf ?? [];
+    const predicateBranch = branches.find((branch) => branch.required?.includes('predicate'));
+    const nonPredicateBranches = branches.filter((branch) => !branch.required?.includes('predicate'));
+
+    expect(branches).toHaveLength(2);
+    expect(predicateBranch).toEqual(
+      expect.objectContaining({
+        required: expect.arrayContaining(['predicate', 'wake']),
+        properties: expect.objectContaining({
+          targetKind: expect.objectContaining({ not: expect.anything() }),
+          payload_filter: expect.objectContaining({ not: expect.anything() }),
+        }),
+      }),
+    );
+    expect(nonPredicateBranches).toHaveLength(1);
+    expect(nonPredicateBranches[0].properties?.predicate).toEqual(expect.objectContaining({ not: expect.anything() }));
+    expect(nonPredicateBranches[0].properties?.targetKind).toEqual(
+      expect.objectContaining({ enum: ['topic', 'event', 'interest'] }),
+    );
+
+    const validate = compileJsonSchema(published);
+    expect(validate({ pattern: 'backlog', targetKind: 'interest', wake: true, predicate })).toBe(false);
+    expect(validate({ pattern: 'backlog', predicate, wake: true })).toBe(true);
+    expect(validate({ pattern: 'backlog', targetKind: 'interest' })).toBe(true);
   });
 
   it('predicate on wake:false is rejected loudly', async () => {
@@ -210,16 +241,6 @@ describe('P-008 predicate watch routing', () => {
     ]) {
       const parsed = watch.args.safeParse(args);
       expect(parsed.success).toBe(false);
-      if (!parsed.success) {
-        expect(parsed.error.issues).toEqual(
-          expect.arrayContaining([
-            expect.objectContaining({
-              path: ['wake'],
-              message: 'predicate watches require wake:true (the predicate engine has no inject leg).',
-            }),
-          ]),
-        );
-      }
     }
 
     expect(watch.args.safeParse({ pattern: 'backlog', wake: true, predicate }).success).toBe(true);
