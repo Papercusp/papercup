@@ -6,16 +6,23 @@
 // toggles its pending rows as a block, applied rows render as done and are
 // never selectable, Apply-selected emits the sorted selected ids, and busy
 // freezes the whole surface. Row hover/focus-within owns the one active detail
-// region; no explicit detail control or summary rail is rendered.
+// region; no explicit detail control is rendered. The shared summary is an
+// exhaustive Ready / Handled / Manual / Not applied partition of Results.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import ReviewReportShell, { type ReviewReportGroup } from "./ReviewReportShell";
+import ReviewReportShell, {
+  partitionReviewRows,
+  type ReviewReportGroup,
+} from "./ReviewReportShell";
 
+const operatorRoot = existsSync(resolve(process.cwd(), "app/globals.css"))
+  ? process.cwd()
+  : resolve(process.cwd(), "apps/operator");
 const REPORT_CSS = readFileSync(
-  resolve(process.cwd(), "app/_components/review-report/review-report.css"),
+  resolve(operatorRoot, "app/_components/review-report/review-report.css"),
   "utf8",
 );
 
@@ -159,10 +166,32 @@ describe("rendering", () => {
     ).toBeNull();
   });
 
-  it("omits the later summary, eyebrow, selection pill, and detail toggles", () => {
+  it("renders the exhaustive summary while omitting rejected extra chrome", () => {
     renderShell();
     const report = screen.getByTestId("review-report");
-    expect(screen.queryByTestId("review-report-summary")).toBeNull();
+    expect(
+      screen.getByRole("region", { name: "Report result accounting" }),
+    ).toBe(screen.getByTestId("review-report-summary"));
+    expect(screen.getByTestId("review-report-results-count").textContent).toBe(
+      "4",
+    );
+    expect(screen.getByTestId("review-report-ready-count").textContent).toBe(
+      "3",
+    );
+    expect(screen.getByTestId("review-report-handled-count").textContent).toBe(
+      "1",
+    );
+    expect(screen.getByTestId("review-report-manual-count").textContent).toBe(
+      "0",
+    );
+    expect(
+      screen.getByTestId("review-report-not-applied-count").textContent,
+    ).toBe("0");
+    expect(
+      screen.getByTestId("review-report-accounting-invariant").textContent,
+    ).toContain(
+      "4 results accounted for: 3 ready, 1 handled, 0 manual, and 0 not applied.",
+    );
     expect(report.querySelector(".review-report__eyebrow")).toBeNull();
     expect(
       screen.queryByTestId("review-group-selection-flip-to-done"),
@@ -172,6 +201,79 @@ describe("rendering", () => {
     fireEvent.click(rowCheck("f2"));
     expect(screen.getByTestId("review-report-status").textContent).toBe(
       "2 of 3 selectable recommendations selected.",
+    );
+  });
+
+  it("partitions each rendered row exactly once across all four outcomes", () => {
+    const partition = partitionReviewRows([
+      {
+        id: "accounting",
+        title: "Accounting",
+        rows: [
+          {
+            id: "ready-default",
+            title: "Ready by default",
+            evidence: [],
+            confidence: "recommended",
+          },
+          {
+            id: "ready-explicit",
+            title: "Ready explicitly",
+            evidence: [],
+            confidence: "recommended",
+            status: "pending",
+            selectable: true,
+          },
+          {
+            id: "handled",
+            title: "Handled",
+            evidence: [],
+            confidence: "provable",
+            status: "applied",
+          },
+          {
+            id: "manual",
+            title: "Manual",
+            evidence: [],
+            confidence: "recommended",
+            status: "pending",
+            selectable: false,
+          },
+          {
+            id: "not-applied",
+            title: "Not applied",
+            evidence: [],
+            confidence: "recommended",
+            status: "dismissed",
+          },
+        ],
+      },
+    ]);
+
+    expect(partition).toEqual({
+      results: 5,
+      ready: 2,
+      handled: 1,
+      manual: 1,
+      notApplied: 1,
+    });
+    expect(partition.results).toBe(
+      partition.ready +
+        partition.handled +
+        partition.manual +
+        partition.notApplied,
+    );
+  });
+
+  it("keeps the five metrics legible at tablet and narrow widths", () => {
+    expect(REPORT_CSS).toMatch(
+      /\.review-report__metrics\s*\{[^}]*grid-template-columns: repeat\(5, minmax\(0, 1fr\)\);/s,
+    );
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 760px\)[\s\S]*?\.review-report__metrics\s*\{[^}]*grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
+    );
+    expect(REPORT_CSS).toMatch(
+      /@container \(max-width: 420px\)[\s\S]*?\.review-report__metrics\s*\{[^}]*grid-template-columns: minmax\(0, 1fr\);/,
     );
   });
 

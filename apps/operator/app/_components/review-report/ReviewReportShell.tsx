@@ -108,6 +108,61 @@ function rowSelectable(row: ReviewReportRow): boolean {
   return rowStatus(row) === "pending" && row.selectable !== false;
 }
 
+export interface ReviewReportPartition {
+  results: number;
+  ready: number;
+  handled: number;
+  manual: number;
+  notApplied: number;
+}
+
+/** D-003: every rendered row belongs to exactly one owner-facing outcome.
+ * Keep this projection shared so Inbox and Plan reports cannot drift into
+ * flow-specific count semantics. */
+export function partitionReviewRows(
+  groups: readonly ReviewReportGroup[],
+): ReviewReportPartition {
+  let results = 0;
+  let ready = 0;
+  let handled = 0;
+  let manual = 0;
+  let notApplied = 0;
+
+  for (const group of groups) {
+    for (const row of group.rows) {
+      results += 1;
+      const status = rowStatus(row);
+      switch (status) {
+        case "pending":
+          if (rowSelectable(row)) ready += 1;
+          else manual += 1;
+          break;
+        case "applied":
+          handled += 1;
+          break;
+        case "dismissed":
+          notApplied += 1;
+          break;
+        default: {
+          const unsupportedStatus: never = status;
+          throw new Error(
+            `Unsupported ReviewReport row status: ${String(unsupportedStatus)}`,
+          );
+        }
+      }
+    }
+  }
+
+  const accounted = ready + handled + manual + notApplied;
+  if (results !== accounted) {
+    throw new Error(
+      `ReviewReport accounting invariant failed: ${results} results != ${accounted} partitioned rows`,
+    );
+  }
+
+  return { results, ready, handled, manual, notApplied };
+}
+
 function initialSelection(
   groups: readonly ReviewReportGroup[],
   defaultSelected: ReviewReportShellProps["defaultSelected"],
@@ -139,6 +194,7 @@ export default function ReviewReportShell({
   onDismiss,
 }: ReviewReportShellProps) {
   const titleId = useId();
+  const summaryTitleId = useId();
   const [selected, setSelected] = useState<Set<string>>(() =>
     initialSelection(groups, defaultSelected),
   );
@@ -171,6 +227,8 @@ export default function ReviewReportShell({
       for (const r of g.rows) if (rowSelectable(r)) ids.add(r.id);
     return ids;
   }, [groups]);
+
+  const partition = useMemo(() => partitionReviewRows(groups), [groups]);
 
   const presentRowIds = useMemo(
     () => new Set(groups.flatMap((group) => group.rows.map((row) => row.id))),
@@ -444,6 +502,52 @@ export default function ReviewReportShell({
           </Button>
         </div>
       </header>
+
+      <section
+        className="review-report__summary"
+        data-testid="review-report-summary"
+        aria-labelledby={summaryTitleId}
+      >
+        <h3 id={summaryTitleId} className="pc-sr-only">
+          Report result accounting
+        </h3>
+        <dl className="review-report__metrics">
+          <div className="review-report__metric review-report__metric--results">
+            <dt>Results</dt>
+            <dd data-testid="review-report-results-count">
+              {partition.results}
+            </dd>
+          </div>
+          <div className="review-report__metric review-report__metric--ready">
+            <dt>Ready</dt>
+            <dd data-testid="review-report-ready-count">{partition.ready}</dd>
+          </div>
+          <div className="review-report__metric review-report__metric--handled">
+            <dt>Handled</dt>
+            <dd data-testid="review-report-handled-count">
+              {partition.handled}
+            </dd>
+          </div>
+          <div className="review-report__metric review-report__metric--manual">
+            <dt>Manual</dt>
+            <dd data-testid="review-report-manual-count">{partition.manual}</dd>
+          </div>
+          <div className="review-report__metric review-report__metric--not-applied">
+            <dt>Not applied</dt>
+            <dd data-testid="review-report-not-applied-count">
+              {partition.notApplied}
+            </dd>
+          </div>
+        </dl>
+        <p
+          className="pc-sr-only"
+          data-testid="review-report-accounting-invariant"
+        >
+          {partition.results} results accounted for: {partition.ready} ready,{" "}
+          {partition.handled} handled, {partition.manual} manual, and{" "}
+          {partition.notApplied} not applied.
+        </p>
+      </section>
 
       <span
         className="pc-sr-only"
