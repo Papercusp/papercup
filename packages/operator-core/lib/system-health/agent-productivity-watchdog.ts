@@ -22,6 +22,23 @@
  * The cost is paid by whoever dispatches to them. Waking a wedged session
  * succeeds — the wake lands, `woken: 1` comes back — and nothing happens.
  *
+ * ── TWO LEGS, ONE SWEEP ─────────────────────────────────────────────────────
+ *
+ * The module runs a second predicate over the SAME population, deliberately not
+ * a second watchdog (WI-42436):
+ *
+ *   wedge leg     "is this agent producing ANY work?"
+ *   cadence leg   "is this agent producing the work its MODE obliges?"
+ *
+ * Same candidate read, same oracle call, same wave-shaped escalation — because
+ * two sweeps over one table with one grace and two thresholds is exactly the
+ * drift that extracting `agent-wedge.ts` just removed. The cadence leg's
+ * subject is the agent that is unmistakably BUSY and still never does the one
+ * thing its mode exists for: measured 2026-08-27, a goal holder made 251
+ * agent-origin calls across 52 tools in 80 minutes with zero ideation, and
+ * every count-based surface read healthy because none of them asks whether the
+ * mode's own obligation ever fired.
+ *
  * ── WHY ONE CORRELATED WAVE, NOT N ALARMS ───────────────────────────────────
  *
  * The single most important design choice here. Wedge causes are CORRELATED:

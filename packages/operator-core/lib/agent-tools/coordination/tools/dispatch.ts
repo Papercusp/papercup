@@ -37,6 +37,12 @@ import {
   type ActionableWorkItemAssignment,
   type RequiredWakeFailure,
 } from '../actionable-work-item-dispatch';
+import { resolveAgentIdentity } from '../identity';
+import {
+  persistPilotParticipantDispatchReceipt,
+  type PilotParticipantDispatchReceipt,
+  type PersistPilotParticipantDispatchInput,
+} from '../../../pilot-participant-receipts';
 
 export interface DispatchArgs {
   to: string;
@@ -48,6 +54,9 @@ export interface DispatchArgs {
   workItemIds?: string[];
   body?: string;
   harness?: string;
+  /** Directed-pair pilot only. Identity/session/role are loaded from the
+   *  canonical binding; callers may name only the item + binding receipt. */
+  pilotBinding?: { itemId: string; bindingReceiptId: string };
 }
 
 /** The lane-assignment leg's outcome (plan_items:assign envelope, distilled). */
@@ -129,6 +138,49 @@ export interface DispatchResult {
   skippedItems?: DispatchSkippedItem[];
   /** A loud, human-readable miss note when the target is not pickup-able right now. */
   warning?: string;
+  /** Canonical receipt persisted only after coord:send actually delivered. */
+  pilotDispatchReceipt?: PilotParticipantDispatchReceipt;
+  /** True when delivery committed but the linked receipt write failed loudly. */
+  deliveryLanded?: boolean;
+  pilotReceiptError?: string;
+}
+
+export async function finalizePilotDispatchReceipt(
+  args: DispatchArgs,
+  result: DispatchResult,
+  scope: { workspaceId: string | null; harnessSlug: string | null },
+  persist: (input: PersistPilotParticipantDispatchInput) => Promise<PilotParticipantDispatchReceipt> =
+    persistPilotParticipantDispatchReceipt,
+): Promise<DispatchResult> {
+  if (!args.pilotBinding || !result.delivered) return result;
+  if (!scope.workspaceId || !scope.harnessSlug) {
+    return {
+      ...result,
+      ok: false,
+      deliveryLanded: true,
+      pilotReceiptError:
+        'coord:send delivery landed, but the workspace/harness scope for the pilot dispatch receipt is missing',
+    };
+  }
+  try {
+    const pilotDispatchReceipt = await persist({
+      workspaceId: scope.workspaceId,
+      harnessSlug: scope.harnessSlug,
+      itemId: args.pilotBinding.itemId,
+      bindingReceiptId: args.pilotBinding.bindingReceiptId,
+      ownerId: result.to,
+    });
+    return { ...result, pilotDispatchReceipt };
+  } catch (error) {
+    return {
+      ...result,
+      ok: false,
+      deliveryLanded: true,
+      pilotReceiptError:
+        'coord:send delivery landed, but canonical pilot dispatch persistence failed: ' +
+        (error instanceof Error ? error.message : String(error)),
+    };
+  }
 }
 
 /** Find the roster row for `to` in a coord:presence snapshot (exact ownerId, else a
@@ -637,6 +689,13 @@ export default defineTool({
         .max(120)
         .optional()
         .describe("Harness scope for the lane assignment (default: the plan's harness)."),
+      pilotBinding: z
+        .object({
+          itemId: z.string().min(1).max(120),
+          bindingReceiptId: z.string().min(1).max(120),
+        })
+        .optional()
+        .describe('directed-pair pilot only: link the delivered role/session to a canonical binding receipt'),
     })
     .superRefine((args, ctx) => {
       if ((args.items?.length ?? 0) > 0 && (args.workItemIds?.length ?? 0) > 0) {
@@ -648,7 +707,13 @@ export default defineTool({
       }
     }),
   async handler(args, ctx) {
-    const result = await composeDispatch(args as DispatchArgs, inProcessCall(ctx));
-    return { content: [{ type: 'text' as const, text: JSON.stringify(result) }] };
+    const dispatchArgs = args as DispatchArgs;
+    const result = await composeDispatch(dispatchArgs, inProcessCall(ctx));
+    const identity = resolveAgentIdentity(ctx);
+    const finalized = await finalizePilotDispatchReceipt(dispatchArgs, result, {
+      workspaceId: identity.workspaceId,
+      harnessSlug: dispatchArgs.harness ?? ((ctx as unknown as { harnessSlug?: string }).harnessSlug ?? null),
+    });
+    return { content: [{ type: 'text' as const, text: JSON.stringify(finalized) }] };
   },
 });

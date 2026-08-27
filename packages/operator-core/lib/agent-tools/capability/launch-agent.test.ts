@@ -523,7 +523,7 @@ describe('resume + fork (D-004/D-007)', () => {
     verifyFreshLaunchStartedMock.mockResolvedValue({
       agentStarted: true,
       waitedMs: 5,
-      sessions: [{ ownerId: 'su-a1a71', successfulCalls: 1 }],
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-successor-1', successfulCalls: 1 }],
       note: 'successor verified',
     });
 
@@ -546,6 +546,10 @@ describe('resume + fork (D-004/D-007)', () => {
       mode: 'successor',
       resumedOwnerId: 'su-a1a71',
       agentStarted: true,
+      freshVerdict: {
+        agentStarted: true,
+        sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-successor-1' }],
+      },
     });
     expect(textOf(res)).toContain("agent's first turn");
   });

@@ -15,7 +15,9 @@ import {
   type AgentPresenceCandidate,
   type AgentCallCensus,
   type AgentWedgeWave,
+  type AgentIdeateSilenceWave,
   type AgentProductivitySweepDeps,
+  IDEATE_PASS_GRACE_MS,
 } from './agent-productivity-watchdog';
 import type { LivenessVerdict } from '../agent-tools/coordination/liveness-oracle';
 import { AGENT_PRODUCTIVITY_GRACE_MS } from '../agent-wedge';
@@ -52,16 +54,27 @@ function aliveVerdict(ownerId: string): LivenessVerdict {
 
 function harness(over: Partial<AgentProductivitySweepDeps> = {}) {
   const escalated: AgentWedgeWave[] = [];
+  const ideateEscalated: AgentIdeateSilenceWave[] = [];
   const deps: Partial<AgentProductivitySweepDeps> = {
     flagEnabled: async () => true,
     now: () => NOW,
     graceMs: AGENT_PRODUCTIVITY_GRACE_MS,
+    ideateGraceMs: IDEATE_PASS_GRACE_MS,
     escalateWave: async (w) => {
       escalated.push(w);
     },
+    // The cadence leg is INERT by default: no candidate carries an ideate
+    // registration, so every wedge-leg test below keeps exactly the meaning it
+    // had before the leg existed — which is what makes them a regression signal
+    // for it rather than a rewritten baseline.
+    readIdeateRegistrations: async () => new Map(),
+    readIdeatePasses: async () => new Map(),
+    escalateIdeateWave: async (w) => {
+      ideateEscalated.push(w);
+    },
     ...over,
   };
-  return { deps, escalated };
+  return { deps, escalated, ideateEscalated };
 }
 
 describe('runAgentProductivitySweepOnce', () => {
@@ -204,7 +217,16 @@ describe('runAgentProductivitySweepOnce', () => {
     const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
 
     expect(readCandidates).not.toHaveBeenCalled();
-    expect(out).toEqual({ scanned: 0, present: 0, wedged: 0, unmeasured: 0, wavesEscalated: 0 });
+    expect(out).toEqual({
+      scanned: 0,
+      present: 0,
+      wedged: 0,
+      unmeasured: 0,
+      wavesEscalated: 0,
+      ideateSilent: 0,
+      ideateSuppressedAsWedged: 0,
+      ideateWavesEscalated: 0,
+    });
     expect(escalated).toHaveLength(0);
   });
 
@@ -231,6 +253,9 @@ describe('runAgentProductivitySweepOnce', () => {
         if (w.phase === 'never-booted') throw new Error('escalation surface down');
         escalated.push(w);
       },
+      readIdeateRegistrations: async () => new Map(),
+      readIdeatePasses: async () => new Map(),
+      escalateIdeateWave: async () => {},
     };
 
     // The swallow is deliberate, so assert it rather than tolerate it: a silent
@@ -274,5 +299,170 @@ describe('runAgentProductivitySweepOnce', () => {
       anyOriginCalls: 0,
     });
     expect(escalated[0].victims[0].presentForMs).toBeGreaterThan(17 * 3_600_000);
+  });
+});
+
+/**
+ * The cadence leg: same population, same instrument, a different predicate.
+ * The wedge leg asks "is this agent producing ANY work?"; this asks "is it
+ * producing the work its MODE obliges?"
+ */
+describe('runAgentProductivitySweepOnce — ideate cadence leg', () => {
+  const REGISTERED_LONG_AGO = NOW - (IDEATE_PASS_GRACE_MS + 60_000);
+
+  /** Registered past the grace, by a launcher rather than the agent itself. */
+  function ideateReg(over: Partial<{ setAtMs: number; setBy: string; ownerDirected: boolean }> = {}) {
+    return {
+      setAtMs: REGISTERED_LONG_AGO,
+      setBy: 'pc-admin-coord-ui',
+      ownerDirected: false,
+      ...over,
+    };
+  }
+
+  // THE case from WI-42436: 251 agent-origin calls across 52 tools, zero
+  // ideation. Busy is not the same as doing what the mode obliges, and every
+  // count-based surface reads healthy for exactly this agent.
+  it('reports an agent that is working normally but has never recorded a pass', async () => {
+    const { deps, ideateEscalated, escalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'busy' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['busy', { agentOriginCalls: 251, anyOriginCalls: 260 }]]),
+      readIdeateRegistrations: async () => new Map([['busy', ideateReg()]]),
+      readIdeatePasses: async () => new Map(),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(1);
+    expect(out.ideateSuppressedAsWedged).toBe(0);
+    expect(out.ideateWavesEscalated).toBe(1);
+    // Not wedged — it is working. The two legs must not be confused.
+    expect(out.wedged).toBe(0);
+    expect(escalated).toHaveLength(0);
+    expect(ideateEscalated[0].victims[0]).toMatchObject({
+      ownerId: 'busy',
+      agentOriginCalls: 251,
+      lastPassAtMs: null,
+      setBy: 'pc-admin-coord-ui',
+      ownerDirected: false,
+    });
+  });
+
+  // Measured 2026-08-27: 13 of 13 ideate-silent sessions had ZERO agent-origin
+  // calls. Their silence is explained by the wedge, which already reports them —
+  // so this leg must stay quiet AND must not report a clean zero.
+  it('suppresses ideate silence the wedge already explains, but still counts it', async () => {
+    const { deps, ideateEscalated, escalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'wedged' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['wedged', { agentOriginCalls: 0, anyOriginCalls: 4 }]]),
+      readIdeateRegistrations: async () => new Map([['wedged', ideateReg()]]),
+      readIdeatePasses: async () => new Map(),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(1);
+    expect(out.ideateSuppressedAsWedged).toBe(1);
+    // No SECOND alarm for a session the wedge wave already carries...
+    expect(out.ideateWavesEscalated).toBe(0);
+    expect(ideateEscalated).toHaveLength(0);
+    // ...and the wedge leg still reports it exactly once.
+    expect(escalated).toHaveLength(1);
+  });
+
+  // The obligation starts when the mode is set: a pass from a previous
+  // registration must not discharge the current one.
+  it('does not let a pass recorded BEFORE registration discharge the obligation', async () => {
+    const { deps, ideateEscalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'stale' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['stale', { agentOriginCalls: 40, anyOriginCalls: 44 }]]),
+      readIdeateRegistrations: async () => new Map([['stale', ideateReg()]]),
+      readIdeatePasses: async () => new Map([['stale', REGISTERED_LONG_AGO - 60_000]]),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(1);
+    expect(ideateEscalated[0].victims[0].lastPassAtMs).toBe(REGISTERED_LONG_AGO - 60_000);
+  });
+
+  it('stays silent once a pass is recorded after registration', async () => {
+    const { deps, ideateEscalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'good' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['good', { agentOriginCalls: 40, anyOriginCalls: 44 }]]),
+      readIdeateRegistrations: async () => new Map([['good', ideateReg()]]),
+      readIdeatePasses: async () => new Map([['good', REGISTERED_LONG_AGO + 60_000]]),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(0);
+    expect(ideateEscalated).toHaveLength(0);
+  });
+
+  // A pass is owed at task boundaries, not on a clock — the grace catches
+  // NEVER, not LATE.
+  it('holds fire on a registration still inside the ideate grace', async () => {
+    const { deps, ideateEscalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'fresh' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['fresh', { agentOriginCalls: 12, anyOriginCalls: 15 }]]),
+      readIdeateRegistrations: async () =>
+        new Map([['fresh', ideateReg({ setAtMs: NOW - 60_000 })]]),
+      readIdeatePasses: async () => new Map(),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(0);
+    expect(ideateEscalated).toHaveLength(0);
+  });
+
+  // The same correlation claim the wedge leg makes: the registrations come from
+  // a LAUNCHER, so N nags would be N copies of one launcher's decision.
+  it('collapses many silent sessions into ONE wave per workspace', async () => {
+    const candidates = Array.from({ length: 9 }, (_, i) => candidate({ ownerId: `su-${i}` }));
+    const { deps, ideateEscalated } = harness({
+      readCandidates: async () => candidates,
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map(candidates.map((c) => [c.ownerId, { agentOriginCalls: 30, anyOriginCalls: 33 }])),
+      readIdeateRegistrations: async () =>
+        new Map(candidates.map((c) => [c.ownerId, ideateReg()])),
+      readIdeatePasses: async () => new Map(),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(9);
+    expect(out.ideateWavesEscalated).toBe(1);
+    expect(ideateEscalated).toHaveLength(1);
+    expect(ideateEscalated[0].victims).toHaveLength(9);
+  });
+
+  // An agent that never had the mode is not a subject of this leg at all.
+  it('ignores an unregistered agent entirely', async () => {
+    const { deps, ideateEscalated } = harness({
+      readCandidates: async () => [candidate({ ownerId: 'plain' })],
+      resolveLiveness: async (cs) => new Map(cs.map((c) => [c.ownerId, aliveVerdict(c.ownerId)])),
+      readProductivity: async () =>
+        new Map([['plain', { agentOriginCalls: 99, anyOriginCalls: 120 }]]),
+      readIdeateRegistrations: async () => new Map(),
+      readIdeatePasses: async () => new Map(),
+    });
+
+    const out = await runAgentProductivitySweepOnce(FAKE_SQL, deps);
+
+    expect(out.ideateSilent).toBe(0);
+    expect(ideateEscalated).toHaveLength(0);
   });
 });

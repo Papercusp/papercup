@@ -8,32 +8,12 @@
  * evidence here.
  */
 import type { PilotArm } from './pilot-arm-assignment.js';
+import type {
+  PilotParticipantBindingReceipt,
+  PilotParticipantDispatchReceipt,
+  PilotParticipantRole,
+} from './pilot-participant-receipts.js';
 import type { ScorecardRow } from './scorecards.js';
-
-export type PilotReceiptRole = 'solo' | 'director' | 'implementer';
-
-/** Structural view of D-038's canonical P-017 binding receipt. */
-export interface PilotCollectionBindingReceipt {
-  receiptId: string;
-  itemId: string;
-  ownerId: string;
-  sessionId: string;
-  role: PilotReceiptRole;
-  /** Exact WorkItem.takenAt ISO string frozen by the canonical claim receipt. */
-  claimVersion: string;
-  bindingIssuedAtMs: number;
-}
-
-/** Structural view of D-038's canonical P-017 dispatch receipt. */
-export interface PilotCollectionDispatchReceipt {
-  receiptId: string;
-  bindingReceiptId: string;
-  itemId: string;
-  ownerId: string;
-  sessionId: string;
-  role: PilotReceiptRole;
-  dispatchedAtMs: number;
-}
 
 /** Frozen before reveal: one item, one independent grader, one opaque packet. */
 export interface PilotGradeBinding {
@@ -57,7 +37,7 @@ export interface PilotReceiptCostWindow {
   itemId: string;
   ownerId: string;
   sessionId: string;
-  role: PilotReceiptRole;
+  role: PilotParticipantRole;
   bindingReceiptId: string;
   dispatchReceiptId: string;
   startMs: number;
@@ -306,11 +286,11 @@ export function validatePilotGradeReceipt(input: {
   };
 }
 
-function expectedRoles(arm: PilotArm): readonly PilotReceiptRole[] {
+function expectedRoles(arm: PilotArm): readonly PilotParticipantRole[] {
   return arm === 'C' ? ['director', 'implementer'] : ['solo'];
 }
 
-function bindingValid(binding: PilotCollectionBindingReceipt): boolean {
+function bindingValid(binding: PilotParticipantBindingReceipt): boolean {
   return (
     nonEmpty(binding.receiptId) &&
     nonEmpty(binding.itemId) &&
@@ -330,8 +310,8 @@ export function derivePilotReceiptCostWindows(input: {
   itemId: string;
   arm: PilotArm;
   closedAtMs: number;
-  bindings: readonly PilotCollectionBindingReceipt[];
-  dispatches: readonly PilotCollectionDispatchReceipt[];
+  bindings: readonly PilotParticipantBindingReceipt[];
+  dispatches: readonly PilotParticipantDispatchReceipt[];
 }): { ok: boolean; windows: PilotReceiptCostWindow[]; gaps: PilotCollectionGuardGap[] } {
   const gaps: PilotCollectionGuardGap[] = [];
   if (!finitePositive(input.closedAtMs)) {

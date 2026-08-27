@@ -15,6 +15,7 @@ const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
 const forceGuard = vi.hoisted(() => ({
   verdict: { allowed: true, basis: 'holder-session-ended', holderLiveness: { live: false } } as any,
 }));
+const pilotReceipts = vi.hoisted(() => ({ persistBinding: vi.fn() }));
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
@@ -61,6 +62,10 @@ vi.mock('./release-force-guard', () => ({
   notifyForceTransition: vi.fn(async () => {}),
   recordForceTransitionAudit: vi.fn(async () => {}),
 }));
+vi.mock('../../pilot-participant-receipts', async (importOriginal) => ({
+  ...(await importOriginal<object>()),
+  persistPilotParticipantBindingReceipt: (...args: unknown[]) => pilotReceipts.persistBinding(...args),
+}));
 
 import { claimWorkItem, classifyClaimFailure, commentWorkItem, getWorkItem } from '../../work-items';
 import { resolveWorkItemReleaseRequest } from '../../work-items-release-request';
@@ -93,6 +98,7 @@ beforeEach(() => {
   releaseRequest.readWorkItemReleaseRequest.mockReturnValue(null);
   releaseRequest.resolveWorkItemReleaseRequest.mockResolvedValue(null);
   premisePort.get.mockReset().mockResolvedValue(null);
+  pilotReceipts.persistBinding.mockReset();
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
@@ -101,6 +107,50 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined, fromHolder: identity.ownerId });
+  });
+
+  it('mints a canonical pilot binding only after a caller-owned claim lands', async () => {
+    const claimVersion = '2026-08-27T07:15:00.000Z';
+    claimM.mockResolvedValue({
+      id: 'WI-PILOT', assignee: 'me', harness: 'papercusp', takenAt: claimVersion,
+    } as never);
+    pilotReceipts.persistBinding.mockResolvedValue({
+      receiptId: 'binding-1', itemId: 'WI-PILOT', ownerId: 'me', sessionId: 'session-1',
+      role: 'director', claimVersion, bindingIssuedAtMs: 100,
+    });
+
+    const b = await body({ id: 'WI-PILOT', harness: 'papercusp', pilotRole: 'director' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      pilotBindingReceipt: { receiptId: 'binding-1', ownerId: 'me', sessionId: 'session-1' },
+    });
+    expect(pilotReceipts.persistBinding).toHaveBeenCalledWith({
+      workspaceId: 'ws-1', harnessSlug: 'papercusp', itemId: 'WI-PILOT', ownerId: 'me',
+      claimVersion, role: 'director',
+    });
+  });
+
+  it('reports claimLanded when canonical pilot binding persistence fails', async () => {
+    claimM.mockResolvedValue({
+      id: 'WI-PILOT', assignee: 'me', harness: 'papercusp', takenAt: '2026-08-27T07:15:00.000Z',
+    } as never);
+    pilotReceipts.persistBinding.mockRejectedValue(new Error('claimVersion CAS changed'));
+
+    const b = await body({ id: 'WI-PILOT', harness: 'papercusp', pilotRole: 'solo' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false, error: 'pilot_binding_receipt_failed', claimLanded: true,
+    });
+    expect(b.results[0].hint).toMatch(/claimVersion CAS changed/);
+  });
+
+  it('refuses caller-issued pilot identity for a named assignee before mutation', async () => {
+    const b = await body({ id: 'WI-PILOT', assignee: 'peer', pilotRole: 'solo' });
+
+    expect(b.results[0]).toMatchObject({ ok: false, error: 'pilot_binding_requires_self_claim' });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(pilotReceipts.persistBinding).not.toHaveBeenCalled();
   });
 
   it('P-016 returns the ready await call when the claimed item has an active gate blocker', async () => {

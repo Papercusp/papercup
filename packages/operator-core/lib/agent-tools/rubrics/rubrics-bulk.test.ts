@@ -28,7 +28,7 @@ const getTool = (await import('./get')).default;
 const ratifyTool = (await import('./ratify')).default;
 
 type Out = { data: any };
-const body = async (tool: typeof getTool, args: unknown) =>
+const body = async (tool: typeof getTool | typeof ratifyTool, args: unknown) =>
   (((await tool.handler(args as never, {} as never)) as Out).data);
 
 beforeEach(() => vi.clearAllMocks());

@@ -4,7 +4,12 @@
  * WHAT args + how their results fold into the dispatch report), so no PG / no live pump.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { composeDispatch, type DispatchArgs } from './dispatch';
+import {
+  composeDispatch,
+  finalizePilotDispatchReceipt,
+  type DispatchArgs,
+  type DispatchResult,
+} from './dispatch';
 import type { HydratableRef, HydratedRef } from '../ref-hydrate';
 import type { RefResolvers } from '../ref-hydrate-resolve';
 
@@ -36,6 +41,87 @@ const sendEnv = (to: string, wake: Record<string, unknown>, msg_id = 'm-1') => (
   ok: true,
   results: [{ ok: true, to: [to], msg_id, ts: 't', wake }],
   counts: { ok: 1, failed: 0 },
+});
+
+describe('directed-pair pilot dispatch receipt', () => {
+  const delivered = (): DispatchResult => ({
+    ok: true,
+    to: 'su-target',
+    sessionState: 'parked',
+    wakeable: true,
+    assigned: null,
+    workItems: null,
+    delivered: 'coord-msg-1',
+    woken: 0,
+    queued: 1,
+    pickupConfirmed: false,
+  });
+
+  it('persists the server-linked receipt only after delivery lands', async () => {
+    const persist = vi.fn(async () => ({
+      receiptId: 'dispatch-1',
+      bindingReceiptId: 'binding-1',
+      itemId: 'WI-1',
+      ownerId: 'su-target',
+      sessionId: 'session-target',
+      role: 'implementer' as const,
+      dispatchedAtMs: 200,
+    }));
+
+    const result = await finalizePilotDispatchReceipt(
+      {
+        to: 'target',
+        note: 'take the role',
+        harness: 'papercusp',
+        pilotBinding: { itemId: 'WI-1', bindingReceiptId: 'binding-1' },
+      },
+      delivered(),
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      persist,
+    );
+
+    expect(persist).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      harnessSlug: 'papercusp',
+      itemId: 'WI-1',
+      bindingReceiptId: 'binding-1',
+      ownerId: 'su-target',
+    });
+    expect(result.pilotDispatchReceipt).toMatchObject({ receiptId: 'dispatch-1' });
+  });
+
+  it('reports deliveryLanded when receipt persistence fails', async () => {
+    const result = await finalizePilotDispatchReceipt(
+      {
+        to: 'target',
+        note: 'take the role',
+        pilotBinding: { itemId: 'WI-1', bindingReceiptId: 'binding-1' },
+      },
+      delivered(),
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      vi.fn(async () => { throw new Error('binding session changed'); }),
+    );
+
+    expect(result).toMatchObject({ ok: false, deliveryLanded: true });
+    expect(result.pilotReceiptError).toMatch(/binding session changed/);
+  });
+
+  it('does not mint a receipt when coord:send did not deliver', async () => {
+    const persist = vi.fn();
+    const result = await finalizePilotDispatchReceipt(
+      {
+        to: 'target',
+        note: 'take the role',
+        pilotBinding: { itemId: 'WI-1', bindingReceiptId: 'binding-1' },
+      },
+      { ...delivered(), delivered: null },
+      { workspaceId: 'ws-1', harnessSlug: 'papercusp' },
+      persist,
+    );
+
+    expect(persist).not.toHaveBeenCalled();
+    expect(result.pilotDispatchReceipt).toBeUndefined();
+  });
 });
 
 const presence = (rows: Array<Record<string, unknown>>) => ({ active: rows, summary: {} });

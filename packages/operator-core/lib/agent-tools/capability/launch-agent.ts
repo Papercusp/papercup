@@ -1258,7 +1258,19 @@ export default defineTool({
       ),
       ...(resumeVerified !== undefined ? { resumeVerified } : {}),
       ...(resumeVerification ? { resumeVerification } : {}),
-      ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
+      ...(freshVerdict
+        ? {
+            agentStarted: freshVerdict.agentStarted,
+            freshVerdict: {
+              agentStarted: freshVerdict.agentStarted,
+              sessions: freshVerdict.sessions.map((session) => ({
+                ownerId: session.ownerId,
+                sessionId:
+                  (session as typeof session & { sessionId?: string | null }).sessionId ?? null,
+              })),
+            },
+          }
+        : {}),
     };
 
     await recordAgentLaunchResult({

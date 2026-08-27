@@ -74,6 +74,12 @@ import {
 // the same way fleet:leader-brief reaches this store).
 import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
 import { suggestedWatchesForItemBlockers } from '../../interest-profiles';
+import {
+  persistPilotParticipantBindingReceipt,
+  PILOT_PARTICIPANT_ROLES,
+  type PilotParticipantBindingReceipt,
+  type PilotParticipantRole,
+} from '../../pilot-participant-receipts';
 
 interface ClaimItem {
   id: string;
@@ -81,6 +87,7 @@ interface ClaimItem {
   harness?: string;
   force?: boolean;
   reason?: string;
+  pilotRole?: PilotParticipantRole;
 }
 
 /**
@@ -281,6 +288,14 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     };
   }
   const claimer = it.assignee ?? claimerDefault;
+  if (it.pilotRole && claimer !== claimerDefault) {
+    return {
+      ok: false,
+      id: it.id,
+      error: 'pilot_binding_requires_self_claim',
+      hint: 'pilotRole is accepted only for the caller\'s own run-owned claim; dispatching a named assignee cannot mint their identity receipt.',
+    };
+  }
   // EI-19313376980892266: start the concurrency read NOW, the moment the claimer is known, and
   // await it only in the success branch — it is independent of admission, the pre-claim lookup
   // and the claim itself, so overlapping them keeps this off the claim's critical path.
@@ -482,6 +497,42 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
     }
   }
   if (workItem) {
+    let pilotBindingReceipt: PilotParticipantBindingReceipt | undefined;
+    if (it.pilotRole) {
+      const claimVersion = workItem.takenAt;
+      const harnessSlug = workItem.harness ?? it.harness;
+      if (!identity.workspaceId || !harnessSlug || !claimVersion) {
+        return {
+          ok: false,
+          id: it.id,
+          error: 'pilot_binding_receipt_failed',
+          claimLanded: true,
+          workItem,
+          hint: 'The work-item claim landed, but its workspace/harness/takenAt claimVersion could not be resolved; no pilot binding receipt was persisted.',
+        };
+      }
+      try {
+        pilotBindingReceipt = await persistPilotParticipantBindingReceipt({
+          workspaceId: identity.workspaceId,
+          harnessSlug,
+          itemId: it.id,
+          ownerId: claimerDefault,
+          claimVersion,
+          role: it.pilotRole,
+        });
+      } catch (error) {
+        return {
+          ok: false,
+          id: it.id,
+          error: 'pilot_binding_receipt_failed',
+          claimLanded: true,
+          workItem,
+          hint:
+            'The work-item claim landed, but canonical pilot binding persistence failed: ' +
+            (error instanceof Error ? error.message : String(error)),
+        };
+      }
+    }
     // WI-5826: see terminalClaimWarning — a by-id claim of a finished row stays ALLOWED
     // (EI-8972) but can no longer be mistaken for fresh work.
     const terminalWarning = terminalClaimWarning(workItem);
@@ -673,6 +724,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ok: true,
           id: it.id,
           workItem,
+          ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
           checkpoint: hint.checkpoint,
           checkpointAgeMs: hint.checkpointAgeMs,
@@ -721,6 +773,7 @@ async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellR
           ok: true,
           id: it.id,
           workItem,
+          ...(pilotBindingReceipt ? { pilotBindingReceipt } : {}),
           ...(forced ? { forced } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
@@ -873,6 +926,7 @@ export default defineTool({
             harness: z.string().max(80).optional(),
             force: z.boolean().optional(),
             reason: z.string().max(500).optional(),
+            pilotRole: z.enum(PILOT_PARTICIPANT_ROLES).optional(),
           }),
         )
         .min(1)
@@ -893,6 +947,10 @@ export default defineTool({
         .describe(
           'default for the inline id / every id in `ids`: required when `force:true` replaces another agent\'s claim; recorded in the forced result, audit, and holder/owner notifications.',
         ),
+      pilotRole: z
+        .enum(PILOT_PARTICIPANT_ROLES)
+        .optional()
+        .describe('directed-pair pilot only: mint a server-issued canonical binding receipt for this caller-owned claim'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (a.ids?.length ?? 0) > 0 || Boolean(a.id), {
       message: 'pass { id } for one, or { ids:[…] } / items:[{ id }] for many',
@@ -918,6 +976,7 @@ export default defineTool({
           harness: it.harness ?? args.harness,
           force: it.force ?? args.force,
           reason: it.reason ?? args.reason,
+          pilotRole: it.pilotRole ?? args.pilotRole,
         }))
       : args.ids?.length
         ? args.ids.map((id) => ({
@@ -926,6 +985,7 @@ export default defineTool({
             harness: args.harness,
             force: args.force,
             reason: args.reason,
+            pilotRole: args.pilotRole,
           }))
         : [
             {
@@ -934,6 +994,7 @@ export default defineTool({
               harness: args.harness,
               force: args.force,
               reason: args.reason,
+              pilotRole: args.pilotRole,
             },
           ];
     const env = await runBulk(list, (it) => claimOne(it, ident, reader), {
