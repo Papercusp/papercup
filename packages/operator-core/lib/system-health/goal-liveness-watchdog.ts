@@ -160,6 +160,15 @@ export interface GoalRowLike {
   installSlug?: string | null;
   /** Parsed, schema-valid launch settings; invalid stored JSON is fail-dark as null. */
   launchSettings?: GoalLaunchSettings | null;
+  /**
+   * Durable proof this goal was successfully started at least once.
+   *
+   * `startGoalById` stamps metadata.agentOwnerId only AFTER the GOAL-mode
+   * attachment succeeds. The value is therefore not a liveness source and may
+   * name an old holder, but its presence distinguishes a started goal whose
+   * holder row was later lost from an installed-only stub that nobody started.
+   */
+  startedHolderOwnerId?: string | null;
   /** P-011 (work-on-everything): goals.standing — TRUE for a stewardship goal. */
   standing?: boolean | null;
 }
@@ -509,11 +518,13 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
         status: string;
         install_slug: string | null;
         launch_settings: unknown;
+        started_holder_owner_id: string | null;
         standing: boolean;
         updated_ms: string;
       }[]
     >`
-      SELECT id, workspace_id, title, status, install_slug, launch_settings, standing,
+      SELECT id, workspace_id, title, status, install_slug, launch_settings,
+             metadata ->> 'agentOwnerId' AS started_holder_owner_id, standing,
              (extract(epoch FROM updated_at) * 1000)::bigint AS updated_ms
         FROM harness_shared.goals
        WHERE status = ANY(${[...GOAL_LIVENESS_SWEEP_STATUSES]}::text[])`;
@@ -538,6 +549,7 @@ function makeReadGoals(sql: Sql): GoalLivenessSweepDeps['readGoals'] {
           status: r.status,
           installSlug: r.install_slug,
           launchSettings: parsed.settings,
+          startedHolderOwnerId: r.started_holder_owner_id,
           standing: r.standing,
           updatedAtMs: Number(r.updated_ms),
         };
@@ -1185,10 +1197,16 @@ export async function runGoalHolderRespawnOnce(
     );
 
     // A stub that was never picked up is not a lost holder and must not be
-    // auto-started. Unknown is equally non-actionable: degraded evidence is not death.
+    // auto-started. But startGoalById stamps metadata.agentOwnerId only after a
+    // successful GOAL-mode attach. When that proof survives while the mode row
+    // does not, this is a LOST ATTACHMENT, not an installed-only stub: send it
+    // through the existing damped recovery path. Unknown is still non-actionable;
+    // degraded evidence is not death.
     if (fold.liveness === 'unheld') {
-      deps.states.delete(key);
-      continue;
+      if (!goal.startedHolderOwnerId?.trim()) {
+        deps.states.delete(key);
+        continue;
+      }
     }
     if (fold.liveness === 'unknown') continue;
 

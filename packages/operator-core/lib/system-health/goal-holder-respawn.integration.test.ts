@@ -156,14 +156,16 @@ async function seedGoal(opts: {
   status?: string;
   launchSettings?: unknown;
   standing?: boolean;
+  metadata?: Record<string, unknown>;
 }): Promise<void> {
   await rootSql`
     INSERT INTO harness_shared.goals
-      (id, workspace_id, install_slug, title, status, launch_settings, standing, budget_window_sec)
+      (id, workspace_id, install_slug, title, status, launch_settings, standing, budget_window_sec, metadata)
     VALUES (${opts.id}, ${WS}, ${HARNESS}, ${'Work on everything (package goal) ' + opts.id},
             ${opts.status ?? 'active'},
             ${opts.launchSettings === undefined ? null : rootSql.json(opts.launchSettings as never)},
-            ${opts.standing ?? true}, ${86_400})`;
+            ${opts.standing ?? true}, ${86_400},
+            ${rootSql.json((opts.metadata ?? {}) as never)})`;
 }
 
 const RESPAWN_SETTINGS = { holder: { requireLive: true, onLoss: 'respawn' } };
@@ -237,6 +239,7 @@ beforeAll(async () => {
       launch_settings jsonb,
       standing boolean NOT NULL DEFAULT false,
       budget_window_sec integer,
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
       created_at timestamptz NOT NULL DEFAULT now(),
       updated_at timestamptz NOT NULL DEFAULT now()
     )`);
@@ -345,6 +348,31 @@ describe('respawn-on-loss for a started package goal (P-010, end-to-end)', () =>
     expect(tick).toMatchObject({ scanned: 1, eligible: 1, attempted: 0, respawned: 0 });
     expect(launches).toEqual([]);
     expect(await goalModeRows('goal-installed-only')).toEqual([]);
+  }, 60_000);
+
+  it('started metadata + lost GOAL row is recovered, then remains stable without a double launch', async () => {
+    const goalId = 'goal-started-row-lost';
+    await seedGoal({
+      id: goalId,
+      launchSettings: RESPAWN_SETTINGS,
+      metadata: { agentOwnerId: INITIAL_HOLDER },
+    });
+    // The goal was started (the post-attach metadata stamp survived), but its
+    // canonical GOAL-mode row was lost. This is the production failure: before
+    // EI-211659 the respawner folded it as `unheld` and confused it with the
+    // installed-only control above.
+    expect(await goalModeRows(goalId)).toEqual([]);
+
+    const { deps, launches } = drillDeps();
+    const recovered = await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(recovered).toMatchObject({ attempted: 1, respawned: 1 });
+    expect(launches).toEqual([goalId]);
+    expect((await goalModeRows(goalId)).map((r) => r.owner_id)).toEqual(['su-replacement-1']);
+
+    sessions.set('su-replacement-1', liveSignals());
+    const stable = await runGoalHolderRespawnOnce(rootSql, deps);
+    expect(stable).toMatchObject({ attempted: 0, respawned: 0 });
+    expect(launches).toEqual([goalId]);
   }, 60_000);
 
   it('a goal on the DEFAULT holder policy (onLoss=deactivate) loses its holder without respawn', async () => {

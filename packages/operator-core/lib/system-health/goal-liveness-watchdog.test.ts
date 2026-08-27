@@ -816,7 +816,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
     expect(launch).not.toHaveBeenCalled();
   });
 
-  it('does not auto-start an unheld goal or infer loss from unknown liveness', async () => {
+  it('does not auto-start a never-started unheld goal or infer loss from unknown liveness', async () => {
     const unheld = respawnGoal({ goalId: 'unheld' });
     const unknown = respawnGoal({ goalId: 'unknown' });
     const launch = vi.fn(async () => ({ ownerId: 'must-not-launch', warnings: [] }));
@@ -834,6 +834,29 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
 
     expect(result).toMatchObject({ scanned: 2, eligible: 2, attempted: 0, respawned: 0 });
     expect(launch).not.toHaveBeenCalled();
+  });
+
+  it('recovers a started goal whose durable GOAL-mode row was lost', async () => {
+    const target = respawnGoal({
+      goalId: 'started-but-row-lost',
+      startedHolderOwnerId: 'su-former-holder',
+    });
+    const launch = vi.fn(async () => ({ ownerId: 'su-replacement', warnings: [] }));
+    const attach = vi.fn(async () => {});
+
+    const result = await runGoalHolderRespawnOnce(
+      sql,
+      respawnDeps({
+        readGoals: async () => ({ goals: [target], holders: [] }),
+        resolveLiveness: vi.fn(async () => new Map()),
+        launch,
+        attach,
+      }),
+    );
+
+    expect(result).toMatchObject({ scanned: 1, eligible: 1, attempted: 1, respawned: 1 });
+    expect(launch).toHaveBeenCalledWith(target);
+    expect(attach).toHaveBeenCalledWith(target, 'su-replacement');
   });
 
   it('never attaches a phantom holder when launch fails', async () => {
