@@ -50,6 +50,7 @@ import {
 } from '../../plan-audits';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
+import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
@@ -196,6 +197,7 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     if (args.phase === 'activation') {
+      const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
       const submittedActivation: ActivationAuditPayload = {
         sourceRanges: args.sourceRanges ?? [],
         mappings: args.mappings ?? [],
@@ -208,6 +210,12 @@ export default defineTool({
         submittedActivation.unresolvedBlockers.length > 0 ||
         submittedActivation.mappings.some((mapping) => mapping.disposition === 'open')
       ) {
+        const repairFiling = await ensureActivationAuditRepairFiling({
+          workspaceId,
+          harnessSlug: harnessSlug ?? '',
+          planSlug: args.slug,
+          activation: submittedActivation,
+        });
         return { data: {
           ok: false as const,
           slug: args.slug,
@@ -219,10 +227,11 @@ export default defineTool({
           openMappingIds: submittedActivation.mappings
             .filter((mapping) => mapping.disposition === 'open')
             .map((mapping) => mapping.id),
+          repairWorkItem: repairFiling.id,
+          repairFiling,
         } };
       }
 
-      const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
       const previousAudit = await getLatestActivationAudit(args.slug, { workspaceId });
       if (!previousAudit) {
         const missingCoverage: Problem[] = [];

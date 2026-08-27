@@ -12,6 +12,11 @@ import { fileURLToPath } from 'node:url';
 import { applyMigrationForTest, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 
 const h: { sql: FreshPgDb['sql'] } = { sql: null as never };
+const repairFiling = vi.hoisted(() => ({
+  conditionKey: 'activation-audit:papercup/activation-target',
+  id: 'EI-ACTIVATION-REPAIR',
+  created: true,
+}));
 const here = dirname(fileURLToPath(import.meta.url));
 const migration = (name: string) => resolve(here, `../../../libs/papercusp/libs/db/sql/${name}`);
 
@@ -20,6 +25,9 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'activation-audit-test' }));
+vi.mock('./agent-tools/plans/activation-audit-repair', () => ({
+  ensureActivationAuditRepairFiling: vi.fn(async () => repairFiling),
+}));
 
 import {
   getLatestActivationAudit,
@@ -27,6 +35,7 @@ import {
   recordCurrentActivationAudit,
   recordPlanAudit,
 } from './plan-audits';
+import { ensureActivationAuditRepairFiling } from './agent-tools/plans/activation-audit-repair';
 import { hashPlanContent } from './agent-tools/plans/content-hash';
 
 let db: FreshPgDb;
@@ -123,6 +132,32 @@ async function seedCurrentPlan() {
 }
 
 describe('migration 938 activation-audit ledger', () => {
+  it('returns the claimable repair lane when low-level validation rejects open coverage', async () => {
+    const result = await recordCurrentActivationAudit({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercusp',
+      planSlug: 'activation-target',
+      createdBy: 'su-test',
+      activation: {
+        ...payload,
+        unresolvedBlockers: ['map the owner constraint before activation'],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: 'activation_blocked',
+      repairWorkItem: 'EI-ACTIVATION-REPAIR',
+      repairFiling,
+    });
+    const repairCall = vi.mocked(ensureActivationAuditRepairFiling).mock.calls[0]?.[0];
+    expect(repairCall).toMatchObject({
+      workspaceId: 'activation-audit-test',
+      harnessSlug: 'papercup',
+      planSlug: 'activation-target',
+    });
+  });
+
   it('preserves completion defaults and reads each audit kind independently', async () => {
     const completion = await recordPlanAudit({
       planSlug: 'audited-plan',

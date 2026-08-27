@@ -60,6 +60,10 @@ import { selectUnambiguousEvidenceRoot } from './evidence-root-selection';
 // it was first needed; it is imported rather than re-derived so there stays exactly
 // ONE implementation of "where is the repo root" rather than two that can disagree.
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
+import {
+  ensureActivationAuditRepairFiling,
+  type ActivationAuditRepairFiling,
+} from './agent-tools/plans/activation-audit-repair';
 
 // ── the record ────────────────────────────────────────────────────────────────
 
@@ -1309,6 +1313,8 @@ export type RecordCurrentActivationAuditResult =
       error: 'plan_busy' | 'plan_not_found' | 'activation_blocked' | 'plan_targets_invalid' | 'plan_revision_unavailable';
       message: string;
       problems?: ActivationAuditPlanTargetProblem[];
+      repairWorkItem?: string | null;
+      repairFiling?: ActivationAuditRepairFiling;
     };
 
 export interface AuditEntryValidationProblem {
@@ -1503,11 +1509,19 @@ export async function recordCurrentActivationAudit(
     input.activation.unresolvedBlockers.length > 0 ||
     input.activation.mappings.some((mapping) => mapping.disposition === 'open')
   ) {
+    const repairFiling = await ensureActivationAuditRepairFiling({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harnessSlug,
+      planSlug: input.planSlug,
+      activation: input.activation,
+    });
     return {
       ok: false,
       error: 'activation_blocked',
       message:
         'Activation audit has unresolved blockers or open requirement mappings. Repair/map them before activation; no audit was recorded.',
+      repairWorkItem: repairFiling.id,
+      repairFiling,
     };
   }
 

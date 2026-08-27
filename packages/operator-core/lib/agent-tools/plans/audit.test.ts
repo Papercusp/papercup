@@ -36,6 +36,9 @@ vi.mock('../../plan-audits', async (orig) => {
     recordCurrentActivationAudit: vi.fn(),
   };
 });
+vi.mock('./activation-audit-repair', () => ({
+  ensureActivationAuditRepairFiling: vi.fn(),
+}));
 
 import {
   getEffectiveItemAudits,
@@ -45,6 +48,7 @@ import {
   recordPlanAudit,
   repoCitationContextForHarness,
 } from '../../plan-audits';
+import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import tool from './audit';
 
@@ -55,6 +59,7 @@ const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
+const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
 
 const ctx = {
   log: vi.fn(),
@@ -90,6 +95,11 @@ beforeEach(() => {
     ok: true,
     audit: { auditSeq: 2 } as never,
     auditedPlanRevision: { id: 41, seq: 6, contentHash: 'a'.repeat(64) },
+  });
+  mockRepairFiling.mockResolvedValue({
+    conditionKey: 'activation-audit:papercusp/plan-a',
+    id: 'EI-ACTIVATION-REPAIR',
+    created: true,
   });
 });
 
@@ -475,10 +485,22 @@ describe('plans:audit phase:activation', () => {
     ['an unresolved blocker', {
       unresolvedBlockers: ['The owner constraint has no plan target.'],
     }],
-  ])('refuses %s before touching either store', async (_label, over) => {
+  ])('refuses %s and returns a claimable repair lane', async (_label, over) => {
     const result = ((await tool.handler(activationArgs(over) as never, ctx)) as { data: any }).data;
 
-    expect(result).toMatchObject({ ok: false, phase: 'activation', error: 'activation_blocked' });
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_blocked',
+      repairWorkItem: 'EI-ACTIVATION-REPAIR',
+      repairFiling: { conditionKey: 'activation-audit:papercusp/plan-a', created: true },
+    });
+    expect(mockRepairFiling).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceId: 'test-workspace',
+      harnessSlug: 'papercusp',
+      planSlug: 'plan-a',
+      activation: expect.objectContaining({ unresolvedBlockers: expect.any(Array) }),
+    }));
     expect(mockResolveSourceRefs).not.toHaveBeenCalled();
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
