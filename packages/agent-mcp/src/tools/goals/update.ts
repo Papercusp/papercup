@@ -19,7 +19,7 @@ import { defineTool } from '@papercusp/tooldef';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
-import { HARNESS_SLUG_RE } from '@papercusp/operator-core/lib/harness-slug';
+import { HARNESS_SLUG_RE, isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
@@ -121,6 +121,15 @@ export default defineTool({
         HARNESS_SLUG_RE,
         'install_slug must match the launch door\'s slug pattern (HARNESS_SLUG_RE) — a wildcard scope token like "*" is rejected here precisely because it is accepted at write time and then fails at every holder launch',
       )
+      // `'all'` PASSES the pattern above, so the regex alone would admit it and
+      // file the goal against a Pot named `all` that does not exist. This door
+      // refuses both scope tokens rather than resolving them (as goals:create
+      // does): a repair caller is naming its target explicitly and can name the
+      // Pot, so silently retargeting the row would be the wrong kind of helpful.
+      .refine((s) => !isWildcardScopeToken(s), {
+        message:
+          'install_slug names a Pot, not a scope: "*" and "all" are workspace-global scope tokens. Name the concrete Pot to file this goal against (the platform Pot is "papercusp").',
+      })
       .optional()
       .describe(
         'REPAIR the Pot this goal is filed against (EI-21563406996333542). A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',

@@ -534,6 +534,40 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(await res.json()).toEqual({ id: 'resp_nonstream', output: [] });
     expect(cliRun).not.toHaveBeenCalled();
+    expect(gw.stats().codex).toMatchObject({ requests: 1, failovers: 0 });
+    expect(gw.stats().egressAttemptsByAccount).toMatchObject({ 'chatgpt-a': 1 });
+  });
+
+  it('PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0 selects the named temporary CLI fallback', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    const cliRun = vi.fn(async () => ({ text: 'served by the rollback path', inputTokens: 5, outputTokens: 3 }));
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('the OAuth transport must stay dark while the fallback is selected');
+    }) as unknown as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliRun: cliRun,
+      codexOAuthProxy: true,
+      codexOAuthNonStream: false,
+      fetchImpl,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'use the rollback path', stream: false },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(cliRun).toHaveBeenCalledOnce();
+    expect(cliRun).toHaveBeenCalledWith(expect.objectContaining({ home }));
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(gw.stats().codex.requests).toBe(1);
   });
 
   it.each([429, 503] as const)('retries a non-stream OAuth %s before aggregating the healthy account response', async (failureStatus) => {
@@ -579,6 +613,11 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+    expect(gw.stats().codex).toMatchObject({ requests: 1, failovers: 1 });
+    expect(gw.stats().egressAttemptsByAccount).toMatchObject({
+      'chatgpt-a': 1,
+      'chatgpt-b': 1,
+    });
   });
 
   it('aborts the OAuth upstream when a non-stream downstream caller disconnects', async () => {

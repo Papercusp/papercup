@@ -498,6 +498,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         harness: spec.harness,
         workspaceId: opts.workspaceId,
         sourcePlanSlug: opts.planRun?.templateSlug ?? spec.sourcePlanSlug,
+        sourcePlanItemIds: [itemId],
         topics: planTopics,
         payload: {
           plan_item: stamp,
@@ -587,6 +588,7 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
         harness: spec.harness,
         workspaceId: opts.workspaceId,
         sourcePlanSlug: opts.planRun.templateSlug,
+        sourcePlanItemIds: [item.id],
         topics: planTopics,
         payload: {
           plan_item: stampForPlanItem(item.id),

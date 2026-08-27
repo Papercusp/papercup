@@ -206,9 +206,16 @@ beforeEach(async () => {
 
 const features = () =>
   db.sql<
-    { feature_id: string; title: string; source_plan_slug: string | null; taken_by: string | null; status: string }[]
+    {
+      feature_id: string;
+      title: string;
+      source_plan_slug: string | null;
+      source_plan_item_ids: string[] | null;
+      taken_by: string | null;
+      status: string;
+    }[]
   >`
-    SELECT feature_id, title, source_plan_slug, taken_by, status
+    SELECT feature_id, title, source_plan_slug, source_plan_item_ids, taken_by, status
       FROM harness_shared.harness_features_consolidated
      WHERE item_kind = 'feature' ORDER BY feature_id`;
 
@@ -269,6 +276,7 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(rows.map((r) => r.title)).toEqual(['Build the frontier gate', 'Wire the runner']);
     // Tied to the plan via the first-class column…
     expect(rows.every((r) => r.source_plan_slug === PLAN)).toBe(true);
+    expect(rows.map((r) => r.source_plan_item_ids)).toEqual([['P-001'], ['P-002']]);
     // …and PLACEABLE: unclaimed (no owner) — the Queen places them.
     expect(rows.every((r) => r.taken_by === null || r.taken_by === '')).toBe(true);
 

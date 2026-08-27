@@ -28,6 +28,7 @@ import {
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import { validatePropertySchemaDeclaration } from '@papercusp/operator-core/lib/typed-properties-db';
 import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
+import { isWildcardScopeToken } from '@papercusp/operator-core/lib/harness-slug';
 import { SU_WRITE_ROLES } from '../../role-config';
 import { GOAL_STATUSES, TripwireSchema, goalId, insertGoalRow } from './_core';
 import { applyGoalBlockedBy } from './goal-deps';
@@ -173,7 +174,7 @@ export default defineTool({
     // The falsy check below is unchanged: a genuinely ABSENT harness still refuses.
     const rawHarnessSlug = ctx.harnessSlug;
     const installSlug =
-      rawHarnessSlug === '*' || rawHarnessSlug === 'all' ? PLATFORM_POT_SLUG : rawHarnessSlug;
+      rawHarnessSlug && isWildcardScopeToken(rawHarnessSlug) ? PLATFORM_POT_SLUG : rawHarnessSlug;
     if (!installSlug) {
       return {
         data: null,

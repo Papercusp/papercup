@@ -13,6 +13,8 @@
 import { describe, expect, it, beforeEach } from 'vitest';
 import tool from './update';
 import { setGoalTransitionExecutor, type GoalStopReport } from './stop-seam';
+import { PLATFORM_POT_SLUG } from '@papercusp/operator-core/lib/platform-pot-slug';
+import { HARNESS_SLUG_RE, WILDCARD_SCOPE_TOKENS } from '@papercusp/operator-core/lib/harness-slug';
 
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
@@ -65,13 +67,28 @@ const writtenMetadata = (): Record<string, unknown> => {
 };
 
 /**
- * The kill criterion is a COLUMN now (migration 765), so it is a plain string
- * param rather than a key inside the metadata JSON. Positional because the
- * UPDATE's template order is fixed: title, body, status, budget, parent,
- * kill_criterion, tripwires, metadata.
+ * The value bound to one SET column of the goals UPDATE.
+ *
+ * DERIVED from the recorded SQL rather than hardcoded, because a hardcoded index
+ * is silently wrong the moment a column is added ahead of it — which is exactly
+ * what happened: `install_slug` (EI-21563406996333542) was inserted between
+ * `parent_id` and `kill_criterion`, so the previous `KILL_CRITERION_PARAM = 5`
+ * began reading the install slug while still being named for the criterion. The
+ * assertions kept their names and changed their meaning, which is the worst way
+ * for a test to break.
+ *
+ * The mock `tx` joins the template strings with '?', one per bound param, so the
+ * count of '?' before a column's placeholder IS that param's index.
  */
-const KILL_CRITERION_PARAM = 5;
-const writtenCriterion = (): unknown => updateCall().params[KILL_CRITERION_PARAM];
+const setParam = (column: string): unknown => {
+  const { sql, params } = updateCall();
+  const m = new RegExp(`\\b${column}\\s*=\\s*`).exec(sql);
+  if (!m) throw new Error(`goals UPDATE has no SET clause for ${column}`);
+  return params[sql.slice(0, m.index + m[0].length).split('?').length - 1];
+};
+
+/** The kill criterion is a COLUMN now (migration 765), not a key inside metadata. */
+const writtenCriterion = (): unknown => setParam('kill_criterion');
 
 beforeEach(() => {
   calls = [];
@@ -117,19 +134,39 @@ beforeEach(() => {
    `adv/launch-su` applies, so a drift between them fails HERE rather than at a
    holder launch weeks later. ── */
 describe('goals:update — install_slug repair cannot write an unlaunchable value', () => {
-  const INSTALL_SLUG_PARAM = 8;
-  const writtenInstallSlug = (): unknown => updateCall().params[INSTALL_SLUG_PARAM];
+  const writtenInstallSlug = (): unknown => setParam('install_slug');
 
   it('REFUSES the wildcard "*" — the exact value that produced the unlaunchable goal', () => {
     expect(tool.args.safeParse({ id: 'g1', installSlug: '*' }).success).toBe(false);
   });
 
-  it('refuses every other value the launch door would reject', () => {
-    for (const bad of ['all', 'a/b', 'a b', 'a:b', '', 'x'.repeat(121)]) {
+  it('refuses every mis-SHAPED slug the launch door would reject', () => {
+    for (const bad of ['*', 'a/b', 'a b', 'a:b', '', 'x'.repeat(121)]) {
       expect(tool.args.safeParse({ id: 'g1', installSlug: bad }).success).toBe(false);
-      // Cross-check against the launch door's own predicate: anything this
-      // schema accepts must be launchable, and vice versa.
+      // Cross-check against the launch door's own predicate rather than a copy
+      // of it: anything this schema accepts must be a slug launch-su accepts.
       expect(HARNESS_SLUG_RE.test(bad) && bad.length <= 120).toBe(false);
+    }
+  });
+
+  /* The case a pattern check cannot catch, and the reason this door needs a
+     refinement on top of the regex. `'all'` is a workspace-global SCOPE token,
+     but it is also a perfectly well-shaped slug — so shape validation waves it
+     through and the goal ends up filed against a Pot named `all` that does not
+     exist. That failure is quieter than the original wildcard bug: `'*'` at
+     least dies loudly at the launch door, whereas `'all'` is launchable-looking
+     all the way down. */
+  it('refuses "all" — shape-VALID, but a scope token rather than a Pot name', () => {
+    // The premise: this is exactly the case the regex alone would have admitted.
+    expect(HARNESS_SLUG_RE.test('all')).toBe(true);
+    const res = tool.args.safeParse({ id: 'g1', installSlug: 'all' });
+    expect(res.success).toBe(false);
+    expect(JSON.stringify(res.error?.issues ?? [])).toMatch(/scope/i);
+  });
+
+  it('agrees with goals:create on WHICH tokens are wildcards, so the doors cannot diverge', () => {
+    for (const token of WILDCARD_SCOPE_TOKENS) {
+      expect(tool.args.safeParse({ id: 'g1', installSlug: token }).success).toBe(false);
     }
   });
 

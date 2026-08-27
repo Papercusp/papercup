@@ -61,6 +61,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.session_respawn_expected`;
+  await sql`DELETE FROM harness_shared.coord_presence WHERE owner_id = 'su-respawn-identity'`;
 });
 
 /**
@@ -85,6 +86,23 @@ async function rowCount(ownerId: string): Promise<number> {
 }
 
 describe('carry-respawn marker — real Postgres (migration 716)', () => {
+  it('clears the predecessor process identity in the same durable mark statement', async () => {
+    await sql`
+      INSERT INTO harness_shared.coord_presence
+        (owner_id, heartbeat_at, host, pid, tty)
+      VALUES
+        ('su-respawn-identity', now(), 'old-host', 4051146, '/dev/pts/9')`;
+
+    await markRespawnExpected('su-respawn-identity', RESPAWN_EXPECTED_TTL_MS, { sql });
+
+    const [presence] = await sql<{ host: string; pid: number | null; tty: string | null }[]>`
+      SELECT host, pid, tty
+        FROM harness_shared.coord_presence
+       WHERE owner_id = 'su-respawn-identity'`;
+    expect(presence).toEqual({ host: '', pid: null, tty: null });
+    expect(await rowCount('su-respawn-identity')).toBe(1);
+  });
+
   it('a mark written by one connection is visible to a DIFFERENT one (connection-independence — the clustered-worker shape)', async () => {
     // Two independent connections stand in for two cluster workers: the writer
     // handled session:request-compaction, the reader is whichever worker the

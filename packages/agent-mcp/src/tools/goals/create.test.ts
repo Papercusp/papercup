@@ -199,6 +199,20 @@ describe('goals:create — a wildcard scope resolves to a LAUNCHABLE install_slu
     await call(ARGS(), CTX());
     expect(writtenInstallSlug()).toBe('papercusp');
   });
+
+  /* The falsifiability control. A guard that has never failed is a guard nobody
+     has tested, and the assertions above cannot demonstrate their own teeth: if
+     the resolution were deleted tomorrow they would fail, but nothing here shows
+     that. So the PRE-FIX implementation is kept as a deliberately-wrong control
+     (the repo's prescribed shape for a subject you import rather than read from
+     a path) — it stores `ctx.harnessSlug` raw, exactly as the handler did, and
+     is measured against the same predicate. If this ever passes, the predicate
+     has stopped discriminating and every assertion above is vacuous. */
+  it('CONTROL: the pre-fix implementation FAILS the predicate these tests assert', () => {
+    const preFixInstallSlug = (harnessSlug: string): string => harnessSlug;
+    expect(HARNESS_SLUG_RE.test(preFixInstallSlug('*'))).toBe(false);
+    expect(preFixInstallSlug('*')).not.toBe(PLATFORM_POT_SLUG);
+  });
 });
 
 /* ── the holder-policy write boundary (goal-live-holder-guarantee-2026-08-18
