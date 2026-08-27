@@ -36,6 +36,7 @@ import { extractCitedFactKeys, resolveCitedFacts, citedFactsWarning } from "../.
 import { shapeWorkItemsGet } from "./get-shape";
 import { CARRY_NOTE_MAX_CHECKS, splitCarryNoteChecks, shortCarryHash } from '../../carry-note';
 import { completionFreshnessForEvidence } from './completion-freshness';
+import { deploymentPositionForEvidence } from './deployment-position';
 
 /**
  * SWR backstop for work_items:get (cache-expensive-tool-reads-2026-06-22 P-005).
@@ -407,6 +408,7 @@ export default defineTool({
         // the current HEAD on the read path; the helper is fail-soft so a local
         // filesystem/read problem never makes work_items:get fail.
         const completionFreshness = completionFreshnessForEvidence(workItem.terminalCompletionEvidence);
+        const deploymentPosition = await deploymentPositionForEvidence(workItem.terminalCompletionEvidence);
         // EI-19397599078921465: the unified lifecycle history — "what actually happened to
         // this item". The filing that produced this believed the history did not exist; it
         // did, spread across audit_log + payload.reopenHistory + payload flags with nothing
@@ -508,6 +510,7 @@ export default defineTool({
           ...(checkpointReadFailed ? { checkpointReadFailed: true as const } : {}),
           ...(priorWorkWarn ? { priorWork, priorWorkWarning: priorWorkWarn } : {}),
           ...(completionFreshness ? { completionFreshness } : {}),
+          ...(deploymentPosition ? { deploymentPosition } : {}),
           ...(checkpointFreshness ? { checkpointFreshness } : {}),
           ...(checkpointStale ? { checkpointStale } : {}),
           ...(checkpointBgJobWarning ? { checkpointBgJobWarning } : {}),

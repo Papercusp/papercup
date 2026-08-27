@@ -57,6 +57,11 @@ vi.mock('./completion-freshness', () => ({
   completionFreshnessForEvidence: (...a: unknown[]) => completionFreshnessForEvidence(...a),
 }));
 
+const deploymentPositionForEvidence = vi.fn();
+vi.mock('./deployment-position', () => ({
+  deploymentPositionForEvidence: (...a: unknown[]) => deploymentPositionForEvidence(...a),
+}));
+
 import get from './get';
 import { CARRY_NOTE_MAX_CHECKS, withCarryNoteChecks, shortCarryHash } from '../../carry-note';
 
@@ -95,6 +100,7 @@ beforeEach(() => {
   getClaimTimePriorWorkHint.mockReset();
   getClaimTimePriorWorkHint.mockResolvedValue(null);
   completionFreshnessForEvidence.mockReset().mockReturnValue(undefined);
+  deploymentPositionForEvidence.mockReset().mockResolvedValue(undefined);
 });
 
 describe('work_items:get — checkpoint field', () => {
@@ -123,6 +129,31 @@ describe('work_items:get — checkpoint field', () => {
 
     expect(completionFreshnessForEvidence).toHaveBeenCalledWith(evidence);
     expect(r.completionFreshness).toEqual(completionFreshness);
+  });
+
+  it('surfaces the independent deployment position for terminal completion paths', async () => {
+    const evidence = { filesChanged: ['packages/example.ts'] };
+    const deploymentPosition = {
+      paths: [{ path: 'packages/example.ts', positions: { committedLocal: true, onStaging: true, inMain: false, deployed: false } }],
+      unknownPaths: [],
+      totalPaths: 1,
+      truncated: false,
+    };
+    getWorkItem.mockResolvedValue({
+      id: 'WI-deployment-position',
+      harness: 'papercup',
+      kind: 'bug',
+      family: 'issue',
+      title: 'terminal item',
+      state: 'done',
+      terminalCompletionEvidence: evidence,
+    });
+    deploymentPositionForEvidence.mockResolvedValue(deploymentPosition);
+
+    const r = await one({ id: 'WI-deployment-position' });
+
+    expect(deploymentPositionForEvidence).toHaveBeenCalledWith(evidence);
+    expect(r.deploymentPosition).toEqual(deploymentPosition);
   });
 
   it('surfaces an existing checkpoint + its age, keyed by the resolved work-item harness/id', async () => {

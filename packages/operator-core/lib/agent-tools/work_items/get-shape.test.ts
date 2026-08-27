@@ -298,6 +298,35 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
     expect(compact.results[0].completionFreshness).toEqual(completionFreshness);
   });
 
+  it('preserves compact deployment positions and explicit unknown/truncation metadata', () => {
+    const deploymentPosition = {
+      paths: Array.from({ length: 10 }, (_, i) => ({
+        path: `src/${i}.ts`,
+        targetSha: `sha-${i}`,
+        deployedSha: 'deployed-sha',
+        positions: { committedLocal: true, onStaging: true, inMain: i === 0, deployed: i === 0 },
+        blockedOn: i === 0 ? null : 'gate',
+      })),
+      unknownPaths: ['src/unknown.ts'],
+      totalPaths: 11,
+      truncated: true,
+    };
+    const normal = shapeWorkItemsGet(envelope([row({ deploymentPosition })]), 'trimmed') as Envelope;
+    expect(normal.results[0].deploymentPosition).toMatchObject({
+      totalPaths: 11,
+      truncated: true,
+      unknownPaths: ['src/unknown.ts'],
+    });
+    expect((normal.results[0].deploymentPosition as any).paths).toHaveLength(4);
+
+    const compact = shapeWorkItemsGet(
+      envelope([row({ checkpoint: 'C'.repeat(40_000), deploymentPosition })]),
+      'trimmed',
+    ) as Envelope;
+    expect(compact.results[0].deploymentPosition).toMatchObject({ totalPaths: 11, truncated: true });
+    expect((compact.results[0].deploymentPosition as any).paths).toHaveLength(4);
+  });
+
   it("caps lifecycle events but NEVER drops the coverage/flags that qualify them", () => {
     const events = Array.from({ length: 30 }, (_, i) => ({ at: `t${i}`, kind: "blocked" }));
     const out = shapeWorkItemsGet(

@@ -316,6 +316,44 @@ function compactHolder(raw: unknown): unknown {
   };
 }
 
+const DEPLOYMENT_PATH_CAPS = { trimmed: 4, standard: 8 } as const;
+
+/** Keep the deployment join readable without re-emitting the full pipeline payload. */
+function projectDeploymentPosition(
+  raw: unknown,
+  tier: WorkItemsGetTier,
+  dropped: Set<string>,
+): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw ?? null;
+  const value = raw as Row;
+  const paths = Array.isArray(value.paths) ? value.paths : [];
+  const cap = DEPLOYMENT_PATH_CAPS[tier];
+  if (paths.length > cap) dropped.add("deploymentPosition.paths");
+  const compact = paths.slice(0, cap).map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const path = entry as Row;
+    return {
+      path: path.path ?? null,
+      targetSha: path.targetSha ?? null,
+      deployedSha: path.deployedSha ?? null,
+      positions: path.positions ?? null,
+      blockedOn: path.blockedOn ?? null,
+      ...(Array.isArray(path.positionsUnknown) && path.positionsUnknown.length
+        ? { positionsUnknown: path.positionsUnknown }
+        : {}),
+    };
+  });
+  const unknownPaths = Array.isArray(value.unknownPaths) ? value.unknownPaths : [];
+  if (unknownPaths.length > cap) dropped.add("deploymentPosition.unknownPaths");
+  return {
+    paths: compact,
+    unknownPaths: unknownPaths.slice(0, cap),
+    totalPaths: value.totalPaths ?? paths.length,
+    truncated: value.truncated === true,
+    ...(value.unknownReason ? { unknownReason: value.unknownReason } : {}),
+  };
+}
+
 /**
  * Preserve the safety-critical identity of a single exact read when the normal
  * ladder cannot fit its diagnostic fields. This is deliberately not used for
@@ -375,6 +413,9 @@ function compactSingleRow(
     ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: true } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
+    ...(r.deploymentPosition
+      ? { deploymentPosition: projectDeploymentPosition(r.deploymentPosition, tier, dropped) }
+      : {}),
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
     ...(r.checkpointStale ? { checkpointStale: r.checkpointStale } : {}),
     ...(r.checkpointBgJobWarning ? { checkpointBgJobWarning: clip(r.checkpointBgJobWarning, caps.warning) } : {}),
@@ -649,6 +690,15 @@ function projectRow(
     ...(r.checkpointContentHash ? { checkpointContentHash: r.checkpointContentHash } : {}),
     ...(r.checkpointReadFailed ? { checkpointReadFailed: r.checkpointReadFailed } : {}),
     ...(r.completionFreshness ? { completionFreshness: r.completionFreshness } : {}),
+    ...(r.deploymentPosition
+      ? {
+          deploymentPosition: projectDeploymentPosition(
+            r.deploymentPosition,
+            caps === FIELD_CAPS.trimmed ? 'trimmed' : 'standard',
+            dropped,
+          ),
+        }
+      : {}),
     // Verdicts ABOUT the checkpoint — small, and each one changes how the
     // checkpoint above should be read. Kept whole.
     ...(r.checkpointFreshness ? { checkpointFreshness: r.checkpointFreshness } : {}),
