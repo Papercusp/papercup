@@ -24,7 +24,7 @@ import {
   buildCheckpointSystemdArgv,
   checkpointRunLogPath,
   checkpointLatestLogPath,
-  launchDetachedCheckpoint,
+  launchDetachedCheckpoint as launchDetachedCheckpointImpl,
   checkActiveCheckpointRun,
   parseCheckpointCandidates,
   defaultReadLogTail,
@@ -390,6 +390,44 @@ function fakeChild() {
   const ee = new EventEmitter() as EventEmitter & { stderr: EventEmitter };
   ee.stderr = new EventEmitter();
   return ee;
+}
+
+// The production default census is intentionally fail-closed and may spend up to its bounded
+// procfs budget on a busy host. Launch tests that are about the systemd/run-lock paths inject a
+// deterministic clear census so they do not accidentally become host-load tests. Authority
+// regressions below pass their own reader through the final positional seam.
+const noPreLockAuthority = () => ({
+  active: false,
+  probeFailed: false,
+  pid: null,
+  startedAtMs: null,
+  elapsedSec: null,
+  cgroupPath: null,
+  workspace: null,
+  harness: null,
+});
+
+function launchDetachedCheckpoint(
+  ...args: [
+    Parameters<typeof launchDetachedCheckpointImpl>[0]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[1]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[2]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[3]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[4]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[5]?,
+    Parameters<typeof launchDetachedCheckpointImpl>[6]?,
+  ]
+): ReturnType<typeof launchDetachedCheckpointImpl> {
+  const [opts, spawnFn, execFn, readLogHead, cancelStaleAwaits, recordDisplacement, readProcessAuthority] = args;
+  return launchDetachedCheckpointImpl(
+    opts,
+    spawnFn,
+    execFn,
+    readLogHead,
+    cancelStaleAwaits,
+    recordDisplacement,
+    readProcessAuthority ?? noPreLockAuthority,
+  );
 }
 
 describe('launchDetachedCheckpoint', () => {
@@ -1496,6 +1534,140 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
 
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
+  });
+
+  it('EI-21340355513221785: refuses when the pre-lock authority census finds a live materializer', async () => {
+    const spawnFn = vi.fn();
+    const execFn = vi.fn(() => ({ status: 0, stdout: 'ActiveState=inactive', stderr: '' }));
+    const readProcessAuthority = vi.fn(async () => ({
+      active: true,
+      probeFailed: false,
+      pid: 4242,
+      startedAtMs: Date.parse('2026-08-27T10:00:00.000Z'),
+      elapsedSec: 42,
+      cgroupPath: '/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope',
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+    }));
+
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree' },
+      spawnFn as never,
+      execFn,
+      () => null,
+      undefined,
+      undefined,
+      readProcessAuthority,
+    );
+
+    expect(readProcessAuthority).toHaveBeenCalledWith('/tree');
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      launched: false,
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        candidate: null,
+        current_phase: 'materializing',
+        elapsed_sec: 42,
+        pre_lock_authority: {
+          workspace: 'papercusp-workspace',
+          harness: 'papercusp',
+          cgroup_path: '/user.slice/user-1000.slice/user@1000.service/app.slice/run-u42.scope',
+          pid: 4242,
+        },
+      },
+    });
+  });
+
+  it('EI-21340355513221785: treats an unknown pre-lock authority census as probe_failed and never spawns', async () => {
+    const spawnFn = vi.fn();
+    const execFn = vi.fn(() => ({ status: 0, stdout: 'ActiveState=inactive', stderr: '' }));
+    const readProcessAuthority = vi.fn(async () => ({
+      active: false,
+      probeFailed: true,
+      pid: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      cgroupPath: null,
+      workspace: null,
+      harness: null,
+    }));
+
+    const r = await launchDetachedCheckpoint(
+      { root: '/tree' },
+      spawnFn as never,
+      execFn,
+      () => null,
+      undefined,
+      undefined,
+      readProcessAuthority,
+    );
+
+    expect(readProcessAuthority).toHaveBeenCalledWith('/tree');
+    expect(spawnFn).not.toHaveBeenCalled();
+    expect(r).toMatchObject({
+      launched: false,
+      reason: 'probe_failed',
+      alreadyRunning: {
+        active: true,
+        probe_failed: true,
+        candidate_stale: false,
+      },
+    });
+  });
+
+  it('EI-21340355513221785: awaits authority before spawn while preserving same-tick child listener attachment', async () => {
+    const child = fakeChild();
+    let resolveAuthority!: (reading: {
+      active: boolean;
+      probeFailed: boolean;
+      pid: number | null;
+      startedAtMs: number | null;
+      elapsedSec: number | null;
+      cgroupPath: string | null;
+      workspace: string | null;
+      harness: string | null;
+    }) => void;
+    const authority = new Promise<Parameters<typeof resolveAuthority>[0]>((resolve) => {
+      resolveAuthority = resolve;
+    });
+    const readProcessAuthority = vi.fn(() => authority);
+    const spawnFn = vi.fn(() => {
+      // This runs after spawnFn returns, but before the next macrotask. Any await between
+      // spawnFn and listener registration would lose this close event and leave the launch
+      // promise pending forever.
+      queueMicrotask(() => child.emit('close', 0));
+      return child;
+    });
+    const execFn = vi.fn(() => ({ status: 0, stdout: 'ActiveState=inactive', stderr: '' }));
+
+    const launch = launchDetachedCheckpoint(
+      { root: '/tree' },
+      spawnFn as never,
+      execFn,
+      () => null,
+      undefined,
+      undefined,
+      readProcessAuthority,
+    );
+    await Promise.resolve();
+    expect(readProcessAuthority).toHaveBeenCalledWith('/tree');
+    expect(spawnFn).not.toHaveBeenCalled();
+
+    resolveAuthority({
+      active: false,
+      probeFailed: false,
+      pid: null,
+      startedAtMs: null,
+      elapsedSec: null,
+      cgroupPath: null,
+      workspace: null,
+      harness: null,
+    });
+
+    await expect(launch).resolves.toMatchObject({ launched: true });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
   });
 
   it('WI-5124: reports willJudge with quietCutApplied + excludedCommits when the quiet-cut steps back from a fresh tip — the exact "my just-landed fix silently excluded" trap', async () => {
