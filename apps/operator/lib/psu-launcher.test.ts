@@ -4184,9 +4184,11 @@ describe("psu-launcher arg parsing", () => {
     const auto = codexGatewayConfigPatch(next, null, {
       gatewayOn: true,
       ownerId: "su-codex",
+      priority: "su",
     });
     expect(auto).toContain('model_provider = "papercusp-codex-gateway"');
     expect(auto).toContain('"x-papercusp-owner" = "su-codex"');
+    expect(auto).toContain('"x-papercusp-priority" = "su"');
     expect(auto).not.toContain("x-papercusp-account");
 
     const direct = codexGatewayConfigPatch(auto);
