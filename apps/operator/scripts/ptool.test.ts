@@ -208,6 +208,13 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
     expect(timeoutForTool('plans:new')).toBe(PTOOL_PLANS_NEW_TIMEOUT_MS);
+    // EI-21562635786542847: carry-respawn's 120s server budget must also
+    // apply when the call is wrapped by tools:invoke.
+    expect(timeoutForTool('session:request-compaction')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'session:request-compaction',
+      args: { focus: 'resume the current lane' },
+    })).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     // EI-21567372634210816: plans:start has a 60s dispatcher default while
     // ptool's ordinary client deadline is 30s; cover both transport routes.
     expect(timeoutForTool('plans:start')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
