@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   buildDeepBrief,
   buildDeepPaneBrief,
-  DEEP_MAX_CONCURRENT,
   DEEP_TIMEOUT_MS,
   delegateDeep,
   type DeepDelegateDeps,
@@ -13,24 +12,21 @@ const WS = 'ws-test';
 function makeDeps(over: Partial<DeepDelegateDeps> = {}): {
   deps: DeepDelegateDeps;
   spies: {
-    countOpenDelegations: ReturnType<typeof vi.fn>;
     createWorkItem: ReturnType<typeof vi.fn>;
     spawn: ReturnType<typeof vi.fn>;
     log: ReturnType<typeof vi.fn>;
   };
 } {
-  const countOpenDelegations = vi.fn(async () => 0);
   const createWorkItem = vi.fn(async () => ({ id: 'WI-301', harness: 'papercup' }));
   const spawn = vi.fn(async () => ({ ok: true, spawnId: 's-deep' }));
   const log = vi.fn();
   const deps: DeepDelegateDeps = {
-    countOpenDelegations,
     createWorkItem,
     spawn,
     log,
     ...over,
   };
-  return { deps, spies: { countOpenDelegations, createWorkItem, spawn, log } };
+  return { deps, spies: { createWorkItem, spawn, log } };
 }
 
 describe('buildDeepBrief', () => {
@@ -73,23 +69,25 @@ describe('delegateDeep', () => {
     expect(spies.spawn.mock.calls[0][0].brief).toContain("work_items:complete { id: 'WI-301'");
   });
 
-  it('rejects when the deep lane is already at capacity', async () => {
-    const { deps, spies } = makeDeps({
-      countOpenDelegations: vi.fn(async () => DEEP_MAX_CONCURRENT),
-    });
-    const out = await delegateDeep(
-      {
-        question: 'Why is the CPU spiking?',
-        workspaceId: WS,
-      },
-      deps,
+  it('durably accepts work beyond the former two-delegation ceiling', async () => {
+    const createWorkItem = vi
+      .fn()
+      .mockResolvedValueOnce({ id: 'WI-301', harness: 'papercup' })
+      .mockResolvedValueOnce({ id: 'WI-302', harness: 'papercup' })
+      .mockResolvedValueOnce({ id: 'WI-303', harness: 'papercup' });
+    const { deps, spies } = makeDeps({ createWorkItem });
+
+    const results = await Promise.all(
+      ['one', 'two', 'three'].map((question) => delegateDeep({ question, workspaceId: WS }, deps)),
     );
 
-    expect(out.ok).toBe(false);
-    if (out.ok) throw new Error('expected capacity rejection');
-    expect(out.error).toContain('at capacity');
-    expect(spies.createWorkItem).not.toHaveBeenCalled();
-    expect(spies.spawn).not.toHaveBeenCalled();
+    expect(results).toEqual([
+      { ok: true, workItemId: 'WI-301', spawnId: 's-deep', spawned: true },
+      { ok: true, workItemId: 'WI-302', spawnId: 's-deep', spawned: true },
+      { ok: true, workItemId: 'WI-303', spawnId: 's-deep', spawned: true },
+    ]);
+    expect(createWorkItem).toHaveBeenCalledTimes(3);
+    expect(spies.spawn).toHaveBeenCalledTimes(3);
   });
 
   it('keeps the durable item when the spawn fails', async () => {

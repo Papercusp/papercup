@@ -7,8 +7,6 @@
  * handoff lane uses (operator-sentinel-handoff-deps.ts).
  *
  * Each dep maps onto an EXISTING substrate primitive — reuse, don't rebuild:
- *   - countOpenDelegations → one SQL count over engineer_issues keyed on the
- *                            feature-family row stamp (the durable marker).
  *   - createWorkItem       → work-items.createWorkItem (kind=`task`, tagged
  *                            tagged `deep-delegation` (the landing gate) +
  *                            stamped payload.deep_delegation, landing ALREADY
@@ -53,25 +51,6 @@ function defaultSpawnHarness(): string | null {
 
 export function defaultDeepDelegateDeps(): DeepDelegateDeps {
   return {
-    async countOpenDelegations(workspaceId) {
-      try {
-        const { getOrgPg } = await import('@papercusp/db-org');
-        const { sql } = getOrgPg();
-        const rows = await sql<{ n: number }[]>`
-          SELECT count(*)::int AS n
-            FROM harness_shared.work_items
-           WHERE workspace_id = ${workspaceId}
-             AND item_kind = 'task'
-             AND status <> ALL(ARRAY['passed', 'deprecated', 'resolved', 'closed']::text[])
-             AND payload->>'deep_delegation' = 'true'
-        `;
-        return rows[0]?.n ?? 0;
-      } catch (err) {
-        console.warn('[deep-delegate] open-count failed:', (err as Error).message);
-        return 0;
-      }
-    },
-
     async createWorkItem(input) {
       try {
         const { createWorkItem } = await import('../work-items');
