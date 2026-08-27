@@ -208,21 +208,18 @@ describe('buildCheckpointSystemdArgv', () => {
     // divergence is silent: `systemctl show` and /proc/<operator>/environ both report the new
     // value while the run logs `mode=shared maxForks=2`. Observed 2026-08-17 with the gate 10
     // reds deep. These pin the forwarding so the two paths cannot drift apart again.
-    it.each(['shared', 'reserved'] as const)(
-      'forwards capacity mode %s into the inner command',
-      (mode) => {
-        const inner = buildCheckpointSystemdArgv(
-          '/tree',
-          '/tmp/cp.log',
-          '/usr/bin:/bin',
-          false,
-          undefined,
-          null,
-          mode,
-        ).at(-1)!;
-        expect(inner).toContain(`PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${mode}'`);
-      },
-    );
+    it.each(['shared', 'reserved'] as const)('forwards capacity mode %s into the inner command', (mode) => {
+      const inner = buildCheckpointSystemdArgv(
+        '/tree',
+        '/tmp/cp.log',
+        '/usr/bin:/bin',
+        false,
+        undefined,
+        null,
+        mode,
+      ).at(-1)!;
+      expect(inner).toContain(`PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE='${mode}'`);
+    });
 
     it('omits the var entirely when unset, so the run keeps its own default', () => {
       const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin').at(-1)!;
@@ -238,15 +235,9 @@ describe('buildCheckpointSystemdArgv', () => {
       ['', 'empty string'],
       ['8', 'a fork count rather than a mode'],
     ])('drops an unrecognised capacity mode (%s: %s)', (bad) => {
-      const inner = buildCheckpointSystemdArgv(
-        '/tree',
-        '/tmp/cp.log',
-        '/usr/bin:/bin',
-        false,
-        undefined,
-        null,
-        bad,
-      ).at(-1)!;
+      const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin', false, undefined, null, bad).at(
+        -1,
+      )!;
       expect(inner).not.toContain('PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE');
       expect(inner).not.toContain('touch /tmp/pwned');
     });
@@ -358,14 +349,7 @@ describe('checkpointCandidateContainsAncestor (EI-21047439235631660)', () => {
       requiredAncestor: REQUIRED,
       candidate: CANDIDATE,
     });
-    expect(execFn).toHaveBeenCalledWith('git', [
-      '-C',
-      '/tree',
-      'merge-base',
-      '--is-ancestor',
-      REQUIRED,
-      CANDIDATE,
-    ]);
+    expect(execFn).toHaveBeenCalledWith('git', ['-C', '/tree', 'merge-base', '--is-ancestor', REQUIRED, CANDIDATE]);
   });
 
   it('accepts only a resolved candidate that contains the resolved required ancestor', () => {
@@ -377,12 +361,15 @@ describe('checkpointCandidateContainsAncestor (EI-21047439235631660)', () => {
     });
   });
 
-  it.each(['ancestor', 'candidate'] as const)('fails closed as unverifiable when the %s object is absent', (missing) => {
-    expect(checkpointCandidateContainsAncestor('/tree', REQUIRED, CANDIDATE, gitExec(1, missing))).toMatchObject({
-      ok: false,
-      reason: 'unverifiable',
-    });
-  });
+  it.each(['ancestor', 'candidate'] as const)(
+    'fails closed as unverifiable when the %s object is absent',
+    (missing) => {
+      expect(checkpointCandidateContainsAncestor('/tree', REQUIRED, CANDIDATE, gitExec(1, missing))).toMatchObject({
+        ok: false,
+        reason: 'unverifiable',
+      });
+    },
+  );
 });
 
 /** A fake ChildProcess whose close/error we drive. */
@@ -551,9 +538,10 @@ describe('checkActiveCheckpointRun (WI-1562 refuse-when-active detection)', () =
 
   it('keeps a trusted inactive unit inactive when its stable log has an exact valid result marker', () => {
     const unit = checkpointUnitForRoot('/tree');
-    const readLogTail = vi.fn(() =>
-      '__GREEN_CHECKPOINT_RESULT__ ' +
-      JSON.stringify({ advanced: false, candidate: 'abc123', from: null, green: null, reason: 'not-green' }),
+    const readLogTail = vi.fn(
+      () =>
+        '__GREEN_CHECKPOINT_RESULT__ ' +
+        JSON.stringify({ advanced: false, candidate: 'abc123', from: null, green: null, reason: 'not-green' }),
     );
     const r = checkActiveCheckpointRun(
       '/tree',
@@ -1224,7 +1212,11 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     });
 
     it('returns UNKNOWN provenance when procfs enumeration itself fails', async () => {
-      const reading = probe({ listPids: () => { throw new Error('proc unavailable'); } });
+      const reading = probe({
+        listPids: () => {
+          throw new Error('proc unavailable');
+        },
+      });
       await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
     });
 
@@ -1232,7 +1224,7 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       const readCgroup = vi.fn(() => '0::/run-u42.scope\n');
       const reading = await probe({
         listPids: () => [100, 200],
-        readEnvironment: (pid) => pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env(),
+        readEnvironment: (pid) => (pid === 100 ? env({ PAPERCUSP_GATE_VERDICT_HARNESS: '' }) : env()),
         readCgroup,
       });
       expect(reading.active).toBe(true);
@@ -1265,8 +1257,50 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
     });
 
     it('returns UNKNOWN when an async procfs dependency rejects', async () => {
-      const reading = probe({ readEnvironment: async () => { throw new Error('proc unavailable'); } });
+      const reading = probe({
+        readEnvironment: async () => {
+          throw new Error('proc unavailable');
+        },
+      });
       await expect(reading).resolves.toMatchObject({ active: false, probeFailed: true });
+    });
+
+    it('reports the exact procfs leg when an environment read rejects', async () => {
+      const reading = probe({
+        readEnvironment: async (pid) => {
+          throw new Error(`EACCES /proc/${pid}/environ`);
+        },
+      });
+      await expect(reading).resolves.toMatchObject({
+        active: false,
+        probeFailed: true,
+        probeDetail: 'environment read for pid 4242 failed: EACCES /proc/4242/environ',
+      });
+    });
+
+    it('scans PID environments with bounded concurrency', async () => {
+      const pids = Array.from({ length: 48 }, (_, index) => index + 1);
+      let inFlight = 0;
+      let maxInFlight = 0;
+      const readEnvironment = vi.fn(async () => {
+        inFlight += 1;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        inFlight -= 1;
+        return '';
+      });
+
+      const reading = await probe({
+        listPids: () => pids,
+        readEnvironment,
+        maxConcurrentReads: 4,
+        totalTimeoutMs: 250,
+      });
+
+      expect(reading).toMatchObject({ active: false, probeFailed: false });
+      expect(readEnvironment).toHaveBeenCalledTimes(pids.length);
+      expect(maxInFlight).toBeGreaterThan(1);
+      expect(maxInFlight).toBeLessThanOrEqual(4);
     });
 
     it('ignores an authority-stamped residue beyond the run-lock stale horizon', async () => {
@@ -1586,6 +1620,7 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
     const readProcessAuthority = vi.fn(async () => ({
       active: false,
       probeFailed: true,
+      probeDetail: 'environment read for pid 4242 timed out after 100ms',
       pid: null,
       startedAtMs: null,
       elapsedSec: null,
@@ -1612,6 +1647,7 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
       alreadyRunning: {
         active: true,
         probe_failed: true,
+        probe_detail: 'environment read for pid 4242 timed out after 100ms',
         candidate_stale: false,
       },
     });

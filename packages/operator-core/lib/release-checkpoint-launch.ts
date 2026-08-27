@@ -141,8 +141,7 @@ export const CHECKPOINT_SYSTEMCTL_PROBE_TIMEOUT_MS = 5_000;
  * the window is DERIVED and cannot drift, and retuning the budget moves this with it.
  */
 export const MANUAL_CHECKPOINT_WATCHDOG_ENV = 'PAPERCUSP_MANUAL_GREEN_CHECKPOINT_WATCHDOG_MS';
-export const MANUAL_CHECKPOINT_WATCHDOG_MS =
-  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + GREEN_CHECKPOINT_SIGKILL_GRACE_MS;
+export const MANUAL_CHECKPOINT_WATCHDOG_MS = GREEN_CHECKPOINT_SUITE_TIMEOUT_MS + GREEN_CHECKPOINT_SIGKILL_GRACE_MS;
 
 export interface LaunchCheckpointResult {
   launched: boolean;
@@ -514,8 +513,7 @@ export function parseCheckpointCandidates(text: string | null): string[] {
 }
 
 /** The persisted orchestrator log prefixes each real line with an ISO timestamp. */
-const CHECKPOINT_LOG_TIMESTAMP =
-  /^\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b/;
+const CHECKPOINT_LOG_TIMESTAMP = /^\s*(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\b/;
 
 function latestLogTimestampMs(...texts: Array<string | null | undefined>): number | null {
   let latest: number | null = null;
@@ -1059,6 +1057,8 @@ export function isCheckpointRunLockHeldCheap(
 export interface CheckpointProcessAuthorityReading {
   active: boolean;
   probeFailed: boolean;
+  /** Exact procfs leg that made the fail-closed reading indeterminate, when one failed. */
+  probeDetail?: string;
   pid: number | null;
   startedAtMs: number | null;
   elapsedSec: number | null;
@@ -1090,19 +1090,24 @@ export type IdentifiedCheckpointProcessAuthority = CheckpointProcessAuthorityRea
 export function hasCheckpointProcessAuthorityIdentity(
   reading: CheckpointProcessAuthorityReading,
 ): reading is IdentifiedCheckpointProcessAuthority {
-  return (
-    reading.pid !== null &&
-    reading.cgroupPath !== null &&
-    reading.workspace !== null &&
-    reading.harness !== null
-  );
+  return reading.pid !== null && reading.cgroupPath !== null && reading.workspace !== null && reading.harness !== null;
 }
 
 /** Keep the pre-lock authority read below the status surface's larger probe budget. */
 export const CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS = 1_000;
 
-/** A single procfs read must not consume the entire authority census budget. */
-export const CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS = 100;
+/**
+ * Tolerate an individual procfs read briefly losing to host I/O pressure while the global
+ * census deadline still bounds the launch path. The broad environment pass is bounded below.
+ */
+export const CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS = 250;
+
+/**
+ * Keep the /proc census fast enough for the one-second launch budget without creating one
+ * outstanding filesystem operation per process on a busy host. The environment pass is the
+ * broad phase; cgroup and process-start reads only run for authority/root matches.
+ */
+export const CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY = 384;
 
 type ProbeAwaitable<T> = T | PromiseLike<T>;
 
@@ -1120,6 +1125,8 @@ export interface CheckpointProcessAuthorityProbeDeps {
   totalTimeoutMs?: number;
   /** Override the per-operation budget in tests or a caller with a tighter deadline. */
   perReadTimeoutMs?: number;
+  /** Override the bounded number of PIDs scanned concurrently. */
+  maxConcurrentReads?: number;
 }
 
 /** Injectable launch-time seam for the async pre-lock authority census. */
@@ -1129,9 +1136,7 @@ export type CheckpointProcessAuthorityReader = (
 
 async function defaultListProcPids(): Promise<number[]> {
   const entries = await readdirAsync('/proc', { withFileTypes: true });
-  return entries
-    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
-    .map((entry) => Number(entry.name));
+  return entries.filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name)).map((entry) => Number(entry.name));
 }
 
 async function defaultReadProcFile(pid: number, name: 'environ' | 'cgroup'): Promise<string | null> {
@@ -1173,10 +1178,15 @@ async function defaultReadProcessStartMsAsync(pid: number): Promise<number | nul
 
 type ProbeReadResult<T> =
   | { status: 'ok'; value: T }
-  | { status: 'timeout' }
-  | { status: 'error' };
+  | { status: 'timeout'; timeoutMs: number }
+  | { status: 'error'; error: string };
 
 const PROC_PROBE_TIMEOUT = Symbol('checkpoint-process-authority-timeout');
+
+function probeErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : String(error);
+  return raw.replace(/\s+/g, ' ').trim().slice(0, 200) || 'unknown error';
+}
 
 /** Race one async procfs operation against a deadline. The underlying fs request may finish
  * later (Node's fs API has no universal cancellation seam), but the caller never waits for it
@@ -1193,20 +1203,19 @@ async function readProcWithTimeout<T>(
   });
   try {
     const result = await Promise.race([work, timeout]);
-    return result === PROC_PROBE_TIMEOUT
-      ? { status: 'timeout' }
-      : { status: 'ok', value: result as T };
-  } catch {
-    return { status: 'error' };
+    return result === PROC_PROBE_TIMEOUT ? { status: 'timeout', timeoutMs } : { status: 'ok', value: result as T };
+  } catch (error) {
+    return { status: 'error', error: probeErrorMessage(error) };
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
 
-function unknownCheckpointProcessAuthority(): CheckpointProcessAuthorityReading {
+function unknownCheckpointProcessAuthority(probeDetail?: string): CheckpointProcessAuthorityReading {
   return {
     active: false,
     probeFailed: true,
+    ...(probeDetail ? { probeDetail } : {}),
     pid: null,
     startedAtMs: null,
     elapsedSec: null,
@@ -1214,6 +1223,12 @@ function unknownCheckpointProcessAuthority(): CheckpointProcessAuthorityReading 
     workspace: null,
     harness: null,
   };
+}
+
+function probeReadFailureDetail<T>(label: string, result: Exclude<ProbeReadResult<T>, { status: 'ok' }>): string {
+  return result.status === 'timeout'
+    ? `${label} timed out after ${result.timeoutMs}ms`
+    : `${label} failed: ${result.error}`;
 }
 
 function nulEnvironment(raw: string): Map<string, string> {
@@ -1255,63 +1270,118 @@ export async function readCheckpointProcessAuthorityCheap(
   deps: CheckpointProcessAuthorityProbeDeps = {},
 ): Promise<CheckpointProcessAuthorityReading> {
   const listPids = deps.listPids ?? defaultListProcPids;
-  const readEnvironment =
-    deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
+  const readEnvironment = deps.readEnvironment ?? ((pid: number) => defaultReadProcFile(pid, 'environ'));
   const readCgroup = deps.readCgroup ?? ((pid: number) => defaultReadProcFile(pid, 'cgroup'));
   const readProcessStartMs = deps.readProcessStartMs ?? defaultReadProcessStartMsAsync;
   const nowMs = (deps.nowMs ?? Date.now)();
   const totalTimeoutMs = Math.max(1, deps.totalTimeoutMs ?? CHECKPOINT_PROCESS_AUTHORITY_PROBE_TIMEOUT_MS);
   const perReadTimeoutMs = Math.max(1, deps.perReadTimeoutMs ?? CHECKPOINT_PROCESS_AUTHORITY_READ_TIMEOUT_MS);
+  const requestedConcurrency = deps.maxConcurrentReads ?? CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY;
+  const scanConcurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.floor(requestedConcurrency))
+    : CHECKPOINT_PROCESS_AUTHORITY_SCAN_CONCURRENCY;
+  // The real broad environment pass is already backed by async fs reads that return null for
+  // disappearing proc entries. Give those reads the global deadline instead of a short
+  // per-entry timer: a queued libuv read can briefly exceed the per-read budget simply because
+  // the census has many bounded workers. Injected readers retain the short seam timeout used by
+  // reliability tests and non-default callers.
+  const environmentTimeoutMs = deps.readEnvironment === undefined ? totalTimeoutMs : perReadTimeoutMs;
   const deadlineMs = Date.now() + totalTimeoutMs;
   const remainingMs = () => deadlineMs - Date.now();
-  const readBounded = <T>(operation: () => ProbeAwaitable<T>) => {
+  const readBounded = <T>(operation: () => ProbeAwaitable<T>, timeoutBudgetMs = perReadTimeoutMs) => {
     const remaining = remainingMs();
     return remaining > 0
-      ? readProcWithTimeout(operation, Math.min(perReadTimeoutMs, remaining))
-      : Promise.resolve<ProbeReadResult<T>>({ status: 'timeout' });
+      ? readProcWithTimeout(operation, Math.min(timeoutBudgetMs, remaining))
+      : Promise.resolve<ProbeReadResult<T>>({ status: 'timeout', timeoutMs: 0 });
   };
 
   const listed = await readBounded(listPids);
-  if (listed.status !== 'ok' || !Array.isArray(listed.value)) {
-    return unknownCheckpointProcessAuthority();
+  if (listed.status !== 'ok') {
+    return unknownCheckpointProcessAuthority(probeReadFailureDetail('procfs PID enumeration', listed));
+  }
+  if (!Array.isArray(listed.value)) {
+    return unknownCheckpointProcessAuthority('procfs PID enumeration returned a non-array result');
   }
   const pids = listed.value;
 
   const expectedRoot = path.resolve(root);
-  const matches: Array<Omit<CheckpointProcessAuthorityReading, 'active' | 'probeFailed'>> = [];
-  for (const pid of pids) {
+  type ProcessAuthorityMatch = Omit<CheckpointProcessAuthorityReading, 'active' | 'probeFailed' | 'probeDetail'>;
+  type ProcessAuthorityScan =
+    | { status: 'ok'; match: ProcessAuthorityMatch | null }
+    | { status: 'failed'; detail: string };
+  const scanPid = async (pid: number): Promise<ProcessAuthorityScan> => {
     // Environment is the cheap authority/root filter. Do not touch cgroup files for the
     // thousands of unrelated processes on a busy host.
-    const environment = await readBounded(() => readEnvironment(pid));
-    if (environment.status !== 'ok') return unknownCheckpointProcessAuthority();
+    const environment = await readBounded(() => readEnvironment(pid), environmentTimeoutMs);
+    if (environment.status !== 'ok') {
+      return {
+        status: 'failed',
+        detail: probeReadFailureDetail(`environment read for pid ${pid}`, environment),
+      };
+    }
     const rawEnv = environment.value;
-    if (rawEnv === null) continue;
+    if (rawEnv === null) return { status: 'ok', match: null };
     const env = nulEnvironment(rawEnv);
     const workspace = (env.get(GATE_VERDICT_WORKSPACE_ENV) ?? '').trim();
     const harness = (env.get(GATE_VERDICT_HARNESS_ENV) ?? '').trim();
     const integrationRoot = (env.get('PAPERCUSP_INTEGRATION_ROOT') ?? '').trim();
-    if (!workspace || !harness || !integrationRoot) continue;
-    if (path.resolve(integrationRoot) !== expectedRoot) continue;
+    if (!workspace || !harness || !integrationRoot) return { status: 'ok', match: null };
+    if (path.resolve(integrationRoot) !== expectedRoot) return { status: 'ok', match: null };
 
     const cgroup = await readBounded(() => readCgroup(pid));
-    if (cgroup.status !== 'ok') return unknownCheckpointProcessAuthority();
+    if (cgroup.status !== 'ok') {
+      return {
+        status: 'failed',
+        detail: probeReadFailureDetail(`cgroup read for pid ${pid}`, cgroup),
+      };
+    }
     const rawCgroup = cgroup.value;
-    if (rawCgroup === null) continue;
+    if (rawCgroup === null) return { status: 'ok', match: null };
     const cgroupPath = unifiedCgroupPath(rawCgroup);
-    if (!cgroupPath) continue;
+    if (!cgroupPath) return { status: 'ok', match: null };
 
     const start = await readBounded(() => readProcessStartMs(pid));
-    if (start.status !== 'ok') return unknownCheckpointProcessAuthority();
+    if (start.status !== 'ok') {
+      return {
+        status: 'failed',
+        detail: probeReadFailureDetail(`process start-time read for pid ${pid}`, start),
+      };
+    }
     const startedAtMs = start.value;
-    const elapsedSec = Number.isFinite(startedAtMs)
-      ? Math.max(0, Math.floor((nowMs - startedAtMs!) / 1000))
-      : null;
+    const elapsedSec = Number.isFinite(startedAtMs) ? Math.max(0, Math.floor((nowMs - startedAtMs!) / 1000)) : null;
     // A process tree that somehow retained the launch stamps past the run-lock's own
     // hard stale horizon must not wedge the gate forever. The same bound guards the
     // canonical lock owner above; an unmeasured start remains positive live evidence.
-    if (elapsedSec !== null && elapsedSec * 1000 > CHECKPOINT_RUN_LOCK_STALE_MS) continue;
-    matches.push({ pid, startedAtMs, elapsedSec, cgroupPath, workspace, harness });
-  }
+    if (elapsedSec !== null && elapsedSec * 1000 > CHECKPOINT_RUN_LOCK_STALE_MS) return { status: 'ok', match: null };
+    return { status: 'ok', match: { pid, startedAtMs, elapsedSec, cgroupPath, workspace, harness } };
+  };
+
+  const matches: ProcessAuthorityMatch[] = [];
+  let nextPidIndex = 0;
+  let scannedCount = 0;
+  let failureDetail: string | null = null;
+  const totalTimeoutDetail = () =>
+    `process-authority census exceeded total timeout of ${totalTimeoutMs}ms after ${scannedCount}/${pids.length} PID scans`;
+  const scanWorker = async (): Promise<void> => {
+    while (failureDetail === null) {
+      if (remainingMs() <= 0) {
+        failureDetail = totalTimeoutDetail();
+        return;
+      }
+      const index = nextPidIndex++;
+      if (index >= pids.length) return;
+      const result = await scanPid(pids[index]!);
+      scannedCount += 1;
+      if (result.status === 'failed') {
+        failureDetail = result.detail;
+        return;
+      }
+      if (result.match) matches.push(result.match);
+    }
+  };
+  const workerCount = Math.min(scanConcurrency, pids.length);
+  await Promise.all(Array.from({ length: workerCount }, () => scanWorker()));
+  if (failureDetail !== null) return unknownCheckpointProcessAuthority(failureDetail);
 
   matches.sort(
     (a, b) =>
@@ -1319,7 +1389,7 @@ export async function readCheckpointProcessAuthorityCheap(
       (a.pid ?? Number.MAX_SAFE_INTEGER) - (b.pid ?? Number.MAX_SAFE_INTEGER),
   );
   const match = matches[0];
-  if (remainingMs() <= 0) return unknownCheckpointProcessAuthority();
+  if (remainingMs() <= 0) return unknownCheckpointProcessAuthority(totalTimeoutDetail());
   return match
     ? { active: true, probeFailed: false, ...match }
     : {
@@ -1399,9 +1469,7 @@ export function checkActiveCheckpointRun(
     // The run-lock is an INDEPENDENT oracle (a plain file read, no fork), so consult it before
     // giving up: it is what keeps a transiently-unforkable host from wedging the gate shut.
     const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
-    const runPhase = lockHeld.held
-      ? readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root))
-      : null;
+    const runPhase = lockHeld.held ? readRunPhase(checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root)) : null;
     const progressAt = checkpointProgressAtMs({
       phaseAt: runPhase?.at,
       startedAtMs: timestampMs(lockHeld.started_at),
@@ -2261,13 +2329,7 @@ export function terminateActiveCheckpointUnit(
   unit: string,
   execFn: ExecSyncLike = defaultExecSync,
 ): { stopped: boolean; reason?: string } {
-  const r = execFn('systemctl', [
-    '--user',
-    'kill',
-    '--signal=SIGTERM',
-    '--kill-whom=all',
-    `${unit}.service`,
-  ]);
+  const r = execFn('systemctl', ['--user', 'kill', '--signal=SIGTERM', '--kill-whom=all', `${unit}.service`]);
   if (r.status === 0) return { stopped: true };
   return { stopped: false, reason: r.stderr.trim().slice(0, 300) || `systemctl kill exited ${r.status}` };
 }
@@ -2504,7 +2566,7 @@ export async function launchDetachedCheckpoint(
         unit,
         systemd: active.systemd,
         probe_failed: true,
-        probe_detail: 'checkpoint process-authority probe failed before launch',
+        probe_detail: authority.probeDetail?.trim() || 'checkpoint process-authority probe failed before launch',
         candidate_stale: false,
       };
       return {
