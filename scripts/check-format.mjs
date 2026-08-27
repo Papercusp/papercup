@@ -590,6 +590,25 @@ export function parseFormatCliArgs(args) {
   return parsed;
 }
 
+/** Describe the exact changed range that failed scoped formatting. */
+export function formatRangeDiagnostic(
+  label,
+  repoPath,
+  lineRange,
+  detail = "need formatting",
+) {
+  return `${label}: ${repoPath}:${lineRange.startLine}-${lineRange.endLine}: ${detail}`;
+}
+
+/** Describe a whole-file formatting failure with the affected path. */
+export function formatWholeFileDiagnostic(
+  label,
+  repoPath,
+  detail = "need formatting",
+) {
+  return `${label}: ${repoPath}: ${detail}`;
+}
+
 function main() {
   const {
     mode,
@@ -655,9 +674,15 @@ function main() {
           );
           if (rangeFormattingDiffers(source, formatted, range)) {
             failedRanges += 1;
+            console.error(formatRangeDiagnostic(label, repoPath, lineRange));
           }
-        } catch {
+        } catch (error) {
           failedRanges += 1;
+          const detail =
+            error instanceof Error
+              ? `check failed: ${error.message}`
+              : `check failed: ${String(error)}`;
+          console.error(formatRangeDiagnostic(label, repoPath, lineRange, detail));
         }
       }
     }
@@ -681,11 +706,18 @@ function main() {
         writeFileSync(resolve(REPO_ROOT, repoPath), formatted, "utf8");
       } else if (formatted !== source) {
         failedRanges += 1;
+        console.error(formatWholeFileDiagnostic(label, repoPath));
       }
     } catch (error) {
       failedRanges += 1;
       console.error(
-        `${label}: ${repoPath}: ${error instanceof Error ? error.message : String(error)}`,
+        formatWholeFileDiagnostic(
+          label,
+          repoPath,
+          error instanceof Error
+            ? `check failed: ${error.message}`
+            : `check failed: ${String(error)}`,
+        ),
       );
     }
   }

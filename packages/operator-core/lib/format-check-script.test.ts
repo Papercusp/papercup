@@ -18,7 +18,9 @@ import {
   buildPrettierStdinArgs,
   buildPrettierWholeFileArgs,
   characterRangeForLines,
+  formatRangeDiagnostic,
   formatRangeWithPrettier,
+  formatWholeFileDiagnostic,
   normalizeScopedPaths,
   parseAddedLineRanges,
   parseFormatCliArgs,
@@ -92,6 +94,18 @@ describe('scoped repository format check', () => {
 
     expect(rangeFormattingDiffers(source, formatted, { start: 0, end: 11 })).toBe(false);
     expect(rangeFormattingDiffers('changed ( );\ntrailing();\n', formatted, { start: 0, end: 11 })).toBe(true);
+  });
+
+  it('identifies the file and changed line range for a formatting failure', () => {
+    expect(formatRangeDiagnostic('format:check:scoped', 'src/example.ts', { startLine: 12, endLine: 14 })).toBe(
+      'format:check:scoped: src/example.ts:12-14: need formatting',
+    );
+  });
+
+  it('identifies the file for a whole-file formatting failure', () => {
+    expect(formatWholeFileDiagnostic('format:check:scoped', 'src/example.ts')).toBe(
+      'format:check:scoped: src/example.ts: need formatting',
+    );
   });
 
   it('maps a comment-only range after a reprinted preceding AST node', () => {
