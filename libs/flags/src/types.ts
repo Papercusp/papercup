@@ -1708,6 +1708,17 @@ export const FLAGS = {
   // DEFAULT ON. OFF = the kill-switch: the timer still ticks but every sweep
   // no-ops before reading the goals table.
   GOAL_DRAIN_FLEET_WATCHDOG: "papercusp-goal-drain-fleet-watchdog",
+  // WI-42442: gates the agent-productivity watchdog — the present-but-unproductive
+  // sweep over EVERY agent, not just goal holders. Measured 2026-08-27: 22 of 166
+  // present sessions had made ZERO agent-origin tool calls since starting (11 of
+  // them fleet members, one wakeable for 18h with no calls of any origin), and
+  // every count-based surface read healthy because none of them counts THIS.
+  // Escalates ONE CORRELATED WAVE per (workspace, phase) rather than N per-victim
+  // alarms — wedge causes are correlated, so N reports bury the one fact that
+  // matters. REPORT-ONLY: never respawns (that would fire N relaunches back into
+  // the wall that caused the wedge). DEFAULT ON. OFF = the kill-switch: the timer
+  // still ticks but every sweep no-ops before reading coord_presence.
+  AGENT_PRODUCTIVITY_WATCHDOG: "papercusp-agent-productivity-watchdog",
   // goal-mode-design-intent-hardening-2026-08-16 P-001 (D-005): gates the drain-fleet
   // AUTO-MINT in goals:start — the PLATFORM, not the agent, stands up the standing
   // drain fleet the GOAL contract requires: registry row + goal-scoped claim spec
