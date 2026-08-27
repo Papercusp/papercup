@@ -552,7 +552,10 @@ export function toIssue(r: IssueRowDb): EngineerIssue {
     kind: (r.kind as IssueStoreKind) ?? 'bug',
     scope: r.scope,
     title: r.title,
-    body: r.body,
+    // Bodyless list projections preserve the row shape with NULL::text.  Keep the
+    // public EngineerIssue contract total so downstream mappers can safely use the
+    // same object for full and lean reads (WI-42508).
+    body: r.body ?? '',
     severity: r.severity as IssueSeverity,
     source: r.source as IssueSource,
     state: r.state as IssueState,
@@ -617,6 +620,39 @@ export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source,
  * a payload optimization, never a schema variant.
  */
 export const ISSUE_COLS_BODYLESS = ISSUE_COLS.replace(/(^|,\s*)body(\s*,)/, '$1NULL::text AS body$2');
+
+/**
+ * ISSUE_COLS with the large JSONB payload replaced by a typed NULL.  This is the
+ * read-side counterpart to {@link ISSUE_COLS_BODYLESS}: callers that only need the
+ * issue identity/state columns must not make postgres-js parse every checkpoint and
+ * completion envelope before a later result shaper drops it (WI-42508).
+ *
+ * Keep this derived from ISSUE_COLS rather than hand-writing a second allowlist.  The
+ * row arity and column order remain identical, so {@link IssueRowDb} and
+ * {@link toIssue} stay usable for both projections.  Predicates in the list query
+ * still reference the real payload where a filter needs it; only the returned column
+ * is projected away.
+ */
+export const ISSUE_COLS_PAYLOADLESS = ISSUE_COLS.replace(
+  /(^|,\s*)payload(\s*,)/,
+  '$1NULL::jsonb AS payload$2',
+);
+
+/** Combined body + payload projection for agent-facing list reads. */
+export const ISSUE_COLS_BODYLESS_PAYLOADLESS = ISSUE_COLS_BODYLESS.replace(
+  /(^|,\s*)payload(\s*,)/,
+  '$1NULL::jsonb AS payload$2',
+);
+
+/** Select the smallest issue row projection requested by a list caller. */
+export function issueListColumns(filter: Pick<ListIssuesFilter, 'includeBody' | 'includePayload'>): string {
+  if (filter.includeBody === false && filter.includePayload === false) {
+    return ISSUE_COLS_BODYLESS_PAYLOADLESS;
+  }
+  if (filter.includeBody === false) return ISSUE_COLS_BODYLESS;
+  if (filter.includePayload === false) return ISSUE_COLS_PAYLOADLESS;
+  return ISSUE_COLS;
+}
 
 /**
  * EI-10489: ISSUE_COLS (the runtime SELECT allowlist above) and IssueRowDb (its TS shape)
@@ -1057,6 +1093,13 @@ export interface ListIssuesFilter {
    * it for a scalar text column too. Only DROPPING avoids the detoast.
    */
   includeBody?: boolean;
+  /**
+   * Omit the JSONB payload from the returned row for callers that only need list
+   * identity/state.  The WHERE clause still reads payload when a filter requires it;
+   * this flag only controls the SELECT projection.  Defaults to included for
+   * backwards compatibility and explicit/detail reads (WI-42508).
+   */
+  includePayload?: boolean;
   /**
    * P-008 (db-performance-remediation-2026-07-26): author + recency predicates, so a
    * caller wanting "how many did *I* file since T" can COUNT in Postgres instead of
@@ -1622,7 +1665,7 @@ async function listIssuesWithLimit(
     : sql``;
   const rows = await sql<IssueRowDb[]>`
     ${topicTagsCte}
-    SELECT ${sql.unsafe(filter.includeBody === false ? ISSUE_COLS_BODYLESS : ISSUE_COLS)}
+    SELECT ${sql.unsafe(issueListColumns(filter))}
       FROM harness_shared.engineer_issues
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])

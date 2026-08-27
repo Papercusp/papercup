@@ -363,6 +363,19 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const q = args.q?.trim() || undefined;
+    // WI-42508: the result shaper runs AFTER the handler, so a trimmed/standard
+    // response must choose a lean SQL projection BEFORE postgres-js materializes
+    // rows.  No ctx tier is the UI/sync path and intentionally keeps the historical
+    // full read; an explicit payloadTier:"full" is the documented detail escape.
+    const tierCtx = ctx as {
+      contextTier?: "trimmed" | "standard" | "full";
+      payloadTierOverride?: "trimmed" | "standard" | "full";
+    };
+    const leanSource =
+      tierCtx.payloadTierOverride !== "full" &&
+      (tierCtx.contextTier === "trimmed" || tierCtx.contextTier === "standard");
+    const includeBody = !leanSource;
+    const includePayload = !leanSource;
     // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
     // `assignee` wins if both are passed (mine is the no-args-needed convenience,
     // not an override of a deliberate lookup of someone else's work).
@@ -419,6 +432,11 @@ export default defineTool({
           audit: args.audit ?? null,
           completionAuthority: args.completionAuthority ?? null,
           includeObservations: args.includeObservations === true,
+          // WI-42508: cache full and lean SQL projections separately.  The
+          // ambient/session tier is otherwise deliberately outside this key because
+          // shaping is a post-cache operation; the source projection is not.
+          includeBody,
+          includePayload,
           limit: args.limit ?? null,
         },
         // WI-4491: tag with the base TABLE `work_items` (the emit_change_notify producer,
@@ -447,6 +465,8 @@ export default defineTool({
           audit: args.audit,
           completionAuthority: args.completionAuthority as CompletionAuthorityFilter | undefined,
           includeObservations: args.includeObservations,
+          includeBody,
+          includePayload,
           limit: args.limit,
         });
         // EI-1597: excerpt per-row summaries so a large backlog can't overflow the agent

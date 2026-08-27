@@ -11,7 +11,14 @@
  * side alone now fails loudly instead of silently.
  */
 import { describe, it, expect } from 'vitest';
-import { ISSUE_COLS, ISSUE_COLS_BODYLESS, ISSUE_ROW_DB_KEYS } from './issues-engineer';
+import {
+  ISSUE_COLS,
+  ISSUE_COLS_BODYLESS,
+  ISSUE_COLS_PAYLOADLESS,
+  ISSUE_COLS_BODYLESS_PAYLOADLESS,
+  ISSUE_ROW_DB_KEYS,
+  issueListColumns,
+} from './issues-engineer';
 
 describe('ISSUE_COLS / IssueRowDb parity guard (EI-10489)', () => {
   it('ISSUE_COLS names exactly the columns in ISSUE_ROW_DB_KEYS', () => {
@@ -73,5 +80,41 @@ describe('ISSUE_COLS_BODYLESS — the P-008 body projection', () => {
     // no-op alias, and the "projection" would ship the full body forever.
     expect(ISSUE_COLS_BODYLESS).not.toBe(ISSUE_COLS);
     expect(ISSUE_COLS_BODYLESS).not.toMatch(/(^|,)\s*body\s*,/);
+  });
+});
+
+describe('WI-42508 lean issue list projections', () => {
+  const cols = (s: string) =>
+    s
+      .split(',')
+      .map((c) => c.trim())
+      .filter(Boolean);
+
+  it('keeps the full row arity and aliases payload back to its original key', () => {
+    expect(cols(ISSUE_COLS_PAYLOADLESS).length).toBe(cols(ISSUE_COLS).length);
+    expect(ISSUE_COLS_PAYLOADLESS).toContain('NULL::jsonb AS payload');
+    expect(cols(ISSUE_COLS_PAYLOADLESS).filter((c) => c === 'payload')).toHaveLength(0);
+  });
+
+  it('combines body + payload omission without changing any other position', () => {
+    const before = cols(ISSUE_COLS);
+    const after = cols(ISSUE_COLS_BODYLESS_PAYLOADLESS);
+    expect(after.length).toBe(before.length);
+    const differing = before
+      .map((c, i) => [c, after[i]] as const)
+      .filter(([b, a]) => b !== a);
+    expect(differing).toEqual([
+      ['body', 'NULL::text AS body'],
+      ['payload', 'NULL::jsonb AS payload'],
+    ]);
+  });
+
+  it('selects full, bodyless, payloadless, and combined variants deterministically', () => {
+    expect(issueListColumns({})).toBe(ISSUE_COLS);
+    expect(issueListColumns({ includeBody: false })).toBe(ISSUE_COLS_BODYLESS);
+    expect(issueListColumns({ includePayload: false })).toBe(ISSUE_COLS_PAYLOADLESS);
+    expect(issueListColumns({ includeBody: false, includePayload: false })).toBe(
+      ISSUE_COLS_BODYLESS_PAYLOADLESS,
+    );
   });
 });
