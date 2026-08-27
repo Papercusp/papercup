@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
 import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
-import { admissionContextFromEnvironment, beginGovernedExecution } from './execution';
+import {
+  admissionContextFromEnvironment,
+  beginGovernedExecution,
+  withGovernedExecution,
+} from './execution';
 
 function deps() {
   let record: any = null;
@@ -91,6 +95,36 @@ describe('governed execution lifecycle', () => {
     );
     expect(await execution.cancel('spawn failed')).toBe(true);
     expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: 'spawn failed' });
+  });
+
+  it('wraps a bounded subprocess lifecycle and releases it after the result', async () => {
+    const d = deps();
+    const result = await withGovernedExecution(
+      { idempotencyKey: 'bounded-1', admissionClass: 'process', demand: { cpuWeight: 0.25 } },
+      { owner: 'bounded-runner' },
+      d,
+      async (context) => ({ ok: true, parentRequestId: context.parentRequestId }),
+    );
+    expect(result).toEqual({ ok: true, parentRequestId: null });
+    expect(d.current()).toMatchObject({ state: 'completed' });
+  });
+
+  it('cancels the durable receipt when a bounded subprocess throws', async () => {
+    const d = deps();
+    await expect(
+      withGovernedExecution(
+        { idempotencyKey: 'bounded-2', admissionClass: 'process' },
+        { owner: 'bounded-runner' },
+        d,
+        async () => {
+          throw new Error('spawn exploded');
+        },
+      ),
+    ).rejects.toThrow('spawn exploded');
+    expect(d.current()).toMatchObject({
+      state: 'cancelled',
+      cancellationReason: 'governed execution failed: spawn exploded',
+    });
   });
 
   it('fails closed when a driver returns non-durable compatibility admission', async () => {
