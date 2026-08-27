@@ -618,6 +618,9 @@ export const READ_ONLY_TOOLS: ReadonlySet<string> = new Set([
   // coord:inbox EXCLUDED — reading marks messages read)
   "coord:presence",
   "coord:glance",
+  // coord:read fetches one message without advancing the inbox read cursor;
+  // unlike coord:inbox, replaying it cannot mutate coordination state.
+  "coord:read",
   "events:catalog",
   "facts:list",
   "state:read",

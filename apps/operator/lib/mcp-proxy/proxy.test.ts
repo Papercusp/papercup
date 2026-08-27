@@ -217,6 +217,18 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body); // no idempotencyKey injection — replay re-executes the read
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it('coord:read is a pure single-message lookup → "readonly", body untouched', () => {
+    const body = Buffer.from(
+      '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"coord:read","arguments":{"msg_id":"msg-123"}}}',
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
   it('a batch mixing a read-only call with an unknown tool degrades to "keyed" (conservative)', () => {
     const body = Buffer.from(
       JSON.stringify([
