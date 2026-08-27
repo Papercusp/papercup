@@ -250,6 +250,20 @@ const stuckParkMs = stuckBackstopCadenceMs;
 const DEFAULT_QUICK_RETRY_PARK_MS = 10 * 60_000; // 10min — comfortably past a normal build/test/install tool call
 const DEFAULT_QUICK_RETRY_MAX_ATTEMPTS = 3;
 
+/** EI-21549554609576994: claimDueRoutine parks a pure loop and stamps
+ * routines.last_fired_at BEFORE the loop action begins. If neither fireLoopWake's
+ * fire-state writer nor the routine-scoped wake ledger advances, the claim died in
+ * that handoff and there is no legitimate turn to wait for. Give the dispatch path
+ * two configured intervals to start, bounded to 1–5 minutes so a short loop is not
+ * dead for the generic 10–30 minute turn-health ladders and a long loop does not
+ * inherit an hours-long dispatch grace. */
+const CLAIM_DISPATCH_GRACE_MIN_MS = 60_000;
+const CLAIM_DISPATCH_GRACE_MAX_MS = 5 * 60_000;
+
+function claimDispatchGraceMs(intervalMs: number): number {
+  return Math.min(Math.max(intervalMs * 2, CLAIM_DISPATCH_GRACE_MIN_MS), CLAIM_DISPATCH_GRACE_MAX_MS);
+}
+
 /** Floor for the quick-retry leg: env-overridable, floored at 3× the loop's own interval (same
  *  "give a short-interval loop several real cycles first" idiom as `stuckParkMs`'s 4×, one less
  *  since this is the SHORTER, earlier-firing leg). */
@@ -709,6 +723,10 @@ export type RebaseVia =
    *  is recorded because no wake has been delivered yet. */
   | 'initial-cold-note-refresh'
   | 'presence-quiescence'
+  /** EI-21549554609576994: the routine claim parked and advanced last_fired_at,
+   *  but the fire-state + wake-delivery writers both remained behind it. No turn
+   *  was dispatched, so re-arm promptly instead of waiting for turn-health dwell. */
+  | 'claim-dispatch-gap'
   | 'stuck-backstop'
   /** WI-36792: the loop is parked at 'infinity' and the FIRE-GATE is what is holding it —
    *  re-arm to the moment the gate's own backoff expires. This via records NO fire outcome
@@ -762,6 +780,13 @@ interface LoopRow {
   // timestamptz columns: a `Date` on a type-parsing connection, a STRING on the operator's
   // pooled `prepare:false` connection — always read through `tsMs()`, never `.getTime()` (EI-2549).
   last_fired_at: Date | string | null;
+  /** Owner-loop fire-state clocks, read role-scoped (workspace + globally unique loop name).
+   *  A claim newer than BOTH means the claim never entered fireLoopWake; a withheld clock
+   *  newer than the claim is the deliberate fire-gate control and must never be retried here. */
+  fire_state_last_fired_at: Date | string | null;
+  fire_state_last_withheld_at: Date | string | null;
+  /** Latest delivery-attempt clock for this exact routine source (`loop:<routineId>`). */
+  last_wake_at: Date | string | null;
   /** max(agent_activity.created_at) for a kind='lifecycle' 'ended' marker after the fire. */
   lifecycle_completed_at: Date | string | null;
   /** WI-6069: max(session_turn_journal.created_at) for this owner after the fire — the
@@ -977,6 +1002,9 @@ export async function reconcileLoopRoutines(
            r.name,
            r.workspace_id AS routine_workspace_id,
            r.last_fired_at,
+           fs.last_fired_at AS fire_state_last_fired_at,
+           fs.last_withheld_at AS fire_state_last_withheld_at,
+           lw.last_wake_at,
            (SELECT max(a.created_at)
               FROM harness_shared.agent_activity a
              WHERE a.owner_id = r.target_owner_id
@@ -1038,6 +1066,21 @@ export async function reconcileLoopRoutines(
               FROM harness_shared.session_turns st2
              WHERE st2.owner = r.target_owner_id) AS turns_ingest_watermark
       FROM harness_shared.routines r
+      LEFT JOIN LATERAL (
+        -- Owner-loop fire state is role-scoped inside one workspace (WI-41224): split legacy
+        -- harness rows may still exist, so take each clock's max rather than trusting one row.
+        SELECT max(s.last_fired_at) AS last_fired_at,
+               max(s.last_withheld_at) AS last_withheld_at
+          FROM harness_shared.autoloop_state s
+         WHERE s.workspace_id = r.workspace_id
+           AND s.role = r.name
+      ) fs ON true
+      LEFT JOIN LATERAL (
+        SELECT max(COALESCE(w.delivered_at, w.created_at)) AS last_wake_at
+          FROM harness_shared.event_wake_deliveries w
+         WHERE w.subscriber_id = r.target_owner_id
+           AND w.source = ('loop:' || r.id)
+      ) lw ON true
      WHERE r.active = TRUE
        AND r.reschedule_interval_sec IS NOT NULL
        AND r.target_owner_id IS NOT NULL
@@ -1276,11 +1319,38 @@ export async function reconcileLoopRoutines(
         // not been written since their fire (updated_at === last_fired_at to the second).
         // A legitimately long turn keeps beating, so it stays exempt via the recency term.
         const lastActiveMs = tsMs(row.presence_last_active_at) ?? 0;
-        const looksDeadOrStuck =
-          row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
-        if (!looksDeadOrStuck) {
-          continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
-        }
+        const fireStateLastFiredMs = tsMs(row.fire_state_last_fired_at);
+        const fireStateLastWithheldMs = tsMs(row.fire_state_last_withheld_at);
+        const lastWakeMs = tsMs(row.last_wake_at);
+        // Production SELECT always returns all three keys (null means the ledger has no row).
+        // Legacy/unit seams may omit them entirely; absence there is evidence-unavailable and
+        // must fail open to the established quick/stuck ladders rather than manufacture a gap.
+        const hasDispatchClockEvidence =
+          Object.prototype.hasOwnProperty.call(row, 'fire_state_last_fired_at') &&
+          Object.prototype.hasOwnProperty.call(row, 'fire_state_last_withheld_at') &&
+          Object.prototype.hasOwnProperty.call(row, 'last_wake_at');
+        const claimDispatchGap =
+          hasDispatchClockEvidence &&
+          row.parked &&
+          nowMs - lastFiredMs >= claimDispatchGraceMs(intervalMs) &&
+          lastActiveMs <= lastFiredMs &&
+          (fireStateLastFiredMs == null || fireStateLastFiredMs < lastFiredMs) &&
+          (fireStateLastWithheldMs == null || fireStateLastWithheldMs < lastFiredMs) &&
+          (lastWakeMs == null || lastWakeMs < lastFiredMs);
+
+        if (claimDispatchGap) {
+          // claimDueRoutine already parked this pure loop at infinity, but every writer that
+          // proves the action progressed is still older than the claim. This is not a long
+          // turn: no turn was dispatched. Re-arm from the claim clock so the finite timestamp
+          // is already due and the next routine tick retries immediately.
+          completedAt = lastFiredMs;
+          via = 'claim-dispatch-gap';
+        } else {
+          const looksDeadOrStuck =
+            row.parked && (lastActiveMs <= lastFiredMs || nowMs - lastActiveMs >= stuckParkMs(intervalMs));
+          if (!looksDeadOrStuck) {
+            continue; // still in flight (recent post-fire activity) / nothing to fold — leave it
+          }
         // Read the fire-state ONCE (only on this quiet-parked path, so healthy loops pay nothing):
         // it drives BOTH the circuit-open decision and the stuck-fire count the guard consumes.
         // Fail-soft: a read failure is treated as zero prior errors (guard still consulted).
@@ -1375,6 +1445,7 @@ export async function reconcileLoopRoutines(
           // wedged (no-signal) provider-wall death reaches, and why it was previously unread.
           turnDeath = classifyLoopLifecycleTurn(row.last_assistant_text_after_fire, intervalMs, nowMs);
         }
+        }
       }
 
       // EI-13818: a reclassified lifecycle-death re-arms after `turnDeath.rearmDelayMs` (reset-
@@ -1396,7 +1467,7 @@ export async function reconcileLoopRoutines(
       // DISPATCHED fire has reached a settle/stuck decision: gate-backoff is deliberately excluded
       // because the gate refused the fire and no turn ran. The canonical counter excludes automatic
       // carry bookkeeping. A null read is evidence-unavailable, not zero, so it fails open.
-      if (via !== 'gate-backoff') {
+      if (via !== 'gate-backoff' && via !== 'claim-dispatch-gap') {
         const evidenceUntilMs = via === 'stuck-backstop' ? nowMs : completedAt;
         const toolCalls = await runWithWorkspace(row.routine_workspace_id, () =>
           countAgentToolCallsInWindow(row.target_owner_id, lastFiredMs, evidenceUntilMs, { sql: db }),
@@ -1550,7 +1621,11 @@ export async function reconcileLoopRoutines(
         // gate's own clock — autoloop_state.last_fired_at, which a withhold deliberately does
         // not advance — the single authority on when the retry is due.
         const outcome: 'ok' | 'error' | null =
-          via === 'gate-backoff' ? null : turnDeath || via === 'stuck-backstop' ? 'error' : 'ok';
+          via === 'gate-backoff'
+            ? null
+            : turnDeath != null || via === 'stuck-backstop' || via === 'claim-dispatch-gap'
+              ? 'error'
+              : 'ok';
         if (outcome != null) {
           const fireDetail = turnDeath ? `loop-lifecycle-death:${turnDeath.reason}` : `loop-${via}`;
           await runWithWorkspace(row.routine_workspace_id, () =>

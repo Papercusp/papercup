@@ -1314,6 +1314,58 @@ describe('reconcileLoopRoutines — WI-2714 quick-retry leg (recover-then-escala
     );
   });
 
+  it('EI-21549554609576994: a started, withheld, delivered, active, or still-in-grace claim is not a dispatch gap', async () => {
+    const controls = [
+      { fire_state_last_fired_at: pgString(T0 + 1) },
+      { fire_state_last_withheld_at: pgString(T0 + 1) },
+      { last_wake_at: pgString(T0 + 1) },
+      { presence_last_active_at: pgString(T0 + 1) },
+    ];
+
+    for (const control of controls) {
+      const updates: unknown[][] = [];
+      const res = await reconcileLoopRoutines({
+        sql: fakeSql(
+          [
+            parkedRow({
+              carry: 'cold',
+              fire_state_last_fired_at: pgString(T0 - 60_000),
+              fire_state_last_withheld_at: null,
+              last_wake_at: pgString(T0 - 60_000),
+              ...control,
+            }),
+          ],
+          updates,
+        ),
+        nowMs: T0 + 2 * 60_000,
+        recordFire: vi.fn(async () => {}),
+        readFireState: NO_PRIOR_ERRORS,
+      });
+      expect(res.rearmed).toBe(0);
+      expect(updates).toHaveLength(0);
+    }
+
+    const withinGraceUpdates: unknown[][] = [];
+    const withinGrace = await reconcileLoopRoutines({
+      sql: fakeSql(
+        [
+          parkedRow({
+            carry: 'cold',
+            fire_state_last_fired_at: pgString(T0 - 60_000),
+            fire_state_last_withheld_at: null,
+            last_wake_at: pgString(T0 - 60_000),
+          }),
+        ],
+        withinGraceUpdates,
+      ),
+      nowMs: T0 + 2 * 60_000 - 1,
+      recordFire: vi.fn(async () => {}),
+      readFireState: NO_PRIOR_ERRORS,
+    });
+    expect(withinGrace.rearmed).toBe(0);
+    expect(withinGraceUpdates).toHaveLength(0);
+  });
+
   it('a quiet-parked, REACHABLE loop retries EARLY (10min, well before the classic 30min dwell) when under the attempt cap', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const updates: unknown[][] = [];
