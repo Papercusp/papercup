@@ -1663,6 +1663,27 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.tool_invocations');
   });
 
+  it('redirects migration_number probes to the reservation ledger num column', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT migration_number, reserved_by, reserved_at FROM harness_shared.migration_reservations WHERE migration_number >= 905 ORDER BY migration_number",
+      'column "migration_number" does not exist',
+    );
+    expect(out).toContain('`num`');
+    expect(out).toContain('`filename`');
+    expect(out).toContain('db:next-migration');
+    expect(out).toContain('harness_shared.migration_reservations');
+  });
+
+  it('redirects the reservation ledger name guess to filename', () => {
+    const out = buildSchemaColumnRedirect(
+      'SELECT name FROM harness_shared.migration_reservations LIMIT 1',
+      'column "name" does not exist',
+    );
+    expect(out).toContain('`filename`');
+    expect(out).toContain('`num`');
+    expect(out).toContain('db:next-migration');
+  });
+
   it('does not redirect result_json for an unrelated relation', () => {
     expect(
       buildSchemaColumnRedirect(

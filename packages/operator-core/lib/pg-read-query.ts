@@ -786,6 +786,21 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       '`call_origin_source` (declared versus derived); request metadata, when needed, is nested under ' +
       '`metadata_json` at `requestOrigin`',
   },
+  {
+    relation: 'migration_reservations',
+    missing: 'migration_number',
+    message:
+      'the allocator stores the migration number in `num`, not `migration_number`; use `filename` for the ' +
+      'armed migration filename, and use `db:next-migration` to allocate a number instead of hand-writing ' +
+      'reservation SQL',
+  },
+  {
+    relation: 'migration_reservations',
+    missing: 'name',
+    message:
+      'the reservation ledger stores the armed migration filename in `filename`, not `name`; the migration ' +
+      'number is `num`, and `db:next-migration` is the typed allocator',
+  },
 ];
 
 /**
