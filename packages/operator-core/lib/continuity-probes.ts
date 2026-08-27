@@ -30,6 +30,21 @@ export const CONTINUITY_PROBE_TIMEOUT_MS = 2_500;
 
 const scalarSchema = z.union([z.string().max(1_000), z.number().finite(), z.boolean(), z.null()]);
 
+/**
+ * Writer-only convenience sentinel. The durable probe must always contain the
+ * concrete revision that was checked at write time; `live` is only a way for a
+ * caller to ask the writer to resolve that revision from the target it named.
+ */
+export const LIVE_SCHEMA_REVISION = 'live';
+
+const schemaRevisionSchema = z
+  .string()
+  .min(1)
+  .max(160)
+  .describe(
+    'Exact projected-tool-registry revision for this target. Writer-only `live` is expanded to the current target revision before validation; persisted and replayed probes contain the concrete revision.',
+  );
+
 export const continuityPredicateSchema = z
   .object({
     path: z.string().min(1).max(240).describe('Dot/bracket path into the JSON result; use "$" for the root value.'),
@@ -60,7 +75,7 @@ const toolProbeShape = z
     tool: z.string().min(1).max(160),
     args: z.record(z.string(), z.unknown()).default({}),
     projection: z.unknown().optional(),
-    schemaRevision: z.string().min(1).max(160),
+    schemaRevision: schemaRevisionSchema,
     expect: continuityPredicateSchema,
   })
   .strict();
@@ -70,7 +85,7 @@ const stateCellProbeShape = z
     kind: z.literal('state-cell'),
     cell: z.string().min(1).max(120),
     as: z.string().min(1).max(200).optional(),
-    schemaRevision: z.string().min(1).max(160),
+    schemaRevision: schemaRevisionSchema,
     expect: continuityPredicateSchema,
   })
   .strict();
@@ -113,6 +128,28 @@ function projectedTool(name: string): ProjectedTool | undefined {
 export function continuityProbeRevision(toolName: string): string | null {
   const tool = projectedTool(toolName);
   return tool ? projectedToolRegistryRevision([tool]) : null;
+}
+
+/**
+ * Resolve the writer-only `schemaRevision:'live'` shorthand before the
+ * current-contract validator runs. Keeping this preprocessing on the writer
+ * schema (rather than the shape/decode schema) ensures durable rows and wake
+ * replay remain pinned to the exact revision that was validated.
+ */
+function normalizeWriterProbeRevision(value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+  const probe = value as Record<string, unknown>;
+  if (probe.schemaRevision !== LIVE_SCHEMA_REVISION) return value;
+
+  const toolName =
+    probe.kind === 'tool' && typeof probe.tool === 'string'
+      ? probe.tool
+      : probe.kind === 'state-cell'
+        ? 'state:read'
+        : null;
+  if (!toolName) return value;
+  const revision = continuityProbeRevision(toolName);
+  return revision ? { ...probe, schemaRevision: revision } : value;
 }
 
 function jsonBytes(value: unknown): number | null {
@@ -259,11 +296,13 @@ export function validateContinuityProbe(probe: ContinuityProbe): ContinuityProbe
 }
 
 /** Writer-facing schema: shape + the live contract, with field-addressed issues. */
-export const continuityProbeSchema = continuityProbeShapeSchema.superRefine((probe, ctx) => {
-  for (const issue of validateContinuityProbe(probe)) {
-    ctx.addIssue({ code: 'custom', path: issue.path, message: `${issue.code}: ${issue.message}` });
-  }
-});
+export const continuityProbeSchema = z
+  .preprocess(normalizeWriterProbeRevision, continuityProbeShapeSchema)
+  .superRefine((probe, ctx) => {
+    for (const issue of validateContinuityProbe(probe)) {
+      ctx.addIssue({ code: 'custom', path: issue.path, message: `${issue.code}: ${issue.message}` });
+    }
+  });
 
 export function encodeContinuityProbe(probe: ContinuityProbe): string {
   return Buffer.from(JSON.stringify(probe), 'utf8').toString('base64url');

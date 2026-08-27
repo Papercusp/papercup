@@ -473,11 +473,11 @@ function checksSpec() {
               'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
                 'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
             ).optional(),
-            probe: continuityProbeSchema
-              .optional()
-              .describe(
-                'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
-              ),
+              probe: continuityProbeSchema
+                .optional()
+                .describe(
+                  'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; use `schemaRevision:"live"` as a writer-only shorthand for the current target revision; persisted probes retain the concrete revision; `recheck` remains the human explanation.',
+                ),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),

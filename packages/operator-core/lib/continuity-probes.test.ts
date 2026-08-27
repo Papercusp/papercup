@@ -19,6 +19,7 @@ import {
   collectContinuityProbeSources,
   continuityProbeRevision,
   continuityProbeSchema,
+  continuityProbeShapeSchema,
   decodeContinuityProbe,
   encodeContinuityProbe,
   runContinuityProbeBatch,
@@ -129,6 +130,29 @@ describe('continuity probe persistence contract', () => {
     expect(() => continuityProbeSchema.parse({ ...readProbe(), projection: { pipe: [{ op: 'head' }] } })).toThrow(
       /projection/,
     );
+  });
+
+  it('resolves the writer-only live revision sentinel while keeping shape/replay strict', async () => {
+    const parsed = continuityProbeSchema.parse({ ...readProbe(), schemaRevision: 'live' });
+    expect(parsed.schemaRevision).toBe(continuityProbeRevision('status:read'));
+    expect(continuityProbeShapeSchema.parse({ ...readProbe(), schemaRevision: 'live' }).schemaRevision).toBe('live');
+
+    const stateProbe: ContinuityProbe = {
+      kind: 'state-cell',
+      cell: 'gate.verdict',
+      schemaRevision: 'live',
+      expect: { path: '$.value', op: 'exists' },
+    };
+    expect(continuityProbeSchema.parse(stateProbe).schemaRevision).toBe(continuityProbeRevision('state:read'));
+
+    const dispatchTool = vi.fn();
+    const replay = await runContinuityProbeBatch([source(readProbe({ schemaRevision: 'live' }))], { dispatchTool });
+    expect(replay.results[0]).toMatchObject({
+      status: 'unknown',
+      executed: false,
+      diagnostic: { code: 'schema_revision_mismatch', storedRevision: 'live' },
+    });
+    expect(dispatchTool).not.toHaveBeenCalled();
   });
 });
 

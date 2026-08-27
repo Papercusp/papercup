@@ -174,6 +174,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect: { path: '$.value', op: 'eq' as const, value: 'green' },
     };
     expect(() => parse({ id: 'WI-7', checks: [{ claim: 'gate is green', probe }] })).not.toThrow();
+    const liveParsed = parse({
+      id: 'WI-7',
+      checks: [{ claim: 'gate is green', probe: { ...probe, schemaRevision: 'live' } }],
+    }) as { checks: Array<{ probe: { schemaRevision: string } }> };
+    expect(liveParsed.checks[0].probe.schemaRevision).toBe(continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL));
     expect(() =>
       parse({ id: 'WI-7', checks: [{ claim: 'gate is green', probe: { ...probe, schemaRevision: 'stale' } }] }),
     ).toThrow(/schema_revision_mismatch/);
