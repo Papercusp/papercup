@@ -31,11 +31,24 @@ describe('Governor admission contract', () => {
       priority: 0,
       deadlineAtMs: null,
       demand: { memoryBytes: 1024, custom: { gpu: 0.5 } },
+      payloadRef: null,
+      coalesceKey: null,
       parent: null,
       bypassKey: null,
       metadata: {},
     });
     expect(JSON.stringify(request)).not.toMatch(/max|ceiling|limit/i);
+  });
+
+  it('normalizes durable payload and coalescing references', () => {
+    expect(
+      normalizeAdmissionRequest({
+        idempotencyKey: 'req-refs',
+        admissionClass: 'transfer',
+        payloadRef: '  work-item:WI-7  ',
+        coalesceKey: '  sync:main  ',
+      }),
+    ).toMatchObject({ payloadRef: 'work-item:WI-7', coalesceKey: 'sync:main' });
   });
 
   it.each([
