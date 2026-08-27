@@ -173,6 +173,13 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     // re-aliased as `wi`; omitting it makes work_items:claimable fail with
     // "column wi.lane does not exist" even though the base table has the column.
     expect(projection).toContain('wi.lane');
+    // Completion and per-claim cooldown floors also read columns after the CTE is
+    // re-aliased as `wi`; keep the narrow projection complete for every outer floor.
+    expect(projection).toContain('wi.terminal_owner');
+    expect(projection).toContain('wi.terminal_completion_ref');
+    expect(projection).toContain('wi.authority');
+    expect(projection).toContain('wi.last_released_by');
+    expect(projection).toContain('wi.last_released_at');
     expect(projection).toContain('wi.updated_ts');
     expect(projection).toContain('wi.source_plan_item_ids');
     expect(projection).not.toContain('wi.summary');
