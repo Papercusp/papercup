@@ -1203,6 +1203,11 @@ export async function listVerifiedWaitTakeoversForSubscribers(
     ) {
       return [];
     }
+    const certificate = parseJsonb<ProducerHealthCertificate>(row.producer_health);
+    const typedRemedy = certificate?.progressLease?.history
+      .slice()
+      .reverse()
+      .find((transition) => transition.remedy)?.remedy;
     const ownerTarget = result.owner.workItemId ?? result.owner.ownerId;
     return [
       {
@@ -1219,11 +1224,14 @@ export async function listVerifiedWaitTakeoversForSubscribers(
           lastProgressAtMs: result.lastProgressAtMs,
           lastFireAtMs: result.lastFireAtMs,
           ...(result.evidence ? { evidence: result.evidence } : {}),
-          remedy: ownerTarget
-            ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
-            : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
+          remedy:
+            typedRemedy?.summary ??
+            (ownerTarget
+              ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
+              : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.'),
+          ...(certificate?.progressLease ? { progressLease: certificate.progressLease } : {}),
         } satisfies VerifiedWaitTakeoverAlert,
-        certificate: parseJsonb<ProducerHealthCertificate>(row.producer_health),
+        certificate,
       },
     ];
   });
@@ -1950,6 +1958,9 @@ export async function settleVerifiedAwaitTimeout(input: {
 }): Promise<AwaitRow | null> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
+  if (input.result.classification === 'progressing' && !input.nextCertificate) {
+    throw new Error('progressing verified wait requires nextCertificate');
+  }
   if (input.nextCertificate) {
     await sql`
       UPDATE harness_shared.event_awaits

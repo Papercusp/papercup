@@ -56,8 +56,14 @@ import { getClaimSpecRecord } from '../../scheduler/claim-spec-store';
 import { formatSpecRef } from '../../scheduler/claim-spec';
 import { resolveClaimSpecWorkspace } from '../../scheduler/claim-spec-workspace';
 import { claimSpecFilterToClaimablePayloadFilter } from '../../scheduler/claim-spec-payload-filter';
-import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
+import {
+  producerHealthInputSchema,
+  progressLeaseInputSchema,
+  resolveProducerHealthCertificate,
+  resolveProgressLeaseCertificate,
+} from './producer-health';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
+import { activeWorkspaceId } from '../../workspace-registry';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -190,6 +196,9 @@ export default defineTool({
     producer_health: producerHealthInputSchema
       .optional()
       .describe('Verified producer health for a single event/fromMsg wait; requires `event` or `fromMsg` and is rejected with a composed `spec`.'),
+    progress_lease: progressLeaseInputSchema
+      .optional()
+      .describe('Evidence-backed liveness lease for a delegated upstream owner. Uses an authoritative read-only tool/path, wakes that owner on the first cadence miss, and applies a typed remedy after repeated misses.'),
     fromMsg: hardText(LIMITS.IDENT)
       .optional()
       .describe(
@@ -210,8 +219,17 @@ export default defineTool({
     if (args.producer_health && args.spec) {
       throw new Error('events:await — producer_health applies to one event/fromMsg wait, not a composed spec');
     }
+    if (args.progress_lease && args.spec) {
+      throw new Error('events:await — progress_lease applies to one event/fromMsg wait, not a composed spec');
+    }
+    if (args.producer_health && args.progress_lease) {
+      throw new Error('events:await — pass producer_health or progress_lease, not both');
+    }
     if (args.producer_health && args.on_timeout === 'expire') {
       throw new Error('events:await — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
+    }
+    if (args.progress_lease && args.on_timeout === 'expire') {
+      throw new Error('events:await — progress_lease requires on_timeout:"wake" so stale evidence and remedies remain actionable');
     }
 
     // EI-383: a REAL registered await ends the turn until the wake — no activity-
@@ -976,16 +994,30 @@ export default defineTool({
       planRunId: args.plan_run_id,
     });
 
+    const harnessRaw = typeof ctx.harnessSlug === 'string' && !['*', 'all'].includes(ctx.harnessSlug) ? ctx.harnessSlug : null;
     const producerHealthCertificate = args.producer_health
       ? await resolveProducerHealthCertificate({
           producerHealth: args.producer_health,
           subscriberId: identity.ownerId,
           timeoutSec: args.timeout_sec,
         })
-      : null;
+      : args.progress_lease
+        ? await resolveProgressLeaseCertificate({
+            progressLease: args.progress_lease,
+            subscriberId: identity.ownerId,
+            workspaceId: ctx.workspaceId ?? identity.workspaceId ?? activeWorkspaceId(),
+            harnessSlug: harnessRaw,
+            role: ctx.role ?? 'su',
+            timeoutSec: args.timeout_sec,
+          })
+        : null;
     const effectiveTimeoutSec =
       args.timeout_sec ??
-      (args.producer_health ? args.producer_health.expected_cadence_sec : DEFAULT_TIMEOUT_SEC);
+      (args.producer_health
+        ? args.producer_health.expected_cadence_sec
+        : args.progress_lease
+          ? args.progress_lease.expected_cadence_sec
+          : DEFAULT_TIMEOUT_SEC);
     let row: AwaitRow;
     try {
       row = await registerAwait({
