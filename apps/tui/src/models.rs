@@ -3211,7 +3211,7 @@ mod tests {
 
         // A STABLE sort by this key makes same-fleet rows contiguous (so the
         // draw_agents header interleave emits one header per fleet), no-fleet last.
-        let mut v = vec![
+        let mut v = [
             mk(None),
             mk(Some("nimbus")),
             mk(Some("atlas")),
