@@ -356,6 +356,24 @@ describe('work_items:get — checkpoint field', () => {
     expect(r).toMatchObject({ ok: true, id: 'WI-13', threadWindow: null, threadWindowReadFailed: true });
   });
 
+  it('accepts threadLimit:0 as an explicit no-thread projection, even with detail:true', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-14', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemDetail.mockResolvedValue({ id: 'WI-14', harness: 'papercup', kind: 'bug', family: 'issue', title: 'wrong full path', state: 'open', topics: [], posts: [], links: [] });
+    getWorkItemThreadWindow.mockResolvedValue({
+      posts: [{ id: 1, thread_id: 'thread-14', author_id: 'su-peer', body: 'must not load', created_ts: '2026-08-12T10:00:00.000Z' }],
+      total: 1,
+      topics: [],
+      createdAt: '2026-08-12T09:00:00.000Z',
+    });
+
+    const r = await one({ id: 'WI-14', detail: true, threadLimit: 0 });
+
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(getWorkItemThreadWindow).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ ok: true, id: 'WI-14' });
+    expect(r).not.toHaveProperty('threadWindow');
+  });
+
   it('never calls the checkpoint store for a not-found item', async () => {
     getWorkItem.mockResolvedValue(null);
     const r = await one({ id: 'WI-404' });
