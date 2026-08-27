@@ -59,7 +59,7 @@ export default function PlansCleanupStrip({
   onReview,
   onRunCleared,
 }: PlansCleanupStripProps) {
-  const { start, stop, restart, dismiss } = usePlanCleanupOps();
+  const { start, stop, restart } = usePlanCleanupOps();
   const resolverSettings = useBulkResolverSettings("plan-cleanup");
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -96,7 +96,14 @@ export default function PlansCleanupStrip({
     } finally {
       setStarting(false);
     }
-  }, [planSlugs, starting, start, filterSnapshot, onRunStarted, resolverSettings]);
+  }, [
+    planSlugs,
+    starting,
+    start,
+    filterSnapshot,
+    onRunStarted,
+    resolverSettings,
+  ]);
 
   const onStop = useCallback(async () => {
     if (!run || busy) return;
@@ -132,20 +139,6 @@ export default function PlansCleanupStrip({
       setBusy(false);
     }
   }, [run, busy, restart]);
-
-  const onDismiss = useCallback(async () => {
-    if (!run || busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await dismiss(run.runId);
-      onRunCleared();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [run, busy, dismiss, onRunCleared]);
 
   if (isRunning && run) {
     const scanOnly = counts.total === 0;
@@ -282,11 +275,11 @@ export default function PlansCleanupStrip({
           <button
             type="button"
             className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
-            data-testid="plans-cleanup-dismiss"
+            data-testid="plans-cleanup-hide"
             disabled={busy}
-            onClick={() => void onDismiss()}
+            onClick={onRunCleared}
           >
-            Dismiss
+            Hide
           </button>
         </div>
         <p className="op-inbox__bulk-hint">
@@ -306,7 +299,10 @@ export default function PlansCleanupStrip({
   const count = planSlugs.length;
   return (
     <div className="op-inbox__bulk-slot" data-testid="plans-cleanup-idle">
-      <BulkResolverSettingsControl kind="plan-cleanup" settings={resolverSettings} />
+      <BulkResolverSettingsControl
+        kind="plan-cleanup"
+        settings={resolverSettings}
+      />
       <button
         type="button"
         className="op-inbox__bulk-start"

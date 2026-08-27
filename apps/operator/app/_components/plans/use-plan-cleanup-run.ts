@@ -84,6 +84,7 @@ export interface PlanCleanupRunState {
 export interface PlanCleanupStartResult {
   ok: boolean;
   runId?: string;
+  phase?: PlanCleanupPhase | null;
   launched?: boolean;
   /** False means the deterministic pass finished the run without an LLM. */
   resolverNeeded?: boolean;
@@ -226,12 +227,38 @@ export function usePlanCleanupOps(): {
   ) => Promise<PlanCleanupStartResult>;
   stop: (runId: string) => Promise<void>;
   restart: (runId: string) => Promise<PlanCleanupStartResult>;
+  resume: (
+    runId: string,
+    findingIds: readonly string[],
+  ) => Promise<PlanCleanupStartResult>;
   dismiss: (runId: string) => Promise<void>;
+  dismissFinding: (
+    runId: string,
+    findingId: string,
+    note?: string | null,
+  ) => Promise<{
+    ok: boolean;
+    phase?: PlanCleanupPhase | null;
+    error?: string;
+  }>;
+  recheckFinding: (
+    runId: string,
+    findingId: string,
+  ) => Promise<{
+    ok: boolean;
+    resolved?: boolean;
+    phase?: PlanCleanupPhase | null;
+    error?: string;
+  }>;
   accept: (
     runId: string,
     findingId: string,
     note?: string | null,
-  ) => Promise<{ ok: boolean; phase?: PlanCleanupPhase | null; error?: string }>;
+  ) => Promise<{
+    ok: boolean;
+    phase?: PlanCleanupPhase | null;
+    error?: string;
+  }>;
 } {
   const start = useCallback(
     async (
@@ -242,7 +269,8 @@ export function usePlanCleanupOps(): {
     ): Promise<PlanCleanupStartResult> => {
       const planSlugs = snapshotPlanSlugs(rawPlanSlugs);
       try {
-        const clickTimeLaunch = launch ?? await loadResolverLaunchProfile("plan-cleanup");
+        const clickTimeLaunch =
+          launch ?? (await loadResolverLaunchProfile("plan-cleanup"));
         const json = await postOp({
           op: "start",
           planSlugs,
@@ -262,10 +290,12 @@ export function usePlanCleanupOps(): {
             json.deterministic && typeof json.deterministic === "object"
               ? {
                   applied: Number(
-                    (json.deterministic as Record<string, unknown>).applied ?? 0,
+                    (json.deterministic as Record<string, unknown>).applied ??
+                      0,
                   ),
                   skipped: Number(
-                    (json.deterministic as Record<string, unknown>).skipped ?? 0,
+                    (json.deterministic as Record<string, unknown>).skipped ??
+                      0,
                   ),
                   failed: Number(
                     (json.deterministic as Record<string, unknown>).failed ?? 0,
@@ -318,10 +348,54 @@ export function usePlanCleanupOps(): {
     await postOp({ op: "dismiss", runId });
   }, []);
 
+  const resume = useCallback(
+    async (
+      runId: string,
+      rawFindingIds: readonly string[],
+    ): Promise<PlanCleanupStartResult> => {
+      const findingIds = [
+        ...new Set(rawFindingIds.map((id) => id.trim()).filter(Boolean)),
+      ];
+      try {
+        const result = await postOp({ op: "resume", runId, findingIds });
+        return {
+          ok: true,
+          runId,
+          phase:
+            typeof result.phase === "string"
+              ? (result.phase as PlanCleanupPhase)
+              : result.phase === null
+                ? null
+                : undefined,
+          launched: result.launched === true,
+          preservedOutcomes:
+            typeof result.preservedOutcomes === "number"
+              ? result.preservedOutcomes
+              : undefined,
+          launchError:
+            typeof result.launchError === "string"
+              ? result.launchError
+              : undefined,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
   const accept = useCallback(
     async (runId: string, findingId: string, note?: string | null) => {
       try {
-        const result = await postOp({ op: "accept", runId, findingId, note: note ?? null });
+        const result = await postOp({
+          op: "accept",
+          runId,
+          findingId,
+          note: note ?? null,
+        });
         const phase =
           typeof result.phase === "string"
             ? (result.phase as PlanCleanupPhase)
@@ -330,11 +404,74 @@ export function usePlanCleanupOps(): {
               : undefined;
         return { ok: true, phase };
       } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
     },
     [],
   );
 
-  return { start, stop, restart, dismiss, accept };
+  const dismissFinding = useCallback(
+    async (runId: string, findingId: string, note?: string | null) => {
+      try {
+        const result = await postOp({
+          op: "dismiss-finding",
+          runId,
+          findingId,
+          note: note ?? null,
+        });
+        const phase =
+          typeof result.phase === "string"
+            ? (result.phase as PlanCleanupPhase)
+            : result.phase === null
+              ? null
+              : undefined;
+        return { ok: true, phase };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
+  const recheckFinding = useCallback(
+    async (runId: string, findingId: string) => {
+      try {
+        const result = await postOp({
+          op: "recheck-finding",
+          runId,
+          findingId,
+        });
+        const phase =
+          typeof result.phase === "string"
+            ? (result.phase as PlanCleanupPhase)
+            : result.phase === null
+              ? null
+              : undefined;
+        return { ok: true, resolved: result.resolved === true, phase };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
+  return {
+    start,
+    stop,
+    restart,
+    resume,
+    dismiss,
+    accept,
+    dismissFinding,
+    recheckFinding,
+  };
 }

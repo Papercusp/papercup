@@ -16,6 +16,9 @@ const H = vi.hoisted(() => ({
   setPlanLifecycleStatus: vi.fn(),
   accept: vi.fn(),
   dismiss: vi.fn(),
+  resume: vi.fn(),
+  dismissFinding: vi.fn(),
+  recheckFinding: vi.fn(),
 }));
 
 vi.mock("@/app/admin/plans/plans-api", async (importOriginal) => {
@@ -48,6 +51,9 @@ vi.mock("./use-plan-cleanup-run", async (importOriginal) => {
         return H.accept(...args);
       },
       dismiss: (...args: unknown[]) => H.dismiss(...args),
+      resume: (...args: unknown[]) => H.resume(...args),
+      dismissFinding: (...args: unknown[]) => H.dismissFinding(...args),
+      recheckFinding: (...args: unknown[]) => H.recheckFinding(...args),
       start: vi.fn(),
       stop: vi.fn(),
     }),
@@ -111,6 +117,13 @@ beforeEach(() => {
   H.setPlanLifecycleStatus.mockReset().mockResolvedValue({ ok: true });
   H.accept.mockReset().mockResolvedValue({ ok: true, phase: "review" });
   H.dismiss.mockReset().mockResolvedValue(undefined);
+  H.resume
+    .mockReset()
+    .mockResolvedValue({ ok: true, phase: "running", launched: true });
+  H.dismissFinding.mockReset().mockResolvedValue({ ok: true, phase: "review" });
+  H.recheckFinding
+    .mockReset()
+    .mockResolvedValue({ ok: true, resolved: true, phase: "review" });
 });
 
 afterEach(cleanup);
@@ -278,8 +291,14 @@ describe("PlanCleanupReport", () => {
       itemId: null,
       target: "p-one ## Now",
     });
+    const onOpenFinding = vi.fn();
     render(
-      <PlanCleanupReport run={run()} findings={[stale]} onClose={vi.fn()} />,
+      <PlanCleanupReport
+        run={run()}
+        findings={[stale]}
+        onOpenFinding={onOpenFinding}
+        onClose={vi.fn()}
+      />,
     );
     expect(screen.getByTestId("review-row-now")).toBeTruthy();
     expect(screen.queryByTestId("review-row-check-now")).toBeNull();
@@ -287,9 +306,80 @@ describe("PlanCleanupReport", () => {
     expect(
       (screen.getByTestId("review-report-apply") as HTMLButtonElement).disabled,
     ).toBe(true);
+    fireEvent.focus(screen.getByTestId("review-row-now"));
+    expect(screen.getByTestId("plan-cleanup-recheck-now")).toBeTruthy();
+    expect(screen.getByTestId("plan-cleanup-retry-now")).toBeTruthy();
+    expect(screen.getByTestId("plan-cleanup-dismiss-now")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("plan-cleanup-open-now"));
+    expect(onOpenFinding).toHaveBeenCalledWith(stale);
   });
 
-  it("closes the takeover only after the run dismiss succeeds", async () => {
+  it("rechecks a manual edit, reconciles the row, and keeps the report open while work remains", async () => {
+    const stale = finding({
+      findingId: "now",
+      kind: "stale-now",
+      itemId: null,
+      target: "p-one ## Now",
+    });
+    render(
+      <PlanCleanupReport run={run()} findings={[stale]} onClose={vi.fn()} />,
+    );
+    fireEvent.focus(screen.getByTestId("review-row-now"));
+    fireEvent.click(screen.getByTestId("plan-cleanup-recheck-now"));
+
+    await waitFor(() =>
+      expect(H.recheckFinding).toHaveBeenCalledWith("run-7", "now"),
+    );
+    expect(screen.getByTestId("review-row-mark-now").textContent).toBe("✓");
+  });
+
+  it("retries exactly the selected unresolved finding and returns to the running strip", async () => {
+    const onClose = vi.fn();
+    const failed = finding({
+      findingId: "failed",
+      kind: "stale-now",
+      itemId: null,
+      outcome: "failed",
+      error: "resolver exited",
+    });
+    render(
+      <PlanCleanupReport run={run()} findings={[failed]} onClose={onClose} />,
+    );
+    fireEvent.focus(screen.getByTestId("review-row-failed"));
+    fireEvent.click(screen.getByTestId("plan-cleanup-retry-failed"));
+
+    await waitFor(() =>
+      expect(H.resume).toHaveBeenCalledWith("run-7", ["failed"]),
+    );
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("dismisses only the chosen unresolved finding and never completes the rest implicitly", async () => {
+    const onClose = vi.fn();
+    const skipped = finding({
+      findingId: "skipped",
+      kind: "stale-now",
+      itemId: null,
+      outcome: "skipped",
+    });
+    render(
+      <PlanCleanupReport run={run()} findings={[skipped]} onClose={onClose} />,
+    );
+    fireEvent.focus(screen.getByTestId("review-row-skipped"));
+    fireEvent.click(screen.getByTestId("plan-cleanup-dismiss-skipped"));
+
+    await waitFor(() =>
+      expect(H.dismissFinding).toHaveBeenCalledWith(
+        "run-7",
+        "skipped",
+        "Owner dismissed this finding from the grouped recovery report",
+      ),
+    );
+    expect(screen.getByTestId("review-row-mark-skipped").textContent).toBe("—");
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes only the report view without mutating the run", () => {
     const onClose = vi.fn();
     render(
       <PlanCleanupReport
@@ -299,7 +389,7 @@ describe("PlanCleanupReport", () => {
       />,
     );
     fireEvent.click(screen.getByTestId("review-report-dismiss"));
-    await waitFor(() => expect(H.dismiss).toHaveBeenCalledWith("run-7"));
     expect(onClose).toHaveBeenCalledTimes(1);
+    expect(H.dismiss).not.toHaveBeenCalled();
   });
 });

@@ -7,28 +7,30 @@ const h = vi.hoisted(() => {
     activePhase = 'running';
   }
   return {
-  ActiveRunError,
-  createRun: vi.fn(),
-  getRun: vi.fn(),
-  getLatestRun: vi.fn(),
-  setRunPhase: vi.fn(),
-  settleRunPhase: vi.fn(),
-  failRunIfExecuting: vi.fn(),
-  restartRun: vi.fn(),
-  classifyRunLiveness: vi.fn(),
-  runDeterministicPlanCleanup: vi.fn(),
-  buildPlanCleanupSystemCall: vi.fn(),
-  markCleanupFindingAccepted: vi.fn(),
-  getRunFindings: vi.fn(),
-  notifyPlanCleanupRunChanged: vi.fn(),
-  requireAllowedOriginOr403: vi.fn(),
-  gateApiRoute: vi.fn(),
-  buildConsoleEnvelope: vi.fn(),
-  spawnHeadless: vi.fn(),
-  resolveSpawnHostOperatorBaseUrl: vi.fn(),
-  buildResolverLaunchCommand: vi.fn(),
-  resolverSpawnOutcome: vi.fn(),
-  child: { once: vi.fn() },
+    ActiveRunError,
+    createRun: vi.fn(),
+    getRun: vi.fn(),
+    getLatestRun: vi.fn(),
+    setRunPhase: vi.fn(),
+    settleRunPhase: vi.fn(),
+    failRunIfExecuting: vi.fn(),
+    restartRun: vi.fn(),
+    classifyRunLiveness: vi.fn(),
+    runDeterministicPlanCleanup: vi.fn(),
+    scanCleanupRun: vi.fn(),
+    buildPlanCleanupSystemCall: vi.fn(),
+    markCleanupFindingAccepted: vi.fn(),
+    markCleanupFindingDismissed: vi.fn(),
+    getRunFindings: vi.fn(),
+    notifyPlanCleanupRunChanged: vi.fn(),
+    requireAllowedOriginOr403: vi.fn(),
+    gateApiRoute: vi.fn(),
+    buildConsoleEnvelope: vi.fn(),
+    spawnHeadless: vi.fn(),
+    resolveSpawnHostOperatorBaseUrl: vi.fn(),
+    buildResolverLaunchCommand: vi.fn(),
+    resolverSpawnOutcome: vi.fn(),
+    child: { once: vi.fn() },
   };
 });
 
@@ -45,10 +47,12 @@ vi.mock('../attention/bulk-run-store', () => ({
 }));
 vi.mock('./run-store', () => ({
   markCleanupFindingAccepted: h.markCleanupFindingAccepted,
+  markCleanupFindingDismissed: h.markCleanupFindingDismissed,
   getRunFindings: h.getRunFindings,
 }));
 vi.mock('./deterministic-runner', () => ({
   runDeterministicPlanCleanup: h.runDeterministicPlanCleanup,
+  scanCleanupRun: h.scanCleanupRun,
   buildPlanCleanupSystemCall: h.buildPlanCleanupSystemCall,
 }));
 vi.mock('../attention/bulk-run-sync', () => ({
@@ -77,11 +81,7 @@ vi.mock('../endpoint-route/routes/admin/attention-bulk-resolve', async (importOr
   };
 });
 
-import {
-  MAX_RUN_PLANS,
-  parsePlanSlugs,
-  planCleanupHandler,
-} from '../endpoint-route/routes/admin/plan-cleanup';
+import { MAX_RUN_PLANS, parsePlanSlugs, planCleanupHandler } from '../endpoint-route/routes/admin/plan-cleanup';
 import { getRegistryEntryV2 } from '../sync-resolver/index';
 
 const run = {
@@ -128,6 +128,10 @@ beforeEach(() => {
     finding: { findingId: 'stale-now:papercusp/plan-a', outcome: 'accepted' },
     run: { ...run, phase: 'review' },
   });
+  h.markCleanupFindingDismissed.mockResolvedValue({
+    finding: { findingId: 'stale-now:papercusp/plan-a', outcome: 'dismissed' },
+    run: { ...run, phase: 'review' },
+  });
   h.notifyPlanCleanupRunChanged.mockResolvedValue(undefined);
   h.requireAllowedOriginOr403.mockReturnValue(null);
   h.gateApiRoute.mockResolvedValue(null);
@@ -137,6 +141,7 @@ beforeEach(() => {
   h.spawnHeadless.mockResolvedValue({ status: 'ok', child: h.child });
   h.resolverSpawnOutcome.mockReturnValue({ ok: true, sessionId: 'su-resolver', child: h.child });
   h.getRunFindings.mockResolvedValue([{ findingId: 'f-1' }]);
+  h.scanCleanupRun.mockResolvedValue([]);
 });
 
 describe('plan-cleanup route policy', () => {
@@ -155,22 +160,26 @@ describe('plan-cleanup route policy', () => {
     );
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ ok: true, runId: run.runId, launched: true });
-    expect(h.createRun).toHaveBeenCalledWith(expect.objectContaining({
-      items: [],
-      runKind: 'plan-cleanup',
-      seedRefs: ['plan-a', 'plan-b'],
-      harnessSlug: 'papercusp',
-    }));
-    expect(h.spawnHeadless).toHaveBeenCalledWith(expect.objectContaining({
-      label: expect.stringContaining('plan-cleanup-'),
-      launchedBy: 'plan-cleanup',
-      envelope: expect.objectContaining({
-        greetingCmd: 'psu --headless',
-        env: expect.objectContaining({
-          PAPERCUSP_KICKOFF_PROMPT: expect.stringContaining('plans:cleanup-manifest'),
+    expect(h.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: [],
+        runKind: 'plan-cleanup',
+        seedRefs: ['plan-a', 'plan-b'],
+        harnessSlug: 'papercusp',
+      }),
+    );
+    expect(h.spawnHeadless).toHaveBeenCalledWith(
+      expect.objectContaining({
+        label: expect.stringContaining('plan-cleanup-'),
+        launchedBy: 'plan-cleanup',
+        envelope: expect.objectContaining({
+          greetingCmd: 'psu --headless',
+          env: expect.objectContaining({
+            PAPERCUSP_KICKOFF_PROMPT: expect.stringContaining('plans:cleanup-manifest'),
+          }),
         }),
       }),
-    }));
+    );
     const pending = h.setRunPhase.mock.calls.find((call) => call[0]?.phase === 'pending')?.[0];
     const running = h.setRunPhase.mock.calls.find((call) => call[0]?.phase === 'running')?.[0];
     expect(pending).toMatchObject({ runId: run.runId, resolverOwner: expect.stringMatching(/^su-/) });
@@ -179,9 +188,7 @@ describe('plan-cleanup route policy', () => {
       phase: 'running',
       resolverOwner: pending.resolverOwner,
     });
-    expect(h.spawnHeadless).toHaveBeenCalledWith(
-      expect.objectContaining({ coordOwnerId: pending.resolverOwner }),
-    );
+    expect(h.spawnHeadless).toHaveBeenCalledWith(expect.objectContaining({ coordOwnerId: pending.resolverOwner }));
   });
 
   it('returns a visible failed run when launch fails instead of failing the request', async () => {
@@ -223,6 +230,86 @@ describe('plan-cleanup route policy', () => {
     });
     expect(h.settleRunPhase).toHaveBeenCalledWith({ runId: run.runId });
   });
+
+  it('preserves review when a legacy client dismisses only the report view', async () => {
+    h.getRun.mockResolvedValueOnce({ ...run, phase: 'review' });
+    const response = await planCleanupHandler(request({ op: 'dismiss', runId: run.runId }), {} as never);
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      phase: 'review',
+      dismissed: true,
+      reviewPreserved: true,
+    });
+    expect(h.setRunPhase).not.toHaveBeenCalled();
+  });
+
+  it('dismisses one finding durably before re-settling the run', async () => {
+    const response = await planCleanupHandler(
+      request({
+        op: 'dismiss-finding',
+        runId: run.runId,
+        findingId: 'stale-now:papercusp/plan-a',
+        note: 'Owner declined this rewrite',
+      }),
+      {} as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.markCleanupFindingDismissed).toHaveBeenCalledWith({
+      runId: run.runId,
+      findingId: 'stale-now:papercusp/plan-a',
+      note: 'Owner declined this rewrite',
+    });
+    expect(h.markCleanupFindingDismissed.mock.invocationCallOrder[0]).toBeLessThan(
+      h.settleRunPhase.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('rechecks the live plan and reconciles a finding only after it disappears', async () => {
+    h.getRun.mockResolvedValueOnce({ ...run, phase: 'review' });
+    h.getRunFindings.mockResolvedValueOnce([
+      { findingId: 'stale-now:papercusp/plan-a', kind: 'stale-now', planSlug: 'plan-a' },
+    ]);
+    const response = await planCleanupHandler(
+      request({
+        op: 'recheck-finding',
+        runId: run.runId,
+        findingId: 'stale-now:papercusp/plan-a',
+      }),
+      {} as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(h.scanCleanupRun).toHaveBeenCalledWith(expect.objectContaining({ runId: run.runId }), ['plan-a']);
+    expect(h.markCleanupFindingAccepted).toHaveBeenCalledWith({
+      runId: run.runId,
+      findingId: 'stale-now:papercusp/plan-a',
+      note: 'Owner recheck confirmed the finding no longer exists in live plan state',
+    });
+    expect(await response.json()).toMatchObject({ resolved: true });
+  });
+
+  it('keeps a finding unresolved when the live recheck still emits it', async () => {
+    h.getRun.mockResolvedValueOnce({ ...run, phase: 'review' });
+    h.getRunFindings.mockResolvedValueOnce([
+      { findingId: 'stale-now:papercusp/plan-a', kind: 'stale-now', planSlug: 'plan-a' },
+    ]);
+    h.scanCleanupRun.mockResolvedValueOnce([{ findingId: 'stale-now:papercusp/plan-a' }]);
+    const response = await planCleanupHandler(
+      request({
+        op: 'recheck-finding',
+        runId: run.runId,
+        findingId: 'stale-now:papercusp/plan-a',
+      }),
+      {} as never,
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ resolved: false, phase: 'review' });
+    expect(h.markCleanupFindingAccepted).not.toHaveBeenCalled();
+    expect(h.settleRunPhase).not.toHaveBeenCalled();
+  });
 });
 
 describe('plans.cleanupRun sync resolver', () => {
@@ -235,20 +322,20 @@ describe('plans.cleanupRun sync resolver', () => {
 
   it('returns one run with its findings and rejects an explicit inbox-kind run', async () => {
     h.getRun.mockResolvedValue({ ...run, phase: 'review' });
-    expect(
-      await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: run.runId } as never),
-    ).toEqual([{
-      run: {
-        ...run,
-        phase: 'review',
-        liveness: { state: 'not-executing', phase: 'review' },
+    expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: run.runId } as never)).toEqual([
+      {
+        run: {
+          ...run,
+          phase: 'review',
+          liveness: { state: 'not-executing', phase: 'review' },
+        },
+        findings: [{ findingId: 'f-1' }],
       },
-      findings: [{ findingId: 'f-1' }],
-    }]);
+    ]);
 
     h.getRun.mockResolvedValue({ ...run, runKind: 'inbox-resolve' });
-    expect(
-      await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: 'inbox-1' } as never),
-    ).toEqual([{ run: null, findings: [] }]);
+    expect(await getRegistryEntryV2('plans.cleanupRun')!.resolve!({ runId: 'inbox-1' } as never)).toEqual([
+      { run: null, findings: [] },
+    ]);
   });
 });

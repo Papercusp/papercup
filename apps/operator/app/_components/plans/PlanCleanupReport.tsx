@@ -6,7 +6,7 @@
  * goes through the same plans-api helper a hand edit uses, and only after that
  * succeeds does the run's `accept` bookkeeping advance.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { BrushCleaning } from "lucide-react";
 import {
   setItemStatus,
@@ -79,15 +79,13 @@ const GROUPS: ReadonlyArray<{
 function reviewStatus(
   finding: PlanCleanupFinding,
   locallyApplied: ReadonlySet<string>,
+  locallyDismissed: ReadonlySet<string>,
 ): ReviewRowStatus {
   if (locallyApplied.has(finding.findingId)) return "applied";
+  if (locallyDismissed.has(finding.findingId)) return "dismissed";
   if (finding.outcome === "auto_applied" || finding.outcome === "accepted")
     return "applied";
-  if (
-    finding.outcome === "dismissed" ||
-    finding.outcome === "skipped" ||
-    finding.outcome === "failed"
-  ) {
+  if (finding.outcome === "dismissed") {
     return "dismissed";
   }
   return "pending";
@@ -119,9 +117,11 @@ function evidenceLines(finding: PlanCleanupFinding): string[] {
 function reportRow(
   finding: PlanCleanupFinding,
   locallyApplied: ReadonlySet<string>,
+  locallyDismissed: ReadonlySet<string>,
   localErrors: ReadonlyMap<string, string>,
+  detailFor?: (finding: PlanCleanupFinding) => ReactNode,
 ): ReviewReportRow {
-  const status = reviewStatus(finding, locallyApplied);
+  const status = reviewStatus(finding, locallyApplied, locallyDismissed);
   const localError = localErrors.get(finding.findingId);
   return {
     id: finding.findingId,
@@ -130,7 +130,10 @@ function reportRow(
     referenceLabel:
       finding.itemId ?? (finding.kind === "stale-now" ? "## Now" : "plan"),
     transition: { from: finding.from, to: finding.to },
-    detail: manualReason(finding) ?? undefined,
+    detail:
+      status === "pending" && detailFor
+        ? detailFor(finding)
+        : (manualReason(finding) ?? undefined),
     error: localError,
     evidence: evidenceLines(finding),
     confidence: finding.confidence,
@@ -148,6 +151,8 @@ export function buildPlanCleanupReviewGroups(
   findings: readonly PlanCleanupFinding[],
   locallyApplied: ReadonlySet<string> = new Set(),
   localErrors: ReadonlyMap<string, string> = new Map(),
+  locallyDismissed: ReadonlySet<string> = new Set(),
+  detailFor?: (finding: PlanCleanupFinding) => ReactNode,
 ): ReviewReportGroup[] {
   const assigned = new Set<string>();
   const groups = GROUPS.map((group) => {
@@ -155,14 +160,28 @@ export function buildPlanCleanupReviewGroups(
       .filter((finding) => group.kinds.has(finding.kind))
       .map((finding) => {
         assigned.add(finding.findingId);
-        return reportRow(finding, locallyApplied, localErrors);
+        return reportRow(
+          finding,
+          locallyApplied,
+          locallyDismissed,
+          localErrors,
+          detailFor,
+        );
       });
     return { ...group, rows };
   }).filter((group) => group.rows.length > 0);
 
   const other = findings
     .filter((finding) => !assigned.has(finding.findingId))
-    .map((finding) => reportRow(finding, locallyApplied, localErrors));
+    .map((finding) =>
+      reportRow(
+        finding,
+        locallyApplied,
+        locallyDismissed,
+        localErrors,
+        detailFor,
+      ),
+    );
   if (other.length > 0) {
     groups.push({
       id: "other",
@@ -216,21 +235,91 @@ export async function applyPlanCleanupFinding(
   }
 }
 
+interface PlanCleanupRecoveryDetailProps {
+  finding: PlanCleanupFinding;
+  busy: boolean;
+  onOpen: () => void;
+  onRecheck: () => void;
+  onRetry: () => void;
+  onDismiss: () => void;
+}
+
+function PlanCleanupRecoveryDetail({
+  finding,
+  busy,
+  onOpen,
+  onRecheck,
+  onRetry,
+  onDismiss,
+}: PlanCleanupRecoveryDetailProps) {
+  return (
+    <div
+      className="plan-cleanup-report__recovery"
+      data-testid={`plan-cleanup-recovery-${finding.findingId}`}
+    >
+      <span className="plan-cleanup-report__recovery-copy">
+        {manualReason(finding) ??
+          "Apply the recommendation, or use a recovery path without hiding the finding."}
+      </span>
+      <span className="plan-cleanup-report__recovery-actions">
+        <button
+          type="button"
+          data-testid={`plan-cleanup-open-${finding.findingId}`}
+          disabled={busy}
+          onClick={onOpen}
+        >
+          Open plan
+        </button>
+        <button
+          type="button"
+          data-testid={`plan-cleanup-recheck-${finding.findingId}`}
+          disabled={busy || finding.kind === "semantic"}
+          onClick={onRecheck}
+        >
+          Recheck
+        </button>
+        <button
+          type="button"
+          data-testid={`plan-cleanup-retry-${finding.findingId}`}
+          disabled={busy}
+          onClick={onRetry}
+        >
+          Retry
+        </button>
+        <button
+          type="button"
+          data-testid={`plan-cleanup-dismiss-${finding.findingId}`}
+          disabled={busy}
+          onClick={onDismiss}
+        >
+          Dismiss finding
+        </button>
+      </span>
+    </div>
+  );
+}
+
 export interface PlanCleanupReportProps {
   run: PlanCleanupRun;
   findings: PlanCleanupFinding[];
+  onOpenFinding?: (finding: PlanCleanupFinding) => void;
   onClose: () => void;
 }
 
 export default function PlanCleanupReport({
   run,
   findings,
+  onOpenFinding,
   onClose,
 }: PlanCleanupReportProps) {
-  const { accept, dismiss } = usePlanCleanupOps();
+  const { accept, dismissFinding, recheckFinding, resume } =
+    usePlanCleanupOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [locallyDismissed, setLocallyDismissed] = useState<Set<string>>(
     () => new Set(),
   );
   const [localErrors, setLocalErrors] = useState<Map<string, string>>(
@@ -239,10 +328,6 @@ export default function PlanCleanupReport({
   const byId = useMemo(
     () => new Map(findings.map((finding) => [finding.findingId, finding])),
     [findings],
-  );
-  const groups = useMemo(
-    () => buildPlanCleanupReviewGroups(findings, locallyApplied, localErrors),
-    [findings, locallyApplied, localErrors],
   );
   const counts = derivePlanCleanupCounts(findings);
   const planCount = new Set(findings.map((finding) => finding.planSlug)).size;
@@ -309,19 +394,140 @@ export default function PlanCleanupReport({
     [busy, byId, accept, run.runId, onClose],
   );
 
-  const onDismiss = useCallback(async () => {
-    if (busy) return;
-    setBusy(true);
-    setNotice(null);
-    try {
-      await dismiss(run.runId);
-      onClose();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
-    }
-  }, [busy, dismiss, run.runId, onClose]);
+  const clearFindingError = useCallback((findingId: string) => {
+    setLocalErrors((previous) => {
+      if (!previous.has(findingId)) return previous;
+      const next = new Map(previous);
+      next.delete(findingId);
+      return next;
+    });
+  }, []);
+
+  const onRetryFinding = useCallback(
+    async (finding: PlanCleanupFinding) => {
+      if (busy) return;
+      setBusy(true);
+      setNotice(null);
+      try {
+        const result = await resume(run.runId, [finding.findingId]);
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              finding.findingId,
+              result.error ?? "The resolver could not retry this finding.",
+            ),
+          );
+          return;
+        }
+        clearFindingError(finding.findingId);
+        onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearFindingError, onClose, resume, run.runId],
+  );
+
+  const onRecheckFinding = useCallback(
+    async (finding: PlanCleanupFinding) => {
+      if (busy) return;
+      setBusy(true);
+      setNotice(null);
+      try {
+        const result = await recheckFinding(run.runId, finding.findingId);
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              finding.findingId,
+              result.error ?? "The live plan could not be rechecked.",
+            ),
+          );
+          return;
+        }
+        if (!result.resolved) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              finding.findingId,
+              "The finding is still present in the live plan. Edit it, Retry it, or dismiss it deliberately.",
+            ),
+          );
+          return;
+        }
+        clearFindingError(finding.findingId);
+        setLocallyApplied((previous) =>
+          new Set(previous).add(finding.findingId),
+        );
+        if (result.phase === "complete") onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearFindingError, onClose, recheckFinding, run.runId],
+  );
+
+  const onDismissFinding = useCallback(
+    async (finding: PlanCleanupFinding) => {
+      if (busy) return;
+      setBusy(true);
+      setNotice(null);
+      try {
+        const result = await dismissFinding(
+          run.runId,
+          finding.findingId,
+          "Owner dismissed this finding from the grouped recovery report",
+        );
+        if (!result.ok) {
+          setLocalErrors((previous) =>
+            new Map(previous).set(
+              finding.findingId,
+              result.error ?? "The finding could not be dismissed.",
+            ),
+          );
+          return;
+        }
+        clearFindingError(finding.findingId);
+        setLocallyDismissed((previous) =>
+          new Set(previous).add(finding.findingId),
+        );
+        if (result.phase === "complete") onClose();
+      } finally {
+        setBusy(false);
+      }
+    },
+    [busy, clearFindingError, dismissFinding, onClose, run.runId],
+  );
+
+  const groups = useMemo(
+    () =>
+      buildPlanCleanupReviewGroups(
+        findings,
+        locallyApplied,
+        localErrors,
+        locallyDismissed,
+        (finding) => (
+          <PlanCleanupRecoveryDetail
+            key={finding.findingId}
+            finding={finding}
+            busy={busy}
+            onOpen={() => onOpenFinding?.(finding)}
+            onRecheck={() => void onRecheckFinding(finding)}
+            onRetry={() => void onRetryFinding(finding)}
+            onDismiss={() => void onDismissFinding(finding)}
+          />
+        ),
+      ),
+    [
+      findings,
+      locallyApplied,
+      localErrors,
+      locallyDismissed,
+      busy,
+      onOpenFinding,
+      onRecheckFinding,
+      onRetryFinding,
+      onDismissFinding,
+    ],
+  );
 
   return (
     <ReviewReportShell
@@ -345,17 +551,18 @@ export default function PlanCleanupReport({
       groups={groups}
       busy={busy}
       applyLabel="Apply selected"
-      dismissLabel="Dismiss"
+      dismissLabel="Close"
       onApply={(ids) => void onApply(ids)}
-      onDismiss={() => void onDismiss()}
+      onDismiss={onClose}
       footer={
         <span>
           <strong>Hand-edit guarantee.</strong> Selected rows dispatch through
           the existing <code>plans:set-status</code>,{" "}
           <code>plans:set-plan-status</code>, or <code>plans:set-archived</code>{" "}
           client paths before acceptance is recorded. Clear a checkbox to skip
-          it in this apply. Rows marked ↗ need authored/manual input and are
-          never selected.
+          it in this apply. Every unresolved row also exposes Open, Recheck,
+          Retry, and explicit per-finding Dismiss; closing this report never
+          marks unresolved work complete.
         </span>
       }
     />

@@ -16,17 +16,23 @@ import {
   BulkRunAlreadyActiveError,
   createRun,
   failRunIfExecuting,
+  getRun,
   restartRun,
   resumeReviewRun,
   setRunPhase,
   settleRunPhase,
 } from '../../../attention/bulk-run-store';
 import { notifyPlanCleanupRunChanged } from '../../../attention/bulk-run-sync';
-import { markCleanupFindingAccepted } from '../../../plan-cleanup/run-store';
+import {
+  getRunFindings,
+  markCleanupFindingAccepted,
+  markCleanupFindingDismissed,
+} from '../../../plan-cleanup/run-store';
 import { buildCleanupResolverBrief } from '../../../plan-cleanup/resolver-brief';
 import {
   buildPlanCleanupSystemCall,
   runDeterministicPlanCleanup,
+  scanCleanupRun,
 } from '../../../plan-cleanup/deterministic-runner';
 import {
   buildResolverLaunchCommand,
@@ -128,10 +134,7 @@ async function launchCleanupResolver(
 async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise<Response> {
   const runId = typeof body.runId === 'string' ? body.runId.trim() : '';
   if (!runId) {
-    return Response.json(
-      { error: { code: 'missing_run_id', message: `op "${op}" requires runId` } },
-      { status: 400 },
-    );
+    return Response.json({ error: { code: 'missing_run_id', message: `op "${op}" requires runId` } }, { status: 400 });
   }
 
   try {
@@ -141,9 +144,11 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       return Response.json({ ok: true, runId, phase: run?.phase ?? null, stopped: true });
     }
     if (op === 'dismiss') {
-      const run = await setRunPhase({ runId, phase: 'complete' });
-      await invalidateCleanupRun();
-      return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true });
+      // Legacy close-view op. It must never force `complete` over unresolved
+      // findings; current clients clear their takeover URL locally, while old
+      // clients receive the same success shape without corrupting settlement.
+      const run = await getRun(runId);
+      return Response.json({ ok: true, runId, phase: run?.phase ?? null, dismissed: true, reviewPreserved: true });
     }
     if (op === 'restart') {
       const resolverOwner = `su-${randomUUID()}`;
@@ -153,9 +158,10 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
           {
             error: {
               code: restarted.reason,
-              message: restarted.reason === 'run_not_found'
-                ? `plan clean-up run ${runId} was not found`
-                : `plan clean-up run ${runId} is still healthy or no longer restartable`,
+              message:
+                restarted.reason === 'run_not_found'
+                  ? `plan clean-up run ${runId} was not found`
+                  : `plan clean-up run ${runId} is still healthy or no longer restartable`,
               runId,
               phase: restarted.phase,
             },
@@ -216,22 +222,56 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       const resumed = await resumeReviewRun({ runId, itemIds: findingIds, resolverOwner });
       if (!resumed.ok) {
         return Response.json(
-          { error: { code: resumed.reason, message: `plan clean-up run ${runId} could not resume selected findings`, runId, phase: resumed.phase } },
+          {
+            error: {
+              code: resumed.reason,
+              message: `plan clean-up run ${runId} could not resume selected findings`,
+              runId,
+              phase: resumed.phase,
+            },
+          },
           { status: resumed.reason === 'run_not_found' ? 404 : 409 },
         );
       }
       const launch = resolvePersistedResolverLaunch(resumed.run.launchSnapshot);
       if (!launch.ok || !launch.effective) {
-        await setRunPhase({ runId, phase: 'failed', error: launch.message ?? 'persisted launch settings are no longer valid' });
+        await setRunPhase({
+          runId,
+          phase: 'failed',
+          error: launch.message ?? 'persisted launch settings are no longer valid',
+        });
         await invalidateCleanupRun();
-        return Response.json({ error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } }, { status: 409 });
+        return Response.json(
+          { error: { code: 'invalid_persisted_launch_settings', message: launch.message, runId } },
+          { status: 409 },
+        );
       }
       const harness = resumed.run.harnessSlug ?? operatorHomeHarnessSlug();
-      const launched = await launchCleanupResolver(runId, resumed.run.seedRefs, harness, launch.effective, resolverOwner);
+      const launched = await launchCleanupResolver(
+        runId,
+        resumed.run.seedRefs,
+        harness,
+        launch.effective,
+        resolverOwner,
+      );
       const phase = launched.ok ? 'running' : 'failed';
-      await setRunPhase({ runId, phase, resolverOwner, ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }) });
+      await setRunPhase({
+        runId,
+        phase,
+        resolverOwner,
+        ...(launched.ok ? {} : { error: launched.error ?? 'resume launch failed' }),
+      });
       await invalidateCleanupRun();
-      return Response.json({ ok: true, runId, phase, resumed: true, launched: launched.ok, requeuedIds: resumed.requeuedIds, preservedOutcomes: resumed.preservedOutcomes, ...(launched.ok ? {} : { launchError: launched.error }) });
+      return Response.json({
+        ok: true,
+        runId,
+        phase,
+        resumed: true,
+        launched: launched.ok,
+        requeuedIds: resumed.requeuedIds,
+        preservedOutcomes: resumed.preservedOutcomes,
+        ...(launched.ok ? {} : { launchError: launched.error }),
+      });
     }
     if (op === 'accept') {
       const findingId = typeof body.findingId === 'string' ? body.findingId.trim() : '';
@@ -258,8 +298,91 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       await invalidateCleanupRun();
       return Response.json({ ok: true, runId, findingId, phase: run?.phase ?? null, accepted: true });
     }
+    if (op === 'dismiss-finding') {
+      const findingId = typeof body.findingId === 'string' ? body.findingId.trim() : '';
+      if (!findingId) {
+        return Response.json(
+          { error: { code: 'missing_finding_id', message: 'op "dismiss-finding" requires findingId' } },
+          { status: 400 },
+        );
+      }
+      const note = typeof body.note === 'string' ? body.note.slice(0, 2000) : null;
+      const dismissed = await markCleanupFindingDismissed({ runId, findingId, note });
+      if (!dismissed.finding) {
+        return Response.json(
+          {
+            error: {
+              code: 'finding_not_reviewable',
+              message: `${findingId} is not unresolved in review for run ${runId}`,
+            },
+          },
+          { status: 409 },
+        );
+      }
+      const run = await settleRunPhase({ runId });
+      await invalidateCleanupRun();
+      return Response.json({ ok: true, runId, findingId, phase: run?.phase ?? null, dismissed: true });
+    }
+    if (op === 'recheck-finding') {
+      const findingId = typeof body.findingId === 'string' ? body.findingId.trim() : '';
+      if (!findingId) {
+        return Response.json(
+          { error: { code: 'missing_finding_id', message: 'op "recheck-finding" requires findingId' } },
+          { status: 400 },
+        );
+      }
+      const run = await getRun(runId);
+      if (!run || run.runKind !== 'plan-cleanup' || run.phase !== 'review') {
+        return Response.json(
+          { error: { code: 'run_not_in_review', message: `plan clean-up run ${runId} is not awaiting owner review` } },
+          { status: 409 },
+        );
+      }
+      const current = (await getRunFindings(runId)).find((finding) => finding.findingId === findingId);
+      if (!current) {
+        return Response.json(
+          { error: { code: 'finding_not_in_run', message: `${findingId} is not part of run ${runId}` } },
+          { status: 404 },
+        );
+      }
+      if (current.kind === 'semantic') {
+        return Response.json(
+          {
+            error: { code: 'finding_not_recheckable', message: 'semantic findings require Retry or explicit Dismiss' },
+          },
+          { status: 409 },
+        );
+      }
+      const stillPresent = (await scanCleanupRun(run, [current.planSlug])).some(
+        (finding) => finding.findingId === findingId,
+      );
+      if (stillPresent) {
+        return Response.json({ ok: true, runId, findingId, phase: run.phase, resolved: false });
+      }
+      const accepted = await markCleanupFindingAccepted({
+        runId,
+        findingId,
+        note: 'Owner recheck confirmed the finding no longer exists in live plan state',
+      });
+      if (!accepted.finding) {
+        return Response.json(
+          {
+            error: { code: 'finding_not_reviewable', message: `${findingId} could not be reconciled in run ${runId}` },
+          },
+          { status: 409 },
+        );
+      }
+      const settled = await settleRunPhase({ runId });
+      await invalidateCleanupRun();
+      return Response.json({ ok: true, runId, findingId, phase: settled?.phase ?? null, resolved: true });
+    }
     return Response.json(
-      { error: { code: 'unknown_op', message: `op must be start | stop | restart | resume | accept | dismiss (got "${op}")` } },
+      {
+        error: {
+          code: 'unknown_op',
+          message: `op must be start | stop | restart | resume | accept | recheck-finding | dismiss-finding | dismiss (got "${op}")`,
+        },
+      },
       { status: 400 },
     );
   } catch (error) {
@@ -279,13 +402,10 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
     const text = await req.text();
     if (text) body = JSON.parse(text) as Record<string, unknown>;
   } catch {
-    return Response.json(
-      { error: { code: 'invalid_json', message: 'request body must be JSON' } },
-      { status: 400 },
-    );
+    return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
   const op = typeof body.op === 'string' ? body.op : 'start';
-  const STOP_OPS = new Set(['stop', 'dismiss']);
+  const STOP_OPS = new Set(['stop', 'dismiss', 'recheck-finding', 'dismiss-finding']);
   if (!STOP_OPS.has(op)) {
     const gated = await gateApiRoute(req, FLAGS.PLAN_CLEANUP);
     if (gated) return gated;
@@ -305,12 +425,8 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
     );
   }
   const harness =
-    typeof body.harness === 'string' && body.harness.trim()
-      ? body.harness.trim()
-      : operatorHomeHarnessSlug();
-  const filter = body.filter && typeof body.filter === 'object'
-    ? (body.filter as Record<string, unknown>)
-    : {};
+    typeof body.harness === 'string' && body.harness.trim() ? body.harness.trim() : operatorHomeHarnessSlug();
+  const filter = body.filter && typeof body.filter === 'object' ? (body.filter as Record<string, unknown>) : {};
 
   // P-004 — PREFLIGHT BEFORE createRun, via the SAME validator the Inbox route
   // uses, so the two panes cannot drift into judging one profile differently.
@@ -391,13 +507,7 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
 
     const resolverOwner = `su-${randomUUID()}`;
     await setRunPhase({ runId: run.runId, phase: 'pending', resolverOwner });
-    const launched = await launchCleanupResolver(
-      run.runId,
-      planSlugs,
-      harness,
-      preflight.launch,
-      resolverOwner,
-    );
+    const launched = await launchCleanupResolver(run.runId, planSlugs, harness, preflight.launch, resolverOwner);
     if (launched.ok) {
       await setRunPhase({
         runId: run.runId,

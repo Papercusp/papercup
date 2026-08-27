@@ -244,6 +244,62 @@ describe("usePlanCleanupOps", () => {
       note: "owner checked it",
     });
   });
+
+  it("routes selected retry, live recheck, and per-finding dismissal through the existing owner endpoint", async () => {
+    H.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          phase: "running",
+          launched: true,
+          preservedOutcomes: 3,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, phase: "review", resolved: false }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ ok: true, phase: "complete", dismissed: true }),
+      });
+    const { result } = renderHook(() => usePlanCleanupOps());
+
+    await expect(
+      result.current.resume("run-1", [" f-1 ", "f-1"]),
+    ).resolves.toMatchObject({
+      ok: true,
+      phase: "running",
+      launched: true,
+      preservedOutcomes: 3,
+    });
+    await expect(
+      result.current.recheckFinding("run-1", "f-2"),
+    ).resolves.toEqual({
+      ok: true,
+      resolved: false,
+      phase: "review",
+    });
+    await expect(
+      result.current.dismissFinding("run-1", "f-3", "Owner declined it"),
+    ).resolves.toEqual({ ok: true, phase: "complete" });
+
+    expect(
+      H.fetch.mock.calls
+        .slice(-3)
+        .map((call) => JSON.parse(call[1].body as string)),
+    ).toEqual([
+      { op: "resume", runId: "run-1", findingIds: ["f-1"] },
+      { op: "recheck-finding", runId: "run-1", findingId: "f-2" },
+      {
+        op: "dismiss-finding",
+        runId: "run-1",
+        findingId: "f-3",
+        note: "Owner declined it",
+      },
+    ]);
+  });
 });
 
 describe("PlansCleanupStrip", () => {
@@ -300,7 +356,9 @@ describe("PlansCleanupStrip", () => {
     const p = props();
     render(<PlansCleanupStrip {...p} />);
     fireEvent.click(screen.getByTestId("plans-cleanup-start"));
-    await waitFor(() => expect(p.onRunStarted).toHaveBeenCalledWith("run-deterministic"));
+    await waitFor(() =>
+      expect(p.onRunStarted).toHaveBeenCalledWith("run-deterministic"),
+    );
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -319,7 +377,11 @@ describe("PlansCleanupStrip", () => {
     };
     render(
       <PlansCleanupStrip
-        {...props({ run: run({ launchSnapshot: launched }), findings, isRunning: true })}
+        {...props({
+          run: run({ launchSnapshot: launched }),
+          findings,
+          isRunning: true,
+        })}
       />,
     );
     expect(screen.getByTestId("plans-cleanup-counts").textContent).toContain(
@@ -331,9 +393,11 @@ describe("PlansCleanupStrip", () => {
     expect(screen.getByTestId("plans-cleanup-counts").textContent).toContain(
       "1 left",
     );
-    expect(screen.getByTestId("plan-cleanup-settings-control").getAttribute("data-effective")).toBe(
-      JSON.stringify(launched),
-    );
+    expect(
+      screen
+        .getByTestId("plan-cleanup-settings-control")
+        .getAttribute("data-effective"),
+    ).toBe(JSON.stringify(launched));
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe(
       "67",
     );
@@ -346,7 +410,7 @@ describe("PlansCleanupStrip", () => {
     });
   });
 
-  it("hands review to ?opcln and clears it only after a successful dismiss", async () => {
+  it("hands review to ?opcln and hides it without completing unresolved findings", async () => {
     const recommendation = finding({ outcome: "recommended" });
     const p = props({
       run: run({ phase: "review", finishedAt: "2026-08-24T12:00:40.000Z" }),
@@ -362,12 +426,8 @@ describe("PlansCleanupStrip", () => {
     fireEvent.click(screen.getByTestId("plans-cleanup-open-review"));
     expect(p.onReview).toHaveBeenCalledWith("run-1");
 
-    fireEvent.click(screen.getByTestId("plans-cleanup-dismiss"));
-    await waitFor(() => expect(H.fetch).toHaveBeenCalledTimes(1));
-    expect(JSON.parse(H.fetch.mock.calls[0]![1].body as string)).toEqual({
-      op: "dismiss",
-      runId: "run-1",
-    });
+    fireEvent.click(screen.getByTestId("plans-cleanup-hide"));
     expect(p.onRunCleared).toHaveBeenCalledTimes(1);
+    expect(H.fetch).not.toHaveBeenCalled();
   });
 });

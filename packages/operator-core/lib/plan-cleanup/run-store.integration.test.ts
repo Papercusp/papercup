@@ -35,6 +35,7 @@ const {
   seedFindings,
   executeCleanupFindingAction,
   markCleanupFindingAccepted,
+  markCleanupFindingDismissed,
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
@@ -189,9 +190,7 @@ describe('plan-cleanup run store (real PG)', () => {
     // Descriptive refresh landed…
     expect(read.every((f) => f.target.endsWith('(rescanned)'))).toBe(true);
     // …and the already-resolved outcome was NOT rolled back to pending.
-    expect(read.find((f) => f.findingId === 'flip-to-done:papercusp/plan-a#P-001')!.outcome).toBe(
-      'auto_applied',
-    );
+    expect(read.find((f) => f.findingId === 'flip-to-done:papercusp/plan-a#P-001')!.outcome).toBe('auto_applied');
   });
 
   it('serializes one action with outcome + counters under the run authority lock', async () => {
@@ -217,8 +216,7 @@ describe('plan-cleanup run store (real PG)', () => {
       {
         kind: 'plan',
         ref: 'plan-a',
-        note:
-          'resolver auto-action rationale: The linked work item is terminal with recorded completion evidence.',
+        note: 'resolver auto-action rationale: The linked work item is terminal with recorded completion evidence.',
       },
     ]);
     expect(result.run).toMatchObject({ autoResolved: 1, recommended: 0, skipped: 0, failed: 0 });
@@ -258,9 +256,7 @@ describe('plan-cleanup run store (real PG)', () => {
     // Counter mapping: auto_applied → auto_resolved column, failed → failed.
     expect(first.run).toMatchObject({ autoResolved: 1, recommended: 1, skipped: 0, failed: 1 });
     // The report's evidence REPLACED the scan-time refs.
-    expect(first.updated[0]!.evidence).toEqual([
-      { kind: 'work-item', ref: 'WI-1', note: 're-verified at apply time' },
-    ]);
+    expect(first.updated[0]!.evidence).toEqual([{ kind: 'work-item', ref: 'WI-1', note: 're-verified at apply time' }]);
     expect(first.updated[0]!.decidedAt).not.toBeNull();
 
     // The consult-reply path re-reports the same finding — counters must not drift.
@@ -398,14 +394,12 @@ describe('plan-cleanup run store (real PG)', () => {
     const unchanged = await getRun(run.runId);
     expect(unchanged).toMatchObject({ phase: 'pending', resolverOwner: 'su-replacement' });
     expect(unchanged!.heartbeatAt).toBeNull();
-    expect((await getRunFindings(run.runId)).every((finding) => finding.outcome === 'pending')).toBe(
-      true,
-    );
+    expect((await getRunFindings(run.runId)).every((finding) => finding.outcome === 'pending')).toBe(true);
 
     // CONTROL: the replacement owner can still use the same run.
-    expect(
-      await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' }),
-    ).toMatchObject({ resolverOwner: 'su-replacement' });
+    expect(await recordRunHeartbeat({ runId: run.runId, resolverOwner: 'su-replacement' })).toMatchObject({
+      resolverOwner: 'su-replacement',
+    });
   });
 
   // ── kind-aware settle + review reads ──────────────────────────────────────
@@ -438,19 +432,31 @@ describe('plan-cleanup run store (real PG)', () => {
     });
     expect(accepted.finding).toMatchObject({ outcome: 'accepted' });
     expect(accepted.finding?.evidence.at(-1)?.note).toMatch(/owner accepted/i);
+    expect((await settleRunPhase({ runId: run.runId }))?.phase).toBe('review');
+    expect(
+      (
+        await markCleanupFindingDismissed({
+          runId: run.runId,
+          findingId: 'archive-candidate:papercusp/plan-b',
+          note: 'Owner deliberately declined the skipped archive recommendation',
+        })
+      ).finding,
+    ).toMatchObject({ outcome: 'dismissed' });
     const done = await settleRunPhase({ runId: run.runId });
     expect(done?.phase).toBe('complete');
     expect(done?.finishedAt).not.toBeNull();
   });
 
-  it('owner acceptance is review-only and refuses non-recommended findings', async () => {
+  it('owner acceptance is review-only, reconciles unresolved findings, and refuses terminal rows', async () => {
     const run = await createCleanupRun();
     await seedFindings({ runId: run.runId, findings: scanFindings() });
     expect(
-      (await markCleanupFindingAccepted({
-        runId: run.runId,
-        findingId: 'stale-now:papercusp/plan-a',
-      })).finding,
+      (
+        await markCleanupFindingAccepted({
+          runId: run.runId,
+          findingId: 'stale-now:papercusp/plan-a',
+        })
+      ).finding,
     ).toBeNull();
 
     await reportFindingOutcomes({
@@ -459,11 +465,50 @@ describe('plan-cleanup run store (real PG)', () => {
     });
     expect((await settleRunPhase({ runId: run.runId }))?.phase).toBe('review');
     expect(
-      (await markCleanupFindingAccepted({
-        runId: run.runId,
-        findingId: 'flip-to-done:papercusp/plan-NOPE#P-9',
-      })).finding,
+      (
+        await markCleanupFindingAccepted({
+          runId: run.runId,
+          findingId: 'flip-to-done:papercusp/plan-NOPE#P-9',
+        })
+      ).finding,
     ).toBeNull();
+
+    const reconciled = await markCleanupFindingAccepted({
+      runId: run.runId,
+      findingId: 'archive-candidate:papercusp/plan-b',
+      note: 'manual edit removed the finding',
+    });
+    expect(reconciled.finding).toMatchObject({ outcome: 'accepted' });
+    expect(
+      (
+        await markCleanupFindingAccepted({
+          runId: run.runId,
+          findingId: 'archive-candidate:papercusp/plan-b',
+        })
+      ).finding,
+    ).toBeNull();
+  });
+
+  it('dismisses one unresolved finding explicitly and leaves other review work visible', async () => {
+    const run = await createCleanupRun();
+    await seedFindings({ runId: run.runId, findings: scanFindings() });
+    await reportFindingOutcomes({
+      runId: run.runId,
+      reports: scanFindings().map((finding) => ({
+        findingId: finding.findingId,
+        outcome: finding.kind === 'stale-now' ? ('failed' as const) : ('recommended' as const),
+      })),
+    });
+    expect((await settleRunPhase({ runId: run.runId }))?.phase).toBe('review');
+
+    const dismissed = await markCleanupFindingDismissed({
+      runId: run.runId,
+      findingId: 'stale-now:papercusp/plan-a',
+      note: 'Owner chose not to rewrite Now',
+    });
+    expect(dismissed.finding).toMatchObject({ outcome: 'dismissed', error: null });
+    expect(dismissed.finding?.evidence.at(-1)?.note).toMatch(/owner dismissed/i);
+    expect((await settleRunPhase({ runId: run.runId }))?.phase).toBe('review');
   });
 
   it('keeps a run with an unreached (still-pending) finding OUT of complete', async () => {
