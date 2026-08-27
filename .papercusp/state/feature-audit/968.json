@@ -1,0 +1,9 @@
+{
+  "actor": "su-dd38a0f7-a586-4147-8cd1-b5da9a30ddf7",
+  "feature_id": "F-FIX-050",
+  "field": "__created",
+  "id": 968,
+  "new_value": "{\"id\":\"F-FIX-050\",\"title\":\"Keep release-sidecar dependency reification out of committed source.tar.zst\",\"sourceIssueId\":\"WI-242480\"}",
+  "old_value": "null",
+  "ts": 1787860032931
+}
