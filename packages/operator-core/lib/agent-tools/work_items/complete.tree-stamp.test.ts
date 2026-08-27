@@ -284,7 +284,7 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     mkdirSync(join(submodule, 'src'), { recursive: true });
 
     const git = (cwd: string, args: string[]) =>
-      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 }).trim();
     git(root, ['init', '-q']);
     git(root, ['config', 'user.email', 'completion-test@example.invalid']);
     git(root, ['config', 'user.name', 'Completion Test']);
@@ -320,7 +320,7 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     mkdirSync(join(submodule, 'src'), { recursive: true });
 
     const git = (cwd: string, args: string[]) =>
-      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 }).trim();
     git(root, ['init', '-q']);
     git(root, ['config', 'user.email', 'completion-test@example.invalid']);
     git(root, ['config', 'user.name', 'Completion Test']);
