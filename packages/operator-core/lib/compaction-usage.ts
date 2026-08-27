@@ -140,6 +140,55 @@ export function codexRolloutSessionId(rolloutPath: string): string | null {
   return m ? m[1] : null;
 }
 
+/** Where a codex owner's context reading actually CAME FROM — the rollout file that
+ *  was read, when it was last written, and whether it belongs to the session the ref
+ *  names. Pure observation: it applies no gate and never suppresses an estimate, so
+ *  reading it can never disarm anyone. The judgement is the CALLER's, and only the
+ *  compaction watchdog has the extra input (`coord_presence.last_active_at`) that
+ *  makes one safe — see {@link codexRolloutSessionId}. */
+export interface CodexReadingProvenance {
+  /** The rollout jsonl the estimate was read from. */
+  rolloutPath: string;
+  /** Its mtime, or null when it vanished between resolution and stat. */
+  rolloutMtimeMs: number | null;
+  /** Native session id parsed from the FILENAME; null ⇒ unparseable ⇒ "cannot check". */
+  rolloutSessionId: string | null;
+  /** Native session id the ref resolved to. */
+  refSessionId: string | null;
+}
+
+/**
+ * Report the provenance of the codex reading for `ownerId` (null for non-codex, an
+ * unresolvable ref, or no rollout). Deliberately separate from
+ * {@link estimateContextTokensForOwner}: the estimate stays a number, and any
+ * trust decision is made by a caller that can see the session's own liveness.
+ */
+export async function codexReadingProvenanceForOwner(
+  ownerId: string,
+  deps: EstimateContextDeps = {},
+): Promise<CodexReadingProvenance | null> {
+  try {
+    const ref = await resolveSessionRefReconciled(ownerId);
+    if (!ref || ref.agent !== 'codex' || ref.sessionKey == null) return null;
+    const rolloutPath = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
+    if (!rolloutPath) return null;
+    let rolloutMtimeMs: number | null = null;
+    try {
+      rolloutMtimeMs = fs.statSync(rolloutPath).mtimeMs;
+    } catch {
+      rolloutMtimeMs = null;
+    }
+    return {
+      rolloutPath,
+      rolloutMtimeMs,
+      rolloutSessionId: codexRolloutSessionId(rolloutPath),
+      refSessionId: ref.sessionId ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function codexSnapshotForRef(
   ref: SessionRef,
   deps: EstimateContextDeps = {},
