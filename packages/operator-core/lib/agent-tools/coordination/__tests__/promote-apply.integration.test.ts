@@ -124,6 +124,19 @@ const captured: CapturedImport[] = [];
 // of its outcome — re-running promote would hit already-done items (marked: []).
 let applyData: any;
 
+async function seedActivationAudit(): Promise<void> {
+  await admin`
+    INSERT INTO harness_shared.plan_audits
+      (workspace_id, harness_slug, plan_slug, audit_seq, created_by, audit_kind,
+       activation, audited_plan_revision_id, audited_plan_revision_seq,
+       audited_plan_content_hash, items, findings)
+    VALUES
+      (${PAPERCUSP_WORKSPACE_ID}, ${PARENT_HARNESS}, ${SLUG}, 1, 'su-test', 'activation',
+       ${JSON.stringify({ sourceRanges: [], mappings: [], repairedOmissions: [], rejectedOrSuperseded: [], unresolvedBlockers: [] })}::text::jsonb,
+       1, 1, ${'a'.repeat(64)}, '[]'::jsonb, '[]'::jsonb)
+  `;
+}
+
 function makeCtx() {
   return {
     log: () => {},
@@ -147,6 +160,7 @@ beforeAll(async () => {
   fx = await setupPlanPgFixture();
   admin = fx.admin;
   await seedPlan(admin, PAPERCUSP_WORKSPACE_ID, PARENT_HARNESS, SLUG, planContent());
+  await seedActivationAudit();
 
   // In-test stand-in for the /features/import route: capture the payload promote
   // POSTs and return deterministic allocated ids. The real mint + coord_links
@@ -193,6 +207,7 @@ afterAll(async () => {
   if (prevApiBase === undefined) delete process.env.INTERNAL_API_BASE;
   else process.env.INTERNAL_API_BASE = prevApiBase;
   await new Promise<void>((r) => server?.close(() => r()));
+  await admin`DELETE FROM harness_shared.plan_audits WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.plan_revisions WHERE workspace_id = ${PAPERCUSP_WORKSPACE_ID} AND harness_slug = ${PARENT_HARNESS} AND plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.harness_plans WHERE plan_slug = ${SLUG}`.catch(() => {});
   await admin`DELETE FROM harness_shared.harness_plan_assertions WHERE plan_slug = ${SLUG}`.catch(() => {});
@@ -312,7 +327,7 @@ describe('plans:promote APPLY path (apply:true, all_waves)', () => {
     `;
     // Seed version 1, then plans:promote writes once for marking items and once
     // for the final Promoted/Now/status write-back.
-    expect(plan.version).toBe(3);
+    expect(Number(plan.version)).toBe(3);
 
     const revisions = await admin<{
       seq: number;

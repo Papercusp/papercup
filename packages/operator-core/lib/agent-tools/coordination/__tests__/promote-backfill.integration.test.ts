@@ -190,7 +190,7 @@ describe('plans:promote — WI-3972 backfill of ## Promoted (no policy, already-
          AND harness_slug = ${PARENT_HARNESS}
          AND plan_slug = ${SLUG}
     `;
-    expect(plan.version).toBe(2);
+    expect(Number(plan.version)).toBe(2);
     expect(plan.content).toBe(content);
 
     const revisions = await admin<{
