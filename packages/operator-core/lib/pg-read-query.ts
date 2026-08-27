@@ -1646,8 +1646,8 @@ export const TOOL_ROUTING_BY_TABLE: Record<string, ToolRoute> = {
     gives: 'audience-scoped history with membership gating',
   },
   coord_thread_posts: {
-    tool: 'coord:catch-up',
-    gives: 'the bounded per-audience catch-up rather than a raw post scan',
+    tool: 'work_items:get',
+    gives: 'the item-scoped comments for a recognizable issue/work-item thread, with the work-item projection and checkpoint',
   },
   tool_invocations: {
     tool: 'activity:tool-log / dev:telemetry / dev:tool_cooccurrence',
@@ -1763,6 +1763,32 @@ export function plainSingleRelationRead(rawSql: string): PlainSingleRelationRead
 }
 
 /**
+ * A coord-thread post is addressable through `work_items:get` only when the
+ * query identifies the stable thread id that work-item/issue writers mint.
+ * Numeric post ids, federated post ids, generic `thr-*` conversations, and
+ * broad thread scans have no one work-item that this tool can resolve, so they
+ * must stay silent rather than receive an unrelated catch-up recommendation.
+ *
+ * Match the literal predicate on the raw SQL because the shared SQL stripper
+ * intentionally erases literal contents. Ignore masked ranges so a comment or
+ * string containing an example predicate cannot trigger the route.
+ */
+function hasRecognizableWorkItemThreadPredicate(rawSql: string): boolean {
+  const masked = sqlLiteralAndCommentRanges(rawSql);
+  const isMasked = (index: number): boolean =>
+    masked.some(([from, to]) => index >= from && index < to);
+  const re = /\bthread_id\b\s*=\s*'((?:''|[^'])*)'/gi;
+  for (let match = re.exec(rawSql); match; match = re.exec(rawSql)) {
+    if (isMasked(match.index)) continue;
+    const threadId = match[1]!.replaceAll("''", "'");
+    if (/^(?:issue-thread|work-item-thread)-[A-Za-z0-9][A-Za-z0-9._-]*$/i.test(threadId)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * "A tool already answers this read" — the aimed replacement for the static
  * `seeAlso` footer (P-001).
  *
@@ -1782,6 +1808,14 @@ export function buildToolRoutingAdvisory(rawSql: string): string | null {
   const bare = read.relation;
   const route = TOOL_ROUTING_BY_TABLE[bare];
   if (!route) return null;
+
+  // coord_thread_posts contains many valid reads that are not work-item
+  // comments (numeric post-id scans, federated posts, and generic conversations).
+  // Only the stable issue/work-item thread-id shape has a faithful
+  // work_items:get replacement; arbitrary post scans are dev:pg_query's job.
+  if (bare === 'coord_thread_posts' && !hasRecognizableWorkItemThreadPredicate(rawSql)) {
+    return null;
+  }
 
   // Let the dedicated claimability advisory own the work_items claim shape —
   // it says something strictly more specific than "there is a list tool".

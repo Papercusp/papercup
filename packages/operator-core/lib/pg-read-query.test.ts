@@ -2212,6 +2212,48 @@ describe('buildToolRoutingAdvisory', () => {
     expect(advisory).toContain('work_items:list');
   });
 
+  it('stays silent for arbitrary coord_thread_posts and post-id scans', () => {
+    expect(
+      buildToolRoutingAdvisory(
+        'SELECT id, author_id, body FROM harness_shared.coord_thread_posts WHERE id = 53559',
+      ),
+    ).toBeNull();
+    expect(
+      buildToolRoutingAdvisory(
+        "SELECT id, thread_id, body FROM harness_shared.coord_thread_posts WHERE post_msg_id = 'post-1'",
+      ),
+    ).toBeNull();
+    expect(
+      buildToolRoutingAdvisory(
+        "SELECT id, thread_id, body FROM harness_shared.coord_thread_posts WHERE thread_id = 'thr-conversation-1'",
+      ),
+    ).toBeNull();
+  });
+
+  it.each(['issue-thread-WI-6270', 'work-item-thread-WI-5137'])(
+    'routes the recognizable %s shape to work_items:get',
+    (threadId) => {
+      const advisory = buildToolRoutingAdvisory(
+        `SELECT id, thread_id, body FROM harness_shared.coord_thread_posts WHERE thread_id = '${threadId}'`,
+      );
+      expect(advisory).toContain('work_items:get');
+      expect(advisory).not.toContain('coord:catch-up');
+    },
+  );
+
+  it('does not route a commented or string-contained example as a thread predicate', () => {
+    expect(
+      buildToolRoutingAdvisory(
+        "SELECT body FROM harness_shared.coord_thread_posts WHERE id = 53559 -- thread_id = 'issue-thread-WI-1'",
+      ),
+    ).toBeNull();
+    expect(
+      buildToolRoutingAdvisory(
+        "SELECT 'thread_id = \'issue-thread-WI-1\'' AS example FROM harness_shared.coord_thread_posts",
+      ),
+    ).toBeNull();
+  });
+
   /**
    * THE RECURRENCE GUARD. Routing an agent to a verb that does not exist is
    * strictly worse than the raw SQL it replaces — the SQL works, and the
