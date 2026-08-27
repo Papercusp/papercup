@@ -287,9 +287,12 @@ describe('published launch args schema', () => {
     expect(launchAgent.args.safeParse({ plan: 'p', successor: { agentId: 'su-a1a71' } }).success).toBe(false);
   });
 
-  it('keeps the individual fresh and source shapes valid', () => {
+  it('requires an actionable brief for source launches', () => {
     expect(launchAgent.args.safeParse({ plan: 'p' }).success).toBe(true);
-    expect(launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' } }).success).toBe(true);
+    expect(launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' } }).success).toBe(false);
+    expect(
+      launchAgent.args.safeParse({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }).success,
+    ).toBe(true);
     expect(launchAgent.args.safeParse({ successor: { agentId: 'su-a1a71' } }).success).toBe(true);
   });
 
@@ -339,6 +342,17 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toMatch(/a `brief`.*or a `plan`/s);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses a no-brief resume before resolving the target or opening a terminal', async () => {
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('requires a non-empty `brief`');
+    expect(textOf(res)).toContain('actionable next turn');
+    expect(resolveResumeTargetMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
   });
 
   it('launches N agents on one brief', async () => {
@@ -659,7 +673,7 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it("EI-11578: a RESUME forces a process-per-window emulator (preferProcessPerWindow) — a resumed dormant session dies under gnome-terminal's VTE pty", async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
     expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ preferProcessPerWindow: true });
   });
 
@@ -670,7 +684,7 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('resumes a dead agent BY AGENT ID — no uuid hunting', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
 
     expect(resolveResumeTargetMock).toHaveBeenCalledWith({ agentId: 'su-a1a71', sessionId: null });
     expect(spawnedCommand()).toContain('--resume=sid-dead');
@@ -685,7 +699,7 @@ describe('resume + fork (D-004/D-007)', () => {
       new Map([['su-caller', { fleetSlug: 'caller-fleet', fleetRole: 'leader' }]]),
     );
 
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
 
     expect(latestFleetMembershipMock).toHaveBeenCalledWith('ws-test', 'su-a1a71');
     expect(fetchPresenceFleetMock).not.toHaveBeenCalled();
@@ -717,7 +731,7 @@ describe('resume + fork (D-004/D-007)', () => {
       lastError: null,
     });
 
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
 
     expect(isError(res)).toBe(false);
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(1);
@@ -762,7 +776,10 @@ describe('resume + fork (D-004/D-007)', () => {
       lastError: null,
     });
 
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, headless: false }, ctx);
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, headless: false, brief: 'continue with the saved placement' },
+      ctx,
+    );
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('Saved launch spec conflict');
@@ -777,7 +794,7 @@ describe('resume + fork (D-004/D-007)', () => {
     getModesMock.mockResolvedValue([{ mode: 'drain', subject: 'bug-drain', ownerDirected: true }]);
     listFactsMock.mockResolvedValue([{ key: 'mode-instructions:drain', body: 'Checkpoint incidental defects.' }]);
 
-    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, fork: true }, ctx);
+    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, fork: true, brief: 'continue the recovery' }, ctx);
 
     expect(spawnedCommand()).toContain('--mode=drain');
     expect(spawnedCommand()).toContain('--mode-subject=bug-drain');
@@ -831,7 +848,7 @@ describe('resume + fork (D-004/D-007)', () => {
       launchedBy: 'su-caller',
       lastActivityAt: Date.now() - 5 * 60_000,
     });
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
 
     expect(spawnedCommand()).toContain('--resume=sid-dead --fork');
     expect(textOf(res)).toContain('still LIVE');
@@ -840,7 +857,10 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('forks explicitly when asked, even from a dead source', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, fork: true }, ctx);
+    await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: true, brief: 'branch the recovery' },
+      ctx,
+    );
     expect(spawnedCommand()).toContain('--fork');
   });
 
@@ -850,6 +870,7 @@ describe('resume + fork (D-004/D-007)', () => {
     const res = await launchAgent.handler(
       {
         resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
         restoreVisible: true,
       },
       ctx,
@@ -870,6 +891,7 @@ describe('resume + fork (D-004/D-007)', () => {
     const res = await launchAgent.handler(
       {
         resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
         restoreVisible: true,
       },
       ctx,
@@ -888,6 +910,7 @@ describe('resume + fork (D-004/D-007)', () => {
     const res = await launchAgent.handler(
       {
         resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
         restoreVisible: true,
       },
       ctx,
@@ -909,6 +932,7 @@ describe('resume + fork (D-004/D-007)', () => {
     const res = await launchAgent.handler(
       {
         resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
         restoreVisible: true,
       },
       ctx,
@@ -936,6 +960,7 @@ describe('resume + fork (D-004/D-007)', () => {
     const res = await launchAgent.handler(
       {
         resume: { sessionId: 'sid-dead' },
+        brief: 'restore the session',
         restoreVisible: true,
       },
       ctx,
@@ -986,7 +1011,7 @@ describe('resume + fork (D-004/D-007)', () => {
       error: 'not_found',
       detail: 'no adv_sessions row for agent su-nope',
     });
-    const res = await launchAgent.handler({ resume: { agentId: 'su-nope' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-nope' }, brief: 'continue the missing session' }, ctx);
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('no adv_sessions row');
     expect(spawnConsoleMock).not.toHaveBeenCalled();
@@ -1002,7 +1027,7 @@ describe('resume + fork (D-004/D-007)', () => {
       mismatch: false,
     });
 
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the delayed recovery' }, ctx);
 
     expect(isError(res)).toBe(false);
     expect(textOf(res)).toContain('RESUME UNCONFIRMED');
@@ -1026,7 +1051,7 @@ describe('resume + fork (D-004/D-007)', () => {
     });
     readPsuLaunchLogTailMock.mockReturnValue('psu: resume transcript was not found');
 
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the logged recovery' }, ctx);
 
     expect(readPsuLaunchLogTailMock).toHaveBeenCalledWith('su-a1a71', { chars: PSU_LAUNCH_LOG_TAIL_CHARS });
     expect(textOf(res)).toContain('Per-owner psu boot log tail');
@@ -1048,7 +1073,10 @@ describe('resume + fork (D-004/D-007)', () => {
       mismatch: true,
     });
 
-    const res = await launchAgent.handler({ resume: { sessionId: 'later-rollout-uuid' } }, ctx);
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'later-rollout-uuid' }, brief: 'continue the exact recovery' },
+      ctx,
+    );
 
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('RESUME UUID MISMATCH');
@@ -1067,7 +1095,10 @@ describe('resume + fork (D-004/D-007)', () => {
   });
 
   it('refuses to resume one session N times (fork is the run-alongside path)', async () => {
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, count: 3 }, ctx);
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery', count: 3 },
+      ctx,
+    );
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toMatch(/cannot be resumed more than once/);
     expect(spawnConsoleMock).not.toHaveBeenCalled();
@@ -1075,7 +1106,10 @@ describe('resume + fork (D-004/D-007)', () => {
 
   it('allows fork × count (branch N agents off one context)', async () => {
     resolveResumeTargetMock.mockResolvedValue(dead);
-    await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, fork: true, count: 2 }, ctx);
+    await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, fork: true, brief: 'branch the recovery', count: 2 },
+      ctx,
+    );
     expect(spawnConsoleMock).toHaveBeenCalledTimes(2);
   });
 
@@ -1086,7 +1120,10 @@ describe('resume + fork (D-004/D-007)', () => {
   });
 
   it('rejects plan + resume (a resumed session keeps its own context)', async () => {
-    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, plan: 'p' } as never, ctx);
+    const res = await launchAgent.handler(
+      { resume: { agentId: 'su-a1a71' }, brief: 'new direction', plan: 'p' } as never,
+      ctx,
+    );
     expect(isError(res)).toBe(true);
     expect(textOf(res)).toContain('`plan` is for a FRESH launch');
   });
