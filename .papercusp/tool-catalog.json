@@ -6075,7 +6075,7 @@
           "POST"
         ]
       },
-      "description": "Record a work transition. Either OPEN a new handoff to other agents (provide `to[]`, `plan_slug`, `summary`, etc. — optionally `items` (P-NNN ids of `plan_slug`) to inline each item's own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.",
+      "description": "Record a work transition. Either OPEN a new handoff to other agents (provide `to[]` and `summary`; optionally `plan_slug` and `items` (P-NNN ids of `plan_slug`) to inline each item's own body into the delivered note, WI-4165) OR ACCEPT an existing one by passing `accept_msg_id` alone.",
       "capabilities": [
         "coord:write"
       ],

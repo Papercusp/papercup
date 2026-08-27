@@ -12,6 +12,10 @@ export interface ResourceGovernorInventoryRow {
   writerEvidence: string;
 }
 export const RESOURCE_GOVERNOR_INVENTORY: readonly ResourceGovernorInventoryRow[];
+export const BYPASS_REGISTRY: ReadonlyMap<
+  string,
+  { disposition: ResourceGovernorInventoryRow["disposition"]; reason: string }
+>;
 export function inspectGovernorSource(source: string): string[];
 export function validateInventory(
   rows?: readonly Partial<ResourceGovernorInventoryRow>[],

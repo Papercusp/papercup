@@ -45,6 +45,12 @@ export function formatPassingTaskVerdictSummary(
   decisions: Array<{ status?: string; reason?: string }>,
   options?: { proofGroupApplied?: boolean; cacheGroup?: string | null },
 ): string;
+export function namespacePassingTaskVerdictDecision<
+  Decision extends { hit: boolean; reason?: string },
+>(
+  decision: Decision,
+  namespace: string,
+): Omit<Decision, "reason"> & { reason: string };
 export function emptyPassingTaskVerdictCache(): PassingTaskVerdictCache;
 export function readPassingTaskVerdictCache(path: string): {
   cache: PassingTaskVerdictCache;
