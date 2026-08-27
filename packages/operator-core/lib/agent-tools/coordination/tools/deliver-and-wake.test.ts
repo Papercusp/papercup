@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog } from '../log';
 import { COORD_WAKE_TARGET_TIMEOUT_MS } from '../inbox-wake';
+import type { WakeReachabilityVerdict } from '../../../events/await/wake-reachability';
 
 // ── Mock the wake pump seam: capture every emit key, do not run the real pump. ──
 /**
@@ -89,7 +90,7 @@ const upsertInboxWakeAwait = vi.fn(
 const cancelInboxWakeAwaits = vi.fn(async () => 0);
 const startAwaitSweeper = vi.fn();
 const captureWakeHandleForOwner = vi.fn(async () => ({ handle: null, note: 'no tracked session — inbox-degraded' }));
-const reachableVerdict = {
+const reachableVerdict: WakeReachabilityVerdict = {
   reachable: true,
   channel: 'psu-socket' as const,
   durableWhileAlive: true,
