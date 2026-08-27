@@ -25,6 +25,7 @@ import {
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { readFileLockIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
+import { checkGoalModeEditGuard } from './goal-mode-edit-guard';
 
 /**
  * The bash→tool substitution verdict (plan bash-to-tool-substitution-2026-07-26,
@@ -97,6 +98,10 @@ export default defineTool({
   args: z.object({
     command: z.string().min(1).max(32000),
     cwd: z.string().max(4096).optional(),
+    tracked_mutation: z.boolean().optional().describe(
+      'Hook-derived verdict: this shell command structurally mutates at least one tracked file. ' +
+      'When true, apply the same GOAL-mode never-implement gate as a native Edit/Write claim.',
+    ),
   }),
   async handler(args, ctx) {
     const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
@@ -105,14 +110,29 @@ export default defineTool({
 
     // Both questions about the same command, concurrently — the caller is a
     // gate on the hot path and the two reads are independent.
-    const [verdict, substitution] = await Promise.all([
+    const [verdict, substitution, goalModeEditDenyReason] = await Promise.all([
       checkBashCommand({ command: args.command, coordinationDomain, ownerId }),
       substitutionVerdict(args.command, workspaceId, ownerId ?? null, args.cwd),
+      args.tracked_mutation && ownerId
+        ? checkGoalModeEditGuard({
+            workspaceId,
+            ownerId,
+            intent: 'PreToolUse:BashTrackedMutation',
+          })
+        : Promise.resolve(null),
     ]);
 
     return {
       content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, ...verdict, ...substitution }) },
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            ...verdict,
+            ...substitution,
+            goalModeEditDenyReason,
+          }),
+        },
       ],
     };
   },

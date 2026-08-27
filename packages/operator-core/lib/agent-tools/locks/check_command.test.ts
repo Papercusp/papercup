@@ -18,13 +18,16 @@ vi.mock('./identity', () => {
 vi.mock('./resource-command-match', () => ({ checkBashCommand: vi.fn() }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws') }));
 vi.mock('../../bash-substitution/registry', () => ({ getSubstitutionRows: vi.fn() }));
+vi.mock('./goal-mode-edit-guard', () => ({ checkGoalModeEditGuard: vi.fn() }));
 
 import { checkBashCommand } from './resource-command-match';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
 import { fileLockCoordinationDomain } from './coordination-domain';
 import { unsafeDependencyInstall } from '../../bash-substitution/pairs/dependency-install';
+import { checkGoalModeEditGuard } from './goal-mode-edit-guard';
 const checkM = vi.mocked(checkBashCommand);
 const rowsM = vi.mocked(getSubstitutionRows);
+const goalEditM = vi.mocked(checkGoalModeEditGuard);
 const tool = (await import('./check_command')).default;
 
 /** A registry row shaped as the matcher consumes it. */
@@ -54,6 +57,7 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   rowsM.mockResolvedValue([]);
+  goalEditM.mockResolvedValue(null);
 });
 
 describe('locks:check_command handler', () => {
@@ -67,6 +71,30 @@ describe('locks:check_command handler', () => {
   it('passes an allow verdict through', async () => {
     checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
     expect(body((await tool.handler({ command: 'ls' } as never, {} as never)) as Out)).toMatchObject({ ok: true, decision: 'allow' });
+  });
+
+  it('applies the existing GOAL edit guard to a hook-confirmed tracked Bash mutation', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    goalEditM.mockResolvedValue('GOAL mode: you never implement');
+
+    const out = body((await tool.handler(
+      { command: 'git mv old.ts new.ts', tracked_mutation: true } as never,
+      { workspaceId: 'ws-live' } as never,
+    )) as Out);
+
+    expect(goalEditM).toHaveBeenCalledWith({
+      workspaceId: 'ws-live',
+      ownerId: 'me',
+      intent: 'PreToolUse:BashTrackedMutation',
+    });
+    expect(out.goalModeEditDenyReason).toBe('GOAL mode: you never implement');
+  });
+
+  it('does not read GOAL mode for a shell command with no tracked mutation', async () => {
+    checkM.mockResolvedValue({ decision: 'allow', matched: [] } as never);
+    const out = body((await tool.handler({ command: 'git status' } as never, {} as never)) as Out);
+    expect(goalEditM).not.toHaveBeenCalled();
+    expect(out.goalModeEditDenyReason).toBeNull();
   });
 });
 
