@@ -419,6 +419,31 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('adds the substrate_outbox table_name redirect alongside knownColumns', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "table_tag" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.substrate_outbox',
+        columns: ['id: bigint', 'workspace_id: text', 'harness_slug: text', 'table_name: text'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT table_tag FROM harness_shared.substrate_outbox WHERE workspace_id = 'ws'",
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      knownColumns: {
+        'harness_shared.substrate_outbox': expect.arrayContaining(['table_name: text']),
+      },
+      schemaColumn: expect.stringContaining('table_name'),
+    });
+  });
+
   it('returns the routines pause metadata redirect for a paused_reason guess', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "paused_reason" does not exist'), { code: '42703' }),

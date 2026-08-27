@@ -1578,6 +1578,16 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.work_items');
   });
 
+  it('redirects substrate_outbox table_tag to the physical table_name column', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT table_tag FROM harness_shared.substrate_outbox WHERE workspace_id = 'ws'",
+      'column "table_tag" does not exist',
+    );
+    expect(out).toContain('table_name');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_shared.substrate_outbox');
+  });
+
   it('redirects the derived checkpoint field to the canonical carry-note reader', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT checkpoint FROM harness_shared.work_items WHERE workspace_id = 'ws' AND feature_id = 'WI-1'",

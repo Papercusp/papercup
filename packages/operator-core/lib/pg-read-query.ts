@@ -745,6 +745,12 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'the public work-item id maps to the canonical `feature_id` column; include `workspace_id` in the predicate',
   },
   {
+    relation: 'substrate_outbox',
+    missing: 'table_tag',
+    message:
+      'the outbox table records the affected relation in the physical `table_name` column; scope by `workspace_id` and `harness_slug` when those tenant columns are relevant',
+  },
+  {
     relation: 'work_items',
     missing: 'checkpoint',
     message:
