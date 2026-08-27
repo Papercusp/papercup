@@ -388,7 +388,7 @@ describe('migration runner — failure paths + recording contract (synthetic sql
     expect(second.appliedCount).toBe(0);
   });
 
-  it('applies files in plain lexicographic filename order (zero-padding is a naming convention, not a numeric sort)', async () => {
+  it('applies numbered files in numeric prefix order with deterministic filename ties', async () => {
     // '002-a.sql' sorts first, so it creates the log table the others insert into.
     const dir = await makeSqlDir({
       '002-a.sql':
@@ -397,16 +397,17 @@ describe('migration runner — failure paths + recording contract (synthetic sql
       '100-c.sql': "INSERT INTO mrb8_log (tag) VALUES ('100');\n",
       '10-ten.sql': "INSERT INTO mrb8_log (tag) VALUES ('10');\n",
       '2-two.sql': "INSERT INTO mrb8_log (tag) VALUES ('2');\n",
+      '374-three.sql': "INSERT INTO mrb8_log (tag) VALUES ('374');\n",
+      '1003-four.sql': "INSERT INTO mrb8_log (tag) VALUES ('1003');\n",
     });
 
     const res = await applyPendingMigrations({ client: sql, sqlDir: dir });
-    expect(res.appliedCount).toBe(5);
+    expect(res.appliedCount).toBe(7);
 
     const rows = await sql.unsafe(`SELECT tag FROM mrb8_log ORDER BY n`);
-    // Lexicographic: '002' < '010' < '10-' < '100' < '2-'. Zero-padded names sort
-    // numerically only BECAUSE they're padded; the unpadded '2-two.sql' lands LAST
-    // (after '100-c.sql') — which is exactly why the real sql dir zero-pads.
-    expect(rows.map((r) => r.tag)).toEqual(['002', '010', '10', '100', '2']);
+    // Numeric prefixes group equivalent numbers, and complete filenames break ties.
+    // Crucially, the three-digit prerequisite runs before the four-digit migration.
+    expect(rows.map((r) => r.tag)).toEqual(['002', '2', '010', '10', '100', '374', '1003']);
   });
 
   it('INCIDENT REGRESSION (2026-06-09 fleet deploy wedge): out-of-band DDL leaves the migration pending — only the runner records', async () => {
