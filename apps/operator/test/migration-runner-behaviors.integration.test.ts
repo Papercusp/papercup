@@ -19,7 +19,7 @@
  *   - psql metacommand lines are stripped from execution but hashed raw
  *   - the default skip set (per-harness-template + MANUAL_ONLY) and its override
  *   - SQL escaping of recorded filenames
- *   - plain lexicographic apply order (zero-padding is convention, not numeric sort)
+ *   - numeric-prefix apply order with deterministic complete-filename tie-breaks
  *   - INCIDENT CLASS (2026-06-09 fleet deploy wedge): out-of-band `psql -f`
  *     application leaves a migration permanently pending — only the RUNNER records.
  *
