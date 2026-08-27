@@ -198,11 +198,17 @@ clear it, and resume the drain.`,
   {
     id: 'grade',
     axis: 'overlay',
-    title: 'GRADE — monitor via rubrics + scorecards',
-    oneLiner: 'stand up rubric-graded monitoring of the given target: reuse a rubric or ratify one, emit scorecards on a loop',
+    implies: ['auto'],
+    title: 'GRADE — score, repair, and re-grade',
+    oneLiner:
+      'enter AUTO, grade with a reused rubric, and drive confirmed findings through a verified fix and re-grade',
     contract: `## GRADE mode — binding contract
-Stand up rubric-graded MONITORING of whatever the owner named, on the
-rubric/scorecard system — never ad-hoc prose reports.
+Own the complete grading-and-correction loop for whatever the owner named, on
+the rubric/scorecard system — never ad-hoc prose reports and never a scorecard
+that leaves confirmed breakage behind. GRADE implies AUTO and you ALREADY hold
+it: entering this mode writes the auto row for you while preserving a deliberately
+chosen autonomy posture such as cold-auto. Act, don't ask, and keep the grading
+loop moving until its exit criterion is met.
 1. REUSE FIRST: rubrics:search for an applicable rubric; propose a new one
    (rubrics:propose → ratification) ONLY on a real gap. Rubric proliferation is
    the failure mode — a near-fit existing rubric beats a bespoke new one.
@@ -213,12 +219,28 @@ rubric/scorecard system — never ad-hoc prose reports.
 3. CHEAP EVIDENCE: prefer deterministic evidence (dev:pg_query, counters,
    freshness checks) over per-wake LLM judgment — the cheapest grading is
    compute, not inference. Rate honestly: unknown beats invented.
-4. TERMS: take cadence + exit criteria from the owner at entry; surface
+4. BASELINE BEFORE REPAIR: emit or durably record the failing evidence before
+   changing it. Preserve the distinction between confirmed, unknown, and not
+   exercised; an unconfirmed hypothesis is filed for investigation, never
+   silently converted into a speculative patch.
+5. FIX WHAT GRADING CONFIRMS: a confirmed defect or material improvement is
+   YOUR implementation work. Dedup first, then claim the existing remediation
+   item or create + claim one before editing. Name the root cause, land the
+   durable fix, add a recurrence guard that fails if the CLASS returns, verify
+   it, and re-grade the original target. Filing a finding, applying a temporary
+   mitigation, or making the scorecard green without fixing the cause is not
+   completion. If a live peer already owns the fix, send the evidence once and
+   grade the result after it lands instead of creating a second implementation.
+6. INDEPENDENCE: remediation ownership does not waive a rubric's independent-
+   acceptance rule. When acceptance requires a non-implementer, launch or route
+   to that grader after your deterministic verification; never self-accept work
+   whose rubric requires an independent verdict.
+7. TERMS: take cadence + exit criteria from the owner at entry; surface
    worsening trends instead of waiting to be asked.
 SU IDEAS: grading an su-filed idea (blender:grade-idea) with a low grade + feedback WAKES its
 originator to revise — your critique is the revision signal that closes their loop, not just a
 score. (No self-grading: the tool refuses when you authored the row.)
-(Overlay: stacks with any autonomy/work-source mode.)`,
+(Overlay: stacks with any work-source mode and structurally enters an autonomy posture.)`,
   },
   {
     id: 'goal',
@@ -622,9 +644,7 @@ export function subjectRequiringModeIds(): readonly string[] {
  * that reaches both, and a mode that is NOT launchable cannot be offered by a
  * surface that forgot to check.
  */
-export const LAUNCHABLE_MODE_IDS: readonly string[] = MODES.filter((m) => m.launchable === true).map(
-  (m) => m.id,
-);
+export const LAUNCHABLE_MODE_IDS: readonly string[] = MODES.filter((m) => m.launchable === true).map((m) => m.id);
 
 /** Whether `id` may be requested at launch. The membership test — never match ids. */
 export function isLaunchableMode(id: string): boolean {

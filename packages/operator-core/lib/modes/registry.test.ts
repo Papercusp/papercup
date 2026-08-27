@@ -42,9 +42,10 @@ describe('mode implications', () => {
   const declaring = MODES.filter((m) => m.implies?.length);
 
   it('pins the known-good population — the whole set, not a sample', () => {
-    expect(declaring.map((m) => m.id).sort()).toEqual(['drain', 'goal']);
+    expect(declaring.map((m) => m.id).sort()).toEqual(['drain', 'goal', 'grade']);
     expect(resolveImpliedModes('goal')).toEqual(['auto', 'ideate']);
     expect(resolveImpliedModes('drain')).toEqual(['auto']);
+    expect(resolveImpliedModes('grade')).toEqual(['auto']);
     expect(resolveImpliedModes('auto')).toEqual([]);
     expect(resolveImpliedModes('nonexistent')).toEqual([]);
   });
@@ -105,7 +106,7 @@ describe('mode implications', () => {
       expect(modeImpliesAutonomy(m.id), m.id).toBe(impliesAnAutonomyMode);
     }
     // and the derived set still matches the standalone accessor
-    expect([...autonomousModeIds()].sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal']);
+    expect([...autonomousModeIds()].sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal', 'grade']);
   });
 });
 
@@ -119,6 +120,34 @@ describe('DRAIN mode defect-filing contract (WI-38401)', () => {
     expect(drain!.contract).toMatch(/Do not mint improvements:capture rows, issues, work-items, or observations/);
     expect(drain!.contract).toMatch(/DIRECTLY BLOCKS the scoped drain/);
     expect(drain!.contract).toMatch(/exactly one blocker linked to the active drain item\/plan/);
+  });
+});
+
+describe('GRADE mode corrective-loop contract (WI-243572)', () => {
+  const grade = modeById('grade');
+
+  it('is a stackable overlay that structurally enters AUTO', () => {
+    expect(grade).not.toBeNull();
+    expect(grade!.axis).toBe('overlay');
+    expect(grade!.implies).toEqual(['auto']);
+    expect(resolveImpliedModes('grade')).toEqual(['auto']);
+    expect(modeImpliesAutonomy('grade')).toBe(true);
+    expect(grade!.contract).toContain('GRADE implies AUTO');
+    expect(grade!.contract).toMatch(/ALREADY hold/);
+  });
+
+  it('owns confirmed findings through root-cause repair, recurrence guard, verification, and re-grade', () => {
+    const c = grade!.contract;
+    expect(c).toContain('BASELINE BEFORE REPAIR');
+    expect(c).toContain('FIX WHAT GRADING CONFIRMS');
+    expect(c).toMatch(/confirmed defect or material improvement is\s+YOUR implementation work/);
+    expect(c).toMatch(/Dedup first/);
+    expect(c).toMatch(/claim the existing remediation\s+item or create \+ claim one before editing/);
+    expect(c).toMatch(/root cause/);
+    expect(c).toMatch(/recurrence guard/);
+    expect(c).toMatch(/re-grade the original target/);
+    expect(c).toMatch(/independent-\s+acceptance rule/);
+    expect(c).toMatch(/never self-accept/);
   });
 });
 
@@ -223,11 +252,12 @@ describe('modeImpliesAutonomy', () => {
     expect(modeImpliesAutonomy('cold-auto')).toBe(true);
     expect(modeImpliesAutonomy('drain')).toBe(true);
     expect(modeImpliesAutonomy('goal')).toBe(true);
+    expect(modeImpliesAutonomy('grade')).toBe(true);
   });
 
   it('does not sweep in overlays that are merely stackable', () => {
     expect(modeImpliesAutonomy('ideate')).toBe(false);
-    expect(modeImpliesAutonomy('grade')).toBe(false);
+    expect(modeImpliesAutonomy('test')).toBe(false);
   });
 
   it('returns false for an unregistered id rather than throwing', () => {
@@ -258,11 +288,9 @@ describe('modeImpliesAutonomy', () => {
    */
   it('disagrees with the legacy hardcoded list it replaced (the drift it fixes)', () => {
     const legacyHardcoded = (id: string) => id === 'auto' || id === 'drain';
-    const disagreements = MODES.map((m) => m.id).filter(
-      (id) => legacyHardcoded(id) !== modeImpliesAutonomy(id),
-    );
-    // cold-auto and goal are exactly the postures the old list silently dropped.
-    expect(disagreements.sort()).toEqual(['cold-auto', 'goal']);
+    const disagreements = MODES.map((m) => m.id).filter((id) => legacyHardcoded(id) !== modeImpliesAutonomy(id));
+    // cold-auto, goal, and grade are exactly the postures the old list silently dropped.
+    expect(disagreements.sort()).toEqual(['cold-auto', 'goal', 'grade']);
   });
 });
 
