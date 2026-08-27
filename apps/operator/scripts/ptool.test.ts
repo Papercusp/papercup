@@ -6,6 +6,7 @@ import {
   buildCallToolParams,
   buildMcpUrl,
   connectWithLocalRetry,
+  listToolsWithLocalRetry,
   escapeJsonStringControls,
   parseArgs,
   parseJsonInput,
@@ -31,11 +32,13 @@ import {
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
+  PTOOL_RETRY_JITTER_MS,
   PTOOL_READ_ONLY_POST_CONNECT_RETRIES,
   PTOOL_SCORECARD_EMIT_TIMEOUT_MS,
   PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
   resultToText,
+  retryWaitMsWithJitter,
   sanitizeJsonText,
   shouldPrintRawResult,
   timeoutForTool,
@@ -66,6 +69,28 @@ describe('ptool bootstrap dependencies', () => {
     expect(ptoolInstallBlock).toContain('exec node "${PTOOL_LAUNCHER}" "\\$@"');
     expect(ptoolInstallBlock).not.toContain('--exec-under-lock');
     expect(ptoolInstallBlock).not.toContain('npm-install-safe.mjs');
+  });
+
+  it('atomically replaces standalone launchers to prevent ETXTBSY races (EI-21566808495780594)', () => {
+    const installer = readFileSync(
+      new URL('./install-standalone-mcp.sh', import.meta.url),
+      'utf8',
+    );
+    const helperStart = installer.indexOf('install_executable_atomic()');
+    const wrapperStart = installer.indexOf('# 4g. Install the `psu` command', helperStart);
+    const verifyStart = installer.indexOf('\n# 5. Verify the endpoint', wrapperStart);
+    const helper = installer.slice(helperStart, wrapperStart);
+    const wrappers = installer.slice(wrapperStart, verifyStart);
+
+    expect(helperStart).toBeGreaterThan(-1);
+    expect(wrapperStart).toBeGreaterThan(helperStart);
+    expect(verifyStart).toBeGreaterThan(wrapperStart);
+    expect(helper).toContain('temporary="$(mktemp "${destination}.tmp.XXXXXX")"');
+    expect(helper).toContain('if ! cat > "$temporary"; then');
+    expect(helper).toContain('if ! mv -f -- "$temporary" "$destination"; then');
+    expect(wrappers.match(/install_executable_atomic "\$PSU_PATH" 755/g)?.length).toBe(1);
+    expect(wrappers.match(/install_executable_atomic "\$PTOOL_PATH" 755/g)?.length).toBe(1);
+    expect(wrappers).not.toMatch(/cat\s*>\s*"\$(?:PSU|PTOOL)_PATH"/);
   });
 });
 
@@ -331,6 +356,9 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(message).toContain('outcome=unknown');
     expect(message).toContain('idempotencyKey=receipt-unknown-1');
     expect(message).toContain('--idempotency-key receipt-unknown-1');
+    expect(message).toContain('ptool transport flag');
+    expect(message).toContain('MCP _meta.idempotencyKey');
+    expect(message).toContain('not by adding idempotencyKey to the target tool JSON arguments');
   });
 
   it('does not mislabel a known pre-dispatch pressure shed as ambiguous', () => {
@@ -340,6 +368,40 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(formatToolCallFailure('coord:send', error)).toContain('rejected before dispatch');
     expect(formatToolCallFailure('coord:send', error)).toContain('no tool execution occurred');
     expect(formatToolCallFailure('coord:send', error)).not.toContain('may have executed');
+  });
+
+  it('classifies only typed proxy 429 refusals as pre-dispatch', () => {
+    const proxyShed = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_overloaded","retryable":true,"retryAfterSec":1}',
+    ), { code: 429 });
+    const providerLimit = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"provider_rate_limit"}',
+    ), { code: 429 });
+    const realProxy502 = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_upstream_error"}',
+    ), { code: 502 });
+
+    expect(isLoopPressureShed(proxyShed)).toBe(true);
+    expect(isLoopPressureShed(providerLimit)).toBe(false);
+    expect(isLoopPressureShed(realProxy502)).toBe(false);
+    expect(formatToolCallFailure('work_items:checkpoint', proxyShed)).toContain('rejected before dispatch');
+  });
+
+  it('retries a typed proxy refusal using its Retry-After hint', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const proxyShed = Object.assign(new Error(
+      'Streamable HTTP error: Error POSTing to endpoint: {"error":"mcp_proxy_critical_continuation_queue_full","retryable":true,"retryAfterSec":2}',
+    ), { code: 429 });
+    const callTool = vi.fn().mockRejectedValueOnce(proxyShed).mockResolvedValue(result);
+    const sleep = vi.fn(async () => {});
+
+    await expect(callToolWithPressureRetry(
+      { callTool },
+      { name: 'tools:invoke', arguments: { name: 'work_items:checkpoint', args: {} } },
+      { maxAttempts: 2, sleep },
+    )).resolves.toBe(result);
+    expect(callTool).toHaveBeenCalledTimes(2);
+    expect(sleep).toHaveBeenCalledWith(2_000);
   });
 });
 
@@ -664,7 +726,7 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
   const shedErr = () =>
     Object.assign(new Error('{"error":"mcp_proxy_handshake_overloaded","retryAfterSec":2}'), { code: 429 });
 
-  it('paces connect retries by the proxy Retry-After hint instead of a flat 1s', async () => {
+  it('honors Retry-After as a minimum and adds positive jitter', async () => {
     const sleeps: number[] = [];
     await expect(
       connectWithLocalRetry(
@@ -680,12 +742,73 @@ describe('ptool local-connect retry diagnostics (EI-21504867146958629)', () => {
           sleep: async (ms: number) => {
             sleeps.push(ms);
           },
+          rand: () => 0,
         },
       ),
     ).rejects.toThrow(/proxy-shed-429/);
-    // The proxy's typed handshake shed asks for 2s (`retryAfterSec: 2`) — the
-    // loop must honor it rather than re-contending every second.
-    expect(sleeps).toEqual([2_000, 2_000]);
+    // A zero entropy sample still produces one positive millisecond: clients
+    // never retry before the server minimum and never share the exact boundary.
+    expect(sleeps).toEqual([2_001, 2_001]);
+  });
+
+  it('de-synchronizes independent ptool processes given the same Retry-After hint', async () => {
+    const samples = [0.1, 0.5, 0.9];
+    const waits = await Promise.all(samples.map(async (sample) => {
+      const sleeps: number[] = [];
+      await expect(
+        connectWithLocalRetry(
+          async () => {
+            throw shedErr();
+          },
+          'http://127.0.0.1:9071',
+          {},
+          {
+            maxAttempts: 2,
+            attemptTimeoutMs: 5_000,
+            totalTimeoutMs: 60_000,
+            rand: () => sample,
+            sleep: async (ms: number) => {
+              sleeps.push(ms);
+            },
+          },
+        ),
+      ).rejects.toThrow(/proxy-shed-429/);
+      return sleeps[0];
+    }));
+
+    expect(waits).toEqual([2_100, 2_500, 2_900]);
+    expect(new Set(waits).size).toBe(samples.length);
+    expect(waits.every((wait) => wait > 2_000)).toBe(true);
+  });
+
+  it('applies the same positive jitter to tools/list discovery retries', async () => {
+    const listTools = vi.fn().mockRejectedValue(shedErr());
+    const sleeps: number[] = [];
+
+    await expect(
+      listToolsWithLocalRetry(
+        { listTools },
+        {},
+        {
+          maxAttempts: 2,
+          timeoutMs: 5_000,
+          totalTimeoutMs: 60_000,
+          rand: () => 0.4,
+          sleep: async (ms: number) => {
+            sleeps.push(ms);
+          },
+        },
+      ),
+    ).rejects.toThrow(/mcp_proxy_handshake_overloaded/);
+
+    expect(listTools).toHaveBeenCalledTimes(2);
+    expect(sleeps).toEqual([2_400]);
+  });
+
+  it('does not retry before a server minimum that exhausts the remaining budget', () => {
+    expect(PTOOL_RETRY_JITTER_MS).toBe(1_000);
+    expect(retryWaitMsWithJitter(2_000, 2_000, { rand: () => 1 })).toBeNull();
+    expect(retryWaitMsWithJitter(2_000, 2_500, { rand: () => 1 })).toBe(2_500);
   });
 
   it('an exhausted budget escapes with the original prefix AND the classified attempt tally', async () => {
