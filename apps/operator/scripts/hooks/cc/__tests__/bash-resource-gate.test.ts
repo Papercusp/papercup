@@ -5241,6 +5241,22 @@ describe('substitution verdict handling', () => {
     expect(requests.at(-1)?.params?.arguments).not.toHaveProperty('tracked_mutation');
   });
 
+  it('honors `git -C`: a mutation in another checkout is not attributed to this tree', () => {
+    const command =
+      'git -C /tmp rm packages/operator-core/lib/agent-tools/locks/check_command.ts';
+    setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
+    expectAllow(runGate(bashCmd(command, { cwd: REPO_ROOT }), {
+      PAPERCUSP_OPERATOR_URL: url,
+      PAPERCUSP_CANONICAL_TREE: REPO_ROOT,
+    }));
+    const requests = readFileSync(requestFile, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } });
+    expect(requests.at(-1)?.params?.arguments).not.toHaveProperty('tracked_mutation');
+  });
+
   it('forwards the shell cwd to locks:check_command for cwd-scoped substitution policy', () => {
     const scratch = '/tmp/ei-204040-scratch';
     setReply({ decision: 'allow', matched: [] });

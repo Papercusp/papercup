@@ -4133,24 +4133,43 @@ def _is_tracked_path(canon, rel):
         return False
 
 
-def _git_command_tail(words):
-    """Words after git's global options, or [] when the argv is ambiguous."""
+def _git_command_tail(words, cwd):
+    """(words after git globals, effective -C cwd), or ([], None) if ambiguous."""
     if not words or words[0].split('/')[-1] != 'git':
-        return []
+        return [], None
     i = 1
-    value_opts = {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'}
+    effective_cwd = cwd
     while i < len(words):
         word = words[i]
         if word == '--':
-            return words[i + 1:]
+            return words[i + 1:], effective_cwd
         if not word.startswith('-') or word == '-':
-            return words[i:]
+            return words[i:], effective_cwd
         key = word.split('=', 1)[0]
-        if key in value_opts and '=' not in word:
+        if key == '-C':
+            if '=' in word:
+                target = word.split('=', 1)[1]
+                i += 1
+            elif i + 1 < len(words):
+                target = words[i + 1]
+                i += 2
+            else:
+                return [], None
+            resolved = _resolve_write_target(target, effective_cwd)
+            if not resolved:
+                return [], None
+            effective_cwd = resolved
+        elif key == '-c' and '=' not in word:
             i += 2
+        elif key == '-c':
+            i += 1
+        elif key in ('--git-dir', '--work-tree', '--namespace', '--config-env'):
+            # These can redirect path interpretation away from cwd. Static
+            # classification cannot prove the target tree, so fail open.
+            return [], None
         else:
             i += 1
-    return []
+    return [], None
 
 
 def _literal_positionals(words):
@@ -4197,7 +4216,7 @@ def _classify_tracked_mutation():
         exe = argv[0].split('/')[-1]
         op, operands = None, []
         if exe == 'git':
-            tail = _git_command_tail(argv)
+            tail, command_cwd = _git_command_tail(argv, base_cwd)
             if not tail or tail[0] not in ('mv', 'rm'):
                 continue
             op = 'git ' + tail[0]
@@ -4210,7 +4229,8 @@ def _classify_tracked_mutation():
         if not operands:
             continue
 
-        rels = [_tracked_repo_path(raw, base_cwd, canon) for raw in operands]
+            command_cwd = base_cwd
+        rels = [_tracked_repo_path(raw, command_cwd, canon) for raw in operands]
         if any(rel and _is_tracked_path(canon, rel) for rel in rels):
             return True
         # A rename to a new path is still a tracked mutation when its SOURCE is
