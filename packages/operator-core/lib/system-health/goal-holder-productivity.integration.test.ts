@@ -139,4 +139,22 @@ describe('makeReadHolderProductivity against real Postgres', () => {
     const read = makeReadHolderProductivity(admin);
     expect((await read([])).size).toBe(0);
   });
+
+  it('works through getOrgPg().sql — the client the WATCHDOG actually passes', async () => {
+    // The discriminating case. Every test above uses the fixture's own admin
+    // client; production builds these deps with `getOrgPg().sql`. If a
+    // serialization fault lives in the client's configuration rather than in
+    // the query text, only this case can see it — and a suite that exercised
+    // one client while production used the other is exactly how a leg stays
+    // dark with a green suite.
+    const { getOrgPg } = await import('@papercusp/db-org');
+    await seedCall({ ownerId: OWNER_A, callOrigin: 'agent' });
+    const read = makeReadHolderProductivity(getOrgPg().sql);
+    const out = await read([
+      { workspaceId: WS, goalId: GOAL_A, ownerId: OWNER_A, setAtMs: HELD_SINCE() },
+      { workspaceId: WS, goalId: GOAL_B, ownerId: OWNER_B, setAtMs: HELD_SINCE() },
+    ]);
+    expect(out.get(`${WS}:${GOAL_A}`)).toBe(1);
+    expect(out.get(`${WS}:${GOAL_B}`)).toBe(0);
+  });
 });
