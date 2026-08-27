@@ -246,7 +246,30 @@ export function buildInboxBulkReviewGroups(
     group.rows.push(row);
   }
 
-  return [...grouped.values()].sort((a, b) => a.title.localeCompare(b.title));
+  return [...grouped.values()]
+    .flatMap((group) => {
+      const actionable = group.rows.filter((row) => row.selectable === true);
+      const otherResults = group.rows.filter((row) => row.selectable !== true);
+
+      // A completed row can carry the same persisted action id as a still-live
+      // recommendation. Keep the actionable rows in the canonical group and
+      // move the non-selectable history behind its own existing disclosure;
+      // otherwise one live action eagerly mounts every historical detail row.
+      if (actionable.length === 0 || otherResults.length === 0) return [group];
+
+      return [
+        { ...group, rows: actionable },
+        {
+          ...group,
+          id: `${group.id}:other-results`,
+          title: `${group.title} · Other results`,
+          description:
+            "Already handled or non-selectable results for this action.",
+          rows: otherResults,
+        },
+      ];
+    })
+    .sort((a, b) => a.title.localeCompare(b.title));
 }
 
 interface HydratedRecommendationProps {
