@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { parseProcStat, classifyThreadCpu, USER_HZ } from './proc-thread-cpu';
+import {
+  parseProcStat,
+  classifyThreadCpu,
+  isConfirmedHostIoWait,
+  USER_HZ,
+} from './proc-thread-cpu';
 
 /**
  * Post-')' tokens are [0]=state … [11]=utime [12]=stime, so this line carries
@@ -100,5 +105,45 @@ describe('classifyThreadCpu', () => {
   it('does not flag wrong-subject for a legitimately saturated single thread', () => {
     const v = classifyThreadCpu({ ...base, baselineTicks: 0, currentTicks: 100 });
     expect(v.suspectWrongSubject).toBe(false);
+  });
+});
+
+describe('isConfirmedHostIoWait', () => {
+  it('recognizes the recorded rq_qos_wait false-kill diagnostic', () => {
+    expect(
+      isConfirmedHostIoWait({
+        state: 'D',
+        cpuMs: 0,
+        cores: 0,
+        wchan: 'rq_qos_wait',
+      }),
+    ).toBe(true);
+  });
+
+  it('recognizes other storage wait channels from the incident evidence', () => {
+    for (const wchan of ['io_schedule', 'io_schedule_timeout', 'wait_on_buffer', 'jbd2_log_wait_commit']) {
+      expect(isConfirmedHostIoWait({ state: 'D', cpuMs: 0, cores: 0, wchan })).toBe(true);
+    }
+  });
+
+  it('does not suppress the recorded spinning/futex wedge', () => {
+    expect(
+      isConfirmedHostIoWait({
+        state: 'R',
+        cpuMs: 910,
+        cores: 0.91,
+        wchan: 'futex_do_wait',
+      }),
+    ).toBe(false);
+  });
+
+  it.each([
+    { state: 'D', cpuMs: 1, cores: 0, wchan: 'rq_qos_wait' },
+    { state: 'S', cpuMs: 0, cores: 0, wchan: 'rq_qos_wait' },
+    { state: 'D', cpuMs: 0, cores: 0, wchan: 'futex_do_wait' },
+    { state: 'D', cpuMs: null, cores: null, wchan: 'rq_qos_wait' },
+    { state: 'D', cpuMs: 0, cores: 0, wchan: null },
+  ])('requires all host-I/O discriminator fields (%o)', (activity) => {
+    expect(isConfirmedHostIoWait(activity)).toBe(false);
   });
 });

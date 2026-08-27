@@ -93,6 +93,49 @@ export interface ThreadCpuVerdict {
   suspectWrongSubject: boolean;
 }
 
+/**
+ * A main-thread activity sample as reported by the event-loop sentinel.
+ *
+ * This stays dependency-free because the sentinel worker is loaded by plain
+ * Node's native type stripping. Keeping the safety decision beside the CPU
+ * classifier prevents the worker and its tests from drifting in how they
+ * interpret `/proc`.
+ */
+export interface MainThreadActivity {
+  state: string | null;
+  cpuMs: number | null;
+  cores: number | null;
+  wchan: string | null;
+}
+
+/**
+ * Linux wait-channel names that identify a thread parked behind block I/O.
+ *
+ * The exact-zero CPU and D-state checks are load-bearing: a name alone is not
+ * enough to establish that the main thread is the parked subject rather than
+ * a stale or misread `/proc` sample.
+ */
+const HOST_IO_WAIT_WCHAN_RE = /^(?:rq_qos_wait|io_schedule(?:_timeout)?|blk_mq_[a-z0-9_]+|wait_on_(?:buffer|page(?:_bit)?|page_writeback)|folio_wait_[a-z0-9_]+|jbd2_[a-z0-9_]+|do_get_write_access|wait_transaction_locked)$/i;
+
+/**
+ * Decide whether a sentinel kill should be suppressed because the main thread
+ * is demonstrably waiting on host storage rather than wedged in JavaScript.
+ *
+ * SIGKILL cannot relieve a block-device queue or swap-thrash wait. Suppressing
+ * it keeps the host from adding a restart/materialization storm to the I/O
+ * incident while the caller continues watching for recovery or a later
+ * transition to a real CPU-consuming wedge.
+ */
+export function isConfirmedHostIoWait(activity: MainThreadActivity): boolean {
+  const wchan = activity.wchan?.trim();
+  return (
+    activity.state === 'D' &&
+    activity.cpuMs === 0 &&
+    activity.cores === 0 &&
+    Boolean(wchan && HOST_IO_WAIT_WCHAN_RE.test(wchan))
+  );
+}
+
 const UNKNOWN: ThreadCpuVerdict = {
   kind: 'unknown',
   cpuMs: null,

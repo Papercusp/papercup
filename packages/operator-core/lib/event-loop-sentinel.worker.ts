@@ -51,7 +51,12 @@ import { writeSync, readFileSync } from 'node:fs';
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — the plain-node Worker requires an explicit .ts specifier; apps/operator does not enable allowImportingTsExtensions.
-import { parseProcStat, classifyThreadCpu } from './proc-thread-cpu.ts';
+import {
+  classifyThreadCpu,
+  isConfirmedHostIoWait,
+  parseProcStat,
+  type MainThreadActivity,
+} from './proc-thread-cpu.ts';
 // EXPLICIT `.ts` EXTENSION IS LOAD-BEARING — do not "tidy" it away.
 //
 // This module is a Worker ENTRY. Worker threads do NOT inherit the parent's
@@ -173,13 +178,18 @@ let healthyCpu: { ticks: number; atMs: number } | null = null;
  * the stall window. Best-effort: every field degrades to `unknown`/absent rather
  * than throwing, because a diagnostic must never take down the sentinel.
  */
-function mainThreadActivity(): Record<string, string | number | boolean> {
+interface MainThreadActivitySnapshot extends MainThreadActivity {
+  fields: Record<string, string | number | boolean>;
+}
+
+function mainThreadActivity(): MainThreadActivitySnapshot {
   const now = readMainThreadStat();
   const verdict = classifyThreadCpu({
     baselineTicks: healthyCpu?.ticks ?? null,
     currentTicks: now?.ticks ?? null,
     elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0,
   });
+  const wchan = readMainThreadWchan();
   const out: Record<string, string | number | boolean> = {
     mainThreadActivity: verdict.kind,
     mainThreadState: now?.state ?? 'unknown',
@@ -187,9 +197,14 @@ function mainThreadActivity(): Record<string, string | number | boolean> {
   if (verdict.cpuMs != null) out.mainThreadCpuMsDuringStall = Math.round(verdict.cpuMs);
   if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
   if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
-  const wchan = readMainThreadWchan();
   if (wchan) out.mainThreadWchan = wchan;
-  return out;
+  return {
+    state: now?.state ?? null,
+    cpuMs: verdict.cpuMs,
+    cores: verdict.cores,
+    wchan,
+    fields: out,
+  };
 }
 
 let state: LoopSentinelState = initialLoopSentinelState(
@@ -200,6 +215,8 @@ let state: LoopSentinelState = initialLoopSentinelState(
 let warnedThisStall = false;
 /** Observe-mode: report a WEDGE at most once per contiguous stall (same reason). */
 let reportedThisStall = false;
+/** Host-I/O suppression is also one log per contiguous stall. */
+let hostIoWaitReportedThisStall = false;
 let acted = false;
 
 const timer = setInterval(() => {
@@ -231,6 +248,7 @@ const timer = setInterval(() => {
       // NEXT stall is reported as a fresh event rather than suppressed.
       warnedThisStall = false;
       reportedThisStall = false;
+      hostIoWaitReportedThisStall = false;
       // Re-baseline the CPU reading while the loop is demonstrably healthy, so a
       // later stall differences against the last GOOD sample. Taken here rather
       // than at stall-detection time because by then the window has already
@@ -247,7 +265,7 @@ const timer = setInterval(() => {
           stalenessMs: action.stalenessMs,
           wedgeAfterMs: thresholds.wedgeAfterMs,
           consecutiveStale: action.consecutiveStale,
-          ...mainThreadActivity(),
+          ...mainThreadActivity().fields,
           ...lastKnownLag(),
         });
       }
@@ -273,6 +291,30 @@ const timer = setInterval(() => {
       return;
 
     case 'kill': {
+      const activity = mainThreadActivity();
+
+      // A stale heartbeat plus a main thread in D-state, with zero CPU and a
+      // recognized storage wait channel, means the host is blocked behind I/O.
+      // SIGKILL cannot free the block and a restart adds more I/O pressure, so
+      // keep watching instead. If the thread later becomes a CPU-consuming
+      // wedge, a subsequent observation still reaches the normal kill path.
+      if (isConfirmedHostIoWait(activity)) {
+        if (hostIoWaitReportedThisStall) return;
+        hostIoWaitReportedThisStall = true;
+        emit('main event loop WEDGED — host I/O wait, NOT killing', {
+          stalenessMs: action.stalenessMs,
+          consecutiveStale: action.consecutiveStale,
+          wedgeAfterMs: thresholds.wedgeAfterMs,
+          mode,
+          pid,
+          reason: 'main thread is in confirmed uninterruptible storage wait; continue watching without restarting the host',
+          hostIoWait: true,
+          ...activity.fields,
+          ...lastKnownLag(),
+        });
+        return;
+      }
+
       // KILL mode is one-shot (the process is about to die). OBSERVE mode must
       // KEEP WATCHING — it exists to soak a suspect host, and a one-shot
       // observer reports exactly one wedge per host lifetime, which is useless
@@ -297,7 +339,7 @@ const timer = setInterval(() => {
           mode,
           pid,
           reason: action.reason,
-          ...mainThreadActivity(),
+          ...activity.fields,
           ...lastKnownLag(),
         },
       );

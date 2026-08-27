@@ -30,6 +30,7 @@ import {
   exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
+  LEADER_BRIEF_READ_CONCURRENCY,
   projectMember,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
@@ -37,6 +38,7 @@ import {
   readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
+  runLeaderBriefReads,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
   topExcludedFloors,
@@ -48,6 +50,29 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () => {
+  it('keeps tuple order while limiting independent reads to the configured width', async () => {
+    let active = 0;
+    let peak = 0;
+    const delays = [25, 5, 15, 1, 10] as const;
+
+    const result = await runLeaderBriefReads(
+      delays.map((delay, index) => async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise((resolve) => setTimeout(resolve, delay));
+        active -= 1;
+        return `read-${index}`;
+      }) as never,
+      2,
+    );
+
+    expect(result).toEqual(['read-0', 'read-1', 'read-2', 'read-3', 'read-4']);
+    expect(peak).toBe(2);
+    expect(LEADER_BRIEF_READ_CONCURRENCY).toBe(4);
+  });
+});
 
 describe('fleet:leader-brief launch worker attestation projection (P-003)', () => {
   it('projects stage status and failures from the durable transaction without re-deriving them', () => {
