@@ -618,15 +618,18 @@ export function makeSubmitVerifier({ lastOutputAt, writeCr, lastInputAt, quietMs
     onExhausted?: (() => void) | undefined;
 }): {
     /** Poll for the verify window; resubmit a bare CR at each quiet observation.
-     *  Returns { polls, resubmits, aborted } (aborted = 'human-input' | null). */
+     *  Returns { polls, resubmits, aborted, exhausted } (aborted = 'human-input' | null;
+     *  exhausted = no output was observed after the maximum resubmits). */
     verify(): Promise<{
         polls: number;
         resubmits: number;
         aborted: string;
+        exhausted?: undefined;
     } | {
         polls: number;
         resubmits: number;
         aborted: null;
+        exhausted: boolean;
     }>;
 };
 /**
