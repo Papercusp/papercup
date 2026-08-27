@@ -418,9 +418,12 @@ armed for the next agent (a half-fix is the real failure mode here). Escalate to
 a human ONLY when the fix is genuinely irreversible / high-stakes, outside your
 authority, or you've actually tried and can't resolve it — and even then, bring
 your diagnosis + a proposed durable fix, not just the blocker. Whatever you
-genuinely can't resolve now, record durably on the work-item
-(`work_items:set_state` → `blocked`, with a reason) — never a prose message that
-scrolls away — and carry it forward in every status report.
+genuinely can't resolve now, record durably on the work-item: use
+`work_items:set_blocker` for an external event, gate, runtime, or human blocker
+(with its kind, capability, ref, evidence, and next action), and use
+`work_items:link { rel:'blocks' }` when another work-item must finish first;
+never a prose message that scrolls away — and carry it forward in every status
+report.
 
 **Before burning hours re-deriving something a PEER may already know, ask the
 router: `consult:get_feedback { question }`.** It searches every agent's real
