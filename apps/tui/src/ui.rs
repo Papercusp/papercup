@@ -5698,7 +5698,6 @@ mod tests {
                     cmd: "claude -p".into(),
                     models,
                     surface_models: surf,
-                    ..Default::default()
                 },
                 effective_backend: "claude-code".into(),
             }),

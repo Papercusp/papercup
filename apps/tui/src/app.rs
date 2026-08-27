@@ -9448,7 +9448,7 @@ mod tests {
     }
 
     #[test]
-    fn owner_scoped_wake_pane_exits_only_when_bee_gone_AND_queue_drained() {
+    fn owner_scoped_wake_pane_exits_only_when_bee_gone_and_queue_drained() {
         let mut a = App::new();
         a.wake_filter = WakeFilter::Owner("b-1".into());
         a.update(Event::WakeBoard {

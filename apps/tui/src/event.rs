@@ -276,10 +276,6 @@ pub enum Event {
     /// The operator conversation loaded on open (GET /api/operator/conversations):
     /// the conversation id + recent turns (oldest first) + whether older history
     /// exists. Seeds the transcript.
-    #[expect(
-        dead_code,
-        reason = "operator chat history loading is staged for the native pane"
-    )]
     ChatHistory {
         conversation_id: String,
         messages: Vec<ChatMessage>,
