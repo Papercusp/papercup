@@ -1172,6 +1172,9 @@ import './fleet/assignments';
 // fleet (fleet-reliability-verification-2026-07-10 P-007): reuses
 // fleet:assignments' decoration pipeline, filtered + reshaped leader-lean.
 import './fleet/leader-brief';
+// fleet:audit — bounded snapshot/keyset composition of canonical current-state
+// and append-only history writers for postmortem/export use (WI-42416).
+import './fleet/fleet-audit';
 // fleet:bench — bench a fleet member as TRACKED STATE
 // (fleet-reliability-verification-2026-07-10 P-006): stage a member's next
 // assignment centrally (captures + registers their wake await FOR them,

@@ -115,7 +115,7 @@ export async function appendFleetMembershipIfAbsent(
  */
 export async function fleetEverMembers(
   fleetSlug: string,
-  opts: { workspaceId?: string } = {},
+  opts: { workspaceId?: string; beforeOrAt?: string } = {},
   sql?: Sql,
 ): Promise<Set<string>> {
   const s = pg(sql);
@@ -125,6 +125,7 @@ export async function fleetEverMembers(
       FROM harness_shared.fleet_membership_events
      WHERE fleet_slug = ${fleetSlug}
        AND (${ws} = '' OR workspace_id = ${ws} OR workspace_id = 'default')
+       ${opts.beforeOrAt ? s`AND at <= ${opts.beforeOrAt}::timestamptz` : s``}
   `;
   const out = new Set<string>();
   for (const r of rows) if (r.owner_id) out.add(r.owner_id);
