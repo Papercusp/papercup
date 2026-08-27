@@ -7,15 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  statfs,
-  unlink,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename, statfs, unlink, writeFile } from 'node:fs/promises';
 import { arch, cpus, freemem, homedir, platform, release, totalmem } from 'node:os';
 import { dirname, join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -24,6 +16,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import {
   LIVE_HEALTH_SCHEMA_VERSION,
   LIVE_HEALTH_SIGNAL_SPECS,
+  emptyLiveHealthObservations,
   emptyLiveHealthSignals,
   isLiveHealthFragment,
   liveHealthWindow,
@@ -48,10 +41,7 @@ export interface LiveHealthPaths {
   readonly snapshotPath: string;
 }
 
-export function resolveLiveHealthPaths(
-  env: NodeJS.ProcessEnv = process.env,
-  home = homedir(),
-): LiveHealthPaths {
+export function resolveLiveHealthPaths(env: NodeJS.ProcessEnv = process.env, home = homedir()): LiveHealthPaths {
   const rootDir = env.PAPERCUSP_RESOURCE_GOVERNOR_HEALTH_DIR
     ? env.PAPERCUSP_RESOURCE_GOVERNOR_HEALTH_DIR
     : join(home, '.papercusp', 'runtime', 'resource-governor');
@@ -153,7 +143,11 @@ export function parseNetworkCounters(text: string | null): NetworkCounters | nul
     if (colon < 0) continue;
     const name = line.slice(0, colon).trim();
     if (!name || name === 'lo') continue;
-    const fields = line.slice(colon + 1).trim().split(/\s+/).map(Number);
+    const fields = line
+      .slice(colon + 1)
+      .trim()
+      .split(/\s+/)
+      .map(Number);
     if (fields.length < 16 || !Number.isFinite(fields[0]) || !Number.isFinite(fields[8])) continue;
     rxBytes += fields[0]!;
     txBytes += fields[8]!;
@@ -220,22 +214,21 @@ export async function collectHostLiveHealthCounters(
   currentPlatform: NodeJS.Platform = platform(),
 ): Promise<HostLiveHealthCounters> {
   await mkdir(paths.rootDir, { recursive: true });
-  const linuxReads = currentPlatform === 'linux'
-    ? await Promise.all([
-        readTextOrNull('/proc/pressure/cpu'),
-        readTextOrNull('/proc/pressure/memory'),
-        readTextOrNull('/proc/stat'),
-        readTextOrNull('/proc/meminfo'),
-        readTextOrNull('/proc/vmstat'),
-        readTextOrNull('/proc/net/dev'),
-        readTextOrNull('/proc/net/tcp'),
-        readTextOrNull('/proc/net/tcp6'),
-      ])
-    : [null, null, null, null, null, null, null, null];
+  const linuxReads =
+    currentPlatform === 'linux'
+      ? await Promise.all([
+          readTextOrNull('/proc/pressure/cpu'),
+          readTextOrNull('/proc/pressure/memory'),
+          readTextOrNull('/proc/stat'),
+          readTextOrNull('/proc/meminfo'),
+          readTextOrNull('/proc/vmstat'),
+          readTextOrNull('/proc/net/dev'),
+          readTextOrNull('/proc/net/tcp'),
+          readTextOrNull('/proc/net/tcp6'),
+        ])
+      : [null, null, null, null, null, null, null, null];
   const fs = await statfs(paths.rootDir).catch(() => null);
-  const diskFreeBytes = fs
-    ? Number(fs.bavail) * Number(fs.bsize)
-    : null;
+  const diskFreeBytes = fs ? Number(fs.bavail) * Number(fs.bsize) : null;
   return {
     atMs: nowMs,
     cpu: readCpuCounters(cpus()),
@@ -303,33 +296,88 @@ export function applyHostLiveHealthReadings(
     if (totalDelta > 0 && idleDelta >= 0) cpuPct = Math.max(0, Math.min(100, (1 - idleDelta / totalDelta) * 100));
   }
   signals['cpu.hostUtilizationPct'] = monitorReading('cpu.hostUtilizationPct', writerId, current, cpuPct, start);
-  signals['cpu.psiSomePct'] = monitorReading('cpu.psiSomePct', writerId, current, current.cpuPsi.some60, current.atMs - 60_000);
-  signals['scheduler.runnableCount'] = monitorReading('scheduler.runnableCount', writerId, current, current.scheduler.runnable);
-  signals['scheduler.blockedCount'] = monitorReading('scheduler.blockedCount', writerId, current, current.scheduler.blocked);
+  signals['cpu.psiSomePct'] = monitorReading(
+    'cpu.psiSomePct',
+    writerId,
+    current,
+    current.cpuPsi.some60,
+    current.atMs - 60_000,
+  );
+  signals['scheduler.runnableCount'] = monitorReading(
+    'scheduler.runnableCount',
+    writerId,
+    current,
+    current.scheduler.runnable,
+  );
+  signals['scheduler.blockedCount'] = monitorReading(
+    'scheduler.blockedCount',
+    writerId,
+    current,
+    current.scheduler.blocked,
+  );
   signals['memory.hostUsedBytes'] = monitorReading(
     'memory.hostUsedBytes',
     writerId,
     current,
     Math.max(0, current.totalMemoryBytes - current.freeMemoryBytes),
   );
-  signals['memory.psiSomePct'] = monitorReading('memory.psiSomePct', writerId, current, current.memoryPsi.some60, current.atMs - 60_000);
-  signals['memory.psiFullPct'] = monitorReading('memory.psiFullPct', writerId, current, current.memoryPsi.full60, current.atMs - 60_000);
-  signals['memory.swapUsedBytes'] = monitorReading('memory.swapUsedBytes', writerId, current, current.memoryKernel.swapUsedBytes);
+  signals['memory.psiSomePct'] = monitorReading(
+    'memory.psiSomePct',
+    writerId,
+    current,
+    current.memoryPsi.some60,
+    current.atMs - 60_000,
+  );
+  signals['memory.psiFullPct'] = monitorReading(
+    'memory.psiFullPct',
+    writerId,
+    current,
+    current.memoryPsi.full60,
+    current.atMs - 60_000,
+  );
+  signals['memory.swapUsedBytes'] = monitorReading(
+    'memory.swapUsedBytes',
+    writerId,
+    current,
+    current.memoryKernel.swapUsedBytes,
+  );
   signals['memory.swapInBytesPerSec'] = monitorReading(
-    'memory.swapInBytesPerSec', writerId, current,
-    rate(current.memoryKernel.swapInPages, previous?.memoryKernel.swapInPages ?? null, elapsedMs, LIVE_HEALTH_PAGE_BYTES), start,
+    'memory.swapInBytesPerSec',
+    writerId,
+    current,
+    rate(
+      current.memoryKernel.swapInPages,
+      previous?.memoryKernel.swapInPages ?? null,
+      elapsedMs,
+      LIVE_HEALTH_PAGE_BYTES,
+    ),
+    start,
   );
   signals['memory.swapOutBytesPerSec'] = monitorReading(
-    'memory.swapOutBytesPerSec', writerId, current,
-    rate(current.memoryKernel.swapOutPages, previous?.memoryKernel.swapOutPages ?? null, elapsedMs, LIVE_HEALTH_PAGE_BYTES), start,
+    'memory.swapOutBytesPerSec',
+    writerId,
+    current,
+    rate(
+      current.memoryKernel.swapOutPages,
+      previous?.memoryKernel.swapOutPages ?? null,
+      elapsedMs,
+      LIVE_HEALTH_PAGE_BYTES,
+    ),
+    start,
   );
   signals['network.rxBytesPerSec'] = monitorReading(
-    'network.rxBytesPerSec', writerId, current,
-    rate(current.network?.rxBytes ?? null, previous?.network?.rxBytes ?? null, elapsedMs), start,
+    'network.rxBytesPerSec',
+    writerId,
+    current,
+    rate(current.network?.rxBytes ?? null, previous?.network?.rxBytes ?? null, elapsedMs),
+    start,
   );
   signals['network.txBytesPerSec'] = monitorReading(
-    'network.txBytesPerSec', writerId, current,
-    rate(current.network?.txBytes ?? null, previous?.network?.txBytes ?? null, elapsedMs), start,
+    'network.txBytesPerSec',
+    writerId,
+    current,
+    rate(current.network?.txBytes ?? null, previous?.network?.txBytes ?? null, elapsedMs),
+    start,
   );
   signals['socket.closeWaitCount'] = monitorReading('socket.closeWaitCount', writerId, current, current.closeWaitCount);
   signals['disk.freeBytes'] = monitorReading('disk.freeBytes', writerId, current, current.diskFreeBytes);
@@ -346,10 +394,7 @@ export function applyHostLiveHealthReadings(
   }
 }
 
-export async function readLiveHealthFragments(
-  paths: LiveHealthPaths,
-  nowMs: number,
-): Promise<LiveHealthFragment[]> {
+export async function readLiveHealthFragments(paths: LiveHealthPaths, nowMs: number): Promise<LiveHealthFragment[]> {
   let names: string[];
   try {
     names = (await readdir(paths.fragmentsDir)).filter((name) => name.endsWith('.json'));
@@ -442,9 +487,13 @@ export class LiveHealthMonitor {
     const current = await this.collectHost(sampledAtMs, this.paths, this.profile.platform);
     const signals = emptyLiveHealthSignals(sampledAtMs);
     applyHostLiveHealthReadings(signals, this.writer.id, current, this.previous);
+    const observations = emptyLiveHealthObservations();
+    for (const [key, reading] of Object.entries(signals) as Array<[LiveHealthSignalKey, LiveHealthReading]>) {
+      if (reading.writerId === this.writer.id) observations[key][this.writer.id] = reading;
+    }
     const writers: Record<string, LiveHealthWriter> = { [this.writer.id]: this.writer };
     const fragments = await this.readFragments(this.paths, sampledAtMs);
-    mergeLiveHealthFragments(signals, writers, fragments, sampledAtMs);
+    mergeLiveHealthFragments(signals, writers, fragments, sampledAtMs, observations);
     const collectedAtMs = this.now();
     signals['latency.monitorTickMs'] = measuredLiveHealthReading({
       key: 'latency.monitorTickMs',
@@ -455,6 +504,7 @@ export class LiveHealthMonitor {
       window: liveHealthWindow('delta', sampledAtMs, collectedAtMs),
       confidence: 1,
     });
+    observations['latency.monitorTickMs'][this.writer.id] = signals['latency.monitorTickMs'];
     const snapshot: LiveHealthSnapshot = {
       schemaVersion: LIVE_HEALTH_SCHEMA_VERSION,
       sequence: ++this.sequence,
@@ -463,6 +513,7 @@ export class LiveHealthMonitor {
       cadenceMs: this.cadenceMs,
       profile: this.profile,
       writers,
+      observations,
       signals,
     };
     await this.writeSnapshot(this.paths.snapshotPath, snapshot);

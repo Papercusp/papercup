@@ -11,14 +11,7 @@ export const LIVE_HEALTH_SCHEMA_VERSION = 'resource-governor-live-health-v1' as 
 export const LIVE_HEALTH_FRAGMENT_SCHEMA_VERSION = 'resource-governor-live-health-fragment-v1' as const;
 
 export type LiveHealthPlatform = NodeJS.Platform;
-export type LiveHealthWriterKind =
-  | 'monitor'
-  | 'operator'
-  | 'database'
-  | 'service'
-  | 'provider'
-  | 'queue'
-  | 'governor';
+export type LiveHealthWriterKind = 'monitor' | 'operator' | 'database' | 'service' | 'provider' | 'queue' | 'governor';
 
 export type LiveHealthUnit =
   | 'boolean'
@@ -89,167 +82,321 @@ export interface LiveHealthSignalSpec {
  */
 export const LIVE_HEALTH_SIGNAL_SPECS = {
   'latency.monitorTickMs': {
-    unit: 'milliseconds', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Wall time for the out-of-process monitor to collect and publish one snapshot.',
   },
   'progress.heartbeatLagMs': {
-    unit: 'milliseconds', writerKind: 'operator', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Lateness of the operator process publisher relative to its declared cadence.',
   },
   'cpu.hostUtilizationPct': {
-    unit: 'percent', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Busy CPU time divided by total CPU time over the sample window.',
   },
   'cpu.processUtilizationPct': {
-    unit: 'percent', writerKind: 'operator', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'percent',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Target process CPU time divided by wall time over the sample window; 100 is one logical core.',
   },
   'cpu.psiSomePct': {
-    unit: 'percent', writerKind: 'monitor', windowKind: 'rolling', freshForMs: 90_000, platforms: ['linux'],
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'rolling',
+    freshForMs: 90_000,
+    platforms: ['linux'],
     description: 'Linux PSI CPU some avg60: time at least one runnable task waited for CPU.',
   },
   'scheduler.runnableCount': {
-    unit: 'count', writerKind: 'monitor', windowKind: 'instant', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'count',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Linux /proc/stat procs_running at the sampling instant.',
   },
   'scheduler.blockedCount': {
-    unit: 'count', writerKind: 'monitor', windowKind: 'instant', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'count',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Linux /proc/stat procs_blocked at the sampling instant.',
   },
   'latency.eventLoopP95Ms': {
-    unit: 'milliseconds', writerKind: 'operator', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'operator',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Operator libuv event-loop-delay histogram p95 over its published window.',
   },
   'memory.hostUsedBytes': {
-    unit: 'bytes', writerKind: 'monitor', windowKind: 'instant', freshForMs: 15_000, platforms: ['all'],
+    unit: 'bytes',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Host total memory minus free memory; an observation, never an admission threshold.',
   },
   'memory.workingSetBytes': {
-    unit: 'bytes', writerKind: 'operator', windowKind: 'instant', freshForMs: 15_000, platforms: ['all'],
+    unit: 'bytes',
+    writerKind: 'operator',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Operator process resident working set.',
   },
   'memory.workingSetGrowthBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'operator', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'bytes-per-second',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Change in operator resident working set divided by elapsed sample time.',
   },
   'memory.psiSomePct': {
-    unit: 'percent', writerKind: 'monitor', windowKind: 'rolling', freshForMs: 90_000, platforms: ['linux'],
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'rolling',
+    freshForMs: 90_000,
+    platforms: ['linux'],
     description: 'Linux PSI memory some avg60.',
   },
   'memory.psiFullPct': {
-    unit: 'percent', writerKind: 'monitor', windowKind: 'rolling', freshForMs: 90_000, platforms: ['linux'],
+    unit: 'percent',
+    writerKind: 'monitor',
+    windowKind: 'rolling',
+    freshForMs: 90_000,
+    platforms: ['linux'],
     description: 'Linux PSI memory full avg60: time all non-idle tasks stalled on reclaim.',
   },
   'memory.gcPauseP95Ms': {
-    unit: 'milliseconds', writerKind: 'operator', windowKind: 'delta', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'P95 duration of V8 GC observations during the publisher window.',
   },
   'memory.minorFaultsPerSec': {
-    unit: 'count-per-second', writerKind: 'operator', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'count-per-second',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Process minor page-fault delta per second.',
   },
   'memory.majorFaultsPerSec': {
-    unit: 'count-per-second', writerKind: 'operator', windowKind: 'delta', freshForMs: 15_000, platforms: ['all'],
+    unit: 'count-per-second',
+    writerKind: 'operator',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['all'],
     description: 'Process major page-fault delta per second.',
   },
   'memory.swapUsedBytes': {
-    unit: 'bytes', writerKind: 'monitor', windowKind: 'instant', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Host SwapTotal minus SwapFree from /proc/meminfo.',
   },
   'memory.swapInBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Linux pswpin page delta converted to bytes per second.',
   },
   'memory.swapOutBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Linux pswpout page delta converted to bytes per second.',
   },
   'database.waitP95Ms': {
-    unit: 'milliseconds', writerKind: 'database', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'database',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Database wait/checkout latency p95 supplied by the DB writer.',
   },
   'database.activeConnections': {
-    unit: 'connections', writerKind: 'database', windowKind: 'instant', freshForMs: 30_000, platforms: ['all'],
+    unit: 'connections',
+    writerKind: 'database',
+    windowKind: 'instant',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Active database connections supplied by the DB writer.',
   },
   'service.waitP95Ms': {
-    unit: 'milliseconds', writerKind: 'service', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'service',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Internal service wait latency p95 supplied by service instrumentation.',
   },
   'descriptor.openCount': {
-    unit: 'descriptors', writerKind: 'operator', windowKind: 'instant', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'descriptors',
+    writerKind: 'operator',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Open descriptors for the publishing operator process.',
   },
   'socket.closeWaitCount': {
-    unit: 'count', writerKind: 'monitor', windowKind: 'instant', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'count',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Host TCP sockets in CLOSE_WAIT from procfs.',
   },
   'disk.freeBytes': {
-    unit: 'bytes', writerKind: 'monitor', windowKind: 'instant', freshForMs: 30_000, platforms: ['all'],
+    unit: 'bytes',
+    writerKind: 'monitor',
+    windowKind: 'instant',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Available bytes on the filesystem containing the monitor snapshot.',
   },
   'disk.readBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Aggregate Linux block-device read-sector delta per second.',
   },
   'disk.writeBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Aggregate Linux block-device write-sector delta per second.',
   },
   'network.rxBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Aggregate non-loopback network receive-byte delta per second.',
   },
   'network.txBytesPerSec': {
-    unit: 'bytes-per-second', writerKind: 'monitor', windowKind: 'delta', freshForMs: 15_000, platforms: ['linux'],
+    unit: 'bytes-per-second',
+    writerKind: 'monitor',
+    windowKind: 'delta',
+    freshForMs: 15_000,
+    platforms: ['linux'],
     description: 'Aggregate non-loopback network transmit-byte delta per second.',
   },
   'provider.waitP95Ms': {
-    unit: 'milliseconds', writerKind: 'provider', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'provider',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Provider/account wait latency p95 supplied by inference routing.',
   },
   'provider.rateLimited': {
-    unit: 'boolean', writerKind: 'provider', windowKind: 'instant', freshForMs: 30_000, platforms: ['all'],
+    unit: 'boolean',
+    writerKind: 'provider',
+    windowKind: 'instant',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Whether the observed provider/account lane is currently rate-limited.',
   },
   'queue.writerLatencyP95Ms': {
-    unit: 'milliseconds', writerKind: 'queue', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'queue',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Canonical durable queue writer latency p95.',
   },
   'queue.writerFailureRate': {
-    unit: 'percent', writerKind: 'queue', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'percent',
+    writerKind: 'queue',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Canonical durable queue writer failures divided by attempts.',
   },
   'queue.oldestAgeMs': {
-    unit: 'milliseconds', writerKind: 'queue', windowKind: 'instant', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'queue',
+    windowKind: 'instant',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Age of the oldest queued receipt; depth alone is intentionally absent as a verdict.',
   },
   'queue.arrivalRate': {
-    unit: 'requests-per-second', writerKind: 'queue', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'requests-per-second',
+    writerKind: 'queue',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Durable receipt arrival rate over the writer window.',
   },
   'queue.drainRate': {
-    unit: 'requests-per-second', writerKind: 'queue', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'requests-per-second',
+    writerKind: 'queue',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Durable receipt terminal/drain rate over the writer window.',
   },
   'governor.admissionLatencyP95Ms': {
-    unit: 'milliseconds', writerKind: 'governor', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'governor',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Governor.admit end-to-end latency p95.',
   },
   'governor.decisionLatencyP95Ms': {
-    unit: 'milliseconds', writerKind: 'governor', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'governor',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Controller decision latency p95, excluding durable queue persistence.',
   },
   'governor.persistLatencyP95Ms': {
-    unit: 'milliseconds', writerKind: 'governor', windowKind: 'rolling', freshForMs: 30_000, platforms: ['all'],
+    unit: 'milliseconds',
+    writerKind: 'governor',
+    windowKind: 'rolling',
+    freshForMs: 30_000,
+    platforms: ['all'],
     description: 'Durable queue/receipt persistence latency p95 observed by the governor.',
   },
 } as const satisfies Record<string, LiveHealthSignalSpec>;
 
 export type LiveHealthSignalKey = keyof typeof LIVE_HEALTH_SIGNAL_SPECS;
-export const LIVE_HEALTH_SIGNAL_KEYS = Object.freeze(
-  Object.keys(LIVE_HEALTH_SIGNAL_SPECS) as LiveHealthSignalKey[],
-);
+export const LIVE_HEALTH_SIGNAL_KEYS = Object.freeze(Object.keys(LIVE_HEALTH_SIGNAL_SPECS) as LiveHealthSignalKey[]);
 
 export interface LiveHealthPlatformProfile {
   readonly platform: LiveHealthPlatform;
@@ -272,6 +419,12 @@ export interface LiveHealthSnapshot {
   readonly cadenceMs: number;
   readonly profile: LiveHealthPlatformProfile;
   readonly writers: Readonly<Record<string, LiveHealthWriter>>;
+  /**
+   * Every writer-scoped observation. This is the attribution source for P-005;
+   * no sibling process/provider lane is discarded by the compact summary.
+   */
+  readonly observations: Readonly<Record<LiveHealthSignalKey, Readonly<Record<string, LiveHealthReading>>>>;
+  /** Newest reading per key for bounded orientation/state summaries. Not a verdict. */
   readonly signals: Readonly<Record<LiveHealthSignalKey, LiveHealthReading>>;
 }
 
@@ -287,11 +440,7 @@ export function clampLiveHealthConfidence(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-export function liveHealthWindow(
-  kind: LiveHealthWindowKind,
-  startedAtMs: number,
-  endedAtMs: number,
-): LiveHealthWindow {
+export function liveHealthWindow(kind: LiveHealthWindowKind, startedAtMs: number, endedAtMs: number): LiveHealthWindow {
   const safeEnd = Number.isFinite(endedAtMs) ? endedAtMs : 0;
   const safeStart = Number.isFinite(startedAtMs) ? Math.min(startedAtMs, safeEnd) : safeEnd;
   return Object.freeze({
@@ -390,12 +539,20 @@ export function emptyLiveHealthSignals(nowMs: number): Record<LiveHealthSignalKe
   ) as Record<LiveHealthSignalKey, LiveHealthReading>;
 }
 
+export function emptyLiveHealthObservations(): Record<LiveHealthSignalKey, Record<string, LiveHealthReading>> {
+  return Object.fromEntries(LIVE_HEALTH_SIGNAL_KEYS.map((key) => [key, {}])) as Record<
+    LiveHealthSignalKey,
+    Record<string, LiveHealthReading>
+  >;
+}
+
 /** Validate the parts that would otherwise let malformed fragments lie healthy. */
 export function isLiveHealthFragment(value: unknown): value is LiveHealthFragment {
   if (!value || typeof value !== 'object') return false;
   const fragment = value as Partial<LiveHealthFragment>;
   if (fragment.schemaVersion !== LIVE_HEALTH_FRAGMENT_SCHEMA_VERSION) return false;
-  if (!fragment.writer || typeof fragment.writer.id !== 'string' || typeof fragment.writer.kind !== 'string') return false;
+  if (!fragment.writer || typeof fragment.writer.id !== 'string' || typeof fragment.writer.kind !== 'string')
+    return false;
   if (!Number.isFinite(fragment.publishedAtMs)) return false;
   if (!fragment.signals || typeof fragment.signals !== 'object') return false;
   for (const [rawKey, rawReading] of Object.entries(fragment.signals)) {
@@ -424,6 +581,7 @@ export function mergeLiveHealthFragments(
   writers: Record<string, LiveHealthWriter>,
   fragments: readonly LiveHealthFragment[],
   nowMs: number,
+  observations?: Record<LiveHealthSignalKey, Record<string, LiveHealthReading>>,
 ): void {
   const ordered = [...fragments].sort((a, b) => b.publishedAtMs - a.publishedAtMs);
   const selected = new Set<LiveHealthSignalKey>();
@@ -431,12 +589,14 @@ export function mergeLiveHealthFragments(
     writers[fragment.writer.id] = fragment.writer;
     for (const [rawKey, reading] of Object.entries(fragment.signals)) {
       const key = rawKey as LiveHealthSignalKey;
-      if (!reading || selected.has(key)) continue;
-      selected.add(key);
+      if (!reading) continue;
       const ageMs = Math.max(0, nowMs - reading.observedAtMs);
-      signals[key] = ageMs > LIVE_HEALTH_SIGNAL_SPECS[key].freshForMs
-        ? staleLiveHealthReading(key, reading, nowMs)
-        : reading;
+      const normalized =
+        ageMs > LIVE_HEALTH_SIGNAL_SPECS[key].freshForMs ? staleLiveHealthReading(key, reading, nowMs) : reading;
+      if (observations) observations[key][reading.writerId] = normalized;
+      if (selected.has(key)) continue;
+      selected.add(key);
+      signals[key] = normalized;
     }
   }
 }

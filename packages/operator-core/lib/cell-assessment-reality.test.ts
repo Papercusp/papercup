@@ -469,6 +469,12 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessHostMemoryPressure({ pressure: 'ok', stale: false, unknownCount: 1, memFreePct: 80 }),
     },
   ],
+  'memory.cgroupAttribution': [
+    { label: 'critical pressure context', expect: 'crit' },
+    { label: 'warning pressure context', expect: 'warn' },
+    { label: 'stable pressure context', expect: 'ok' },
+    { label: 'unmeasured pressure context', expect: null },
+  ],
   'agent.goal': [
     { label: 'the agent holds nothing', expect: assessAgentGoal(null, []) },
     { label: 'a corroborated ref', expect: assessAgentGoal(GOALOF('corroborated'), []) },
@@ -592,6 +598,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'deploy.3070.sha': ['executing', 'restart-required', 'process-unverified', null],
   'git.mainBehindStaging': ['caught-up', 'normal-buffer', 'gate-stalled', null],
   'host.memoryPressure': ['critical', 'warning', 'stable-low-free', 'stable', null, null],
+  'memory.cgroupAttribution': ['crit', 'warn', 'ok', null],
   'agent.goal': ['nothing-held', 'corroborated', 'sole', 'divergent', 'divergent', null],
   'testing.census.population': ['no-providers', 'census-not-run', 'empty-measured', 'populated'],
   'testing.coverage.floor': ['no-population', 'below-floor', 'measured-with-waivers', 'meets-floor'],
@@ -606,13 +613,13 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * partition with zero residue, and this is it.
    */
   it('registers exactly eleven cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(11);
+    expect(BUILTIN_CELLS).toHaveLength(12);
     expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length).toBe(
       BUILTIN_CELLS.length,
     );
     expect(PIPELINE_CELLS).toHaveLength(7);
     expect(GOAL_CELLS).toHaveLength(1);
-    expect(HOST_MEMORY_CELLS).toHaveLength(1);
+    expect(HOST_MEMORY_CELLS).toHaveLength(2);
     expect(COVERAGE_CELLS).toHaveLength(2);
   });
 
@@ -905,6 +912,13 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       'low free capacity must not be reported as PSI pressure',
     ],
     [
+      'memory.cgroupAttribution',
+      'memory.pressure',
+      'crit',
+      'ok',
+      'attribution context must preserve the resolver pressure band',
+    ],
+    [
       'agent.goal',
       'goalCompeting',
       assessAgentGoal(GOALOF('corroborated', ['WI-2']), []) ?? '',
@@ -928,7 +942,7 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */
-  it('probes all ten cells for sign inversion', () => {
+  it('probes all registered cells for sign inversion', () => {
     expect(new Set(PAIRS.map((p) => p[0])).size).toBe(BUILTIN_CELLS.length);
     for (const spec of BUILTIN_CELLS) {
       expect(

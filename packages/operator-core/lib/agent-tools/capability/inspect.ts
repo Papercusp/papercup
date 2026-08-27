@@ -143,10 +143,9 @@ export type InspectResolution =
   | { ok: true; command: string; cwd: string }
   | { ok: false; reason: string; message: string };
 
-const TEST_PATH_GUIDANCE =
-  '`onlyPaths` is only valid for check:"typecheck". For tests, pass one test file or directory with `path` ' +
-  '(package-relative when `package` is supplied, repo-relative when it is omitted); ' +
-  'for multiple files, split them into separate capability:inspect calls (or use testing:run).';
+const TEST_PATH_CONFLICT_GUIDANCE =
+  '`path` and `onlyPaths` cannot be supplied together for check:"test". Use `path` for one test file or directory, ' +
+  'or use `onlyPaths` for an exact multi-file run.';
 
 // The default package Vitest config excludes these files. Keep the resolver on
 // the repository test router for the same owning-config selection that
@@ -247,7 +246,28 @@ export function resolveInspectCommand(
   }
 
   if (args.check === 'test' && args.onlyPaths && args.onlyPaths.length > 0) {
-    return { ok: false, reason: 'bad_args', message: TEST_PATH_GUIDANCE };
+    if (args.path !== undefined) {
+      return { ok: false, reason: 'bad_args', message: TEST_PATH_CONFLICT_GUIDANCE };
+    }
+
+    // `test:file` is the repository's canonical exact-test router: it accepts
+    // multiple paths and selects the owning Vitest or Node:test configuration.
+    // Callers with a package commonly mix package-relative paths with paths
+    // copied from repo-level diagnostics, so accept both spellings and always
+    // hand the root router repo-relative tokens.
+    const packageRel = args.package === undefined ? '' : relative(baseDir, cwd);
+    const repoPaths: string[] = [];
+    for (const raw of args.onlyPaths) {
+      const normalized = normalizeTestPathToken(raw);
+      const isRepoRelative =
+        Boolean(packageRel) &&
+        (normalized === packageRel || normalized.startsWith(`${packageRel}/`));
+      const v = validateRelPath(normalized, isRepoRelative ? baseDir : cwd);
+      if (!v.ok) return { ok: false, reason: 'bad_only_path', message: v.reason };
+      repoPaths.push(relative(baseDir, v.abs).replace(/\\/g, '/'));
+    }
+
+    return { ok: true, command: `npm run test:file -- ${repoPaths.join(' ')}`, cwd: baseDir };
   }
 
   if (args.check === 'typecheck') {
@@ -555,7 +575,7 @@ export default defineTool({
   args: z.object({
     check: z
       .enum(['typecheck', 'test'])
-      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path>` router for `.integration.test.*`/`.browser.test.*`, or, with no package, the repo `npm run test:affected`.'),
+      .describe('typecheck = `npx tsc --noEmit` in the package; test = the package suite (`npx vitest run`), the repository `npm run test:file -- <path…>` router for exact one- or multi-file runs, or, with no package and no paths, the repo `npm run test:affected`.'),
     package: z
       .string()
       .optional()
@@ -570,14 +590,14 @@ export default defineTool({
       .describe(
         'test only: one test file/dir to narrow the run (e.g. "lib/foo.test.ts"). When `package` is supplied, ' +
           'the path is package-relative; when omitted, it is repo-relative. Layered `.integration.test.*`/`.browser.test.*` ' +
-          'files are routed through the repository `test:file` command automatically. For multiple files, use testing:run or make one capability:inspect call per path.',
+          'files are routed through the repository `test:file` command automatically. For multiple exact files, use `onlyPaths` instead; do not pass both fields.',
       ),
     onlyPaths: z
       .array(z.string().min(1).max(300))
       .max(50)
       .optional()
       .describe(
-        'typecheck only (foreground or background): never pass with check:"test". Discover the repository baseline gate that covers these package- or repo-relative paths, then scope its verdict via `--files=`. Use this to verify your changed files without treating accepted pre-existing diagnostics elsewhere as your regression. Mixed or uncovered gate scopes are refused rather than guessed.',
+        'Exact paths for a focused run. For test, pass one or more package-relative paths (when `package` is supplied) or repo-relative paths (when omitted); they run through the root `npm run test:file -- <paths…>` router. For typecheck, discover the repository baseline gate that covers these package- or repo-relative paths, then scope its verdict via `--files=`. Mixed or uncovered gate scopes are refused rather than guessed.',
       ),
     run_in_background: z
       .boolean()

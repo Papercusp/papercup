@@ -104,7 +104,33 @@ function shapeResult(res: unknown, tier: TierName): unknown {
 
   // Decisions: newest-N (the tail is the live context; older decisions are
   // history), each body capped harder than the sections-mode bound.
-  if (Array.isArray(r.decisions) && r.decisions.length > 0) {
+  //
+  // EXCEPT when the caller narrowed the read to explicit decision ids
+  // (EI-21573289806322713). `decisionSelection` is present iff this payload came
+  // from `narrowDecisionPayload` (../plans/get.ts), and that selector exists —
+  // in its own words — "specifically to recover a governing ruling whose
+  // complete body did not fit in a plan read"; its arg is documented as
+  // returning those ids "with complete bodies". Applying either cut here
+  // truncates the very escape hatch that exists BECAUSE of truncation.
+  //
+  // Both cuts were actively harmful on that path, the slice worse than the clip:
+  //  - `slice(-c.decisions)` keeps the NEWEST few, so an explicit selection
+  //    silently loses requested ids from the HEAD;
+  //  - and either way `decisionSelection.missing` still reads `[]` — the field
+  //    that is "deliberately in-band so a missing id cannot be mistaken for a
+  //    complete read". Measured: 5 explicit ids returned matched:5 / missing:[]
+  //    with every body clipped, one at 186 of 4,782 chars (~4% of the ruling).
+  //
+  // Skipping the cuts does not reintroduce the overflow this shaper exists to
+  // prevent: `narrowDecisionPayload` already strips the plan's prose, items and
+  // decorations for exactly this reason, so a narrowed payload is the governing
+  // text and identity/CAS fields, nothing else. If that still overflows, the
+  // result-door spills it as a typed reference envelope carrying a recovery
+  // pointer — honest, and strictly better than plausible-looking clipped text,
+  // which is what the D-004 shape contract ("nothing is silently dropped") asks
+  // for. A cut that cannot be detected is the one failure mode it forbids.
+  const isNarrowedDecisionRead = r.decisionSelection != null;
+  if (Array.isArray(r.decisions) && r.decisions.length > 0 && !isNarrowedDecisionRead) {
     const total = r.decisions.length;
     out.decisions = r.decisions.slice(-c.decisions).map((d) => {
       if (!d || typeof d !== "object") return d;

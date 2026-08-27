@@ -92,6 +92,32 @@ const status = {
     ],
     unembedded: 2,
   },
+  importStorage: {
+    owner: {
+      retainedBytes: 512 * 1024 * 1024,
+      reservedBytes: 512 * 1024 * 1024,
+      usedBytes: 1024 * 1024 * 1024,
+      remainingBytes: 31 * 1024 * 1024 * 1024,
+      maxBytes: 32 * 1024 * 1024 * 1024,
+      retainedJobs: 1,
+      reservedJobs: 1,
+      jobs: 2,
+      remainingJobs: 6,
+      maxJobs: 8,
+    },
+    workspace: {
+      retainedBytes: 512 * 1024 * 1024,
+      reservedBytes: 512 * 1024 * 1024,
+      usedBytes: 1024 * 1024 * 1024,
+      remainingBytes: 255 * 1024 * 1024 * 1024,
+      maxBytes: 256 * 1024 * 1024 * 1024,
+      retainedJobs: 1,
+      reservedJobs: 1,
+      jobs: 2,
+      remainingJobs: 62,
+      maxJobs: 64,
+    },
+  },
   grants: [],
   supportedSources: [
     "gmail",
@@ -244,7 +270,15 @@ beforeEach(() => {
       if (url === "/api/user/personal-vault" && init?.method === "DELETE") {
         return Response.json({
           ok: true,
-          removed: { documents: 12, cursors: 0, aliases: 0, identities: 0 },
+          removed: {
+            documents: 12,
+            cursors: 0,
+            aliases: 0,
+            identities: 0,
+            importJobs: 1,
+            importArchives: 1,
+            importArchiveCleanupFailures: 0,
+          },
         });
       }
       if (url === "/api/user/personal-vault/grants/preview") {
@@ -328,6 +362,10 @@ describe("PersonalVaultSettingsPage", () => {
       }),
     ];
     render(<PersonalVaultSettingsPage />);
+
+    expect(
+      (await screen.findByLabelText("Archive storage forecast")).textContent,
+    ).toContain("1.0 GB of 32.0 GB owner capacity");
 
     const activity = (
       await screen.findByRole("heading", { name: "Archive activity" })

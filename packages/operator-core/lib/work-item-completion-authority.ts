@@ -315,6 +315,65 @@ export function isLegacyClose(authority: CompletionAuthorityFrom, isTerminal: bo
 }
 
 /**
+ * EI-21574559473613348 — reconcile the authority a close COMPUTED in-process with the one
+ * the database actually STORED, and report the stored one.
+ *
+ * ── WHY THESE CAN DISAGREE ─────────────────────────────────────────────────────
+ * Migration 972 installs a BEFORE trigger,
+ * `harness_shared.downgrade_unproven_committed_close()`, which re-applies the
+ * content-identity floor in SQL. That placement is deliberate: it holds the floor BELOW
+ * the deploy boundary, so a frozen release build serving older code cannot mint stronger
+ * authority than current source permits. When it fires it rewrites 'committed' to
+ * 'proposed' and RAISEs a WARNING — which reaches the Postgres log and nobody else.
+ *
+ * So a close could be told 'committed' by the tool and stored as 'proposed' in the same
+ * write, with nothing surfacing the contradiction. Agents then truthfully relayed the
+ * response value and were wrong about the durable record; that is how this was found.
+ *
+ * `persisted` must come from a read taken AFTER the write (both of complete.ts's write
+ * paths re-read the row through the issue view), or this reconciliation is meaningless.
+ * The computed value is the fallback ONLY for a writer that stamps no authority at all,
+ * so legacy/system paths are unchanged.
+ */
+export function reconcileStampedAuthority(input: {
+  /** did this call actually stamp a close? (terminal state reached, no state error) */
+  stamped: boolean;
+  /** authority on the row re-read AFTER the write — the post-trigger truth */
+  persisted: CompletionAuthorityFrom;
+  /** authority this process computed before the write */
+  computed: CompletionAuthorityFrom;
+  /** the pre-floor evidence judgement, used to attribute a DB-side downgrade */
+  authorityByEvidence: string;
+  /** how many paths the completion declared in `filesChanged` */
+  declaredFilesCount: number;
+  /** did the in-process floor already downgrade this close? */
+  inProcessContentIdentityMissing: boolean;
+}): {
+  stampedAuthority: CompletionAuthorityFrom;
+  contentIdentityDowngrade: boolean;
+  divergedFromComputed: boolean;
+} {
+  if (!input.stamped) {
+    return { stampedAuthority: null, contentIdentityDowngrade: false, divergedFromComputed: false };
+  }
+  const stampedAuthority = input.persisted ?? input.computed;
+  // The floor can be applied in EITHER place, and the remedy text is identical, so
+  // attribute off the OUTCOME rather than the site. Keyed only to the in-process flag, a
+  // DB-side downgrade fell through to generic "supply evidence" advice, which names
+  // fields the caller already sent and can never clear the downgrade.
+  const contentIdentityDowngrade =
+    input.inProcessContentIdentityMissing ||
+    (stampedAuthority === 'proposed' &&
+      input.authorityByEvidence === 'committed' &&
+      input.declaredFilesCount > 0);
+  return {
+    stampedAuthority,
+    contentIdentityDowngrade,
+    divergedFromComputed: input.persisted !== null && input.persisted !== input.computed,
+  };
+}
+
+/**
  * The minimum evidence bar for `committed`.
  *
  * `verifiedHow` PLUS at least one of `testsRun` / `testResult`. Both halves are load-

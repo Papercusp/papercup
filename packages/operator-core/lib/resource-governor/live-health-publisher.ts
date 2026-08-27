@@ -77,6 +77,11 @@ function deltaRate(current: number, previous: number, elapsedMs: number): number
   return ((current - previous) * 1_000) / elapsedMs;
 }
 
+function signedDeltaRate(current: number, previous: number, elapsedMs: number): number | null {
+  if (elapsedMs <= 0) return null;
+  return ((current - previous) * 1_000) / elapsedMs;
+}
+
 function reading(
   key: LiveHealthSignalKey,
   writerId: string,
@@ -160,7 +165,7 @@ export class ProcessLiveHealthPublisher {
         previous && elapsedMs > 0
           ? deltaRate(current.cpuMicros, previous.cpuMicros, elapsedMs) === null
             ? null
-            : (deltaRate(current.cpuMicros, previous.cpuMicros, elapsedMs)! / 1_000) * 100
+            : deltaRate(current.cpuMicros, previous.cpuMicros, elapsedMs)! / 10_000
           : null,
         current.atMs,
         startMs,
@@ -177,19 +182,31 @@ export class ProcessLiveHealthPublisher {
         'event-loop-monitor-unavailable',
       ),
       'memory.workingSetBytes': reading(
-        'memory.workingSetBytes', this.writer.id, current.rssBytes, current.atMs, current.atMs, 'instant', 'rss-unavailable',
+        'memory.workingSetBytes',
+        this.writer.id,
+        current.rssBytes,
+        current.atMs,
+        current.atMs,
+        'instant',
+        'rss-unavailable',
       ),
       'memory.workingSetGrowthBytesPerSec': reading(
         'memory.workingSetGrowthBytesPerSec',
         this.writer.id,
-        previous ? deltaRate(current.rssBytes, previous.rssBytes, elapsedMs) : null,
+        previous ? signedDeltaRate(current.rssBytes, previous.rssBytes, elapsedMs) : null,
         current.atMs,
         startMs,
         'delta',
         'publisher-warmup-or-working-set-decrease',
       ),
       'memory.gcPauseP95Ms': reading(
-        'memory.gcPauseP95Ms', this.writer.id, gcP95, current.atMs, startMs, 'delta', 'no-gc-observed-in-window',
+        'memory.gcPauseP95Ms',
+        this.writer.id,
+        gcP95,
+        current.atMs,
+        startMs,
+        'delta',
+        'no-gc-observed-in-window',
       ),
       'memory.minorFaultsPerSec': reading(
         'memory.minorFaultsPerSec',
@@ -245,7 +262,10 @@ export class ProcessLiveHealthPublisher {
         try {
           await this.publishOnce();
         } catch (error) {
-          console.warn('[resource-governor-health] process publisher failed:', error instanceof Error ? error.message : error);
+          console.warn(
+            '[resource-governor-health] process publisher failed:',
+            error instanceof Error ? error.message : error,
+          );
         }
       },
       { category: 'watchdog', instanced: true, allowInTest: this.allowTimerInTest },
@@ -266,10 +286,14 @@ interface PublisherSingletonState {
   starting: Promise<ProcessLiveHealthPublisher> | null;
 }
 
-const singleton = pinModuleState('@papercusp/operator-core.resource-governor-live-health-publisher', () => ({
-  publisher: null,
-  starting: null,
-} as PublisherSingletonState));
+const singleton = pinModuleState(
+  '@papercusp/operator-core.resource-governor-live-health-publisher',
+  () =>
+    ({
+      publisher: null,
+      starting: null,
+    }) as PublisherSingletonState,
+);
 
 /** Idempotent across duplicate ESM/CJS module records. */
 export function startProcessLiveHealthPublisher(
@@ -278,12 +302,15 @@ export function startProcessLiveHealthPublisher(
   if (singleton.publisher) return Promise.resolve(singleton.publisher);
   if (singleton.starting) return singleton.starting;
   const publisher = new ProcessLiveHealthPublisher(options);
-  singleton.starting = publisher.start().then(() => {
-    singleton.publisher = publisher;
-    return publisher;
-  }).finally(() => {
-    singleton.starting = null;
-  });
+  singleton.starting = publisher
+    .start()
+    .then(() => {
+      singleton.publisher = publisher;
+      return publisher;
+    })
+    .finally(() => {
+      singleton.starting = null;
+    });
   return singleton.starting;
 }
 

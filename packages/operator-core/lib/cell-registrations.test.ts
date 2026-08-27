@@ -16,6 +16,7 @@ import {
   MAIN_BEHIND_STAGING_CELL,
   AGENT_GOAL_CELL,
   HOST_MEMORY_PRESSURE_CELL,
+  MEMORY_CGROUP_ATTRIBUTION_CELL,
   BUILTIN_CELLS,
   registerBuiltinCells,
 } from './cell-registrations';
@@ -142,6 +143,7 @@ describe('P-007: the four verdict cells', () => {
       'git.mainBehindStaging',
       'git.pipelinePosition',
       'host.memoryPressure',
+      'memory.cgroupAttribution',
       // deterministic-coverage-census-2026-08-17 P-005. A PAIR, split along the line
       // between a count and a ratio: the population is never unknown (it is a row
       // count, so 0 is a measurement), while the ratio has no answer at all when that
@@ -445,6 +447,33 @@ describe('EI-20449419111876508: host.memoryPressure is a readable shared-writer 
     expect(assessment!.evidence).toContain('host.memFreePct');
     expect(assessment!.evidence).not.toContain(HOST_MEMORY_PRESSURE_CELL.headline);
     expect(assessment!.codes['stable-low-free'].meaning).toMatch(/free memory is below the declared capacity warning threshold/);
+  });
+});
+
+describe('EI-21572281184148497: memory.cgroupAttribution is a readable shared-writer lens', () => {
+  beforeEach(() => __resetCellRegistryForTests());
+
+  it('validates and registers as a workspace-visible nullable cell', () => {
+    expect(validateCellSpec(MEMORY_CGROUP_ATTRIBUTION_CELL)).toEqual([]);
+    registerBuiltinCells();
+    expect(getCell('memory.cgroupAttribution', { ownerId: 'su-anyone' })).toEqual(
+      MEMORY_CGROUP_ATTRIBUTION_CELL,
+    );
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.callerRelativity).toEqual({ kind: 'global' });
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.visibility).toEqual({ kind: 'workspace' });
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.nullable).toBe(true);
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.unknownHoist).toBe('memory.unknown');
+  });
+
+  it('projects the existing host:memory_pressure attribution path without a second resolver', () => {
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.changeSignal).toEqual({
+      kind: 'poll',
+      tool: 'host:memory_pressure',
+      path: 'memory.cgroupAttribution',
+    });
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.resolver).toBe(HOST_MEMORY_PRESSURE_CELL.resolver);
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.assessment?.path).toBe('memory.pressure');
+    expect(MEMORY_CGROUP_ATTRIBUTION_CELL.assessment?.evidence).toEqual(['memory.unknown']);
   });
 });
 

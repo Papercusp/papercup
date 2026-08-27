@@ -65,6 +65,19 @@ interface PersonalGrant {
   revoked_at: string | null;
 }
 
+interface ImportStorageScope {
+  retainedBytes: number;
+  reservedBytes: number;
+  usedBytes: number;
+  remainingBytes: number;
+  maxBytes: number;
+  retainedJobs: number;
+  reservedJobs: number;
+  jobs: number;
+  remainingJobs: number;
+  maxJobs: number;
+}
+
 interface VaultStatus {
   ok: boolean;
   enabled: boolean;
@@ -74,6 +87,7 @@ interface VaultStatus {
   grants: PersonalGrant[];
   supportedSources: string[];
   embedding: { mode: "gemma"; localOnly: true };
+  importStorage: { owner: ImportStorageScope; workspace: ImportStorageScope };
   integrations?: { google: IntegrationStatus; facebook?: IntegrationStatus };
 }
 
@@ -569,6 +583,9 @@ export default function PersonalVaultSettingsPage() {
           cursors: number;
           aliases: number;
           identities: number;
+          importJobs: number;
+          importArchives: number;
+          importArchiveCleanupFailures: number;
         };
       }>(
         await fetch("/api/user/personal-vault", {
@@ -583,7 +600,7 @@ export default function PersonalVaultSettingsPage() {
         }),
       );
       toast.success(
-        `Purged ${result.removed.documents.toLocaleString()} document${result.removed.documents === 1 ? "" : "s"}${source ? ` from ${purgeTargetLabel(purgeTarget)}` : ""}.`,
+        `Purged ${result.removed.documents.toLocaleString()} document${result.removed.documents === 1 ? "" : "s"}${source ? ` from ${purgeTargetLabel(purgeTarget)}` : ""} and ${result.removed.importArchives.toLocaleString()} retained encrypted archive${result.removed.importArchives === 1 ? "" : "s"}.${result.removed.importArchiveCleanupFailures ? ` ${result.removed.importArchiveCleanupFailures.toLocaleString()} archive cleanup${result.removed.importArchiveCleanupFailures === 1 ? " is" : "s are"} queued for retry.` : ""}`,
       );
       setPurgeTarget(null);
       await load();
@@ -1418,6 +1435,21 @@ export default function PersonalVaultSettingsPage() {
             records stay isolated in search, dedupe, status, and purge.
           </span>
         </label>
+        <p
+          className="pc-settings-note"
+          aria-label="Archive storage forecast"
+          style={{ marginTop: 12 }}
+        >
+          <strong>Encrypted archive storage:</strong>{" "}
+          {formatBytes(status.importStorage.owner.usedBytes)} of{" "}
+          {formatBytes(status.importStorage.owner.maxBytes)} owner capacity ·{" "}
+          {status.importStorage.owner.jobs.toLocaleString()} of{" "}
+          {status.importStorage.owner.maxJobs.toLocaleString()} retained or
+          reserved jobs. Current usage is{" "}
+          {formatBytes(status.importStorage.owner.retainedBytes)} retained +{" "}
+          {formatBytes(status.importStorage.owner.reservedBytes)} reserved while
+          uploads are in flight.
+        </p>
         <div
           className="pc-settings-note"
           aria-labelledby="vault-archive-help-heading"

@@ -55,7 +55,9 @@ import {
   MAX_PERSONAL_VAULT_IMPORT_BYTES,
   finalizePersonalVaultImportUpload,
   listPersonalVaultImportJobs,
+  personalVaultImportStorageUsage,
   publicPersonalVaultImportJob,
+  purgePersonalVaultImportArchives,
   releasePersonalVaultImportUpload,
   removePersonalVaultImportArchive,
   reservePersonalVaultImportUpload,
@@ -607,11 +609,12 @@ const status = defineTool({
     const user = await getSessionUserOrDefault(req.headers);
     const workspaceId = activeWorkspaceId();
     const { sql } = getOrgPg();
-    const [enabled, stats, grants, integrations] = await Promise.all([
+    const [enabled, stats, grants, integrations, importStorage] = await Promise.all([
       isPersonalVaultEnabled(sql, workspaceId, user.id),
       personalVaultStats(sql, workspaceId, user.id),
       listPersonalGrants(sql, workspaceId, user.id),
       integrationStatuses(workspaceId, user.id),
+      personalVaultImportStorageUsage(sql, workspaceId, user.id),
     ]);
     return Response.json({
       ok: true,
@@ -623,6 +626,7 @@ const status = defineTool({
       supportedSources: SUPPORTED_SOURCES,
       embedding: { mode: 'gemma', localOnly: true },
       integrations,
+      importStorage,
     });
   },
 });
@@ -805,7 +809,24 @@ const purge = defineTool({
         sourceId,
         providerAccountId,
       });
-      return Response.json({ ok: true, source, sourceId, providerAccountId, removed });
+      const imports = await purgePersonalVaultImportArchives(
+        getOrgPg().sql,
+        workspaceId,
+        user.id,
+        { sourceId, providerAccountId },
+      );
+      return Response.json({
+        ok: true,
+        source,
+        sourceId,
+        providerAccountId,
+        removed: {
+          ...removed,
+          importJobs: imports.jobs,
+          importArchives: imports.archives,
+          importArchiveCleanupFailures: imports.cleanupFailures,
+        },
+      });
     } catch (err) {
       return Response.json({ ok: false, error: messageOf(err) }, { status: 400 });
     }
@@ -889,7 +910,12 @@ const archiveImports = defineTool({
       user.id,
       50,
     );
-    return Response.json({ ok: true, jobs: jobs.map(publicPersonalVaultImportJob) });
+    const storage = await personalVaultImportStorageUsage(
+      getOrgPg().sql,
+      activeWorkspaceId(),
+      user.id,
+    );
+    return Response.json({ ok: true, jobs: jobs.map(publicPersonalVaultImportJob), storage });
   },
 });
 

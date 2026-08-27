@@ -48,9 +48,11 @@ export interface InboxBulkRecommendationProps {
 export function recommendationValidity(
   item: AttentionItem,
   actionId: string | null,
+  draftAnswer?: string | null,
 ): { valid: boolean; reason?: string } {
   if (!actionId) return { valid: false, reason: 'no action recommended' };
-  if (isNavigateAction(actionId)) {
+  const hasDraftedAnswer = actionId === 'answer' && Boolean(draftAnswer?.trim());
+  if (isNavigateAction(actionId) && !hasDraftedAnswer) {
     return { valid: false, reason: `"${actionId}" only opens a view — it resolves nothing` };
   }
   const options = attentionItemToCardSpec(item).options ?? [];
@@ -79,11 +81,11 @@ export default function InboxBulkRecommendation({
 
   const spec = useMemo(() => attentionItemToCardSpec(item), [item]);
   const validity = useMemo(
-    () => recommendationValidity(item, rec.actionId),
-    [item, rec.actionId],
+    () => recommendationValidity(item, rec.actionId, draft),
+    [item, rec.actionId, draft],
   );
   const options = spec.options ?? [];
-  const hasDraft = Boolean(rec.draftAnswer?.trim()) || editing;
+  const hasDraft = Boolean(draft.trim()) || editing;
 
   const accept = async () => {
     if (accepting || busy) return;

@@ -38,10 +38,10 @@ describe('live-health managed-child topology', () => {
     const bootstrap = readFileSync(join(root, 'apps/operator/bin/host-bootstrap.ts'), 'utf8');
     expect(serve).toContain('PAPERCUSP_RESOURCE_GOVERNOR_MONITOR_MODE');
     expect(serve).toContain('runLiveHealthMonitorMain');
-    expect(hono).toContain("'resource-health'");
+    expect(hono).toContain('resource-health');
     expect(hono).toContain('runLiveHealthMonitorMain');
     expect(bootstrap).toContain('startProcessLiveHealthPublisher');
     expect(bootstrap).toContain('ensureLiveHealthMonitor');
-    expect(bootstrap).toContain("PAPERCUSP_RESOURCE_GOVERNOR_MONITOR !== '0'");
+    expect(bootstrap).toMatch(/PAPERCUSP_RESOURCE_GOVERNOR_MONITOR\s*!==\s*["']0["']/);
   });
 });

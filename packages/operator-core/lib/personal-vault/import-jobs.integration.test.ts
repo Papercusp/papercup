@@ -9,7 +9,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,9 +20,14 @@ import {
   MAX_PERSONAL_VAULT_IMPORT_BYTES,
   MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
   MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES,
+  cleanupExpiredPersonalVaultImportArchives,
   cleanupOrphanedPersonalVaultImportUploads,
+  personalVaultImportStorageUsage,
   personalVaultImportStorageDir,
+  purgePersonalVaultImportArchives,
   reservePersonalVaultImportUpload,
+  runPersonalVaultImportBatch,
+  storePersonalVaultImportArchive,
 } from './import-jobs';
 
 const MIGRATION = fileURLToPath(new URL(
@@ -127,6 +132,21 @@ describe('Personal Vault import aggregate admission (D-010)', () => {
       jobs: 2,
       bytes: MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
     }]);
+    await expect(personalVaultImportStorageUsage(org.adminSql, WS, userId)).resolves.toMatchObject({
+      owner: {
+        retainedBytes: 0,
+        reservedBytes: MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
+        usedBytes: MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
+        jobs: 2,
+        remainingBytes: 0,
+        maxBytes: MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
+      },
+      workspace: {
+        usedBytes: MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
+        jobs: 2,
+        maxBytes: MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES,
+      },
+    });
   });
 
   it('rejects a new owner when retained archives have filled the workspace ceiling', async () => {
@@ -221,5 +241,151 @@ describe('Personal Vault import orphan recovery (D-010)', () => {
     await expect(cleanupOrphanedPersonalVaultImportUploads(org.adminSql, WS)).resolves.toBe(0);
     expect(existsSync(liveUpload.storagePath)).toBe(true);
     expect(existsSync(liveJobArchive)).toBe(true);
+  });
+
+  it('keeps an expired upload reservation until both filesystem phases are removed', async () => {
+    const root = personalVaultImportStorageDir(WS);
+    await mkdir(root, { recursive: true });
+    const upload = await reservePersonalVaultImportUpload(org.adminSql, {
+      workspaceId: WS,
+      userId,
+      filename: 'cleanup-retry.zip',
+      declaredSizeBytes: 1,
+    });
+    const archivePath = upload.storagePath.replace(/\.partial$/i, '.archive');
+    await writeFile(upload.storagePath, 'partial-ciphertext');
+    await writeFile(archivePath, 'complete-ciphertext');
+    await org.adminSql`
+      UPDATE harness_shared.personal_vault_import_uploads
+         SET expires_at = now() - interval '1 second'
+       WHERE workspace_id = ${WS} AND id = ${upload.id}::uuid`;
+
+    await expect(cleanupOrphanedPersonalVaultImportUploads(
+      org.adminSql,
+      WS,
+      Date.now(),
+      async () => { throw new Error('filesystem_temporarily_unavailable'); },
+    )).resolves.toBe(0);
+    const retained = await org.adminSql<Array<{ count: number }>>`
+      SELECT count(*)::int AS count
+        FROM harness_shared.personal_vault_import_uploads
+       WHERE workspace_id = ${WS} AND id = ${upload.id}::uuid`;
+    expect(retained).toEqual([{ count: 1 }]);
+    expect(existsSync(upload.storagePath)).toBe(true);
+    expect(existsSync(archivePath)).toBe(true);
+
+    await expect(cleanupOrphanedPersonalVaultImportUploads(org.adminSql, WS)).resolves.toBe(1);
+    expect(existsSync(upload.storagePath)).toBe(false);
+    expect(existsSync(archivePath)).toBe(false);
+  });
+
+  it('keeps a completed import terminal when archive deletion fails and retries cleanup later', async () => {
+    const root = personalVaultImportStorageDir(WS);
+    await mkdir(root, { recursive: true });
+    const archivePath = join(root, `${randomUUID()}.archive`);
+    await writeFile(archivePath, 'encrypted-test-ciphertext');
+    const rows = await org.adminSql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.personal_vault_import_jobs
+        (workspace_id, user_id, filename, storage_path, content_sha256,
+         idempotency_key, size_bytes)
+      VALUES (${WS}, ${userId}::uuid, 'terminal-cleanup.zip', ${archivePath},
+              ${'e'.repeat(64)}, ${'f'.repeat(64)}, 1)
+      RETURNING id`;
+
+    const result = await runPersonalVaultImportBatch(org.adminSql, WS, {
+      leaseOwner: `test:${RUN}`,
+      streamArchive: async function* emptyArchive() {},
+      verifyArchive: async () => 'e'.repeat(64),
+      removeArchive: async () => { throw new Error('filesystem_temporarily_unavailable'); },
+    });
+    expect(result).toMatchObject({
+      claimed: true,
+      jobId: rows[0]!.id,
+      status: 'completed',
+      error: null,
+    });
+    const retained = await org.adminSql<Array<{
+      status: string;
+      storage_path: string | null;
+      last_error: string | null;
+    }>>`
+      SELECT status, storage_path, last_error
+        FROM harness_shared.personal_vault_import_jobs
+       WHERE workspace_id = ${WS} AND id = ${rows[0]!.id}::uuid`;
+    expect(retained).toEqual([{
+      status: 'completed',
+      storage_path: archivePath,
+      last_error: 'archive_cleanup_failed:filesystem_temporarily_unavailable',
+    }]);
+
+    await expect(cleanupExpiredPersonalVaultImportArchives(org.adminSql, WS)).resolves.toBe(1);
+    const cleaned = await org.adminSql<Array<{
+      status: string;
+      storage_path: string | null;
+      last_error: string | null;
+    }>>`
+      SELECT status, storage_path, last_error
+        FROM harness_shared.personal_vault_import_jobs
+       WHERE workspace_id = ${WS} AND id = ${rows[0]!.id}::uuid`;
+    expect(cleaned).toEqual([{ status: 'completed', storage_path: null, last_error: null }]);
+  });
+
+  it('removes partial ciphertext when a streamed write fails', async () => {
+    const body = (async function* oversizedBody() {
+      yield Buffer.from('too large');
+    })();
+    await expect(storePersonalVaultImportArchive(WS, body, {
+      maxBytes: 1,
+      rootKey: 'failed-write-test-key',
+    })).rejects.toThrow('personal_archive_too_large');
+    expect(await readdir(personalVaultImportStorageDir(WS))).toEqual([]);
+  });
+
+  it('purges only matching retained ciphertext and preserves import audit rows', async () => {
+    const root = personalVaultImportStorageDir(WS);
+    await mkdir(root, { recursive: true });
+    const sourceId = randomUUID();
+    const otherSourceId = randomUUID();
+    const matchingArchive = join(root, `${randomUUID()}.archive`);
+    const otherArchive = join(root, `${randomUUID()}.archive`);
+    await writeFile(matchingArchive, 'matching-ciphertext');
+    await writeFile(otherArchive, 'other-ciphertext');
+    await org.adminSql`
+      INSERT INTO harness_shared.personal_vault_import_jobs
+        (workspace_id, user_id, source_id, provider_account_id, filename,
+         storage_path, content_sha256, idempotency_key, size_bytes)
+      VALUES
+        (${WS}, ${userId}::uuid, ${sourceId}::uuid, 'owner@example.com',
+         'matching.zip', ${matchingArchive}, ${'1'.repeat(64)}, ${'2'.repeat(64)}, 1),
+        (${WS}, ${userId}::uuid, ${otherSourceId}::uuid, 'other@example.com',
+         'other.zip', ${otherArchive}, ${'3'.repeat(64)}, ${'4'.repeat(64)}, 1)`;
+
+    await expect(purgePersonalVaultImportArchives(org.adminSql, WS, userId, {
+      sourceId,
+      providerAccountId: 'owner@example.com',
+    })).resolves.toEqual({ jobs: 1, archives: 1, cleanupFailures: 0 });
+    expect(existsSync(matchingArchive)).toBe(false);
+    expect(existsSync(otherArchive)).toBe(true);
+    const rows = await org.adminSql<Array<{
+      source_id: string;
+      status: string;
+      cancel_requested: boolean;
+      storage_path: string | null;
+    }>>`
+      SELECT source_id, status, cancel_requested, storage_path
+        FROM harness_shared.personal_vault_import_jobs
+       WHERE workspace_id = ${WS} AND user_id = ${userId}::uuid
+       ORDER BY source_id`;
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.source_id === sourceId)).toMatchObject({
+      status: 'cancelled',
+      cancel_requested: true,
+      storage_path: null,
+    });
+    expect(rows.find((row) => row.source_id === otherSourceId)).toMatchObject({
+      status: 'queued',
+      cancel_requested: false,
+      storage_path: otherArchive,
+    });
   });
 });

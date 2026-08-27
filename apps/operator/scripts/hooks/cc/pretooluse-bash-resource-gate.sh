@@ -4223,13 +4223,12 @@ def _classify_tracked_mutation():
             operands = _literal_positionals(tail[1:])
         elif exe == 'mv':
             op = 'mv'
+            command_cwd = base_cwd
             operands = _literal_positionals(argv[1:])
         else:
             continue
         if not operands:
             continue
-
-            command_cwd = base_cwd
         rels = [_tracked_repo_path(raw, command_cwd, canon) for raw in operands]
         if any(rel and _is_tracked_path(canon, rel) for rel in rels):
             return True

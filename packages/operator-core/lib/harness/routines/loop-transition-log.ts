@@ -123,13 +123,20 @@ export async function readLatestLoopTransition(
         detail: unknown;
       }>
     >`
-      SELECT at, event, actor, new_next_fire_at, interval_sec, detail
-        FROM harness_shared.routine_loop_transitions
-       WHERE workspace_id = ${input.workspaceId}
-         AND install_slug = ${input.installSlug}
-         AND routine_name = ${input.routineName}
-         AND target_owner_id = ${input.targetOwnerId}
-       ORDER BY at DESC
+      SELECT t.at, t.event, t.actor, t.new_next_fire_at, t.interval_sec, t.detail
+        FROM harness_shared.routines r
+        JOIN LATERAL (
+          SELECT at, event, actor, new_next_fire_at, interval_sec, detail
+            FROM harness_shared.routine_loop_transitions
+           WHERE workspace_id = r.workspace_id
+             AND routine_id = r.id
+           ORDER BY at DESC
+           LIMIT 1
+        ) t ON TRUE
+       WHERE r.workspace_id = ${input.workspaceId}
+         AND r.install_slug = ${input.installSlug}
+         AND r.name = ${input.routineName}
+         AND r.target_owner_id = ${input.targetOwnerId}
        LIMIT 1
     `;
     const row = rows[0];

@@ -29,7 +29,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
 });
 
 import { CELL_READ_TIMEOUT_MS, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
-import { BUILTIN_CELLS } from './cell-registrations';
+import { BUILTIN_CELLS, MEMORY_CGROUP_ATTRIBUTION_CELL } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 
@@ -817,6 +817,38 @@ describe('D-039 — every nullable BUILTIN cell reaches a reader with its hoist'
         expect(r.ordered).toEqual({ stages: s.ordered?.stages });
         expect(r.ordered?.stages.length).toBeGreaterThan(0);
       }
+    }
+  });
+});
+
+describe('EI-21572281184148497 — attribution cell reads the existing host resolver lens', () => {
+  it('projects memory.cgroupAttribution and its contextual assessment from one dispatch', async () => {
+    registerCell(MEMORY_CGROUP_ATTRIBUTION_CELL);
+    const attribution = {
+      accounting: 'cgroup-v2-inclusive-descendants',
+      partial: false,
+      throttled: null,
+      top: [
+        {
+          path: '/user.slice/papercup-dev-api.service',
+          memoryBytes: 48 * 1024 ** 3,
+          swapBytes: 4 * 1024 ** 3,
+          directPids: 17,
+        },
+      ],
+    };
+    dispatchReadOnlyTool.mockResolvedValue({
+      memory: { cgroupAttribution: attribution, pressure: 'crit', unknown: [] },
+    });
+
+    const r = await readCell(MEMORY_CGROUP_ATTRIBUTION_CELL.cell, READER, ENV);
+
+    expect(dispatchReadOnlyTool).toHaveBeenCalledTimes(1);
+    expect(r.status).toBe('value');
+    if (r.status === 'value') {
+      expect(r.value).toEqual(attribution);
+      expect(r.assessment).toMatchObject({ status: 'resolved', path: 'memory.pressure', code: 'crit' });
+      expect(r.unknownHoist).toEqual({ key: 'memory.unknown', value: [] });
     }
   });
 });

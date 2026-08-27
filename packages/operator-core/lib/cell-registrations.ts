@@ -986,6 +986,62 @@ export const HOST_MEMORY_PRESSURE_CELL: CellSpec = {
     '{ memory: { pressure: "ok"|"warn"|"crit"|null, measuredAt, ageMs, stale, psiMemorySome60, psiMemoryFull60, cgroupAttribution: { accounting, partial, top[{ path, memoryBytes, swapBytes, directPids }] }|null, thresholds: { source, psiMemorySomeWarn, psiMemoryFullCrit, staleMs, blindMs }, reasons[], unknown[] }, host: { measuredAt, memFreePct, memTotalGb, psiMemSome60 } }',
 };
 
+/**
+ * EI-21572281184148497 — the bounded cgroup owner projection carried by the
+ * canonical memory-pressure resolver. This is a separate cell so the critical
+ * pressure action can point agents at a value they can actually re-read.
+ *
+ * The resolver remains the same as `host.memoryPressure`; this cell only projects
+ * its `memory.cgroupAttribution` lens. `memory.pressure` is the resolver's existing
+ * contextual code path, while `memory.unknown` carries the same capture-health
+ * qualification for both lenses.
+ */
+export const MEMORY_CGROUP_ATTRIBUTION_CELL: CellSpec = {
+  cell: 'memory.cgroupAttribution',
+  registeredOn: '2026-08-27',
+  owner: 'su-30c473f3-c5b8-43d0-bba2-8d6b40e1aabd',
+  headline: 'memory.cgroupAttribution',
+
+  assessment: {
+    path: 'memory.pressure',
+    codes: {
+      crit: {
+        meaning: 'The same perf capture reports critical memory pressure; attribution rows provide bounded owner context for the stall.',
+        safeAction: 'Inspect the attribution rows before removing load, and do not treat the largest cgroup as confirmed cause without reclaim-event evidence.',
+      },
+      warn: {
+        meaning: 'The same perf capture reports sustained memory reclaim pressure; attribution rows provide bounded owner context.',
+        safeAction: 'Reduce or inspect load, then use the attribution rows to identify the likely producer.',
+      },
+      ok: {
+        meaning: 'The same perf capture reports no PSI memory-pressure threshold crossing.',
+        safeAction: 'Do not attribute a memory stall to this capture; treat a null attribution as unmeasured owner context.',
+      },
+    },
+    evidence: ['memory.unknown'],
+  },
+
+  nullable: true,
+  unknownHoist: 'memory.unknown',
+  callerRelativity: { kind: 'global' },
+
+  provenance: {
+    obtainedBy:
+      'the `memory.cgroupAttribution` lens of the same evaluateMemoryPressure(readLatestPerfSignals()) result used by host.memoryPressure',
+    liveExercised: true,
+    evidence:
+      'Live host:memory_pressure exercise 2026-08-27 confirmed the payload contains memory.cgroupAttribution alongside memory.pressure and memory.unknown; the reality and read sweeps walk all three paths through the real resolver result.',
+  },
+
+  resolver:
+    'evaluateMemoryPressure(readLatestPerfSignals()) @ packages/operator-core/lib/system-health/perf-budgets.ts',
+  visibility: { kind: 'workspace' },
+  federation: { kind: 'local' },
+  changeSignal: { kind: 'poll', tool: 'host:memory_pressure', path: 'memory.cgroupAttribution' },
+  shape:
+    '{ memory: { cgroupAttribution: { accounting, partial, throttled, top[{ path, memoryBytes, swapBytes, directPids }] }|null, pressure: "ok"|"warn"|"crit"|null, unknown[] } }',
+};
+
 /* ═══════════════════════════════════════════════════════════════════════════════
  * P-016 — THE AGENT GOAL CELL
  *
@@ -1354,6 +1410,7 @@ export const BUILTIN_CELLS: CellSpec[] = [
   DEPLOYED_SHA_CELL,
   MAIN_BEHIND_STAGING_CELL,
   HOST_MEMORY_PRESSURE_CELL,
+  MEMORY_CGROUP_ATTRIBUTION_CELL,
   AGENT_GOAL_CELL,
   TESTING_CENSUS_POPULATION_CELL,
   TESTING_COVERAGE_FLOOR_CELL,

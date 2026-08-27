@@ -72,7 +72,7 @@ describe('readLatestLoopTransition', () => {
         },
       },
     });
-    const select = sql.statements.find((s) => /SELECT at, event, actor/.test(s.text));
+    const select = sql.statements.find((s) => /SELECT t\.at, t\.event, t\.actor/.test(s.text));
     expect(select?.values).toEqual(['ws-1', 'papercusp', 'loop-su-70702', 'su-70702']);
   });
 
@@ -90,7 +90,7 @@ describe('readLatestLoopTransition', () => {
       ),
     ).resolves.toEqual({ status: 'none' });
 
-    const unavailable = fakeSql({ throwOn: /SELECT at, event, actor/ });
+    const unavailable = fakeSql({ throwOn: /SELECT t\.at, t\.event, t\.actor/ });
     await expect(
       readLatestLoopTransition(
         {

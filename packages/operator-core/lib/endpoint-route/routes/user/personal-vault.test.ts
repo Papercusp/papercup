@@ -18,6 +18,8 @@ const mocks = vi.hoisted(() => ({
   releaseImport: vi.fn(),
   removeImportArchive: vi.fn(),
   listImportJobs: vi.fn(),
+  importStorage: vi.fn(),
+  purgeImports: vi.fn(),
   cancelImport: vi.fn(),
   retryImport: vi.fn(),
   listSources: vi.fn(),
@@ -49,6 +51,8 @@ vi.mock('../../../personal-vault/import-jobs', async () => {
     releasePersonalVaultImportUpload: mocks.releaseImport,
     removePersonalVaultImportArchive: mocks.removeImportArchive,
     listPersonalVaultImportJobs: mocks.listImportJobs,
+    personalVaultImportStorageUsage: mocks.importStorage,
+    purgePersonalVaultImportArchives: mocks.purgeImports,
     requestPersonalVaultImportCancellation: mocks.cancelImport,
     retryPersonalVaultImportJob: mocks.retryImport,
   };
@@ -181,6 +185,33 @@ beforeEach(() => {
   mocks.releaseImport.mockResolvedValue(undefined);
   mocks.removeImportArchive.mockResolvedValue(undefined);
   mocks.listImportJobs.mockResolvedValue([importJob()]);
+  mocks.importStorage.mockResolvedValue({
+    owner: {
+      retainedBytes: 4,
+      reservedBytes: 0,
+      usedBytes: 4,
+      remainingBytes: 32 * 1024 * 1024 * 1024 - 4,
+      maxBytes: 32 * 1024 * 1024 * 1024,
+      retainedJobs: 1,
+      reservedJobs: 0,
+      jobs: 1,
+      remainingJobs: 7,
+      maxJobs: 8,
+    },
+    workspace: {
+      retainedBytes: 4,
+      reservedBytes: 0,
+      usedBytes: 4,
+      remainingBytes: 256 * 1024 * 1024 * 1024 - 4,
+      maxBytes: 256 * 1024 * 1024 * 1024,
+      retainedJobs: 1,
+      reservedJobs: 0,
+      jobs: 1,
+      remainingJobs: 63,
+      maxJobs: 64,
+    },
+  });
+  mocks.purgeImports.mockResolvedValue({ jobs: 1, archives: 1, cleanupFailures: 0 });
   mocks.cancelImport.mockResolvedValue(importJob({ status: 'cancelled', storagePath: null }));
   mocks.retryImport.mockResolvedValue(importJob());
   mocks.loadProviders.mockResolvedValue(['google']);
@@ -258,6 +289,9 @@ describe('Personal Vault owner routes', () => {
       workspaceId: 'ws-test',
       embedding: { mode: 'gemma', localOnly: true },
       stats: { unembedded: 1 },
+      importStorage: {
+        owner: { usedBytes: 4, maxBytes: 32 * 1024 * 1024 * 1024, jobs: 1, maxJobs: 8 },
+      },
       integrations: {
         google: {
           configured: true,
@@ -603,6 +637,10 @@ describe('Personal Vault owner routes', () => {
       sourceId: null,
       providerAccountId: null,
     });
+    expect(mocks.purgeImports).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', {
+      sourceId: null,
+      providerAccountId: null,
+    });
   });
 
   it('forwards account provenance for a surgical purge', async () => {
@@ -627,6 +665,10 @@ describe('Personal Vault owner routes', () => {
       providerAccountId: 'owner@example.com',
     });
     expect(mocks.purge).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 'gmail', {
+      sourceId: SOURCE_ID,
+      providerAccountId: 'owner@example.com',
+    });
+    expect(mocks.purgeImports).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', {
       sourceId: SOURCE_ID,
       providerAccountId: 'owner@example.com',
     });
@@ -778,8 +820,10 @@ describe('Personal Vault owner routes', () => {
     await expect(listed.json()).resolves.toMatchObject({
       ok: true,
       jobs: [{ id: IMPORT_ID, status: 'queued' }],
+      storage: { owner: { usedBytes: 4, jobs: 1 } },
     });
     expect(mocks.listImportJobs).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1', 50);
+    expect(mocks.importStorage).toHaveBeenCalledWith(mocks.sql, 'ws-test', 'user-1');
 
     const cancelled = await invoke(
       'DELETE',

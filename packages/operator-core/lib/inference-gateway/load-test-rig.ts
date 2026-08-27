@@ -26,11 +26,14 @@
  * smoothing fix avoids by never bursting. Storm cases therefore run ~15s; the smoothed (ON) case is
  * fast because it never trips the penalty. Keep storm-case timeouts generous on a loaded box.
  */
-import { createInferenceGateway } from './gateway';
-import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import { ACCOUNT_HEADER, createInferenceGateway } from './gateway';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
+import { aggregateCodexNonStreamResponse } from './codex-oauth-proxy';
 import type {
   GatewayRequestOutcome,
   GatewayRequestTelemetrySnapshot,
@@ -60,6 +63,27 @@ export interface MockUpstream {
   perAccount429(): Record<string, number>;
   /** Total upstream calls received (200s + 429s) — the denominator. */
   total(): number;
+}
+
+async function abortableDelay(ms: number, signal?: AbortSignal | null): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise<void>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      cleanup();
+      reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'));
+    };
+    timer = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    if (signal?.aborted) abort();
+    else signal?.addEventListener('abort', abort, { once: true });
+  });
 }
 
 /**
@@ -97,18 +121,7 @@ export function mockBurstUpstream(opts: MockUpstreamOptions): MockUpstream {
     }
     recent.push(now);
     hist.set(tok, recent);
-    if (opts.latencyMs) {
-      await new Promise<void>((resolve, reject) => {
-        const signal = init?.signal;
-        const timer = setTimeout(resolve, opts.latencyMs);
-        const abort = () => {
-          clearTimeout(timer);
-          reject(signal?.reason ?? new DOMException('The operation was aborted', 'AbortError'));
-        };
-        if (signal?.aborted) abort();
-        else signal?.addEventListener('abort', abort, { once: true });
-      });
-    }
+    await abortableDelay(opts.latencyMs ?? 0, init?.signal);
     return new Response(
       JSON.stringify({
         id: 'msg_rig',
@@ -616,8 +629,20 @@ async function mapWithConcurrency<T>(
 
 function responseSignature(body: string): string {
   try {
-    const parsed = JSON.parse(body) as { type?: unknown; role?: unknown; content?: unknown };
-    return JSON.stringify({ type: parsed.type ?? null, role: parsed.role ?? null, content: parsed.content ?? null });
+    const parsed = JSON.parse(body) as {
+      id?: unknown;
+      type?: unknown;
+      role?: unknown;
+      content?: unknown;
+      output?: unknown;
+    };
+    return JSON.stringify({
+      id: parsed.id ?? null,
+      type: parsed.type ?? null,
+      role: parsed.role ?? null,
+      content: parsed.content ?? null,
+      output: parsed.output ?? null,
+    });
   } catch {
     return body.slice(0, 256);
   }
@@ -631,35 +656,68 @@ async function waitForNoActiveRequests(gateway: ReturnType<typeof createInferenc
 }
 
 /**
- * Deterministic no-spend P-006 certification run. It uses the real gateway and the same mock account,
- * model, request body, and upstream for both routes. Operational canaries feed their live samples into
- * `certifyGatewayLatency`; this runner keeps the full acceptance logic permanently executable in CI.
+ * Deterministic no-spend P-006 certification run. It exercises the corrected ChatGPT-subscription
+ * OAuth non-stream path (the P-005 replacement for per-request `codex exec`) through the REAL gateway.
+ * The direct control uses the same model, account credential, normalized request, mock ChatGPT backend,
+ * and SSE-to-JSON aggregator. Operational canaries feed live samples into `certifyGatewayLatency`; this
+ * runner keeps the exact acceptance logic permanently executable in CI without spending provider quota.
  */
 export async function runGatewayLatencyCertRig(
   opts: GatewayLatencyCertRigOptions = {},
 ): Promise<GatewayLatencyCertificationReport> {
   const count = opts.samplesPerRouteAndConcurrency ?? GATEWAY_LATENCY_CERT_THRESHOLDS.samplesPerRouteAndConcurrency;
-  const model = opts.model ?? 'claude-opus-4';
+  const model = opts.model ?? 'gpt-5.5';
   const samples: GatewayLatencyCertSample[] = [];
   const telemetryByConcurrency: GatewayLatencyCertificationInput['telemetryByConcurrency'] = {};
   let queuedWithIdleViolations = 0;
 
   for (const concurrency of GATEWAY_LATENCY_CERT_CONCURRENCIES) {
     const accountId = `latency-cert-account-c${concurrency}`;
-    const token = `latency-cert-token-c${concurrency}`;
-    const upstream = mockBurstUpstream({
-      burstCap: count * 4 + 10,
-      burstWindowMs: 1_000,
-      latencyMs: opts.upstreamLatencyMs ?? 5,
-    });
-    const pool = createFailoverPool([{ accountId, token: async () => token }]);
-    const governor = new RateLimitGovernor({ maxConcurrent: concurrency });
+    const accessToken = `latency-cert-token-c${concurrency}`;
+    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), `gateway-latency-cert-c${concurrency}-`));
+    await fs.writeFile(
+      path.join(codexHome, 'auth.json'),
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: { access_token: accessToken, refresh_token: null, account_id: accountId },
+      }),
+    );
+    const cliAccounts = [{ accountId, home: codexHome }];
+    const oauthFetch = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      if (headers.get('authorization') !== `Bearer ${accessToken}` || headers.get('chatgpt-account-id') !== accountId) {
+        return new Response(JSON.stringify({ error: { message: 'wrong certification account' } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      await abortableDelay(opts.upstreamLatencyMs ?? 5, init?.signal);
+      const completed = {
+        id: `resp_latency_cert_c${concurrency}`,
+        object: 'response',
+        model,
+        output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'ok' }] }],
+      };
+      return new Response(
+        `data: ${JSON.stringify({ type: 'response.created', response: { id: completed.id } })}\n\n` +
+          `data: ${JSON.stringify({ type: 'response.completed', response: completed })}\n\n` +
+          'data: [DONE]\n\n',
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      );
+    }) as typeof fetch;
     const gw = createInferenceGateway({
-      pool,
-      upstreamBase: 'http://upstream.invalid',
-      fetchImpl: upstream.fetchImpl,
-      governorFor: () => governor,
+      accountId: 'latency-cert-claude-control',
+      token: async () => 'latency-cert-claude-token',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool([{ accountId, token: async () => '' }]),
+      codexCliRun: async () => {
+        throw new Error('P-006 OAuth certification unexpectedly selected the legacy CLI fallback');
+      },
+      codexOAuthProxy: true,
+      codexOAuthNonStream: true,
+      fetchImpl: oauthFetch,
       concurrency,
+      codexConcurrency: concurrency,
       aimd: { floor: concurrency },
       maxQueueWaitMs: 2_000,
       requestAbsorbMs: 0,
@@ -667,11 +725,17 @@ export async function runGatewayLatencyCertRig(
       log: () => {},
     });
     const port = await gw.listen(0);
-    const body = JSON.stringify({
+    const gatewayBody = JSON.stringify({
       model,
-      max_tokens: 4,
+      input: 'latency certification ping',
       stream: false,
-      messages: [{ role: 'user', content: 'latency certification ping' }],
+      store: false,
+    });
+    const directBody = JSON.stringify({
+      model,
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'latency certification ping' }] }],
+      stream: true,
+      store: false,
     });
 
     const fire = async (
@@ -687,27 +751,50 @@ export async function runGatewayLatencyCertRig(
       try {
         const response =
           route === 'direct'
-            ? await upstream.fetchImpl('http://upstream.invalid/v1/messages', {
+            ? await oauthFetch('https://chatgpt.invalid/backend-api/codex/responses', {
                 method: 'POST',
-                headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-                body,
+                headers: {
+                  'content-type': 'application/json',
+                  authorization: `Bearer ${accessToken}`,
+                  'chatgpt-account-id': accountId,
+                },
+                body: directBody,
                 signal: controller.signal,
               })
-            : await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+            : await fetch(`http://127.0.0.1:${port}/v1/responses`, {
                 method: 'POST',
-                headers: { 'content-type': 'application/json', 'x-papercusp-owner': pairId },
-                body,
+                headers: {
+                  'content-type': 'application/json',
+                  'x-papercusp-owner': pairId,
+                  [ACCOUNT_HEADER]: accountId,
+                },
+                body: gatewayBody,
                 signal: controller.signal,
               });
         const ttftMs = performance.now() - started;
-        const responseBody = await response.text();
+        let responseBody: string;
+        if (route === 'direct' && response.ok) {
+          if (!response.body) throw new Error('direct OAuth control returned no response body');
+          const aggregated = await aggregateCodexNonStreamResponse(
+            response.body as unknown as AsyncIterable<Uint8Array>,
+            {
+              contentType: response.headers.get('content-type'),
+              maxBytes: 1_000_000,
+              timeoutMs: 2_000,
+              signal: controller.signal,
+            },
+          );
+          responseBody = aggregated.toString('utf8');
+        } else {
+          responseBody = await response.text();
+        }
         return {
           pairId,
           route,
           concurrency,
           model,
           accountId,
-          protocol: 'anthropic-messages',
+          protocol: 'openai-responses',
           streaming: false,
           status: response.status,
           outcome: response.ok ? 'ok' : response.status === 429 ? 'upstream-429' : 'upstream-error',
@@ -722,7 +809,7 @@ export async function runGatewayLatencyCertRig(
           concurrency,
           model,
           accountId,
-          protocol: 'anthropic-messages',
+          protocol: 'openai-responses',
           streaming: false,
           status: null,
           outcome: controller.signal.aborted ? 'cancelled' : 'gateway-error',
@@ -741,7 +828,8 @@ export async function runGatewayLatencyCertRig(
         'inference-gateway-latency-cert-queue-sampler',
         1,
         () => {
-          const admission = gw.stats().admission;
+          const stats = gw.stats();
+          const admission = stats.codexAdmission ?? stats.admission;
           if (admission.queued > 0 && admission.running < admission.maxConcurrent) queuedWithIdleViolations++;
         },
         { category: 'external-process', classification: 'must-sample', allowInTest: true, instanced: true },
@@ -766,6 +854,7 @@ export async function runGatewayLatencyCertRig(
       samples.push(...direct, ...viaGateway, ...cancelled);
     } finally {
       await gw.close();
+      await fs.rm(codexHome, { recursive: true, force: true });
     }
   }
 

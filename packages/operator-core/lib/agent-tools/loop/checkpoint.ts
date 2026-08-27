@@ -257,8 +257,8 @@ export default defineTool({
       'Use work_items:checkpoint for work-item state.',
     chaining:
       'Write last before a cold turn ends; also refresh work_items:checkpoint and facts:assert durable conclusions. ' +
-      "To retune an ACTIVE loop, call loop:arm { carry: 'cold'|'warm' }; omitted intervalSec and goal are inherited " +
-      'from the active loop, and either may be provided when changing it. A FRESH loop still requires intervalSec and goal.',
+      "To retune an ACTIVE loop, first read loop:status, then call loop:arm { intervalSec: <number>, goal: <string>, carry: 'cold'|'warm' }; " +
+      'intervalSec and goal are required even when only carry changes.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',

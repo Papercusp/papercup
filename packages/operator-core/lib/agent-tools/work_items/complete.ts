@@ -91,6 +91,7 @@ import {
   authorityForCompletion,
   countsTowardBurnDown,
   insufficientEvidenceReason,
+  reconcileStampedAuthority,
 } from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -2723,8 +2724,29 @@ async function completeOne(
   // none (no terminal `state`, or the state write was rejected). Reporting the computed
   // judgement in either of those cases would tell the caller their close was graded when
   // no close happened — the same class of lie the deleted auto-fill told.
-  const stampedAuthority =
-    !stateError && finalState && TERMINAL_WORK_ITEM_STATES.has(finalState) ? completionAuthority : null;
+  //
+  // EI-21574559473613348: report the PERSISTED authority, not the one this process
+  // computed — they can disagree. Migration 972 installs a BEFORE trigger,
+  // `harness_shared.downgrade_unproven_committed_close()`, that re-applies the
+  // content-identity floor in SQL. That is deliberate: it holds the floor BELOW the
+  // deploy boundary, so a frozen release build serving older code cannot mint stronger
+  // authority than this source permits. When it fires it rewrites 'committed' to
+  // 'proposed' and RAISEs a WARNING — which reaches the Postgres log and nobody else.
+  //
+  // Both write paths above re-read the row through the issue view AFTER the base write
+  // (the same reason `finalState` reads from `workItem`), so the post-trigger truth is
+  // already in hand here. Reporting the computed value instead told callers their close
+  // landed 'committed' while the durable row said 'proposed'; agents then truthfully
+  // relayed a false status, which is how this was found. Fall back to the computed value
+  // only when the row carries none, so a writer that stamps no authority is unchanged.
+  const { stampedAuthority, contentIdentityDowngrade } = reconcileStampedAuthority({
+    stamped: !stateError && Boolean(finalState) && TERMINAL_WORK_ITEM_STATES.has(finalState),
+    persisted: workItem?.completionAuthority ?? null,
+    computed: completionAuthority,
+    authorityByEvidence,
+    declaredFilesCount: completionEvidenceForGate?.filesChanged?.length ?? 0,
+    inProcessContentIdentityMissing: committedContentIdentityMissing,
+  });
   // The change is worthless if it is silent. An agent whose close just landed `proposed`
   // must be TOLD, in the response to the call that did it, what it costs and what would
   // have avoided it — otherwise the first they learn of it is a leader asking why their
@@ -2738,7 +2760,7 @@ async function completeOne(
     stampedAuthority === 'proposed'
       ? `${it.id} is CLOSED but its completion landed authority:'proposed' — recorded and out of the ` +
         `claimable pool, but NOT counted toward burn-down, and it stays owned by you until it is settled. ` +
-        (committedContentIdentityMissing
+        (contentIdentityDowngrade
           ? `The server could not prove that every declared \`filesChanged\` path has the same Git blob content in the working tree and committed HEAD. Missing, mismatched, or unavailable content identity never qualifies as \`committed\`; re-run verification from a committed tree and settle this close.`
           : insufficientEvidenceReason(completionEvidenceForGate) === 'added-tests-without-path'
           ? `Its evidence says \`addedTests: true\` but names no file in \`filesChanged\`. Those cannot both ` +

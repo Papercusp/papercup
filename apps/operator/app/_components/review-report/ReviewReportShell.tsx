@@ -83,8 +83,6 @@ export interface ReviewReportGroup {
 
 export interface ReviewReportShellProps {
   title: string;
-  /** Compact context above the title; consumers distinguish Inbox from Plans. */
-  eyebrow?: string;
   /** Flow-specific symbol inside the shared Option-B title tile. */
   icon?: ReactNode;
   subtitle?: ReactNode;
@@ -129,7 +127,6 @@ const CONFIDENCE_LABEL: Record<ReviewRowConfidence, string> = {
 
 export default function ReviewReportShell({
   title,
-  eyebrow = "Resolution review",
   icon,
   subtitle,
   groups,
@@ -146,9 +143,11 @@ export default function ReviewReportShell({
     initialSelection(groups, defaultSelected),
   );
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const [expandedReasons, setExpandedReasons] = useState<Set<string>>(
-    () => new Set(),
+  const [activeDetailRowId, setActiveDetailRowId] = useState<string | null>(
+    null,
   );
+  const hoveredDetailRowId = useRef<string | null>(null);
+  const focusedDetailRowId = useRef<string | null>(null);
   const reportRef = useRef<HTMLElement>(null);
   const applyButtonRef = useRef<HTMLButtonElement>(null);
   const dismissButtonRef = useRef<HTMLButtonElement>(null);
@@ -178,28 +177,24 @@ export default function ReviewReportShell({
     [groups],
   );
 
-  const reportCounts = useMemo(() => {
-    let total = 0;
-    let applied = 0;
-    let manual = 0;
-    for (const group of groups) {
-      for (const row of group.rows) {
-        total += 1;
-        if (rowStatus(row) === "applied") applied += 1;
-        else if (rowStatus(row) === "pending" && !rowSelectable(row)) manual += 1;
-      }
-    }
-    return { total, applied, manual };
-  }, [groups]);
-
   // A live report can remove a row and later reintroduce the same stable id.
-  // Once it left the current report, a stale expanded state must not resurrect
-  // without a fresh owner action.
+  // Once it leaves, no stale hover/focus state may resurrect its detail.
   useLayoutEffect(() => {
-    setExpandedReasons((previous) => {
-      if ([...previous].every((id) => presentRowIds.has(id))) return previous;
-      return new Set([...previous].filter((id) => presentRowIds.has(id)));
-    });
+    if (
+      hoveredDetailRowId.current !== null &&
+      !presentRowIds.has(hoveredDetailRowId.current)
+    ) {
+      hoveredDetailRowId.current = null;
+    }
+    if (
+      focusedDetailRowId.current !== null &&
+      !presentRowIds.has(focusedDetailRowId.current)
+    ) {
+      focusedDetailRowId.current = null;
+    }
+    setActiveDetailRowId((previous) =>
+      previous !== null && !presentRowIds.has(previous) ? null : previous,
+    );
   }, [presentRowIds]);
 
   // Selection intersected with what is STILL pending — a consumer marking rows
@@ -333,19 +328,13 @@ export default function ReviewReportShell({
   };
 
   const toggleCollapsed = (groupId: string) => {
+    hoveredDetailRowId.current = null;
+    focusedDetailRowId.current = null;
+    setActiveDetailRowId(null);
     setCollapsed((prev) => {
       const next = new Set(prev);
       if (next.has(groupId)) next.delete(groupId);
       else next.add(groupId);
-      return next;
-    });
-  };
-
-  const toggleReason = (rowId: string) => {
-    setExpandedReasons((previous) => {
-      const next = new Set(previous);
-      if (next.has(rowId)) next.delete(rowId);
-      else next.add(rowId);
       return next;
     });
   };
@@ -412,7 +401,6 @@ export default function ReviewReportShell({
             </span>
           ) : null}
           <div className="review-report__head-text">
-            <span className="review-report__eyebrow">{eyebrow}</span>
             <h2 id={titleId} className="review-report__title">
               {title}
             </h2>
@@ -456,42 +444,6 @@ export default function ReviewReportShell({
           </Button>
         </div>
       </header>
-
-      <div
-        className="review-report__summary"
-        data-testid="review-report-summary"
-        aria-label="Report summary"
-      >
-        <div className="review-report__summary-lead">
-          <span className="review-report__summary-kicker">Current selection</span>
-          <strong data-testid="review-report-selected-count">
-            {liveSelected.size}
-          </strong>
-          <span>
-            of {pendingIds.size} ready to apply
-          </span>
-        </div>
-        <dl className="review-report__metrics">
-          <div className="review-report__metric">
-            <dt>Results</dt>
-            <dd data-testid="review-report-total-count">
-              {reportCounts.total}
-            </dd>
-          </div>
-          <div className="review-report__metric review-report__metric--good">
-            <dt>Handled</dt>
-            <dd data-testid="review-report-handled-count">
-              {reportCounts.applied}
-            </dd>
-          </div>
-          <div className="review-report__metric review-report__metric--manual">
-            <dt>Manual</dt>
-            <dd data-testid="review-report-manual-count">
-              {reportCounts.manual}
-            </dd>
-          </div>
-        </dl>
-      </div>
 
       <span
         className="pc-sr-only"
@@ -555,14 +507,6 @@ export default function ReviewReportShell({
                     >
                       {group.rows.length}
                     </span>
-                    <span
-                      className={`review-report__group-selection review-report__group-selection--${groupState}`}
-                      data-testid={`review-group-selection-${group.id}`}
-                    >
-                      {groupPending.length > 0
-                        ? `${selCount}/${groupPending.length} selected`
-                        : "Review only"}
-                    </span>
                     {group.description != null ? (
                       <span className="review-report__group-desc">
                         {group.description}
@@ -581,12 +525,12 @@ export default function ReviewReportShell({
                   {group.rows.map((row, rowIndex) => {
                     const status = rowStatus(row);
                     const selectable = rowSelectable(row);
-                    const reasonOpen = expandedReasons.has(row.id);
+                    const detailOpen = activeDetailRowId === row.id;
                     const evidence =
                       row.evidence.length > 0
                         ? row.evidence
                         : ["No reason was recorded."];
-                    const reasonRegionId = `${titleId}-reason-${index}-${rowIndex}`;
+                    const detailRegionId = `${titleId}-detail-${index}-${rowIndex}`;
                     return (
                       <li
                         ref={(node) => {
@@ -594,10 +538,48 @@ export default function ReviewReportShell({
                           else rowNodes.current.delete(row.id);
                         }}
                         key={row.id}
-                        className={`review-report__row review-report__row--${status}`}
+                        className={`review-report__row review-report__row--${status}${detailOpen ? " review-report__row--detail-open" : ""}`}
                         data-testid={`review-row-${row.id}`}
                         data-review-row-id={row.id}
-                        tabIndex={-1}
+                        aria-describedby={
+                          detailOpen ? detailRegionId : undefined
+                        }
+                        tabIndex={selectable ? -1 : 0}
+                        onPointerEnter={() => {
+                          hoveredDetailRowId.current = row.id;
+                          setActiveDetailRowId(row.id);
+                        }}
+                        onPointerLeave={() => {
+                          if (hoveredDetailRowId.current === row.id) {
+                            hoveredDetailRowId.current = null;
+                          }
+                          setActiveDetailRowId((current) =>
+                            current === row.id
+                              ? focusedDetailRowId.current
+                              : current,
+                          );
+                        }}
+                        onFocusCapture={() => {
+                          focusedDetailRowId.current = row.id;
+                          setActiveDetailRowId(row.id);
+                        }}
+                        onBlurCapture={(event) => {
+                          const next = event.relatedTarget;
+                          if (
+                            next instanceof Node &&
+                            event.currentTarget.contains(next)
+                          ) {
+                            return;
+                          }
+                          if (focusedDetailRowId.current === row.id) {
+                            focusedDetailRowId.current = null;
+                          }
+                          setActiveDetailRowId((current) =>
+                            current === row.id
+                              ? hoveredDetailRowId.current
+                              : current,
+                          );
+                        }}
                       >
                         <span className="review-report__row-check-slot">
                           {selectable ? (
@@ -671,30 +653,9 @@ export default function ReviewReportShell({
                           )}
                         </span>
                         <span className="review-report__row-evidence">
-                          <button
-                            type="button"
-                            className="review-report__reason-toggle"
-                            data-testid={`review-row-reason-${row.id}`}
-                            aria-label={`Why ${row.title}`}
-                            aria-expanded={reasonOpen}
-                            aria-controls={reasonRegionId}
-                            disabled={busy}
-                            onClick={() => toggleReason(row.id)}
-                          >
-                            <span className="review-report__reason-toggle-inner">
-                              <span className="review-report__reason-label">
-                                Why
-                              </span>
-                              <span className="review-report__evidence-item">
-                                {evidence[0]}
-                              </span>
-                              <ChevronDown
-                                size={12}
-                                className={`review-report__reason-chevron${reasonOpen ? " review-report__reason-chevron--open" : ""}`}
-                                aria-hidden="true"
-                              />
-                            </span>
-                          </button>
+                          <span className="review-report__evidence-item">
+                            {evidence[0]}
+                          </span>
                         </span>
                         <span
                           className={`review-report__row-conf review-report__row-conf--${row.confidence}`}
@@ -702,28 +663,32 @@ export default function ReviewReportShell({
                         >
                           {CONFIDENCE_LABEL[row.confidence]}
                         </span>
-                        {reasonOpen ? (
+                        {detailOpen ? (
                           <div
-                            id={reasonRegionId}
-                            className="review-report__reason-detail"
-                            data-testid={`review-row-reason-detail-${row.id}`}
+                            id={detailRegionId}
+                            className="review-report__row-hover-detail"
+                            data-testid={`review-row-detail-${row.id}`}
                             role="region"
-                            aria-label={`Why ${row.title}`}
+                            aria-label={`Details for ${row.title}`}
                           >
-                            <strong>Why this decision</strong>
-                            <ul>
-                              {evidence.map((line, evidenceIndex) => (
-                                <li key={`${row.id}-evidence-${evidenceIndex}`}>
-                                  {line}
-                                </li>
-                              ))}
-                            </ul>
+                            <div className="review-report__detail-evidence">
+                              <strong>Decision evidence</strong>
+                              <ul>
+                                {evidence.map((line, evidenceIndex) => (
+                                  <li
+                                    key={`${row.id}-evidence-${evidenceIndex}`}
+                                  >
+                                    {line}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                            {row.detail != null ? (
+                              <div className="review-report__detail-consumer">
+                                {row.detail}
+                              </div>
+                            ) : null}
                           </div>
-                        ) : null}
-                        {row.detail != null ? (
-                          <span className="review-report__row-detail">
-                            {row.detail}
-                          </span>
                         ) : null}
                         {row.error != null ? (
                           <span

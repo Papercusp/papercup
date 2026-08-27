@@ -330,14 +330,65 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     expect(resolveInspectCommand({ check: 'typecheck', package: 'p', path: 'x' }, BASE).ok).toBe(false);
   });
 
-  it('onlyPaths is rejected for tests', () => {
-    const r = resolveInspectCommand({ check: 'test', package: 'p', onlyPaths: ['x.test.ts'] }, BASE);
+  it('test with package-relative onlyPaths → uses the root exact multi-file router', () => {
+    expect(
+      resolveInspectCommand(
+        { check: 'test', package: 'packages/operator-core', onlyPaths: ['lib/foo.test.ts', 'lib/bar.test.ts'] },
+        BASE,
+      ),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:file -- packages/operator-core/lib/foo.test.ts packages/operator-core/lib/bar.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('test with package + repo-relative onlyPaths → does not double-prefix paths', () => {
+    expect(
+      resolveInspectCommand(
+        {
+          check: 'test',
+          package: 'packages/operator-core',
+          onlyPaths: [
+            'packages/operator-core/lib/foo.test.ts',
+            'packages/operator-core/lib/bar.integration.test.ts',
+          ],
+        },
+        BASE,
+      ),
+    ).toEqual({
+      ok: true,
+      command:
+        'npm run test:file -- packages/operator-core/lib/foo.test.ts packages/operator-core/lib/bar.integration.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('test with repo-relative onlyPaths and no package → uses the root exact multi-file router', () => {
+    expect(
+      resolveInspectCommand(
+        {
+          check: 'test',
+          onlyPaths: ['packages/operator-core/lib/foo.test.ts', 'packages/operator-core/lib/bar.test.ts'],
+        },
+        BASE,
+      ),
+    ).toEqual({
+      ok: true,
+      command: 'npm run test:file -- packages/operator-core/lib/foo.test.ts packages/operator-core/lib/bar.test.ts',
+      cwd: BASE,
+    });
+  });
+
+  it('rejects ambiguous test path arguments when path and onlyPaths are both supplied', () => {
+    const r = resolveInspectCommand(
+      { check: 'test', package: 'packages/operator-core', path: 'lib/foo.test.ts', onlyPaths: ['lib/bar.test.ts'] },
+      BASE,
+    );
     expect(r.ok).toBe(false);
     if (!r.ok) {
       expect(r.reason).toBe('bad_args');
-      expect(r.message).toContain('pass one test file or directory with `path`');
-      expect(r.message).toContain('repo-relative when it is omitted');
-      expect(r.message).toContain('separate capability:inspect calls');
+      expect(r.message).toContain('cannot be supplied together');
     }
   });
 
@@ -345,10 +396,12 @@ describe('resolveNpmWorkspaceAlias — EI-21200682380693689', () => {
     const shape = (inspectTool as unknown as { args: { shape: Record<string, { description?: string }> } }).args.shape;
     expect(shape.package.description).toMatch(/Repository-relative directory path to run in/);
     expect(shape.package.description).toMatch(/or the canonical npm workspace name such as "@papercusp\/operator-core"/);
-    expect(shape.onlyPaths.description).toMatch(/never pass with check:"test"/);
+    expect(shape.onlyPaths.description).toMatch(/For test, pass one or more package-relative paths/);
+    expect(shape.onlyPaths.description).toMatch(/root `npm run test:file -- <paths…>` router/);
+    expect(shape.onlyPaths.description).toMatch(/For typecheck, discover the repository baseline gate/);
     expect(shape.path.description).toMatch(/one test file\/dir/);
     expect(shape.path.description).toMatch(/when omitted, it is repo-relative/);
-    expect(shape.path.description).toMatch(/one capability:inspect call per path/);
+    expect(shape.path.description).toMatch(/multiple exact files, use `onlyPaths` instead/);
     expect(shape.runInBackground.description).toMatch(/Compatibility alias for run_in_background/);
   });
 });
@@ -545,6 +598,17 @@ describe('resolveInspectCommand — security (no shell injection / traversal)', 
         BASE,
         [{ npmScript: 'lint:tsc', prefixes: ['pkg/'] }],
         () => true,
+      );
+      expect(r.ok, `onlyPath "${bad}" must be rejected`).toBe(false);
+      if (!r.ok) expect(r.reason).toBe('bad_only_path');
+    }
+  });
+
+  it('rejects shell metacharacters in test onlyPaths before constructing the command', () => {
+    for (const bad of ['x.test.ts; rm -rf /', 'x.test.ts && curl evil', 'x.test.ts|tee', 'x $(whoami).ts', 'x,y.test.ts']) {
+      const r = resolveInspectCommand(
+        { check: 'test', package: 'pkg', onlyPaths: [bad] },
+        BASE,
       );
       expect(r.ok, `onlyPath "${bad}" must be rejected`).toBe(false);
       if (!r.ok) expect(r.reason).toBe('bad_only_path');

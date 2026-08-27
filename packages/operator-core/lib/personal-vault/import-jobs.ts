@@ -139,10 +139,38 @@ interface PersonalVaultImportUploadRow {
 }
 
 interface PersonalVaultImportAdmissionRow {
-  workspace_bytes: number | string;
-  workspace_jobs: number | string;
-  owner_bytes: number | string;
-  owner_jobs: number | string;
+  workspace_retained_bytes: number | string;
+  workspace_reserved_bytes: number | string;
+  workspace_retained_jobs: number | string;
+  workspace_reserved_jobs: number | string;
+  owner_retained_bytes: number | string;
+  owner_reserved_bytes: number | string;
+  owner_retained_jobs: number | string;
+  owner_reserved_jobs: number | string;
+}
+
+export interface PersonalVaultImportStorageScope {
+  retainedBytes: number;
+  reservedBytes: number;
+  usedBytes: number;
+  remainingBytes: number;
+  maxBytes: number;
+  retainedJobs: number;
+  reservedJobs: number;
+  jobs: number;
+  remainingJobs: number;
+  maxJobs: number;
+}
+
+export interface PersonalVaultImportStorageUsage {
+  owner: PersonalVaultImportStorageScope;
+  workspace: PersonalVaultImportStorageScope;
+}
+
+export interface PersonalVaultImportPurgeResult {
+  jobs: number;
+  archives: number;
+  cleanupFailures: number;
 }
 
 interface PersonalVaultImportJobRow {
@@ -315,6 +343,89 @@ export function personalVaultImportStorageDir(workspaceId: string): string {
   return papercuspPathForWorkspace(workspaceId, 'personal-vault-imports');
 }
 
+function storageUsageScope(
+  retainedBytes: number | string,
+  reservedBytes: number | string,
+  retainedJobs: number | string,
+  reservedJobs: number | string,
+  maxBytes: number,
+  maxJobs: number,
+): PersonalVaultImportStorageScope {
+  const normalizedRetainedBytes = Number(retainedBytes);
+  const normalizedReservedBytes = Number(reservedBytes);
+  const normalizedRetainedJobs = Number(retainedJobs);
+  const normalizedReservedJobs = Number(reservedJobs);
+  const usedBytes = normalizedRetainedBytes + normalizedReservedBytes;
+  const jobs = normalizedRetainedJobs + normalizedReservedJobs;
+  return {
+    retainedBytes: normalizedRetainedBytes,
+    reservedBytes: normalizedReservedBytes,
+    usedBytes,
+    remainingBytes: Math.max(0, maxBytes - usedBytes),
+    maxBytes,
+    retainedJobs: normalizedRetainedJobs,
+    reservedJobs: normalizedReservedJobs,
+    jobs,
+    remainingJobs: Math.max(0, maxJobs - jobs),
+    maxJobs,
+  };
+}
+
+/** Owner-facing forecast and the admission authority share this exact accounting query. */
+export async function personalVaultImportStorageUsage(
+  sql: postgres.Sql,
+  workspaceId: string,
+  userId: string,
+): Promise<PersonalVaultImportStorageUsage> {
+  const rows = await sql<PersonalVaultImportAdmissionRow[]>`
+    SELECT
+      COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
+                 WHERE workspace_id = ${workspaceId} AND storage_path IS NOT NULL), 0)
+        AS workspace_retained_bytes,
+      COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
+                 WHERE workspace_id = ${workspaceId}), 0)
+        AS workspace_reserved_bytes,
+      (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
+        WHERE workspace_id = ${workspaceId} AND storage_path IS NOT NULL)
+        AS workspace_retained_jobs,
+      (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
+        WHERE workspace_id = ${workspaceId})
+        AS workspace_reserved_jobs,
+      COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
+                 WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid
+                   AND storage_path IS NOT NULL), 0)
+        AS owner_retained_bytes,
+      COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
+                 WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid), 0)
+        AS owner_reserved_bytes,
+      (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
+        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid
+          AND storage_path IS NOT NULL)
+        AS owner_retained_jobs,
+      (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
+        WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid)
+        AS owner_reserved_jobs`;
+  const row = rows[0]!;
+  return {
+    owner: storageUsageScope(
+      row.owner_retained_bytes,
+      row.owner_reserved_bytes,
+      row.owner_retained_jobs,
+      row.owner_reserved_jobs,
+      MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES,
+      MAX_PERSONAL_VAULT_OWNER_STORED_JOBS,
+    ),
+    workspace: storageUsageScope(
+      row.workspace_retained_bytes,
+      row.workspace_reserved_bytes,
+      row.workspace_retained_jobs,
+      row.workspace_reserved_jobs,
+      MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES,
+      MAX_PERSONAL_VAULT_WORKSPACE_STORED_JOBS,
+    ),
+  };
+}
+
 /** Reserve both disk bytes and one retained-job slot before accepting a request body. */
 export async function reservePersonalVaultImportUpload(
   sql: postgres.Sql,
@@ -327,39 +438,17 @@ export async function reservePersonalVaultImportUpload(
 
   return sql.begin(async (tx) => {
     await tx`SELECT pg_advisory_xact_lock(hashtextextended(${`personal-vault-import:${input.workspaceId}`}, 0))`;
-    const usage = await tx<PersonalVaultImportAdmissionRow[]>`
-      SELECT
-        COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
-                   WHERE workspace_id = ${input.workspaceId} AND storage_path IS NOT NULL), 0)
-          + COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
-                       WHERE workspace_id = ${input.workspaceId}), 0) AS workspace_bytes,
-        (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
-          WHERE workspace_id = ${input.workspaceId} AND storage_path IS NOT NULL)
-          + (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
-              WHERE workspace_id = ${input.workspaceId}) AS workspace_jobs,
-        COALESCE((SELECT sum(size_bytes) FROM harness_shared.personal_vault_import_jobs
-                   WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
-                     AND storage_path IS NOT NULL), 0)
-          + COALESCE((SELECT sum(reserved_bytes) FROM harness_shared.personal_vault_import_uploads
-                       WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid), 0)
-          AS owner_bytes,
-        (SELECT count(*) FROM harness_shared.personal_vault_import_jobs
-          WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid
-            AND storage_path IS NOT NULL)
-          + (SELECT count(*) FROM harness_shared.personal_vault_import_uploads
-              WHERE workspace_id = ${input.workspaceId} AND user_id = ${input.userId}::uuid)
-          AS owner_jobs`;
-    const current = usage[0]!;
-    if (Number(current.owner_jobs) >= MAX_PERSONAL_VAULT_OWNER_STORED_JOBS) {
+    const current = await personalVaultImportStorageUsage(tx, input.workspaceId, input.userId);
+    if (current.owner.jobs >= MAX_PERSONAL_VAULT_OWNER_STORED_JOBS) {
       throw new Error('personal_vault_import_owner_job_limit');
     }
-    if (Number(current.workspace_jobs) >= MAX_PERSONAL_VAULT_WORKSPACE_STORED_JOBS) {
+    if (current.workspace.jobs >= MAX_PERSONAL_VAULT_WORKSPACE_STORED_JOBS) {
       throw new Error('personal_vault_import_workspace_job_limit');
     }
-    if (Number(current.owner_bytes) + reservedBytes > MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES) {
+    if (current.owner.usedBytes + reservedBytes > MAX_PERSONAL_VAULT_OWNER_RETAINED_BYTES) {
       throw new Error('personal_vault_import_owner_storage_limit');
     }
-    if (Number(current.workspace_bytes) + reservedBytes > MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES) {
+    if (current.workspace.usedBytes + reservedBytes > MAX_PERSONAL_VAULT_WORKSPACE_RETAINED_BYTES) {
       throw new Error('personal_vault_import_workspace_storage_limit');
     }
     const rows = await tx<PersonalVaultImportUploadRow[]>`
@@ -698,6 +787,40 @@ export async function listPersonalVaultImportJobs(
   return rows.map(mapJob);
 }
 
+/** Remove matching retained ciphertext while preserving every import audit row. */
+export async function purgePersonalVaultImportArchives(
+  sql: postgres.Sql,
+  workspaceId: string,
+  userId: string,
+  provenance: { sourceId?: string | null; providerAccountId?: string | null } = {},
+  removeArchive: typeof removePersonalVaultImportArchive = removePersonalVaultImportArchive,
+): Promise<PersonalVaultImportPurgeResult> {
+  const sourceId = normalizePersonalSourceId(provenance.sourceId);
+  const providerAccountId = normalizePersonalProviderAccountId(provenance.providerAccountId);
+  const rows = await sql<PersonalVaultImportJobRow[]>`
+    UPDATE harness_shared.personal_vault_import_jobs
+       SET cancel_requested = true,
+           status = CASE WHEN status IN ('queued', 'running') THEN 'cancelled' ELSE status END,
+           completed_at = COALESCE(completed_at, now()),
+           lease_owner = NULL, lease_expires_at = NULL,
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId} AND user_id = ${userId}::uuid
+       AND storage_path IS NOT NULL
+       AND (${sourceId}::uuid IS NULL OR source_id = ${sourceId}::uuid)
+       AND (${providerAccountId}::text IS NULL OR provider_account_id = ${providerAccountId})
+    RETURNING *`;
+  let archives = 0;
+  let cleanupFailures = 0;
+  for (const row of rows) {
+    if (await cleanupJobArchivePreservingTerminalStatus(sql, mapJob(row), removeArchive)) {
+      archives += 1;
+    } else {
+      cleanupFailures += 1;
+    }
+  }
+  return { jobs: rows.length, archives, cleanupFailures };
+}
+
 export async function requestPersonalVaultImportCancellation(
   sql: postgres.Sql,
   workspaceId: string,
@@ -717,14 +840,8 @@ export async function requestPersonalVaultImportCancellation(
   if (!rows[0]) return getPersonalVaultImportJob(sql, workspaceId, userId, jobId);
   let job = mapJob(rows[0]);
   if (job.status === 'cancelled' && job.storagePath) {
-    await removeArchive(job.workspaceId, job.storagePath);
-    const cleared = await sql<PersonalVaultImportJobRow[]>`
-      UPDATE harness_shared.personal_vault_import_jobs
-         SET storage_path = NULL, updated_at = now()
-       WHERE workspace_id = ${job.workspaceId} AND user_id = ${job.userId}::uuid
-         AND id = ${job.id}::uuid
-      RETURNING *`;
-    job = mapJob(cleared[0]!);
+    await cleanupJobArchivePreservingTerminalStatus(sql, job, removeArchive);
+    job = (await getPersonalVaultImportJob(sql, workspaceId, userId, jobId))!;
   }
   return job;
 }
@@ -877,9 +994,27 @@ async function cleanupJobArchive(
   await removeArchive(job.workspaceId, job.storagePath);
   await sql`
     UPDATE harness_shared.personal_vault_import_jobs
-       SET storage_path = NULL, updated_at = now()
+       SET storage_path = NULL, last_error = NULL, updated_at = now()
      WHERE workspace_id = ${job.workspaceId} AND user_id = ${job.userId}::uuid
        AND id = ${job.id}::uuid`;
+}
+
+async function cleanupJobArchivePreservingTerminalStatus(
+  sql: postgres.Sql,
+  job: PersonalVaultImportJob,
+  removeArchive: typeof removePersonalVaultImportArchive,
+): Promise<boolean> {
+  try {
+    await cleanupJobArchive(sql, job, removeArchive);
+    return true;
+  } catch (cause) {
+    await sql`
+      UPDATE harness_shared.personal_vault_import_jobs
+         SET last_error = ${`archive_cleanup_failed:${errorText(cause)}`}, updated_at = now()
+       WHERE workspace_id = ${job.workspaceId} AND user_id = ${job.userId}::uuid
+         AND id = ${job.id}::uuid`;
+    return false;
+  }
 }
 
 export async function cleanupExpiredPersonalVaultImportArchives(
@@ -896,16 +1031,7 @@ export async function cleanupExpiredPersonalVaultImportArchives(
   let cleaned = 0;
   for (const row of rows) {
     const job = mapJob(row);
-    try {
-      await cleanupJobArchive(sql, job, removeArchive);
-      cleaned += 1;
-    } catch (cause) {
-      await sql`
-        UPDATE harness_shared.personal_vault_import_jobs
-           SET last_error = ${`archive_cleanup_failed:${errorText(cause)}`}, updated_at = now()
-         WHERE workspace_id = ${job.workspaceId} AND user_id = ${job.userId}::uuid
-           AND id = ${job.id}::uuid`;
-    }
+    if (await cleanupJobArchivePreservingTerminalStatus(sql, job, removeArchive)) cleaned += 1;
   }
   return cleaned;
 }
@@ -914,19 +1040,31 @@ export async function cleanupOrphanedPersonalVaultImportUploads(
   sql: postgres.Sql,
   workspaceId: string,
   now = Date.now(),
+  removeArchive: typeof removePersonalVaultImportArchive = removePersonalVaultImportArchive,
 ): Promise<number> {
   const expired = await sql<PersonalVaultImportUploadRow[]>`
-    DELETE FROM harness_shared.personal_vault_import_uploads
-     WHERE workspace_id = ${workspaceId} AND expires_at <= now()
-    RETURNING *`;
+    SELECT * FROM harness_shared.personal_vault_import_uploads
+     WHERE workspace_id = ${workspaceId} AND expires_at <= to_timestamp(${now / 1_000})
+     ORDER BY expires_at
+     LIMIT 25`;
   let cleaned = 0;
   for (const row of expired) {
     const upload = mapUploadReservation(row);
-    await Promise.all([
-      removePersonalVaultImportArchive(workspaceId, upload.storagePath),
-      removePersonalVaultImportArchive(workspaceId, upload.storagePath.replace(/\.partial$/i, '.archive')),
-    ]).catch(() => undefined);
-    cleaned += 1;
+    try {
+      await Promise.all([
+        removeArchive(workspaceId, upload.storagePath),
+        removeArchive(workspaceId, upload.storagePath.replace(/\.partial$/i, '.archive')),
+      ]);
+      const deleted = await sql<{ id: string }[]>`
+        DELETE FROM harness_shared.personal_vault_import_uploads
+         WHERE workspace_id = ${workspaceId} AND user_id = ${upload.userId}::uuid
+           AND id = ${upload.id}::uuid
+           AND expires_at <= to_timestamp(${now / 1_000})
+        RETURNING id`;
+      if (deleted[0]) cleaned += 1;
+    } catch {
+      // Keep the durable reservation/path so the next cleanup pass retries it.
+    }
   }
 
   const root = personalVaultImportStorageDir(workspaceId);
@@ -980,7 +1118,7 @@ async function processClaimedJob(
   const current = await refreshJob(sql, job);
   if (current.cancelRequested) {
     await finishJob(sql, current, 'cancelled');
-    await cleanupJobArchive(sql, current, removeArchive);
+    await cleanupJobArchivePreservingTerminalStatus(sql, current, removeArchive);
     return {
       claimed: true,
       jobId: current.id,
@@ -1039,7 +1177,7 @@ async function processClaimedJob(
       current.contentSha256,
     );
     await finishJob(sql, current, 'completed');
-    await cleanupJobArchive(sql, current, removeArchive);
+    await cleanupJobArchivePreservingTerminalStatus(sql, current, removeArchive);
   } else {
     await sql`
       UPDATE harness_shared.personal_vault_import_jobs
@@ -1074,7 +1212,7 @@ export async function runPersonalVaultImportBatch(
   );
   const leaseOwner = options.leaseOwner?.trim() || `system:personal-vault-import:${workspaceId}`;
   const removeArchive = options.removeArchive ?? removePersonalVaultImportArchive;
-  await cleanupOrphanedPersonalVaultImportUploads(sql, workspaceId);
+  await cleanupOrphanedPersonalVaultImportUploads(sql, workspaceId, Date.now(), removeArchive);
   await cleanupExpiredPersonalVaultImportArchives(sql, workspaceId, removeArchive);
   const job = await claimNextPersonalVaultImportJob(sql, workspaceId, leaseOwner, leaseSeconds);
   if (!job) {
