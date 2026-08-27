@@ -1372,7 +1372,14 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
     }
     AND ${filter.createdSince ? sql`${col('created_at')} >= ${filter.createdSince}::timestamptz` : sql`TRUE`}
     AND ${filter.updatedSince ? sql`${col('updated_at')} >= ${filter.updatedSince}::timestamptz` : sql`TRUE`}
-    AND ${filter.sourcePlanSlug ? sql`${col('source_plan_slug')} = ${filter.sourcePlanSlug}` : sql`TRUE`}`;
+    AND ${
+      filter.sourcePlanSlug
+        ? sql`(
+            ${col('source_plan_slug')} = ${filter.sourcePlanSlug}
+            OR ${col('payload')} -> 'plan_item' ->> 'plan_slug' = ${filter.sourcePlanSlug}
+          )`
+        : sql`TRUE`
+    }`;
 }
 
 /**

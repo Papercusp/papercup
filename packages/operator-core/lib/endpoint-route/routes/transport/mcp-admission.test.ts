@@ -48,9 +48,27 @@ describe('classifyMcpBody — only a tools/call is sheddable', () => {
     'dev_pg_query',
     'mcp__papercusp-su__dev_pg_query',
     'mcp__papercusp_su__dev_pg_query',
+    // EI-21574538947513211 — the tool used to OBSERVE loop pressure was itself being shed by
+    // the pressure gate (94 retryable -32000s, reason loop_pressure_critical, on a bounded
+    // 149-index ownLogProbe walk). Listed in every name form the normalizer must collapse,
+    // because a client-mangled spelling reaching the gate un-normalized would silently
+    // reinstate the shed.
+    'dev:dogfood_substrate_status',
+    'dev_dogfood_substrate_status',
+    'mcp__papercusp-su__dev_dogfood_substrate_status',
   ])('does NOT shed bounded critical-pressure diagnostic %s', (name) => {
     expect(classifyMcpBody(toolsCall(11, name))).toEqual({ sheddable: false, id: null });
   });
+
+  // The CONTROL for the case above: the exemption must stay an allowlist, not a prefix rule.
+  // `dev:` is not a licence — a neighbouring dev tool with unread per-call cost must still shed,
+  // or the narrow list quietly becomes "anything named dev:*".
+  it.each(['dev:pipeline_position', 'dev:restart', 'dev:processes'])(
+    'STILL sheds unlisted dev tool %s (the list is an allowlist, not a dev: prefix rule)',
+    (name) => {
+      expect(classifyMcpBody(toolsCall(12, name))).toEqual({ sheddable: true, id: 12 });
+    },
+  );
   it('sheds a batch that CONTAINS a tools/call and echoes the first call id', () => {
     const batch = JSON.stringify([
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
@@ -243,6 +261,28 @@ describe('evaluateAdmission — end-to-end gate against a real Request', () => {
     const req = post(toolsCall(6, 'dev:pg_query'));
     expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
     expect(JSON.parse(await req.text()).params.name).toBe('dev:pg_query');
+  });
+  // EI-21574538947513211: the end-to-end shape of the reported failure. Asserted through
+  // evaluateAdmission (not just the pure classifier) because the reported symptom was a real
+  // 429 with reason 'loop_pressure_critical' reaching the caller — the classifier being right
+  // would not have been enough if the gate still shed it downstream.
+  it('admits dev:dogfood_substrate_status under critical pressure — the tool that OBSERVES the pressure must not be shed by it', async () => {
+    const req = post(toolsCall(7, 'dev:dogfood_substrate_status'));
+    expect(await evaluateAdmission(req, 'critical', true)).toBeNull();
+    // The body must survive the peek unconsumed, exactly as the pg_query case asserts.
+    expect(JSON.parse(await req.text()).params.name).toBe('dev:dogfood_substrate_status');
+  });
+  it('CONTROL: still sheds an unlisted dev tool under critical pressure with reason loop_pressure_critical', async () => {
+    const shed = await evaluateAdmission(post(toolsCall(8, 'dev:pipeline_position')), 'critical', true);
+    // Proves the admission above is the ALLOWLIST working, not critical-pressure shedding
+    // having stopped working altogether — without this, the test above would still pass if the
+    // gate were disabled entirely.
+    expect(shed).not.toBeNull();
+    expect(shed!.status).toBe(429);
+    expect((await shed!.json()).error.data).toMatchObject({
+      retryable: true,
+      reason: 'loop_pressure_critical',
+    });
   });
   it('admits (null) when the kill-switch disables admission control', async () => {
     expect(await evaluateAdmission(post(toolsCall()), 'critical', false)).toBeNull();

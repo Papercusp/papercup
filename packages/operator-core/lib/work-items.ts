@@ -1100,7 +1100,14 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
         ? sql`updated_ts >= (EXTRACT(EPOCH FROM ${filter.updatedSince}::timestamptz) * 1000)::bigint`
         : sql`TRUE`
     }
-    AND ${filter.sourcePlanSlug ? sql`source_plan_slug = ${filter.sourcePlanSlug}` : sql`TRUE`}`;
+    AND ${
+      filter.sourcePlanSlug
+        ? sql`(
+            source_plan_slug = ${filter.sourcePlanSlug}
+            OR payload -> 'plan_item' ->> 'plan_slug' = ${filter.sourcePlanSlug}
+          )`
+        : sql`TRUE`
+    }`;
 }
 
 /**

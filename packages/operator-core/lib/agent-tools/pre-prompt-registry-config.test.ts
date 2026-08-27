@@ -73,6 +73,29 @@ describe('PRE_PROMPT_REGISTRY', () => {
     });
   });
 
+  it('reconstructs force and reason for a system:plan-item-lane-sync hold', () => {
+    const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
+    const claimTool = lookupByMcpName('work_items:claim');
+    expect(claim).toBeDefined();
+    expect(claimTool).toBeDefined();
+
+    const columns = projectWriteColumns(claimTool!.inputSchema as Record<string, unknown>, {
+      columnNames: claim!.writeColumnNames,
+      requiredColumnNames: claim!.writeRequiredColumnNames,
+      columnOverrides: claim!.columnOverrides,
+    });
+    expect(columns?.map((column) => column.name)).toEqual(['id', 'assignee', 'harness', 'force', 'reason']);
+    expect(reconstructArgs('EI-21572738517279628,,papercusp,true,system:plan-item-lane-sync hold', columns!)).toEqual({
+      ok: true,
+      args: {
+        id: 'EI-21572738517279628',
+        harness: 'papercusp',
+        force: true,
+        reason: 'system:plan-item-lane-sync hold',
+      },
+    });
+  });
+
   it('advertises claim as row+keyed while set_state stays on its full keyed schema (WI-3260)', () => {
     const claim = lookupByMcpName('work_items:claim');
     expect(claim).toBeDefined();
@@ -80,7 +103,7 @@ describe('PRE_PROMPT_REGISTRY', () => {
     const claimOneOf = (claimAdvertised as { oneOf?: unknown[] }).oneOf;
     expect(claimOneOf).toHaveLength(2);
     const row = claimOneOf![0] as { properties?: Record<string, { description?: string }> };
-    expect(row.properties?.row?.description).toContain('id, assignee?, harness?');
+    expect(row.properties?.row?.description).toContain('id, assignee?, harness?, force?, reason?');
 
     const setState = lookupByMcpName('work_items:set_state');
     expect(setState).toBeDefined();

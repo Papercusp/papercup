@@ -39,6 +39,8 @@ import { decoratePlanNowBlock } from "./liveness-decoration";
 import { getAcceptanceRubricForPlan } from "../../rubrics";
 import { getLatestPlanAudit } from "../../plan-audits";
 import { splitPlanSections } from "./plan-sections";
+import { CHARS_PER_TOKEN_ESTIMATE, computeTurnDoors } from "../../context-doors";
+import { getDoorConstantsSync } from "../../context-doors-config";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -356,6 +358,86 @@ export function narrowHeadingPayload(
 }
 
 /**
+ * The char budget one narrowed decision response may occupy, derived from the
+ * SAME door computation the result-door will apply to this caller
+ * (result-door.ts: `computeTurnDoors(0, getDoorConstantsSync(ownerId))`, then
+ * `resultEach * CHARS_PER_TOKEN_ESTIMATE`). Deriving it rather than hardcoding
+ * a constant is what keeps the two from drifting: a workspace or session that
+ * widens its door widens the page with it, automatically.
+ *
+ * The budget is per RESPONSE while narrowing happens per PLAN, so a multi-slug
+ * decision read splits it evenly. Even division is deliberately chosen over a
+ * shared running remainder: the per-slug payloads are built inside a map whose
+ * completion order is not guaranteed, and a budget that depended on that order
+ * would page non-deterministically for identical inputs. Decision ids are
+ * plan-local, so a multi-slug decision read is the rare case anyway.
+ */
+export function decisionPageBudgetChars(
+  ownerId: string | null | undefined,
+  planCount: number,
+): number {
+  const doors = computeTurnDoors(0, getDoorConstantsSync(ownerId));
+  const perResponse = doors.resultEach * CHARS_PER_TOKEN_ESTIMATE;
+  return Math.floor(perResponse / Math.max(1, planCount));
+}
+
+/**
+ * Chars reserved, on top of the measured identity envelope, for the parts of
+ * the response that do not exist yet when the page is chosen: the outer
+ * `{ ok, results: [...] }` wrapper, the `decisionSelection` block (up to five
+ * id arrays), the `decisionContinuation` block, and serialize-result's
+ * advisory footer. Deliberately generous — under-reserving costs a spill (the
+ * exact failure this pagination exists to prevent) while over-reserving costs
+ * one extra page, so the asymmetry is priced in.
+ */
+const DECISION_PAGE_ENVELOPE_RESERVE_CHARS = 1_200;
+
+/**
+ * Choose how many of `selected` fit one response WITHOUT CLIPPING ANY BODY.
+ *
+ * The contract is all-or-nothing per decision: a decision is either returned
+ * complete or named in `deferred`. A partially-returned body is the defect
+ * this path exists to prevent (EI-21573289806322713), so it is not a state
+ * this function can produce.
+ *
+ * PROGRESS GUARANTEE: the first decision is always returned, even when it
+ * alone exceeds the budget. A single ruling larger than the door cannot be
+ * made to fit by any paging strategy, and returning it (letting the door
+ * spill it, with `deferred` naming the rest honestly) is strictly better than
+ * returning an empty page — which would make the continuation non-terminating.
+ */
+export function pageDecisionsToBudget<T extends { id: string }>(
+  envelope: Record<string, unknown>,
+  selected: T[],
+  budgetChars: number | undefined,
+): { returned: T[]; deferred: string[] } {
+  if (
+    budgetChars == null ||
+    !Number.isFinite(budgetChars) ||
+    budgetChars <= 0 ||
+    selected.length <= 1
+  ) {
+    return { returned: selected, deferred: [] };
+  }
+  const available =
+    budgetChars - JSON.stringify(envelope).length - DECISION_PAGE_ENVELOPE_RESERVE_CHARS;
+  const returned: T[] = [];
+  let used = 0;
+  for (const decision of selected) {
+    // What this record ADDS to the serialized `decisions` array (+1 for the
+    // separator) — not the body length alone.
+    const cost = JSON.stringify(decision).length + 1;
+    if (returned.length > 0 && used + cost > available) break;
+    returned.push(decision);
+    used += cost;
+  }
+  return {
+    returned,
+    deferred: selected.slice(returned.length).map((decision) => String(decision.id)),
+  };
+}
+
+/**
  * Build the decision-id-narrowed payload.
  *
  * A decision read exists specifically to recover a governing ruling whose
@@ -364,11 +446,44 @@ export function narrowHeadingPayload(
  * decorations here would recreate the overflow this selector is meant to
  * avoid. `decisionSelection` is deliberately in-band so a missing id cannot
  * be mistaken for a complete read.
+ *
+ * EI-21573289806322713 — CONTINUATION, and why it is not truncation.
+ *
+ * Recovering a governing ruling is exactly the case where a partial answer is
+ * worse than a smaller one: a clipped body still reads as the whole ruling,
+ * and a plan Decision is the substrate other lanes are required to follow. So
+ * when the selected bodies exceed one response's budget, they are split
+ * ACROSS responses rather than shrunk within one.
+ *
+ * The continuation is STATELESS: `decisionContinuation.call` is a complete
+ * plans:get argument set naming the deferred ids. Nothing expires, no
+ * server-side page state has to survive a restart, and re-issuing it is
+ * idempotent.
+ *
+ * `matched` keeps its established meaning — every requested id found in the
+ * plan — so callers reading `matched`/`missing` are unaffected. `returned`
+ * and `deferred` appear ONLY when a split actually happened, which is exactly
+ * when `decisions.length < matched.length` would otherwise be an unexplained
+ * discrepancy; their absence therefore means "complete". `missing` never
+ * absorbs a deferred id: not-found and not-yet-sent are different answers and
+ * stay in different fields.
+ *
+ * BOUNDARY, stated because it is easy to over-claim: sizing a response against
+ * the caller's per-result door does NOT eliminate the reporter's
+ * `aggregate-output-budget-exceeded`. That budget is shared across the sibling
+ * tool calls in one hop (result-door.ts `reserveAggregateBytes`), and once a
+ * cohort's budget is consumed every later result in it spills however small it
+ * is. Paging shrinks each response — and a response under the per-result
+ * ceiling is charged its true size instead of the ceiling — but a wide enough
+ * fan-out still exhausts the cohort. Closing that gap needs the remaining
+ * aggregate budget to be readable at payload-build time, which is a change to
+ * the shared door and deliberately out of scope here.
  */
 export function narrowDecisionPayload<T extends { id: string }>(
   base: Record<string, unknown>,
   requestedIds: string[],
   selected: T[],
+  budgetChars?: number,
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const identityFields = new Set([
@@ -393,12 +508,35 @@ export function narrowDecisionPayload<T extends { id: string }>(
     }
     out[key] = value;
   }
-  out.decisions = selected;
+  // Page AFTER the identity envelope is built, so the budget is measured
+  // against what the response actually carries rather than an estimate.
+  const { returned, deferred } = pageDecisionsToBudget(out, selected, budgetChars);
+
+  out.decisions = returned;
   out.decisionSelection = {
     requested: requestedIds,
     matched: selected.map((decision) => String(decision.id)),
     missing: requestedIds.filter((id) => !selected.some((decision) => decision.id === id)),
+    // Present only on a split — see the header note. Absence means every
+    // matched id's complete body is in `decisions`.
+    ...(deferred.length > 0
+      ? { returned: returned.map((decision) => String(decision.id)), deferred }
+      : {}),
   };
+  if (deferred.length > 0) {
+    out.decisionContinuation = {
+      deferred,
+      note:
+        `${deferred.length} more requested decision(s) did not fit this response and were ` +
+        `DEFERRED, not truncated — every body in \`decisions\` above is complete. ` +
+        `Re-issue plans:get with \`decisionContinuation.call\` to receive them.`,
+      call: {
+        ...(typeof out.slug === "string" ? { slug: out.slug } : {}),
+        ...(typeof out.harness === "string" ? { harness: out.harness } : {}),
+        decisions: deferred,
+      },
+    };
+  }
   return out;
 }
 
@@ -443,7 +581,15 @@ export default defineTool({
     trimmed: (data) => shapePlansGet(data, "trimmed"),
   },
   async handler(args, ctx) {
-    const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+    // `ownerId` is not on UnifiedToolContext but is present on the papercusp
+    // dispatch ctx; read it defensively rather than widening the shared type.
+    // Its only use is resolving this caller's door width, and
+    // getDoorConstantsSync fail-softs to the baked floor when it is absent —
+    // so a miss costs one extra continuation page, never a lost decision.
+    const ctxAny = ctx as {
+      metadata?: (d: Record<string, unknown>) => void;
+      ownerId?: string | null;
+    };
     const slugs = mergeIds(args.slug, args.slugs);
     // EI-21194994217912029: exact-slug scope recovery. A recovery call often
     // carries an exact plan slug but NO resolvable harness; instead of failing
@@ -766,6 +912,7 @@ export default defineTool({
                   base,
                   requestedDecisionIds,
                   selectedDecisions,
+                  decisionPageBudgetChars(ctxAny.ownerId, slugs.length),
                 ),
               };
             }

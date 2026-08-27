@@ -2937,4 +2937,26 @@ describe('WI-38339 work-item shape filters', () => {
     expect(ids(fromPlan)).toEqual([feat.id, bug.id].sort());
     expect(await wi.listWorkItems({ harness: H, sourcePlanSlug: 'a-plan-that-produced-nothing' })).toEqual([]);
   });
+
+  it('sourcePlanSlug falls back to payload.plan_item when normalized provenance is absent', async () => {
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'payload-only feature', harness: H });
+    const issue = await wi.createWorkItem({ kind: 'bug', title: 'payload-only issue', harness: H });
+    const slug = 'wi-38339-payload-only-plan';
+    const stamp = { plan_slug: slug, item_id: 'P-003' };
+
+    // This reproduces rows minted by the legacy promotion path: the durable stamp is
+    // present, but the normalized source-plan columns were never populated.
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET source_plan_slug = NULL,
+             source_plan_item_ids = NULL,
+             payload = COALESCE(payload, '{}'::jsonb) || ${db.sql.json({ plan_item: stamp })}
+       WHERE feature_id = ANY(${[feature.id, issue.id]}::text[])`;
+
+    const fromPlan = await wi.listWorkItems({ harness: H, sourcePlanSlug: slug });
+    expect(ids(fromPlan)).toEqual([feature.id, issue.id].sort());
+    expect(await wi.listWorkItems({ harness: H, sourcePlanSlug: 'a-different-plan' })).toEqual([]);
+    expect(await wi.countWorkItems({ harness: H, sourcePlanSlug: slug })).toBe(2);
+    expect(Object.values(await wi.countWorkItemsByState({ harness: H, sourcePlanSlug: slug })).reduce((a, b) => a + b, 0)).toBe(2);
+  });
 });

@@ -81078,6 +81078,10 @@ Personal Vault is an owner-controlled, local data pool for Gmail, Google Calenda
 
 Archive files are parsed on this machine. Gmail mbox, Calendar ICS, Contacts vCard, Facebook/Instagram message JSON, and X archive data are normalized directly into `harness_shared.personal_documents`. The original archive is not uploaded by the importer.
 
+While an import is queued or retained, its staging file is AES-256-GCM ciphertext with an authenticated manifest and independently authenticated chunks. The key is derived per workspace from the operator database-encryption root key; plaintext archive bytes are never the retained file. **Settings → Personal Vault** shows retained ciphertext plus in-flight reservations against both the owner byte limit and retained-job limit.
+
+Workspace Kopia snapshots include this ciphertext because they snapshot the workspace root. They deliberately do not include the host key at `~/.papercusp/db-encryption-key`, which lives outside that root. A restore on the same host therefore decrypts normally. A new-host restore must escrow and restore the original key (or inject the same `PAPERCUSP_DB_ENCRYPTION_KEY`) separately; a replacement or missing original key produces an explicit authentication failure and leaves the archive unchanged.
+
 Personal document and query embeddings use the local EmbeddingGemma-300m path. The database requires the personal embedding mode discriminator; cloud embedding modes cannot be written into the personal vector space. Personal content must not be sent to a cloud embedding API.
 
 OAuth access and refresh tokens remain in the server-owned plugin configuration. HTTP status responses expose only provider readiness, capability state, safe timestamps, and missing scope names—never tokens, credential references, provider cursors, or raw source configuration.
@@ -81106,7 +81110,7 @@ The Personal Vault settings page shows source counts, local-only posture, and li
 * purge one source or the entire vault after destructive confirmation;
 * import supported archives with local drag and drop.
 
-A source purge removes its personal documents and synchronization cursor state. Document vectors live on the document rows and disappear with them. The all-source purge applies the same operation across every imported source. Capability disable, provider disconnect, and purge are deliberately separate operations.
+A source purge removes its personal documents and synchronization cursor state. Document vectors live on the document rows and disappear with them. Account/source-attributed retained import ciphertext is cancelled and removed in the same owner action, while the import job row remains as a non-secret audit record. The all-source purge applies the same operation across every imported source and every retained owner archive. If filesystem removal fails, the ciphertext path and an `archive_cleanup_failed` marker remain durable for the cleanup routine to retry; a completed import is never reclassified as failed merely because post-completion deletion failed. Capability disable, provider disconnect, and purge are deliberately separate operations.
 
 ## Live Google Workspace ingestion
 
@@ -81139,6 +81143,7 @@ The acceptance suite must keep both sides green:
 3. prove live source ownership, replay dedupe, capability disablement, reconnect preservation, and disconnect-without-purge against the real database;
 4. prove OAuth callbacks store only server-side token metadata and the owner status route never serializes secrets or cursors;
 5. exercise Gmail, Calendar, Contacts, Facebook, routine, route, and settings UI recovery states, while recording any external credential or app-review wall explicitly.
+6. prove retained archives contain no plaintext marker, same-key restore succeeds, wrong/replaced keys and header/truncation mutations fail without rewriting the file, and failed writes leave no partial ciphertext.
 
 Migration and runtime tests also cover workspace/user isolation, local-only embedding modes, revocation/replacement, kill-switch writes, purge, identity resolution, and second-sink persistence.
 

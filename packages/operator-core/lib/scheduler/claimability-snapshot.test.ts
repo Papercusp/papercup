@@ -132,10 +132,32 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     );
 
     const materialization = pg.queries[0] ?? '';
-    const where = materialization.slice(materialization.lastIndexOf('WHERE'));
+    const cteStart = materialization.indexOf('WITH filtered_claim_candidates AS MATERIALIZED');
+    const cteEnd = materialization.indexOf(') SELECT', cteStart);
+    const where = materialization.slice(cteStart, cteEnd);
     expect(materialization).toMatch(/\(TRUE\)\s+AS spec_match/);
     expect(where).toContain('COALESCE(item_kind, kind)');
     expect(where).toContain('= ?');
+  });
+
+  it('materializes pushed-down matches before evaluating claim floors', async () => {
+    const pg = makePool();
+    await readIssueClaimability(
+      { field: 'kind', op: '=', value: 'bug' },
+      { ...OPTS, client: pg.client },
+      { limit: 20 },
+    );
+
+    const materialization = pg.queries[0] ?? '';
+    expect(materialization).toMatch(/WITH filtered_claim_candidates AS MATERIALIZED \(/);
+    expect(materialization).toMatch(/FROM filtered_claim_candidates wi/);
+    // The filter belongs to the CTE's base-table WHERE; the outer query only
+    // decorates the already-filtered rows with the expensive claim floors.
+    const cteEnd = materialization.indexOf(') SELECT');
+    const fromFiltered = materialization.indexOf('FROM filtered_claim_candidates wi');
+    expect(cteEnd).toBeGreaterThan(-1);
+    expect(materialization.indexOf('COALESCE(item_kind, kind)')).toBeLessThan(cteEnd);
+    expect(fromFiltered).toBeGreaterThan(cteEnd);
   });
 
   it('materializes only the columns consumed by claimability siblings, not the 80-column work-item row', async () => {

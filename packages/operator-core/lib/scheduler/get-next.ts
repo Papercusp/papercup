@@ -994,7 +994,40 @@ export function issueClaimCandidateSubquery(
           wi.redundancy
         `
       : sql`wi.*`;
+
+  // A pushed-down filter is an execution-order contract, not just a logical
+  // simplification. Without a materialization barrier PostgreSQL is free to
+  // inline the filtered relation and evaluate the correlated claim-floor
+  // expressions while scanning the whole issue-family table (the exact fleet
+  // read measured ~13s in work_item_claim_floors_v14 before this barrier). The
+  // snapshot caller is deliberately the only current user of this path, and
+  // its narrow projection makes the intermediate relation cheap to materialize.
+  // Keep broad/non-pushed callers unchanged: delta reads need a population wide
+  // enough to cover both filters, and standalone callers retain their existing
+  // SQL shape.
+  const baseWhere = sql`
+    wi.item_kind IN ('bug', 'change', 'task')
+    AND wi.workspace_id = ${issueWs}
+    AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
+    AND wi.status = ANY(${states as string[]}::text[])
+  `;
+  const pushedSource = filterPushdown
+    ? sql`
+        WITH filtered_claim_candidates AS MATERIALIZED (
+          SELECT ${baseColumns}
+          FROM harness_shared.work_items wi
+          WHERE ${baseWhere}
+            AND (${filterPushdown})
+        )
+      `
+    : sql``;
+  const source = filterPushdown ? sql`filtered_claim_candidates wi` : sql`harness_shared.work_items wi`;
+  // Non-pushed callers intentionally retain the broad population: their outer
+  // predicates may need to compare the current and proposed filters (delta
+  // reads), so `compiled` stays a projected `spec_match` there.
+  const where = filterPushdown ? sql`` : sql`WHERE ${baseWhere}`;
   return sql`
+    ${pushedSource}
     SELECT
       ${baseColumns},
       (${filterPushdown ? sql`TRUE` : compiled})                       AS spec_match,
@@ -1036,12 +1069,8 @@ export function issueClaimCandidateSubquery(
       -- else inside the filing-grace window); an exclusion for either reports here, under the
       -- one cooldown breakdown bucket, per WI-5939 "do not add a parallel mechanism".
       (${issueCooldownExclusionSql(sql, assignee, cooldown)})            AS ok_cooldown
-    FROM harness_shared.work_items wi
-    WHERE wi.item_kind IN ('bug', 'change', 'task')
-      AND wi.workspace_id = ${issueWs}
-      AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
-      AND wi.status = ANY(${states as string[]}::text[])
-      ${filterPushdown ? sql`AND (${filterPushdown})` : sql``}
+    FROM ${source}
+    ${where}
   `;
 }
 

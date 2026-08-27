@@ -16,8 +16,9 @@
  * next } (with `goal` accepted as an alias for `next`, and the historical
  * `keyInsight`/`nextAction` spellings accepted as compatibility aliases; rendered to
  * renderCarryNote's canonical `## Heading` template a cold successor
- * knows how to read) OR a raw { note } string. Replace-on-write; a blank/null note (or
- * all-blank fields) CLEARS. Journaling ON (the loop trajectory ring, like the Queen) —
+ * knows how to read) OR a raw { note } string (with historical { checkpoint } accepted
+ * as a compatibility alias). Replace-on-write; a blank/null note (or all-blank fields)
+ * CLEARS. Journaling ON (the loop trajectory ring, like the Queen) —
  * recent wakes' notes survive a clear so a cold successor still sees the trajectory.
  */
 import { z } from 'zod';
@@ -241,8 +242,8 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
-    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }; ' +
-    'canonical fields win and blank/null clears. Keyed by ownerId. walls/checks default ' +
+    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, ' +
+    'or compatibility alias { checkpoint }; canonical note wins and blank/null clears. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
     'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
     'contention returns retryable timeout data, not a transport hang.',
@@ -284,6 +285,11 @@ export default defineTool({
         .max(32000)
         .nullish()
         .describe('Raw carry-note text; blank/null ⇒ clear. Ignored when any of did/left/insight/next is set.'),
+      checkpoint: z
+        .string()
+        .max(32000)
+        .nullish()
+        .describe('Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.'),
       // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
       // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
       // back as `repairs`. A hard reject discards the whole multi-KB note over one long
@@ -419,6 +425,24 @@ export default defineTool({
                   .describe(
                     'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
                   ),
+                // EI-21575304064818009: expose the structured verification
+                // vocabulary that coerceCarryRowShape already accepts. The
+                // preprocessor maps these aliases to claim/recheck/verified,
+                // but a live client validates against this nested JSON schema
+                // before the preprocessor runs. Omitting them therefore turns
+                // a lossless compatibility path into invalid_args.
+                kind: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.claim,
+                  'Compatibility alias for `claim` in structured verification rows; prefer `claim`.',
+                ).optional(),
+                command: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.recheck,
+                  'Compatibility alias for `recheck` in structured verification rows; prefer `recheck`.',
+                ).optional(),
+                result: carryRowTextSchema(
+                  CARRY_ROW_SOFT_CAPS.verified,
+                  'Compatibility alias for `verified` in structured verification rows; prefer `verified`.',
+                ).optional(),
               }),
             )
             .max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
@@ -486,6 +510,7 @@ export default defineTool({
       (a) =>
         a.read === true ||
         a.note !== undefined ||
+        a.checkpoint !== undefined ||
         a.did !== undefined ||
         a.left !== undefined ||
         a.insight !== undefined ||
@@ -497,7 +522,7 @@ export default defineTool({
         a.checks !== undefined,
       {
         message:
-          'pass { did, left, insight, next } (any; goal aliases next), { note }, { walls }, or { checks } — nothing to write',
+          'pass { did, left, insight, next } (any; goal aliases next), { note } (or compatibility alias { checkpoint }), { walls }, or { checks } — nothing to write',
       },
     ),
   async handler(args, ctx) {
@@ -766,8 +791,11 @@ export default defineTool({
       fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
     // all-blank structured write renders '' ⇒ a clear). Otherwise write the raw note
-    // verbatim; an explicitly supplied `note` wins even when it is null.
-    const rawNote = args.note;
+    // verbatim. `checkpoint` is the historical generic carry-note spelling used by
+    // work_items:checkpoint callers; normalize it at the boundary so every downstream
+    // path (row merge, provenance lint, verify-read, and clear) keeps canonical loop
+    // semantics. An explicitly supplied `note` wins even when it is null.
+    const rawNote = args.note !== undefined ? args.note : args.checkpoint;
     const baseNote = hasStructured ? renderCarryNote(fields) : rawNote;
 
     // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:

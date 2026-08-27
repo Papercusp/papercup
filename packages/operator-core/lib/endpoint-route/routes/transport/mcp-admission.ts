@@ -124,8 +124,30 @@ export function resetMcpAdmissionForTests(): void {
  * proxy, and because a proxy-reserved request can otherwise be shed here after
  * it reaches the operator.
  */
+/**
+ * EI-21574538947513211 adds `dev:dogfood_substrate_status`, measured: a bounded 149-index
+ * `ownLogProbe` walk at concurrency 20 drew 94 explicit retryable -32000 sheds with reason
+ * `loop_pressure_critical`. That is this gate rejecting the very tool used to OBSERVE the
+ * pressure it is reacting to — the failure mode the exemption above exists to prevent, arriving
+ * through the one diagnostic that was never listed.
+ *
+ * It meets the stated bar rather than widening it. `attachOwnLogProbe` takes a SINGLE
+ * non-negative `index` and performs exactly one `handle.ownLog.get(index)` against an
+ * ALREADY-OPEN Corestore — its own contract is that it "never opens a second Corestore or joins
+ * transport just to inspect a row", and a relocated handle routes over the bounded
+ * `substrate:getOwnLogOp` RPC. The tool is read-only throughout. The 149-index figure was the
+ * CALLER issuing 149 separate cheap calls, not one unbounded unit of work; per-call cost is what
+ * this list is about.
+ *
+ * ⚠ Know what listing a tool actually grants — it is BOTH legs, not just the pressure one.
+ * `isCriticalPressureDiagnostic` is read by `classifyMcpBody` (⇒ never pressure-shed) AND by
+ * `classifyMcpRequest` (⇒ classified 'diagnostic', which `shouldShedForCapacity` returns false
+ * for). `diagnosticReserve` is a floor carved out of the ORDINARY ceiling for diagnostics, NOT a
+ * cap on them, so a listed tool is bounded only by the global `maxInFlight`. Do not add anything
+ * here whose per-call cost you have not read.
+ */
 const CRITICAL_PRESSURE_DIAGNOSTIC_TOOLS = new Set(
-  ['dev:service_health', 'dev:pg_query'].map(normalizeMcpName),
+  ['dev:service_health', 'dev:pg_query', 'dev:dogfood_substrate_status'].map(normalizeMcpName),
 );
 
 function isCriticalPressureDiagnostic(toolName: unknown): boolean {

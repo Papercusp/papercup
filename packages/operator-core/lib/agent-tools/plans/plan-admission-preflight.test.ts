@@ -32,11 +32,7 @@ import {
 } from './plan-admission-preflight';
 import { validateClaimSpec } from '../../scheduler/claim-spec';
 
-const item = (
-  id: string,
-  storedStatus: PlanItem['storedStatus'] = 'todo',
-  blockedBy: string[] = [],
-): PlanItem => ({
+const item = (id: string, storedStatus: PlanItem['storedStatus'] = 'todo', blockedBy: string[] = []): PlanItem => ({
   id,
   text: id,
   storedStatus,
@@ -68,9 +64,7 @@ const lane = (args: {
     matchedByFilter: issueMatchedByFilter,
     excluded: issueExcluded,
     issueFamily: { claimable: issue, matchedByFilter: issueMatchedByFilter, excluded: issueExcluded },
-    featureFamily: featureReachable
-      ? { claimable: feature, matchedByFilter: null, excluded: null }
-      : null,
+    featureFamily: featureReachable ? { claimable: feature, matchedByFilter: null, excluded: null } : null,
     effective: mixed
       ? {
           claimable: feature == null ? null : issue + feature,
@@ -101,6 +95,41 @@ const lane = (args: {
 };
 
 describe('evaluateExactPlanAdmission', () => {
+  it('ignores terminal historical promotions when checking duplicate actionable coverage', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001')],
+      workItems: [
+        {
+          id: 'WI-live',
+          family: 'issue',
+          state: 'open',
+          sourcePlanItemIds: ['P-001'],
+          payload: null,
+        },
+        {
+          id: 'WI-dropped',
+          family: 'issue',
+          state: 'dropped',
+          sourcePlanItemIds: ['P-001'],
+          payload: null,
+        },
+      ],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+    });
+
+    expect(verdict).toMatchObject({
+      ready: true,
+      status: 'ready',
+      reason: 'ready',
+      promotion: {
+        rows: 2,
+        coveredActionable: 1,
+        duplicateActionable: [],
+      },
+    });
+  });
+
   it('admits a feature-only exact-plan lane from feature-family truth', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
@@ -126,12 +155,14 @@ describe('evaluateExactPlanAdmission', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems: [item('P-001')],
-      workItems: [{
-        id: 'WI-1',
-        family: 'issue',
-        sourcePlanItemIds: null,
-        payload: { plan_item: { item_id: 'P-001' } },
-      }],
+      workItems: [
+        {
+          id: 'WI-1',
+          family: 'issue',
+          sourcePlanItemIds: null,
+          payload: { plan_item: { item_id: 'P-001' } },
+        },
+      ],
       laneHealth: lane({ issue: 1, featureReachable: false }),
     });
 
@@ -343,12 +374,14 @@ describe('evaluateExactPlanAdmission', () => {
       reason: 'insufficient-executable-width',
       parallelism: { readyWidth: 2, readyItemIds: ['P-001', 'P-002'] },
       executableWidth: 1,
-      blockingRows: [{
-        planItemId: 'P-002',
-        workItemId: 'WI-2',
-        holder: 'su-holder',
-        takenAt: '2026-08-24T02:10:42.079Z',
-      }],
+      blockingRows: [
+        {
+          planItemId: 'P-002',
+          workItemId: 'WI-2',
+          holder: 'su-holder',
+          takenAt: '2026-08-24T02:10:42.079Z',
+        },
+      ],
     });
     expect(verdict.message).toContain(
       'Held ready rows: P-002->WI-2(holder=su-holder, takenAt=2026-08-24T02:10:42.079Z).',
@@ -375,14 +408,16 @@ describe('evaluateExactPlanAdmission', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems: [item('P-001')],
-      workItems: [{
-        id: 'WI-1',
-        family: 'issue',
-        sourcePlanItemIds: ['P-001'],
-        payload: null,
-        assignee: 'su-caller',
-        takenAt: '2026-08-24T02:10:42.079Z',
-      }],
+      workItems: [
+        {
+          id: 'WI-1',
+          family: 'issue',
+          sourcePlanItemIds: ['P-001'],
+          payload: null,
+          assignee: 'su-caller',
+          takenAt: '2026-08-24T02:10:42.079Z',
+        },
+      ],
       laneHealth: lane({
         issue: 0,
         issueMatchedByFilter: 1,
@@ -398,11 +433,13 @@ describe('evaluateExactPlanAdmission', () => {
       status: 'ready',
       reason: 'ready',
       executableWidth: 0,
-      blockingRows: [{
-        planItemId: 'P-001',
-        workItemId: 'WI-1',
-        holder: 'su-caller',
-      }],
+      blockingRows: [
+        {
+          planItemId: 'P-001',
+          workItemId: 'WI-1',
+          holder: 'su-caller',
+        },
+      ],
     });
     expect(verdict.message).toContain('caller already holds all 1 actionable ready row(s)');
   });
@@ -411,14 +448,16 @@ describe('evaluateExactPlanAdmission', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',
       planItems: [item('P-001')],
-      workItems: [{
-        id: 'WI-1',
-        family: 'issue',
-        sourcePlanItemIds: ['P-001'],
-        payload: null,
-        assignee: 'su-other',
-        takenAt: '2026-08-24T02:10:42.079Z',
-      }],
+      workItems: [
+        {
+          id: 'WI-1',
+          family: 'issue',
+          sourcePlanItemIds: ['P-001'],
+          payload: null,
+          assignee: 'su-other',
+          takenAt: '2026-08-24T02:10:42.079Z',
+        },
+      ],
       laneHealth: lane({
         issue: 0,
         issueMatchedByFilter: 1,
@@ -438,12 +477,14 @@ describe('preflightExactPlanAdmission IO wiring', () => {
     vi.clearAllMocks();
     mocks.getPlanRow.mockResolvedValue({ planSlug: 'plan-a' });
     mocks.planItemsForRow.mockReturnValue([item('P-001')]);
-    mocks.listWorkItems.mockResolvedValue([{
-      id: 'WI-1',
-      family: 'issue',
-      sourcePlanItemIds: undefined,
-      payload: { planItem: { itemId: 'P-001' } },
-    }]);
+    mocks.listWorkItems.mockResolvedValue([
+      {
+        id: 'WI-1',
+        family: 'issue',
+        sourcePlanItemIds: undefined,
+        payload: { planItem: { itemId: 'P-001' } },
+      },
+    ]);
     mocks.readClaimSpecLaneHealth.mockResolvedValue(lane({ issue: 1, featureReachable: false }));
   });
 
@@ -471,15 +512,17 @@ describe('preflightExactPlanAdmission IO wiring', () => {
       includeChildren: true,
       limit: 2_000,
     });
-    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledWith(expect.objectContaining({
-      fleet: 'fleet-a',
-      harness: 'papercusp',
-      workspaceId: 'ws-1',
-      assignee: 'su-test',
-      matchedBy: 'exact-plan-preflight',
-      spec: expect.objectContaining({ specId: 'plans-start-plan-a', states: ['open'] }),
-      record: expect.objectContaining({ fleetSlug: 'fleet-a', harnessSlug: 'papercusp' }),
-    }));
+    expect(mocks.readClaimSpecLaneHealth).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fleet: 'fleet-a',
+        harness: 'papercusp',
+        workspaceId: 'ws-1',
+        assignee: 'su-test',
+        matchedBy: 'exact-plan-preflight',
+        spec: expect.objectContaining({ specId: 'plans-start-plan-a', states: ['open'] }),
+        record: expect.objectContaining({ fleetSlug: 'fleet-a', harnessSlug: 'papercusp' }),
+      }),
+    );
     expect(verdict.requestedSeats).toBe(1);
   });
 

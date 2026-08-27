@@ -412,9 +412,20 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
-  it('rejects the removed generic checkpoint field instead of treating it as a raw note', () => {
-    expect(() => parse({ checkpoint: 'legacy generic carry note' })).toThrow(/unrecognized_keys[\s\S]*checkpoint/i);
-    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  it('accepts the generic checkpoint field as a lossless compatibility alias for raw note', async () => {
+    const b = body(await call({ checkpoint: 'legacy generic carry note' }));
+
+    expect(b).toMatchObject({ ok: true, cleared: false });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('legacy generic carry note');
+  });
+
+  it('prefers canonical note over the generic checkpoint alias, including an explicit clear', async () => {
+    await call({ note: 'canonical note', checkpoint: 'legacy note' });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('canonical note');
+
+    setLoopCarryNote.mockClear();
+    await call({ note: null, checkpoint: 'legacy note' });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('');
   });
 
   it('accepts a current read-only executable probe and refuses schema drift before the store runs', () => {
@@ -1480,6 +1491,26 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       ]);
     });
 
+    it('maps structured kind/command/result rows to the canonical check shape', () => {
+      const out = parse({
+        checks: [
+          {
+            kind: 'the focused checkpoint test passes',
+            command: 'npm run test:file -- checkpoint.test.ts',
+            result: '8/8 tests passed',
+          },
+        ],
+      }) as { checks: { claim: string; recheck?: string; verified?: string }[] };
+
+      expect(out.checks).toEqual([
+        {
+          claim: 'the focused checkpoint test passes',
+          recheck: 'npm run test:file -- checkpoint.test.ts',
+          verified: '8/8 tests passed',
+        },
+      ]);
+    });
+
     it('does NOT invent a verification: a not-yet-verified status maps to no `verified` at all (stays PREDICTED)', () => {
       const out = parse({ checks: [{ claim: 'deploy landed', status: 'predicted' }] }) as {
         checks: { claim: string; verified?: string }[];
@@ -1617,6 +1648,20 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         });
         expect(rowProperties[field].description).toContain(`Soft cap: ${softCap} chars`);
       }
+    });
+
+    it('publishes structured verification aliases in the nested checks schema', () => {
+      type JsonNode = { [key: string]: unknown };
+      const schema = (tool.args as unknown as { toJSONSchema: () => unknown }).toJSONSchema() as JsonNode;
+      const properties = ((schema.properties as JsonNode).checks as JsonNode).items as JsonNode;
+      const rowProperties = properties.properties as Record<string, JsonNode>;
+
+      expect(rowProperties.kind).toMatchObject({ type: 'string' });
+      expect(rowProperties.command).toMatchObject({ type: 'string' });
+      expect(rowProperties.result).toMatchObject({ type: 'string' });
+      expect(rowProperties.kind.description).toContain('Compatibility alias for `claim`');
+      expect(rowProperties.command.description).toContain('Compatibility alias for `recheck`');
+      expect(rowProperties.result.description).toContain('Compatibility alias for `verified`');
     });
 
     it('truncates an overlong narrative field to the soft cap rather than rejecting the call', async () => {
