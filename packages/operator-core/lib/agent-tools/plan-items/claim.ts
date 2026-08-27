@@ -31,6 +31,7 @@ import { holderContextReader, resolveHolderAdvisory } from '../coordination/hold
 import { planItemRef } from '../../agent-goal-ref';
 import type { CellReader } from '../../cell-registry';
 import type { LivenessMode } from '../../plan-items/claims';
+import { getClaimTimeCheckpointHint } from '../../work-item-checkpoint';
 import {
   buildClaimTimeEnrichment,
   type ClaimTimeEnrichment,
@@ -124,6 +125,41 @@ async function claimTimeContext(
     harness: harness ?? null,
     workspaceId,
   });
+}
+
+interface ClaimTimeCheckpointContext {
+  checkpoint?: string;
+  checkpointAgeMs?: number | null;
+  checkpointWarning?: string;
+}
+
+/**
+ * EI-21574679768631502: a resumed plan-item claim has a real work-item row, so
+ * carry the prior holder's checkpoint onto the same claim receipt as the other
+ * claim surfaces. The bare lease path intentionally has no work-item to query.
+ *
+ * Fail-soft by design: checkpoint context is an advisory guard and must never
+ * turn a successful claim into a failed one.
+ */
+async function claimTimeCheckpointContext(
+  workItem: ClaimTimeEnrichmentSubject | null,
+  harness: string | undefined,
+  workspaceId: string,
+): Promise<ClaimTimeCheckpointContext> {
+  if (!workItem?.id) return {};
+  const hint = await getClaimTimeCheckpointHint({
+    harness: workItem.harness ?? harness ?? null,
+    workItemId: workItem.id,
+    workspaceId,
+  }).catch(() => null);
+  return hint
+    ? {
+        checkpoint: hint.checkpoint,
+        checkpointAgeMs: hint.checkpointAgeMs,
+        checkpointWarning:
+          'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+      }
+    : {};
 }
 
 interface ClaimSpecItem {
@@ -258,6 +294,16 @@ export default defineTool({
           // minted/resumed workItem. A refused/conflict convert maps back to the same
           // claim-shaped failure the bare path returns (its embedded `claim` payload).
           if (conv.status === 'converted' || conv.status === 'resumed') {
+            const [checkpointContext, enrichment] = await Promise.all([
+              claimTimeCheckpointContext(conv.workItem, it.harness ?? args.harness, workspaceId),
+              claimTimeContext(
+                it.plan,
+                it.item,
+                conv.workItem,
+                it.harness ?? args.harness,
+                workspaceId,
+              ),
+            ]);
             return {
               ok: true,
               plan: it.plan,
@@ -269,13 +315,8 @@ export default defineTool({
               // premise, retraction, authorship and contradiction guards key on the
               // payload/title/summary/state that only the full row carries. Handing
               // over the id alone is exactly how this surface stayed at 2 of 6.
-              ...(await claimTimeContext(
-                it.plan,
-                it.item,
-                conv.workItem,
-                it.harness ?? args.harness,
-                workspaceId,
-              )),
+              ...checkpointContext,
+              ...enrichment,
             };
           }
           return {
