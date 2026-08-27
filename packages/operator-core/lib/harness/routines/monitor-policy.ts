@@ -174,6 +174,20 @@ export function normalizeMonitorPredicateKey(value: string): string | null {
   return normalized;
 }
 
+export function monitorPredicateDedupRefusal(
+  normalizedPredicateKey: string | null,
+  conflictingKind: 'monitor' | 'exact-await',
+): { code: 'monitor_exact_await_duplicate'; message: string; details: { predicateKey: string; conflictingKind: string } } | null {
+  if (!normalizedPredicateKey) return null;
+  return {
+    code: 'monitor_exact_await_duplicate',
+    message:
+      `Refusing duplicate monitoring for predicate ${normalizedPredicateKey}: this owner already has a live ${conflictingKind}. ` +
+      'Keep the exact event await for an owner/leader when the event exists; otherwise cancel/end the existing registration first.',
+    details: { predicateKey: normalizedPredicateKey, conflictingKind },
+  };
+}
+
 export function prepareMonitorConfig(value: unknown): MonitorAdmissionResult {
   const parsed = monitorArmConfigSchema.safeParse(value);
   if (!parsed.success) {
@@ -380,6 +394,29 @@ export async function listActiveMonitorOwnersForPredicate(
     { client: opts.sql },
   );
   return rows.map((row) => row.owner_id);
+}
+
+export async function hasActiveMonitorForOwnerPredicate(
+  input: { workspaceId: string; ownerId: string; predicateKey: string },
+  opts: { sql?: Sql } = {},
+): Promise<boolean> {
+  const normalized = normalizeMonitorPredicateKey(input.predicateKey);
+  if (!normalized) return false;
+  const rows = await boundedPgReadTxn<Array<{ found: number }>>(
+    (tx) => tx`
+      SELECT 1 AS found
+        FROM harness_shared.routines r
+       WHERE r.workspace_id = ${input.workspaceId}
+         AND r.active = TRUE
+         AND r.reschedule_interval_sec IS NOT NULL
+         AND r.target_owner_id = ${input.ownerId}
+         AND r.payload_template->>'mode' = 'monitor'
+         AND r.payload_template->'monitor'->>'predicateKey' = ${normalized}
+       LIMIT 1
+    `,
+    { client: opts.sql },
+  );
+  return rows.length > 0;
 }
 
 export async function readMonitorOwnerTurnEvidence(

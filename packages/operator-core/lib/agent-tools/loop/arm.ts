@@ -40,7 +40,7 @@ import {
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
-import { listWakeAwaitsForSubscriber } from '../../events/await/store';
+import { hasLiveExactAwaitForSubscriberKey, listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { probeWakeReachability, type WakeReachabilityVerdict } from '../../events/await/wake-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
@@ -48,6 +48,7 @@ import { getSessionBrief } from '../../session-brief';
 import { lintCarrySurfaceProvenance } from '../../carry-surface-provenance-lint';
 import {
   admitMonitorArm,
+  monitorPredicateDedupRefusal,
   monitorArmConfigSchema,
   prepareMonitorConfig,
   type PersistedMonitorConfig,
@@ -873,6 +874,10 @@ export default defineTool({
         return monitorRefusal(admission.code, admission.message, admission.details);
       }
       admittedMonitorConfig = admission.config;
+      if (await hasLiveExactAwaitForSubscriberKey(ownerId, admission.config.predicateKey)) {
+        const refusal = monitorPredicateDedupRefusal(admission.config.predicateKey, 'exact-await')!;
+        return monitorRefusal(refusal.code, refusal.message, refusal.details);
+      }
       if (explicitWorkItem && admission.config.authority.kind !== 'work-item') {
         return monitorRefusal(
           'monitor_work_item_authority_mismatch',

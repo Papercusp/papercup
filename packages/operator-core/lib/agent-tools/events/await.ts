@@ -27,6 +27,7 @@ import {
 import { readInstalledUnitEvents } from '../../events/await/installed-events';
 import {
   registerAwait,
+  hasLiveExactAwaitForSubscriberKey,
   findAnnouncementsForKey,
   findNearMissKeys,
   cancelAwait,
@@ -71,6 +72,11 @@ import {
 } from './producer-health';
 import { resolveAnnouncementOwnership, type AnnouncementOwnership } from './status';
 import { activeWorkspaceId } from '../../workspace-registry';
+import {
+  hasActiveMonitorForOwnerPredicate,
+  monitorPredicateDedupRefusal,
+  normalizeMonitorPredicateKey,
+} from '../../harness/routines/monitor-policy';
 
 // The fallback timeout-wake window + hard cap — one shared source of truth
 // (await-timeout-fallback-defaults-2026-07-03): the default is now 30min, not 4h.
@@ -992,6 +998,24 @@ export default defineTool({
     // new wait. Skipped when a PRIOR key genuinely fired for someone (announcedGate/
     // already_fired above already returned) — this only runs on the path that is
     // about to register a fresh row.
+    if (!isPattern(eventKey)) {
+      const predicateKey = normalizeMonitorPredicateKey(eventKey);
+      if (
+        predicateKey &&
+        (await hasActiveMonitorForOwnerPredicate({
+          workspaceId: ctx.workspaceId ?? identity.workspaceId ?? activeWorkspaceId(),
+          ownerId: identity.ownerId,
+          predicateKey,
+        }))
+      ) {
+        const refusal = monitorPredicateDedupRefusal(predicateKey, 'monitor')!;
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: refusal.code, message: refusal.message, ...refusal.details }) }],
+          isError: true,
+        };
+      }
+    }
+
     let supersededCount = 0;
     try {
       supersededCount = await cancelAwaitsForSubscribersOnKeys([identity.ownerId], [eventKey], {

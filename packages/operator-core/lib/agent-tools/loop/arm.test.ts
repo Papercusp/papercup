@@ -80,6 +80,7 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async 
 // Defaults to EMPTY so every pre-existing handler test keeps its exact prior wording.
 vi.mock('../../events/await/store', () => ({
   listWakeAwaitsForSubscriber: vi.fn(async () => ({ totalCount: 0, sample: [] })),
+  hasLiveExactAwaitForSubscriberKey: vi.fn(async () => false),
 }));
 vi.mock('../../events/await/wake-reachability', () => ({
   probeWakeReachability: vi.fn(async () => ({
@@ -141,6 +142,7 @@ const monitorAdmissionM = vi.mocked(admitMonitorArm);
 const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
 const potHomeM = vi.mocked((await import('../../pot/wake')).resolvePotHomeSlug);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
+const exactAwaitM = vi.mocked((await import('../../events/await/store')).hasLiveExactAwaitForSubscriberKey);
 // EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
 // (non-async) describe callback, and this file's describes are synchronous.
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
@@ -183,6 +185,7 @@ beforeEach(() => {
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
   mockResolvedTyped(admitM, { allowed: true, scoped: false });
+  exactAwaitM.mockResolvedValue(false);
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
@@ -330,6 +333,22 @@ describe('loop:arm — anti-babysitting P-003 typed monitor admission', () => {
     });
     expect(claimM).not.toHaveBeenCalled();
     expect(materializeM).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a monitor when the owner already has the same exact await, before mutation', async () => {
+    exactAwaitM.mockResolvedValueOnce(true);
+    const b = body(await call({ mode: 'monitor', monitor: monitorConfig() }));
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'monitor_exact_await_duplicate',
+      details: {
+        predicateKey: 'release:green:papercusp',
+        conflictingKind: 'exact-await',
+      },
+    });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(materializeM).not.toHaveBeenCalled();
+    expect(armWakeM).not.toHaveBeenCalled();
   });
 
   it('keeps ordinary work loops byte-compatible and never invokes monitor admission', async () => {
