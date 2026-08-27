@@ -1194,16 +1194,47 @@ describe('getFeedbackCore — revival leg (WI-39852)', () => {
     expect(sel?.selected?.[0]).toMatchObject({ ownerId: 'zombie-a', revived: true });
   });
 
-  it('cap 1 (MAX_REVIVALS_PER_CONSULT): dead-preempt spends the budget — a failed wake on the revived cannot re-revive', async () => {
+  it('wake-failed: advances to the next selected responder before attempting revival', async () => {
+    const first = cand('zombie-first');
+    const second = cand('live-second', { score: 0.65 });
+    const base = makeDeps(routeOf([first, second]));
+    let reachCount = 0;
+    base.deps.reach = async (o) => {
+      base.reached.push(o);
+      reachCount += 1;
+      return reachCount === 1
+        ? { queued: 0, woke: 0, pickupConfirmed: false }
+        : { queued: 1, woke: 1, pickupConfirmed: false };
+    };
+
+    const res = asOk(await getFeedbackCore(baseReq, base.deps));
+
+    expect(res.responder?.ownerId).toBe('live-second');
+    expect(res.responder_via).toBe('floor');
+    expect(res.wake).toEqual({ attempted: true, queued: 1, woke: 0, pickupConfirmed: false });
+    expect(base.reached.map((wake) => wake.responder)).toEqual(['zombie-first', 'live-second']);
+    expect(res.revival).toBeUndefined();
+
+    const row = await stateRow(res.conversation_id);
+    expect(row.responder_id).toBe('live-second');
+    expect(row.cascade_cursor).toBe(1);
+    const digest = typeof row.cascade_digest === 'string' ? JSON.parse(row.cascade_digest) : row.cascade_digest;
+    expect(digest).toEqual([
+      expect.objectContaining({ ownerId: 'zombie-first', kind: 'wake_failed' }),
+    ]);
+  });
+
+  it('cap 1 (MAX_REVIVALS_PER_CONSULT): dead-preempt spends the budget — a failed wake advances to the live next candidate without re-reviving', async () => {
     const { deps, revived } = makeReviveDeps(
       routeOf([deadExpert], { all: [deadExpert, liveLow] }),
       { spawned: true, verified: null, detail: 'booting' },
       { wokeOnReach: 0 },
     );
     const res = asOk(await getFeedbackCore(baseReq, deps));
-    expect(res.responder?.ownerId).toBe('dead-x');
+    expect(res.responder?.ownerId).toBe('live-low');
     expect(res.wake.woke).toBe(0);
-    // ONE revival total — the wake-failed leg found the budget spent.
+    // ONE revival total — the wake-failed leg advanced to the selected live
+    // candidate and found the budget spent, so it did not re-revive.
     expect(revived).toHaveLength(1);
     expect(res.revival?.trigger).toBe('dead-preempt');
   });

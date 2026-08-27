@@ -34,6 +34,7 @@
 import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
+import { advanceCascade, makeDigestEntry } from './cascade-core';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -1044,18 +1045,71 @@ export async function getFeedbackCore(
     // truthful: a queued wake is not a started turn.
     woke = pickupConfirmed ? queued : 0;
 
-    // 7b) WI-39852 wake-failed leg: a LIVE-read chosen responder whose wake
-    //     reached NOBODY is a false-parked zombie — treat as dead and revive
-    //     the SAME owner. Shares the one-revival budget with dead-preempt via
-    //     the persisted `revived` stamps (revivalBudgetSpent,
-    //     EI-20864690354207496 F2): a SPAWNED dead-preempt stamped
-    //     selected[0].revived, so this guard finds the budget spent and a
-    //     revived-then-unreachable session can never loop. (A dead-preempt
-    //     that FAILED to spawn left no stamp — the budget is honestly unspent
-    //     and this leg may still make the consult's one revival attempt.)
-    //     The row is already persisted; on spawn, stamp the revival marker
-    //     onto the persisted selection provenance (selected[0] IS the chosen).
-    if (queued === 0 && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
+    // 7b) A required wake that queued nothing is a failed delivery, not a
+    //     successful route. If the persisted selection has another entry,
+    //     advance the same CAS-protected cascade used by reply/decline/expiry
+    //     and record the failed head in its digest before waking the next
+    //     selectee. This makes a parked/stale first candidate unable to stall
+    //     a blocking consult. The reach adapter preserves the durable queue
+    //     count + pickup confirmation for this result surface.
+    //
+    //     Same-owner revival remains the fallback only when there is no next
+    //     selected responder. That keeps the existing single-candidate
+    //     wake-failed recovery while preferring the already-selected menu over
+    //     spending a revival on a responder whose delivery just failed.
+    const hasNextCandidate = finalSelected.length > 1;
+    if (queued === 0 && hasNextCandidate) {
+      let failoverReach: { queued?: number; woke?: number; pickupConfirmed?: boolean } | undefined;
+      const advanced = await advanceCascade(
+        {
+          workspaceId: req.workspaceId,
+          conversationId: opened.conversation_id,
+          question: req.question,
+          latencyContract: latency,
+          requesterId: req.requesterId,
+          routing: route.snapshot,
+          cascadeCursor: 0,
+          digest: [],
+          event: makeDigestEntry(
+            finalChosen.ownerId,
+            'wake_failed',
+            now.toISOString(),
+            'Required wake queued no deliveries; advancing to the next selected responder.',
+          ),
+          stateOnAdvance: 'awaiting_responder',
+          nowIso: now.toISOString(),
+        },
+        sql,
+        async (opts) => {
+          failoverReach = await deps.reach(opts);
+          return { woke: failoverReach.queued ?? failoverReach.woke ?? 0 };
+        },
+      );
+      if (advanced.advanced && advanced.next) {
+        const nextSelected = finalSelected.find((selection) => selection.candidate.ownerId === advanced.next?.ownerId);
+        if (nextSelected) {
+          finalChosen = nextSelected.candidate;
+          finalChosenVia = nextSelected.via;
+          queued = failoverReach?.queued ?? failoverReach?.woke ?? advanced.woke;
+          pickupConfirmed = failoverReach?.pickupConfirmed ?? false;
+          woke = pickupConfirmed ? queued : 0;
+        }
+      }
+    }
+
+    // 7c) WI-39852 wake-failed fallback: a LIVE-read chosen responder whose
+    //     wake reached NOBODY is a false-parked zombie — revive the SAME owner
+    //     only when the selected menu had no next candidate. Shares the
+    //     one-revival budget with dead-preempt via the persisted `revived`
+    //     stamps (revivalBudgetSpent, EI-20864690354207496 F2): a SPAWNED
+    //     dead-preempt stamped selected[0].revived, so this guard finds the
+    //     budget spent and a revived-then-unreachable session can never loop.
+    //     (A dead-preempt that FAILED to spawn left no stamp — the budget is
+    //     honestly unspent and this leg may still make the consult's one
+    //     revival attempt.) The row is already persisted; on spawn, stamp the
+    //     revival marker onto the persisted selection provenance (selected[0]
+    //     IS the chosen).
+    if (queued === 0 && !hasNextCandidate && deps.revive && !revivalBudgetSpent(route.snapshot.selection?.selected)) {
       const rr = await deps.revive({
         ownerId: finalChosen.ownerId,
         conversationId: opened.conversation_id,
