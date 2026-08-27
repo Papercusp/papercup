@@ -3,6 +3,10 @@ import {
   type ItemStatus,
   type PlanItem,
 } from '@papercusp/plan-parser';
+import {
+  getDependencyPolicy,
+  type DependencyPolicyFinding,
+} from '../../scheduler/dependency-invariants';
 
 const TERMINAL_STATUSES = new Set<ItemStatus>(['done', 'dropped']);
 
@@ -77,6 +81,43 @@ export interface PlanDagParallelismDiagnostics {
   fanInChokepoints: PlanDagFanInChokepoint[];
   phaseInversions: PlanDagPhaseInversion[];
   releaseGateBlocksBuild: PlanDagReleaseGateBlock[];
+  /** Shared, evidence-bearing probable-mistake output consumed by lint and admission. */
+  findings: DependencyPolicyFinding[];
+}
+
+function finding(
+  code: string,
+  detail: Omit<DependencyPolicyFinding, 'code' | 'classification' | 'confidence' | 'provenance' | 'suggestedAction'>,
+): DependencyPolicyFinding {
+  const policy = getDependencyPolicy(code);
+  if (!policy) throw new Error(`unknown dependency policy code: ${code}`);
+  return {
+    code,
+    classification: policy.classification,
+    confidence: policy.confidence,
+    provenance: [...policy.provenance],
+    suggestedAction: policy.suggestedAction,
+    ...detail,
+  };
+}
+
+function rationaleFor(...items: Array<PlanItem | undefined>): string[] {
+  return [...new Set(items.flatMap((item) => item?.decisionRefs ?? []))].sort();
+}
+
+function edgeFinding(
+  code: string,
+  subject: PlanItem,
+  dependency: PlanItem,
+  evidence: Record<string, unknown>,
+): DependencyPolicyFinding {
+  const refs = rationaleFor(subject, dependency);
+  return finding(code, {
+    nodes: [subject.id, dependency.id],
+    edges: [{ subject: subject.id, dependency: dependency.id }],
+    evidence,
+    ...(refs.length ? { suppressedBy: { kind: 'structured-rationale', refs } } : {}),
+  });
 }
 
 function summarizeCriticalPath(path: readonly string[]): string {
@@ -229,6 +270,62 @@ export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanD
     if (candidate.depth > criticalPath.depth) criticalPath = candidate;
   }
 
+  const findings: DependencyPolicyFinding[] = [];
+  for (const item of items) {
+    for (const blockerId of item.blockedBy) {
+      const blocker = byId.get(blockerId);
+      if (!blocker) continue;
+      if (TERMINAL_STATUSES.has(blocker.storedStatus)) {
+        findings.push(edgeFinding('satisfied-edge-retained', item, blocker, {
+          lifecycle: { subject: item.storedStatus, dependency: blocker.storedStatus },
+        }));
+      }
+      if (TERMINAL_STATUSES.has(item.storedStatus) && !TERMINAL_STATUSES.has(blocker.storedStatus)) {
+        findings.push(edgeFinding('terminal-dependant-live-blocker', item, blocker, {
+          lifecycle: { subject: item.storedStatus, dependency: blocker.storedStatus },
+        }));
+      }
+    }
+  }
+  for (const inversion of phaseInversions) {
+    const subject = byId.get(inversion.itemId)!;
+    const dependency = byId.get(inversion.blockerId)!;
+    findings.push(edgeFinding('phase-inversion', subject, dependency, {
+      phases: { subject: inversion.itemPhase, dependency: inversion.blockerPhase },
+    }));
+  }
+  for (const inversion of releaseGateBlocksBuild) {
+    const subject = byId.get(inversion.itemId)!;
+    const dependency = byId.get(inversion.blockerId)!;
+    findings.push(edgeFinding('gate-foundation-inversion', subject, dependency, {
+      phases: { subject: inversion.itemPhase, dependency: inversion.blockerPhase },
+      titles: { subject: subject.text, dependency: dependency.text },
+    }));
+  }
+  if (nonTerminalItems.length >= 3 && readyItems.length <= 1 && criticalPath.depth >= 3) {
+    const refs = rationaleFor(...criticalPath.path.map((id) => byId.get(id)));
+    findings.push(finding('narrow-or-deep-topology', {
+      nodes: [...criticalPath.path],
+      edges: criticalPath.path.slice(1).map((id, index) => ({ subject: id, dependency: criticalPath.path[index] })),
+      evidence: {
+        topologyMetrics: { nonTerminal: nonTerminalItems.length, readyWidth: readyItems.length, criticalPathDepth: criticalPath.depth },
+        path: [...criticalPath.path],
+      },
+      ...(refs.length ? { suppressedBy: { kind: 'structured-rationale', refs } } : {}),
+    }));
+  }
+  for (const chokepoint of fanInChokepoints.filter((entry) => entry.blockerIds.length >= 4)) {
+    const subject = byId.get(chokepoint.itemId)!;
+    const blockers = chokepoint.blockerIds.map((id) => byId.get(id)).filter((item): item is PlanItem => Boolean(item));
+    const refs = rationaleFor(subject, ...blockers);
+    findings.push(finding('high-degree-node', {
+      nodes: [subject.id, ...blockers.map((item) => item.id)],
+      edges: blockers.map((item) => ({ subject: subject.id, dependency: item.id })),
+      evidence: { topologyMetrics: { fanIn: blockers.length } },
+      ...(refs.length ? { suppressedBy: { kind: 'structured-rationale', refs } } : {}),
+    }));
+  }
+
   return {
     nonTerminal: nonTerminalItems.length,
     readyWidth: readyItems.length,
@@ -246,5 +343,6 @@ export function analyzePlanDagParallelism(planItems: readonly PlanItem[]): PlanD
     fanInChokepoints,
     phaseInversions,
     releaseGateBlocksBuild,
+    findings,
   };
 }

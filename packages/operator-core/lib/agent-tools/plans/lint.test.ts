@@ -770,9 +770,11 @@ describe('plans:lint — DAG parallelism diagnostics (WI-40832)', () => {
       `## Phase 3\n\n- **P-003** \`todo\` Integrate adapter blocked-by: P-002`,
     )), 'dag-lint-test', false);
 
-    const finding = report.warnings.find((entry) => entry.code === 'dag_low_executable_width');
-    expect(finding?.message).toContain('readyWidth=1');
-    expect(finding?.message).toContain('P-001 -> P-002 -> P-003');
+    const finding = report.warnings.find((entry) => entry.code === 'narrow-or-deep-topology');
+    expect(finding?.dependencyFinding?.evidence).toMatchObject({
+      topologyMetrics: { readyWidth: 1, criticalPathDepth: 3 },
+      path: ['P-001', 'P-002', 'P-003'],
+    });
   });
 
   it('reports exact fan-in, phase-inversion, and release-gate edges', async () => {
@@ -784,11 +786,11 @@ describe('plans:lint — DAG parallelism diagnostics (WI-40832)', () => {
       `## Phase 4\n\n- **P-003** \`todo\` Beta distribution release gate`,
     )), 'dag-lint-test', false);
 
-    expect(report.warnings.find((entry) => entry.code === 'dag_fan_in_chokepoint')?.message)
-      .toContain('P-004 <- [P-001, P-002]');
-    expect(report.warnings.find((entry) => entry.code === 'dag_phase_inversion')?.message)
-      .toContain('P-001 (Phase 1) <- P-003 (Phase 4)');
-    expect(report.warnings.find((entry) => entry.code === 'dag_release_gate_blocks_build')?.message)
-      .toContain('P-001 <- P-003');
+    // Two blockers are an explicitly healthy shape; high-degree begins at four.
+    expect(report.warnings.find((entry) => entry.code === 'high-degree-node')).toBeUndefined();
+    expect(report.warnings.find((entry) => entry.code === 'phase-inversion')?.dependencyFinding?.edges)
+      .toEqual([{ subject: 'P-001', dependency: 'P-003' }]);
+    expect(report.warnings.find((entry) => entry.code === 'gate-foundation-inversion')?.dependencyFinding?.nodes)
+      .toEqual(['P-001', 'P-003']);
   });
 });

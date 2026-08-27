@@ -65,6 +65,8 @@ export interface ExactPlanAdmission {
     sourceCapExhausted: boolean;
   };
   parallelism: PlanDagParallelismDiagnostics;
+  /** Advisory-only classifier output; never changes the admission verdict. */
+  findings: PlanDagParallelismDiagnostics['findings'];
   requestedSeats: number | null;
   executableWidth: number | null;
   seatShortfall: number | null;
@@ -236,6 +238,7 @@ export function evaluateExactPlanAdmission(args: {
       sourceCapExhausted: args.sourceCapExhausted === true,
     },
     parallelism,
+    findings: parallelism.findings,
     requestedSeats,
     executableWidth,
     seatShortfall,

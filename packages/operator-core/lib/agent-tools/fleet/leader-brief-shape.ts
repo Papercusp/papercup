@@ -157,6 +157,18 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
   );
   if (population) out.population = population;
 
+  if (Array.isArray(source.findings)) {
+    out.findings = source.findings.slice(0, rowCap).map((value) => {
+      const row = asDict(value);
+      if (!row) return value;
+      return pick(
+        row,
+        ['code', 'classification', 'confidence', 'nodes', 'edges', 'evidence', 'provenance', 'suggestedAction', 'suppressedBy'],
+        220,
+      ) ?? row;
+    });
+  }
+
   const rows = Array.isArray(source.rows) ? source.rows : [];
   out.rows = rows.slice(0, rowCap).map((value) => {
     const row = asDict(value);

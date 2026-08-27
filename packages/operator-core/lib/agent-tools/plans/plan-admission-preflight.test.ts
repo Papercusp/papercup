@@ -96,6 +96,22 @@ const lane = (args: {
 };
 
 describe('evaluateExactPlanAdmission', () => {
+  it('surfaces probable-mistake findings without changing an otherwise ready verdict', () => {
+    const planItems = [
+      item('P-001'),
+      item('P-002', 'todo', ['P-001']),
+      item('P-003', 'todo', ['P-002']),
+    ];
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems,
+      workItems: [{ id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-001'], payload: null }],
+      laneHealth: lane({ issue: 1, featureReachable: false }),
+    });
+
+    expect(verdict.status).toBe('ready');
+    expect(verdict.findings).toContainEqual(expect.objectContaining({ code: 'narrow-or-deep-topology' }));
+  });
   it('ignores terminal historical promotions when checking duplicate actionable coverage', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',

@@ -2363,6 +2363,8 @@ export type LeaderDependencyBottleneckView =
         holderBasis: 'reconciled-fleet-assignment-claims';
       };
       rows: LeaderDependencyBottleneckRow[];
+      /** Work dependency health projection: same classifier output as the tool read. */
+      findings?: DependencyBottleneckResult['findings'];
       /** Opt-in human renderer over the same SQL result as `rows`. */
       mermaid?: string;
     }
@@ -2472,6 +2474,7 @@ export function buildLeaderDependencyBottleneckView(
       holderBasis: 'reconciled-fleet-assignment-claims',
     },
     rows,
+    findings: result.findings ?? [],
     ...(result.graph ? { mermaid: renderDependencyBottleneckMermaid(result.graph) } : {}),
   };
 }

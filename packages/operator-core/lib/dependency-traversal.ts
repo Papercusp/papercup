@@ -18,6 +18,7 @@
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
+import { getDependencyPolicy, type DependencyPolicyFinding } from './scheduler/dependency-invariants';
 import {
   PG_READ_QUERY_CALL_OVERHEAD_MS,
   PG_READ_QUERY_HARD_TIMEOUT_MS,
@@ -119,6 +120,8 @@ export interface DependencyBottleneckGraph {
 export interface DependencyBottleneckResult {
   population: DependencyBottleneckPopulation;
   rows: DependencyBottleneckCandidate[];
+  /** Additive for callers constructing older snapshots; the live reader always emits it. */
+  findings?: DependencyPolicyFinding[];
   /** Present only when the caller requested the human-review graph projection. */
   graph?: DependencyBottleneckGraph;
 }
@@ -1048,7 +1051,7 @@ export async function readDependencyBottlenecks(
     [...ALL_TERMINAL_STATUSES].map((status) => status.toLowerCase()),
     planSlug,
     limit,
-    args.includeGraph === true,
+    true,
   ], deps.query, deps.client);
   const populationRow = rows.find((row) => row.row_kind === 'population');
   if (!populationRow) throw new Error('dependency bottleneck query returned no population row');
@@ -1071,8 +1074,7 @@ export async function readDependencyBottlenecks(
         openBlockedCount: Number(row.open_blocked_count),
       };
     });
-  const graph = args.includeGraph
-    ? {
+  const measuredGraph = {
         nodes: rows
           .filter((row) => row.row_kind === 'graph_node')
           .map((row): DependencyBottleneckGraphNode => {
@@ -1108,8 +1110,28 @@ export async function readDependencyBottlenecks(
             };
           })
           .sort((a, b) => a.key.localeCompare(b.key)),
-      }
-    : undefined;
+      };
+  const highDegreePolicy = getDependencyPolicy('high-degree-node');
+  if (!highDegreePolicy) throw new Error('dependency policy high-degree-node is not registered');
+  const findings: DependencyPolicyFinding[] = bottlenecks.flatMap((candidate) => {
+    const incident = measuredGraph.edges.filter((edge) => edge.dependencyKey === candidate.key);
+    // An aggregate transitive count cannot satisfy P-013's exact-edge evidence
+    // contract. Stay silent unless this same snapshot carries every direct edge.
+    if (incident.length < 4) return [];
+    return [{
+      code: highDegreePolicy.code,
+      classification: highDegreePolicy.classification,
+      confidence: highDegreePolicy.confidence,
+      nodes: [candidate.key, ...incident.map((edge) => edge.subjectKey)],
+      edges: incident.map((edge) => ({ subject: edge.subjectKey, dependency: edge.dependencyKey })),
+      evidence: {
+        topologyMetrics: { directFanOut: incident.length, openBlockedCount: candidate.openBlockedCount },
+        exactEdgesComplete: !populationRow.depth_limited,
+      },
+      provenance: [...highDegreePolicy.provenance],
+      suggestedAction: highDegreePolicy.suggestedAction,
+    }];
+  });
   return {
     population: {
       kind: 'exact-plan-open-roots',
@@ -1125,6 +1147,7 @@ export async function readDependencyBottlenecks(
       maxDepth,
     },
     rows: bottlenecks,
-    ...(graph ? { graph } : {}),
+    findings,
+    ...(args.includeGraph ? { graph: measuredGraph } : {}),
   };
 }

@@ -248,6 +248,16 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
             progressBasis: 'harness_shared.work_items.last_progress_at',
             holderBasis: 'reconciled-fleet-assignment-claims',
           },
+          findings: [{
+            code: 'high-degree-node',
+            classification: 'advisory',
+            confidence: 'medium',
+            nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
+            edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
+            evidence: { topologyMetrics: { directFanOut: 4 } },
+            provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
+            suggestedAction: 'Review the node as a fragility bottleneck.',
+          }],
           rows: Array.from({ length: 8 }, (_, index) => ({
             rank: index + 1,
             key: `work_item:WI-${index}`,
@@ -279,6 +289,7 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
 
     const bottlenecks = out.dependencyBottlenecks as {
       rows: Array<Record<string, unknown>>;
+      findings: Array<Record<string, unknown>>;
       rowsTruncated: { total: number; shown: number };
       mermaid: string;
     };
@@ -294,6 +305,14 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       rowsTruncated: { total: 8, shown: 4 },
     });
     expect(bottlenecks.rows).toHaveLength(4);
+    expect(bottlenecks.findings).toEqual([expect.objectContaining({
+      code: 'high-degree-node',
+      classification: 'advisory',
+      confidence: 'medium',
+      nodes: ['work_item:WI-0', 'plan_item:one-plan#P-001'],
+      edges: [{ subject: 'plan_item:one-plan#P-001', dependency: 'work_item:WI-0' }],
+      provenance: ['dependency-graph-admission-and-health-2026-08-26#D-005'],
+    })]);
     expect(bottlenecks.rows[0]).toMatchObject({
       rank: 1,
       ref: 'WI-0',

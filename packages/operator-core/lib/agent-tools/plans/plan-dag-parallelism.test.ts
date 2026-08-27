@@ -78,6 +78,48 @@ describe('analyzePlanDagParallelism', () => {
       blockerId: 'P-003',
       blockerPhase: 'Phase 4',
     }]);
+    expect(result.findings.map((finding) => finding.code)).toEqual([
+      'phase-inversion',
+      'gate-foundation-inversion',
+    ]);
+    expect(result.findings[0]).toMatchObject({
+      classification: 'advisory',
+      confidence: 'medium',
+      nodes: ['P-001', 'P-003'],
+      edges: [{ subject: 'P-001', dependency: 'P-003' }],
+      provenance: expect.arrayContaining(['dependency-graph-admission-and-health-2026-08-26#D-005']),
+      suggestedAction: expect.any(String),
+    });
+  });
+
+  it('keeps ordinary diamonds healthy and suppresses an explicitly-rationalized serial chain', () => {
+    const result = analyzePlanDagParallelism([
+      item({ id: 'P-001', phase: 'Phase 1' }),
+      item({ id: 'P-002', phase: 'Phase 2', blockedBy: ['P-001'] }),
+      item({ id: 'P-003', phase: 'Phase 2', blockedBy: ['P-001'] }),
+      { ...item({ id: 'P-004', phase: 'Phase 3', blockedBy: ['P-002', 'P-003'] }), decisionRefs: ['D-001'] },
+    ]);
+
+    expect(result.findings).toEqual([
+      expect.objectContaining({
+        code: 'narrow-or-deep-topology',
+        suppressedBy: { kind: 'structured-rationale', refs: ['D-001'] },
+      }),
+    ]);
+  });
+
+  it('emits a high-degree finding only beyond the healthy multiple-blocker shape', () => {
+    const blockers = ['P-001', 'P-002', 'P-003', 'P-004'].map((id) => item({ id, phase: 'Phase 1' }));
+    const result = analyzePlanDagParallelism([
+      ...blockers,
+      item({ id: 'P-005', phase: 'Phase 2', blockedBy: blockers.map(({ id }) => id) }),
+    ]);
+
+    expect(result.findings).toContainEqual(expect.objectContaining({
+      code: 'high-degree-node',
+      nodes: ['P-005', 'P-001', 'P-002', 'P-003', 'P-004'],
+      evidence: { topologyMetrics: { fanIn: 4 } },
+    }));
   });
 
   it('terminates on cycles and reports their members as non-ready', () => {

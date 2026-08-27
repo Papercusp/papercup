@@ -193,6 +193,7 @@ describe('readDependencyBottlenecks result shaping', () => {
         lastProgressAt: '2026-08-23T01:02:03.000Z',
         openBlockedCount: 5,
       }],
+      findings: [],
     });
   });
 
@@ -285,5 +286,53 @@ describe('readDependencyBottlenecks result shaping', () => {
         }),
       ],
     });
+  });
+
+  it('classifies a high-degree bottleneck only with exact incident-edge evidence', async () => {
+    const base = {
+      blocker_status: null,
+      blocker_title: null,
+      work_item_refs: null,
+      last_progress_at: null,
+      open_root_count: 4,
+      candidate_count: 1,
+      depth_limited: false,
+      graph_external_ref: null,
+    };
+    const query = vi.fn(async () => [
+      { ...base, row_kind: 'population' as const, blocker_key: null, blocker_kind: null, blocker_ref: null,
+        open_blocked_count: null, graph_subject_key: null, graph_dependency_key: null, graph_relation: null },
+      { ...base, row_kind: 'bottleneck' as const, blocker_key: 'work_item:WI-1', blocker_kind: 'work_item' as const,
+        blocker_ref: 'WI-1', open_blocked_count: 4, graph_subject_key: null, graph_dependency_key: null, graph_relation: null },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        ...base,
+        row_kind: 'graph_edge' as const,
+        blocker_key: `edge-${index + 1}`,
+        blocker_kind: null,
+        blocker_ref: null,
+        open_blocked_count: null,
+        graph_subject_key: `plan_item:fleet-plan#P-00${index + 1}`,
+        graph_dependency_key: 'work_item:WI-1',
+        graph_relation: 'work-item-blocks' as const,
+      })),
+    ]);
+
+    const result = await readDependencyBottlenecks({
+      workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', planSlug: 'fleet-plan',
+    }, { query: query as never });
+
+    expect(result.graph).toBeUndefined();
+    expect(result.findings).toEqual([expect.objectContaining({
+      code: 'high-degree-node',
+      classification: 'advisory',
+      confidence: 'medium',
+      nodes: ['work_item:WI-1', 'plan_item:fleet-plan#P-001', 'plan_item:fleet-plan#P-002',
+        'plan_item:fleet-plan#P-003', 'plan_item:fleet-plan#P-004'],
+      edges: expect.arrayContaining([
+        { subject: 'plan_item:fleet-plan#P-001', dependency: 'work_item:WI-1' },
+      ]),
+      provenance: expect.arrayContaining(['dependency-graph-admission-and-health-2026-08-26#D-005']),
+      suggestedAction: expect.any(String),
+    })]);
   });
 });
