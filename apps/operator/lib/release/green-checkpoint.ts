@@ -1345,7 +1345,7 @@ export const CANDIDATE_SELECTION_TO_SUITE_WARN_MS = 20 * 60_000;
  *  30m is generous: CANDIDATE_SELECTION_TO_SUITE_WARN_MS already warns at 20m for the WHOLE
  *  selection→suite stretch (setupTree + both preflights + a slot wait capped at
  *  HEAVY_SLOT_WAIT_SEC=120s), of which setupTree is normally the dominant but still single-digit-
- *  minute leg even under contention. 30m stays comfortably inside the 120m suite timeout, so a
+ *  minute leg even under contention. 30m stays comfortably inside the 115m suite timeout, so a
  *  setupTree timeout still leaves that outer bound (and SELF_WATCHDOG_MS above it) as the final
  *  backstop for anything downstream — this constant only closes the ONE gap that let a run
  *  outlive both of those without ever reaching the suite at all. */
@@ -1362,7 +1362,7 @@ export const SETUP_TREE_TIMEOUT_MS = 30 * 60_000;
  * complete publisher independently at 90m. Stage markers from
  * dependency-generation.sh reset the idle budget; the hard cap remains immune
  * to output, so a child that merely prints forever still terminates below the
- * gate-wide 120m parent budget. */
+ * gate-wide 115m parent budget. */
 export const DEPENDENCY_GENERATION_IDLE_TIMEOUT_MS = SETUP_TREE_TIMEOUT_MS;
 export const DEPENDENCY_GENERATION_HARD_TIMEOUT_MS = 90 * 60_000;
 
@@ -1386,7 +1386,7 @@ export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
 /** WI-1319 root fix (c): a SELF-BOUND wall-clock watchdog, armed by THIS process
  *  (green-checkpoint.ts) itself, independent of the supervising parent
  *  (release-actions.ts's `runScript`, which SIGTERMs the whole process group at
- *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=120m + escalates to SIGKILL 15s later).
+ *  GREEN_CHECKPOINT_SUITE_TIMEOUT_MS=115m + escalates to SIGKILL 15s later).
  *
  *  That parent-side kill relies on the PARENT (the bg-host / routines-tick node
  *  process) staying alive long enough for its in-memory `setTimeout` to fire.
@@ -1416,7 +1416,7 @@ export const MATERIALIZATION_HEARTBEAT_MAX_DURATION_MS =
  *  itself + every runCmd-spawned vitest/tsx worker in one shot) — no orphan can
  *  outlive it.
  *
- *  INVARIANT: strictly greater than the parent's full kill window (120m SIGTERM
+ *  INVARIANT: strictly greater than the parent's full kill window (115m SIGTERM
  *  + 15s SIGKILL escalation), so a LIVE parent's kill always wins the race and
  *  this watchdog is a pure backstop, never a competing timeout. Keep it at or
  *  above 3h for long-load checkpoint runs so the outer launch cap cannot cut the
@@ -1451,7 +1451,7 @@ export interface SelfWatchdogConfig {
 
 /** Resolve the deadline AND what that deadline means from the same validated transport.
  *
- * A scheduled run inherits a live parent-side 120m timeout, so its later 180m watchdog can
+ * A scheduled run inherits a live parent-side 115m timeout, so its later 180m watchdog can
  * only fire after that parent failed to land the normal kill. A detached manual run has no
  * such parent timer: the launcher deliberately transports 120m15s into THIS watchdog, while
  * systemd remains a 3h outer backstop. Reusing the scheduled "presumed-dead parent" diagnosis
