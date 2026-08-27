@@ -24,13 +24,14 @@ vi.mock('@papercusp/operator-core/lib/session', () => ({
 }));
 
 let spaRoutes: import('hono').Hono;
+let createSpaRoutes: typeof import('./host-spa').createSpaRoutes;
 let distDir: string;
 
 beforeAll(async () => {
   distDir = mkdtempSync(join(tmpdir(), 'host-spa-dist-'));
   writeFileSync(join(distDir, 'index.html'), '<!doctype html><html><head></head><body>app</body></html>');
   process.env.PAPERCUSP_SPA_DIST = distDir;
-  ({ spaRoutes } = await import('./host-spa'));
+  ({ spaRoutes, createSpaRoutes } = await import('./host-spa'));
 });
 
 afterEach(() => {
@@ -86,6 +87,28 @@ describe('SPA shell pre-hydration globals', () => {
     expect(body).toContain('window.__PAPERCUSP_PREFS__={"theme_id":"black","visual_effects_mode":"minimal"}');
     // Inside <head>, before the deferred module entry, so the boot scripts read it.
     expect(body.indexOf('window.__PAPERCUSP_PREFS__=')).toBeLessThan(body.indexOf('</head>'));
+  });
+
+  it('pins hosted hydration to the control-plane workspace and never exposes local state', async () => {
+    process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
+    setFlagOverridesForTest({ 'papercusp-testing': true });
+    try {
+      const hostedRoutes = createSpaRoutes({
+        kind: 'hosted',
+        controlPlaneWorkspaceId: 'hosted-control-plane',
+      });
+      const res = await hostedRoutes.request('/?ws=other-tenant-workspace');
+      const body = await res.text();
+
+      expect(res.status).toBe(200);
+      expect(body).toContain('window.__PAPERCUSP_WS__="hosted-control-plane";');
+      expect(body).not.toContain('other-tenant-workspace');
+      expect(body).not.toContain('window.__PAPERCUSP_PREFS__=');
+      expect(body).not.toContain('window.__PAPERCUSP_FLAGS__=');
+      expect(body).not.toContain('window.__PAPERCUSP_TAURI_ISOLATED__=');
+    } finally {
+      delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
+    }
   });
 
   it('serves the shell for an unknown client route (200, not 404)', async () => {

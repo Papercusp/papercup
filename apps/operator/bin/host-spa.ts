@@ -23,11 +23,6 @@
 import { Hono } from 'hono';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { extname, join, resolve, sep } from 'node:path';
-import { getAllFlags, isBackendConfigured } from '@papercusp/flags/server';
-import { activeWorkspaceId } from '@papercusp/operator-core/lib/workspace-registry';
-import { readProfile } from '@papercusp/operator-core/lib/session';
-import { resolveDistinctId } from '@papercusp/operator-core/lib/flag-distinct-id';
-import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
 // P-006: the destination invariant as a POLICY (the prevention leg), kept in one
 // place so this host, the vite dev server and the desktop cannot drift apart.
 // Imported from the LEAF module, not the '@papercusp/desktop-ipc' barrel: this
@@ -35,7 +30,6 @@ import { reinitFlagBackend } from '@papercusp/operator-core/lib/flag-bus';
 // webview bootstrap, which have no business being loaded server-side.
 // csp-policy.ts imports nothing at all, so it is safe in any environment.
 import { cspReportOnlyHeaders } from '../../../libs/generic/desktop-ipc/src/csp-policy';
-import { isTestingFeaturesEnabled } from '@papercusp/operator-core/lib/posthog-config';
 import { describeMissingBundle } from '../lib/spa-build-status';
 
 /**
@@ -151,8 +145,18 @@ function serveFile(absPath: string, status = 200, cacheControl?: string): Respon
  *     backend hiccup must never break the shell, so on any error we omit the
  *     seed and let the client fall back to its async bootstrap.
  */
-async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Promise<Response> {
-  let html = readFileSync(indexPath, 'utf-8');
+export type SpaRouteProfile =
+  | { readonly kind?: 'local' }
+  | {
+      readonly kind: 'hosted';
+      /** Fixed control-plane workspace; never a customer-selected workspace. */
+      readonly controlPlaneWorkspaceId: string;
+    };
+
+async function localPreHydrationGlobals(req: Request): Promise<string[]> {
+  // Keep every process-global/local data dependency behind this branch. The
+  // hosted profile below never imports these modules, much less calls them.
+  const { activeWorkspaceId } = await import('@papercusp/operator-core/lib/workspace-registry');
   let wsId = 'default';
   try {
     // Phase E (P-053): each window self-identifies via `?ws=<id>` in its URL
@@ -179,6 +183,7 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
   // workspace the window self-identifies as. Best-effort: on any error the
   // boot scripts fall back to the localStorage cache + defaults.
   try {
+    const { readProfile } = await import('@papercusp/operator-core/lib/session');
     const profile = await readProfile(wsId);
     const prefs = {
       theme_id: typeof profile.theme_id === 'string' ? profile.theme_id : null,
@@ -190,14 +195,36 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
     /* profile unreadable — boot scripts fall back to localStorage + defaults */
   }
   try {
+    const [flagsModule, distinctId, flagBus, posthog] = await Promise.all([
+      import('@papercusp/flags/server'),
+      import('@papercusp/operator-core/lib/flag-distinct-id'),
+      import('@papercusp/operator-core/lib/flag-bus'),
+      import('@papercusp/operator-core/lib/posthog-config'),
+    ]);
+    const { getAllFlags, isBackendConfigured } = flagsModule;
+    const { resolveDistinctId } = distinctId;
+    const { reinitFlagBackend } = flagBus;
+    const { isTestingFeaturesEnabled } = posthog;
     if (isBackendConfigured() !== isTestingFeaturesEnabled()) {
       reinitFlagBackend();
     }
-    const flags = await getAllFlags(resolveDistinctId(req));
-    globals.push(`window.__PAPERCUSP_FLAGS__=${JSON.stringify(flags)};`);
+    const resolvedFlags = await getAllFlags(resolveDistinctId(req));
+    globals.push(`window.__PAPERCUSP_FLAGS__=${JSON.stringify(resolvedFlags)};`);
   } catch {
     /* flag backend unavailable — client bootstraps flags asynchronously */
   }
+  return globals;
+}
+
+async function serveIndexHtml(
+  indexPath: string,
+  req: Request,
+  hostedControlPlaneWorkspaceId: string | null,
+): Promise<Response> {
+  let html = readFileSync(indexPath, 'utf-8');
+  const globals = hostedControlPlaneWorkspaceId === null
+    ? await localPreHydrationGlobals(req)
+    : [`window.__PAPERCUSP_WS__=${JSON.stringify(hostedControlPlaneWorkspaceId)};`];
   const inject = `<script>${globals.join('')}</script>`;
   // Insert right after <head> so it runs before the deferred module bundle.
   html = html.includes('<head>') ? html.replace('<head>', `<head>${inject}`) : inject + html;
@@ -231,41 +258,57 @@ function safeDistPath(rel: string): string | null {
   return abs;
 }
 
-export const spaRoutes = new Hono();
-
-// Final fallback — registered last in `host-handler.ts`, so `/api/*`,
-// `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
-// have all already terminated before a request reaches here.
-spaRoutes.get('*', async (c) => {
-  const pathname = decodeURI(new URL(c.req.url).pathname);
-  const rel = pathname.replace(/^\/+/, '');
-
-  // (1) Extension'd path → static asset from dist/. Miss = real 404.
-  if (rel && extname(rel)) {
-    const abs = safeDistPath(rel);
-    if (abs && existsSync(abs) && statSync(abs).isFile()) {
-      return serveFile(
-        abs,
-        200,
-        pathname.startsWith(IMMUTABLE_ASSET_PREFIX) ? IMMUTABLE_CACHE_CONTROL : undefined,
-      );
+export function createSpaRoutes(profile: SpaRouteProfile = { kind: 'local' }): Hono {
+  let hostedControlPlaneWorkspaceId: string | null = null;
+  if (profile.kind === 'hosted') {
+    const configuredWorkspaceId = profile.controlPlaneWorkspaceId.trim();
+    if (configuredWorkspaceId.length === 0) {
+      throw new TypeError('hosted_spa_requires_a_control_plane_workspace_id');
     }
-    return new Response('Not found', {
-      status: 404,
-      headers: { 'content-type': 'text/plain; charset=utf-8' },
-    });
+    hostedControlPlaneWorkspaceId = configuredWorkspaceId;
   }
 
-  // (2) Extensionless → SPA shell. Client router (TSR) owns the route,
-  //     including its own not-found component, so this is always 200.
-  const indexPath = join(SPA_DIST_ROOT, 'index.html');
-  if (existsSync(indexPath)) return serveIndexHtmlWithWorkspace(indexPath, c.req.raw);
+  const routes = new Hono();
+  // Final fallback — registered last in `host-handler.ts`, so `/api/*`,
+  // `/internal/docs/*`, `/wiki`, `/drizzle-studio` and the cross-app proxies
+  // have all already terminated before a request reaches here.
+  routes.get('*', async (c) => {
+    const pathname = decodeURI(new URL(c.req.url).pathname);
+    const rel = pathname.replace(/^\/+/, '');
 
-  // No bundle. If the last build FAILED, say that — and do NOT prescribe the
-  // build, because that is the command that failed (EI-10539). Otherwise (never
-  // built) the build advice is right and stands.
-  return new Response(describeMissingBundle(SPA_DIST_ROOT), {
-    status: 503,
-    headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    // (1) Extension'd path → static asset from dist/. Miss = real 404.
+    if (rel && extname(rel)) {
+      const abs = safeDistPath(rel);
+      if (abs && existsSync(abs) && statSync(abs).isFile()) {
+        return serveFile(
+          abs,
+          200,
+          pathname.startsWith(IMMUTABLE_ASSET_PREFIX) ? IMMUTABLE_CACHE_CONTROL : undefined,
+        );
+      }
+      return new Response('Not found', {
+        status: 404,
+        headers: { 'content-type': 'text/plain; charset=utf-8' },
+      });
+    }
+
+    // (2) Extensionless → SPA shell. Client router (TSR) owns the route,
+    //     including its own not-found component, so this is always 200.
+    const indexPath = join(SPA_DIST_ROOT, 'index.html');
+    if (existsSync(indexPath)) {
+      return serveIndexHtml(indexPath, c.req.raw, hostedControlPlaneWorkspaceId);
+    }
+
+    // No bundle. If the last build FAILED, say that — and do NOT prescribe the
+    // build, because that is the command that failed (EI-10539). Otherwise
+    // (never built) the build advice is right and stands.
+    return new Response(describeMissingBundle(SPA_DIST_ROOT), {
+      status: 503,
+      headers: { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' },
+    });
   });
-});
+  return routes;
+}
+
+/** Local/desktop SPA behavior retained as the default profile. */
+export const spaRoutes = createSpaRoutes();

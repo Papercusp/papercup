@@ -7,7 +7,7 @@ import {
   type HostedRuntimeDependencies,
 } from "@papercusp/operator-core/lib/endpoint-route/hosted-runtime";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
-import { spaRoutes } from "./host-spa";
+import { createSpaRoutes } from "./host-spa";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
 export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
@@ -25,7 +25,7 @@ export interface HostedHandler {
 
 export function createHostedHandler(
   plane: AssembledHostedControlPlane,
-  spa: Hono = spaRoutes,
+  spa: Hono,
 ): HostedHandler {
   const app = new Hono();
 
@@ -56,9 +56,11 @@ export async function createHostedHandlerFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
   dependencies: HostedRuntimeDependencies = {},
 ): Promise<HostedHandler> {
-  const plane = await createHostedRuntime(
-    readHostedRuntimeConfiguration(env),
-    dependencies,
-  );
-  return createHostedHandler(plane);
+  const configuration = readHostedRuntimeConfiguration(env);
+  const plane = await createHostedRuntime(configuration, dependencies);
+  const spa = createSpaRoutes({
+    kind: "hosted",
+    controlPlaneWorkspaceId: configuration.controlPlaneWorkspaceId,
+  });
+  return createHostedHandler(plane, spa);
 }
