@@ -22,6 +22,7 @@ import {
   fallbackTranscriptFresh,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
+  resolveCodexRolloutPathForRef,
   resolveSessionRef,
   resolveSessionRefReconciled,
   tokensFromFileSize,
@@ -528,5 +529,162 @@ describe('parseLaunchCompactionLimitArgv (psu --compaction-limit off the recorde
 
   it('ignores non-string argv entries (launch_argv is JSON — it can hold anything)', () => {
     expect(parseLaunchCompactionLimitArgv([1, null, { a: 1 }, '--compaction-limit=90000'])).toBe(90_000);
+  });
+});
+
+/**
+ * WI-42507 — the adv ROW and the codex HOME its native session writes into can come
+ * apart, so a home-keyed read serves a stranger's transcript. The repair follows the
+ * ref's own session id into a sibling home, but only ever ONTO A FRESHER FILE.
+ *
+ * The negative cases below are the point of this block: each is a way the repair could
+ * have reintroduced WI-38090 (pinning a live session to a dead predecessor's frozen
+ * rollout) by the other door.
+ */
+describe('resolveCodexRolloutPathForRef (WI-42507 — row/home identity mismatch)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'codex-home-mismatch-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  const SID = '01a04287-e5a2-4c1e-9f30-2b7d5a6c8e11';
+  const OTHER_SID = 'ff9c1234-aaaa-4bbb-8ccc-0123456789ab';
+
+  const aged = (p: string, ageMs: number): string => {
+    writeFileSync(p, '{}\n');
+    const when = new Date(Date.now() - ageMs);
+    utimesSync(p, when, when);
+    return p;
+  };
+
+  /** The real filename shape the repair parses, so codexRolloutSessionId() sees `sid`. */
+  const namedRollout = (sid: string, ageMs: number): string =>
+    aged(join(dir, `rollout-2026-08-27T09-00-00-${sid}.jsonl`), ageMs);
+
+  /** A sibling-home hit. Its name is never parsed — findCodexRolloutByUuid vouches for it. */
+  const siblingRollout = (label: string, ageMs: number): string =>
+    aged(join(dir, `sibling-${label}.jsonl`), ageMs);
+
+  const ref = { agent: 'codex', sessionId: SID, sessionKey: 19845 };
+
+  it('keeps the keyed home and never searches siblings when it already holds the ref session', async () => {
+    const keyed = namedRollout(SID, 1_000);
+    const siblings = vi.fn(async () => [19993]);
+    const byUuid = vi.fn(async () => siblingRollout('unused', 0));
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => keyed,
+        codexSiblingSessionKeys: siblings,
+        findCodexRolloutByUuid: byUuid,
+      }),
+    ).resolves.toBe(keyed);
+    // The healthy majority must pay NO extra I/O — this is what keeps the repair off
+    // the watchdog's hot path.
+    expect(siblings).not.toHaveBeenCalled();
+    expect(byUuid).not.toHaveBeenCalled();
+  });
+
+  it('follows the ref session into a sibling home when the keyed home holds only a frozen stranger', async () => {
+    // The measured pathology: row 19845's home held nothing but 03:14–03:39 rollouts
+    // belonging to a different session, while SID was actively writing under 19993.
+    const frozenStranger = namedRollout(OTHER_SID, 99 * 60_000);
+    const liveElsewhere = siblingRollout('live', 5_000);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => frozenStranger,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => liveElsewhere,
+      }),
+    ).resolves.toBe(liveElsewhere);
+  });
+
+  it('REFUSES to move onto the ref session when it is OLDER than the keyed home (WI-38090 guard)', async () => {
+    // A ref naming a DEAD predecessor whose rollout happens to sit in a sibling home.
+    // Without the strictly-fresher rule the repair would drag the reading BACKWARDS
+    // onto that frozen file — exactly the pathology it exists to remove.
+    const liveKeyed = namedRollout(OTHER_SID, 2_000);
+    const deadElsewhere = siblingRollout('dead', 90 * 60_000);
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => liveKeyed,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => deadElsewhere,
+      }),
+    ).resolves.toBe(liveKeyed);
+  });
+
+  it('keeps the keyed home on an mtime TIE (the strict boundary of "strictly fresher")', async () => {
+    // Third point of the falsifiability triple. With the two tests above this pins the
+    // comparison exactly, so no mutation of that one line survives: `>` → `>=` breaks
+    // THIS test, `> ` → `true` breaks the WI-38090 guard, `> ` → `false` breaks the
+    // follows-into-sibling case. A tie means neither file is newer, so there is no
+    // evidence to move on and the incumbent keeps it.
+    const keyed = namedRollout(OTHER_SID, 5_000);
+    const tied = siblingRollout('tied', 5_000);
+    const sameMtime = () => 1_700_000_000_000;
+
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => keyed,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => tied,
+        statMtimeMs: sameMtime,
+      }),
+    ).resolves.toBe(keyed);
+  });
+
+  it('adopts a sibling rollout when the keyed home has NOTHING — but only a fresh one', async () => {
+    const fresh = siblingRollout('fresh', 5_000);
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => null,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => fresh,
+      }),
+    ).resolves.toBe(fresh);
+  });
+
+  it('degrades to null rather than adopt a STALE sibling when the keyed home has nothing', async () => {
+    // Null is not a failure here: it degrades to the watchdog's dark-telemetry grace,
+    // whereas a frozen number is the input that drives respawn-streak suppression.
+    const stale = siblingRollout('stale', 90 * 60_000);
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => null,
+        codexSiblingSessionKeys: async () => [19993],
+        findCodexRolloutByUuid: async () => stale,
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('returns the keyed answer unchanged when no sibling holds the ref session', async () => {
+    const keyed = namedRollout(OTHER_SID, 1_000);
+    await expect(
+      resolveCodexRolloutPathForRef(ref, 'su-e602814a', {
+        findCodexRollout: async () => keyed,
+        codexSiblingSessionKeys: async () => [19993, 20001],
+        findCodexRolloutByUuid: async () => null,
+      }),
+    ).resolves.toBe(keyed);
+  });
+
+  it('cannot check without a ref session id or an owner, so it leaves the keyed answer alone', async () => {
+    const keyed = namedRollout(OTHER_SID, 1_000);
+    const siblings = vi.fn(async () => [19993]);
+    const deps = { findCodexRollout: async () => keyed, codexSiblingSessionKeys: siblings };
+
+    // A codex row with no native session_id is the DOCUMENTED normal state, not an anomaly.
+    await expect(
+      resolveCodexRolloutPathForRef({ agent: 'codex', sessionId: null, sessionKey: 19845 }, 'su-x', deps),
+    ).resolves.toBe(keyed);
+    await expect(resolveCodexRolloutPathForRef(ref, null, deps)).resolves.toBe(keyed);
+    expect(siblings).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a ref with no session key at all', async () => {
+    await expect(
+      resolveCodexRolloutPathForRef({ agent: 'codex', sessionId: SID, sessionKey: null }, 'su-x', {}),
+    ).resolves.toBeNull();
   });
 });

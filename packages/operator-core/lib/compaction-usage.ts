@@ -240,8 +240,18 @@ export async function resolveCodexRolloutPathForRef(
     if (!candidate) continue;
     const candidateMtime = statMtime(candidate);
     if (candidateMtime == null) continue;
+    if (keyedMtime == null) {
+      // Nothing to compare against: the keyed home has no rollout at all. Adopting a
+      // FROZEN sibling here would be worse than the null it replaces — null degrades to
+      // the watchdog's dark-telemetry grace, whereas a frozen number is the very input
+      // that drives the respawn-streak suppression. So apply the same freshness floor
+      // P-016 already uses for exactly this "is it live or is it a dead predecessor"
+      // call ({@link fallbackTranscriptFresh}).
+      if (Date.now() - candidateMtime <= FALLBACK_TRANSCRIPT_FRESH_MS) return candidate;
+      continue;
+    }
     // (b): strictly fresher only. A tie or an older file keeps the keyed answer.
-    if (keyedMtime == null || candidateMtime > keyedMtime) return candidate;
+    if (candidateMtime > keyedMtime) return candidate;
   }
   return keyed;
 }
