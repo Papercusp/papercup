@@ -248,6 +248,21 @@ describe('plans:audit phase:activation', () => {
     expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '- **P-001** `todo` Final shipment verification waits for green main and :3070.',
+    '- **P-001** `todo` Wait for :3070 before closing the deployed-only restart continuity check because staging cannot exercise the deployed-host supervisor restart.',
+  ])('records activation for a valid final or reasoned deployed-only item: %s', async (item) => {
+    mockGetPlanRow.mockResolvedValue({
+      content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n${item}\n`,
+    } as never);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({ ok: true, phase: 'activation' });
+    expect(mockResolveSourceRefs).toHaveBeenCalled();
+    expect(mockRecordActivation).toHaveBeenCalled();
+  });
+
   it('admits omitted or empty coverage arrays at the schema for carry-forward re-audits', () => {
     expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
     expect(tool.args.safeParse({
