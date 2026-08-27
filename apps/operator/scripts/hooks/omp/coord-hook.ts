@@ -2132,6 +2132,74 @@ function workspaceRoot(): string {
   }
 }
 
+/** A `.git` entry marks a repository root only when it is valid: a file
+ * (submodule/link-worktree gitlink) or a directory containing HEAD (an
+ * ordinary clone). Mirrors the cc hook's `_valid_git_entry` predicate so a
+ * stray empty `.git` directory cannot silently change lock scope. */
+function validGitEntry(repoRoot: string): boolean {
+  try {
+    const entry = join(repoRoot, '.git');
+    const stats = statSync(entry);
+    return stats.isFile() || (stats.isDirectory() && existsSync(join(entry, 'HEAD')));
+  } catch {
+    return false;
+  }
+}
+
+function pathIsWithin(path: string, parent: string): boolean {
+  return path === parent || path.startsWith(`${parent}/`);
+}
+
+/** Find the direct-child workspace repository containing a nested repo root.
+ * The nearest root may be a submodule; worktree policy belongs to the
+ * enclosing direct-child checkout. */
+function workspaceRepoRoot(repoRoot: string, ws: string): string | null {
+  let candidate: string;
+  try {
+    candidate = realpathSync(repoRoot);
+  } catch {
+    candidate = repoRoot;
+  }
+  if (candidate === ws || !pathIsWithin(candidate, ws)) return null;
+  while (dirname(candidate) !== ws) {
+    const parent = dirname(candidate);
+    if (parent === candidate || !pathIsWithin(parent, ws)) return null;
+    candidate = parent;
+  }
+  return validGitEntry(candidate) ? candidate : null;
+}
+
+function isIsolationWorktree(repoRoot: string, canonicalTree: string): boolean {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(repoRoot);
+  } catch {
+    realRoot = repoRoot;
+  }
+  return pathIsWithin(realRoot, join(canonicalTree, '.papercusp', 'worktrees'));
+}
+
+/** Resolve the main checkout for a linked worktree. Returns null for an
+ * ordinary repo, a submodule gitlink, or an unreadable/malformed entry. */
+function resolveWorktreeMainRoot(repoRoot: string): string | null {
+  try {
+    const gitEntry = join(repoRoot, '.git');
+    if (!statSync(gitEntry).isFile()) return null;
+    const match = /^gitdir:\s*(.+)$/.exec(readFileSync(gitEntry, 'utf8').trim());
+    if (!match) return null;
+    let gitDir = match[1].trim();
+    if (!gitDir.startsWith('/')) gitDir = join(repoRoot, gitDir);
+    gitDir = realpathSync(gitDir);
+    const commonDir = join(gitDir, 'commondir');
+    if (!existsSync(commonDir)) return null;
+    let common = readFileSync(commonDir, 'utf8').trim();
+    if (!common.startsWith('/')) common = join(gitDir, common);
+    return dirname(realpathSync(common));
+  } catch {
+    return null;
+  }
+}
+
 /** Walk up from a path (or its nearest existing parent) to the dir
  *  holding a `.git` entry — file (worktree) or dir. Mirrors the cc
  *  hook's find_repo_root so OMP and cc key locks identically across the
@@ -2147,7 +2215,7 @@ function findRepoRoot(absPath: string): string | null {
   }
   if (!isDir) d = dirname(d);
   while (d && d !== dirname(d)) {
-    if (existsSync(join(d, '.git'))) return d;
+    if (validGitEntry(d)) return d;
     d = dirname(d);
   }
   return null;

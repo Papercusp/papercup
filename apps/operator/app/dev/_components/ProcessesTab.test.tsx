@@ -106,7 +106,10 @@ describe('fmtAge', () => {
 const PROC: Process = {
   pid: 4242,
   kind: 'claude',
-  cmdline: 'claude --foo',
+  executable: 'claude',
+  role: 'worker',
+  build: '0.1.0+abc123',
+  started_at: '2026-08-27T04:00:00.000Z',
   cwd: '/tmp/x',
   started_seconds_ago: 12,
   harness_slug: 'my-harness',
@@ -150,7 +153,14 @@ describe('<KillModal /> confirm gate', () => {
   it('surfaces the process kind and pid in the modal header', () => {
     renderModal();
     expect(screen.getByText('Kill process 4242?')).toBeTruthy();
-    expect(screen.getByText('claude')).toBeTruthy();
+    expect(screen.getByText('kind').parentElement?.textContent).toContain('claude');
+  });
+
+  it('shows only the allowlisted process metadata, never an argv/cmdline', () => {
+    renderModal();
+    expect(screen.getByText('worker')).toBeTruthy();
+    expect(screen.getByText('0.1.0+abc123')).toBeTruthy();
+    expect(screen.queryByText(/cmdline|--foo/i)).toBeNull();
   });
 
   it('clicking cancel clears the modal (setState null)', () => {
