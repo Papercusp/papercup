@@ -268,6 +268,73 @@ describe('routines:list', () => {
       candidateAgeAtObservationMs: 30 * 60_000,
       commitsBehindTip: 4,
     });
+    expect(result.failingTestsAttestation).toEqual({
+      candidate: 'abc123',
+      inFlightCandidate: null,
+      staleAgainstInFlight: null,
+      warning: null,
+    });
+  });
+
+  it('marks cached failingTests as belonging to a prior verdict when another candidate is in flight', () => {
+    const now = Date.parse('2026-08-12T17:30:00.000Z');
+    const result = attestGateHealth(
+      {
+        observedAt: now - 60_000,
+        observedCandidate: 'oldcandidate1234567890',
+        failingTests: ['lint:tsc'],
+        inFlightCandidate: {
+          candidate: 'newcandidateabcdef1234',
+          candidateSource: 'tip',
+          base: 'basecandidate1234',
+          selectedAtMs: now - 30_000,
+          quietCutApplied: false,
+          tipAtSelection: 'newcandidateabcdef1234',
+          refireDepth: 0,
+          pid: 1234,
+          observedAtMs: now - 5_000,
+        },
+      },
+      now,
+    ) as Record<string, unknown>;
+
+    expect(result.failingTests).toEqual(['lint:tsc']);
+    expect(result.failingTestsAttestation).toEqual({
+      candidate: 'oldcandidate1234567890',
+      inFlightCandidate: 'newcandidateabcdef1234',
+      staleAgainstInFlight: true,
+      warning:
+        'These failingTests describe terminal verdict oldcandidate1234567890, not the active run newcandidateabcdef1234; do not triage them as current-run failures.',
+    });
+  });
+
+  it('attests failingTests as current when short and full candidate shas identify the same run', () => {
+    const now = Date.parse('2026-08-12T17:30:00.000Z');
+    const result = attestGateHealth(
+      {
+        observedCandidate: 'abc123def456',
+        failingTests: ['lib/red.test.ts'],
+        inFlightCandidate: {
+          candidate: 'abc123def4567890abcdef',
+          candidateSource: 'tip',
+          base: null,
+          selectedAtMs: now - 30_000,
+          quietCutApplied: false,
+          tipAtSelection: null,
+          refireDepth: 0,
+          pid: 1234,
+          observedAtMs: now - 5_000,
+        },
+      },
+      now,
+    ) as Record<string, unknown>;
+
+    expect(result.failingTestsAttestation).toEqual({
+      candidate: 'abc123def456',
+      inFlightCandidate: 'abc123def4567890abcdef',
+      staleAgainstInFlight: false,
+      warning: null,
+    });
   });
 
   it('does not invent provenance for a legacy or malformed gate-health blob', () => {
@@ -276,6 +343,12 @@ describe('routines:list', () => {
       Date.parse('2026-08-12T17:30:00.000Z'),
     ) as Record<string, unknown>;
     expect(result.failingTests).toEqual(['a.test.ts']);
+    expect(result.failingTestsAttestation).toEqual({
+      candidate: null,
+      inFlightCandidate: null,
+      staleAgainstInFlight: null,
+      warning: null,
+    });
     expect(result.readAttestation).toEqual({
       snapshotObservedAt: null,
       snapshotAgeMs: null,

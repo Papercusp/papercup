@@ -16,6 +16,7 @@ import { formatIdleAge } from '../../format/relative-time';
 // validator's pg/system-action-registry dependencies along.
 import { ROUTINE_VALIDATION_METADATA_KEY } from '../../startup/routine-validation-episode';
 import { WATCHDOG_HEALTH_METADATA_KEY } from '../../release/watchdog-health';
+import { parseInFlightCandidate } from '../../release/in-flight-candidate';
 
 /**
  * The DELIBERATE-PAUSE record, read back out of `routines.metadata.pause`.
@@ -96,6 +97,12 @@ function isoAt(value: number | null): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function sameCandidate(a: string, b: string): boolean {
+  const left = a.trim().toLowerCase();
+  const right = b.trim().toLowerCase();
+  return left.length > 0 && right.length > 0 && (left === right || left.startsWith(right) || right.startsWith(left));
+}
+
 /**
  * Add read-time provenance to the cached gate verdict without pretending that the
  * current checkout is the candidate the gate judged. The writer already persists
@@ -120,17 +127,42 @@ export function attestGateHealth(value: unknown, nowMs: number = Date.now()): un
     typeof gateHealth.commitsBehindTip === 'number' && Number.isFinite(gateHealth.commitsBehindTip)
       ? gateHealth.commitsBehindTip
       : null;
+  const observedCandidate =
+    typeof gateHealth.observedCandidate === 'string' && gateHealth.observedCandidate.trim()
+      ? gateHealth.observedCandidate
+      : null;
+  const inFlightCandidate = parseInFlightCandidate(gateHealth.inFlightCandidate, nowMs)?.candidate ?? null;
+  const hasFailingTests =
+    Array.isArray(gateHealth.failingTests) && gateHealth.failingTests.some((test) => typeof test === 'string' && test.length > 0);
+  const failingTestsStaleAgainstInFlight = !hasFailingTests
+    ? false
+    : observedCandidate && inFlightCandidate
+      ? !sameCandidate(observedCandidate, inFlightCandidate)
+      : null;
 
   return {
     ...gateHealth,
+    // EI-21546055972045422: `failingTests` belongs to the last TERMINAL verdict, while
+    // `inFlightCandidate` names the run executing RIGHT NOW. Returning the array without this
+    // candidate-bound sibling made a prior verdict read as the active run's failures whenever
+    // those candidates differed. Keep the raw array for compatibility, but make the mismatch
+    // explicit and adjacent so a reader never has to infer it from two unrelated fields.
+    failingTestsAttestation: {
+      candidate: observedCandidate,
+      inFlightCandidate,
+      staleAgainstInFlight: failingTestsStaleAgainstInFlight,
+      warning:
+        failingTestsStaleAgainstInFlight === true
+          ? `These failingTests describe terminal verdict ${observedCandidate}, not the active run ${inFlightCandidate}; do not triage them as current-run failures.`
+          : null,
+    },
     readAttestation: {
       // `snapshotAge` is deliberately alongside the cached failing-test list, so a
       // reader cannot mistake an old red for a current one without seeing its age.
       snapshotObservedAt: isoAt(observedAtMs),
       snapshotAgeMs,
       snapshotAge: snapshotAgeMs === null ? null : `${formatIdleAge(snapshotAgeMs / 1000)} ago`,
-      observedCandidate:
-        typeof gateHealth.observedCandidate === 'string' ? gateHealth.observedCandidate : null,
+      observedCandidate,
       candidateCommittedAt: isoAt(candidateCommittedAtMs),
       candidateAgeAtObservationMs,
       commitsBehindTip,
@@ -203,6 +235,7 @@ export default defineTool({
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
       '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
+      '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
       '⚠ `health.validation[\'unregistered-system-action\']` means that routine is SILENTLY DEAD: its `system:` handler is registered nowhere, so it fires on cadence and does nothing. active/nextFireAt still read healthy — this key is the only tell. Fix is a missing side-effect import in register-system-actions.ts.',
     ].join(' '),
