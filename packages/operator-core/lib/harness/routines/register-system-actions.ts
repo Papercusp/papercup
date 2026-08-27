@@ -488,6 +488,7 @@ import './sql-read-census-action';
 import './work-item-admission-promoter-action';
 import './work-item-admission-bulk-dedup-action';
 import './work-item-admission-delta-sweep-action';
+import './work-item-admission-daily-digest-action';
 import './work-item-durable-park-audit-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence

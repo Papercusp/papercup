@@ -323,6 +323,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs one strong-model call over the hourly admitted-item delta to detect shared-root-cause bursts',
   },
+  'system:work-item-admission-daily-digest': {
+    spend: 'llm',
+    why: 'Runs one guarded full-corpus strong-model cluster digest after a completed bulk stage',
+  },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
