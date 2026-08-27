@@ -1,9 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isHostedPrincipal } from './hosted-principal';
-import type {
-  HostedMembershipAuthority,
-  HostedMembershipAuthorityReader,
-} from './hosted-membership-authority';
+import type { HostedMembershipAuthority, HostedMembershipAuthorityReader } from './hosted-membership-authority';
 import { hostedPermissionsForMembership } from './hosted-role-permissions';
 import type { HostedSession } from './hosted-session';
 import {
@@ -49,9 +46,7 @@ function session(overrides: Partial<HostedSession> = {}): HostedSession {
   };
 }
 
-function membership(
-  overrides: Partial<HostedMembershipAuthority> = {},
-): HostedMembershipAuthority {
+function membership(overrides: Partial<HostedMembershipAuthority> = {}): HostedMembershipAuthority {
   const role = overrides.role ?? 'member';
   return {
     organizationId: TENANT_A.organizationId,
@@ -79,13 +74,15 @@ function harness(options: {
   authorityThrows?: boolean;
   workspaceLookupThrows?: boolean;
   observedWorkspaceLookups?: Array<{
+    userId: string;
+    sessionId: string;
+    sessionVersion: number;
     organizationId: string;
     customerWorkspaceId: string;
     controlPlaneWorkspaceId: string;
   }>;
 }): Harness {
-  const cookieSessionId =
-    options.cookieSessionId === undefined ? SESSION_ID : options.cookieSessionId;
+  const cookieSessionId = options.cookieSessionId === undefined ? SESSION_ID : options.cookieSessionId;
   const stored = options.session === undefined ? session() : options.session;
   const authority = options.membership === undefined ? membership() : options.membership;
   const owned = options.ownedWorkspaces ?? new Set([TENANT_A.workspaceId]);
@@ -95,10 +92,7 @@ function harness(options: {
       if (options.authorityThrows) throw new Error('pg down');
       if (!authority) return null;
       // Model the real adapter: the row is keyed by (user, organization).
-      if (
-        authority.userId !== input.userId ||
-        authority.organizationId !== input.organizationId
-      ) {
+      if (authority.userId !== input.userId || authority.organizationId !== input.organizationId) {
         return null;
       }
       return authority;
@@ -132,9 +126,9 @@ function harness(options: {
 
 describe('hosted principal resolver', () => {
   it('requires a control-plane workspace id', () => {
-    expect(() =>
-      createHostedPrincipalResolver({ ...harness({}).deps, controlPlaneWorkspaceId: '  ' }),
-    ).toThrow(/control_plane_workspace_id/);
+    expect(() => createHostedPrincipalResolver({ ...harness({}).deps, controlPlaneWorkspaceId: '  ' })).toThrow(
+      /control_plane_workspace_id/,
+    );
   });
 
   it('resolves a verified hosted principal from cookie, session, and live membership', async () => {
@@ -151,10 +145,7 @@ describe('hosted principal resolver', () => {
     expect(result.principal.activeOrganizationId).toBe(TENANT_A.organizationId);
     expect(result.principal.sessionId).toBe(SESSION_ID);
     expect(result.principal.sessionVersion).toBe(AUTHORITY_VERSION);
-    expect([...result.principal.permissions].sort()).toEqual([
-      'workspace:operate',
-      'workspace:view',
-    ]);
+    expect([...result.principal.permissions].sort()).toEqual(['workspace:operate', 'workspace:view']);
   });
 
   it('scopes the principal to the control plane, never to the customer workspace', async () => {
@@ -174,8 +165,21 @@ describe('hosted principal resolver', () => {
 
   it('derives permissions live from the current role, per role', async () => {
     for (const [role, expected] of [
-      ['owner', ['billing:manage', 'cloud-connection:manage', 'members:manage', 'workspace:destroy', 'workspace:operate', 'workspace:view']],
-      ['admin', ['cloud-connection:manage', 'members:manage', 'workspace:destroy', 'workspace:operate', 'workspace:view']],
+      [
+        'owner',
+        [
+          'billing:manage',
+          'cloud-connection:manage',
+          'members:manage',
+          'workspace:destroy',
+          'workspace:operate',
+          'workspace:view',
+        ],
+      ],
+      [
+        'admin',
+        ['cloud-connection:manage', 'members:manage', 'workspace:destroy', 'workspace:operate', 'workspace:view'],
+      ],
       ['member', ['workspace:operate', 'workspace:view']],
       ['billing', ['billing:manage', 'workspace:view']],
     ] as const) {
@@ -306,6 +310,9 @@ describe('hosted principal resolver', () => {
 
     it('scopes the workspace ownership check to the control plane workspace', async () => {
       const observedWorkspaceLookups: Array<{
+        userId: string;
+        sessionId: string;
+        sessionVersion: number;
         organizationId: string;
         customerWorkspaceId: string;
         controlPlaneWorkspaceId: string;
@@ -318,6 +325,9 @@ describe('hosted principal resolver', () => {
 
       expect(observedWorkspaceLookups).toEqual([
         {
+          userId: TENANT_A.userId,
+          sessionId: SESSION_ID,
+          sessionVersion: AUTHORITY_VERSION,
           organizationId: TENANT_A.organizationId,
           customerWorkspaceId: TENANT_A.workspaceId,
           controlPlaneWorkspaceId: CONTROL_PLANE_WORKSPACE,
@@ -327,6 +337,9 @@ describe('hosted principal resolver', () => {
 
     it('does not consult the workspace directory when no workspace is selected', async () => {
       const observedWorkspaceLookups: Array<{
+        userId: string;
+        sessionId: string;
+        sessionVersion: number;
         organizationId: string;
         customerWorkspaceId: string;
         controlPlaneWorkspaceId: string;

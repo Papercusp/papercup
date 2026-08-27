@@ -365,7 +365,7 @@ export default defineTool({
         .array(memberSpecSchema)
         .optional()
         .describe(
-          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA selector, never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
+          'DECLARATIVE per-member config for a FRESH multi-launch, index-aligned to agent number (entry 0 → agent 1, …). Each set field OVERRIDES the flat top-level arg (model/effort/account/model/context/limit/role/brief/…) for THAT agent only; an unset field falls through to the top-level arg, then the system default. `members[i].role` is a REGISTERED PERSONA ID resolved against the target harness (valid ids are harness-specific), never a lane/job label — put lane direction in `members[i].brief` or the shared `label`; invalid personas fail atomically before any terminal opens. Fewer entries than `count` ⇒ the rest use the flat args, never an error. `count` defaults to `members.length` when omitted. Not for resume/fork (a single session). `carry`/`claimKinds` need a self-pulling fleet — use fleet:launch-on-plan for those.',
         ),
       cwd: z
         .string()

@@ -69,6 +69,15 @@ const ACCEPTANCE_GRADER_FALLBACK = {
   account: 'default' as const,
 };
 
+/**
+ * Manual citation checks must use the same subject tree as the frozen audit.
+ * A superproject records a nested submodule as a gitlink, not as a tree of
+ * blobs, so asking the superproject to resolve a file below that gitlink is an
+ * expected miss rather than evidence that the audit fabricated the path.
+ */
+const ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE =
+  'For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader\'s checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.';
+
 export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted';
 
 export interface AcceptanceGraderTerminalFailure {
@@ -489,7 +498,7 @@ export function buildAssignedAcceptanceGraderBrief(
     `evidence, then emit ONE complete scorecard: ` +
     `scorecards:emit { rubricRef:${JSON.stringify(rubricId)}${targetHive}, ratings:{ <every criterion key> } } ` +
     `with concrete evidence per rating. The targetHive makes deterministic checks run against the subject ` +
-    `tree rather than the grader's checkout. The verdict is YOURS — consult if you need to, but the grade ` +
+    `tree rather than the grader's checkout. ${ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE} The verdict is YOURS — consult if you need to, but the grade ` +
     `is not delegable.`
   );
 }
@@ -622,6 +631,7 @@ export async function launchAcceptanceGrader(
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
+    ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE,
     `Recorded rerun command (for provenance; your judge policy forbids executing Bash): ${rerun}`,
     `FROZEN_ACCEPTANCE_CONTEXT=${snapshot}`,
   ].join('\n\n');

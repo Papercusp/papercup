@@ -33,3 +33,20 @@ fn help_is_side_effect_free_without_a_controlling_tty() {
 fn workbench_help_is_side_effect_free_without_a_controlling_tty() {
     assert_help_is_side_effect_free(&["workbench", "--help"]);
 }
+
+#[test]
+fn version_is_side_effect_free_without_a_controlling_tty() {
+    let output = Command::new(env!("CARGO_BIN_EXE_pui"))
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run pui version command");
+
+    assert!(output.status.success(), "pui --version failed: {output:?}");
+    assert!(output.stderr.is_empty(), "pui --version wrote to stderr");
+    assert!(
+        String::from_utf8_lossy(&output.stdout).starts_with("pui "),
+        "version output was unexpected: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}

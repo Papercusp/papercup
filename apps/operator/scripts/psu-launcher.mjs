@@ -3572,8 +3572,9 @@ export function applyOmpToolsAllowlist(mcpJsonText, toolNames) {
  * The per-session config copy must carry papercusp-su, and may carry the public
  * context7 server. Copying every server from the user's global mcp.json also
  * pulls heavyweight/browser and credentialed plugin servers into every worker,
- * even though the trimmed Papercusp tool spine cannot use them. Full-mode and
- * role launches deliberately skip this filter by not supplying toolsAllowlist.
+ * even though the trimmed Papercusp tool spine cannot use them. ROLE launches
+ * deliberately skip this filter by not supplying toolsAllowlist; there is no
+ * context-size opt-out ('full' normalizes to 'trimmed' at parse).
  * Pure string→string; returns the input unchanged on any parse failure.
  */
 function filterTrimmedOmpMcpServers(mcpJsonText) {
@@ -5491,9 +5492,10 @@ export const SU_CONTEXT_DEFAULT = "trimmed";
  *  Re-derived 2026-07-02 from live turn-1 boots minus the measured persona file:
  *  60.1k sonnet-fleet − 15.6k persona ≈ 44.5k; 76.2k power − ~28k ≈ 48k; 66.1k
  *  fable-fleet − 16k ≈ 50k → 50k (top of the measured band, guard stays
- *  conservative). Assumes ToolSearch deferral is ON (the launch tail forces
- *  ENABLE_TOOL_SEARCH=true for non-full launches — without it a gateway-routed
- *  member boots ~46k heavier, P-031 gap 3). */
+ *  conservative). Assumes ToolSearch deferral is ON (the launch tail sets
+ *  ENABLE_TOOL_SEARCH=true on the claude paths — see the writes below; neither
+ *  branches on contextSize, so there is no full/non-full distinction here.
+ *  Without the deferral a gateway-routed member boots ~46k heavier, P-031 gap 3). */
 export const SU_BASELINE_NON_PERSONA_TOKENS = RUNTIME_OVERHEAD_TOKENS;
 
 /**
@@ -5833,16 +5835,25 @@ export function preflightWindowGuard({
 }
 
 /**
- * WI-39948: Codex's code-mode bridge serializes the advertised tool surface into
- * its per-call IPC request. Advertising Papercusp's whole catalog produced a
- * ~128 MiB frame, above the bridge's hard 64 MiB limit, so the session booted but
- * EVERY tool call was rejected before execution. `--force` cannot make that
- * transport valid. Retiring the whole-catalog mode removed the ordinary route into
- * this state — the guard remains as a backstop for any caller that reaches here with
- * a non-trimmed size, and still points at the growable trimmed seed
- * (tools:find/tools:invoke preserve full reachability).
+ * Validate the launch's context size and return the EFFECTIVE one: 'trimmed' for
+ * both '' and the retired 'full' alias, and a throw for anything unrecognized. That
+ * is the whole behaviour — it does not inspect the agent, and it has no Codex-specific
+ * branch.
+ *
+ * HISTORY (why the whole-catalog mode is gone, not a live guard): WI-39948 — Codex's
+ * code-mode bridge serializes the advertised tool surface into its per-call IPC
+ * request, so advertising the whole catalog produced a ~128 MiB frame above the
+ * bridge's hard 64 MiB limit; the session booted and then rejected EVERY tool call
+ * before execution, and `--force` could not make that transport valid. Retiring the
+ * mode removed that state at the source: 'full' now normalizes to 'trimmed' here, so
+ * no caller can reach the oversized frame. The growable trimmed seed preserves full
+ * reachability via tools:find/tools:invoke.
+ *
+ * This function was named assertCodexToolTransport and took an `agent` it never read.
+ * Do not reintroduce that: a Codex-only backstop cannot fire, because 'full' is the
+ * only recognized non-trimmed value and it normalizes rather than throwing.
  */
-export function assertCodexToolTransport({ agent = "claude", contextSize }) {
+export function assertLaunchContextSize({ contextSize }) {
   const normalized = normalizeSuContextSize(contextSize);
   if (!normalized.ok) throw new Error(`psu: ${normalized.error}`);
   return normalized.contextSize;
@@ -5857,7 +5868,7 @@ export function runLaunchPreflight({
   budget = null,
   force,
 }) {
-  const effectiveContextSize = assertCodexToolTransport({ agent, contextSize });
+  const effectiveContextSize = assertLaunchContextSize({ contextSize });
   const personaBytes = assertLaunchPersona(promptFile);
   const guard = preflightWindowGuard({
     personaBytes,

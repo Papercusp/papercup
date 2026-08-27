@@ -15,10 +15,7 @@
  * no path by which a local principal becomes a hosted one — `isHostedPrincipal`
  * would reject it anyway, but the resolver never constructs one.
  */
-import {
-  createHostedPrincipal,
-  type HostedPrincipal,
-} from './hosted-principal';
+import { createHostedPrincipal, type HostedPrincipal } from './hosted-principal';
 import type { HostedMembershipAuthority, HostedMembershipAuthorityReader } from './hosted-membership-authority';
 import type { HostedSession, HostedSessionCookieCodec } from './hosted-session';
 import type { HostedSessionAuthorizationState } from './hosted-authorization';
@@ -82,9 +79,7 @@ export type HostedPrincipalResolver = (headers: Headers) => Promise<HostedPrinci
  * Derived from the same row the principal was built from, so the version the
  * gate compares is the version the principal actually carries.
  */
-export function hostedSessionAuthorizationState(
-  session: HostedSession,
-): HostedSessionAuthorizationState {
+export function hostedSessionAuthorizationState(session: HostedSession): HostedSessionAuthorizationState {
   return {
     sessionId: session.id,
     sessionVersion: session.permissionVersion,
@@ -92,9 +87,7 @@ export function hostedSessionAuthorizationState(
   };
 }
 
-export function createHostedPrincipalResolver(
-  deps: HostedPrincipalResolverDependencies,
-): HostedPrincipalResolver {
+export function createHostedPrincipalResolver(deps: HostedPrincipalResolverDependencies): HostedPrincipalResolver {
   const controlPlaneWorkspaceId = deps.controlPlaneWorkspaceId.trim();
   if (controlPlaneWorkspaceId.length === 0) {
     throw new TypeError('hosted_principal_resolver_requires_a_control_plane_workspace_id');
@@ -131,10 +124,7 @@ export function createHostedPrincipalResolver(
     // The lookup is already keyed by the session's organization, so this can
     // only fire on an adapter bug — which is exactly when a tenant boundary
     // must not be taken on trust.
-    if (
-      membership.organizationId !== session.organizationId ||
-      membership.userId !== session.userId
-    ) {
+    if (membership.organizationId !== session.organizationId || membership.userId !== session.userId) {
       return { ok: false, reason: 'session_organization_mismatch', session };
     }
 
@@ -154,6 +144,9 @@ export function createHostedPrincipalResolver(
       let owned: boolean;
       try {
         owned = await deps.membershipAuthority.workspaceBelongsToOrganization({
+          userId: membership.userId,
+          sessionId: session.id,
+          sessionVersion: session.permissionVersion,
           organizationId: membership.organizationId,
           customerWorkspaceId: selectedWorkspaceId,
           controlPlaneWorkspaceId,

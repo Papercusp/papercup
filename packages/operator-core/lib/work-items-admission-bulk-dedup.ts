@@ -11,6 +11,7 @@
 import { randomUUID } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { admissionIdentity } from './harness/improvements/digest';
+import { isTransientNetworkError } from './harness/routines/hetzner-orphan-frame-reaper';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
 import {
   ADMISSION_COMPONENT_FLOOR,
@@ -37,6 +38,9 @@ export const BULK_DEDUP_ACTOR = `system:${WORK_ITEM_ADMISSION_BULK_DEDUP}`;
 export const DEFAULT_BULK_MAX_STAGES = 12;
 export const DEFAULT_BULK_PAIRS_PER_CALL = 150;
 export const DEFAULT_BULK_SHARD_CONCURRENCY = 4;
+/** Bounded retries for a single model batch. A successful earlier batch stays
+ * in memory, so only the failed batch is replayed. */
+export const DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS = [500, 1_500, 4_000] as const;
 
 export type BulkDedupScope = 'full-corpus' | 'machine-emitter-targeted';
 
@@ -80,6 +84,7 @@ export interface BulkDedupStageResult {
   modelCalls: number;
   tokensIn: number;
   tokensOut: number;
+  modelRetries: number;
   censusBefore: number;
   censusAfter: number;
   scopedPairsAfter: number;
@@ -113,6 +118,10 @@ export interface BulkDedupRunOptions {
   ownerId?: string;
   /** Dependency seam used by the real-PG recurrence guard to inject a census rise. */
   beforePostStageCensus?: (sql: OrgSql, stageIndex: number) => Promise<void>;
+  /** Injectable bounded backoff for transient model transport failures. */
+  batchRetryBackoffsMs?: readonly number[];
+  /** Injectable sleep seam for retry tests; production uses setTimeout. */
+  batchRetryDelay?: (ms: number) => Promise<void>;
   runCensus?: CensusRunner;
 }
 
@@ -344,10 +353,39 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
      WHERE id = ${runId}`.catch(() => undefined);
 }
 
+async function callBulkModelBatchWithRetry(
+  call: () => Promise<ReturnType<PromoterLlmCall> extends Promise<infer T> ? T : never>,
+  opts: { backoffsMs: readonly number[]; delay: (ms: number) => Promise<void> },
+): Promise<{ response: Awaited<ReturnType<PromoterLlmCall>>; retries: number }> {
+  let retries = 0;
+  for (;;) {
+    try {
+      return { response: await call(), retries };
+    } catch (error) {
+      if (!isTransientNetworkError(error) || retries >= opts.backoffsMs.length) throw error;
+      await opts.delay(opts.backoffsMs[retries]!);
+      retries += 1;
+    }
+  }
+}
+
 async function judgeBulkPairs(
   input: BulkInput,
-  opts: { llmCall: PromoterLlmCall; pairsPerCall: number; shardConcurrency: number; ownerId?: string },
-): Promise<{ judgements: PromoterJudgement[]; modelCalls: number; tokensIn: number; tokensOut: number }> {
+  opts: {
+    llmCall: PromoterLlmCall;
+    pairsPerCall: number;
+    shardConcurrency: number;
+    ownerId?: string;
+    batchRetryBackoffsMs: readonly number[];
+    batchRetryDelay: (ms: number) => Promise<void>;
+  },
+): Promise<{
+  judgements: PromoterJudgement[];
+  modelCalls: number;
+  modelRetries: number;
+  tokensIn: number;
+  tokensOut: number;
+}> {
   const byShard = new Map<number, PromoterPair[]>();
   for (const pair of input.pairs) {
     const shard = input.pairShard.get(pair.pairKey);
@@ -366,6 +404,7 @@ async function judgeBulkPairs(
   const judgeShard = async (shard: number, shardPairs: PromoterPair[]) => {
     const judgements: PromoterJudgement[] = [];
     let modelCalls = 0;
+    let modelRetries = 0;
     let tokensIn = 0;
     let tokensOut = 0;
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
@@ -374,14 +413,20 @@ async function judgeBulkPairs(
     for (let offset = 0; offset < shardPairs.length; offset += opts.pairsPerCall) {
       const batch = shardPairs.slice(offset, offset + opts.pairsPerCall);
       const prompt = buildBulkDedupPrompt(batch, ghostItems);
-      const response = await opts.llmCall({
-        model: LEARNING_MODEL_SPEC,
-        system: prompt.system,
-        messages: [{ role: 'user', content: prompt.user }],
-        responseFormat: 'json',
-        maxTokens: Math.min(8_000, 500 + batch.length * 180),
-        ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
-      });
+      const attempted = await callBulkModelBatchWithRetry(
+        () =>
+          opts.llmCall({
+            model: LEARNING_MODEL_SPEC,
+            system: prompt.system,
+            messages: [{ role: 'user', content: prompt.user }],
+            responseFormat: 'json',
+            maxTokens: Math.min(8_000, 500 + batch.length * 180),
+            ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
+          }),
+        { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
+      );
+      const response = attempted.response;
+      modelRetries += attempted.retries;
       const parsed = parsePromoterJudgements(responsePayload(response));
       const expected = new Set(batch.map((pair) => pair.pairKey));
       const unknown = parsed.find((judgement) => !expected.has(judgement.pairKey));
@@ -394,7 +439,7 @@ async function judgeBulkPairs(
       tokensIn += response.inputTokens;
       tokensOut += response.outputTokens;
     }
-    return { judgements, modelCalls, tokensIn, tokensOut };
+    return { judgements, modelCalls, modelRetries, tokensIn, tokensOut };
   };
   const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
     while (nextShardIndex < shardEntries.length) {
@@ -408,6 +453,7 @@ async function judgeBulkPairs(
   return {
     judgements: results.flatMap((result) => result.judgements),
     modelCalls: results.reduce((sum, result) => sum + result.modelCalls, 0),
+    modelRetries: results.reduce((sum, result) => sum + result.modelRetries, 0),
     tokensIn: results.reduce((sum, result) => sum + result.tokensIn, 0),
     tokensOut: results.reduce((sum, result) => sum + result.tokensOut, 0),
   };
@@ -423,6 +469,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     1,
     Math.min(16, Math.floor(opts.shardConcurrency ?? DEFAULT_BULK_SHARD_CONCURRENCY)),
   );
+  const batchRetryBackoffsMs = (opts.batchRetryBackoffsMs ?? DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS).filter(
+    (delayMs) => Number.isFinite(delayMs) && delayMs >= 0,
+  );
+  const batchRetryDelay = opts.batchRetryDelay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const runCensus = opts.runCensus ?? runWorkItemAdmissionCensus;
   const censusBase = {
     ...(opts.census ?? {}),
@@ -477,6 +527,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         merged: 0,
         held: 0,
         modelCalls: 0,
+        modelRetries: 0,
         tokensIn: 0,
         tokensOut: 0,
         censusBefore: census.censusAfter,
@@ -502,6 +553,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         pairsPerCall,
         shardConcurrency,
         ownerId: opts.ownerId,
+        batchRetryBackoffsMs,
+        batchRetryDelay,
       });
       const itemIds = new Set(input.pairs.flatMap((pair) => [pair.a.id, pair.b.id]));
       const stageItems = [...itemIds].map((id) => input.items.get(id)!).filter(Boolean);
@@ -550,6 +603,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           merged,
           held,
           modelCalls: judged.modelCalls,
+          modelRetries: judged.modelRetries,
           tokensIn: judged.tokensIn,
           tokensOut: judged.tokensOut,
           censusBefore: census.censusAfter,
@@ -578,6 +632,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                          : 'scope-zero'
                        : null,
                    modelCalls: judged.modelCalls,
+                   modelRetries: judged.modelRetries,
                    verdicts,
                    ratchet: { before: census.censusAfter, after: nextCensus.censusAfter, ok: true },
                  })}::text::jsonb

@@ -77,6 +77,50 @@ describe("vm-release boot ordering (D-043 / P-050)", () => {
   });
 });
 
+describe("hosted control-plane serve profile (D-051 / P-037)", () => {
+  it("is selected only by the explicit distribution profile", () => {
+    expect(
+      serve.isHostedControlPlaneServeProfile({
+        PAPERCUSP_DISTRIBUTION_PROFILE: "hosted-control-plane",
+      }),
+    ).toBe(true);
+    expect(
+      serve.isHostedControlPlaneServeProfile({
+        PAPERCUSP_DISTRIBUTION_PROFILE: "vm-release",
+      }),
+    ).toBe(false);
+    expect(serve.isHostedControlPlaneServeProfile({})).toBe(false);
+  });
+
+  it("keeps the hosted and local boot graphs in mutually exclusive branches", () => {
+    const selection = serveSrc.indexOf("if (hostedControlPlane)");
+    const hostedHandler = serveSrc.indexOf(
+      'import("./hosted-handler")',
+      selection,
+    );
+    const localBranch = serveSrc.indexOf("} else {", hostedHandler);
+    const bootstrap = serveSrc.indexOf(
+      'import("./host-bootstrap")',
+      localBranch,
+    );
+    const localHandler = serveSrc.indexOf(
+      'import("./host-handler")',
+      localBranch,
+    );
+    const serveCall = serveSrc.indexOf(
+      "server = serve({ fetch: requestHandler",
+      localHandler,
+    );
+
+    expect(selection).toBeGreaterThan(-1);
+    expect(hostedHandler).toBeGreaterThan(selection);
+    expect(localBranch).toBeGreaterThan(hostedHandler);
+    expect(bootstrap).toBeGreaterThan(localBranch);
+    expect(localHandler).toBeGreaterThan(localBranch);
+    expect(serveCall).toBeGreaterThan(localHandler);
+  });
+});
+
 describe("side-effect-free help (EI-21546899007927487)", () => {
   it.each(["--help", "-h"])(
     "%s exits successfully without touching runtime state",

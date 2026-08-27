@@ -391,6 +391,78 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
   }, 60_000);
 
+  it('retries a later transient socket failure without replaying an earlier judged batch', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+              'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+
+    let calls = 0;
+    const seenPairs: string[] = [];
+    const result = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-transient-retry',
+      sql: db.sql,
+      pairsPerCall: 1,
+      shardConcurrency: 1,
+      batchRetryBackoffsMs: [1],
+      batchRetryDelay: async () => undefined,
+      census: { chunkCount: 1, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        calls += 1;
+        const pairKey = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)][0]?.[1];
+        expect(pairKey).toBeTruthy();
+        seenPairs.push(pairKey!);
+        if (calls === 2) {
+          throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_SOCKET' } });
+        }
+        return {
+          text: '',
+          json: {
+            judgements: [
+              {
+                pairKey,
+                verdict: pairKey === 'a::b' ? 'r-finding-merge' : 'distinct',
+                reason: pairKey === 'a::b' ? 'same failure and remedy' : 'different failure and remedy',
+              },
+            ],
+          },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+    });
+
+    expect(calls).toBe(3);
+    expect(seenPairs).toEqual(['a::b', 'c::d', 'c::d']);
+    expect(result).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(result.stages[0]).toMatchObject({
+      pairs: 2,
+      modelCalls: 2,
+      modelRetries: 1,
+      censusBefore: 2,
+      censusAfter: 0,
+      scopedPairsAfter: 0,
+    });
+
+    const adjudications = await db.sql<Array<{ a: string; b: string }>>`
+      SELECT a, b FROM harness_shared.dedup_adjudications ORDER BY a, b`;
+    expect(adjudications).toEqual([
+      { a: 'a', b: 'b' },
+      { a: 'c', b: 'd' },
+    ]);
+    const stage = await db.sql<Array<{ state: string; retries: number }>>`
+      SELECT detail->>'status' AS state, (detail->>'modelRetries')::int AS retries
+        FROM harness_shared.admission_runs WHERE id = 'bulk-transient-retry-stage-1'`;
+    expect(stage).toEqual([{ state: 'complete', retries: 1 }]);
+  }, 60_000);
+
   it('judges independent shards concurrently while keeping each shard internally ordered', async () => {
     await seed();
     await db.sql`

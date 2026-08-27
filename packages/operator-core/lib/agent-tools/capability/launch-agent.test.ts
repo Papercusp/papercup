@@ -322,6 +322,33 @@ describe('published launch args schema', () => {
       }).success,
     ).toBe(true);
   });
+
+  it('documents members.role as a dynamic harness persona id, not a lane label', () => {
+    // The published args preserve two source-launch variants in a ZodUnion;
+    // inspect the first object variant's shared member schema.
+    const argsOut = (launchAgent.args as unknown as {
+      options: Array<{
+        shape: {
+          members: { unwrap: () => { element: { shape: Record<string, { description?: string }> } } };
+        };
+      }>;
+    }).options[0]!;
+    const members = argsOut.shape.members.unwrap();
+    const role = members.element.shape.role;
+
+    expect(role.description).toMatch(/registered persona id/i);
+    expect(role.description).toMatch(/target harness/i);
+    expect(role.description).toMatch(/not a lane\/job label/i);
+    // The valid persona set is resolved against the selected harness at launch
+    // time, so the shared wire schema must remain string-shaped rather than
+    // freezing one harness's registry into a static enum.
+    expect(
+      launchAgent.args.safeParse({
+        brief: 'member-specific launch',
+        members: [{ role: 'independent-rubric-grader' }],
+      }).success,
+    ).toBe(true);
+  });
 });
 
 describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {

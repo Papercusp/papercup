@@ -21,7 +21,7 @@ export interface WorkOsWebhookLogger {
 
 export interface WorkOsWebhookRouteDependencies {
   intake?: WorkOsWebhookIntake;
-  secret?: () => string | undefined;
+  secret?: () => string | undefined | Promise<string | undefined>;
   signatureKeyRef?: () => string | undefined;
   logger?: WorkOsWebhookLogger;
 }
@@ -45,7 +45,7 @@ export function createWorkOsWebhookRoute(dependencies: WorkOsWebhookRouteDepende
       try {
         const result = await intake({
           request,
-          secret: secret(),
+          secret: await secret(),
           signatureKeyRef: signatureKeyRef(),
         });
         logger.info('[auth/workos-webhook] accepted', {

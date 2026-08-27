@@ -45,7 +45,10 @@ function eventJson(overrides: Record<string, unknown> = {}): string {
 }
 
 async function captureIntake(body: string, extraHeaders: Record<string, string> = {}) {
-  const enqueue = vi.fn<WorkOsWebhookReceiptSink['enqueue']>().mockResolvedValue({ deduplicated: false });
+  const enqueue = vi.fn<WorkOsWebhookReceiptSink['enqueue']>().mockResolvedValue({
+    deduplicated: false,
+    receivedAt: NOW,
+  });
   const result = await intakeWorkOsWebhook({
     request: request(body, { 'workos-signature': signature(body), ...extraHeaders }),
     secret: SECRET,
@@ -67,6 +70,7 @@ describe('WorkOS webhook authentication and parsing', () => {
       subjectRef: 'user_workos_01',
       eventVersion: '4',
       deduplicated: false,
+      receivedAt: NOW,
     });
     const queued = enqueue.mock.calls[0][0];
     expect(queued.payload).toMatchObject({ tenant_id: 'tenant_root', workspace_id: 'workspace_root' });
@@ -83,6 +87,7 @@ describe('WorkOS webhook authentication and parsing', () => {
     body.set(encoded, 3);
     const enqueue = vi.fn<WorkOsWebhookReceiptSink['enqueue']>().mockResolvedValue({
       deduplicated: false,
+      receivedAt: NOW,
     });
 
     await expect(
@@ -226,11 +231,12 @@ describe('WorkOsWebhookReceiptStore', () => {
 
   it('persists the verified receipt as a real jsonb object before reporting acceptance', async () => {
     const event = parsed();
-    const { sql, calls } = mockSql([[{ payload_sha256: event.payloadSha256 }]]);
+    const { sql, calls } = mockSql([[{ payload_sha256: event.payloadSha256, received_at: NOW }]]);
     const store = new WorkOsWebhookReceiptStore(sql, () => NOW);
 
     await expect(store.enqueue(event, { signatureKeyRef: 'workos-key-2026-08' })).resolves.toEqual({
       deduplicated: false,
+      receivedAt: NOW,
     });
     expect(calls).toHaveLength(1);
     expect(calls[0].text).toContain('ON CONFLICT (provider, event_id) DO NOTHING');
@@ -241,12 +247,13 @@ describe('WorkOsWebhookReceiptStore', () => {
 
   it('acknowledges an exact digest duplicate and rejects an id collision', async () => {
     const event = parsed();
-    const duplicate = mockSql([[], [{ payload_sha256: event.payloadSha256 }]]);
+    const duplicate = mockSql([[], [{ payload_sha256: event.payloadSha256, received_at: NOW }]]);
     await expect(new WorkOsWebhookReceiptStore(duplicate.sql, () => NOW).enqueue(event)).resolves.toEqual({
       deduplicated: true,
+      receivedAt: NOW,
     });
 
-    const collision = mockSql([[], [{ payload_sha256: 'f'.repeat(64) }]]);
+    const collision = mockSql([[], [{ payload_sha256: 'f'.repeat(64), received_at: NOW }]]);
     await expect(new WorkOsWebhookReceiptStore(collision.sql, () => NOW).enqueue(event)).rejects.toMatchObject({
       code: 'receipt_collision',
       status: 409,

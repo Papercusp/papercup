@@ -39,7 +39,13 @@ function writeMcpConfig(path: string, bundle: AgentBundle, accessToken: string):
     mcpServers: {
       papercusp: {
         url: bundle.mcp_url,
-        headers: { Authorization: `Bearer ${accessToken}` },
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          // OMP resolves leading-! header values against the spawned
+          // process environment. Carry the per-launch session id so
+          // MCP calls share identity with the OMP coordination hook.
+          'x-papercusp-client': '!printf %s "${PAPERCUSP_SID:-}"',
+        },
       },
     },
   };

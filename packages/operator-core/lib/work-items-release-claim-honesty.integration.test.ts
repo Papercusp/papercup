@@ -44,6 +44,7 @@ vi.mock('@papercusp/flags/server', async (importOriginal) => ({
 }));
 
 const { releaseWorkItem, claimWorkItem, getWorkItem, classifyClaimFailure } = await import('./work-items');
+const { assignActionableWorkItems } = await import('./agent-tools/coordination/actionable-work-item-dispatch');
 const { acquireClaimLocal, getClaim } = await import('./work-item-claims');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
@@ -81,18 +82,24 @@ async function featureTakenBy(id: string): Promise<string | null> {
   return row?.taken_by ?? null;
 }
 
-async function seedIssue(id: string, assignee: string | null): Promise<void> {
+async function seedIssue(id: string, assignee: string | null, state = 'open'): Promise<void> {
   await sql`
     INSERT INTO harness_shared.engineer_issues
       (workspace_id, issue_id, scope, title, state, assignee, assigned_at, updated_at)
     VALUES
-      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, 'open', ${assignee}, ${assignee ? sql`now()` : null}, now())`;
+      (${WS}, ${id}, ${`harness:${HARNESS}`}, ${id}, ${state}, ${assignee}, ${assignee ? sql`now()` : null}, now())`;
 }
 
 async function issueAssignee(id: string): Promise<string | null> {
   const [row] = await sql<{ assignee: string | null }[]>`
     SELECT assignee FROM harness_shared.engineer_issues WHERE workspace_id = ${WS} AND issue_id = ${id}`;
   return row?.assignee ?? null;
+}
+
+async function issueState(id: string): Promise<string | null> {
+  const [row] = await sql<{ state: string | null }[]>`
+    SELECT state FROM harness_shared.engineer_issues WHERE workspace_id = ${WS} AND issue_id = ${id}`;
+  return row?.state ?? null;
 }
 
 describe('P-003: work_items:release honesty (non-force) — real two-ledger DB', () => {
@@ -134,6 +141,46 @@ describe('P-003: work_items:release honesty (non-force) — real two-ledger DB',
     const released = await releaseWorkItem('EI-HELD-1', { expectedAssignee: 'su-issue-holder' });
     expect(released).not.toBeNull();
     expect(await issueAssignee('EI-HELD-1')).toBeNull();
+  });
+
+  it('issue-family: releasing wip requeues to open so direct actionable dispatch can claim it', async () => {
+    await seedIssue('EI-WIP-RELEASE', 'su-issue-holder', 'wip');
+
+    const released = await releaseWorkItem('EI-WIP-RELEASE', { expectedAssignee: 'su-issue-holder' });
+
+    expect(released?.state).toBe('open');
+    expect(await issueState('EI-WIP-RELEASE')).toBe('open');
+
+    const assignment = await assignActionableWorkItems({
+      workItemIds: ['EI-WIP-RELEASE'],
+      targetAgent: 'su-issue-successor',
+      harness: HARNESS,
+    });
+
+    expect(assignment).toMatchObject({
+      ok: true,
+      actionable: ['EI-WIP-RELEASE'],
+      assigned: ['EI-WIP-RELEASE'],
+      executionWorkItemIds: ['EI-WIP-RELEASE'],
+      skipped: [],
+      failed: [],
+    });
+    expect(await issueAssignee('EI-WIP-RELEASE')).toBe('su-issue-successor');
+  });
+
+  it('issue-family: release preserves parked and terminal states', async () => {
+    const preservedStates = ['open', 'blocked', 'needs-human', 'resolved', 'closed', 'done', 'dropped'];
+
+    for (const state of preservedStates) {
+      const id = `EI-PRESERVE-${state.replaceAll('-', '_')}`;
+      await seedIssue(id, 'su-issue-holder', state);
+
+      const released = await releaseWorkItem(id, { expectedAssignee: 'su-issue-holder' });
+
+      expect(released?.state, `release should preserve ${state}`).toBe(state);
+      expect(await issueState(id), `stored state should preserve ${state}`).toBe(state);
+      expect(await issueAssignee(id)).toBeNull();
+    }
   });
 
   it('a force release (no expectedAssignee) clears any holder — the leader/reaper override path stays unrestricted at this layer (the TOOL layer gates who may pass force)', async () => {

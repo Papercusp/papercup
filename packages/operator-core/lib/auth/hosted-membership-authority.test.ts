@@ -156,6 +156,9 @@ describe('PostgresHostedMembershipAuthority.resolveActive', () => {
 
 describe('PostgresHostedMembershipAuthority.workspaceBelongsToOrganization', () => {
   const input = {
+    userId: USER,
+    sessionId: `hs_${'A'.repeat(43)}`,
+    sessionVersion: 1,
     organizationId: ORG,
     customerWorkspaceId: 'cw-1',
     controlPlaneWorkspaceId: 'papercusp-control-plane',
@@ -165,27 +168,17 @@ describe('PostgresHostedMembershipAuthority.workspaceBelongsToOrganization', () 
     // customer_workspaces is keyed (workspace_id, id): an (organization_id, id)
     // filter alone is not unique across control-plane workspaces.
     const sql = fakeSql([[{ organization_id: ORG }]]);
-    const owned = await new PostgresHostedMembershipAuthority(
-      sql as never,
-    ).workspaceBelongsToOrganization(input);
+    const owned = await new PostgresHostedMembershipAuthority(sql as never).workspaceBelongsToOrganization(input);
 
     expect(owned).toBe(true);
     expect(sql.calls[0].sql).toContain('harness_shared.customer_workspaces');
     expect(sql.calls[0].sql).toContain('deleted_at IS NULL');
-    expect(sql.calls[0].params).toEqual([
-      'papercusp-control-plane',
-      'cw-1',
-      ORG,
-    ]);
+    expect(sql.calls[0].params).toEqual(['papercusp-control-plane', 'cw-1', ORG]);
   });
 
   it('is false when no row matches', async () => {
     const sql = fakeSql([[]]);
-    expect(
-      await new PostgresHostedMembershipAuthority(sql as never).workspaceBelongsToOrganization(
-        input,
-      ),
-    ).toBe(false);
+    expect(await new PostgresHostedMembershipAuthority(sql as never).workspaceBelongsToOrganization(input)).toBe(false);
   });
 
   it('refuses blank identifiers without touching the database', async () => {
@@ -193,10 +186,11 @@ describe('PostgresHostedMembershipAuthority.workspaceBelongsToOrganization', () 
     const reader = new PostgresHostedMembershipAuthority(sql as never);
 
     expect(await reader.workspaceBelongsToOrganization({ ...input, organizationId: '' })).toBe(false);
+    expect(await reader.workspaceBelongsToOrganization({ ...input, userId: '' })).toBe(false);
+    expect(await reader.workspaceBelongsToOrganization({ ...input, sessionId: '' })).toBe(false);
+    expect(await reader.workspaceBelongsToOrganization({ ...input, sessionVersion: -1 })).toBe(false);
     expect(await reader.workspaceBelongsToOrganization({ ...input, customerWorkspaceId: ' ' })).toBe(false);
-    expect(
-      await reader.workspaceBelongsToOrganization({ ...input, controlPlaneWorkspaceId: '' }),
-    ).toBe(false);
+    expect(await reader.workspaceBelongsToOrganization({ ...input, controlPlaneWorkspaceId: '' })).toBe(false);
     expect(sql.calls).toHaveLength(0);
   });
 });

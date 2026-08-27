@@ -96,6 +96,7 @@ Subcommands:
 
 Options:
   -h, --help                 Print this help text
+  -V, --version              Print version information
 ";
 
 fn print_cli_help(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> bool {
@@ -103,6 +104,17 @@ fn print_cli_help(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> boo
         || matches!(subcommand_arg, Some("-h") | Some("--help"))
     {
         print!("{CLI_HELP}");
+        true
+    } else {
+        false
+    }
+}
+
+fn print_cli_version(subcommand: Option<&str>, subcommand_arg: Option<&str>) -> bool {
+    if matches!(subcommand, Some("-V") | Some("--version"))
+        || matches!(subcommand_arg, Some("-V") | Some("--version"))
+    {
+        println!("pui {}", env!("CARGO_PKG_VERSION"));
         true
     } else {
         false
@@ -121,6 +133,9 @@ async fn main() -> Result<()> {
     let subcommand = std::env::args().nth(1);
     let subcommand_arg = std::env::args().nth(2);
     if print_cli_help(subcommand.as_deref(), subcommand_arg.as_deref()) {
+        return Ok(());
+    }
+    if print_cli_version(subcommand.as_deref(), subcommand_arg.as_deref()) {
         return Ok(());
     }
     match subcommand.as_deref() {
@@ -344,7 +359,7 @@ async fn main() -> Result<()> {
 
 #[cfg(test)]
 mod cli_help_tests {
-    use super::print_cli_help;
+    use super::{print_cli_help, print_cli_version};
 
     #[test]
     fn top_level_help_is_recognized() {
@@ -361,6 +376,23 @@ mod cli_help_tests {
     #[test]
     fn ordinary_subcommand_arguments_do_not_trigger_help() {
         assert!(!print_cli_help(Some("hive-pane"), Some("engineering")));
+    }
+
+    #[test]
+    fn top_level_version_is_recognized() {
+        assert!(print_cli_version(Some("--version"), None));
+        assert!(print_cli_version(Some("-V"), None));
+    }
+
+    #[test]
+    fn subcommand_version_is_recognized_before_dispatch() {
+        assert!(print_cli_version(Some("workbench"), Some("--version")));
+        assert!(print_cli_version(Some("doctor"), Some("-V")));
+    }
+
+    #[test]
+    fn ordinary_subcommand_arguments_do_not_trigger_version() {
+        assert!(!print_cli_version(Some("hive-pane"), Some("engineering")));
     }
 }
 

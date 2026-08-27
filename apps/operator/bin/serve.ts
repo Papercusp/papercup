@@ -34,6 +34,8 @@
  *   PAPERCUSP_PG_SQL_DIR          migrations dir (default: repo libs/papercusp/libs/db/sql)
  *   PAPERCUSP_USE_EMBEDDED_PG=0   attach external PG via HARNESS_*_DATABASE_URL instead
  *   PAPERCUSP_SERVE_UI=1          force the SPA on even under serve (default off here)
+ *   PAPERCUSP_DISTRIBUTION_PROFILE=hosted-control-plane
+ *                                 start only the hosted API allowlist + same-origin SPA
  */
 // MUST remain the first import. Projection/background modules can resolve
 // flags during ESM evaluation, before main() runs; without this side effect the
@@ -1442,6 +1444,14 @@ export function isServeHelpRequest(argv: readonly string[]): boolean {
   return argv.includes("--help") || argv.includes("-h");
 }
 
+export const HOSTED_CONTROL_PLANE_SERVE_PROFILE = "hosted-control-plane";
+
+export function isHostedControlPlaneServeProfile(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.PAPERCUSP_DISTRIBUTION_PROFILE === HOSTED_CONTROL_PLANE_SERVE_PROFILE;
+}
+
 async function main(): Promise<void> {
   // EI-21546899007927487: argv help is a read-only introspection contract. This
   // MUST remain the first branch in main(): the packaged sidecar dispatches
@@ -1726,25 +1736,37 @@ async function main(): Promise<void> {
     // exportResolvedPortEnv).
     exportResolvedPortEnv(port);
 
-    const { runBootstrap } = await import("./host-bootstrap");
-    const { handler } = await import("./host-handler");
     const { serve } = await import("@hono/node-server");
+    const hostedControlPlane = isHostedControlPlaneServeProfile();
+    let requestHandler: (request: Request) => Promise<Response>;
 
-    runBootstrap();
+    if (hostedControlPlane) {
+      // D-051: never import the local handler or runBootstrap graph here. The
+      // hosted module contains only the exact `/api` allowlist plus the shared
+      // SPA, and its runtime constructor asserts mounted[] before returning.
+      const { createHostedHandlerFromEnvironment } =
+        await import("./hosted-handler");
+      requestHandler = (await createHostedHandlerFromEnvironment()).handler;
+    } else {
+      const { runBootstrap } = await import("./host-bootstrap");
+      const { handler } = await import("./host-handler");
+      requestHandler = handler;
+      runBootstrap();
 
-    // EI-20952729544817284: the desktop bundle is built from THIS entrypoint,
-    // not hono-host.ts. The latter already starts this publisher, but keeping
-    // the library in serve.mjs through read-side imports did not execute it —
-    // packaged substrate owners therefore never wrote their diagnostic row.
-    // Start only after embedded PG is ready and bootstrap has installed the
-    // substrate-owner state; the publisher self-gates on ownership every beat.
-    const { startBootedHandlesPgPublisher } =
-      await import("@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg");
-    bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});
+      // EI-20952729544817284: the desktop bundle is built from THIS entrypoint,
+      // not hono-host.ts. The latter already starts this publisher, but keeping
+      // the library in serve.mjs through read-side imports did not execute it —
+      // packaged substrate owners therefore never wrote their diagnostic row.
+      // Start only after embedded PG is ready and bootstrap has installed the
+      // substrate-owner state; the publisher self-gates on ownership every beat.
+      const { startBootedHandlesPgPublisher } =
+        await import("@papercusp/operator-core/lib/sync/hyperbee/substrate-booted-handles-pg");
+      bootedHandlesPgPublisher = startBootedHandlesPgPublisher({});
+    }
 
-    server = serve({ fetch: handler, port, hostname }, async (info) => {
+    server = serve({ fetch: requestHandler, port, hostname }, async (info) => {
       log(
-        `listening on http://${hostname}:${info.port} (UI ${process.env.PAPERCUSP_SERVE_UI === "0" ? "OFF" : "ON"})`,
+        `listening on http://${hostname}:${info.port} (${hostedControlPlane ? "HOSTED CONTROL PLANE" : `UI ${process.env.PAPERCUSP_SERVE_UI === "0" ? "OFF" : "ON"}`})`,
       );
       // WI-3287: OPERATOR_JSON/OPERATOR_PORT_MEMORY are THE PRIMARY's discovery
       // records — Tauri's `--ensure` reuse check, the sticky-port memory, and

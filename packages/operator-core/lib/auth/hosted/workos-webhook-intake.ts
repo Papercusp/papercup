@@ -65,17 +65,20 @@ export interface VerifiedWorkOsWebhookEvent {
 
 export interface WorkOsWebhookReceiptResult extends VerifiedWorkOsWebhookEvent {
   deduplicated: boolean;
+  /** Original durable receipt time, preserved across duplicate delivery. */
+  receivedAt: Date;
 }
 
 export interface WorkOsWebhookReceiptSink {
   enqueue(
     event: VerifiedWorkOsWebhookEvent,
     options?: { signatureKeyRef?: string | null },
-  ): Promise<{ deduplicated: boolean }>;
+  ): Promise<{ deduplicated: boolean; receivedAt: Date }>;
 }
 
 interface ReceiptDigestRow {
   payload_sha256: string;
+  received_at: Date | string;
 }
 
 function intakeError(
@@ -305,7 +308,7 @@ export class WorkOsWebhookReceiptStore implements WorkOsWebhookReceiptSink {
   async enqueue(
     event: VerifiedWorkOsWebhookEvent,
     options: { signatureKeyRef?: string | null } = {},
-  ): Promise<{ deduplicated: boolean }> {
+  ): Promise<{ deduplicated: boolean; receivedAt: Date }> {
     const now = this.clock();
     const nowIso = now.toISOString();
     const retentionUntil = new Date(now.getTime() + WORKOS_WEBHOOK_RETENTION_MS).toISOString();
@@ -323,19 +326,21 @@ export class WorkOsWebhookReceiptStore implements WorkOsWebhookReceiptSink {
          ${payloadJson}::text::jsonb, ${event.payloadSha256}, ${signatureKeyRef},
          ${nowIso}, ${nowIso}, ${nowIso}, ${retentionUntil})
       ON CONFLICT (provider, event_id) DO NOTHING
-      RETURNING payload_sha256
+      RETURNING payload_sha256, received_at
     `;
-    if (inserted.length > 0) return { deduplicated: false };
+    if (inserted.length > 0) {
+      return { deduplicated: false, receivedAt: receiptDate(inserted[0].received_at) };
+    }
 
     const existing = await this.sql<ReceiptDigestRow[]>`
-      SELECT payload_sha256
+      SELECT payload_sha256, received_at
         FROM papercusp_auth.webhook_event_receipts
        WHERE provider = 'workos'
          AND event_id = ${event.eventId}
        LIMIT 1
     `;
     if (existing[0]?.payload_sha256 === event.payloadSha256) {
-      return { deduplicated: true };
+      return { deduplicated: true, receivedAt: receiptDate(existing[0].received_at) };
     }
     if (existing.length > 0) {
       throw intakeError(
@@ -347,6 +352,14 @@ export class WorkOsWebhookReceiptStore implements WorkOsWebhookReceiptSink {
     }
     throw intakeError('enqueue_failed', 503, true, 'Webhook receipt could not be confirmed.');
   }
+}
+
+function receiptDate(value: Date | string): Date {
+  const receivedAt = value instanceof Date ? value : new Date(value);
+  if (!Number.isFinite(receivedAt.getTime())) {
+    throw intakeError('enqueue_failed', 503, true, 'Webhook receipt has an invalid received_at timestamp.');
+  }
+  return receivedAt;
 }
 
 export async function intakeWorkOsWebhook(input: {

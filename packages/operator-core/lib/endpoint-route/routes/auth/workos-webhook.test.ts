@@ -17,6 +17,7 @@ const RECEIPT: WorkOsWebhookReceiptResult = {
   },
   payloadSha256: 'a'.repeat(64),
   deduplicated: true,
+  receivedAt: new Date('2026-08-23T12:00:01.000Z'),
 };
 
 function request(): Request {

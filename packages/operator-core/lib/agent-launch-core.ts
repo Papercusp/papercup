@@ -640,7 +640,12 @@ export const memberSpecSchema = z
       .describe(
         `psu --compaction-limit: this member's soft compaction limit in TOKENS (>= ${MIN_COMPACTION_LIMIT_TOKENS}). Clamped down to the fleet-role ceiling at seed time — it can lower a member's limit, never raise it past its cap.`,
       ),
-    role: z.string().optional().describe("psu --role for this member."),
+    role: z
+      .string()
+      .optional()
+      .describe(
+        "psu --role: a registered persona id resolved against the target harness (the valid ids are harness-specific). This is not a lane/job label; put lane direction in this member's `brief` or the shared `label`.",
+      ),
     agent: z.string().optional().describe("psu --agent (claude|omp|codex) for this member."),
     launchContext: z.string().optional().describe("psu --launch-context: this member's own brief FILE path."),
     brief: z

@@ -82,10 +82,7 @@ export function hostedMembershipAuthorityVersion(updatedAt: Date | string): numb
  * purpose: an authorization path may look a membership up, and may not write.
  */
 export interface HostedMembershipAuthorityReader {
-  resolveActive(input: {
-    userId: string;
-    organizationId: string;
-  }): Promise<HostedMembershipAuthority | null>;
+  resolveActive(input: { userId: string; organizationId: string }): Promise<HostedMembershipAuthority | null>;
   /**
    * Whether a customer workspace belongs to the organization. The hosted
    * session carries a selected workspace id; without this check a session whose
@@ -98,6 +95,9 @@ export interface HostedMembershipAuthorityReader {
    * workspace.
    */
   workspaceBelongsToOrganization(input: {
+    userId: string;
+    sessionId: string;
+    sessionVersion: number;
     organizationId: string;
     customerWorkspaceId: string;
     controlPlaneWorkspaceId: string;
@@ -107,10 +107,7 @@ export interface HostedMembershipAuthorityReader {
 export class PostgresHostedMembershipAuthority implements HostedMembershipAuthorityReader {
   constructor(private readonly sql: SqlClient = getOrgPg().sql) {}
 
-  async resolveActive(input: {
-    userId: string;
-    organizationId: string;
-  }): Promise<HostedMembershipAuthority | null> {
+  async resolveActive(input: { userId: string; organizationId: string }): Promise<HostedMembershipAuthority | null> {
     const userId = identifier(input.userId);
     const organizationId = identifier(input.organizationId);
     if (userId === null || organizationId === null) return null;
@@ -136,15 +133,24 @@ export class PostgresHostedMembershipAuthority implements HostedMembershipAuthor
   }
 
   async workspaceBelongsToOrganization(input: {
+    userId: string;
+    sessionId: string;
+    sessionVersion: number;
     organizationId: string;
     customerWorkspaceId: string;
     controlPlaneWorkspaceId: string;
   }): Promise<boolean> {
+    const userId = identifier(input.userId);
+    const sessionId = identifier(input.sessionId);
     const organizationId = identifier(input.organizationId);
     const customerWorkspaceId = identifier(input.customerWorkspaceId);
     const controlPlaneWorkspaceId = identifier(input.controlPlaneWorkspaceId);
     if (
       organizationId === null ||
+      userId === null ||
+      sessionId === null ||
+      !Number.isSafeInteger(input.sessionVersion) ||
+      input.sessionVersion < 0 ||
       customerWorkspaceId === null ||
       controlPlaneWorkspaceId === null
     ) {

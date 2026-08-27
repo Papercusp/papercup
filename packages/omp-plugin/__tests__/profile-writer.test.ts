@@ -69,6 +69,9 @@ describe('writeProfile', () => {
     };
     expect(cfg.mcpServers.papercusp.url).toBe('http://operator.local/api/mcp?power_user=1');
     expect(cfg.mcpServers.papercusp.headers.Authorization).toBe('Bearer access-secret');
+    expect(cfg.mcpServers.papercusp.headers['x-papercusp-client']).toBe(
+      '!printf %s "${PAPERCUSP_SID:-}"',
+    );
     // The URL line in the JSON must NOT contain the token.
     expect(cfg.mcpServers.papercusp.url).not.toContain('access-secret');
   });
@@ -129,6 +132,9 @@ describe('rewriteAccessToken', () => {
       mcpServers: { papercusp: { url: string; headers: Record<string, string> } };
     };
     expect(cfg.mcpServers.papercusp.headers.Authorization).toBe('Bearer access-2');
+    expect(cfg.mcpServers.papercusp.headers['x-papercusp-client']).toBe(
+      '!printf %s "${PAPERCUSP_SID:-}"',
+    );
     expect(cfg.mcpServers.papercusp.url).toBe(bundle.mcp_url);
   });
 });

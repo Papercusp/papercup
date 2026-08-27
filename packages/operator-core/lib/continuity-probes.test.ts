@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
 const cells = vi.hoisted(() => new Map<string, Record<string, any>>());
@@ -21,6 +22,7 @@ import {
   continuityProbeRevision,
   continuityProbeSchema,
   continuityProbeShapeSchema,
+  continuityPredicateSchema,
   decodeContinuityProbe,
   encodeContinuityProbe,
   runContinuityProbeBatch,
@@ -124,6 +126,16 @@ describe('continuity probe persistence contract', () => {
     expect(
       validateContinuityProbe(readProbe({ expect: { path: '$.state', op: 'eq', value: 'sk-abcdefghijklmnop' } })),
     ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'secret_material' })]));
+  });
+
+  it('documents the conditional predicate and direct-tool restrictions in the generated schema', () => {
+    const schema = JSON.stringify(z.toJSONSchema(continuityProbeSchema as never));
+    expect(schema).toContain('MUST omit `value`');
+    expect(schema).toContain('comparison operations require a scalar `value`');
+    expect(schema).toContain('indirect/meta surfaces such as `dev:pg_query`');
+    expect(() =>
+      continuityPredicateSchema.parse({ path: '$.state', op: 'exists', value: 'green' }),
+    ).toThrow(/exists.*does not take a value/);
   });
 
   it('reports live contract violations at the nested probe field', () => {

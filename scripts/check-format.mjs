@@ -354,7 +354,10 @@ export function applyFormattedChangesWithinRange(source, formatted, range) {
     const changeStart = sourceOffset;
     let original = "";
     let replacement = "";
-    while (index < parts.length && (parts[index].added || parts[index].removed)) {
+    while (
+      index < parts.length &&
+      (parts[index].added || parts[index].removed)
+    ) {
       const changed = parts[index];
       if (changed.removed) {
         original += changed.value;
@@ -682,7 +685,9 @@ function main() {
             error instanceof Error
               ? `check failed: ${error.message}`
               : `check failed: ${String(error)}`;
-          console.error(formatRangeDiagnostic(label, repoPath, lineRange, detail));
+          console.error(
+            formatRangeDiagnostic(label, repoPath, lineRange, detail),
+          );
         }
       }
     }

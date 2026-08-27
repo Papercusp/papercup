@@ -95,6 +95,10 @@ describe('launchAcceptanceGrader', () => {
     expect(snapshot.rubric.rubricId).toBe('acceptance-ship-the-thing');
     expect(snapshot.audit.auditSeq).toBe(3);
     expect(snapshot.terminalWork[0]).toMatchObject({ id: 'WI-1', state: 'done' });
+    expect(brief).toContain('first resolve the subject harness checkout');
+    expect(brief).toContain('capability:read');
+    expect(brief).toContain('git rev-parse <superproject-ref>:<nested-path>');
+    expect(brief).toContain('not evidence of a fabricated citation');
     expect(brief.length).toBeLessThan(8_000);
   });
 
@@ -428,6 +432,8 @@ describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
       "scorecards:emit { rubricRef:\"acceptance-ship-the-thing\", targetHive:\"papercusp\", ratings:",
     );
     expect(brief).toContain('subject tree rather than the grader\'s checkout');
+    expect(brief).toContain('gitlink');
+    expect(brief).toContain('cwd` set to the nested submodule');
   });
 
   it('keeps the legacy operator-plan form when no concrete harness exists', () => {

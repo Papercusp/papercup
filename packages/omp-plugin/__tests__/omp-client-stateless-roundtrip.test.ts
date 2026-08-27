@@ -312,6 +312,9 @@ describe('L4 — OMP-shaped MCP client against a stateless operator transport', 
     const ent = cfg.mcpServers.papercusp;
     expect(ent.url).toBe(`${baseUrl}/api/mcp?power_user=1`);
     expect(ent.headers.Authorization).toBe(`Bearer ${accessToken}`);
+    expect(ent.headers['x-papercusp-client']).toBe(
+      '!printf %s "${PAPERCUSP_SID:-}"',
+    );
 
     const transport = new StreamableHTTPClientTransport(new URL(ent.url), {
       requestInit: { headers: { Authorization: ent.headers.Authorization } },
@@ -404,6 +407,9 @@ describe('L4 — OMP-shaped MCP client against a stateless operator transport', 
     };
     expect(cfg2.mcpServers.papercusp.headers.Authorization).toBe(
       `Bearer ${refreshed.access_token}`,
+    );
+    expect(cfg2.mcpServers.papercusp.headers['x-papercusp-client']).toBe(
+      '!printf %s "${PAPERCUSP_SID:-}"',
     );
 
     // New client with the new header — works.

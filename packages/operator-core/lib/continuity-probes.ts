@@ -48,8 +48,14 @@ const schemaRevisionSchema = z
 export const continuityPredicateSchema = z
   .object({
     path: z.string().min(1).max(240).describe('Dot/bracket path into the JSON result; use "$" for the root value.'),
-    op: z.enum(['exists', 'eq', 'ne', 'gt', 'gte', 'lt', 'lte']),
-    value: scalarSchema.optional(),
+    op: z
+      .enum(['exists', 'eq', 'ne', 'gt', 'gte', 'lt', 'lte'])
+      .describe(
+        'Predicate operation. `exists` checks presence and MUST omit `value`; comparison operations require a scalar `value`.',
+      ),
+    value: scalarSchema
+      .optional()
+      .describe('Expected scalar for comparison operations; omit this field when `op` is `exists`.'),
   })
   .strict()
   .superRefine((predicate, ctx) => {
@@ -72,7 +78,13 @@ export const continuityPredicateSchema = z
 const toolProbeShape = z
   .object({
     kind: z.literal('tool'),
-    tool: z.string().min(1).max(160),
+    tool: z
+      .string()
+      .min(1)
+      .max(160)
+      .describe(
+        'Exact direct projected-tool name. Only directly invoked read-only tools may be persisted; indirect/meta surfaces such as `dev:pg_query`, `tools:invoke`, `code:run`, `recipes:run`, `capability:*`, and `computer:*` are rejected.',
+      ),
     args: z.record(z.string(), z.unknown()).default({}),
     projection: z.unknown().optional(),
     schemaRevision: schemaRevisionSchema,

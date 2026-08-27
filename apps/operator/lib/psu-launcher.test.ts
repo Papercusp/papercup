@@ -1229,7 +1229,9 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     expect(dir!.startsWith("/")).toBe(false); // relative, so join(home, dir) resolves correctly
   });
 
-  it("full mode (discoveryOff) flips discoveryMode OFF, preserving modelRoles", () => {
+  // NOT "full mode": discoveryOff accompanies the trimmed SEED and is explicitly not
+  // the retired whole-catalog mode (see the discoveryOff doc on writeOmpSessionConfigDir).
+  it("discoveryOff flips discoveryMode OFF, preserving modelRoles", () => {
     const dir = writeOmpSessionConfigDir("sess1", { discoveryOff: true }, home);
     const written = readFileSync(
       join(home, dir!, "agent", "config.yml"),
@@ -1707,7 +1709,9 @@ describe("writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
     ).toEqual(globalMcp);
   });
 
-  it("full mode preserves the complete user-selected MCP server map", () => {
+  // The shape under test is a ROLE launch (discoveryOff, no toolsAllowlist) — role
+  // launches are what skip the server-map filter now that 'full' is retired.
+  it("a role launch (no toolsAllowlist) preserves the complete user-selected MCP server map", () => {
     const globalMcp = {
       mcpServers: {
         "papercusp-su": JSON.parse(MCP_JSON).mcpServers["papercusp-su"],
