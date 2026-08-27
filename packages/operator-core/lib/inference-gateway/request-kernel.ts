@@ -91,14 +91,16 @@ export interface GatewayKernelAttemptFeedback<TRoute, TChunk, TMetadata> {
   error: GatewayRequestKernelError | null;
 }
 
-export interface GatewayKernelAdmissionLease {
-  release(result: { outcome: GatewayRequestOutcome; status: number | null }): MaybePromise<void>;
-}
-
 export interface GatewayKernelAdmissionController<TRoute, TChunk, TMetadata> {
-  acquire(
+  /**
+   * Run the admitted lifecycle inside the existing lane gate. Implementations wrap
+   * `PriorityAdmissionQueue.run()` (or the local lane's equivalent), so the proven
+   * task-settle path remains the sole slot-release authority.
+   */
+  run<TResult>(
     context: GatewayKernelContext & { route: GatewayKernelRoute<TRoute> },
-  ): MaybePromise<GatewayKernelAdmissionLease>;
+    task: () => Promise<TResult>,
+  ): Promise<TResult>;
   /** AIMD/rate feedback remains lane-specific data, but the kernel guarantees one callback per attempt. */
   observeAttempt?(feedback: GatewayKernelAttemptFeedback<TRoute, TChunk, TMetadata>): MaybePromise<void>;
 }
@@ -597,15 +599,12 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     }
   };
   let route: GatewayKernelRoute<TRoute> | null = null;
-  let lease: GatewayKernelAdmissionLease | null = null;
-  let inFlight: GatewayKernelInFlightHandle | null = null;
   let streaming = false;
   let attempts = 0;
   let failovers = 0;
   let finalStatus: number | null = null;
   let finalOutcome: GatewayRequestOutcome = 'unclassified';
   let failure: GatewayRequestKernelError | null = null;
-  let cleanupFailure: GatewayRequestKernelError | null = null;
   let timeline: GatewayRequestTimeline | null = null;
 
   try {
@@ -628,205 +627,229 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     span.routeSelected();
     let currentRoute: GatewayKernelRoute<TRoute> = route;
 
-    lease = await abortable(
-      Promise.resolve(opts.admission.acquire({ ...base, route: currentRoute })),
-      requestController.signal,
-    );
-    span.admitted();
-    inFlight = await abortable(
-      Promise.resolve(
-        opts.inFlight.register({
-          requestId: base.requestId,
-          correlationId,
-          laneId: opts.request.lane.id,
-          provider,
-          startedAt: base.startedAt,
-          isStreaming: () => streaming,
-          abort: (reason) => requestController.abort(cancellationError(reason)),
-        }),
-      ),
-      requestController.signal,
-    );
-
-    span.beginStage('bodyRead');
-    let body: Buffer;
-    try {
-      body = await readBoundedGatewayRequestBody({
-        source: opts.request.body,
-        maxBytes: opts.policy.maxBodyBytes,
-        timeoutMs: opts.policy.bodyReadTimeoutMs,
-        signal: requestController.signal,
-      });
-    } finally {
-      span.endStage('bodyRead');
-    }
-
-    for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
-      attempts = attempt;
-      const attemptContext: GatewayKernelAttemptContext<TRoute> = {
-        ...base,
-        route: currentRoute,
-        body,
-        attempt,
-        maxAttempts: opts.policy.maxAttempts,
-        triedRouteKeys: [...triedRouteKeys],
-      };
-      span.setTransport(currentRoute.transport);
-      const measureAuth = provider !== 'local';
-      if (measureAuth) span.beginStage('auth');
-      let prepared!: TPrepared;
-      let preparationFailure: GatewayRequestKernelError | null = null;
+    await opts.admission.run({ ...base, route: currentRoute }, async () => {
+      span.admitted();
+      let inFlight: GatewayKernelInFlightHandle | null = null;
+      let lifecycleFailure: GatewayRequestKernelError | null = null;
       try {
-        prepared = await abortable(
-          Promise.resolve(opts.adapter.prepareAttempt(attemptContext)),
+        inFlight = await abortable(
+          Promise.resolve(
+            opts.inFlight.register({
+              requestId: base.requestId,
+              correlationId,
+              laneId: opts.request.lane.id,
+              provider,
+              startedAt: base.startedAt,
+              isStreaming: () => streaming,
+              abort: (reason) => requestController.abort(cancellationError(reason)),
+            }),
+          ),
           requestController.signal,
         );
-      } catch (error) {
-        preparationFailure = normalizeError(error, requestController.signal);
-      } finally {
-        if (measureAuth) span.endStage('auth');
-      }
-      if (preparationFailure) {
-        await opts.admission.observeAttempt?.({
-          context: attemptContext,
-          response: null,
-          error: preparationFailure,
-        });
-        if (preparationFailure.retryable && attempt < opts.policy.maxAttempts) {
-          const next = await chooseFailover({
-            currentRoute,
-            attempt,
-            lastResponse: null,
-            lastError: preparationFailure,
-          });
-          if (next) {
-            route = currentRoute = next;
-            triedRouteKeys.add(next.key);
-            span.recordFailover();
-            failovers++;
-            continue;
-          }
-        }
-        throw preparationFailure;
-      }
 
-      span.recordAttempt();
-      span.beginStage('upstreamTtfb');
-      let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
-      let attemptFailure: GatewayRequestKernelError | null = null;
-      try {
-        response = await withDeadline({
-          parent: requestController.signal,
-          timeoutMs: opts.policy.ttfbTimeoutMs,
-          error: () =>
-            new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${opts.policy.ttfbTimeoutMs}ms`, {
-              code: 'ttfb-timeout',
-              outcome: 'upstream-error',
-              status: 504,
-              retryable: true,
-            }),
-          run: (signal) => opts.adapter.executeAttempt(prepared, { ...attemptContext, signal }),
-        });
-      } catch (error) {
-        attemptFailure = normalizeError(error, requestController.signal);
-      } finally {
-        span.endStage('upstreamTtfb');
-      }
-      if (attemptFailure) {
-        await opts.admission.observeAttempt?.({
-          context: attemptContext,
-          response: null,
-          error: attemptFailure,
-        });
-        if (attemptFailure.retryable && attempt < opts.policy.maxAttempts) {
-          const next = await chooseFailover({
-            currentRoute,
-            attempt,
-            lastResponse: null,
-            lastError: attemptFailure,
+        span.beginStage('bodyRead');
+        let body: Buffer;
+        try {
+          body = await readBoundedGatewayRequestBody({
+            source: opts.request.body,
+            maxBytes: opts.policy.maxBodyBytes,
+            timeoutMs: opts.policy.bodyReadTimeoutMs,
+            signal: requestController.signal,
           });
-          if (next) {
-            route = currentRoute = next;
-            triedRouteKeys.add(next.key);
-            span.recordFailover();
-            failovers++;
-            continue;
-          }
+        } finally {
+          span.endStage('bodyRead');
         }
-        throw attemptFailure;
-      }
 
-      validateRoute(opts.request.lane, { ...currentRoute, transport: response.transport }, pin, false);
-      span.setTransport(response.transport);
-      try {
-        await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
-      } catch (error) {
-        try {
-          await response.discard?.();
-        } catch (discardError) {
-          throw new AggregateError(
-            [error, discardError],
-            'gateway attempt observation and response cleanup both failed',
-          );
-        }
-        throw error;
-      }
-      if (response.retryable && attempt < opts.policy.maxAttempts) {
-        let next: GatewayKernelRoute<TRoute> | null;
-        try {
-          next = await chooseFailover({
-            currentRoute,
+        for (let attempt = 1; attempt <= opts.policy.maxAttempts; attempt++) {
+          attempts = attempt;
+          const attemptContext: GatewayKernelAttemptContext<TRoute> = {
+            ...base,
+            route: currentRoute,
+            body,
             attempt,
-            lastResponse: response,
-            lastError: null,
-          });
-        } catch (error) {
+            maxAttempts: opts.policy.maxAttempts,
+            triedRouteKeys: [...triedRouteKeys],
+          };
+          span.setTransport(currentRoute.transport);
+          const measureAuth = provider !== 'local';
+          if (measureAuth) span.beginStage('auth');
+          let prepared!: TPrepared;
+          let preparationFailure: GatewayRequestKernelError | null = null;
           try {
-            await response.discard?.();
-          } catch (discardError) {
-            throw new AggregateError(
-              [error, discardError],
-              'gateway failover selection and response cleanup both failed',
+            prepared = await abortable(
+              Promise.resolve(opts.adapter.prepareAttempt(attemptContext)),
+              requestController.signal,
             );
+          } catch (error) {
+            preparationFailure = normalizeError(error, requestController.signal);
+          } finally {
+            if (measureAuth) span.endStage('auth');
           }
-          throw error;
+          if (preparationFailure) {
+            await opts.admission.observeAttempt?.({
+              context: attemptContext,
+              response: null,
+              error: preparationFailure,
+            });
+            if (preparationFailure.retryable && attempt < opts.policy.maxAttempts) {
+              const next = await chooseFailover({
+                currentRoute,
+                attempt,
+                lastResponse: null,
+                lastError: preparationFailure,
+              });
+              if (next) {
+                route = currentRoute = next;
+                triedRouteKeys.add(next.key);
+                span.recordFailover();
+                failovers++;
+                continue;
+              }
+            }
+            throw preparationFailure;
+          }
+
+          span.recordAttempt();
+          span.beginStage('upstreamTtfb');
+          let response!: GatewayKernelUpstreamResponse<TChunk, TMetadata>;
+          let attemptFailure: GatewayRequestKernelError | null = null;
+          try {
+            response = await withDeadline({
+              parent: requestController.signal,
+              timeoutMs: opts.policy.ttfbTimeoutMs,
+              error: () =>
+                new GatewayRequestKernelError(`gateway upstream TTFB exceeded ${opts.policy.ttfbTimeoutMs}ms`, {
+                  code: 'ttfb-timeout',
+                  outcome: 'upstream-error',
+                  status: 504,
+                  retryable: true,
+                }),
+              run: (signal) => opts.adapter.executeAttempt(prepared, { ...attemptContext, signal }),
+            });
+          } catch (error) {
+            attemptFailure = normalizeError(error, requestController.signal);
+          } finally {
+            span.endStage('upstreamTtfb');
+          }
+          if (attemptFailure) {
+            await opts.admission.observeAttempt?.({
+              context: attemptContext,
+              response: null,
+              error: attemptFailure,
+            });
+            if (attemptFailure.retryable && attempt < opts.policy.maxAttempts) {
+              const next = await chooseFailover({
+                currentRoute,
+                attempt,
+                lastResponse: null,
+                lastError: attemptFailure,
+              });
+              if (next) {
+                route = currentRoute = next;
+                triedRouteKeys.add(next.key);
+                span.recordFailover();
+                failovers++;
+                continue;
+              }
+            }
+            throw attemptFailure;
+          }
+
+          validateRoute(opts.request.lane, { ...currentRoute, transport: response.transport }, pin, false);
+          span.setTransport(response.transport);
+          try {
+            await opts.admission.observeAttempt?.({ context: attemptContext, response, error: null });
+          } catch (error) {
+            try {
+              await response.discard?.();
+            } catch (discardError) {
+              throw new AggregateError(
+                [error, discardError],
+                'gateway attempt observation and response cleanup both failed',
+              );
+            }
+            throw error;
+          }
+          if (response.retryable && attempt < opts.policy.maxAttempts) {
+            let next: GatewayKernelRoute<TRoute> | null;
+            try {
+              next = await chooseFailover({
+                currentRoute,
+                attempt,
+                lastResponse: response,
+                lastError: null,
+              });
+            } catch (error) {
+              try {
+                await response.discard?.();
+              } catch (discardError) {
+                throw new AggregateError(
+                  [error, discardError],
+                  'gateway failover selection and response cleanup both failed',
+                );
+              }
+              throw error;
+            }
+            if (next) {
+              await response.discard?.();
+              route = currentRoute = next;
+              triedRouteKeys.add(next.key);
+              span.recordFailover();
+              failovers++;
+              continue;
+            }
+          }
+
+          streaming = response.streaming;
+          span.setStreaming(streaming);
+          if (streaming) span.beginStage('stream');
+          try {
+            await pumpResponse({
+              response,
+              downstream: opts.downstream,
+              signal: requestController.signal,
+              bodyIdleTimeoutMs: opts.policy.bodyIdleTimeoutMs,
+              downstreamIdleTimeoutMs: opts.policy.downstreamIdleTimeoutMs,
+            });
+          } finally {
+            if (streaming) span.endStage('stream');
+          }
+          finalStatus = response.status;
+          finalOutcome = response.outcome ?? classifyGatewayTelemetryOutcome(response.status);
+          break;
         }
-        if (next) {
-          await response.discard?.();
-          route = currentRoute = next;
-          triedRouteKeys.add(next.key);
-          span.recordFailover();
-          failovers++;
-          continue;
+
+        if (finalStatus === null || !route) {
+          throw new GatewayRequestKernelError('gateway request exhausted its attempt budget without a response', {
+            code: 'upstream-error',
+            outcome: 'upstream-error',
+            status: 502,
+          });
         }
+      } catch (error) {
+        lifecycleFailure = normalizeError(error, requestController.signal);
+        finalOutcome = lifecycleFailure.outcome;
+        finalStatus = lifecycleFailure.status;
       }
 
-      streaming = response.streaming;
-      span.setStreaming(streaming);
-      if (streaming) span.beginStage('stream');
-      try {
-        await pumpResponse({
-          response,
-          downstream: opts.downstream,
-          signal: requestController.signal,
-          bodyIdleTimeoutMs: opts.policy.bodyIdleTimeoutMs,
-          downstreamIdleTimeoutMs: opts.policy.downstreamIdleTimeoutMs,
+      let unregisterFailure: unknown;
+      if (inFlight) {
+        try {
+          await inFlight.unregister({ outcome: finalOutcome, status: finalStatus });
+        } catch (error) {
+          unregisterFailure = error;
+        }
+      }
+      if (unregisterFailure !== undefined) {
+        throw new GatewayRequestKernelError('gateway in-flight unregister failed before slot release', {
+          code: 'gateway-error',
+          outcome: 'gateway-error',
+          status: 500,
+          cause: lifecycleFailure ? new AggregateError([lifecycleFailure, unregisterFailure]) : unregisterFailure,
         });
-      } finally {
-        if (streaming) span.endStage('stream');
       }
-      finalStatus = response.status;
-      finalOutcome = response.outcome ?? classifyGatewayTelemetryOutcome(response.status);
-      break;
-    }
-
-    if (finalStatus === null || !route) {
-      throw new GatewayRequestKernelError('gateway request exhausted its attempt budget without a response', {
-        code: 'upstream-error',
-        outcome: 'upstream-error',
-        status: 502,
-      });
-    }
+      if (lifecycleFailure) throw lifecycleFailure;
+    });
   } catch (error) {
     failure = normalizeError(error, requestController.signal);
     finalOutcome = failure.outcome;
@@ -835,25 +858,12 @@ export async function executeGatewayRequestKernel<TRoute, TPrepared, TChunk, TMe
     clearTimeout(ceilingTimer);
     opts.request.signal?.removeEventListener('abort', onCallerAbort);
     opts.downstream.signal?.removeEventListener('abort', onDownstreamAbort);
-    const cleanup = await Promise.allSettled([
-      inFlight?.unregister({ outcome: finalOutcome, status: finalStatus }),
-      lease?.release({ outcome: finalOutcome, status: finalStatus }),
-    ]);
-    const rejected = cleanup.find((result): result is PromiseRejectedResult => result.status === 'rejected');
-    if (rejected) {
-      cleanupFailure = normalizeError(rejected.reason, requestController.signal);
-      if (!failure) {
-        finalOutcome = 'gateway-error';
-        finalStatus = 500;
-      }
-    }
     timeline = span.finish(finalOutcome, finalStatus);
   }
 
-  const terminalFailure = failure ?? cleanupFailure;
-  if (terminalFailure) {
-    terminalFailure.timeline = timeline ?? undefined;
-    throw terminalFailure;
+  if (failure) {
+    failure.timeline = timeline ?? undefined;
+    throw failure;
   }
   if (!route || finalStatus === null || !timeline) {
     throw new GatewayRequestKernelError('gateway request kernel failed to produce a terminal result', {

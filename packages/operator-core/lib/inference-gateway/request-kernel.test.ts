@@ -139,14 +139,14 @@ function fixture(lane: GatewayLaneDescriptor, overrides: FixtureOverrides = {}) 
     policy: { ...DEFAULT_POLICY, ...overrides.policy },
     telemetry,
     admission: {
-      async acquire({ route }) {
+      async run({ route }, task) {
         events.push(`admit:${route.value.name}`);
-        return {
-          release({ outcome, status }) {
-            releaseCount++;
-            events.push(`release:${outcome}:${status ?? 'null'}`);
-          },
-        };
+        try {
+          return await task();
+        } finally {
+          releaseCount++;
+          events.push('release');
+        }
       },
       observeAttempt({ context, response, error }) {
         events.push(`observe:${context.route.value.name}:${response?.status ?? error?.code ?? 'unknown'}`);
@@ -311,9 +311,10 @@ describe.each(laneCases)('$id shared request lifecycle', ({ lane }) => {
         'downstream:write:second',
         'downstream:end',
         'inflight:unregister:ok:200',
-        'release:ok:200',
+        'release',
       ]),
     );
+    expect(f.events.indexOf('inflight:unregister:ok:200')).toBeLessThan(f.events.indexOf('release'));
     expect(f.telemetry.snapshot().requests).toMatchObject({
       started: 1,
       finalized: 1,
