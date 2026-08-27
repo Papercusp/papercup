@@ -30,7 +30,7 @@
 import { useEffect } from 'react';
 import { onSyncBusEvent } from '@papercusp/sync';
 import { getOrCreateClientId } from '@papercusp/operator-core/lib/ui/client-id';
-import { canUseContentOriginDesktopActions } from '@/lib/ipc-status-tauri';
+import { canUseContentOriginDesktopActions, isDesktop } from '@/lib/ipc-status-tauri';
 
 const CONSOLE_LAUNCH_REQUEST_EVENT = 'console.launch-request';
 
@@ -70,7 +70,27 @@ async function handleLaunchRequest(args: LaunchRequestArgs): Promise<void> {
   const clientId = getOrCreateClientId();
   if (!ticket || !clientId) return;
   if (args.targetClientId && args.targetClientId !== clientId) return;
-  if (!await canUseContentOriginDesktopActions()) return;
+  if (!await canUseContentOriginDesktopActions()) {
+    // A plain browser must leave an untargeted ticket available for the real
+    // desktop shell. A Tauri webview, however, can identify that its
+    // content-origin IPC bridge is unavailable and fail its own request
+    // immediately instead of making the agent wait for the 30s timeout.
+    if (!isDesktop()) return;
+    const claim = await postJson('/api/agent-mcp/console/launch-claim', {
+      ticket,
+      clientId,
+    }) as LaunchClaimResponse | null;
+    if (!claim || claim.granted !== true) return;
+    await postJson('/api/agent-mcp/console/launch-result', {
+      ticket,
+      ok: false,
+      error:
+        'Tauri desktop bridge unavailable — reopen the Papercusp desktop window before retrying',
+    }).catch(() => {
+      /* operator unreachable — its timeout is the backstop */
+    });
+    return;
+  }
 
   // The envelope is returned exactly once by the atomic claim. It never rides
   // the broadcast SSE stream, and a wrong client id cannot consume the ticket.
