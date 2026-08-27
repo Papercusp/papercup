@@ -111,6 +111,24 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
     expect(claimResumeMock).not.toHaveBeenCalled();
   });
 
+  it('passes the canonical local-liveness witness to the locked acquisition', async () => {
+    const evidence = { version: 1, kind: 'no-live-codex-writer' };
+    const res = await postResumed({
+      advSessionId: 42,
+      resumeClaimKey: 'resume-claim-evidence',
+      localLivenessEvidence: evidence,
+    });
+
+    expect(res.status).toBe(200);
+    expect(acquireResumeMock).toHaveBeenCalledWith(
+      42,
+      'resume-claim-evidence',
+      undefined,
+      undefined,
+      evidence,
+    );
+  });
+
   it('keeps legacy callers without a replay key compatible', async () => {
     const res = await postResumed({ advSessionId: 42 });
 
@@ -175,6 +193,24 @@ describe('POST bootstrap-su/session-resumed — atomic resume claim', () => {
       const res = await postResumed({ advSessionId: 42, resumeClaimKey });
       expect(res.status).toBe(400);
     }
+    expect(claimResumeMock).not.toHaveBeenCalled();
+  });
+
+  it('400s malformed local-liveness evidence without touching the claim', async () => {
+    for (const localLivenessEvidence of [
+      null,
+      { version: 1, kind: 'free' },
+      { version: 1, kind: 'no-live-codex-writer', extra: true },
+      'no-live-codex-writer',
+    ]) {
+      const res = await postResumed({
+        advSessionId: 42,
+        resumeClaimKey: 'resume-claim-malformed-evidence',
+        localLivenessEvidence,
+      });
+      expect(res.status).toBe(400);
+    }
+    expect(acquireResumeMock).not.toHaveBeenCalled();
     expect(claimResumeMock).not.toHaveBeenCalled();
   });
 });

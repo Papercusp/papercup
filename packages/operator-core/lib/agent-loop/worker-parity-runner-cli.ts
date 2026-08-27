@@ -21,6 +21,11 @@ import {
   type WorkerParityArmResult,
   type WorkerParityRoutePlan,
 } from './worker-parity-runner';
+import {
+  admissionContextFromEnvironment,
+  beginGovernedExecution,
+  governedExecutionRuntime,
+} from '../resource-governor/execution';
 
 // This one-shot driver never embeds text, but account-pool resolution imports
 // the shared sync graph. Point that graph at the maintained sidecar before any
@@ -179,6 +184,18 @@ async function runIsolatedArm(args: CliArgs): Promise<void> {
 }
 
 async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseConfig: Record<string, unknown>, projectDir: string): Promise<WorkerParityArmResult> {
+  const execution = await beginGovernedExecution(
+    {
+      idempotencyKey: `worker-parity:${args.cohortId}:${input.runId}`,
+      admissionClass: 'process',
+      demand: { cpuWeight: 1 },
+      payloadRef: `worker-parity:${input.runId}`,
+      parent: admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT),
+      metadata: { processKind: 'worker-parity', arm: input.arm, pairIndex: input.pairIndex },
+    },
+    { owner: process.env.PAPERCUSP_SID?.trim() || `worker-parity:${input.runId}` },
+    governedExecutionRuntime(args.workspaceId, 'agent-process'),
+  );
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...workerParityArmEnv(input.routeEnv),
@@ -192,6 +209,7 @@ async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseC
     PAPERCUSP_PARITY_PROJECT_DIR: projectDir,
     PAPERCUSP_SPAWN_MODEL: input.model,
     HARNESS_CONFIG_JSON: JSON.stringify(workerParityArmConfig(baseConfig as never, input.arm, input.model)),
+    PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
   };
   const script = fileURLToPath(import.meta.url);
   return new Promise((resolve, reject) => {
@@ -211,8 +229,11 @@ async function spawnArmProcess(input: WorkerParityArmInput, args: CliArgs, baseC
       stderr = `${stderr}${chunk}`.slice(-128_000);
       process.stderr.write(`[parity ${input.pairIndex}/${input.arm}] ${chunk}`);
     });
-    child.on('error', reject);
-    child.on('close', (code, signal) => {
+    child.on('error', (error) => {
+      void execution.cancel(`worker parity spawn error: ${error.message}`).finally(() => reject(error));
+    });
+    child.on('close', async (code, signal) => {
+      await execution.finish({ cpuWeight: 1 });
       if (code !== 0) {
         reject(new Error(
           `parity ${input.runId} child failed code=${code ?? 'null'} signal=${signal ?? 'none'}: `

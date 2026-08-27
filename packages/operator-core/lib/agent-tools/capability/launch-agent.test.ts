@@ -593,6 +593,45 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(textOf(res)).toContain("agent's first turn");
   });
 
+  it('promotes a dormant critical resume to an identity-preserving fresh successor', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    fetchContextPressureMock.mockResolvedValue(new Map([['su-a1a71', 'critical']]));
+    renderCarryBriefTextMock.mockReturnValue('checkpoint: recover the held claim');
+    verifyFreshLaunchStartedMock.mockResolvedValue({
+      agentStarted: true,
+      waitedMs: 5,
+      sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-auto-successor-1', successfulCalls: 1 }],
+      note: 'automatic successor verified',
+    });
+
+    const res = await launchAgent.handler({
+      resume: { agentId: 'su-a1a71' },
+      brief: 'continue the recovery',
+    }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnedCommand()).toContain('--agent=claude --owner-id=su-a1a71 --harness=papercusp');
+    expect(spawnedCommand()).not.toContain('--resume=');
+    expect(spawnedCommand()).not.toContain('--fork');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('continue the recovery');
+    expect(spawnedEnv().PAPERCUSP_KICKOFF_PROMPT).toContain('checkpoint: recover the held claim');
+    expect(buildCarryBriefMock).toHaveBeenCalledWith('su-a1a71', { workspaceId: 'ws-test' });
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalledWith(
+      expect.objectContaining({ expected: 1, expectedOwnerIds: ['su-a1a71'] }),
+    );
+    expect(dataOf(res)?.launch).toMatchObject({
+      mode: 'successor',
+      resumedOwnerId: 'su-a1a71',
+      agentStarted: true,
+      freshVerdict: {
+        agentStarted: true,
+        sessions: [{ ownerId: 'su-a1a71', sessionId: 'session-auto-successor-1' }],
+      },
+    });
+    expect(textOf(res)).toContain('DORMANT at CRITICAL context pressure');
+  });
+
   it('refuses an identity-preserving successor when the source is still live', async () => {
     resolveResumeTargetMock.mockResolvedValue({ ...dead, live: true, endedAt: null });
 

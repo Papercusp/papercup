@@ -49,15 +49,15 @@ vi.mock('../../../console-spawn', () => ({
   spawnHeadless: (...args: unknown[]) => spawnHeadlessMock(...args),
 }));
 vi.mock('../../../resource-governor/spawn-execution', () => ({
-  spawnGovernedAgentProcess: async (
+  spawnGovernedAgentProcess: (
     input: { idempotencyKey: string },
-    spawnProcess: (context: Record<string, unknown>) => Promise<Record<string, unknown>>,
+    spawnProcess: (context: Record<string, unknown>) => Record<string, unknown>,
   ) => {
     const admissionContext = {
       receiptId: `receipt:${input.idempotencyKey}`,
       leaseId: `lease:${input.idempotencyKey}`,
     };
-    const result = await spawnProcess(admissionContext);
+    const result = spawnProcess(admissionContext);
     return result.status === 'ok' ? { ...result, admissionContext } : result;
   },
 }));

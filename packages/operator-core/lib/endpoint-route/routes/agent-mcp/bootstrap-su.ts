@@ -35,6 +35,7 @@ import {
   endedRecordedOwnerIds,
   acquireAdvSessionResume,
   finalizeAdvSessionResume,
+  isAdvSessionLocalLivenessEvidence,
   markAdvSessionEnded,
   parseKilledBySignalReport,
   claimAdvSessionResume,
@@ -3215,8 +3216,13 @@ const sessionResumed = defineTool({
     if (denied) return denied;
     let advSessionId: number | null = null;
     let resumeClaimKey: string | null = null;
+    let localLivenessEvidence: unknown = undefined;
     try {
-      const body = (await req.json()) as { advSessionId?: unknown; resumeClaimKey?: unknown };
+      const body = (await req.json()) as {
+        advSessionId?: unknown;
+        resumeClaimKey?: unknown;
+        localLivenessEvidence?: unknown;
+      };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
@@ -3229,6 +3235,14 @@ const sessionResumed = defineTool({
           return jsonRes({ error: 'resumeClaimKey must be a non-empty string of at most 200 characters' }, 400);
         }
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'localLivenessEvidence')) {
+        if (!isAdvSessionLocalLivenessEvidence(body.localLivenessEvidence)) {
+          return jsonRes({
+            error: 'localLivenessEvidence must be { version: 1, kind: \'no-live-codex-writer\' }',
+          }, 400);
+        }
+        localLivenessEvidence = body.localLivenessEvidence;
+      }
     } catch {
       /* fall through to the 400 */
     }
@@ -3237,7 +3251,15 @@ const sessionResumed = defineTool({
     }
     try {
       if (resumeClaimKey) {
-        const reservation = await acquireAdvSessionResume(advSessionId, resumeClaimKey);
+        const reservation = localLivenessEvidence === undefined
+          ? await acquireAdvSessionResume(advSessionId, resumeClaimKey)
+          : await acquireAdvSessionResume(
+            advSessionId,
+            resumeClaimKey,
+            undefined,
+            undefined,
+            localLivenessEvidence,
+          );
         return jsonRes({ ok: true, ...reservation, reactivated: reservation.acquired });
       }
       const claimed = await claimAdvSessionResume(advSessionId, null);

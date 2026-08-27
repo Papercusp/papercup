@@ -25,6 +25,7 @@ import {
 } from './loop';
 import {
   decideMonitorAdmission,
+  hasActiveMonitorForOwnerPredicate,
   listActiveMonitorOwnersForPredicate,
   readMonitorOwnerTurnEvidence,
 } from './monitor-policy';
@@ -135,6 +136,18 @@ describe('loop surface round-trip (real PG)', () => {
         { sql },
       ),
     ).toEqual([OWNER]);
+    expect(
+      await hasActiveMonitorForOwnerPredicate(
+        { workspaceId: WS, ownerId: OWNER, predicateKey: ' FLEET:ALPHA ' },
+        { sql },
+      ),
+    ).toBe(true);
+    expect(
+      await hasActiveMonitorForOwnerPredicate(
+        { workspaceId: WS, ownerId: OWNER, predicateKey: 'fleet:beta' },
+        { sql },
+      ),
+    ).toBe(false);
   });
 
   it('anti-babysitting P-003: resolves canonical session_turn owner authority and exact quote from real PG', async () => {

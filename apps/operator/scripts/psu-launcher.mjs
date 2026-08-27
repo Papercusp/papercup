@@ -7271,6 +7271,7 @@ export async function reportSessionEnded(advSessionId, exitCode, opts = {}) {
  * @property {()=>number} [now]
  * @property {(message:string)=>any} [onNotice]
  * @property {string} [resumeClaimKey]
+ * @property {unknown} [localLivenessEvidence]
  *
  * @param {number|string|null} advSessionId the adv_sessions PK to claim
  * @param {ResumeClaimOptions} [opts]
@@ -7288,6 +7289,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
     now = () => Date.now(),
     onNotice = (message) => process.stderr.write(message),
     resumeClaimKey = randomUUID(),
+    localLivenessEvidence = null,
   } = opts;
   if (!advSessionId) return { claimed: false, reason: "no-session" };
   const claimKey = String(resumeClaimKey || "").trim();
@@ -7300,6 +7302,9 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
   }
   try {
     const tok = token ?? readToken();
+    const canonicalLocalLivenessEvidence = normalizeResumeLocalLivenessEvidence(
+      localLivenessEvidence,
+    );
     const response = await fetchWithResilience(
       operatorUrl + "/api/agent-mcp/console/bootstrap-su/session-resumed",
       {
@@ -7311,6 +7316,9 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
         body: JSON.stringify({
           advSessionId: Number(advSessionId),
           resumeClaimKey: claimKey,
+          ...(canonicalLocalLivenessEvidence
+            ? { localLivenessEvidence: canonicalLocalLivenessEvidence }
+            : {}),
         }),
       },
       {
@@ -7444,6 +7452,7 @@ export async function reportSessionResumed(advSessionId, opts = {}) {
  * @property {()=>number} [now]
  * @property {(message:string)=>any} [onNotice]
  * @property {number} [waitBudgetMs]
+ * @property {unknown} [localLivenessEvidence]
  */
 
 /**
@@ -7467,13 +7476,20 @@ export async function acquireSessionResumeWithRecovery(
     now = () => Date.now(),
     onNotice = (message) => console.error(message),
     waitBudgetMs = 75_000,
+    localLivenessEvidence = null,
   } = opts;
   const claimKey = String(resumeClaimKey || "").trim();
   const startedAt = now();
+  const canonicalLocalLivenessEvidence = normalizeResumeLocalLivenessEvidence(
+    localLivenessEvidence,
+  );
 
   while (true) {
     const outcome = await reportImpl(advSessionId, {
       resumeClaimKey: claimKey,
+      ...(canonicalLocalLivenessEvidence
+        ? { localLivenessEvidence: canonicalLocalLivenessEvidence }
+        : {}),
     });
     if (outcome.claimed || outcome.status !== "reserved") return outcome;
 
@@ -9011,6 +9027,64 @@ export function codexThreadWriterHolder(
 }
 
 /**
+ * The only local liveness witness accepted by the resume endpoint. Keep this
+ * closed and exact: a probe result that is missing, malformed, or from an
+ * unknown failure mode must not relax the server's recent-active guard.
+ */
+export const NO_LIVE_CODEX_WRITER_EVIDENCE = Object.freeze({
+  version: 1,
+  kind: "no-live-codex-writer",
+});
+
+/** Normalize a wire value to the one canonical local-liveness witness. */
+export function normalizeResumeLocalLivenessEvidence(value) {
+  if (
+    value == null ||
+    typeof value !== "object" ||
+    Array.isArray(value)
+  )
+    return null;
+  const keys = Object.keys(value);
+  if (
+    keys.length !== 2 ||
+    !keys.includes("version") ||
+    !keys.includes("kind") ||
+    value.version !== 1 ||
+    value.kind !== "no-live-codex-writer"
+  )
+    return null;
+  return { ...NO_LIVE_CODEX_WRITER_EVIDENCE };
+}
+
+/**
+ * Build the positive witness for an exact Codex resume only when both local
+ * liveness oracles positively say there is no competing writer. Every other
+ * result remains unknown and therefore returns null (fail closed).
+ */
+export function normalizeCodexResumeLocalLivenessEvidence({
+  agent,
+  fork = false,
+  forceResume = process.env.PSU_FORCE_RESUME,
+  liveHost,
+  writerHolder,
+} = {}) {
+  if (
+    agent !== "codex" ||
+    fork ||
+    forceResume === "1" ||
+    liveHost !== null ||
+    writerHolder == null ||
+    typeof writerHolder !== "object" ||
+    Array.isArray(writerHolder) ||
+    writerHolder.held !== false ||
+    (writerHolder.reason !== "free" &&
+      writerHolder.reason !== "no-lock-file")
+  )
+    return null;
+  return normalizeResumeLocalLivenessEvidence(NO_LIVE_CODEX_WRITER_EVIDENCE);
+}
+
+/**
  * The CODEX_HOME a resume of `session` will run in — an explicit `codexHome`
  * (WI-3884: the home a rollout was actually FOUND in by disk scan) wins over the
  * row-id derivation. Extracted so the writer-lock guard, the picker and the spawn
@@ -9108,8 +9182,11 @@ async function launchResume(
   // no_live_pty_host on a live session; the 2026-07-08 su-a8f52 incident). A
   // FORK is the supported run-alongside path (fresh identity); PSU_FORCE_RESUME=1
   // overrides for recovery of a wedged-but-technically-alive host.
+  let liveHostForResume;
+  let localLivenessEvidence = null;
   if (!fork && session.coordOwnerId && process.env.PSU_FORCE_RESUME !== "1") {
     const live = findLiveHostFor(session.coordOwnerId);
+    liveHostForResume = live;
     if (live) {
       const activity = classifyLiveHostActivity(live);
       const lastActivityIso = activity.lastActivityAt
@@ -9161,6 +9238,15 @@ async function launchResume(
       console.error(codexActiveWriterMessage(session, holder));
       process.exit(2);
     }
+    // Only the two known-positive local oracle results can relax the server's
+    // recent-active guard. Unknown/error results remain fail-closed.
+    localLivenessEvidence = normalizeCodexResumeLocalLivenessEvidence({
+      agent: session.agent,
+      fork,
+      forceResume: process.env.PSU_FORCE_RESUME,
+      liveHost: liveHostForResume,
+      writerHolder: holder,
+    });
   }
   let resumeClaimed = false;
   let resumeClaimKey = null;
@@ -9237,7 +9323,11 @@ async function launchResume(
         process.exit(2);
       }
     }
-    const claim = await acquireSessionResumeWithRecovery(session.id);
+    const claim = await acquireSessionResumeWithRecovery(session.id, {
+      ...(localLivenessEvidence
+        ? { localLivenessEvidence }
+        : {}),
+    });
     if (!claim.claimed) {
       console.error(
         `psu: refusing to resume session #${session.id} — ${describeResumeClaimRefusal(claim, { agent: session.agent })}; no agent process was spawned.`,

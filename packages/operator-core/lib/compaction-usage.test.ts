@@ -122,6 +122,11 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
       const stale = Date.now() - 71.5 * 60_000;
       utimesSync(path, stale / 1000, stale / 1000);
 
+      // PERMANENT POSITIVE CONTROL, and the reason this guard is falsifiable rather
+      // than merely green: codexContextSnapshotFromRollout IS the pre-fix code path
+      // (codexSnapshotForRef used to return it unconditionally). Asserting it still
+      // yields 227005 from this exact file means the null below can ONLY come from
+      // the new gate — delete the gate and this pair contradicts itself.
       expect(codexContextSnapshotFromRollout(path)?.tokens).toBe(227_005);
       expect(
         await estimateContextTokens(

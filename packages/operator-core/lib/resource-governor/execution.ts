@@ -79,3 +79,30 @@ export function governedExecutionRuntime(workspaceId: string, namespace = 'agent
 export function resetGovernedExecutionRuntimesForTests(): void {
   runtimes.clear();
 }
+
+/** Decode the typed parent lineage propagated through a spawned process env. */
+export function admissionContextFromEnvironment(value: string | undefined): AdmissionContext | undefined {
+  if (!value?.trim()) return undefined;
+  try {
+    const context = JSON.parse(value) as Partial<AdmissionContext>;
+    if (
+      context.contractVersion !== 1
+      || typeof context.requestId !== 'string'
+      || !context.requestId
+      || typeof context.rootRequestId !== 'string'
+      || !context.rootRequestId
+      || typeof context.idempotencyKey !== 'string'
+      || !context.idempotencyKey
+      || typeof context.admissionClass !== 'string'
+      || typeof context.priority !== 'number'
+      || !context.demand
+      || typeof context.demand !== 'object'
+      || typeof context.depth !== 'number'
+      || typeof context.createdAtMs !== 'number'
+      || typeof context.decisionGeneration !== 'number'
+    ) return undefined;
+    return Object.freeze(context as AdmissionContext);
+  } catch {
+    return undefined;
+  }
+}

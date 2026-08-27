@@ -358,8 +358,8 @@ export default defineTool({
     // cannot safely identify one another by roster ordering after launch.
     const respawnOwnerId = (args as typeof args & { __respawnOwnerId?: string })
       .__respawnOwnerId?.trim() || null;
-    const isResume = !!(args.resume?.agentId || args.resume?.sessionId);
-    const isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
+    let isResume = !!(args.resume?.agentId || args.resume?.sessionId);
+    let isSuccessor = !!(args.successor?.agentId || args.successor?.sessionId);
     const sourceAction = isResume || isSuccessor;
     if (args.successor && !isSuccessor) {
       return err('`successor` needs `agentId` or `sessionId` — pass the ended predecessor reference to recover.');
@@ -446,17 +446,17 @@ export default defineTool({
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
       let sourceStillLive = target.live;
-      if (isSuccessor) {
+      const prepareSuccessor = async (sourceKind: 'ended' | 'critical-dormant'): Promise<string | null> => {
         if (!target.ownerId) {
-          return err(
+          return (
             `Cannot start successor for ${target.sessionId}: the ended source has no coord owner id to pre-pin. ` +
-              'Use a fresh context-seeded launch instead; no process was opened.',
+            'Use a fresh context-seeded launch instead; no process was opened.'
           );
         }
         if (sourceStillLive) {
-          return err(
+          return (
             `Cannot start successor for ${target.ownerId}: the source session is still LIVE. ` +
-              'A fresh process cannot safely retain an active owner identity; use ordinary resume, which forks live sources.',
+            'A fresh process cannot safely retain an active owner identity; use ordinary resume, which forks live sources.'
           );
         }
         // A successor must run the same backend as its predecessor. An explicit
@@ -466,22 +466,22 @@ export default defineTool({
           ? target.agent
           : null;
         if (target.agent && !sourceAgent) {
-          return err(
+          return (
             `Cannot start successor for ${target.ownerId}: the ended source recorded unsupported agent ${target.agent}. ` +
-              'No process was opened; launch a fresh agent with an explicit supported backend.',
+            'No process was opened; launch a fresh agent with an explicit supported backend.'
           );
         }
         if (args.agent && sourceAgent && args.agent !== sourceAgent) {
-          return err(
+          return (
             `Cannot start successor for ${target.ownerId}: requested agent ${args.agent} differs from the ended source agent ${sourceAgent}. ` +
-              'Omit agent to inherit the predecessor backend.',
+            'Omit agent to inherit the predecessor backend.'
           );
         }
         resumeAgent = sourceAgent;
         args.agent ??= sourceAgent ?? undefined;
         args.cwd ??= target.cwd ?? undefined;
         notes.push(
-          `✓ Fresh successor for ended session ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +
+          `✓ Fresh successor for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId} (${target.agent ?? 'agent'}) is pre-pinned to the original coord identity ${target.ownerId}; ` +
             'the predecessor remains untouched and its durable carry/claims are reused.',
         );
         try {
@@ -489,7 +489,7 @@ export default defineTool({
           const carry = await buildCarryBrief(target.ownerId, { workspaceId });
           const renderedCarry = renderCarryBriefText(carry);
           const rawBrief = [
-            `Fresh successor recovery for ended session ${target.sessionId}.`,
+            `Fresh successor recovery for ${sourceKind === 'critical-dormant' ? 'critical dormant source' : 'ended session'} ${target.sessionId}.`,
             `This is a NEW context retaining predecessor identity ${target.ownerId}; re-orient and verify live state before acting.`,
             args.brief?.trim() ? `Current recovery direction:\n${args.brief.trim()}` : null,
             renderedCarry ? `Predecessor carry/recovery brief:\n${renderedCarry}` : 'No carry brief was available; recover durable state with coord:orient { afterCompaction: true } and work_items:get before editing.',
@@ -501,11 +501,16 @@ export default defineTool({
             inlineNotice: true,
           });
         } catch (e) {
-          return err(
+          return (
             `Cannot start successor for ${target.ownerId}: failed to assemble its durable carry/recovery brief ` +
-              `(${(e as Error)?.message ?? e}). No process was opened.`,
+              `(${(e as Error)?.message ?? e}). No process was opened.`
           );
         }
+        return null;
+      };
+      if (isSuccessor) {
+        const successorFailure = await prepareSuccessor('ended');
+        if (successorFailure) return err(successorFailure);
       } else if (args.restoreVisible) {
         if (!target.live || !target.ownerId) {
           sourceStillLive = false;
@@ -585,11 +590,11 @@ export default defineTool({
         // Otherwise a sweeper stamped it on noticing the process was already gone, so
         // stating it as "ended <ts>" asserts something we do not know (WI-7126).
         const endedPhrase = describeSessionEndTime(target);
-        notes.push(
+        const sourceActionNote =
           fork
             ? `Forking session ${target.sessionId} (${target.agent ?? 'agent'}, ${sourceStillLive ? 'live' : endedPhrase}) — the fork mints a NEW coord id; find it in coord:presence.`
-            : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`,
-        );
+            : `Resuming session ${target.sessionId} (${target.agent ?? 'agent'}, ${endedPhrase}) — it re-attaches its ORIGINAL identity ${target.ownerId ?? '(unknown)'}.`;
+        let promotedToSuccessor = false;
 
         // EI-21007744826020808: a live source at the context cliff can technically
         // fork/resume, accept the kickoff injection, and then die before it can take
@@ -601,14 +606,32 @@ export default defineTool({
           try {
             const pressure = (await fetchContextPressure([target.ownerId])).get(target.ownerId);
             if (pressure === 'critical') {
-              return err(
-                `Cannot ${fork ? 'fork' : 'resume'} ${target.ownerId}: its current context is CRITICAL ` +
-                  '(at or above 90% of its compaction limit). The resumed transcript may boot but cannot ' +
-                  'reliably take another turn. Compact/recover that source first, or launch a FRESH agent ' +
-                  'with a context-seeded brief.',
-              );
-            }
-            if (pressure === 'high') {
+              // A dormant critical source cannot reliably take another turn, but
+              // it is also safe to replace: no live CLI is attached to its
+              // transcript. Promote this narrow case to the explicit fresh
+              // successor path so the singleton coord identity and durable claim
+              // survive without opening a duplicate live process. A resolved
+              // LIVE source remains refused, even if its host disappears during
+              // this call, because that liveness race is not proof of dormancy.
+              if (!target.live) {
+                const successorFailure = await prepareSuccessor('critical-dormant');
+                if (successorFailure) return err(successorFailure);
+                isResume = false;
+                isSuccessor = true;
+                fork = false;
+                promotedToSuccessor = true;
+                notes.push(
+                  `⚠ ${target.ownerId} is DORMANT at CRITICAL context pressure; ordinary ${args.fork ? 'fork' : 'resume'} was promoted to a fresh identity-preserving successor so the original coord identity and durable claim are retained.`,
+                );
+              } else {
+                return err(
+                  `Cannot ${fork ? 'fork' : 'resume'} ${target.ownerId}: its current context is CRITICAL ` +
+                    '(at or above 90% of its compaction limit). The resumed transcript may boot but cannot ' +
+                    'reliably take another turn. Compact/recover that source first, or launch a FRESH agent ' +
+                    'with a context-seeded brief.',
+                );
+              }
+            } else if (pressure === 'high') {
               notes.push(
                 `⚠ ${target.ownerId} is already at HIGH context pressure (≥80%); the ${fork ? 'fork' : 'resume'} may need to compact before doing useful work.`,
               );
@@ -619,6 +642,7 @@ export default defineTool({
             );
           }
         }
+        if (!promotedToSuccessor) notes.push(sourceActionNote);
         if (staleHeadlessRecovery) {
           const shutdown = await shutdownViaPty(target.ownerId!, {
             force: true,

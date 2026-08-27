@@ -1,17 +1,23 @@
 import { readFileSync } from 'node:fs';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+const { advSessionRowsMock, advSessionBeginMock } = vi.hoisted(() => {
+  const sql = vi.fn(async () => [] as unknown[]);
+  const begin = vi.fn(async (fn: (tx: typeof sql) => unknown) => fn(sql));
+  return { advSessionRowsMock: sql, advSessionBeginMock: begin };
+});
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: advSessionRowsMock }),
+  getOrgPg: () => ({ sql: Object.assign(advSessionRowsMock, { begin: advSessionBeginMock }) }),
 }));
 
 import {
   isDeadTerminalLaunch,
   isFailedTerminalLaunch,
+  acquireAdvSessionResume,
   fallbackCodexLaunchSpecFromAdvSession,
   hasAdvSessionTerminalEvidence,
+  isAdvSessionLocalLivenessEvidence,
   readAdvSessionLaunchRecordByOwner,
   markAdvSessionShutdownAcceptedByOwner,
   reactivateAdvSessionByOwner,
@@ -26,6 +32,8 @@ const SOURCE = readFileSync(new URL('./adv-sessions.ts', import.meta.url), 'utf8
 beforeEach(() => {
   advSessionRowsMock.mockReset();
   advSessionRowsMock.mockResolvedValue([]);
+  advSessionBeginMock.mockReset();
+  advSessionBeginMock.mockImplementation(async (fn: (tx: typeof advSessionRowsMock) => unknown) => fn(advSessionRowsMock));
 });
 
 describe('readAdvSessionLaunchRecordByOwner', () => {
@@ -158,7 +166,7 @@ describe('fallbackCodexLaunchSpecFromAdvSession', () => {
       workspaceId: 'papercusp-workspace',
       harnessSlug: null,
       profile: 'engineer',
-      contextSize: null,
+      contextSize: 'trimmed',
       personaTier: null,
       model: null,
       planSlug: 'drain-plan',
@@ -179,6 +187,78 @@ describe('fallbackCodexLaunchSpecFromAdvSession', () => {
   it('refuses a different owner or non-Codex session', () => {
     expect(fallbackCodexLaunchSpecFromAdvSession(row(), 'su-other')).toBeNull();
     expect(fallbackCodexLaunchSpecFromAdvSession(row({ agent: 'claude' }), 'su-current')).toBeNull();
+  });
+});
+
+describe('Codex resume local-liveness evidence (EI-21584243912058462)', () => {
+  it('accepts exactly the closed positive discriminant', () => {
+    expect(isAdvSessionLocalLivenessEvidence({
+      version: 1,
+      kind: 'no-live-codex-writer',
+    })).toBe(true);
+    for (const value of [
+      null,
+      undefined,
+      [],
+      { version: 1, kind: 'no-live-codex-writer', extra: true },
+      { version: '1', kind: 'no-live-codex-writer' },
+      { version: 1, kind: 'free' },
+    ]) {
+      expect(isAdvSessionLocalLivenessEvidence(value)).toBe(false);
+    }
+  });
+
+  it('uses the witness only inside the locked Codex recent-active transaction', async () => {
+    const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      const sql = strings.join(' ');
+      if (sql.includes('SELECT agent, ended_at')) {
+        return [{
+          agent: 'codex',
+          ended_at: null,
+          ended_by: null,
+          started_at: new Date(),
+          resume_claim_key: null,
+          resume_claimed_at: null,
+        }];
+      }
+      if (sql.includes('UPDATE harness_shared.adv_sessions')) {
+        return [{ lease_expires_at: new Date(Date.now() + 60_000).toISOString() }];
+      }
+      return [];
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(
+      42,
+      'resume-key',
+      60,
+      300,
+      { version: 1, kind: 'no-live-codex-writer' },
+    )).resolves.toMatchObject({ status: 'acquired', acquired: true });
+    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('FOR UPDATE'))).toBe(true);
+    expect(tx.mock.calls.some(([strings]) => strings.join(' ').includes('UPDATE harness_shared.adv_sessions'))).toBe(true);
+  });
+
+  it('keeps a recent row live when the evidence is malformed or unknown', async () => {
+    const tx = vi.fn(async (strings: TemplateStringsArray, ..._values: unknown[]) => {
+      if (strings.join(' ').includes('SELECT agent, ended_at')) {
+        return [{
+          agent: 'codex',
+          ended_at: null,
+          ended_by: null,
+          started_at: new Date(),
+          resume_claim_key: null,
+          resume_claimed_at: null,
+        }];
+      }
+      throw new Error('unexpected write');
+    });
+    advSessionBeginMock.mockImplementation(async (fn) => fn(tx as typeof advSessionRowsMock));
+
+    await expect(acquireAdvSessionResume(42, 'resume-key', 60, 300, {
+      version: 1,
+      kind: 'unknown',
+    })).resolves.toEqual({ status: 'live', acquired: false });
   });
 });
 

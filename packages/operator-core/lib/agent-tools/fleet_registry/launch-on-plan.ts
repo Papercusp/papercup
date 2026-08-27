@@ -43,6 +43,7 @@ import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless } from '../../console-spawn';
 import { spawnGovernedAgentProcess } from '../../resource-governor/spawn-execution';
+import type { AdmissionContext } from '../../resource-governor/admission';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveProjectDir } from '../../spawn-config';
@@ -3955,6 +3956,7 @@ export default defineTool({
       command: string;
       registered: boolean;
     } | null = null;
+    let leaderAdmissionContext: AdmissionContext | undefined;
     if (spawningLeader && spawnedLeaderOwnerId) {
       // The leader's brief is the standing leader job — the same text a caller-leader gets
       // in this tool's RESULT and would otherwise have had to relay by hand, which is the
@@ -4045,6 +4047,7 @@ export default defineTool({
             `with capability:launch-agent), or use a NEW fleet name to get a fresh spawned leader.`,
         );
       }
+      leaderAdmissionContext = leaderResult.admissionContext;
       // The leader is OPEN — only now does the registry learn who leads. Before this line the
       // fleet was honestly leaderless; after it, it names an agent that demonstrably launched.
       // Best-effort: a registry write failure must not orphan a leader that is already running,
@@ -4115,7 +4118,7 @@ export default defineTool({
                     idempotencyKey: `fleet-spawn:${fleetSlug}:${launchRequestedAt}:member:${i}`,
                     owner: memberOwnerId,
                     payloadRef: `fleet:${fleetSlug}:member:${memberOwnerId}`,
-                    parent: leaderResult.status === 'ok' ? leaderResult.admissionContext : undefined,
+                    parent: leaderAdmissionContext,
                     metadata: { launchedBy: ownerId, targetOwnerId: memberOwnerId, fleetSlug, role: 'member' },
                   },
                   (admissionContext) => {

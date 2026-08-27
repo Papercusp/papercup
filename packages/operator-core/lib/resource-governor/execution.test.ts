@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
 import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
-import { beginGovernedExecution } from './execution';
+import { admissionContextFromEnvironment, beginGovernedExecution } from './execution';
 
 function deps() {
   let record: any = null;
@@ -56,6 +56,18 @@ function deps() {
 }
 
 describe('governed execution lifecycle', () => {
+  it('round-trips a propagated parent context and rejects malformed env input', async () => {
+    const d = deps();
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'parent', admissionClass: 'agent' },
+      { owner: 'agent-launcher' },
+      d,
+    );
+    expect(admissionContextFromEnvironment(JSON.stringify(execution.context))).toEqual(execution.context);
+    expect(admissionContextFromEnvironment('{bad json')).toBeUndefined();
+    expect(admissionContextFromEnvironment(JSON.stringify({ requestId: 'partial' }))).toBeUndefined();
+  });
+
   it('persists, targets its own receipt, marks running, and releases exact actual demand', async () => {
     const d = deps();
     const execution = await beginGovernedExecution(
