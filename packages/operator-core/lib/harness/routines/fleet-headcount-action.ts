@@ -569,6 +569,15 @@ function governorLaunchTransaction(args: {
       transactionId: args.prior.transactionId,
       reason: `preserved prior launch transaction ${args.prior.transactionId} before governor ${args.action}`,
     });
+    for (const failure of args.prior.failed) {
+      history.push({
+        at: args.now,
+        action: 'observe',
+        transactionId: args.prior.transactionId,
+        ownerId: failure.ownerId,
+        reason: `preserved ${failure.phase} failure: ${failure.reason}`.slice(0, 500),
+      });
+    }
   }
   history.push({
     at: args.now,
@@ -748,11 +757,24 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       // running (the fleet may shrink back under the ceiling on its own), and the
       // reason belongs on the attempt so an operator sees WHY the fleet is being
       // held below target instead of reading it as the top-up silently breaking.
+      transaction = transactionForGovernorVerdict({
+        transaction,
+        liveMemberIds,
+        launcherOwnerId,
+        now,
+      });
+      const verdict = governorVerdictForAssessment(assessment, now, {
+        outcome: 'failed',
+        reason: goalLaunch.refusal.message,
+      });
+      recordGovernorVerdict(transaction, verdict);
+      transaction.recovery.nextAction = verdict.reason;
+      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
       await recordFleetHeadcountAttempt({
         workspaceId,
         fleetSlug,
         succeeded: false,
-        error: goalLaunch.refusal.message,
+        error: verdict.reason,
       });
       return;
     }
