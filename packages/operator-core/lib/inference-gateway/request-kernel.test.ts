@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { PriorityAdmissionQueue } from '@papercusp/papercusp-shared/agent';
 import { makeGatewayLaneRegistry, type GatewayLaneDescriptor } from './provider-adapters';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
@@ -531,6 +532,18 @@ describe.each(laneCases.filter(({ lane }) => lane.capabilities.accountPinning !=
 );
 
 describe('gateway request kernel contract guards', () => {
+  it('maps directly onto the existing PriorityAdmissionQueue.run task-settle seam', async () => {
+    const queue = new PriorityAdmissionQueue({ maxConcurrent: 1, maxQueued: 1 });
+    const f = fixture(laneRegistry.anthropicMessages);
+    f.options.admission.run = (_context, task) => queue.run(0, task, { tier: 1 });
+
+    const result = await executeGatewayRequestKernel(f.options);
+
+    expect(result).toMatchObject({ status: 200, outcome: 'ok' });
+    expect(queue.snapshot()).toMatchObject({ running: 0, queued: 0, maxConcurrent: 1 });
+    expect(f.events.indexOf('inflight:unregister:ok:200')).toBeGreaterThan(-1);
+  });
+
   it('fails closed when a local lane is given an account pin', async () => {
     const f = fixture(laneRegistry.localOpenAiChat, {
       pin: { accountId: 'impossible', mode: 'hard' },
