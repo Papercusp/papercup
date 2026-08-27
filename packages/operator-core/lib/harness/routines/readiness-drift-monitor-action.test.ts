@@ -18,12 +18,14 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const reconcileReadinessMock = vi.fn();
 const reconcileEndpointsMock = vi.fn();
+const reconcileGraphPolicyMock = vi.fn();
 
 vi.mock('../../scheduler/readiness-reconcile', () => ({
   reconcileReadiness: () => reconcileReadinessMock(),
 }));
 vi.mock('../../scheduler/work-item-deps-integrity', () => ({
   reconcileWorkItemDepEndpoints: () => reconcileEndpointsMock(),
+  reconcileDependencyGraphPolicy: () => reconcileGraphPolicyMock(),
 }));
 
 import './readiness-drift-monitor-action';
@@ -38,6 +40,15 @@ const ctx = (payloadTemplate: Record<string, unknown> | null = null): SystemActi
 
 const CLEAN_READINESS = { drift: 0, missing: [], extra: [] };
 const CLEAN_ENDPOINTS = { defects: 0, mismatched: [], dangling: [] };
+const CLEAN_GRAPH_POLICY = {
+  workspaces: [],
+  nodes: 0,
+  edges: 0,
+  findings: [],
+  hardBlocks: 0,
+  advisories: 0,
+  strandedNodes: 0,
+};
 
 const run = async (payloadTemplate: Record<string, unknown> | null = null) => {
   const action = getSystemAction('readiness-drift-monitor');
@@ -58,6 +69,7 @@ beforeEach(() => {
   logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
   reconcileReadinessMock.mockResolvedValue(CLEAN_READINESS);
   reconcileEndpointsMock.mockResolvedValue(CLEAN_ENDPOINTS);
+  reconcileGraphPolicyMock.mockResolvedValue(CLEAN_GRAPH_POLICY);
 });
 
 afterEach(() => {
@@ -72,6 +84,7 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
     // The load-bearing assertion. drift=0 early-returns the readiness sweep; the endpoint
     // sweep must still have run.
     expect(reconcileEndpointsMock).toHaveBeenCalledTimes(1);
+    expect(reconcileGraphPolicyMock).toHaveBeenCalledTimes(1);
   });
 
   it('still runs the endpoint sweep when the readiness sweep THROWS', async () => {
@@ -85,6 +98,33 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
     reconcileEndpointsMock.mockRejectedValue(new Error('endpoint sweep exploded'));
     await expect(run()).resolves.toBeUndefined();
     expect(reconcileReadinessMock).toHaveBeenCalled();
+  });
+
+  it('still runs readiness and endpoint sweeps when the GRAPH POLICY sweep throws', async () => {
+    reconcileGraphPolicyMock.mockRejectedValue(new Error('graph policy exploded'));
+    await expect(run()).resolves.toBeUndefined();
+    expect(reconcileReadinessMock).toHaveBeenCalledTimes(1);
+    expect(reconcileEndpointsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports graph-policy findings without mutating intent', async () => {
+    reconcileGraphPolicyMock.mockResolvedValue({
+      workspaces: [
+        { workspaceId: 'default', nodes: 2, edges: 2, findings: [{ code: 'cycle', classification: 'hard-block' }] },
+      ],
+      nodes: 2,
+      edges: 2,
+      findings: [{ code: 'cycle', classification: 'hard-block' }],
+      hardBlocks: 1,
+      advisories: 0,
+      strandedNodes: 2,
+    });
+    await run();
+    const logged = warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+    expect(logged).toContain('DEPENDENCY POLICY FINDINGS');
+    expect(logged).toContain('cycle:hard-block');
+    expect(logged).toMatch(/detect-only/i);
+    expect(reconcileGraphPolicyMock).toHaveBeenCalledTimes(1);
   });
 
   it('runs the endpoint sweep even with repair disabled — it is detect-only either way', async () => {

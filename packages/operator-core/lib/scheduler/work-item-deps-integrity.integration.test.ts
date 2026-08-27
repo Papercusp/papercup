@@ -34,7 +34,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 
-const { reconcileWorkItemDepEndpoints } = await import('./work-item-deps-integrity');
+const { reconcileDependencyGraphPolicy, reconcileWorkItemDepEndpoints } = await import('./work-item-deps-integrity');
 
 const WS = 'default';
 const H = 'papercup';
@@ -68,12 +68,7 @@ const seedIssue = (id: string) => db.sql`
   VALUES (${H}, ${id}, ${`issue ${id}`}, 'open', 'task', ${WS}, 0, 0)`;
 
 /** Write an edge with EXACTLY the given endpoint kinds/refs — including invalid ones. */
-const edge = (
-  blockedKind: string,
-  blockedRef: string,
-  blockerKind: string,
-  blockerRef: string,
-) => db.sql`
+const edge = (blockedKind: string, blockedRef: string, blockerKind: string, blockerRef: string) => db.sql`
   INSERT INTO harness_shared.work_item_deps
     (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
   VALUES (${WS}, ${blockedKind}, ${blockedRef}, ${blockerKind}, ${blockerRef}, 'blocks')`;
@@ -242,6 +237,36 @@ describe('reconcileWorkItemDepEndpoints — the D-017 endpoint-integrity detecto
     await edge('feature', 'od#d#F-9', 'feature', `${H}#F-2`);
 
     expect((await reconcileWorkItemDepEndpoints(db.sql)).defects).toBe(0);
+  });
+});
+
+describe('reconcileDependencyGraphPolicy — complete-graph positive and negative controls', () => {
+  it('reports ZERO findings for a healthy serial chain', async () => {
+    await seedFeature('F-1');
+    await seedFeature('F-2');
+    await seedFeature('F-3');
+    await edge('feature', `${H}#F-2`, 'feature', `${H}#F-1`);
+    await edge('feature', `${H}#F-3`, 'feature', `${H}#F-2`);
+
+    const census = await reconcileDependencyGraphPolicy(db.sql);
+    expect(census).toMatchObject({ nodes: 3, edges: 2, findings: [], hardBlocks: 0, advisories: 0 });
+  });
+
+  it('CATCHES a seeded cycle and exposes its stranded closure without misclassifying it as a new increase', async () => {
+    await seedFeature('F-1');
+    await seedFeature('F-2');
+    await seedFeature('F-3');
+    await edge('feature', `${H}#F-1`, 'feature', `${H}#F-2`);
+    await edge('feature', `${H}#F-2`, 'feature', `${H}#F-1`);
+    await edge('feature', `${H}#F-3`, 'feature', `${H}#F-2`);
+
+    const census = await reconcileDependencyGraphPolicy(db.sql);
+    expect(census.findings.map((finding) => finding.code)).toEqual(['cycle']);
+    expect(census.hardBlocks).toBe(1);
+    expect(census.strandedNodes).toBe(3);
+    expect(census.workspaces[0]?.analysis.strandedClosure.map((node) => `${node.kind}:${node.ref}`)).toEqual(
+      expect.arrayContaining(['feature:papercup#F-1', 'feature:papercup#F-2', 'feature:papercup#F-3']),
+    );
   });
 });
 

@@ -55,6 +55,7 @@
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 import { reconcileReadiness, type ReadinessKey } from '../../scheduler/readiness-reconcile';
 import {
+  reconcileDependencyGraphPolicy,
   reconcileWorkItemDepEndpoints,
   type DepEndpointDefect,
 } from '../../scheduler/work-item-deps-integrity';
@@ -151,11 +152,43 @@ async function sweepEndpointIntegrity(): Promise<void> {
   }
 }
 
+async function sweepDependencyGraphPolicy(): Promise<void> {
+  try {
+    const census = await reconcileDependencyGraphPolicy();
+    if (census.findings.length === 0) {
+      console.log(
+        `[readiness-drift-monitor] dependency policy clean across ${census.workspaces.length} workspace(s) ` +
+          `(nodes=${census.nodes} edges=${census.edges} findings=0 stranded=${census.strandedNodes})`,
+      );
+      return;
+    }
+    console.warn(
+      `[readiness-drift-monitor] DEPENDENCY POLICY FINDINGS findings=${census.findings.length} ` +
+        `hard=${census.hardBlocks} advisory=${census.advisories} nodes=${census.nodes} edges=${census.edges}`,
+    );
+    for (const workspace of census.workspaces.filter((row) => row.findings.length > 0).slice(0, SAMPLE)) {
+      console.warn(
+        `[readiness-drift-monitor] workspace=${workspace.workspaceId} ` +
+          `findings=${workspace.findings.map((finding) => `${finding.code}:${finding.classification}`).join(', ')}`,
+      );
+    }
+    console.warn(
+      '[readiness-drift-monitor] graph-policy findings are detect-only; repair the named writer/edge or record an explicit grandfather before strict rollout',
+    );
+  } catch (e) {
+    console.warn(
+      '[readiness-drift-monitor] dependency-policy sweep failed (non-fatal): ' +
+        (e instanceof Error ? e.message : String(e)),
+    );
+  }
+}
+
 registerSystemAction('readiness-drift-monitor', async (ctx: SystemActionCtx) => {
   // Runs regardless of how the readiness sweep below exits (including its early returns),
   // because the two answer different questions and a clean readiness tick says nothing
   // about endpoint integrity.
   await sweepEndpointIntegrity();
+  await sweepDependencyGraphPolicy();
   try {
     const repairEnabled = ctx.payloadTemplate?.repair !== false;
 
@@ -196,8 +229,6 @@ registerSystemAction('readiness-drift-monitor', async (ctx: SystemActionCtx) => 
     );
   } catch (e) {
     // A monitor must never wedge the routine tick.
-    console.warn(
-      '[readiness-drift-monitor] sweep failed (non-fatal): ' + (e instanceof Error ? e.message : String(e)),
-    );
+    console.warn('[readiness-drift-monitor] sweep failed (non-fatal): ' + (e instanceof Error ? e.message : String(e)));
   }
 });
