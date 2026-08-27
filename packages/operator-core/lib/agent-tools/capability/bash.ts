@@ -234,7 +234,7 @@ export default defineTool({
     'Run `bash -c` in the project dir; stream and spill large output to a log. Operator callers may bind redacted integration credentials.',
   guidance: {
     when:
-      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
+      'Run builds, tests, checks, or scripts. For non-trivial `jq` filters, compile first with `jq -n` against no input before reading exports; this catches syntax errors without consuming export input. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
