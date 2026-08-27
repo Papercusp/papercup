@@ -42,6 +42,7 @@ import {
   resolveTerminalPlanItemResidue,
   stalledClaims,
   summarizeOrphan,
+  shouldRecoverClaimFromHealth,
   type AgentAssignment,
   type FleetAssignmentRow,
   type HolderActivity,
@@ -1201,9 +1202,6 @@ export default defineTool({
     const healthyLoopOwners = new Set(
       agents.filter((a) => a.monitorState != null).map((a) => a.agentId),
     );
-    const stalled = stalledClaims(reconciledRows).filter(
-      (row) => !row.agentId || !healthyLoopOwners.has(row.agentId),
-    );
     // WI-5975: the holder-liveness map every reclaim-candidate row is summarized
     // against. `agents` is already decorated (reconcileWakeability →
     // `sessionState`, decorateMemberVerdicts → `lastToolCallAt`), so the
@@ -1224,6 +1222,17 @@ export default defineTool({
         },
       ]),
     );
+    // P-006: progress-derived claim health is the recovery guard, not just a rendered
+    // decoration. Stale-claim recovery surfaces must not invite reclaim/takeover when
+    // the richer writer evidence says the holder is healthy, deliberately waiting,
+    // recoverable by wake, or internally contested. Only genuinely suspect progress
+    // remains in the stalled/reclaimable bucket.
+    const stalled = stalledClaims(reconciledRows).filter((row) => {
+      if (row.agentId && healthyLoopOwners.has(row.agentId)) return false;
+      const health = deriveClaimHealth(row, row.agentId ? (holderActivity.get(row.agentId) ?? null) : null);
+      return shouldRecoverClaimFromHealth(health);
+    });
+
     const rowByAgentAndId = new Map<string, FleetAssignmentRow>();
     for (const row of reconciledRows) {
       if (!row.agentId) continue;
