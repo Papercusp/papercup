@@ -2799,6 +2799,10 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     });
     cleanups.push(() => handle.close());
 
+    // Settle boot's fire-and-forget initial merge before this fixture starts
+    // counting the passes that drive the synthetic repair episode below.
+    await handle.mergeNow();
+
     const stale = fakeCloseableRemoteLog(keyHex);
     handle.admitted.set(keyHex, stale);
 
@@ -2937,6 +2941,10 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
     });
     cleanups.push(() => handle.close());
 
+    // Settle boot's fire-and-forget initial merge before this fixture starts
+    // counting the passes that drive the synthetic repair episode below.
+    await handle.mergeNow();
+
     const stale = fakeCloseableRemoteLog(keyHex);
     handle.admitted.set(keyHex, stale);
 
@@ -3025,6 +3033,10 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       replicationStallGraceMs: 0,
     });
     cleanups.push(() => handle.close());
+
+    // Settle boot's fire-and-forget initial merge before this fixture starts
+    // counting the passes that drive the synthetic repair episode below.
+    await handle.mergeNow();
 
     const stale = fakeCloseableRemoteLog(keyHex);
     handle.admitted.set(keyHex, stale);
@@ -3275,6 +3287,10 @@ describe('bootHarnessSubstrate — WI-3684 repair-on-detect (P-002)', () => {
       repairConfirmationMaxDeferrals: 1,
     });
     cleanups.push(() => handle.close());
+
+    // Settle boot's fire-and-forget initial merge before this fixture starts
+    // counting the passes that drive the synthetic repair episode below.
+    await handle.mergeNow();
 
     handle.admitted.set(keyHex, fakeCloseableRemoteLog(keyHex));
 
