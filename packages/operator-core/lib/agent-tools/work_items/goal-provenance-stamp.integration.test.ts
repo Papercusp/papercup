@@ -239,4 +239,35 @@ describe('goal provenance stamping (P-002/D-008) against real SQL', () => {
 
     expect(await storedGoalId(res.workItem.id)).toBe(GOAL_RUN);
   });
+
+  it('does not stamp a pre-existing feature row when the WI allocator collides', async () => {
+    const owner = 'su-feature-collision';
+    await givenInheritedGoal(owner, GOAL_INHERITED);
+
+    // Simulate a restored/federated row arriving while the local allocator is
+    // stale. The production sequence-floor trigger normally prevents this, but
+    // the writer must still handle the conflict safely if it occurs (including
+    // on a database that has not yet applied that migration).
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, summary, status, item_kind, workspace_id, created_ts, updated_ts)
+      VALUES
+        (${HARNESS}, 'WI-1', 'pre-existing incumbent', 'must not be rewritten', 'open', 'feature', ${WS}, 1, 1)`;
+    await sql`ALTER SEQUENCE harness_shared.work_item_seq RESTART WITH 1`;
+
+    const { createOneWorkItem } = await import('./_create-core');
+    const res = await createOneWorkItem(
+      { kind: 'feature', title: 'fresh feature after allocator collision', harness: HARNESS, pot: HARNESS, workspace: WS },
+      { ownerId: owner, workspaceId: WS, harnessSlug: HARNESS },
+    );
+    expect(res.ok, res.ok ? '' : `create failed: ${(res as { error?: string }).error}`).toBe(true);
+    if (!res.ok) return;
+
+    expect(res.workItem.id).not.toBe('WI-1');
+    const incumbent = await sql`
+      SELECT title, goal_id FROM harness_shared.work_items
+       WHERE harness_slug = ${HARNESS} AND feature_id = 'WI-1'`;
+    expect(incumbent).toEqual([{ title: 'pre-existing incumbent', goal_id: null }]);
+    expect(await storedGoalId(res.workItem.id)).toBe(GOAL_INHERITED);
+  });
 });
