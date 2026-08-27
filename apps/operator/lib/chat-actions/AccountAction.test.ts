@@ -83,6 +83,16 @@ describe('AccountAction — availability (D-005 §5: unknown ⇒ no pill)', () =
   it('is UNAVAILABLE with no session to act on', () => {
     expect(axis().available({ sessionOwnerId: '', accountPin: null })).toBe(false);
   });
+
+  it('is AVAILABLE as a disabled loading pill while the roster read is in flight', () => {
+    const loading = { sessionOwnerId: OWNER, rosterReadState: 'loading' as const };
+    expect(axis().available(loading)).toBe(true);
+    expect(axis().current(loading)).toMatchObject({
+      value: 'loading…',
+      on: false,
+      loading: true,
+    });
+  });
 });
 
 describe('AccountAction — current() is pure, sync, and does not overclaim', () => {

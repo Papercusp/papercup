@@ -151,6 +151,11 @@ registerChatModeAction({
   group: 'config',
   available: (ctx) => {
     const c = ctx as SessionActionCtx;
+    if (!c.sessionOwnerId) return false;
+    /* A missing roster row is not yet evidence that this axis is inapplicable:
+       while the shared read is in flight, show a disabled loading pill. Once
+       it resolves, the backend/session checks below remain authoritative. */
+    if (c.rosterReadState === 'loading') return true;
     /* claude-only, and for a mechanism reason rather than caution: codex and omp
        resumes exec the bare CLI, so the envelope refuses a model there instead
        of dropping the flag silently. Offering a pill that can only throw would
@@ -164,6 +169,14 @@ registerChatModeAction({
      surface already rendered from. Sourcing `launchArgv` ONTO that row
      (adv-roster.ts) is what makes this possible without a per-agent lookup. */
   current: (ctx) => {
+    if (ctx.rosterReadState === 'loading') {
+      return {
+        value: 'loading…',
+        on: false,
+        loading: true,
+        title: 'Loading this session\'s model and effort…',
+      };
+    }
     const spec = readModelSpec(ctx as SessionActionCtx);
     if (!spec) {
       return {

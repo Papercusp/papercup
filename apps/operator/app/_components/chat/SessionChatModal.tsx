@@ -1200,6 +1200,19 @@ export default function SessionChatModal({
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  // EI-21590502169409362: an absent target row is ambiguous until the shared
+  // roster read has answered. Preserve that distinction for the two pills
+  // whose availability is derived from fields on this row: they show a
+  // disabled loading placeholder while the query is in flight, then either
+  // become real controls for a resolved target or disappear for a resolved
+  // missing target. A target row wins over `loading` so a background refresh
+  // cannot regress a populated pill back to a placeholder.
+  const rosterReadState = actionRosterEntry
+    ? ('resolved' as const)
+    : actionRoster.loading
+      ? ('loading' as const)
+      : ('resolved-missing' as const);
+
   // hud-first-nav-and-dossier-2026-07-26 P-003: the SAME advRoster.list row
   // (actionRoster, already fetched above for the action bar — no new query)
   // re-read as a RosterEntry (AgentDossier's own prop shape) instead of
@@ -1574,6 +1587,7 @@ export default function SessionChatModal({
         ? {
             sessionOwnerId,
             ownerLabel,
+            rosterReadState,
             // P-006 (session actions): only Claude consumes `sessionId`; OMP
             // reads ompThreadId and Codex remains gated by the console-launch
             // action until its CODEX_HOME/rollout contract is wired there.
@@ -1627,7 +1641,7 @@ export default function SessionChatModal({
             compactionLimit: actionRosterEntry?.compactionLimit,
           }
         : null,
-    [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],
+    [sessionOwnerId, ownerLabel, actionRosterEntry, resolved, rosterReadState],
   );
 
   const agentName = ownerLabel || sessionOwnerId || 'agent session';

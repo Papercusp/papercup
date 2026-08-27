@@ -291,6 +291,32 @@ describe('ChatActionBar', () => {
       expect(pill.className).not.toContain('pc-ctl-mode--off');
     });
 
+    it('renders a loading mode as a disabled, explicitly labelled placeholder', () => {
+      const options = vi.fn(() => [{ id: 'ready', label: 'Ready' }]);
+      registerChatModeAction(
+        axis({
+          id: 'loading-axis',
+          cap: 'ACCT',
+          current: () => ({
+            value: 'not-yet-read',
+            on: false,
+            loading: true,
+            title: 'Waiting for the roster',
+          }),
+          options,
+        }),
+      );
+      render(<ChatActionBar ctx={ctx} />);
+
+      const pill = screen.getByTestId('chat-mode-loading-axis') as HTMLButtonElement;
+      expect(pill.disabled).toBe(true);
+      expect(pill.textContent).toContain('Loading…');
+      expect(pill.getAttribute('aria-label')).toMatch(/ACCT is loading/i);
+
+      fireEvent.click(pill);
+      expect(options).not.toHaveBeenCalled();
+    });
+
     it('the accessible name states the axis, its value AND that it is changeable', () => {
       registerChatModeAction(axis());
       render(<ChatActionBar ctx={ctx} />);

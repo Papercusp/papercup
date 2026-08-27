@@ -36,9 +36,23 @@ export interface ChatActionContext {
   sessionOwnerId: string;
   /** Friendly display label, when the caller has one. */
   ownerLabel?: string | null;
+  /**
+   * Whether the roster query that supplies this context has answered for the
+   * target owner. Optional for callers that predate the distinction; those
+   * callers retain each action's existing field-based availability rules.
+   *
+   * `loading` is intentionally different from `resolved-missing`: while the
+   * query is in flight, an absent roster field is not evidence that the
+   * control does not apply. The surface can show a disabled loading pill until
+   * the query resolves and then either reveal the real value or remove it.
+   */
+  rosterReadState?: ChatRosterReadState;
   /** Lane-specific extension fields (session roster row, mode state, …). */
   [extra: string]: unknown;
 }
+
+/** The three honest answers to a roster read for the chat's target owner. */
+export type ChatRosterReadState = 'loading' | 'resolved' | 'resolved-missing';
 
 /** A lightweight confirm-before-run step — no payload collected. */
 export interface ChatActionConfirm {
@@ -160,8 +174,14 @@ export interface ChatModeState {
   /**
    * Whether the axis is engaged. Drives the FORM (filled cap vs hollow), which
    * is what makes on/off legible in greyscale rather than by colour alone.
-   */
+  */
   on: boolean;
+  /**
+   * The axis is waiting for the surface's source data. A loading state is
+   * rendered as a disabled placeholder pill, never as a guessed value that a
+   * reader could mistake for the resolved state.
+   */
+  loading?: boolean;
   /** Long explanation for the pill's tooltip. */
   title?: string;
 }

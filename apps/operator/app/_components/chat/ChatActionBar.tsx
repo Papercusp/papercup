@@ -340,8 +340,11 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
            (autonomy shows "on" for the option `auto`); the overlays'
            option ids already ARE their display values, so `value` is the
            id there and the fallback is exact, not approximate. */
-        const value = state.optionId ?? state.value;
-        const ariaLabel = `${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`;
+        const value = state.loading ? '__loading__' : state.optionId ?? state.value;
+        const displayValue = state.loading ? 'Loading…' : state.value;
+        const ariaLabel = state.loading
+          ? `${mode.cap} is loading${state.title ? ` — ${state.title}` : ''}.`
+          : `${mode.cap} is ${state.value}${state.title ? ` — ${state.title}` : ''}. Change it.`;
         const triggerClassName = `pc-ctl-mode${state.on ? '' : ' pc-ctl-mode--off'}`;
         /* Hoisted so BOTH menu shapes hang the identical pill off themselves.
            The pill is a two-part object — a filled cap carrying the axis name
@@ -353,7 +356,7 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
           <span className="pc-ctl-mode__inner">
             <span className="pc-ctl-mode__cap">{mode.cap}</span>
             <span className="pc-ctl-mode__value">
-              {state.value}
+              {displayValue}
               <span aria-hidden="true">▾</span>
             </span>
           </span>
@@ -371,9 +374,9 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
               key={mode.id}
               value={value}
               onChange={(optionId) => void applyMode(mode, optionId)}
-              disabled={runningId !== null}
+              disabled={runningId !== null || state.loading === true}
               onOpenChange={(open) => {
-                if (open) ensureOptions(mode);
+                if (open && !state.loading) ensureOptions(mode);
               }}
               options={resolvedOptions.map((o) => ({
                 value: o.id,
@@ -409,9 +412,9 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
             key={mode.id}
             value={value}
             onChange={(optionId) => void applyMode(mode, optionId)}
-            disabled={runningId !== null}
+            disabled={runningId !== null || state.loading === true}
             onOpenChange={(open) => {
-              if (open) ensureOptions(mode);
+              if (open && !state.loading) ensureOptions(mode);
             }}
             options={resolvedOptions.map((o) => ({
               value: o.id,

@@ -203,10 +203,14 @@ registerChatModeAction({
      model+effort) cluster together, AFTER the posture pills: posture says what
      the agent IS, these say what it RUNS ON. */
   group: 'config',
-  /* UNKNOWN ⇒ no pill (D-005 §5). An operator whose roster predates `accountPin`
-     cannot tell us what this session is routed to, and a pill showing a
-     plausible-but-unsourced account is worse than its absence. */
-  available: (ctx) => Boolean(ctx.sessionOwnerId) && readAccountPin(ctx) !== undefined,
+  /* UNKNOWN ⇒ no pill (D-005 §5), except while the roster read is still in
+     flight. During that window the absent field means "not answered yet", not
+     "this control does not apply"; the loading pill makes that distinction
+     visible without guessing an account. Once the read resolves, the existing
+     field predicate resumes and a genuinely unknown/partial row stays hidden. */
+  available: (ctx) =>
+    Boolean(ctx.sessionOwnerId) &&
+    (ctx.rosterReadState === 'loading' || readAccountPin(ctx) !== undefined),
   /* PURE + sync (D-005 §6): read straight off the roster row the surface already
      rendered from. The authoritative live read is `gateway:owner_report`, a
      per-agent fetch — putting that behind this function would cost a gateway
@@ -214,6 +218,14 @@ registerChatModeAction({
      popup. Sourcing the pin ONTO the roster row is what makes this possible
      (adv-roster.ts `accountPin`). */
   current: (ctx) => {
+    if (ctx.rosterReadState === 'loading') {
+      return {
+        value: 'loading…',
+        on: false,
+        loading: true,
+        title: 'Loading this session\'s account routing…',
+      };
+    }
     const pin = readAccountPin(ctx);
     if (!pin) {
       /* Still not claiming "this session is on auto" — no DYNAMIC pin is all `accountPin` can say.

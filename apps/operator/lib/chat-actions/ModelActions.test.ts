@@ -130,6 +130,16 @@ describe('availability — the two absences are not the same (D-005 §5)', () =>
   it('is unavailable with no resumable session id — there is nothing to branch from', () => {
     expect(axis().available({ sessionOwnerId: OWNER, agent: 'claude', launchArgv: [] })).toBe(false);
   });
+
+  it('is AVAILABLE as a disabled loading pill while the roster read is in flight', () => {
+    const loading: ChatActionContext = { sessionOwnerId: OWNER, rosterReadState: 'loading' };
+    expect(axis().available(loading)).toBe(true);
+    expect(axis().current(loading)).toMatchObject({
+      value: 'loading…',
+      on: false,
+      loading: true,
+    });
+  });
 });
 
 describe('current() — reports the EFFECTIVE spec off the launch argv (D-009 §B)', () => {
