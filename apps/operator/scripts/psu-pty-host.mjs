@@ -3675,6 +3675,35 @@ export function hostThroughPty(o) {
   let childStartupReady = false;
   let childStartupFirstOutputAt = 0;
   let headlessClaudeOnboardingExpiryTimer = null;
+  // A scripted resume/fork kickoff is the only path that can encounter Claude's
+  // interactive "Autocompact is thrashing" recovery menu. Keep this detector
+  // alive before wireChildData() attaches the first listener so the menu cannot
+  // win a race against injectTurnAtPrompt(). Fresh launches seed their first
+  // turn as a CLI positional argument and do not pass through this gate.
+  const launchKickoff = managedKickoff?.text ?? kickoff;
+  const claudeResumeCompactionEnabled =
+    Boolean(launchKickoff) && String(env.PAPERCUSP_AGENT ?? '').trim().toLowerCase() === 'claude';
+  const claudeResumeCompaction = makeClaudeResumeCompactionRecoveryStateMachine({
+    enabled: claudeResumeCompactionEnabled,
+    startupMs: claudeResumeCompactionStartupMs(env),
+    recoveryMs: claudeResumeCompactionRecoveryMs(env),
+  });
+  let claudeResumeCompactionTimeoutReported = false;
+  const reportClaudeResumeCompactionTimeout = () => {
+    if (claudeResumeCompactionTimeoutReported) return;
+    claudeResumeCompactionTimeoutReported = true;
+    appendHostEvent(ownerId, 'claude-resume-compaction-timed-out', {
+      recoveryMs: claudeResumeCompactionRecoveryMs(env),
+    });
+    try {
+      process.stderr.write(
+        `psu-pty-host: Claude resume compaction recovery timed out for ${ownerId}; ` +
+          `the scripted kickoff will be dropped rather than written into an unresolved menu.\n`,
+      );
+    } catch {
+      /* diagnostics are best-effort */
+    }
+  };
   const baseMeta = {
     ownerId,
     advSessionId: advSessionId != null ? String(advSessionId) : null,
@@ -3957,6 +3986,28 @@ export function hostThroughPty(o) {
     STARTUP_MARKER_FALLBACK_MS,
   );
 
+  // Claude may pause at an interactive resume-choice menu after it has already
+  // emitted ordinary startup bytes. This gate is deliberately separate from the
+  // output-quiet busy gate: a quiet menu is not a composer prompt. It returns
+  // immediately for non-Claude/non-scripted launches and for ordinary resumes
+  // whose bounded detection window expires without the menu.
+  const waitForClaudeResumeCompaction = async (deadline) => {
+    if (!claudeResumeCompactionEnabled) return { ready: true };
+    while (true) {
+      const state = claudeResumeCompaction.tick();
+      if (state.timedOut) {
+        reportClaudeResumeCompactionTimeout();
+        return { ready: false, reason: 'resume-compaction-timeout' };
+      }
+      if (!claudeResumeCompaction.isAwaitingPrompt()) return { ready: true };
+      if (Date.now() >= deadline) {
+        reportClaudeResumeCompactionTimeout();
+        return { ready: false, reason: 'resume-compaction-timeout' };
+      }
+      await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
+    }
+  };
+
   // WI-2930: verify every injected submit actually started a turn — resubmit a
   // bare CR at each quiet observation in a bounded post-submit window (see
   // makeSubmitVerifier). writeCr reads the live `child` closure so it survives a
@@ -4055,8 +4106,18 @@ export function hostThroughPty(o) {
         ) &&
         Date.now() < deadline
       ) {
+        const recoveryState = claudeResumeCompaction.tick();
+        if (recoveryState.timedOut) {
+          reportClaudeResumeCompactionTimeout();
+          dropReason = 'resume-compaction-timeout';
+          break;
+        }
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
       }
+      // The inner delivery loop below owns the common drop/diagnostic path. Do
+      // not return or break from this outer try block when the recovery machine
+      // has already timed out; its next gated check observes the same terminal
+      // state and exits through that shared path.
       const startupFallbackReady =
         childStartupFirstOutputAt > 0 &&
         Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs;
@@ -4093,9 +4154,24 @@ export function hostThroughPty(o) {
         }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         attempts++;
+        const recoveryBeforeBusy = await waitForClaudeResumeCompaction(deadline);
+        if (!recoveryBeforeBusy.ready) {
+          dropReason = recoveryBeforeBusy.reason;
+          break;
+        }
+        if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         const atPrompt = await agentBusyGate.waitAtPrompt();
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         if (!atPrompt.deferred) {
+          // The menu can be painted while the ordinary quiet gate is settling.
+          // Re-check immediately before the first byte so a stale quiet reading
+          // can never authorize a kickoff into the recovery choices.
+          const recoveryAfterBusy = await waitForClaudeResumeCompaction(deadline);
+          if (!recoveryAfterBusy.ready) {
+            dropReason = recoveryAfterBusy.reason;
+            break;
+          }
+          if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
           for (const step of controlWritesForAgent({ mode: 'turn', data: text }, env.PAPERCUSP_AGENT, env)) {
             if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
             if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
@@ -4163,6 +4239,8 @@ export function hostThroughPty(o) {
                 ? 'submit verification exhausted without observing output after a resubmit'
                 : dropReason.startsWith('submit-verification-aborted-')
                   ? `submit verification aborted (${dropReason.slice('submit-verification-aborted-'.length)})`
+              : dropReason === 'resume-compaction-timeout'
+                ? 'Claude resume compaction recovery timed out before a standalone composer prompt appeared'
               : 'the child never settled to its prompt'
         } ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
@@ -4180,7 +4258,6 @@ export function hostThroughPty(o) {
   // (kickoffPositionalArgs); a resume has no such seam, which is exactly the gap
   // this closes. Fire-and-forget: the session is usable while we wait for its
   // prompt, and a failure is loud (above), never silent.
-  const launchKickoff = managedKickoff?.text ?? kickoff;
   if (launchKickoff) {
     void (async () => {
       const label = managedKickoff ? 'session-port seed' : 'launch kickoff';
@@ -5242,6 +5319,25 @@ export function hostThroughPty(o) {
           startupMs: headlessClaudeOnboardingStartupMs(env),
         });
       }
+      const resumeCompaction = claudeResumeCompaction.observe(raw);
+      if (resumeCompaction.action === 'select-summary') {
+        try {
+          // Claude's first menu item is the safe summary recovery. Send exactly
+          // one raw CR; this is a recovery choice, not a user turn, so it must
+          // not go through controlWritesForAgent() or submit verification.
+          child.write('\r');
+          appendHostEvent(ownerId, 'claude-resume-compaction-summary-selected', {
+            startupMs: claudeResumeCompactionStartupMs(env),
+            recoveryMs: claudeResumeCompactionRecoveryMs(env),
+          });
+        } catch {
+          /* the child-exit path owns teardown; recovery will expire loudly */
+        }
+      } else if (resumeCompaction.action === 'ready') {
+        appendHostEvent(ownerId, 'claude-resume-compaction-ready', {});
+      } else if (resumeCompaction.timedOut) {
+        reportClaudeResumeCompactionTimeout();
+      }
       if (!childStartupReady) {
         // A normal headless Claude boot remains byte-ready. Only a positively
         // identified theme screen turns readiness off until its Security screen
@@ -5251,6 +5347,14 @@ export function hostThroughPty(o) {
       }
       if (onboarding.action === 'submit' && onboarding.prompt === 'theme') {
         childStartupReady = false;
+      }
+      // The generic Claude readiness heuristic intentionally accepts any output,
+      // which is unsafe for the quiet resume-choice menu. Keep it blocked until
+      // the recovery machine has seen a later standalone composer prompt.
+      if (resumeCompaction.awaitingPrompt || resumeCompaction.timedOut) {
+        childStartupReady = false;
+      } else if (resumeCompaction.action === 'ready') {
+        childStartupReady = true;
       }
       activity.touchOutput();
       // Everything else — readiness above, the output taps below — keeps seeing
