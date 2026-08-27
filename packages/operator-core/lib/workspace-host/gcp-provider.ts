@@ -241,6 +241,12 @@ export interface GcpSnapshotInsertInput {
   snapshotEncryptionKey?: { kmsKeyName: string };
 }
 
+export interface GcpInstanceGuestAttribute {
+  namespace: string;
+  key: string;
+  value: string;
+}
+
 /**
  * Compute Engine REST-shaped seam. The production composition owns ADC/token
  * resolution; this provider accepts only non-secret connection references and
@@ -274,6 +280,12 @@ export interface GcpWorkspaceHostApiClient {
   getNat(projectId: string, region: string, routerName: string, name: string): Promise<GcpNatObservation | undefined>;
   getDisk(projectId: string, zone: string, name: string): Promise<GcpDiskObservation | undefined>;
   getInstance(projectId: string, zone: string, name: string): Promise<GcpInstanceObservation | undefined>;
+  getInstanceGuestAttributes(
+    projectId: string,
+    zone: string,
+    name: string,
+    queryPath: string,
+  ): Promise<readonly GcpInstanceGuestAttribute[]>;
   getSnapshot(projectId: string, name: string): Promise<GcpSnapshotObservation | undefined>;
 
   insertNetwork(projectId: string, input: GcpNetworkInsertInput, requestId: string): Promise<GcpOperationRef>;
@@ -1065,6 +1077,7 @@ function metadata(
 ): readonly { key: string; value: string }[] {
   const entries = new Map<string, string>(Object.entries(settings.metadata));
   entries.set('block-project-ssh-keys', 'TRUE');
+  entries.set('enable-guest-attributes', 'TRUE');
   entries.set('enable-oslogin', 'TRUE');
   entries.set('papercusp-host-id', hostId);
   entries.set('papercusp-data-resize-policy', settings.dataDiskResizePolicy);

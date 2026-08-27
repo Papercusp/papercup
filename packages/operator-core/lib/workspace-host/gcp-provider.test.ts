@@ -328,6 +328,10 @@ class FakeGcpWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
     return this.instances.get(name);
   }
 
+  async getInstanceGuestAttributes() {
+    return [];
+  }
+
   async getSnapshot(_projectId: string, name: string) {
     return this.snapshots.get(name);
   }
@@ -639,6 +643,7 @@ describe('GCP workspace-host provider planning', () => {
     expect(instance.metadata.items).toEqual(
       expect.arrayContaining([
         { key: 'enable-oslogin', value: 'TRUE' },
+        { key: 'enable-guest-attributes', value: 'TRUE' },
         { key: 'block-project-ssh-keys', value: 'TRUE' },
         { key: 'papercusp-data-resize-policy', value: GCP_DATA_DISK_RESIZE_POLICY },
         {

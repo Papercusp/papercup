@@ -25,6 +25,7 @@ import type {
   GcpFirewallInsertInput,
   GcpFirewallObservation,
   GcpInstanceInsertInput,
+  GcpInstanceGuestAttribute,
   GcpInstanceObservation,
   GcpNatInsertInput,
   GcpNatObservation,
@@ -98,6 +99,13 @@ interface RawInstance extends RawResource {
   }>;
   serviceAccounts?: Array<{ email?: string; scopes?: string[] }>;
   metadata?: { items?: Array<{ key?: string; value?: string }> };
+}
+
+interface RawGuestAttributes {
+  queryPath?: string;
+  queryValue?: {
+    items?: Array<{ namespace?: string; key?: string; value?: string }>;
+  };
 }
 
 interface RawNat {
@@ -764,6 +772,27 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
       ...(bootDisk?.sourceImage ? { sourceImage: bootDisk.sourceImage } : {}),
       ...(recreated ? { recreateInput: recreated } : {}),
     };
+  }
+
+  async getInstanceGuestAttributes(
+    projectId: string,
+    zone: string,
+    name: string,
+    queryPath: string,
+  ): Promise<readonly GcpInstanceGuestAttribute[]> {
+    const path = required(queryPath, 'guest_attribute_query_path');
+    if (!/^[A-Za-z0-9._/-]+$/.test(path) || path.includes('..')) {
+      throw new Error('guest_attribute_query_path has an invalid value');
+    }
+    const raw = await this.request<RawGuestAttributes>(
+      `${this.projectBase(projectId)}/zones/${segment(zone, 'zone')}/instances/${segment(name, 'instance_name')}` +
+        `/getGuestAttributes?queryPath=${encodeURIComponent(path)}`,
+    );
+    return (raw.queryValue?.items ?? []).map((item, index) => ({
+      namespace: required(item.namespace, `guest attribute namespace ${index}`),
+      key: required(item.key, `guest attribute key ${index}`),
+      value: required(item.value, `guest attribute value ${index}`),
+    }));
   }
 
   async getSnapshot(projectId: string, name: string): Promise<GcpSnapshotObservation | undefined> {
