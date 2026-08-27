@@ -4765,7 +4765,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     stageSpan?.setModel(bodyModel || null);
     stageSpan?.setStreaming(wantStream);
     if (!wantStream && !codexOAuthNonStreamEnabled) {
-      await serveCodexCliBridge(req, res, cli, bodyBuf, routing);
+      await executeCodexLegacyTransport(
+        legacyExecutorForGatewayTransport(providerAdapters.codex.lane, 'cli-exec'),
+        { req, res, cli, url, preBody: bodyBuf, routing },
+      );
       return;
     }
     if (!wantStream) {
@@ -5114,8 +5117,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const hardPin =
         pinnedCli !== null &&
         (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
-      if (codexOAuthProxyEnabled) await serveCodexOAuthProxy(req, res, cli, url, { hardPin, pinned: pinnedCli, ownerId: wantOwner });
-      else await serveCodexCliBridge(req, res, cli, undefined, { hardPin, pinned: pinnedCli, ownerId: wantOwner });
+      const transport = codexOAuthProxyEnabled ? 'oauth-http' : 'cli-exec';
+      await executeCodexLegacyTransport(
+        legacyExecutorForGatewayTransport(adapter.lane, transport),
+        {
+          req,
+          res,
+          cli,
+          url,
+          routing: { hardPin, pinned: pinnedCli, ownerId: wantOwner },
+        },
+      );
       return;
     }
     const hardPin =
@@ -5403,6 +5415,64 @@ export function createInferenceGateway(deps: GatewayDeps) {
       res.off('close', onResClose);
       currentAc = undefined;
     }
+  }
+
+  type LegacyGatewayEntryExecutor = (
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+  ) => Promise<void>;
+
+  const legacyGatewayEntryExecutors: Record<
+    GatewayLegacyEntryExecutorId,
+    LegacyGatewayEntryExecutor
+  > = {
+    proxy,
+    proxyOpenAi,
+    proxyLocal,
+  };
+  const legacyAdmissionSignal = new AbortController().signal;
+  let legacyAdmissionRequestSeq = 0;
+  const unqueuedLegacyAdmission: Pick<
+    GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>,
+    'run'
+  > = {
+    run: (_context, task) => task(),
+  };
+
+  /** Run one static legacy entry inside a lane's existing callback-scoped
+   * admission authority. There is intentionally no lease or release callback:
+   * the queue releases only after `task` (including in-flight unregister) settles. */
+  function executeLegacyLaneTask<TResult>(opts: {
+    req: http.IncomingMessage;
+    lane: GatewayLaneDescriptor;
+    admission: Pick<GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>, 'run'>;
+    task(executor: GatewayLegacyEntryExecutorId): Promise<TResult>;
+  }): Promise<TResult> {
+    const entry = legacyEntryRouteForGatewayLane(opts.lane);
+    const span = requestSpan(opts.req);
+    const requestId = span?.requestId ?? ++legacyAdmissionRequestSeq;
+    return executeGatewayLegacyLane({
+      context: {
+        requestId,
+        correlationId: `legacy-${requestId}`,
+        lane: opts.lane,
+        ownerId:
+          span?.ownerId ??
+          (opts.req.headers[OWNER_HEADER] as string | undefined)?.trim() ??
+          null,
+        pin: null,
+        signal: legacyAdmissionSignal,
+        startedAt: span?.startedAt ?? Date.now(),
+      },
+      route: {
+        key: `${opts.lane.id}:${entry.executor}`,
+        value: entry.executor,
+        transport: entry.transport,
+      },
+      admission: opts.admission,
+      execute: () => opts.task(entry.executor),
+    });
   }
 
   const server = http.createServer((req, res) => {
@@ -5851,12 +5921,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       span.setCacheRouting('not-applicable');
       span.routeSelected();
       span.admitted(); // local capacity is enforced inside proxyLocal; there is no outer cloud queue.
-      void proxyLocal(req, res, url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions').catch((e) => {
-        markRequestGatewayError(req);
-        log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
-        if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway local-backend error' }, gateway: true });
-        else res.destroy();
-      });
+      const localUrl = url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions';
+      void executeLegacyLaneTask({
+        req,
+        lane: gatewayLaneRegistry.localOpenAiChat,
+        admission: unqueuedLegacyAdmission,
+        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, localUrl),
+      }).catch((e) => {
+          markRequestGatewayError(req);
+          log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
+          if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway local-backend error' }, gateway: true });
+          else res.destroy();
+        });
       return;
     }
     // Codex CLI probes `/v1/models` before its first turn. The Codex response is
@@ -5864,12 +5940,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // LLM admission queue; an Anthropic storm can otherwise starve metadata and
     // make healthy Codex agents fail before their first token.
     if (req.method === 'GET' && url.startsWith('/v1/models') && providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id === 'codex') {
-      void proxyOpenAi(req, res, url).catch((e) => {
-        codexUpstreamErrors++;
-        log('error', `codex models handler crashed: ${(e as Error).message}`);
-        if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway Codex models error' }, gateway: true });
-        else res.destroy();
-      });
+      void executeLegacyLaneTask({
+        req,
+        lane: providerAdapters.codex.lane,
+        admission: unqueuedLegacyAdmission,
+        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, url),
+      }).catch((e) => {
+          codexUpstreamErrors++;
+          log('error', `codex models handler crashed: ${(e as Error).message}`);
+          if (!res.headersSent) sendJson(res, 500, { type: 'error', error: { type: 'api_error', message: 'inference-gateway Codex models error' }, gateway: true });
+          else res.destroy();
+        });
       return;
     }
     const priLabel = effectivePriorityLabel(req.headers);
@@ -5891,17 +5972,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
         )
       : undefined;
     stageSpan?.setCacheRouting(cachePolicyEnabled ? 'unchanged' : 'disabled');
-    const providerId = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id;
+    const providerAdapter = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId);
+    const providerId = providerAdapter.id;
     stageSpan?.routeSelected();
     const requestTierMap = providerId === 'codex' ? codexTierMap : tierMap;
     const tier = requestTierMap ? tierOf(priLabel, requestTierMap) : undefined;
-    const handler = providerId === 'codex' ? proxyOpenAi : proxy;
     const admissionQueue = providerId === 'codex' ? codexQueue : queue;
     // Claude registers itself after parsing its request and acquiring its per-account governor. Codex has
     // no equivalent inner registration point, so wrap the whole admitted handler here. The shared self-heal
     // valve can now reclaim a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
     const runHandler = providerId === 'codex'
-      ? async () => {
+      ? async (executor: GatewayLegacyEntryExecutorId) => {
           stageSpan?.admitted();
           const reqId = ++reqSeq;
           inFlightReg.set(reqId, {
@@ -5919,7 +6000,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             },
           });
           try {
-            await handler(req, res, url);
+            await legacyGatewayEntryExecutors[executor](req, res, url);
           } finally {
             const entry = inFlightReg.get(reqId);
             if (entry) {
@@ -5928,11 +6009,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
             }
           }
         }
-      : async () => {
+      : async (executor: GatewayLegacyEntryExecutorId) => {
           stageSpan?.admitted();
-          await handler(req, res, url);
+          await legacyGatewayEntryExecutors[executor](req, res, url);
         };
-    admissionQueue.run(pri, runHandler, tier !== undefined ? { tier } : undefined).catch((e) => {
+    executeLegacyLaneTask({
+      req,
+      lane: providerAdapter.lane,
+      admission: {
+        run: (_context, task) =>
+          admissionQueue.run(pri, task, tier !== undefined ? { tier } : undefined),
+      },
+      task: runHandler,
+    }).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.

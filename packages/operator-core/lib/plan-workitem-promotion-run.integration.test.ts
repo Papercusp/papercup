@@ -415,6 +415,51 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     expect(rows.map((row) => row.payload.needs_2_machine_rig)).toEqual([true, false]);
   });
 
+  /**
+   * EI-21574373783224719: `fleet:launch-on-plan`'s promotion failsafe mints a plan's lanes as
+   * claimable work-items when the leader skipped `plans:start`, and deliberately leaves
+   * `op_status` NULL (flipping it would put a fleet-driven plan on the DBOS orchestrator
+   * frontier — a second dispatcher). That left the minted rows with NO reservation signal:
+   * `reservedPlanLaneExclusionSql`'s execution legs read op_status/lifecycle, and its fleet leg
+   * (EI-13524) reads `payload.fleet_slug` — which had ZERO producers across 123,735 rows. So
+   * every minted lane was claimable by the fleet AND by every unrelated agent's self-select at
+   * once. Measured live: WI-41517 was served to two different non-fleet agents 57 minutes apart
+   * while its fleet was working the sibling lane; 37 such lanes were exposed across 6 plans.
+   *
+   * Asserted BOTH WAYS on purpose. The positive direction alone would still pass if the key
+   * were stamped unconditionally, which would reserve every ordinary `plans:start` promotion for
+   * a fleet that does not exist and make those lanes unclaimable by anyone via self-select —
+   * a worse failure than the one being fixed. The absence case is what rules that out, and it
+   * checks the KEY IS ABSENT rather than falsy, because the floor tests `payload ? 'fleet_slug'`
+   * (jsonb key existence): a stamped `null`/`''` would still reserve the lane.
+   */
+  it('EI-21574373783224719: stamps payload.fleet_slug for a fleet-scoped promotion, and omits the key entirely otherwise', async () => {
+    h.plans.set(PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Fleet-reserved lane' }] });
+
+    expect((await run.promotePlanItems({ ...base, fleetSlug: 'abm-monitor-enforcement' })).promoted).toBe(1);
+    const [reserved] = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind = 'feature'
+       ORDER BY feature_id
+    `;
+    expect(reserved!.payload.fleet_slug).toBe('abm-monitor-enforcement');
+
+    // Control: an ordinary (non-fleet) promotion must leave the lane unreserved, exactly as
+    // before this fix — the key absent, not present-and-empty. A SEPARATE plan slug, so this
+    // mints its own row instead of colliding with the reserved one promoted above.
+    const ORDINARY_PLAN = 'demo-promote-plan-no-fleet';
+    h.plans.set(ORDINARY_PLAN, { items: [{ id: 'P-001', status: 'todo', text: 'Ordinary lane' }] });
+    expect((await run.promotePlanItems({ ...base, planSlug: ORDINARY_PLAN })).promoted).toBe(1);
+    const [ordinary] = await db.sql<{ payload: Record<string, unknown> }[]>`
+      SELECT payload
+        FROM harness_shared.harness_features_consolidated
+       WHERE item_kind = 'feature'
+         AND source_plan_slug = ${ORDINARY_PLAN}
+    `;
+    expect(Object.keys(ordinary!.payload)).not.toContain('fleet_slug');
+  });
+
   it('WI-40825: stamps item_text_hash off the SEMANTIC item text, so the read side can derive drift', async () => {
     // The gap this closes: convert-at-pickup hashed the item text, but `plans:start` →
     // promote is the DOMINANT mint path. Stamping only in convert.ts left

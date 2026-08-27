@@ -280,9 +280,7 @@ async function lockDependencyMutationEndpoints(
   const bareIds = new Set<string>();
   for (const mutation of mutations) {
     const endpoints =
-      mutation.op === 'replace'
-        ? [mutation.blocked, ...mutation.blockers]
-        : [mutation.blocked, mutation.blocker];
+      mutation.op === 'replace' ? [mutation.blocked, ...mutation.blockers] : [mutation.blocked, mutation.blocker];
     for (const endpoint of endpoints) {
       const bareId = endpointBareId(endpoint);
       if (bareId) bareIds.add(bareId);
@@ -444,11 +442,10 @@ export async function mutateWorkItemDependencies(
       await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
       const current = await loadStoredDependencyEdges(tx, input.workspaceId);
       const candidate = applyDependencyMutations(current, input.mutations);
-      const { nodes, outOfScopeIdentityKeys } = await loadDependencyNodes(
-        tx,
-        itemWorkspaceId,
-        [...current, ...candidate],
-      );
+      const { nodes, outOfScopeIdentityKeys } = await loadDependencyNodes(tx, itemWorkspaceId, [
+        ...current,
+        ...candidate,
+      ]);
       const before = analyseStoredEdges(nodes, current);
       const after = analyseStoredEdges(nodes, candidate);
       const findings = newlyRejectedFindings(before, after, current, candidate, outOfScopeIdentityKeys);

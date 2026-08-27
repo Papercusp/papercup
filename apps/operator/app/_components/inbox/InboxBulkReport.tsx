@@ -6,20 +6,14 @@
  * The report projects the persisted run into the shared ReviewReportShell. A
  * selected row still dispatches through useBulkRunOps.acceptRecommendation —
  * the same resolve-first / record-second hand path the inline card uses. The
- * existing InboxBulkRecommendation remains the per-row drill-in; its expensive
- * detail-tier attention read mounts only when that drill-in is opened.
+ * existing InboxBulkRecommendation remains the per-row detail; its expensive
+ * detail-tier attention read mounts only while the shared row is hovered or
+ * focus-within.
  */
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Sparkles } from "lucide-react";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
-import { useHydratedAttentionItem } from "@/app/admin/plans/plans-api";
+import { usePlanAttentionItem } from "@/app/admin/plans/plans-api";
 import { isNavigateAction } from "@/app/admin/plans/attention-card";
 import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import ReviewReportShell, {
@@ -41,6 +35,67 @@ function humanize(value: string): string {
   return value
     .replace(/[-_]+/g, " ")
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function refString(
+  ref: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const value = ref[key];
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
+/**
+ * Rebuild the smallest AttentionItem the canonical terminal dispatcher needs
+ * from the click-time row persisted in attention_bulk_run_items.
+ *
+ * This is deliberately fail-closed. `item_kind` and `item_ref.kind` were
+ * snapshotted together; a legacy/corrupt row that lacks either, or whose two
+ * discriminants disagree, stays visible in the report but cannot be selected.
+ * DETAIL-only fields (especially `actions`) remain absent until the one active
+ * hover/focus detail hydrates through `plans.attentionItem`.
+ */
+export function bulkRunItemToAttentionSnapshot(
+  runItem: BulkRunItem,
+  run?: Pick<BulkRun, "harnessSlug">,
+): AttentionItem | null {
+  const refKind = runItem.ref?.kind;
+  if (
+    typeof refKind !== "string" ||
+    !runItem.kind ||
+    runItem.kind !== refKind
+  ) {
+    return null;
+  }
+
+  const ref = runItem.ref as AttentionItem["ref"];
+  const harnessSlug =
+    refString(runItem.ref, "harnessSlug") ??
+    refString(runItem.ref, "targetHarness") ??
+    run?.harnessSlug ??
+    undefined;
+  const planSlug =
+    refKind === "plan-item" ? refString(runItem.ref, "slug") : undefined;
+  const itemRef =
+    refKind === "plan-item" ? refString(runItem.ref, "itemId") : undefined;
+
+  return {
+    id: runItem.itemId,
+    kind: refKind as AttentionItem["kind"],
+    source: "bulk-run-snapshot",
+    ...(harnessSlug ? { harnessSlug } : {}),
+    ...(planSlug ? { planSlug } : {}),
+    ...(itemRef ? { itemRef } : {}),
+    title: runItem.title ?? runItem.itemId,
+    body: runItem.rationale ?? "",
+    status: runItem.outcome,
+    importance: "normal",
+    tier: "decision",
+    needsHuman: true,
+    ...(runItem.ownerAgentId ? { ownerAgentId: runItem.ownerAgentId } : {}),
+    triageState: "untriaged",
+    ref,
+  };
 }
 
 function itemKind(
@@ -146,7 +201,10 @@ export function buildInboxBulkReviewGroups(
     const status = reviewStatus(runItem, locallyApplied);
     const localError = localErrors.get(runItem.itemId);
     const hasAction =
-      Boolean(runItem.actionId) && !isNavigateAction(runItem.actionId!);
+      Boolean(runItem.actionId) &&
+      (!isNavigateAction(runItem.actionId!) ||
+        (runItem.actionId === "answer" &&
+          Boolean(runItem.draftAnswer?.trim())));
     const row: ReviewReportRow = {
       id: runItem.itemId,
       title: item?.title ?? runItem.title ?? runItem.itemId,
@@ -163,7 +221,10 @@ export function buildInboxBulkReviewGroups(
         Boolean(item),
       error: localError,
       detail:
-        runItem.outcome === "recommended" && item && detailFor
+        status === "pending" &&
+        runItem.outcome === "recommended" &&
+        item &&
+        detailFor
           ? detailFor(item, runItem)
           : fallbackDetail(runItem),
     };
@@ -178,9 +239,10 @@ interface HydratedRecommendationProps {
   runItem: BulkRunItem;
   busy: boolean;
   onAccept: (
+    item: AttentionItem,
     draftOverride: string | null,
   ) => Promise<{ ok: boolean; error?: string }>;
-  onDiscuss?: () => void;
+  onDiscuss?: (item: AttentionItem) => void;
 }
 
 function HydratedRecommendation({
@@ -190,8 +252,8 @@ function HydratedRecommendation({
   onAccept,
   onDiscuss,
 }: HydratedRecommendationProps) {
-  const hydrated = useHydratedAttentionItem(listItem);
-  if (!hydrated.hydrated || !hydrated.item) {
+  const detail = usePlanAttentionItem(listItem.id);
+  if (detail.loading) {
     return (
       <span
         className="inbox-bulk-report__detail-loading"
@@ -202,90 +264,59 @@ function HydratedRecommendation({
       </span>
     );
   }
+  if (detail.error) {
+    return (
+      <span className="inbox-bulk-report__detail-loading" role="alert">
+        Could not load this item&rsquo;s current options: {detail.error}
+      </span>
+    );
+  }
+  if (!detail.data) {
+    return (
+      <span className="inbox-bulk-report__detail-loading" role="alert">
+        This item is no longer available in the live Inbox. Nothing was applied;
+        resolve it from the current Inbox if it reappears.
+      </span>
+    );
+  }
+
+  const hydratedItem = { ...listItem, ...detail.data };
   return (
     <InboxBulkRecommendation
-      item={hydrated.item}
+      item={hydratedItem}
       rec={runItem}
       busy={busy}
-      onAccept={onAccept}
-      onDiscuss={onDiscuss}
+      onAccept={(draftOverride) => onAccept(hydratedItem, draftOverride)}
+      onDiscuss={onDiscuss ? () => onDiscuss(hydratedItem) : undefined}
     />
   );
 }
 
-export interface InboxBulkRecommendationDrillInProps extends HydratedRecommendationProps {
-  open: boolean;
-  onToggle: () => void;
-  /** Gives the report a stable focus target after a successful inline accept
-   * removes the currently focused decision desk. */
-  onToggleNode?: (node: HTMLButtonElement | null) => void;
-}
-
 /** One-at-a-time detail hydration keeps a 200-row report from opening 200
  * detail subscriptions just to render its overview. */
-export function InboxBulkRecommendationDrillIn(
-  props: InboxBulkRecommendationDrillInProps,
+export function InboxBulkRecommendationDetail(
+  props: HydratedRecommendationProps,
 ) {
-  const toggleRef = useRef<HTMLButtonElement | null>(null);
-
   return (
-    <span
-      className={`inbox-bulk-report__drill${props.open ? " inbox-bulk-report__drill--open" : ""}`}
+    <div
+      className="inbox-bulk-report__hover-detail"
+      data-testid={`inbox-bulk-detail-${props.runItem.itemId}`}
     >
-      <button
-        ref={(node) => {
-          toggleRef.current = node;
-          props.onToggleNode?.(node);
-        }}
-        type="button"
-        className="inbox-bulk-report__drill-toggle"
-        data-testid={`inbox-bulk-drill-${props.runItem.itemId}`}
-        aria-expanded={props.open}
-        aria-controls={`inbox-bulk-decision-desk-${props.runItem.itemId}`}
-        disabled={props.busy}
-        onClick={props.onToggle}
-      >
-        {props.open ? "Close decision desk" : "Open decision desk"}
-      </button>
-      {props.open ? (
-        <span
-          id={`inbox-bulk-decision-desk-${props.runItem.itemId}`}
-          className="inbox-bulk-report__decision-desk"
-          data-testid={`inbox-bulk-decision-desk-${props.runItem.itemId}`}
-          role="region"
-          aria-label={`Decision desk for ${props.listItem.title}`}
-          onKeyDown={(event) => {
-            if (props.busy || event.key !== "Escape") return;
-            event.preventDefault();
-            event.stopPropagation();
-            // Focus the surviving disclosure trigger before unmounting the
-            // region so keyboard users never fall back to <body>.
-            toggleRef.current?.focus({ preventScroll: true });
-            props.onToggle();
-          }}
-        >
-          <span className="inbox-bulk-report__decision-desk-head">
-            <span className="inbox-bulk-report__decision-desk-kicker">
-              Focused decision
-            </span>
-            <strong>{props.listItem.title}</strong>
-            <span>
-              Review the live options, adjust the reply if needed, then accept
-              or discuss.
-            </span>
-          </span>
-          <HydratedRecommendation {...props} />
+      <div className="inbox-bulk-report__detail-head">
+        <strong>{props.listItem.title}</strong>
+        <span>
+          Review the live options, adjust the reply if needed, then accept or
+          discuss.
         </span>
-      ) : null}
-    </span>
+      </div>
+      <HydratedRecommendation {...props} />
+    </div>
   );
 }
 
 export interface InboxBulkReportProps {
   run: BulkRun;
   runItems: BulkRunItem[];
-  attentionItems: AttentionItem[];
-  onRefresh?: () => void;
   onOpenThread?: (item: AttentionItem) => void;
   onClose: () => void;
 }
@@ -293,50 +324,30 @@ export interface InboxBulkReportProps {
 export default function InboxBulkReport({
   run,
   runItems,
-  attentionItems,
-  onRefresh,
   onOpenThread,
   onClose,
 }: InboxBulkReportProps) {
   const { acceptRecommendation, dismiss } = useBulkRunOps();
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
-  const [activeDrillId, setActiveDrillId] = useState<string | null>(null);
-  const drillToggleNodes = useRef(new Map<string, HTMLButtonElement>());
-  const pendingFocusRestoreId = useRef<string | null>(null);
   const [locallyApplied, setLocallyApplied] = useState<Set<string>>(
     () => new Set(),
   );
   const [localErrors, setLocalErrors] = useState<Map<string, string>>(
     () => new Map(),
   );
-  const attentionById = useMemo(
-    () => new Map(attentionItems.map((item) => [item.id, item])),
-    [attentionItems],
-  );
+  const attentionById = useMemo(() => {
+    const snapshots = new Map<string, AttentionItem>();
+    for (const runItem of runItems) {
+      const snapshot = bulkRunItemToAttentionSnapshot(runItem, run);
+      if (snapshot) snapshots.set(snapshot.id, snapshot);
+    }
+    return snapshots;
+  }, [run.harnessSlug, runItems]);
   const runItemById = useMemo(
     () => new Map(runItems.map((item) => [item.itemId, item])),
     [runItems],
   );
-
-  useEffect(() => {
-    if (activeDrillId === null) return;
-    if (attentionById.has(activeDrillId) && runItemById.has(activeDrillId)) {
-      return;
-    }
-    // Both inputs are live current-state feeds. Once either source stops
-    // representing the open desk, close it permanently so the same stable id
-    // cannot silently remount an expanded region if it reappears later.
-    setActiveDrillId(null);
-  }, [activeDrillId, attentionById, runItemById]);
-
-  useEffect(() => {
-    if (activeDrillId !== null) return;
-    const itemId = pendingFocusRestoreId.current;
-    if (!itemId) return;
-    pendingFocusRestoreId.current = null;
-    drillToggleNodes.current.get(itemId)?.focus({ preventScroll: true });
-  }, [activeDrillId]);
 
   const applyRecommendation = useCallback(
     async (
@@ -364,10 +375,9 @@ export default function InboxBulkReport({
         next.delete(runItem.itemId);
         return next;
       });
-      onRefresh?.();
       return result;
     },
-    [acceptRecommendation, onRefresh, run.runId],
+    [acceptRecommendation, run.runId],
   );
 
   const acceptSingle = useCallback(
@@ -385,10 +395,6 @@ export default function InboxBulkReport({
       setNotice(null);
       try {
         const result = await applyRecommendation(item, runItem, draftOverride);
-        if (result.ok) {
-          pendingFocusRestoreId.current = runItem.itemId;
-          setActiveDrillId(null);
-        }
         if (result.phase === "complete") onClose();
         return result;
       } finally {
@@ -406,25 +412,15 @@ export default function InboxBulkReport({
         locallyApplied,
         localErrors,
         (item, runItem) => (
-          <InboxBulkRecommendationDrillIn
+          <InboxBulkRecommendationDetail
             key={runItem.itemId}
             listItem={item}
             runItem={runItem}
             busy={busy}
-            open={activeDrillId === runItem.itemId}
-            onToggleNode={(node) => {
-              if (node) drillToggleNodes.current.set(runItem.itemId, node);
-              else drillToggleNodes.current.delete(runItem.itemId);
-            }}
-            onToggle={() =>
-              setActiveDrillId((current) =>
-                current === runItem.itemId ? null : runItem.itemId,
-              )
+            onAccept={(hydratedItem, draftOverride) =>
+              acceptSingle(hydratedItem, runItem, draftOverride)
             }
-            onAccept={(draftOverride) =>
-              acceptSingle(item, runItem, draftOverride)
-            }
-            onDiscuss={onOpenThread ? () => onOpenThread(item) : undefined}
+            onDiscuss={onOpenThread}
           />
         ),
       ),
@@ -434,7 +430,6 @@ export default function InboxBulkReport({
       locallyApplied,
       localErrors,
       busy,
-      activeDrillId,
       acceptSingle,
       onOpenThread,
     ],
@@ -456,7 +451,7 @@ export default function InboxBulkReport({
             setLocalErrors((previous) =>
               new Map(previous).set(
                 runItem.itemId,
-                "This item is no longer in the live attention feed; resolve it from the Inbox.",
+                "This run row has no valid persisted dispatch snapshot; resolve it from the current Inbox.",
               ),
             );
             continue;
@@ -492,7 +487,6 @@ export default function InboxBulkReport({
   return (
     <ReviewReportShell
       key={run.runId}
-      eyebrow="Inbox resolution"
       title="Inbox bulk-resolve report"
       icon={<Sparkles size={19} />}
       subtitle={
@@ -519,8 +513,8 @@ export default function InboxBulkReport({
           <strong>Resolve-first guarantee.</strong> Selected rows dispatch
           through the same live Inbox action path as a hand resolve, then record
           acceptance on the run. A failed resolve stays visible and unrecorded.
-          Open one <em>decision desk</em> at a time to load the item&rsquo;s
-          current options, edit a drafted reply, or open its discussion.
+          Hover a row—or focus its checkbox—to review the item&rsquo;s current
+          options, edit a drafted reply, or open its discussion.
         </span>
       }
     />

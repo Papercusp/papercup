@@ -72,7 +72,9 @@ describe('consultExpiryEmitReplyEvent', () => {
 
 describe('consultExpiryReach', () => {
   it('builds the notifying identity from the ROW workspace, not an ambient one', async () => {
-    let identityWs: string | undefined;
+    // `AgentIdentity.workspaceId` is `string | null`, so widen rather than narrow —
+    // a `string | undefined` here would not compile.
+    let identityWs: string | null | undefined;
     const notify = (async (identity) => {
       identityWs = identity.workspaceId;
       return { notified: [], subscribed: [], woke: 1 } as never;
