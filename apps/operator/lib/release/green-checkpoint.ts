@@ -731,12 +731,13 @@ export interface CheckpointDeps {
   stagingContainsFrozenRepair?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<boolean | null>;
-  /** EI-21007486441633274: publish an additive integration-history join only after the
-   * exact frozen repair has passed every gate and has become the green release ref. The
-   * returned SHA must be the integration head, must descend from both the prior integration
-   * tip and `queue.repairHead`, and must preserve the prior integration tree byte-for-byte.
-   * Returning null (or throwing) keeps the ready-to-promote queue durable: `main` stays on
-   * that exact tested repair while newer integration tips remain blocked. */
+  /** EI-21007486441633274 / WI-40081: publish an additive integration-history join only
+   * after the exact frozen repair passes its isolated verification. The returned SHA is an
+   * immutable CANONICAL candidate for a fresh full-gate run: it must be the integration head,
+   * descend from both the prior integration tip and `queue.repairHead`, and preserve the prior
+   * integration tree byte-for-byte. The isolated repair head is verification-only and must
+   * never advance the green release ref directly. Returning null (or throwing) keeps the
+   * ready-to-promote queue durable and `main` unchanged. */
   reconcileFrozenRepairIntoStaging?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<string | null>;
@@ -7545,61 +7546,56 @@ async function runGreenCheckpointInner(
   };
 
   /**
-   * Publish and advance the exact repair SHA before touching staging. `ready-to-promote`
-   * is the durable transaction journal: if a process dies after the remote push but before
-   * the local ref move, the next pass safely repeats the push; if it dies after the ref move,
-   * `lastReady === repairHead` skips both effects and resumes at the staging join.
+   * Convert a green isolated repair into the one thing D-001 permits promotion to judge: an
+   * immutable canonical staging SHA. The replacement ready-to-test queue is written BEFORE the
+   * old repair worktree is cleaned, so a crash either resumes the ready-to-promote join or the
+   * exact canonical full-gate candidate; it can never fall through to a moving tip.
    */
-  const advanceExactFrozenRepair = async (
+  const stageCanonicalRepairRetest = async (
     queue: FrozenCandidateRepairQueue,
-    onFailure?: (leg: "push" | "advance") => void,
-  ): Promise<{ candidate: string; advance: AdvanceResult }> => {
-    const exactCandidate = await revParse(
-      cfg.integrationRoot,
-      queue.repairHead,
-    );
-    if (lastReady === exactCandidate) {
-      return {
-        candidate: exactCandidate,
-        advance: {
-          advanced: false,
-          from: exactCandidate,
-          to: exactCandidate,
-          reason: "already-at-candidate",
-        },
-      };
-    }
-
-    if (!opts.noPush) {
-      await pushGreenCandidateOrThrow(
-        cfg,
-        deps,
-        exactCandidate,
-        lastReady,
-      ).catch((error: unknown) => {
-        onFailure?.("push");
-        throw error;
-      });
-    }
-    const advance = await deps
-      .advance(exactCandidate)
-      .catch((error: unknown) => {
-        onFailure?.("advance");
-        throw error;
-      });
-    if (
-      advance.to !== exactCandidate ||
-      advance.reason === "not-fast-forward"
-    ) {
-      const error = new Error(
-        `verified frozen repair ${exactCandidate.slice(0, 12)} was published but ${cfg.releaseRef} ` +
-          `did not fast-forward to it (reason=${advance.reason}, from=${advance.from?.slice(0, 12) ?? "unset"}, ` +
-          `to=${advance.to.slice(0, 12)})`,
+  ): Promise<
+    | { ok: true; candidate: string; queue: FrozenCandidateRepairQueue }
+    | { ok: false; error: unknown }
+  > => {
+    try {
+      const reconciledHead =
+        await deps.reconcileFrozenRepairIntoStaging!(queue);
+      if (!reconciledHead) return { ok: false, error: null };
+      const canonicalCandidate = await revParse(
+        cfg.integrationRoot,
+        reconciledHead,
       );
-      onFailure?.("advance");
-      throw error;
+      const canonicalQueue = createFrozenCandidateQueue({
+        candidate: canonicalCandidate,
+        qualificationAttemptId: queue.qualificationAttemptId ?? null,
+        base: lastReady,
+        worktreePath: path.join(
+          cfg.integrationRoot,
+          ".papercusp",
+          "worktrees",
+          `green-candidate-${pipelineName(cfg.integrationRoot)}-${canonicalCandidate.slice(0, 12)}`,
+        ),
+        // The isolated repair suite is proof about another SHA. Re-entry must execute the
+        // complete canonical gate and therefore cannot inherit that affected-task proof.
+        affectedTestProofGroup: null,
+        nowMs: Date.now(),
+      });
+      await deps.writeFrozenRepairQueue!(canonicalQueue);
+      await deps
+        .cleanupFrozenRepairWorktree?.(queue)
+        .catch((error) =>
+          deps.log(
+            `warn: verification-only repair worktree cleanup failed: ${error instanceof Error ? error.message : error}`,
+          ),
+        );
+      return {
+        ok: true,
+        candidate: canonicalCandidate,
+        queue: canonicalQueue,
+      };
+    } catch (error) {
+      return { ok: false, error };
     }
-    return { candidate: exactCandidate, advance };
   };
   if (!diagnosticOnly && deps.readFrozenRepairQueue) {
     try {
@@ -7685,120 +7681,50 @@ async function runGreenCheckpointInner(
     }
   }
   if (repairQueue) {
-    // A process may die after proving the exact repair green, before or after advancing
-    // `main`, or while publishing the additive staging-history join. The persisted
-    // ready-to-promote row resumes those idempotent effects WITHOUT spending a second suite.
-    // Old/direct callers without the reconciliation hook retain the historical exact-head
-    // re-verification path for compatibility.
+    // A process may die after proving the exact repair green or while publishing the additive
+    // staging-history join. The persisted ready-to-promote row resumes that idempotent join,
+    // then replaces itself with a ready-to-test queue pinned to the canonical joined SHA.
+    // `main` is untouched until that exact canonical SHA passes the full gate.
+    // Old/direct callers without both durable hooks retain the historical exact-head path.
     if (repairQueue.phase === "ready-to-promote") {
-      if (deps.reconcileFrozenRepairIntoStaging) {
-        const exactPromotion = await advanceExactFrozenRepair(repairQueue);
-        let reconciledHead: string | null = null;
-        let reconciliationError: unknown = null;
-        try {
-          reconciledHead =
-            await deps.reconcileFrozenRepairIntoStaging(repairQueue);
-        } catch (error) {
-          reconciliationError = error;
-        }
-        if (!reconciledHead) {
-          const detail = reconciliationError
-            ? `: ${reconciliationError instanceof Error ? reconciliationError.message : reconciliationError}`
+      if (
+        deps.reconcileFrozenRepairIntoStaging &&
+        deps.writeFrozenRepairQueue
+      ) {
+        const verifiedRepairHead = repairQueue.repairHead;
+        const staged = await stageCanonicalRepairRetest(repairQueue);
+        if (!staged.ok) {
+          const detail = staged.error
+            ? `: ${staged.error instanceof Error ? staged.error.message : staged.error}`
             : "";
           const summary =
-            `verified frozen repair ${exactPromotion.candidate.slice(0, 8)} is the exact green ` +
-            `${cfg.releaseRef} commit, but could not be joined into the current ` +
-            `${cfg.integrationBranch} history${detail}; keeping the ready-to-promote queue and ` +
-            `refusing to select a newer integration tip`;
+            `verified frozen repair ${verifiedRepairHead.slice(0, 8)} remains verification-only; ` +
+            `it could not be joined into current ${cfg.integrationBranch} history${detail}. ` +
+            `Keeping the ready-to-promote queue, leaving ${cfg.releaseRef} unchanged, and refusing ` +
+            `to select a moving integration tip`;
           deps.log(summary);
           return {
-            advanced: exactPromotion.advance.advanced,
-            candidate: exactPromotion.candidate,
-            from: exactPromotion.advance.from,
-            green: true,
+            advanced: false,
+            candidate: verifiedRepairHead,
+            from: lastReady,
+            green: null,
             reason: "repair-in-progress",
             summary,
             repairQueue,
           };
         }
-        const summary =
-          `verified frozen repair ${exactPromotion.candidate.slice(0, 8)} is the exact green ` +
-          `${cfg.releaseRef} commit and was joined additively into ${cfg.integrationBranch} at ` +
-          `${reconciledHead.slice(0, 8)}; the persisted queue is complete and the next gate may select the latest integration tip`;
-        deps.log(summary);
-
-        // Report while the durable row still exists. A crash after delivery but before the
-        // clear can repeat the signal; clearing first could lose the only success signal.
-        await deps
-          .broadcast(
-            `🟩 green-checkpoint: \`${cfg.releaseRef}\` is at exact verified repair ${exactPromotion.candidate.slice(0, 8)} (green, deployable)`,
-            summary,
-          )
-          .catch(() => {});
-        await deps.clearEscalation?.().catch(() => {});
-        {
-          const pipeline = pipelineName(cfg.integrationRoot);
-          const greenSummary =
-            `[${pipeline}] ${cfg.releaseRef} is at exact verified repair ` +
-            `${exactPromotion.candidate.slice(0, 8)} (green, deployable)`;
-          const payload = {
-            sha: exactPromotion.candidate,
-            from: exactPromotion.advance.from,
-            pipeline,
-            candidateSource,
-            runId: deps.runId ?? null,
-          };
-          try {
-            await deps.emitEvent?.({
-              key: "release:green",
-              summary: greenSummary,
-              payload,
-              cancelSiblingKeysFor: [
-                "green-checkpoint:red",
-                `green-checkpoint:red:${pipeline}`,
-              ],
-            });
-            await deps.emitEvent?.({
-              key: `release:green:${pipeline}`,
-              summary: greenSummary,
-              payload,
-              cancelSiblingKeysFor: [
-                "green-checkpoint:red",
-                `green-checkpoint:red:${pipeline}`,
-              ],
-            });
-          } catch (error) {
-            deps.log(
-              `warn: resumed frozen-repair release:green emit failed: ${error instanceof Error ? error.message : error}`,
-            );
-          }
-        }
-        await deps
-          .clearInFlightCandidate?.()
-          .catch((error) =>
-            deps.log(
-              `warn: resumed frozen-repair in-flight marker clear failed: ${error instanceof Error ? error.message : error}`,
-            ),
-          );
-        await deps.writeFrozenRepairQueue?.(null);
-        await deps
-          .cleanupFrozenRepairWorktree?.(repairQueue)
-          .catch((e) =>
-            deps.log(
-              `warn: reconciled repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
-            ),
-          );
-        return {
-          advanced: exactPromotion.advance.advanced,
-          candidate: exactPromotion.candidate,
-          from: exactPromotion.advance.from,
-          green: true,
-          reason: "advanced",
-          summary,
-        };
+        repairQueue = staged.queue;
+        candidate = staged.candidate;
+        initialCandidateVerification = true;
+        deps.log(
+          `verified frozen repair ${verifiedRepairHead.slice(0, 8)} stayed verification-only; ` +
+            `joined it into ${cfg.integrationBranch} and re-entering the full gate on immutable ` +
+            `canonical candidate ${candidate.slice(0, 8)}`,
+        );
+      } else {
+        repairQueue = { ...repairQueue, phase: "ready-to-verify" };
+        await deps.writeFrozenRepairQueue?.(repairQueue);
       }
-      repairQueue = { ...repairQueue, phase: "ready-to-verify" };
-      await deps.writeFrozenRepairQueue?.(repairQueue);
     }
     const fixerAlive = repairQueue.fixerSpawnId
       ? await deps
