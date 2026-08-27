@@ -32,6 +32,21 @@ import { isSuTierRole } from '../../su-role-addendum';
 import { PAIR_ROLE_IMPLEMENTER } from './pair-launch-options';
 import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
+import { readAgentConfig } from '../../agent-config';
+import {
+  CLOUD_MODEL_MENU,
+  composeLaunchModelSpec,
+  DEFAULT_MODEL_TIERS,
+  launchAgentBackendForModel,
+  splitModelSpec,
+  type LaunchAgentBackend,
+  type ModelTier,
+} from '../../agent-config-constants';
+import {
+  getFleet,
+  setFleetLaunchTransaction,
+  type FleetLaunchTransaction,
+} from '../../agent-fleets-store';
 
 /** Default window to wait for the replacement's FIRST heartbeat before calling the respawn failed. */
 const DEFAULT_VERIFY_SEC = 90;
@@ -75,6 +90,305 @@ function replacementOwnerId(fleetSlug: string, memberOwnerId: string, idempotenc
     return `su-respawn-${digest}`;
   }
   return `su-respawn-${randomUUID()}`;
+}
+
+const RESPAWN_HISTORY_LIMIT = 32;
+
+function replaceMemberIds(ids: readonly string[] | undefined, drainedOwnerId: string, replacementOwnerId: string): string[] {
+  return [...new Set((ids ?? []).map((ownerId) => ownerId === drainedOwnerId ? replacementOwnerId : ownerId))];
+}
+
+function addMemberId(ids: readonly string[], ownerId: string): string[] {
+  return [...new Set([...ids, ownerId])];
+}
+
+function removeMemberId(ids: readonly string[], ownerId: string): string[] {
+  return ids.filter((candidate) => candidate !== ownerId);
+}
+
+export type RespawnLaunchOutcome = 'launch-failed' | 'unverified' | 'verified';
+
+/**
+ * Reconcile a member replacement into the latest durable launch transaction without mutating the
+ * transaction that was read. The old owner is retained only as governor history/retirement and
+ * failure evidence; every recovery identity points at the replacement. The replacement starts
+ * unresolved so a presence/worker verification is still required before it can leave retry state.
+ */
+export function reconcileRespawnLaunchTransaction(args: {
+  transaction: FleetLaunchTransaction;
+  drainedOwnerId: string;
+  replacementOwnerId: string;
+  now?: number;
+}): FleetLaunchTransaction {
+  const { transaction, drainedOwnerId, replacementOwnerId } = args;
+  const now = args.now ?? Date.now();
+  const replacement = (ids: readonly string[] | undefined) =>
+    replaceMemberIds(ids, drainedOwnerId, replacementOwnerId);
+  const unconfirmedMemberIds = replacement(transaction.unconfirmedMemberIds);
+  if (!unconfirmedMemberIds.includes(replacementOwnerId)) unconfirmedMemberIds.push(replacementOwnerId);
+
+  const retryOwnerIds = replacement(transaction.recovery.retryOwnerIds);
+  if (!retryOwnerIds.includes(replacementOwnerId)) retryOwnerIds.push(replacementOwnerId);
+
+  const priorGovernor = transaction.governor;
+  const history = [...(priorGovernor?.history ?? [])];
+  const alreadyRecorded = history.some(
+    (event) => event.action === 'respawn' && event.ownerId === drainedOwnerId && event.replacementOwnerId === replacementOwnerId,
+  );
+  if (!alreadyRecorded) {
+    history.push({
+      at: now,
+      action: 'respawn',
+      transactionId: transaction.transactionId,
+      ownerId: drainedOwnerId,
+      replacementOwnerId,
+      reason: `respawn-member replaced drained owner ${drainedOwnerId} with unresolved replacement ${replacementOwnerId}`,
+    });
+  }
+  const governor = {
+    version: 1 as const,
+    probeOwnerIds: replacement(priorGovernor?.probeOwnerIds ?? transaction.requestedMemberIds),
+    attestationAttempts: Object.fromEntries(
+      Object.entries(priorGovernor?.attestationAttempts ?? {})
+        .filter(([ownerId]) => ownerId !== drainedOwnerId && ownerId !== replacementOwnerId),
+    ),
+    retiredMemberIds: [
+      ...new Set([
+        ...(priorGovernor?.retiredMemberIds ?? []).filter((ownerId) => ownerId !== replacementOwnerId),
+        drainedOwnerId,
+      ]),
+    ],
+    history: history.slice(-RESPAWN_HISTORY_LIMIT),
+    terminalVerdict: null,
+    ...(priorGovernor?.capacity ? { capacity: priorGovernor.capacity } : {}),
+  };
+
+  return {
+    ...transaction,
+    state: 'partial',
+    updatedAt: now,
+    requestedMemberIds: replacement(transaction.requestedMemberIds),
+    openedMemberIds: replacement(transaction.openedMemberIds),
+    verifiedMemberIds: replacement(transaction.verifiedMemberIds),
+    unconfirmedMemberIds,
+    ...(transaction.workerReadyMemberIds
+      ? { workerReadyMemberIds: transaction.workerReadyMemberIds.filter((ownerId) => ownerId !== drainedOwnerId && ownerId !== replacementOwnerId) }
+      : {}),
+    ...(transaction.workerAttestations
+      ? { workerAttestations: transaction.workerAttestations.filter((attestation) => attestation.ownerId !== drainedOwnerId && attestation.ownerId !== replacementOwnerId) }
+      : {}),
+    failed: transaction.failed.map((failure) => ({ ...failure })),
+    waves: transaction.waves.map((wave) => ({
+      ...wave,
+      ownerIds: replacement(wave.ownerIds),
+      ...(wave.openedOwnerIds ? { openedOwnerIds: replacement(wave.openedOwnerIds) } : {}),
+      ...(wave.verifiedOwnerIds ? { verifiedOwnerIds: replacement(wave.verifiedOwnerIds) } : {}),
+    })),
+    recovery: {
+      ...transaction.recovery,
+      retryOwnerIds,
+      nextAction: `replacement ${replacementOwnerId} is pending respawn verification; do not replay the drained owner ${drainedOwnerId}`,
+    },
+    ...(transaction.requestedMembers
+      ? {
+          requestedMembers: transaction.requestedMembers.map((member) => ({
+            ...member,
+            ownerId: member.ownerId === drainedOwnerId ? replacementOwnerId : member.ownerId,
+          })),
+        }
+      : {}),
+    governor,
+  };
+}
+
+function settleRespawnLaunchTransaction(
+  transaction: FleetLaunchTransaction,
+  replacementOwnerId: string,
+  outcome: RespawnLaunchOutcome,
+  reason: string | undefined,
+): FleetLaunchTransaction {
+  const next: FleetLaunchTransaction = {
+    ...transaction,
+    requestedMemberIds: [...transaction.requestedMemberIds],
+    openedMemberIds: [...transaction.openedMemberIds],
+    verifiedMemberIds: [...transaction.verifiedMemberIds],
+    unconfirmedMemberIds: [...(transaction.unconfirmedMemberIds ?? [])],
+    failed: transaction.failed.map((failure) => ({ ...failure })),
+    waves: transaction.waves.map((wave) => ({
+      ...wave,
+      ownerIds: [...wave.ownerIds],
+      ...(wave.openedOwnerIds ? { openedOwnerIds: [...wave.openedOwnerIds] } : {}),
+      ...(wave.verifiedOwnerIds ? { verifiedOwnerIds: [...wave.verifiedOwnerIds] } : {}),
+    })),
+    recovery: { ...transaction.recovery, retryOwnerIds: [...transaction.recovery.retryOwnerIds] },
+    ...(transaction.workerReadyMemberIds ? { workerReadyMemberIds: [...transaction.workerReadyMemberIds] } : {}),
+    ...(transaction.workerAttestations ? { workerAttestations: transaction.workerAttestations.map((attestation) => ({ ...attestation })) } : {}),
+    ...(transaction.requestedMembers ? { requestedMembers: transaction.requestedMembers.map((member) => ({ ...member })) } : {}),
+    ...(transaction.governor
+      ? {
+          governor: {
+            ...transaction.governor,
+            probeOwnerIds: [...transaction.governor.probeOwnerIds],
+            attestationAttempts: { ...transaction.governor.attestationAttempts },
+            retiredMemberIds: [...transaction.governor.retiredMemberIds],
+            history: [...transaction.governor.history],
+            terminalVerdict: transaction.governor.terminalVerdict,
+          },
+        }
+      : {}),
+  };
+
+  if (outcome === 'verified') {
+    next.openedMemberIds = addMemberId(next.openedMemberIds, replacementOwnerId);
+    next.verifiedMemberIds = addMemberId(next.verifiedMemberIds, replacementOwnerId);
+    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds, replacementOwnerId);
+    next.recovery.retryOwnerIds = removeMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
+    next.recovery.nextAction = `respawn replacement ${replacementOwnerId} verified`;
+  } else if (outcome === 'unverified') {
+    next.openedMemberIds = addMemberId(next.openedMemberIds, replacementOwnerId);
+    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds, replacementOwnerId);
+    next.unconfirmedMemberIds = addMemberId(next.unconfirmedMemberIds, replacementOwnerId);
+    next.recovery.retryOwnerIds = addMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
+    next.recovery.nextAction = reason ?? `respawn replacement ${replacementOwnerId} launched but remains unverified`;
+  } else {
+    next.openedMemberIds = removeMemberId(next.openedMemberIds, replacementOwnerId);
+    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds, replacementOwnerId);
+    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds, replacementOwnerId);
+    next.recovery.retryOwnerIds = addMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
+    next.recovery.nextAction = reason ?? `respawn replacement ${replacementOwnerId} failed to launch`;
+    if (!next.failed.some((failure) => failure.ownerId === replacementOwnerId && failure.phase === 'spawn')) {
+      next.failed.push({ ownerId: replacementOwnerId, phase: 'spawn', reason: next.recovery.nextAction });
+    }
+  }
+
+  const verified = new Set(next.verifiedMemberIds);
+  next.waves = next.waves.map((wave) => {
+    if (!wave.ownerIds.includes(replacementOwnerId)) return wave;
+    let opened = [...(wave.openedOwnerIds ?? [])];
+    let verifiedInWave = [...(wave.verifiedOwnerIds ?? [])];
+    if (outcome === 'launch-failed') {
+      opened = removeMemberId(opened, replacementOwnerId);
+      verifiedInWave = removeMemberId(verifiedInWave, replacementOwnerId);
+    } else {
+      opened = addMemberId(opened, replacementOwnerId);
+      verifiedInWave = outcome === 'verified'
+        ? addMemberId(verifiedInWave, replacementOwnerId)
+        : removeMemberId(verifiedInWave, replacementOwnerId);
+    }
+    return {
+      ...wave,
+      openedOwnerIds: opened,
+      verifiedOwnerIds: verifiedInWave,
+      state: outcome === 'verified' && wave.ownerIds.length > 0 && wave.ownerIds.every((ownerId) => verifiedInWave.includes(ownerId))
+        ? 'verified'
+        : 'partial',
+    };
+  });
+  next.state = next.requestedMemberIds.length > 0 && next.requestedMemberIds.every((ownerId) => verified.has(ownerId))
+    ? 'verified'
+    : 'partial';
+  return next;
+}
+
+export interface PersistRespawnLaunchTransactionOptions {
+  workspaceId: string;
+  fleetSlug: string;
+  drainedOwnerId: string;
+  replacementOwnerId: string;
+  outcome: RespawnLaunchOutcome;
+  /** The transaction id observed before draining. A different id is a newer launch and is preserved. */
+  expectedTransactionId?: string | null;
+  reason?: string;
+  now?: () => number;
+  getFleetFn?: typeof getFleet;
+  setFleetLaunchTransactionFn?: typeof setFleetLaunchTransaction;
+}
+
+export type PersistRespawnLaunchTransactionResult =
+  | { ok: true; attempts: number; transaction: FleetLaunchTransaction }
+  | { ok: false; attempts: number; reason: 'no-transaction' | 'read-failed' | 'newer-transaction' | 'cas-exhausted'; error?: string; preservedTransactionId?: string };
+
+/** Persist respawn reconciliation with a bounded CAS retry, never overwriting a newer launch. */
+export async function persistRespawnLaunchTransaction(
+  opts: PersistRespawnLaunchTransactionOptions,
+): Promise<PersistRespawnLaunchTransactionResult> {
+  const getFleetFn = opts.getFleetFn ?? getFleet;
+  const setFleetLaunchTransactionFn = opts.setFleetLaunchTransactionFn ?? setFleetLaunchTransaction;
+  const hasExpectedTransaction = opts.expectedTransactionId !== undefined;
+  let lastError: string | undefined;
+  let readFailures = 0;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let fleet: Awaited<ReturnType<typeof getFleet>>;
+    try {
+      fleet = await getFleetFn(opts.workspaceId, opts.fleetSlug);
+    } catch (error) {
+      readFailures += 1;
+      lastError = error instanceof Error ? error.message : String(error);
+      continue;
+    }
+    const current = fleet?.lastLaunchTransaction ?? null;
+    if (!current) return { ok: false, attempts: attempt, reason: 'no-transaction' };
+    if (hasExpectedTransaction && current.transactionId !== opts.expectedTransactionId) {
+      return {
+        ok: false,
+        attempts: attempt,
+        reason: 'newer-transaction',
+        preservedTransactionId: current.transactionId,
+      };
+    }
+
+    const now = opts.now?.() ?? Date.now();
+    const reconciled = reconcileRespawnLaunchTransaction({
+      transaction: current,
+      drainedOwnerId: opts.drainedOwnerId,
+      replacementOwnerId: opts.replacementOwnerId,
+      now,
+    });
+    const next = settleRespawnLaunchTransaction(
+      reconciled,
+      opts.replacementOwnerId,
+      opts.outcome,
+      opts.reason,
+    );
+    try {
+      const persisted = await setFleetLaunchTransactionFn({
+        workspaceId: opts.workspaceId,
+        fleetSlug: opts.fleetSlug,
+        transaction: next,
+        expectedRevision: {
+          transactionId: current.transactionId,
+          updatedAt: current.updatedAt,
+        },
+      });
+      if (persisted) return { ok: true, attempts: attempt, transaction: next };
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  return {
+    ok: false,
+    attempts: 3,
+    reason: readFailures === 3 ? 'read-failed' : 'cas-exhausted',
+    ...(lastError ? { error: lastError } : {}),
+  };
+}
+
+function summarizeRespawnLaunchTransaction(result: PersistRespawnLaunchTransactionResult): Record<string, unknown> {
+  if (result.ok) {
+    return {
+      status: 'persisted',
+      attempts: result.attempts,
+      transactionId: result.transaction.transactionId,
+    };
+  }
+  return {
+    status: result.reason,
+    attempts: result.attempts,
+    ...(result.error ? { error: result.error } : {}),
+    ...(result.preservedTransactionId ? { preservedTransactionId: result.preservedTransactionId } : {}),
+  };
 }
 
 export interface AwaitReplacementResult {
@@ -394,6 +708,145 @@ async function preflightSavedPersonaRole(opts: {
   return { ok: true };
 }
 
+type SavedModelPreflightResult =
+  | { ok: true; model?: string; backend: LaunchAgentBackend | null }
+  | {
+      ok: false;
+      error: 'saved_model_invalid' | 'saved_model_preflight_failed' | 'saved_model_backend_mismatch';
+      model?: string;
+      agent?: string;
+      backend?: LaunchAgentBackend;
+      message: string;
+    };
+
+/**
+ * Validate the saved model/effort/backend tuple before respawn-member drains the old process.
+ * The launcher accepts a broad model string at its boundary, but a recovery path must not kill a
+ * healthy member and then discover that the replacement's first gateway request will 404. The
+ * effective tier menu is the owner-configured catalog (falling back to the committed menu), while
+ * CLOUD_MODEL_MENU covers the native aliases that are valid even when a custom tier menu omits
+ * them. `launchAgentBackendForModel` remains the one backend classifier for known model ids.
+ */
+async function preflightSavedModel(opts: {
+  model?: string;
+  effort?: string;
+  agent?: string;
+  workspaceId: string;
+}): Promise<SavedModelPreflightResult> {
+  let config: Awaited<ReturnType<typeof readAgentConfig>>;
+  try {
+    config = await readAgentConfig();
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'saved_model_preflight_failed',
+      model: opts.model,
+      agent: opts.agent,
+      message:
+        `Could not read the registered model catalog for workspace \`${opts.workspaceId}\`: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+
+  const tiers: readonly ModelTier[] = config.tiers && config.tiers.length > 0 ? config.tiers : DEFAULT_MODEL_TIERS;
+  let composedModel: string | undefined;
+  try {
+    composedModel = composeLaunchModelSpec(opts.model, opts.effort);
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'saved_model_invalid',
+      model: opts.model,
+      agent: opts.agent,
+      message:
+        `The saved model/effort combination is invalid: ${error instanceof Error ? error.message : String(error)}. ` +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+
+  const requestedAgent = opts.agent?.trim().toLowerCase();
+  const explicitAgent: LaunchAgentBackend | null =
+    requestedAgent === 'claude' || requestedAgent === 'claude-code'
+      ? 'claude'
+      : requestedAgent === 'codex'
+        ? 'codex'
+        : requestedAgent === 'omp'
+          ? 'omp'
+          : null;
+  if (requestedAgent && !explicitAgent) {
+    return {
+      ok: false,
+      error: 'saved_model_invalid',
+      model: composedModel ?? opts.model,
+      agent: opts.agent,
+      message:
+        `The saved launch agent \`${opts.agent}\` is not one of claude, codex, or omp. ` +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+
+  // An omitted model means "use the backend default". It is still safe to preserve for legacy
+  // launch rows, provided any explicitly persisted agent is itself a recognized backend.
+  if (!composedModel) return { ok: true, model: composedModel, backend: explicitAgent };
+
+  const backend = launchAgentBackendForModel(composedModel);
+  const catalogModel = splitModelSpec(composedModel).model?.replace(/\[[^\]]+\]$/, '').toLowerCase() ?? null;
+  const inEffectiveTiers = tiers.some(
+    (tier) => splitModelSpec(tier.spec).model?.replace(/\[[^\]]+\]$/, '').toLowerCase() === catalogModel,
+  );
+  const inCloudMenu = CLOUD_MODEL_MENU.some(
+    (choice) => splitModelSpec(choice.value).model?.replace(/\[[^\]]+\]$/, '').toLowerCase() === catalogModel,
+  );
+
+  if (!backend) {
+    return {
+      ok: false,
+      error: 'saved_model_invalid',
+      model: composedModel,
+      agent: opts.agent,
+      message:
+        `The saved model \`${composedModel}\` is not registered in the effective model tiers or ` +
+        `CLOUD_MODEL_MENU, so its launch backend cannot be determined. ` +
+        'Choose a registered model before retrying. The old member was NOT killed and no replacement was launched.',
+    };
+  }
+
+  // Native Claude aliases are only safe when the current catalog still exposes them. OMP is a
+  // multi-provider backend, so it may run a registered native cloud model explicitly; provider/id
+  // models are likewise classified as OMP by launchAgentBackendForModel and need no native menu row.
+  if (backend === 'claude' && !inEffectiveTiers && !inCloudMenu) {
+    return {
+      ok: false,
+      error: 'saved_model_invalid',
+      model: composedModel,
+      agent: opts.agent,
+      backend,
+      message:
+        `The saved Claude model \`${composedModel}\` is not present in the effective model tiers or ` +
+        `CLOUD_MODEL_MENU. The old member was NOT killed and no replacement was launched.`,
+    };
+  }
+
+  // Keep OMP's documented multi-provider behavior: it can run either native cloud family. Native
+  // Claude/Codex CLIs, however, must agree with the model classifier or the replacement will boot
+  // with an unrunnable model and only surface the failure on its first gateway request.
+  if (explicitAgent && explicitAgent !== 'omp' && explicitAgent !== backend) {
+    return {
+      ok: false,
+      error: 'saved_model_backend_mismatch',
+      model: composedModel,
+      agent: opts.agent,
+      backend,
+      message:
+        `The saved model \`${composedModel}\` belongs to the \`${backend}\` backend, but the saved ` +
+        `launch requested agent \`${opts.agent}\`. The old member was NOT killed and no replacement was launched.`,
+    };
+  }
+
+  return { ok: true, model: composedModel, backend };
+}
+
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
@@ -435,6 +888,12 @@ export default defineTool({
         .max(120)
         .optional()
         .describe('Fleet slug (or name — slugified). Defaults to the single fleet you lead.'),
+      harness: z
+        .string()
+        .min(1)
+        .max(120)
+        .optional()
+        .describe("Harness slug for legacy launch-spec recovery. Defaults to the member's saved context or the session harness."),
       model: z.string().max(80).optional().describe('New model spec (e.g. "opus[1m]", "sonnet:high").'),
       effort: z.string().max(40).optional().describe('New reasoning effort (low|medium|high|xhigh|max) — composed onto the model spec.'),
       account: z.string().max(120).optional().describe('New account routing (default | auto | a pool account id).'),
@@ -502,7 +961,7 @@ export default defineTool({
     // and an explicit respawn agent override. Never default either field.
     const memberPresence = await getPresence(memberOwnerId).catch(() => null);
     const memberBrief = await getSessionBrief({ ownerId: memberOwnerId }).catch(() => null);
-    const callerHarness = resolveConcreteHarnessSlug(undefined, ctx) ?? '';
+    const callerHarness = resolveConcreteHarnessSlug(args.harness, ctx) ?? '';
     const legacyHarness = memberBrief?.harnessSlug?.trim() || memberPresence?.potSlug?.trim() ||
       (callerHarness && callerHarness !== '*' && callerHarness !== 'all' ? callerHarness : undefined);
 
@@ -592,6 +1051,73 @@ export default defineTool({
         true,
       );
     }
+
+    // Validate the composed saved model/backend against the current catalog before taking the
+    // destructive snapshot/kill path. capability:launch-agent performs its own model handling,
+    // but only after it has opened the replacement terminal — too late for recovery safety.
+    const modelPreflight = await preflightSavedModel({
+      model: savedLaunchSpec.effective.member.model,
+      effort: savedLaunchSpec.effective.member.effort,
+      agent: savedLaunchSpec.effective.member.agent,
+      workspaceId,
+    });
+    if (!modelPreflight.ok) {
+      return json(
+        {
+          ok: false,
+          error: modelPreflight.error,
+          fleet: slug,
+          member: memberOwnerId,
+          ...(modelPreflight.model ? { model: modelPreflight.model } : {}),
+          ...(modelPreflight.agent ? { agent: modelPreflight.agent } : {}),
+          ...(modelPreflight.backend ? { backend: modelPreflight.backend } : {}),
+          message: modelPreflight.message,
+          killed: false,
+          launched: false,
+          launchSpec: {
+            provenance: savedLaunchSpec.provenance,
+            reusePath: savedLaunchSpec.reusePath,
+            overrides: savedLaunchSpec.overrides,
+            preservedFields: savedLaunchSpec.preservedFields,
+          },
+        },
+        true,
+      );
+    }
+
+    // Snapshot the transaction revision before the destructive drain. A respawn is allowed to
+    // reconcile only the launch lineage it observed; if another launch starts while this one is
+    // draining, persistRespawnLaunchTransaction reports and preserves that newer transaction.
+    let expectedLaunchTransactionId: string | null | undefined;
+    let launchTransactionReadError: string | undefined;
+    try {
+      const fleet = await getFleet(workspaceId, slug);
+      expectedLaunchTransactionId = fleet?.lastLaunchTransaction?.transactionId ?? null;
+    } catch (error) {
+      launchTransactionReadError = error instanceof Error ? error.message : String(error);
+    }
+    const persistRespawnTransaction = (
+      outcome: RespawnLaunchOutcome,
+      reason?: string,
+    ): Promise<PersistRespawnLaunchTransactionResult> => {
+      if (launchTransactionReadError) {
+        return Promise.resolve({
+          ok: false,
+          attempts: 0,
+          reason: 'read-failed',
+          error: launchTransactionReadError,
+        });
+      }
+      return persistRespawnLaunchTransaction({
+        workspaceId,
+        fleetSlug: slug,
+        drainedOwnerId: memberOwnerId,
+        replacementOwnerId: replacementOwner,
+        outcome,
+        expectedTransactionId: expectedLaunchTransactionId,
+        reason,
+      });
+    };
 
     // 0. Snapshot the fleet's roster BEFORE the kill, so the replacement is identified by being
     //    an owner-id that was not there before — a respawn mints a NEW identity, so "some member
@@ -727,6 +1253,7 @@ export default defineTool({
         leaderOwnerId: target.fleet.leaderOwnerId,
         list: () => listFleetPresence(workspaceId, slug),
       });
+      const launchTransactionPersistence = await persistRespawnTransaction('launch-failed', launch.text || undefined);
       return json(
         {
           ok: false,
@@ -746,6 +1273,7 @@ export default defineTool({
             preservedFields: savedLaunchSpec.preservedFields,
           },
           verified: false,
+          launchTransactionPersistence: summarizeRespawnLaunchTransaction(launchTransactionPersistence),
           headcount,
           message: respawnFailureMessage(headcount),
         },
@@ -759,6 +1287,10 @@ export default defineTool({
     //    respawn silently leaves a fleet a member down (WI-6936).
     const verifySec = args.verifySec ?? DEFAULT_VERIFY_SEC;
     if (verifySec === 0 || !rosterReadable) {
+      const launchTransactionPersistence = await persistRespawnTransaction(
+        'unverified',
+        `respawn replacement ${replacementOwner} launched but verification was ${rosterReadable ? 'skipped' : 'unavailable'}`,
+      );
       return json({
         ok: true,
         fleet: slug,
@@ -777,6 +1309,7 @@ export default defineTool({
           preservedFields: savedLaunchSpec.preservedFields,
         },
         verified: false,
+        launchTransactionPersistence: summarizeRespawnLaunchTransaction(launchTransactionPersistence),
         verification: rosterReadable ? 'skipped' : 'unavailable',
         message: `Launch REQUESTED but NOT verified${rosterReadable ? ' (verifySec:0)' : ' (the fleet presence roster could not be read)'} — the launcher only knows it spawned a terminal, which survives a CLI that dies before its first turn. Confirm a real agent exists before relying on it: fleet:leader-brief { fleet:'${slug}', include_stale:true } and require a NEW member with loopMode set and a fresh heartbeat.`,
       });
@@ -788,6 +1321,12 @@ export default defineTool({
       list: () => listFleetPresence(workspaceId, slug),
       timeoutMs: verifySec * 1000,
     });
+    const launchTransactionPersistence = await persistRespawnTransaction(
+      verify.verified ? 'verified' : 'unverified',
+      verify.verified
+        ? undefined
+        : `respawn replacement ${replacementOwner} launched but never appeared in the fleet roster within ${verifySec}s`,
+    );
 
     return json(
       {
@@ -808,6 +1347,7 @@ export default defineTool({
           preservedFields: savedLaunchSpec.preservedFields,
         },
         verified: verify.verified,
+        launchTransactionPersistence: summarizeRespawnLaunchTransaction(launchTransactionPersistence),
         newMember: verify.newMemberOwnerId,
         waitedMs: verify.waitedMs,
         ...(verify.verified

@@ -22,6 +22,9 @@ const resolveSavedFleetLaunchSpec = vi.fn();
 const getSessionBrief = vi.fn();
 const resolveProjectDir = vi.fn();
 const assembleRolePrompt = vi.fn();
+const readAgentConfig = vi.fn();
+const getFleet = vi.fn();
+const setFleetLaunchTransaction = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -61,6 +64,17 @@ vi.mock('../../spawn-config', () => ({
 vi.mock('@papercusp/orchestrator/role-prompt', () => ({
   assembleRolePrompt: (...a: unknown[]) => assembleRolePrompt(...a),
 }));
+vi.mock('../../agent-config', () => ({
+  readAgentConfig: (...a: unknown[]) => readAgentConfig(...a),
+}));
+vi.mock('../../agent-fleets-store', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../agent-fleets-store')>();
+  return {
+    ...actual,
+    getFleet: (...a: unknown[]) => getFleet(...a),
+    setFleetLaunchTransaction: (...a: unknown[]) => setFleetLaunchTransaction(...a),
+  };
+});
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
   json: (payload: Record<string, unknown>, isError = false) => ({
@@ -69,14 +83,54 @@ vi.mock('./_shared', () => ({
   }),
 }));
 
-import tool, { awaitMemberDrain, awaitReplacementMember } from './respawn-member';
+import tool, {
+  awaitMemberDrain,
+  awaitReplacementMember,
+  persistRespawnLaunchTransaction,
+  reconcileRespawnLaunchTransaction,
+} from './respawn-member';
 import { PAIR_ROLE_IMPLEMENTER } from './pair-launch-options';
+import type { FleetLaunchTransaction } from '../../agent-fleets-store';
 
 const row = (ownerId: string, heartbeatAgoMs = 0) => ({
   ownerId,
   startedAt: new Date(Date.now() - 60_000),
   heartbeatAt: new Date(Date.now() - heartbeatAgoMs),
   lastToolCallAt: null,
+});
+
+const launchTransaction = (overrides: Partial<FleetLaunchTransaction> = {}): FleetLaunchTransaction => ({
+  version: 1,
+  transactionId: 'tx-respawn',
+  launcherOwnerId: LEADER,
+  state: 'partial',
+  requestedAt: 1_000,
+  updatedAt: 2_000,
+  requestedMemberIds: [MEMBER],
+  openedMemberIds: [MEMBER],
+  verifiedMemberIds: [],
+  unconfirmedMemberIds: [MEMBER],
+  failed: [],
+  waves: [{ index: 0, ownerIds: [MEMBER], state: 'partial', openedOwnerIds: [MEMBER], verifiedOwnerIds: [] }],
+  recovery: { retryOwnerIds: [MEMBER], nextAction: 'resume unresolved member' },
+  governor: {
+    version: 1,
+    probeOwnerIds: [MEMBER],
+    attestationAttempts: { [MEMBER]: 1 },
+    retiredMemberIds: [],
+    history: [],
+    terminalVerdict: null,
+  },
+  requestedMembers: [{
+    index: 0,
+    ownerId: MEMBER,
+    agent: 'codex',
+    model: 'gpt-5.6-sol',
+    account: 'default',
+    carry: 'warm',
+    headless: true,
+  }],
+  ...overrides,
 });
 
 function parse(res: unknown) {
@@ -103,6 +157,7 @@ beforeEach(() => {
   getSessionBrief.mockResolvedValue(null);
   resolveProjectDir.mockResolvedValue('/tmp/papercusp');
   assembleRolePrompt.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/papercusp' } });
+  readAgentConfig.mockResolvedValue({ tiers: [] });
   resolveFleetMemberTarget.mockResolvedValue({
     ok: true,
     callerId: LEADER,
@@ -121,6 +176,8 @@ beforeEach(() => {
   sendMessage.mockResolvedValue({ msg_id: 'yield-1' });
   wakeRecipients.mockResolvedValue({ targets: [MEMBER], keys: ['wake-1'], queued: 1, woken: 1, staged: 0, stagedTargets: [], fanoutCapped: [], timedOutTargets: [] });
   resolveSessionStates.mockReset().mockResolvedValue(new Map());
+  getFleet.mockResolvedValue({ lastLaunchTransaction: null });
+  setFleetLaunchTransaction.mockResolvedValue(true);
   // Roster: the old member before the kill, a NEW live owner once the replacement has booted.
   // mockReset (not clearAllMocks) — a leftover `once` value would be consumed by the verification
   // poll instead of the snapshot, and the test would then really wait out the 90s window.
@@ -146,6 +203,14 @@ beforeEach(() => {
     };
     for (const [field, value] of Object.entries(opts.requested ?? {})) {
       if (value !== undefined) member[field] = value;
+    }
+    // Keep the orchestration fixture internally coherent when a test changes the model family
+    // without pinning an agent. The production resolver preserves a saved explicit agent; tests
+    // that exercise that safety boundary pass `agent` explicitly below.
+    if (opts.requested?.agent === undefined && typeof member.model === 'string') {
+      const model = member.model.replace(/\[[^\]]+\]$/, '').replace(/:(low|medium|high|xhigh|max)$/i, '').toLowerCase();
+      if (/^(opus|sonnet|haiku|fable)$/.test(model)) member.agent = 'claude';
+      if (/^(sol|terra|luna|gpt-5\.6-(sol|terra|luna))$/.test(model)) member.agent = 'codex';
     }
     return {
       ok: true,
@@ -178,9 +243,149 @@ beforeEach(() => {
   });
 });
 
+describe('respawn launch-transaction persistence', () => {
+  it('replaces the drained identity while preserving retirement history and recovery evidence', () => {
+    const original = launchTransaction();
+    const reconciled = reconcileRespawnLaunchTransaction({
+      transaction: original,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-fixed',
+      now: 3_000,
+    });
+
+    expect(reconciled).toMatchObject({
+      state: 'partial',
+      updatedAt: 3_000,
+      requestedMemberIds: ['su-respawn-fixed'],
+      openedMemberIds: ['su-respawn-fixed'],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: ['su-respawn-fixed'],
+      recovery: {
+        retryOwnerIds: ['su-respawn-fixed'],
+        nextAction: expect.stringContaining('do not replay'),
+      },
+      governor: {
+        probeOwnerIds: ['su-respawn-fixed'],
+        retiredMemberIds: [MEMBER],
+        history: [expect.objectContaining({
+          action: 'respawn',
+          ownerId: MEMBER,
+          replacementOwnerId: 'su-respawn-fixed',
+        })],
+      },
+      requestedMembers: [expect.objectContaining({ ownerId: 'su-respawn-fixed' })],
+    });
+    expect(reconciled.waves[0]).toMatchObject({
+      ownerIds: ['su-respawn-fixed'],
+      openedOwnerIds: ['su-respawn-fixed'],
+    });
+    // The CAS writer must be able to retry from the exact snapshot it read.
+    expect(original.requestedMemberIds).toEqual([MEMBER]);
+    expect(original.recovery.retryOwnerIds).toEqual([MEMBER]);
+  });
+
+  it('persists a verified replacement with the observed transaction revision', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
+
+    const result = await persistRespawnLaunchTransaction({
+      workspaceId: 'ws',
+      fleetSlug: SLUG,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-fixed',
+      outcome: 'verified',
+      expectedTransactionId: 'tx-respawn',
+      now: () => 3_000,
+    });
+
+    expect(result).toMatchObject({ ok: true, attempts: 1 });
+    if (!result.ok) throw new Error('expected persistence to succeed');
+    expect(result.transaction).toMatchObject({
+      state: 'verified',
+      updatedAt: 3_000,
+      requestedMemberIds: ['su-respawn-fixed'],
+      verifiedMemberIds: ['su-respawn-fixed'],
+      unconfirmedMemberIds: [],
+      recovery: { retryOwnerIds: [], nextAction: expect.stringContaining('verified') },
+    });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      fleetSlug: SLUG,
+      transaction: result.transaction,
+      expectedRevision: { transactionId: 'tx-respawn', updatedAt: 2_000 },
+    });
+  });
+
+  it('preserves a newer launch transaction instead of overwriting it', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction({ transactionId: 'tx-new', updatedAt: 4_000 }) });
+
+    const result = await persistRespawnLaunchTransaction({
+      workspaceId: 'ws',
+      fleetSlug: SLUG,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-fixed',
+      outcome: 'verified',
+      expectedTransactionId: 'tx-respawn',
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      attempts: 1,
+      reason: 'newer-transaction',
+      preservedTransactionId: 'tx-new',
+    });
+    expect(setFleetLaunchTransaction).not.toHaveBeenCalled();
+  });
+
+  it('retries a compare-and-set miss and reports a bounded read failure', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
+    setFleetLaunchTransaction.mockReset().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const retried = await persistRespawnLaunchTransaction({
+      workspaceId: 'ws',
+      fleetSlug: SLUG,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-fixed',
+      outcome: 'unverified',
+      expectedTransactionId: 'tx-respawn',
+      now: () => 3_000,
+    });
+    expect(retried).toMatchObject({ ok: true, attempts: 2 });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledTimes(2);
+
+    getFleet.mockRejectedValue(new Error('db down'));
+    const unreadable = await persistRespawnLaunchTransaction({
+      workspaceId: 'ws',
+      fleetSlug: SLUG,
+      drainedOwnerId: MEMBER,
+      replacementOwnerId: 'su-respawn-fixed',
+      outcome: 'launch-failed',
+      expectedTransactionId: 'tx-respawn',
+    });
+    expect(unreadable).toMatchObject({ ok: false, attempts: 3, reason: 'read-failed', error: 'db down' });
+  });
+});
+
 describe('fleet:respawn-member (P-008)', () => {
   it('accepts role as a boot-baked respawn setting at the tool boundary', () => {
     expect(tool.args.safeParse({ member: MEMBER, role: 'su' }).success).toBe(true);
+  });
+
+  it('accepts and honors an explicit per-call harness context for legacy recovery', async () => {
+    getPresence.mockResolvedValueOnce(null);
+    getSessionBrief.mockResolvedValueOnce(null);
+
+    expect(tool.args.safeParse({ member: MEMBER, harness: 'papercusp', model: 'gpt-5.6-sol' }).success).toBe(true);
+
+    const res = await tool.handler(
+      { member: MEMBER, harness: 'papercusp', model: 'gpt-5.6-sol' } as never,
+      { harnessSlug: '*' } as never,
+    );
+    expect(parse(res)).toMatchObject({ ok: true, fleet: SLUG, oldMember: MEMBER });
+    expect(resolveSavedFleetLaunchSpec).toHaveBeenCalledWith(
+      expect.objectContaining({
+        legacyFallbacks: expect.objectContaining({ harness: 'papercusp' }),
+      }),
+    );
   });
 
   it('kills the old member then fresh-launches the replacement with the new declarative spec', async () => {
@@ -268,6 +473,63 @@ describe('fleet:respawn-member (P-008)', () => {
       }),
       expect.anything(),
     );
+  });
+
+  it('refuses an unavailable saved Claude model before reading the roster or killing the old member', async () => {
+    const res = await tool.handler({ member: MEMBER, agent: 'claude', model: 'claude-opus-4' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'saved_model_invalid',
+      fleet: SLUG,
+      member: MEMBER,
+      model: 'claude-opus-4:xhigh',
+      agent: 'claude',
+      killed: false,
+      launched: false,
+    });
+    expect(p.message).toMatch(/not registered in the effective model tiers or CLOUD_MODEL_MENU/);
+    expect(readAgentConfig).toHaveBeenCalledTimes(1);
+    expect(listFleetPresence).not.toHaveBeenCalled();
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the saved model catalog cannot be read, before killing the old member', async () => {
+    readAgentConfig.mockRejectedValueOnce(new Error('config unavailable'));
+    const res = await tool.handler({ member: MEMBER, agent: 'claude', model: 'opus[1m]' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'saved_model_preflight_failed',
+      killed: false,
+      launched: false,
+    });
+    expect(p.message).toContain('config unavailable');
+    expect(listFleetPresence).not.toHaveBeenCalled();
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('refuses a saved native agent/model backend mismatch before killing the old member', async () => {
+    const res = await tool.handler({ member: MEMBER, agent: 'claude', model: 'gpt-5.6-sol', effort: 'xhigh' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'saved_model_backend_mismatch',
+      model: 'gpt-5.6-sol:xhigh',
+      agent: 'claude',
+      backend: 'codex',
+      killed: false,
+      launched: false,
+    });
+    expect(p.message).toMatch(/belongs to the `codex` backend/);
+    expect(listFleetPresence).not.toHaveBeenCalled();
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
   });
 
   it('accepts an explicit role override so stale saved-role recovery can be repaired before launch', async () => {
@@ -693,9 +955,19 @@ describe('fleet:respawn-member (P-008)', () => {
  */
 describe('fleet:respawn-member replacement verification (WI-6936)', () => {
   it('reports verified with the NEW owner-id once it appears in the roster', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
     const res = await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never);
     const p = parse(res);
     expect(p).toMatchObject({ ok: true, verified: true, newMember: expect.stringMatching(/^su-respawn-/) });
+    expect(p.launchTransactionPersistence).toEqual({ status: 'persisted', attempts: 1, transactionId: 'tx-respawn' });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: { transactionId: 'tx-respawn', updatedAt: 2_000 },
+      transaction: expect.objectContaining({
+        state: 'verified',
+        requestedMemberIds: [p.replacementOwner],
+        verifiedMemberIds: [p.replacementOwner],
+      }),
+    }));
     // the pre-kill snapshot is what makes the new owner identifiable
     expect(listFleetPresence).toHaveBeenCalledWith('ws', SLUG);
   });
@@ -721,25 +993,45 @@ describe('fleet:respawn-member replacement verification (WI-6936)', () => {
   });
 
   it('verifySec:0 returns unverified with the probe to run, never a bare ok', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
     const res = await tool.handler({ member: MEMBER, model: 'opus[1m]', verifySec: 0 } as never, {} as never);
     const p = parse(res);
     expect(p).toMatchObject({ ok: true, verified: false, verification: 'skipped' });
+    expect(p.launchTransactionPersistence).toEqual({ status: 'persisted', attempts: 1, transactionId: 'tx-respawn' });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({
+        state: 'partial',
+        unconfirmedMemberIds: [p.replacementOwner],
+        recovery: { retryOwnerIds: [p.replacementOwner], nextAction: expect.stringContaining('skipped') },
+      }),
+    }));
     expect(p.message).toMatch(/NOT verified/);
     expect(p.message).toMatch(/leader-brief/);
   });
 
   it('degrades to unverified (not a false success) when the roster cannot be read', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
     listFleetPresence.mockReset();
     listFleetPresence.mockRejectedValue(new Error('pg down'));
     const res = await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never);
     const p = parse(res);
     expect(p).toMatchObject({ ok: true, verified: false, verification: 'unavailable' });
+    expect(p.launchTransactionPersistence).toEqual({ status: 'persisted', attempts: 1, transactionId: 'tx-respawn' });
   });
 
   it('leaves the launch-failed path reporting unverified too', async () => {
+    getFleet.mockResolvedValue({ lastLaunchTransaction: launchTransaction() });
     launchHandler.mockResolvedValue({ content: [{ type: 'text', text: 'launch failed' }], isError: true });
     const p = parse(await tool.handler({ member: MEMBER, model: 'opus[1m]' } as never, {} as never));
     expect(p).toMatchObject({ ok: false, verified: false });
+    expect(p.launchTransactionPersistence).toEqual({ status: 'persisted', attempts: 1, transactionId: 'tx-respawn' });
+    expect(setFleetLaunchTransaction).toHaveBeenCalledWith(expect.objectContaining({
+      transaction: expect.objectContaining({
+        state: 'partial',
+        failed: [expect.objectContaining({ ownerId: p.replacementOwner, phase: 'spawn' })],
+        recovery: { retryOwnerIds: [p.replacementOwner], nextAction: expect.stringContaining('launch failed') },
+      }),
+    }));
   });
 });
 
