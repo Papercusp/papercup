@@ -251,6 +251,10 @@ export interface GitPipelineSnapshot {
     repairQueue?: FrozenRepairQueueDiagnostic | null;
     /** P-007: one typed, routine-owned logical qualification view. */
     qualification?: CheckpointQualificationState;
+    /** Whether the sibling `failingTests` array came from a real code verdict.
+     * `false` means the latest checkpoint ended before rendering one; `null` is a legacy or
+     * malformed blob whose measurement state cannot be established. */
+    failingTestsMeasured?: boolean | null;
     /** WI-4533: the tests the gate ITSELF named in its last verdict (`gate_health.failingTests`)
      *  — the workspace(s) + file path(s) that actually redded it. The blob has carried these all
      *  along and NO read surfaced them, so every consumer asking "what is red?" fell back to
@@ -584,6 +588,31 @@ export function currentGateInconclusive(
 }
 function strArr(v: unknown): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/**
+ * Preserve the distinction between an empty measured verdict and a checkpoint that never
+ * produced a verdict. Older writers did not stamp the boolean, so the recorded inconclusive
+ * marker is accepted as negative proof and an actual array as positive proof. Everything else
+ * remains unknown rather than being promoted to a confident empty measurement.
+ */
+export function gateFailingTestsMeasurement(input: {
+  failingTests: unknown;
+  measured: unknown;
+  inconclusive: GitPipelineSnapshot['gate']['inconclusive'];
+}): { failingTests: string[]; measured: boolean | null } {
+  const rawFailingTests = input.failingTests;
+  const hasArray = Array.isArray(rawFailingTests);
+  const failingTests = hasArray
+    ? rawFailingTests.filter((x: unknown): x is string => typeof x === 'string')
+    : [];
+  if (input.measured === false || input.inconclusive !== null) {
+    return { failingTests: [], measured: false };
+  }
+  if (input.measured === true) {
+    return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
+  }
+  return hasArray ? { failingTests, measured: true } : { failingTests: [], measured: null };
 }
 function skippedPathArr(v: unknown): GitSyncSkippedPath[] {
   if (!Array.isArray(v)) return [];
@@ -1135,10 +1164,16 @@ export async function gitPipelineSnapshot(
         ? ((gateHealth as { lastFromFresh?: boolean }).lastFromFresh as boolean)
         : null,
   });
+  const gateInconclusive = currentGateInconclusive(gateHealth.inconclusive, gcMeta.repair_queue);
+  const failingTestsMeasurement = gateFailingTestsMeasurement({
+    failingTests: gateHealth.failingTests,
+    measured: gateHealth.failingTestsMeasured,
+    inconclusive: gateInconclusive,
+  });
   const effectiveGate = pinProvenGateCorrection(gcVerdictStaleReasonCode, {
     consecutiveReds: rawConsecutiveReds,
     stalled: gateHealth.stallAlerted === true,
-    failingTests: strArr(gateHealth.failingTests),
+    failingTests: failingTestsMeasurement.failingTests,
     firstRedAtMs: num(gateHealth.firstRedAt),
   });
 
@@ -1303,6 +1338,8 @@ export async function gitPipelineSnapshot(
       // WI-4533: the gate's OWN verdict about what is failing (see the type's note) — never the
       // names behind a streak already proven reset (they'd misdirect a fixer at passing tests).
       failingTests: effectiveGate.failingTests,
+      failingTestsMeasured:
+        gcVerdictStaleReasonCode === 'pin-advance' ? true : failingTestsMeasurement.measured,
       // Not part of `RawGateCounters`/`pinProvenGateCorrection`: a proven pin-advance already
       // wipes `failingTests` to `[]` above, which alone makes `verifyGateVerdict`'s file-shaped
       // check a no-op — no separate reset needed for the candidate it was attributed to.
@@ -1328,7 +1365,7 @@ export async function gitPipelineSnapshot(
       // by construction. Shape-checked rather than cast: a blob predating this field, or one
       // written by a version that shaped it differently, must read as "no abort recorded" rather
       // than as a half-populated abort a consumer would render with empty fields.
-      inconclusive: currentGateInconclusive(gateHealth.inconclusive, gcMeta.repair_queue),
+      inconclusive: gateInconclusive,
       repairQueue,
       qualification,
     },

@@ -2198,6 +2198,8 @@ export async function trackGateStall(
       watchdogAlerted?: boolean;
       pendingRunId?: string | null;
       failingTests?: string[];
+      /** True only when a real code verdict measured the sibling failingTests array. */
+      failingTestsMeasured?: boolean;
       retriageStaleTip?: string | null;
       retriageDetail?: string | null;
       retriageClassification?: 'real-red' | 'stale-candidate' | 'unknown' | null;
@@ -2287,7 +2289,12 @@ export async function trackGateStall(
       try {
         await sql.unsafe(
           `UPDATE harness_shared.routines
-              SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+              SET metadata = jsonb_set(
+                    jsonb_set(COALESCE(metadata, '{}'::jsonb), '{gate_health,inconclusive}', $2::jsonb, true),
+                    '{gate_health,failingTestsMeasured}',
+                    'false'::jsonb,
+                    true
+                  ),
                   updated_at = now()
             WHERE install_slug = $1 AND target_role = 'system:green-checkpoint'`,
           [
@@ -2495,6 +2502,7 @@ export async function trackGateStall(
           pendingRunId: null,
           watchdogAlerted: false,
           failingTests: [],
+          failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           retriageStaleTip: null,
@@ -2529,6 +2537,7 @@ export async function trackGateStall(
           pendingRunId: null,
           watchdogAlerted: gh.watchdogAlerted ?? false,
           failingTests: (failingTests ?? []).slice(0, 20),
+          failingTestsMeasured: true,
           observedAt: Date.now(),
           observedCandidate: candidate?.slice(0, 12) ?? null,
           retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
@@ -2956,6 +2965,7 @@ export async function trackGateStall(
       lastFromFresh: fromPin != null,
       watchdogAlerted: gh.watchdogAlerted ?? false,
       failingTests: (failingTests ?? []).slice(0, 20),
+      failingTestsMeasured: true,
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
       retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
