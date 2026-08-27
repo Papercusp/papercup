@@ -1121,18 +1121,9 @@ describe("ompDefaultModelAdvisory (P-004 first-turn overflow guard)", () => {
   });
 });
 
-describe("SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal picker prompt)", () => {
-  it("offers exactly Native/Full/Trimmed with the flag values, Native ⇒ null", () => {
-    expect(SU_CONTEXT_CHOICES.map((c) => c.value)).toEqual([
-      null,
-      "full",
-      "trimmed",
-    ]);
-    // The Native option maps to null so the picker emits NO --context-size flag —
-    // a byte-identical launch to the pre-feature behavior (the key non-regression).
-    const native = SU_CONTEXT_CHOICES[0];
-    expect(native.value).toBeNull();
-    expect(native.name).toMatch(/native/i);
+describe("SU_CONTEXT_CHOICES (trimmed-only launch policy)", () => {
+  it("offers exactly the growable trimmed mode", () => {
+    expect(SU_CONTEXT_CHOICES.map((c) => c.value)).toEqual(["trimmed"]);
   });
 
   // PSU_-prefixed alias throughout: this describe tests psu-launcher.mjs's OWN
@@ -1141,9 +1132,7 @@ describe("SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
   // parity suite) and reading them here tested the wrong module — see the note on
   // the import block.
   it("labels embed the token estimates, in parity with the operator UI", () => {
-    const full = SU_CONTEXT_CHOICES.find((c) => c.value === "full")!;
     const trimmed = SU_CONTEXT_CHOICES.find((c) => c.value === "trimmed")!;
-    expect(full.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.full);
     expect(trimmed.name).toContain(PSU_SU_CONTEXT_TOKEN_ESTIMATES.trimmed);
     // Same measured figures the UI's SU_CONTEXT_OPTIONS shows (AdvSessionsClient.tsx).
     // Re-measured 2026-07-02 post-Phase-3: 60.1k sonnet-fleet / ~76k power boot
@@ -1165,7 +1154,7 @@ describe("SU_CONTEXT_CHOICES (WI-1282 su-context-size-variants — terminal pick
     }
   });
 
-  it("defaults the picker selection to Trimmed, not Native or Full", () => {
+  it("defaults the picker selection to Trimmed", () => {
     // The tool catalogue the picker highlights by default: neither the full
     // up-front catalog nor each client's native (no-flag) behavior, but the
     // trimmed core-spine + native-soft-trim variant.
@@ -2452,9 +2441,13 @@ describe("psu-launcher arg parsing", () => {
     }
   });
 
-  it("parses --context-size (WI-1282 su-context-size-variants); defaults to null", () => {
+  it("parses trimmed and normalizes the legacy full spelling", () => {
     expect(parseArgs(["--context-size=trimmed"]).contextSize).toBe("trimmed");
-    expect(parseArgs(["--context-size=full"]).contextSize).toBe("full");
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const legacy = parseArgs(["--context-size=full"]);
+    expect(legacy.contextSize).toBe("trimmed");
+    expect(spy).toHaveBeenCalledWith(expect.stringMatching(/full is retired.*trimmed/i));
+    spy.mockRestore();
     expect(parseArgs(["--agent=claude"]).contextSize).toBeNull();
   });
 
@@ -10679,7 +10672,7 @@ describe("psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)", () => {
       "--fleet=shared-hive-testing",
       "--account=acct1",
       "--profile=power",
-      "--context-size=full",
+      "--context-size=trimmed",
       "--model=opus",
       "--add-dir=/x",
       "--",
@@ -10696,7 +10689,7 @@ describe("psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)", () => {
         "--fleet=shared-hive-testing",
         "--account=acct1",
         "--profile=power",
-        "--context-size=full",
+        "--context-size=trimmed",
         "--model=opus[1m]",
         "--add-dir=/x",
         "--auto",
@@ -10907,32 +10900,24 @@ describe("launch preflight guards (context-trimming-tiers P-016 / P-018)", () =>
     expect(guard.budget).toBe(budget);
   });
 
-  it("runLaunchPreflight: refuse throws with the --force pointer; force downgrades to a warning", () => {
+  it("runLaunchPreflight: legacy full uses the trimmed budget instead of the eager-full refusal", () => {
     const dir = mkdtempSync(join(tmpdir(), "psu-p018-"));
     const persona = join(dir, "persona.md");
     writeFileSync(persona, "x".repeat(105_000));
-    expect(() =>
-      runLaunchPreflight({
-        promptFile: persona,
-        contextSize: "full",
-        model: "haiku",
-        force: false,
-      }),
-    ).toThrow(/--force/);
     const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const g = runLaunchPreflight({
       promptFile: persona,
       contextSize: "full",
       model: "haiku",
-      force: true,
+      force: false,
     });
-    expect(g.level).toBe("refuse");
+    expect(g.level).toBe("warn");
     expect(warnSpy).toHaveBeenCalled();
     warnSpy.mockRestore();
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("runLaunchPreflight: Codex full context is refused before spawn even with --force (WI-39948)", () => {
+  it("runLaunchPreflight: legacy full normalizes before the Codex transport preflight", () => {
     const dir = mkdtempSync(join(tmpdir(), "psu-wi39948-"));
     const persona = join(dir, "persona.md");
     writeFileSync(persona, "x".repeat(5_000));
@@ -10945,9 +10930,7 @@ describe("launch preflight guards (context-trimming-tiers P-016 / P-018)", () =>
         agent: "codex",
         force: true,
       }),
-    ).toThrow(
-      /64 MiB frame cap.*--context-size=trimmed.*--force cannot bypass/i,
-    );
+    ).not.toThrow();
 
     expect(() =>
       runLaunchPreflight({

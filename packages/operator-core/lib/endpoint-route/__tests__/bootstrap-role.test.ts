@@ -174,7 +174,7 @@ beforeEach(() => {
     sid: 'role-abc', nativeSessionId: 'nsid-abc',
     claudeConfigDir: join(LC_DIR, 'session-claude', 'role-abc'),
     sessionMcpDir: join(LC_DIR, 'session-mcp', 'role-abc'),
-    contextSize: 'full',
+    contextSize: 'trimmed',
   });
 });
 
@@ -411,12 +411,12 @@ describe('bootstrap-role', () => {
 // "Prompt is too long" fix (the auto-select default itself lives in
 // buildRoleLaunchSpec, covered by role-launch-spec.test.ts).
 describe('bootstrap-role — WI-4608 context_size threading', () => {
-  it('omitted context_size ⇒ buildRoleLaunchSpec receives contextSize:null (its own auto-select applies)', async () => {
+  it('omitted context_size ⇒ bootstrap normalizes to trimmed before building the role spec', async () => {
     const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001' });
     expect(res.status).toBe(200);
-    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ contextSize: null }));
+    expect(buildRoleLaunchSpecMock).toHaveBeenCalledWith(expect.objectContaining({ contextSize: 'trimmed' }));
     const json = await res.json();
-    expect(json.contextSize).toBe('full'); // mock spec's resolved value, surfaced verbatim
+    expect(json.contextSize).toBe('trimmed');
   });
 
   // P-013/D-022: this case's SUBJECT is context_size threading — the role is
@@ -450,7 +450,7 @@ describe('bootstrap-role — WI-4608 context_size threading', () => {
     const res = await callPost({ role: 'worker', agent: 'claude', harness_slug: 'papercup', feature: 'F-001', context_size: 'huge' });
     expect(res.status).toBe(400);
     const json = await res.json();
-    expect(json.error).toMatch(/context_size must be full\|trimmed/);
+    expect(json.error).toMatch(/context size must be 'trimmed'/);
     expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
   });
 });
