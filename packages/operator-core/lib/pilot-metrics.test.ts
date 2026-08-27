@@ -19,11 +19,12 @@ import {
 } from './pilot-metrics.js';
 import { type PilotArm } from './pilot-arm-assignment.js';
 
-const obs = (
-  arm: PilotArm,
-  score: number,
-  over: Partial<ArmObservation> = {},
-): ArmObservation => ({ itemId: `WI-${arm}${score}`, arm, score, ...over });
+const obs = (arm: PilotArm, score: number, over: Partial<ArmObservation> = {}): ArmObservation => ({
+  itemId: `WI-${arm}${score}`,
+  arm,
+  score,
+  ...over,
+});
 
 describe('rare events — D-022 enforced mechanically, not remembered', () => {
   it('WITHHOLDS the rate when too few events were observed', () => {
@@ -67,10 +68,7 @@ describe('cost attribution — the arm-C correction', () => {
   });
 
   it('handles a single-agent arm without special-casing', () => {
-    const summary = summariseArm('A', [
-      obs('A', 3, { agentCostsUsd: [1.0] }),
-      obs('A', 4, { agentCostsUsd: [3.0] }),
-    ]);
+    const summary = summariseArm('A', [obs('A', 3, { agentCostsUsd: [1.0] }), obs('A', 4, { agentCostsUsd: [3.0] })]);
     expect(summary.totalCostUsd).toBeCloseTo(4.0, 10);
   });
 
@@ -135,8 +133,7 @@ describe('buildPilotReport', () => {
     expect(report.effectVsBaseline.C).toBeGreaterThan(0);
     expect(report.effectVsReviewGate.C).toBeGreaterThan(0);
     // The pair costs roughly double per item — the number the quality gain must justify.
-    expect(report.arms.C.meanCostPerItemUsd! / report.arms.A.meanCostPerItemUsd!)
-      .toBeCloseTo(2, 1);
+    expect(report.arms.C.meanCostPerItemUsd! / report.arms.A.meanCostPerItemUsd!).toBeCloseTo(2, 1);
   });
 
   it('withholds every rare-event rate at pilot size', () => {
@@ -172,11 +169,14 @@ describe('deriveAdaptiveTierGate — D-033 preregistered verdict', () => {
     scores: readonly number[],
     cost: number,
     over: Partial<ArmObservation> = {},
-  ): ArmObservation[] => scores.map((score, i) => obs(label, score, {
-    itemId: `WI-${label}-${i}`,
-    agentCostsUsd: label === 'C' ? [cost / 2, cost / 2] : [cost],
-    ...over,
-  }));
+  ): ArmObservation[] =>
+    scores.map((score, i) =>
+      obs(label, score, {
+        itemId: `WI-${label}-${i}`,
+        agentCostsUsd: label === 'C' ? [cost / 2, cost / 2] : [cost],
+        ...over,
+      }),
+    );
 
   const report = (
     a: readonly number[],
@@ -184,11 +184,8 @@ describe('deriveAdaptiveTierGate — D-033 preregistered verdict', () => {
     c: readonly number[],
     costs: readonly [number, number, number] = [1, 1.1, 2],
     over: Partial<ArmObservation> = {},
-  ) => buildPilotReport([
-    ...arm('A', a, costs[0], over),
-    ...arm('B', b, costs[1], over),
-    ...arm('C', c, costs[2], over),
-  ]);
+  ) =>
+    buildPilotReport([...arm('A', a, costs[0], over), ...arm('B', b, costs[1], over), ...arm('C', c, costs[2], over)]);
 
   const a = [5, 6, 5, 6, 5, 6, 5];
   const b = [5, 6, 6, 5, 6, 5, 6];
@@ -243,30 +240,24 @@ describe('deriveAdaptiveTierGate — D-033 preregistered verdict', () => {
   });
 
   it('fails closed when collection, score, cost, or achieved-n evidence is incomplete', () => {
-    const observations = [
-      ...arm('A', a, 1),
-      ...arm('B', b, 1.1),
-      ...arm('C', c.slice(0, 6), 2),
-    ];
+    const observations = [...arm('A', a, 1), ...arm('B', b, 1.1), ...arm('C', c.slice(0, 6), 2)];
     observations[0] = { ...observations[0], agentCostsUsd: undefined };
     const decision = deriveAdaptiveTierGate(buildPilotReport(observations), {
       collectionComplete: false,
     });
     expect(decision.status).toBe('insufficient-evidence');
     expect(decision.policy).toEqual(DEFAULT_ADAPTIVE_TIER_POLICY);
-    expect(decision.readinessIssues).toEqual(expect.arrayContaining([
-      expect.stringMatching(/typed evidence gaps/i),
-      expect.stringMatching(/arm A has costs for 6\/7/i),
-      expect.stringMatching(/arm C achieved n=6/i),
-    ]));
+    expect(decision.readinessIssues).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/typed evidence gaps/i),
+        expect.stringMatching(/arm A has costs for 6\/7/i),
+        expect.stringMatching(/arm C achieved n=6/i),
+      ]),
+    );
   });
 
   it('requires individual rare-event adjudication before changing the policy', () => {
-    const observations = [
-      ...arm('A', a, 1),
-      ...arm('B', b, 1.1),
-      ...arm('C', c, 2),
-    ];
+    const observations = [...arm('A', a, 1), ...arm('B', b, 1.1), ...arm('C', c, 2)];
     observations[0] = { ...observations[0], reopened: true };
     const pilot = buildPilotReport(observations);
     const held = deriveAdaptiveTierGate(pilot, { collectionComplete: true });

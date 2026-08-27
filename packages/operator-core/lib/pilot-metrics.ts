@@ -122,9 +122,26 @@ export function sampleSd(xs: readonly number[]): number | null {
  * would report intervals ~25% too narrow and make a null look like a finding.
  */
 const T_CRIT_95: Readonly<Record<number, number>> = {
-  1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-  8: 2.306, 9: 2.262, 10: 2.228, 11: 2.201, 12: 2.179, 13: 2.16, 14: 2.145,
-  15: 2.131, 16: 2.12, 17: 2.11, 18: 2.101, 19: 2.093, 20: 2.086,
+  1: 12.706,
+  2: 4.303,
+  3: 3.182,
+  4: 2.776,
+  5: 2.571,
+  6: 2.447,
+  7: 2.365,
+  8: 2.306,
+  9: 2.262,
+  10: 2.228,
+  11: 2.201,
+  12: 2.179,
+  13: 2.16,
+  14: 2.145,
+  15: 2.131,
+  16: 2.12,
+  17: 2.11,
+  18: 2.101,
+  19: 2.093,
+  20: 2.086,
 };
 
 export function tCritical95(df: number): number {
@@ -155,9 +172,7 @@ export function cohensD(a: readonly number[], b: readonly number[]): number | nu
   if (a.length < 2 || b.length < 2) return null;
   const sdA = sampleSd(a)!;
   const sdB = sampleSd(b)!;
-  const pooled = Math.sqrt(
-    ((a.length - 1) * sdA ** 2 + (b.length - 1) * sdB ** 2) / (a.length + b.length - 2),
-  );
+  const pooled = Math.sqrt(((a.length - 1) * sdA ** 2 + (b.length - 1) * sdB ** 2) / (a.length + b.length - 2));
   if (pooled === 0) return null;
   return (mean(b)! - mean(a)!) / pooled;
 }
@@ -192,15 +207,10 @@ export function countRareEvent(flags: readonly boolean[]): RareEventCount {
  * Summaries
  * ------------------------------------------------------------------ */
 
-export function summariseArm(
-  arm: PilotArm,
-  observations: readonly ArmObservation[],
-): ArmSummary {
+export function summariseArm(arm: PilotArm, observations: readonly ArmObservation[]): ArmSummary {
   const mine = observations.filter((o) => o.arm === arm);
   const scores = mine.map((o) => o.score).filter((s) => Number.isFinite(s));
-  const wall = mine
-    .map((o) => o.wallClockMs)
-    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const wall = mine.map((o) => o.wallClockMs).filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 
   // Sum across every participating agent — the arm-C correction (see module note).
   const perItemCost = mine
@@ -247,8 +257,7 @@ export function buildPilotReport(observations: readonly ArmObservation[]): Pilot
     C: summariseArm('C', observations),
   } as const;
 
-  const scoresFor = (arm: PilotArm) =>
-    observations.filter((o) => o.arm === arm).map((o) => o.score);
+  const scoresFor = (arm: PilotArm) => observations.filter((o) => o.arm === arm).map((o) => o.score);
 
   const smallestArm = Math.min(arms.A.n, arms.B.n, arms.C.n);
 
@@ -336,18 +345,14 @@ function comparePilotArms(
   const referenceCost = finiteOrNull(report.arms[reference].meanCostPerItemUsd);
   const candidateCost = finiteOrNull(report.arms[candidate].meanCostPerItemUsd);
   const effectSize = finiteOrNull(effectSizeInput);
-  const scoreDelta =
-    referenceScore === null || candidateScore === null ? null : candidateScore - referenceScore;
-  const meanCostDeltaUsd =
-    referenceCost === null || candidateCost === null ? null : candidateCost - referenceCost;
+  const scoreDelta = referenceScore === null || candidateScore === null ? null : candidateScore - referenceScore;
+  const meanCostDeltaUsd = referenceCost === null || candidateCost === null ? null : candidateCost - referenceCost;
   const incrementalCostPerScorePointUsd =
     scoreDelta === null || scoreDelta <= 0 || meanCostDeltaUsd === null
       ? null
       : Math.max(0, meanCostDeltaUsd) / scoreDelta;
   const maxIncrementalCostPerScorePointUsd =
-    referenceCost === null
-      ? null
-      : referenceCost * PILOT_MAX_INCREMENTAL_COST_PER_POINT_REFERENCE_UNITS;
+    referenceCost === null ? null : referenceCost * PILOT_MAX_INCREMENTAL_COST_PER_POINT_REFERENCE_UNITS;
   const costJustified =
     incrementalCostPerScorePointUsd === null || maxIncrementalCostPerScorePointUsd === null
       ? null
@@ -381,10 +386,7 @@ function comparePilotArms(
  * The default is deliberately sticky: at n=7/arm an inconclusive result cannot rule out a
  * moderate benefit, so it preserves D-007's arm B rather than silently reading null as parity.
  */
-export function deriveAdaptiveTierGate(
-  report: PilotReport,
-  input: AdaptiveTierGateInput,
-): AdaptiveTierGateDecision {
+export function deriveAdaptiveTierGate(report: PilotReport, input: AdaptiveTierGateInput): AdaptiveTierGateDecision {
   const bVsA = comparePilotArms(report, 'A', 'B', report.effectVsBaseline.B);
   const cVsB = comparePilotArms(report, 'B', 'C', report.effectVsReviewGate.C);
   const readinessIssues: string[] = [];
@@ -405,10 +407,7 @@ export function deriveAdaptiveTierGate(
   if (bVsA.effectSize === null) readinessIssues.push('B-vs-A effect size is unavailable');
   if (cVsB.effectSize === null) readinessIssues.push('C-vs-B effect size is unavailable');
 
-  const reopened = (['A', 'B', 'C'] as const).reduce(
-    (sum, arm) => sum + report.arms[arm].reopened.events,
-    0,
-  );
+  const reopened = (['A', 'B', 'C'] as const).reduce((sum, arm) => sum + report.arms[arm].reopened.events, 0);
   const authorityProposed = (['A', 'B', 'C'] as const).reduce(
     (sum, arm) => sum + report.arms[arm].authorityProposed.events,
     0,
@@ -482,8 +481,7 @@ export function deriveAdaptiveTierGate(
  */
 export function interpretationFor(smallestArmN: number): string {
   if (smallestArmN === 0) return 'No observations — nothing can be concluded.';
-  const detectable =
-    smallestArmN >= 26 ? 0.8 : smallestArmN >= 12 ? 1.2 : smallestArmN >= 7 ? 1.6 : 2.0;
+  const detectable = smallestArmN >= 26 ? 0.8 : smallestArmN >= 12 ? 1.2 : smallestArmN >= 7 ? 1.6 : 2.0;
   return (
     `SCREENING study (smallest arm n=${smallestArmN}). At this size the comparison can ` +
     `detect roughly Cohen d>=${detectable.toFixed(1)} at 80% power on the continuous score. ` +
