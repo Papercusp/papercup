@@ -780,6 +780,34 @@ describe("tri-state group checkbox", () => {
 });
 
 describe("collapse", () => {
+  it("optionally starts groups without selectable actions collapsed and keeps them expandable", () => {
+    const groups = groupsFixture().map((group) =>
+      group.id === "orphaned-claim"
+        ? {
+            ...group,
+            rows: group.rows.map((row) => ({
+              ...row,
+              selectable: false,
+            })),
+          }
+        : group,
+    );
+    renderShell({ groups, collapseNonSelectableByDefault: true });
+
+    const actionable = screen.getByTestId("review-group-toggle-flip-to-done");
+    const historical = screen.getByTestId("review-group-toggle-orphaned-claim");
+    expect(actionable.getAttribute("aria-expanded")).toBe("true");
+    expect(historical.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.getByTestId("review-row-f1")).toBeTruthy();
+    expect(screen.queryByTestId("review-row-o1")).toBeNull();
+    expect(screen.queryByTestId("review-row-o2")).toBeNull();
+
+    fireEvent.click(historical);
+    expect(historical.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("review-row-o1")).toBeTruthy();
+    expect(screen.getByTestId("review-row-o2")).toBeTruthy();
+  });
+
   it("collapsing a group hides its rows (and description) without touching selection", () => {
     renderShell();
     expect(screen.getByTestId("review-row-f1")).toBeTruthy();

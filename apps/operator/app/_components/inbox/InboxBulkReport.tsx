@@ -697,6 +697,7 @@ export default function InboxBulkReport({
         </span>
       }
       groups={groups}
+      collapseNonSelectableByDefault
       busy={busy}
       applyLabel="Apply selected"
       dismissLabel="Close"

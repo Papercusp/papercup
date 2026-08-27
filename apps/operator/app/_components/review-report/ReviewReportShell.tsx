@@ -103,6 +103,10 @@ export interface ReviewReportShellProps {
   /** Initial selection: 'pending' (default — every selectable row), 'none', or
    *  an explicit row-id list. */
   defaultSelected?: "pending" | "none" | readonly string[];
+  /** Start groups with no selectable actions behind their existing disclosure.
+   *  The exhaustive summary still accounts for every row, and the owner can
+   *  expand the group on demand. Off by default for existing report flows. */
+  collapseNonSelectableByDefault?: boolean;
   applyLabel?: string;
   dismissLabel?: string;
   /** Disables all interaction while an apply is in flight. */
@@ -435,6 +439,7 @@ export default function ReviewReportShell({
   subtitle,
   groups,
   defaultSelected = "pending",
+  collapseNonSelectableByDefault = false,
   applyLabel = "Apply selected",
   dismissLabel = "Dismiss",
   busy = false,
@@ -447,7 +452,15 @@ export default function ReviewReportShell({
   const [selected, setSelected] = useState<Set<string>>(() =>
     initialSelection(groups, defaultSelected),
   );
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState<Set<string>>(() =>
+    collapseNonSelectableByDefault
+      ? new Set(
+          groups
+            .filter((group) => !group.rows.some(rowSelectable))
+            .map((group) => group.id),
+        )
+      : new Set(),
+  );
   const [detailController] = useState(() => new ReviewDetailController());
   const reportRef = useRef<HTMLElement>(null);
   const applyButtonRef = useRef<HTMLButtonElement>(null);

@@ -338,7 +338,7 @@ describe("buildInboxBulkReviewGroups", () => {
     });
   });
 
-  it("matches the observed 158-row Inbox partition without hiding unresolved rows", () => {
+  it("accounts for the observed 158-row Inbox partition while mounting actionable rows first", () => {
     const runItems = observedInboxRunItems();
     const attentionById = new Map(
       runItems.map((item) => [item.itemId, attention(item.itemId)]),
@@ -394,7 +394,17 @@ describe("buildInboxBulkReviewGroups", () => {
     expect(
       screen.getByTestId("review-report-not-applied-count").textContent,
     ).toBe("136");
-    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(158);
+    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(9);
+    const unresolvedToggle = screen.getByTestId(
+      "review-group-toggle-skipped:coord-message",
+    );
+    expect(unresolvedToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("review-row-unresolved-0")).toBeNull();
+
+    fireEvent.click(unresolvedToggle);
+    expect(unresolvedToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("review-row-unresolved-0")).toBeTruthy();
+    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(145);
   });
 });
 
@@ -566,12 +576,17 @@ describe("<InboxBulkReport>", () => {
     expect(screen.getByTestId("review-row-mark-a").textContent).toBe("✓");
   });
 
-  it("retries or dismisses an unresolved skipped row without hiding it implicitly", async () => {
+  it("retries or dismisses an unresolved skipped row after expanding its group", async () => {
     const skipped = runItem({ outcome: "skipped", actionId: null });
     const onClose = vi.fn();
     const { rerender } = render(
       <InboxBulkReport run={run} runItems={[skipped]} onClose={onClose} />,
     );
+    const toggle = screen.getByTestId(
+      "review-group-toggle-skipped:coord-message",
+    );
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(toggle);
     fireEvent.focus(screen.getByTestId("review-row-a"));
     fireEvent.click(screen.getByTestId("inbox-bulk-retry-a"));
     await waitFor(() => expect(H.resume).toHaveBeenCalledWith("run-8", ["a"]));
