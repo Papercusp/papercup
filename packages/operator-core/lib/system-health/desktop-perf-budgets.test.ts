@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import {
-  DESKTOP_PERF_BUDGETS,
-  evaluateInteractionBudget,
-} from './desktop-perf-budgets';
+import { DESKTOP_PERF_BUDGETS, evaluateInteractionBudget } from './desktop-perf-budgets';
 
 describe('DESKTOP_PERF_BUDGETS', () => {
   it('declares the plan-popup-open interaction budget (WI-5547)', () => {
     expect(DESKTOP_PERF_BUDGETS.interactions['plan-popup-open']).toBe(1500);
+  });
+
+  it('declares the P-013 Inbox bulk-report-open budget', () => {
+    expect(DESKTOP_PERF_BUDGETS.interactions['inbox-bulk-report-open']).toBe(1500);
+    expect(evaluateInteractionBudget('inbox-bulk-report-open', 1500).ok).toBe(true);
+    expect(evaluateInteractionBudget('inbox-bulk-report-open', 1501).ok).toBe(false);
   });
 
   it('declares the P-006 broadened interaction budgets', () => {

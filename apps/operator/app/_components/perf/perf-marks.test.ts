@@ -6,7 +6,7 @@
  * Uses the real User Timing API available in the jsdom/Node test env. Marks +
  * measures are process-global, so each test clears them first.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PERF_INTERACTIONS,
   STALE_START_MS,
@@ -14,8 +14,8 @@ import {
   endInteraction,
   getLatestMeasure,
   clearInteraction,
-} from './perf-marks';
-import { DESKTOP_PERF_BUDGETS } from '@papercusp/operator-core/lib/system-health/desktop-perf-budgets';
+} from "./perf-marks";
+import { DESKTOP_PERF_BUDGETS } from "@papercusp/operator-core/lib/system-health/desktop-perf-budgets";
 
 const NAME = PERF_INTERACTIONS.planPopupOpen;
 const START = `${NAME}:start`;
@@ -31,31 +31,39 @@ afterEach(() => {
   resetTimeline();
 });
 
-describe('PERF_INTERACTIONS registry', () => {
-  it('names the plan-popup-open interaction', () => {
-    expect(PERF_INTERACTIONS.planPopupOpen).toBe('plan-popup-open');
+describe("PERF_INTERACTIONS registry", () => {
+  it("names the plan-popup-open interaction", () => {
+    expect(PERF_INTERACTIONS.planPopupOpen).toBe("plan-popup-open");
   });
 
-  it('names the P-006 broadened interactions with stable kebab values', () => {
+  it("names the P-013 Inbox bulk-report interaction", () => {
+    expect(PERF_INTERACTIONS.inboxBulkReportOpen).toBe(
+      "inbox-bulk-report-open",
+    );
+  });
+
+  it("names the P-006 broadened interactions with stable kebab values", () => {
     // These string values are the contract between the emitting hooks
     // (begin/endInteraction call sites) and DESKTOP_PERF_BUDGETS.interactions
     // keys + the desktopPerformanceChecks measure keys. Pinned so a rename can't
     // silently sever the wiring.
-    expect(PERF_INTERACTIONS.commandPaletteOpen).toBe('command-palette-open');
-    expect(PERF_INTERACTIONS.conversationThreadLoad).toBe('conversation-thread-load');
-    expect(PERF_INTERACTIONS.harnessDockOpen).toBe('harness-dock-open');
+    expect(PERF_INTERACTIONS.commandPaletteOpen).toBe("command-palette-open");
+    expect(PERF_INTERACTIONS.conversationThreadLoad).toBe(
+      "conversation-thread-load",
+    );
+    expect(PERF_INTERACTIONS.harnessDockOpen).toBe("harness-dock-open");
   });
 
-  it('every registered interaction has a DESKTOP_PERF_BUDGETS entry (no unbudgeted instrumentation)', () => {
+  it("every registered interaction has a DESKTOP_PERF_BUDGETS entry (no unbudgeted instrumentation)", () => {
     for (const name of Object.values(PERF_INTERACTIONS)) {
       expect(
         DESKTOP_PERF_BUDGETS.interactions[name],
         `PERF_INTERACTIONS.${name} is instrumented but has no budget in DESKTOP_PERF_BUDGETS.interactions`,
-      ).toBeTypeOf('number');
+      ).toBeTypeOf("number");
     }
   });
 
-  it('every P-006 interaction begins + ends like plan-popup-open (shared substrate)', () => {
+  it("every P-006 interaction begins + ends like plan-popup-open (shared substrate)", () => {
     for (const name of [
       PERF_INTERACTIONS.commandPaletteOpen,
       PERF_INTERACTIONS.conversationThreadLoad,
@@ -68,65 +76,67 @@ describe('PERF_INTERACTIONS registry', () => {
       const d = endInteraction(name);
       expect(d).not.toBeNull();
       expect(d).toBeGreaterThanOrEqual(0);
-      expect(performance.getEntriesByName(name, 'measure')).toHaveLength(1);
+      expect(performance.getEntriesByName(name, "measure")).toHaveLength(1);
     }
   });
 });
 
-describe('begin/endInteraction', () => {
-  it('measures a non-negative duration and emits a synchronously-readable measure entry', () => {
+describe("begin/endInteraction", () => {
+  it("measures a non-negative duration and emits a synchronously-readable measure entry", () => {
     beginInteraction(NAME);
     const d = endInteraction(NAME);
     expect(d).not.toBeNull();
     expect(d).toBeGreaterThanOrEqual(0);
     // The measure entry is what the packaged-binary wdio runner reads.
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(1);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(1);
     expect(getLatestMeasure(NAME)).toBe(d);
   });
 
-  it('is a no-op (null, no measure) with no prior begin — safe to call on a shared render path', () => {
+  it("is a no-op (null, no measure) with no prior begin — safe to call on a shared render path", () => {
     const d = endInteraction(NAME);
     expect(d).toBeNull();
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(0);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(0);
   });
 
-  it('consumes the start mark (measure-once): a second end returns null and adds no measure', () => {
+  it("consumes the start mark (measure-once): a second end returns null and adds no measure", () => {
     beginInteraction(NAME);
     expect(endInteraction(NAME)).not.toBeNull();
     expect(endInteraction(NAME)).toBeNull();
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(1);
-    expect(performance.getEntriesByName(START, 'mark')).toHaveLength(0);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(1);
+    expect(performance.getEntriesByName(START, "mark")).toHaveLength(0);
   });
 
-  it('discards a stale start (a begin whose end never came within STALE_START_MS)', () => {
+  it("discards a stale start (a begin whose end never came within STALE_START_MS)", () => {
     beginInteraction(NAME);
-    const start = performance.getEntriesByName(START, 'mark')[0]!;
-    vi.spyOn(performance, 'now').mockReturnValue(start.startTime + STALE_START_MS + 1);
+    const start = performance.getEntriesByName(START, "mark")[0]!;
+    vi.spyOn(performance, "now").mockReturnValue(
+      start.startTime + STALE_START_MS + 1,
+    );
     const d = endInteraction(NAME);
     expect(d).toBeNull();
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(0);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(0);
     // the stale start is cleared so it can't poison a later render
-    expect(performance.getEntriesByName(START, 'mark')).toHaveLength(0);
+    expect(performance.getEntriesByName(START, "mark")).toHaveLength(0);
   });
 
-  it('a fresh begin replaces a prior unconsumed start (exactly one measure on end)', () => {
+  it("a fresh begin replaces a prior unconsumed start (exactly one measure on end)", () => {
     beginInteraction(NAME);
     beginInteraction(NAME);
-    expect(performance.getEntriesByName(START, 'mark')).toHaveLength(1);
+    expect(performance.getEntriesByName(START, "mark")).toHaveLength(1);
     expect(endInteraction(NAME)).not.toBeNull();
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(1);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(1);
   });
 
-  it('clearInteraction drops a pending start so a later end is a no-op', () => {
+  it("clearInteraction drops a pending start so a later end is a no-op", () => {
     beginInteraction(NAME);
     clearInteraction(NAME);
     expect(endInteraction(NAME)).toBeNull();
-    expect(performance.getEntriesByName(NAME, 'measure')).toHaveLength(0);
+    expect(performance.getEntriesByName(NAME, "measure")).toHaveLength(0);
   });
 });
 
-describe('getLatestMeasure', () => {
-  it('returns null before any measure and the last duration after', () => {
+describe("getLatestMeasure", () => {
+  it("returns null before any measure and the last duration after", () => {
     expect(getLatestMeasure(NAME)).toBeNull();
     beginInteraction(NAME);
     const d = endInteraction(NAME);

@@ -18,7 +18,13 @@ import { waitForMainThreadQuiet } from '../../../libs/generic/gui-readiness/src/
 
 export interface AdminTestEventSink {
   suite: (payload: { suiteId: AdminTestSuiteId; label: string; startedAt: number; description: string }) => void;
-  progress: (payload: { suiteId: AdminTestSuiteId; checkId: string; label: string; index: number; total: number }) => void;
+  progress: (payload: {
+    suiteId: AdminTestSuiteId;
+    checkId: string;
+    label: string;
+    index: number;
+    total: number;
+  }) => void;
   result: (payload: AdminTestCheckResult) => void;
   done: (payload: AdminTestSuiteDone) => void;
   log: (payload: { suiteId: AdminTestSuiteId; level: 'info' | 'warn' | 'error'; line: string }) => void;
@@ -232,9 +238,8 @@ export function applyAiExploreEvent(
     if (totalMs !== undefined) summary.totalMs = totalMs;
     if (steps !== undefined) summary.steps = Math.max(summary.steps, steps);
     if (costUsd !== undefined) summary.costUsd = costUsd;
-    summary.exitCode = typeof payload.exitCode === 'number' && Number.isFinite(payload.exitCode)
-      ? payload.exitCode
-      : null;
+    summary.exitCode =
+      typeof payload.exitCode === 'number' && Number.isFinite(payload.exitCode) ? payload.exitCode : null;
   } else if (type === 'error') {
     summary.errors.push(String(payload.message === undefined ? 'unknown error' : payload.message));
   } else if (type === 'log' && payload.level === 'error') {
@@ -457,12 +462,17 @@ function memoryCoreChecks(_ctx: SuiteContext) {
       run: async () => {
         const { buildMemoryCoreChecks } = await import('./memory/suite/checks');
         const checks = buildMemoryCoreChecks(runId);
-        let failed = 0, warned = 0, passed = 0, skipped = 0;
+        let failed = 0,
+          warned = 0,
+          passed = 0,
+          skipped = 0;
         const failures: string[] = [];
         for (const c of checks) {
           const r = await c.run();
-          if (r.status === 'fail') { failed += 1; failures.push(`${c.id}: ${r.actual}`); }
-          else if (r.status === 'warn') warned += 1;
+          if (r.status === 'fail') {
+            failed += 1;
+            failures.push(`${c.id}: ${r.actual}`);
+          } else if (r.status === 'warn') warned += 1;
           else if (r.status === 'pass') passed += 1;
           else skipped += 1;
         }
@@ -508,10 +518,15 @@ async function executeCheck(
   }
 }
 
-function summarizeSuite(spec: AdminTestSuiteSpec, results: AdminTestCheckResult[], durationMs: number): AdminTestSuiteDone {
+function summarizeSuite(
+  spec: AdminTestSuiteSpec,
+  results: AdminTestCheckResult[],
+  durationMs: number,
+): AdminTestSuiteDone {
   const counts: Record<AdminTestStatus, number> = { pass: 0, warn: 0, fail: 0, skip: 0 };
   for (const result of results) counts[result.status] += 1;
-  const status: AdminTestStatus = counts.fail > 0 ? 'fail' : counts.warn > 0 ? 'warn' : counts.pass > 0 ? 'pass' : 'skip';
+  const status: AdminTestStatus =
+    counts.fail > 0 ? 'fail' : counts.warn > 0 ? 'warn' : counts.pass > 0 ? 'pass' : 'skip';
   return { suiteId: spec.id, label: spec.label, status, durationMs, counts };
 }
 
@@ -521,8 +536,12 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'bridge-health',
       label: 'Tauri bridge health',
       run: async () => {
-        const health = await runTauriJson<{ uptime_ms: number; webview_ready: boolean; sidecars_alive: boolean }>(ctx, ['health', '--json']);
-        if (!health.ok || !health.value) return fail('webview_ready=true and sidecars_alive=true.', describeCommandFailure(health));
+        const health = await runTauriJson<{ uptime_ms: number; webview_ready: boolean; sidecars_alive: boolean }>(ctx, [
+          'health',
+          '--json',
+        ]);
+        if (!health.ok || !health.value)
+          return fail('webview_ready=true and sidecars_alive=true.', describeCommandFailure(health));
         const { uptime_ms, webview_ready, sidecars_alive } = health.value;
         return statusResult(
           webview_ready && sidecars_alive,
@@ -547,7 +566,10 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'console-clean',
       label: 'Console error window',
       run: async () => {
-        const result = await runTauriEvalResultJson<{ count: number; errs: Array<{ kind: string; detail?: string; target: string }> }>(
+        const result = await runTauriEvalResultJson<{
+          count: number;
+          errs: Array<{ kind: string; detail?: string; target: string }>;
+        }>(
           ctx,
           `(async () => {
             const s = window.__papercuspPerfRecorder;
@@ -559,12 +581,17 @@ function desktopHealthChecks(ctx: SuiteContext) {
             return { count: errs.length, errs };
           })()`,
         );
-        if (!result.ok || !result.value) return fail('0 console errors during a 3s observation window.', describeCommandFailure(result));
+        if (!result.ok || !result.value)
+          return fail('0 console errors during a 3s observation window.', describeCommandFailure(result));
         return statusResult(
           result.value.count === 0,
           '0 console errors during a 3s observation window.',
-          result.value.count === 0 ? 'No console errors observed.' : `${result.value.count} console error event(s) observed.`,
-          result.value.count > 0 ? result.value.errs.map((entry) => `${entry.kind}: ${entry.detail ?? entry.target}`).slice(0, 6) : undefined,
+          result.value.count === 0
+            ? 'No console errors observed.'
+            : `${result.value.count} console error event(s) observed.`,
+          result.value.count > 0
+            ? result.value.errs.map((entry) => `${entry.kind}: ${entry.detail ?? entry.target}`).slice(0, 6)
+            : undefined,
         );
       },
     },
@@ -572,7 +599,9 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'voice-assets',
       label: 'Voice runtime assets',
       run: async () => {
-        const assets = await runTauriEvalResultJson<Array<{ u: string; status?: number; contentType?: string | null; len?: string | null; error?: string }>>(
+        const assets = await runTauriEvalResultJson<
+          Array<{ u: string; status?: number; contentType?: string | null; len?: string | null; error?: string }>
+        >(
           ctx,
           `(async () => {
             const urls = [
@@ -595,7 +624,11 @@ function desktopHealthChecks(ctx: SuiteContext) {
             return out;
           })()`,
         );
-        if (!assets.ok || !assets.value) return fail('All required VAD/ONNX assets resolve successfully inside the Tauri webview.', describeCommandFailure(assets));
+        if (!assets.ok || !assets.value)
+          return fail(
+            'All required VAD/ONNX assets resolve successfully inside the Tauri webview.',
+            describeCommandFailure(assets),
+          );
         const rows = assets.value;
         const required = rows;
         const requiredOk = required.every((row) => row.status === 200);
@@ -609,7 +642,12 @@ function desktopHealthChecks(ctx: SuiteContext) {
         return statusResult(
           pass,
           'Silero model/worklet and ONNX runtime script+wasm assets resolve as real runtime assets (200 with correct MIME).',
-          rows.map((row) => `${row.u} → ${row.status ?? 'ERR'}${row.contentType ? ` (${row.contentType})` : ''}${row.error ? ` ${row.error}` : ''}`).join(' · '),
+          rows
+            .map(
+              (row) =>
+                `${row.u} → ${row.status ?? 'ERR'}${row.contentType ? ` (${row.contentType})` : ''}${row.error ? ` ${row.error}` : ''}`,
+            )
+            .join(' · '),
         );
       },
     },
@@ -617,12 +655,21 @@ function desktopHealthChecks(ctx: SuiteContext) {
       id: 'packaged-smoke-selector',
       label: 'Packaged smoke mount selector',
       run: async () => {
-        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('#root')?.firstElementChild)`);
-        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The packaged WDIO smoke selector (#root with mounted children) still exists.', describeCommandFailure(marker));
+        const marker = await runTauriEvalJson<boolean>(
+          ctx,
+          `Boolean(document.querySelector('#root')?.firstElementChild)`,
+        );
+        if (!marker.ok || typeof marker.value !== 'boolean')
+          return fail(
+            'The packaged WDIO smoke selector (#root with mounted children) still exists.',
+            describeCommandFailure(marker),
+          );
         return statusResult(
           marker.value,
           'The packaged WDIO smoke selector (#root with mounted children) still exists.',
-          marker.value ? '#root contains mounted app content.' : '#root has no mounted app content in the current desktop DOM.',
+          marker.value
+            ? '#root contains mounted app content.'
+            : '#root has no mounted app content in the current desktop DOM.',
         );
       },
     },
@@ -649,7 +696,8 @@ function aiExplorePromptChecks(ctx: SuiteContext) {
     label: prompt.label,
     run: async () => {
       const summary = await runAiExplorePrompt(ctx, prompt.goal, prompt.startUrl);
-      const ok = summary.errors.length === 0 && (summary.exitCode === null || summary.exitCode === 0) && summary.costUsd <= 0.15;
+      const ok =
+        summary.errors.length === 0 && (summary.exitCode === null || summary.exitCode === 0) && summary.costUsd <= 0.15;
       return statusResult(
         ok,
         'AI Explore backend completes the prompt without errors and stays within the $0.15 per-prompt cap.',
@@ -712,10 +760,7 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // it MUST see, and only trust a zero once that lands. This is the one
         // place that deliberate HTTP request is allowed — a test rig auditing the
         // invariant, never the shipped app.
-        const controlUrl = new URL(
-          '/__egress_control__',
-          (await getDesktopState(ctx)).origin,
-        ).toString();
+        const controlUrl = new URL('/__egress_control__', (await getDesktopState(ctx)).origin).toString();
         const probe = await runTauriEvalResultJson<{
           monitorPresent: boolean;
           verdict: string | null;
@@ -877,7 +922,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         // The old predicate therefore never held (WI-39486). Measure the Tests
         // surface this build actually reaches; the vitals panel being
         // unreachable is tracked separately, not asserted here.
-        const result = await measureWarmRoute(ctx, '/adv?slug=papercup&tab=testing', (page) => page.href.includes('tab=testing') && page.h1.includes('Tests'));
+        const result = await measureWarmRoute(
+          ctx,
+          '/adv?slug=papercup&tab=testing',
+          (page) => page.href.includes('tab=testing') && page.h1.includes('Tests'),
+        );
         return warmRouteResult('route:testing-live-warm', 'Warm Tests tab', result);
       },
     },
@@ -885,7 +934,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'plans-warm-route',
       label: 'Plans warm route',
       run: async () => {
-        const result = await measureWarmRoute(ctx, '/admin/plans', (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'));
+        const result = await measureWarmRoute(
+          ctx,
+          '/admin/plans',
+          (page) => page.href.includes('/admin/plans') && page.h1.includes('Plans'),
+        );
         return warmRouteResult('route:plans-warm', 'Warm /admin/plans', result);
       },
     },
@@ -911,7 +964,9 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           return fail(
             `The Plans sidebar popup-open interaction settles within ${budgetMs}ms in the Tauri desktop shell.`,
             `Could not measure plan-popup-open: ${result.detail}`,
-            ['Open the op-chat sidebar on the Plans face (?opcv=plans) with at least one plan row so the interaction can be driven.'],
+            [
+              'Open the op-chat sidebar on the Plans face (?opcv=plans) with at least one plan row so the interaction can be driven.',
+            ],
           );
         }
         const verdict = evaluateInteractionBudget('plan-popup-open', result.measuredMs);
@@ -920,7 +975,48 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The Plans sidebar popup-open interaction settles within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `plan-popup-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
           undefined,
-          [{ key: 'interaction:plan-popup-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+          [
+            {
+              key: 'interaction:plan-popup-open',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
+        );
+      },
+    },
+    {
+      id: 'interaction-inbox-bulk-report-open',
+      label: 'Inbox bulk report open interaction',
+      run: async () => {
+        // A review run is data-dependent, so the long-lived desktop suite reads
+        // the latest real gesture measure instead of fabricating a run. P-014
+        // drives a fresh/current review and records the same canonical entry.
+        const result = await readLatestInteractionMeasure(ctx, 'inbox-bulk-report-open');
+        const budgetMs = DESKTOP_PERF_BUDGETS.interactions['inbox-bulk-report-open'];
+        if (!result.ok) {
+          return skip(
+            `The Inbox grouped bulk report opens within ${budgetMs}ms in the Tauri desktop shell.`,
+            `No inbox-bulk-report-open measure recorded in this shell yet — open Review decisions on a persisted Inbox bulk run (${result.detail}).`,
+          );
+        }
+        const verdict = evaluateInteractionBudget('inbox-bulk-report-open', result.measuredMs);
+        return statusResult(
+          verdict.ok,
+          `The Inbox grouped bulk report opens within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
+          `inbox-bulk-report-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
+          undefined,
+          [
+            {
+              key: 'interaction:inbox-bulk-report-open',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
         );
       },
     },
@@ -951,7 +1047,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The global command palette opens within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `command-palette-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
           undefined,
-          [{ key: 'interaction:command-palette-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+          [
+            {
+              key: 'interaction:command-palette-open',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
         );
       },
     },
@@ -983,7 +1087,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The Learning tab view switch settles within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `learning-view-switch=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
           undefined,
-          [{ key: 'interaction:learning-view-switch', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+          [
+            {
+              key: 'interaction:learning-view-switch',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
         );
       },
     },
@@ -1009,7 +1121,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `A conversation thread loads within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `conversation-thread-load=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
           undefined,
-          [{ key: 'interaction:conversation-thread-load', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+          [
+            {
+              key: 'interaction:conversation-thread-load',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
         );
       },
     },
@@ -1037,7 +1157,15 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The harness dock hydrates within ${verdict.budgetMs}ms in the Tauri desktop shell.`,
           `harness-dock-open=${result.measuredMs}ms (budget ${verdict.budgetMs}ms).`,
           undefined,
-          [{ key: 'interaction:harness-dock-open', value: result.measuredMs, unit: 'ms', budget: verdict.budgetMs, ok: verdict.ok }],
+          [
+            {
+              key: 'interaction:harness-dock-open',
+              value: result.measuredMs,
+              unit: 'ms',
+              budget: verdict.budgetMs,
+              ok: verdict.ok,
+            },
+          ],
         );
       },
     },
@@ -1096,7 +1224,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
             return { maxDuration: sorted[0]?.duration || 0, top: sorted.slice(0, 5) };
           })()`,
         );
-        if (!summary.ok || !summary.value) return fail(`The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`, describeCommandFailure(summary));
+        if (!summary.ok || !summary.value)
+          return fail(
+            `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
+            describeCommandFailure(summary),
+          );
         const top = summary.value.top.map((row) => `${row.duration}ms ${row.route} ${row.target}`).slice(0, 5);
         // ABSENT SIGNAL IS NOT A PASS. With no recorded interactions the eval above
         // yields maxDuration=0, which used to render as a green "max interaction=0ms"
@@ -1119,7 +1251,14 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           `The desktop interaction recorder reports max interaction <= ${DESKTOP_PERF_BUDGETS.interactionMaxMs}ms.`,
           `max interaction=${summary.value.maxDuration}ms.`,
           top,
-          [budgetMeasure('interaction:recorder-max', summary.value.maxDuration, 'ms', DESKTOP_PERF_BUDGETS.interactionMaxMs)],
+          [
+            budgetMeasure(
+              'interaction:recorder-max',
+              summary.value.maxDuration,
+              'ms',
+              DESKTOP_PERF_BUDGETS.interactionMaxMs,
+            ),
+          ],
         );
       },
     },
@@ -1127,7 +1266,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
       id: 'desktop-memory-budget',
       label: 'Desktop RSS budget',
       run: async () => {
-        await runTauri(ctx, ['navigate', `${ctx.origin}/admin/testing?tab=test-runs&suite=desktop-performance`], 12_000).catch(() => undefined);
+        await runTauri(
+          ctx,
+          ['navigate', `${ctx.origin}/admin/testing?tab=test-runs&suite=desktop-performance`],
+          12_000,
+        ).catch(() => undefined);
         await sleep(750, ctx.signal);
         // Close any stray recorder windows left by a previous chaos run (or a prior
         // failed run from this session) before reading RSS. A lingering
@@ -1149,7 +1292,11 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
         ).catch(() => undefined);
         const pid = await getTauriPid(ctx);
         await sleep(1500, ctx.signal);
-        if (!pid) return fail(`The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB.`, 'Could not determine the running Tauri PID.');
+        if (!pid)
+          return fail(
+            `The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB.`,
+            'Could not determine the running Tauri PID.',
+          );
         const tree = await readMemoryTree(pid);
         const top = [...tree.rows].sort((a, b) => b.rssKb - a.rssKb).slice(0, 5);
         const largest = top[0]?.rssKb ?? 0;
@@ -1157,7 +1304,10 @@ function desktopPerformanceChecks(ctx: SuiteContext) {
           largest <= DESKTOP_PERF_BUDGETS.maxProcessRssKb,
           `The largest Tauri/WebKit process RSS stays below ${Math.round(DESKTOP_PERF_BUDGETS.maxProcessRssKb / 1024)}MB (512MB below the 4096MB kill threshold).`,
           `${Math.round(largest / 1024)}MB max RSS across ${tree.rows.length} processes (${Math.round(tree.totalRssKb / 1024)}MB total).`,
-          top.map((row) => `${row.pid} ${row.name ?? 'unknown'} → ${Math.round(row.rssKb / 1024)}MB RSS (HWM ${Math.round(row.hwmKb / 1024)}MB)`),
+          top.map(
+            (row) =>
+              `${row.pid} ${row.name ?? 'unknown'} → ${Math.round(row.rssKb / 1024)}MB RSS (HWM ${Math.round(row.hwmKb / 1024)}MB)`,
+          ),
           [budgetMeasure('memory:rss-kb', largest, 'kb', DESKTOP_PERF_BUDGETS.maxProcessRssKb)],
         );
       },
@@ -1171,7 +1321,11 @@ function packagedReadinessChecks(ctx: SuiteContext) {
       id: 'tauri-driver',
       label: 'tauri-driver installed',
       run: async () => {
-        const exec = await runCommand('bash', ['-lc', 'command -v tauri-driver || true'], { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs: 5000 });
+        const exec = await runCommand('bash', ['-lc', 'command -v tauri-driver || true'], {
+          cwd: ctx.repoRoot,
+          signal: ctx.signal,
+          timeoutMs: 5000,
+        });
         const pathText = exec.stdout.trim();
         return statusResult(
           pathText.length > 0,
@@ -1184,7 +1338,11 @@ function packagedReadinessChecks(ctx: SuiteContext) {
       id: 'webkit-webdriver',
       label: 'WebKit WebDriver installed',
       run: async () => {
-        const exec = await runCommand('bash', ['-lc', 'command -v WebKitWebDriver || true'], { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs: 5000 });
+        const exec = await runCommand('bash', ['-lc', 'command -v WebKitWebDriver || true'], {
+          cwd: ctx.repoRoot,
+          signal: ctx.signal,
+          timeoutMs: 5000,
+        });
         const pathText = exec.stdout.trim();
         return statusResult(
           pathText.length > 0,
@@ -1225,25 +1383,28 @@ function packagedReadinessChecks(ctx: SuiteContext) {
       id: 'smoke-selector',
       label: 'packaged smoke selector stays valid',
       run: async () => {
-        const marker = await runTauriEvalJson<boolean>(ctx, `Boolean(document.querySelector('#root')?.firstElementChild)`);
-        if (!marker.ok || typeof marker.value !== 'boolean') return fail('The WDIO smoke spec selector (#root with mounted children) still exists.', describeCommandFailure(marker));
+        const marker = await runTauriEvalJson<boolean>(
+          ctx,
+          `Boolean(document.querySelector('#root')?.firstElementChild)`,
+        );
+        if (!marker.ok || typeof marker.value !== 'boolean')
+          return fail(
+            'The WDIO smoke spec selector (#root with mounted children) still exists.',
+            describeCommandFailure(marker),
+          );
         return statusResult(
           marker.value,
           'The WDIO smoke spec selector (#root with mounted children) still exists.',
-          marker.value ? '#root contains mounted app content.' : '#root has no mounted app content in the current desktop shell DOM.',
+          marker.value
+            ? '#root contains mounted app content.'
+            : '#root has no mounted app content in the current desktop shell DOM.',
         );
       },
     },
   ];
 }
 
-function routeCheck(
-  ctx: SuiteContext,
-  id: string,
-  label: string,
-  route: string,
-  heading: string,
-) {
+function routeCheck(ctx: SuiteContext, id: string, label: string, route: string, heading: string) {
   return {
     id,
     label,
@@ -1308,16 +1469,11 @@ async function chaosSurfaceCheck(
   route: string,
 ): Promise<Omit<AdminTestCheckResult, 'suiteId' | 'id' | 'label' | 'durationMs'>> {
   const summary = await runChaosRecorder(ctx, route, 5_000);
-  return gradeChaosSummary(
-    summary,
-    `Chaos-clicking the ${label} surface for 5s`,
-    `chaos:${surfaceKey}:`,
-    [
-      `route: ${route}`,
-      `recorder routes: ${summary.routes.join(', ') || '(none)'}`,
-      `duration=${summary.durationMs}ms · longTasks=${summary.longTasks}`,
-    ],
-  );
+  return gradeChaosSummary(summary, `Chaos-clicking the ${label} surface for 5s`, `chaos:${surfaceKey}:`, [
+    `route: ${route}`,
+    `recorder routes: ${summary.routes.join(', ') || '(none)'}`,
+    `duration=${summary.durationMs}ms · longTasks=${summary.longTasks}`,
+  ]);
 }
 
 /**
@@ -1356,13 +1512,15 @@ export function gradeChaosSummary(
   // exclusion is auditable. `undefined` prints as "unreported" rather than 0, so
   // a stale SPA bundle cannot masquerade as free arming.
   const frameWhere = summary.maxFrameAtMs === undefined ? '' : ` @${summary.maxFrameAtMs}ms into window`;
-  const setupText = summary.setupMaxFrameMs === undefined
-    ? ' · setup=unreported (recorder predates the split)'
-    : ` · setup maxFrame=${summary.setupMaxFrameMs}ms/drops=${summary.setupFrameDrops ?? 0} (excluded from grade)`;
+  const setupText =
+    summary.setupMaxFrameMs === undefined
+      ? ' · setup=unreported (recorder predates the split)'
+      : ` · setup maxFrame=${summary.setupMaxFrameMs}ms/drops=${summary.setupFrameDrops ?? 0} (excluded from grade)`;
   const contextText = summary.maxFrameContext ? ` · preceding=${summary.maxFrameContext}` : '';
-  const timerText = summary.maxFrameTimerTicks === undefined
-    ? ' · timer-correlation=unreported'
-    : ` · timer ticks=${summary.maxFrameTimerTicks}/maxGap=${summary.maxFrameTimerGapMs ?? 0}ms inside worst frame`;
+  const timerText =
+    summary.maxFrameTimerTicks === undefined
+      ? ' · timer-correlation=unreported'
+      : ` · timer ticks=${summary.maxFrameTimerTicks}/maxGap=${summary.maxFrameTimerGapMs ?? 0}ms inside worst frame`;
   const actual = `${summary.clicks} clicks · ${inpText} · errors=${summary.errors} · reloads=${summary.reloads} · frameDrops=${summary.frameDrops} · maxFrame=${summary.maxFrameMs}ms${frameWhere}${setupText}${contextText}${timerText}.`;
 
   const measures = [
@@ -1389,12 +1547,17 @@ export function gradeChaosSummary(
     return statusResult(false, expected, actual, details, measures);
   }
   if (!inpMeasured) {
-    return skip(expected, `INP UNMEASURED — ${actual}`, [
-      `The recorder made ${summary.clicks} clicks but observed 0 Event Timing entries, so p95/max INP were never measured and are NOT reported as 0.`,
-      'Cause: the chaos driver (gremlins.js) synthesises its clicks, and Event Timing only records TRUSTED events — verified 2026-08-16 in this WebKitGTK (2 synthetic clicks on a 60ms-blocking handler => 0 entries; 2 real xdotool clicks => 6 entries). Measuring chaos INP requires a real input driver, not a recorder fix (WI-39495).',
-      'Every other budget on this surface (errors, reloads, frame drops, max frame) WAS measured and passed.',
-      ...details,
-    ], measures);
+    return skip(
+      expected,
+      `INP UNMEASURED — ${actual}`,
+      [
+        `The recorder made ${summary.clicks} clicks but observed 0 Event Timing entries, so p95/max INP were never measured and are NOT reported as 0.`,
+        'Cause: the chaos driver (gremlins.js) synthesises its clicks, and Event Timing only records TRUSTED events — verified 2026-08-16 in this WebKitGTK (2 synthetic clicks on a 60ms-blocking handler => 0 entries; 2 real xdotool clicks => 6 entries). Measuring chaos INP requires a real input driver, not a recorder fix (WI-39495).',
+        'Every other budget on this surface (errors, reloads, frame drops, max frame) WAS measured and passed.',
+        ...details,
+      ],
+      measures,
+    );
   }
   const inpPass =
     summary.maxInp <= DESKTOP_PERF_BUDGETS.chaosInpMaxMs && summary.p95Inp <= DESKTOP_PERF_BUDGETS.chaosInpP95Ms;
@@ -1464,21 +1627,49 @@ async function runCommand(
       resolve(result);
     };
     const onAbort = () => {
-      try { child.kill('SIGTERM'); } catch { /* noop */ }
+      try {
+        child.kill('SIGTERM');
+      } catch {
+        /* noop */
+      }
     };
     opts.signal.addEventListener('abort', onAbort, { once: true });
-    child.stdout.on('data', (chunk) => { stdout += String(chunk); });
-    child.stderr.on('data', (chunk) => { stderr += String(chunk); });
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
     child.on('error', (error) => {
-      finish({ code: null, signal: null, stdout, stderr, durationMs: Date.now() - startedAt, timedOut, error: error.message });
+      finish({
+        code: null,
+        signal: null,
+        stdout,
+        stderr,
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        error: error.message,
+      });
     });
     child.on('close', (code, signal) => {
-      finish({ code, signal, stdout: stdout.trim(), stderr: stderr.trim(), durationMs: Date.now() - startedAt, timedOut, error: null });
+      finish({
+        code,
+        signal,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        durationMs: Date.now() - startedAt,
+        timedOut,
+        error: null,
+      });
     });
     const timeout = opts.timeoutMs
       ? setTimeout(() => {
           timedOut = true;
-          try { child.kill('SIGKILL'); } catch { /* noop */ }
+          try {
+            child.kill('SIGKILL');
+          } catch {
+            /* noop */
+          }
         }, opts.timeoutMs)
       : null;
   });
@@ -1508,7 +1699,11 @@ async function runTauri(ctx: SuiteContext, args: string[], timeoutMs = 12_000): 
   return await runCommand(command, pinned, { cwd: ctx.repoRoot, signal: ctx.signal, timeoutMs });
 }
 
-async function runTauriJson<T>(ctx: SuiteContext, args: string[], timeoutMs = 12_000): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
+async function runTauriJson<T>(
+  ctx: SuiteContext,
+  args: string[],
+  timeoutMs = 12_000,
+): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
   const exec = await runTauri(ctx, args, timeoutMs);
   if (exec.error) return { ok: false, value: null, command: `tauri-agent-tools ${args.join(' ')}`, exec };
   try {
@@ -1518,11 +1713,19 @@ async function runTauriJson<T>(ctx: SuiteContext, args: string[], timeoutMs = 12
   }
 }
 
-async function runTauriEvalJson<T>(ctx: SuiteContext, expression: string, timeoutMs = 12_000): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
+async function runTauriEvalJson<T>(
+  ctx: SuiteContext,
+  expression: string,
+  timeoutMs = 12_000,
+): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
   return runTauriJson<T>(ctx, ['eval', `JSON.stringify(${expression})`], timeoutMs);
 }
 
-async function runTauriEvalResultJson<T>(ctx: SuiteContext, expression: string, timeoutMs = 12_000): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
+async function runTauriEvalResultJson<T>(
+  ctx: SuiteContext,
+  expression: string,
+  timeoutMs = 12_000,
+): Promise<{ ok: boolean; value: T | null; command: string; exec: ExecResult }> {
   const exec = await runTauri(ctx, ['eval', expression], timeoutMs);
   if (exec.error) return { ok: false, value: null, command: `tauri-agent-tools eval ${expression}`, exec };
   try {
@@ -1600,10 +1803,32 @@ async function runAiExplorePrompt(ctx: SuiteContext, goal: string, startUrl: str
     { ok: true; summary: AiExploreRunSummary } | { ok: false; status: number; text: string }
   >(ctx, script, 120_000);
   if (!result.ok || !result.value) {
-    return { goal, steps: 0, totalMs: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, exitCode: null, errors: [describeCommandFailure(result)], logs: [] };
+    return {
+      goal,
+      steps: 0,
+      totalMs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      exitCode: null,
+      errors: [describeCommandFailure(result)],
+      logs: [],
+    };
   }
   if (!result.value.ok) {
-    return { goal, steps: 0, totalMs: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, exitCode: null, errors: [`HTTP ${result.value.status}: ${result.value.text}`], logs: [] };
+    return {
+      goal,
+      steps: 0,
+      totalMs: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      exitCode: null,
+      errors: [`HTTP ${result.value.status}: ${result.value.text}`],
+      logs: [],
+    };
   }
   return result.value.summary;
 }
@@ -1627,7 +1852,19 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
   chaosUrl.searchParams.set('dry', 'false');
   const ready = await measureRoute(ctx, chaosUrl.toString(), (page) => page.href.includes('testsTab=chaos-desktop'));
   if (!ready.ok) {
-    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'] };
+    return {
+      clicks: 0,
+      durationMs,
+      inpSamples: 0,
+      maxInp: 0,
+      p95Inp: 0,
+      longTasks: 0,
+      errors: 1,
+      reloads: 0,
+      frameDrops: 0,
+      maxFrameMs: 0,
+      routes: ready.page.details.length > 0 ? ready.page.details : ['chaos tab did not load'],
+    };
   }
   let hydrated = false;
   for (let i = 0; i < 40; i += 1) {
@@ -1647,7 +1884,19 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     await sleep(250, ctx.signal);
   }
   if (!hydrated) {
-    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos tab controls did not hydrate'] };
+    return {
+      clicks: 0,
+      durationMs,
+      inpSamples: 0,
+      maxInp: 0,
+      p95Inp: 0,
+      longTasks: 0,
+      errors: 1,
+      reloads: 0,
+      frameDrops: 0,
+      maxFrameMs: 0,
+      routes: ['chaos tab controls did not hydrate'],
+    };
   }
   // Reset any stuck run state (e.g. a previous test run left the chaos store in
   // 'launching' or 'recording' state, so the button shows 'Stop' instead of
@@ -1693,8 +1942,21 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     10_000,
   );
   if (!launched.ok || !launched.value?.ok) {
-    const reason = launched.value && 'reason' in launched.value ? launched.value.reason : describeCommandFailure(launched);
-    return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: [reason || 'chaos recorder launch failed'] };
+    const reason =
+      launched.value && 'reason' in launched.value ? launched.value.reason : describeCommandFailure(launched);
+    return {
+      clicks: 0,
+      durationMs,
+      inpSamples: 0,
+      maxInp: 0,
+      p95Inp: 0,
+      longTasks: 0,
+      errors: 1,
+      reloads: 0,
+      frameDrops: 0,
+      maxFrameMs: 0,
+      routes: [reason || 'chaos recorder launch failed'],
+    };
   }
   const effectiveDurationMs = durationMs <= 10_000 ? 10_000 : 30_000;
   const deadline = Date.now() + effectiveDurationMs + 20_000;
@@ -1755,17 +2017,20 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
       const errors = source.filter((ev) => ev.kind === 'console-error' || ev.kind === 'unhandled-error').length;
       const longTasks = source.filter((ev) => ev.kind === 'long-task').length;
       const routes = Object.keys(summary.value.routes || {});
-      const frameAt = typeof summary.value.maxFrameAtMs === 'number' && typeof summary.value.windowStartedAt === 'number'
-        ? summary.value.windowStartedAt + summary.value.maxFrameAtMs
-        : null;
-      const precedingClick = frameAt === null
-        ? undefined
-        : source
-            .filter((ev) => ev.kind === 'click-dispatch' && Number(ev.ts || 0) <= frameAt)
-            .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))[0];
-      const maxFrameContext = precedingClick && frameAt !== null
-        ? `${precedingClick.target || '(unknown target)'} ${Math.max(0, Math.round(frameAt - Number(precedingClick.ts || 0)))}ms before`
-        : undefined;
+      const frameAt =
+        typeof summary.value.maxFrameAtMs === 'number' && typeof summary.value.windowStartedAt === 'number'
+          ? summary.value.windowStartedAt + summary.value.maxFrameAtMs
+          : null;
+      const precedingClick =
+        frameAt === null
+          ? undefined
+          : source
+              .filter((ev) => ev.kind === 'click-dispatch' && Number(ev.ts || 0) <= frameAt)
+              .sort((a, b) => Number(b.ts || 0) - Number(a.ts || 0))[0];
+      const maxFrameContext =
+        precedingClick && frameAt !== null
+          ? `${precedingClick.target || '(unknown target)'} ${Math.max(0, Math.round(frameAt - Number(precedingClick.ts || 0)))}ms before`
+          : undefined;
       return {
         clicks: Number(summary.value.clicks || inps.length),
         durationMs: Number(summary.value.durationMs || durationMs),
@@ -1782,8 +2047,10 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
         // Left undefined when the recorder build does not send them, so a stale
         // SPA bundle reads as "not reported" rather than "arming cost zero".
         maxFrameAtMs: typeof summary.value.maxFrameAtMs === 'number' ? summary.value.maxFrameAtMs : undefined,
-        maxFrameTimerTicks: typeof summary.value.maxFrameTimerTicks === 'number' ? summary.value.maxFrameTimerTicks : undefined,
-        maxFrameTimerGapMs: typeof summary.value.maxFrameTimerGapMs === 'number' ? summary.value.maxFrameTimerGapMs : undefined,
+        maxFrameTimerTicks:
+          typeof summary.value.maxFrameTimerTicks === 'number' ? summary.value.maxFrameTimerTicks : undefined,
+        maxFrameTimerGapMs:
+          typeof summary.value.maxFrameTimerGapMs === 'number' ? summary.value.maxFrameTimerGapMs : undefined,
         setupMaxFrameMs: typeof summary.value.setupMaxFrameMs === 'number' ? summary.value.setupMaxFrameMs : undefined,
         setupFrameDrops: typeof summary.value.setupFrameDrops === 'number' ? summary.value.setupFrameDrops : undefined,
         maxFrameContext,
@@ -1792,7 +2059,19 @@ async function runChaosRecorder(ctx: SuiteContext, route: string, durationMs: nu
     }
     await sleep(500, ctx.signal);
   }
-  return { clicks: 0, durationMs, inpSamples: 0, maxInp: 0, p95Inp: 0, longTasks: 0, errors: 1, reloads: 0, frameDrops: 0, maxFrameMs: 0, routes: ['chaos recorder summary did not arrive before timeout'] };
+  return {
+    clicks: 0,
+    durationMs,
+    inpSamples: 0,
+    maxInp: 0,
+    p95Inp: 0,
+    longTasks: 0,
+    errors: 1,
+    reloads: 0,
+    frameDrops: 0,
+    maxFrameMs: 0,
+    routes: ['chaos recorder summary did not arrive before timeout'],
+  };
 }
 
 async function getDesktopState(ctx: SuiteContext): Promise<DesktopState> {
@@ -1844,7 +2123,6 @@ async function readMemoryTree(rootPid: number): Promise<MemoryTree> {
   }
   return { totalRssKb: rows.reduce((sum, row) => sum + row.rssKb, 0), rows };
 }
-
 
 async function readProcStatus(pid: number): Promise<MemoryRow | null> {
   const fields = await readProcStatusFields(pid, ['Name', 'VmRSS', 'VmHWM', 'Threads']);
@@ -1949,7 +2227,7 @@ export function warmRouteResult(
       `UNMEASURED — the route never reached a settled state within ${24 * 125}ms of polling, so no settle time was measured (the elapsed ${result.elapsedMs}ms is the poll loop's own ceiling, NOT a page latency).`,
       [
         `Last observed page: ${result.page.summary}`,
-        'Either the surface genuinely never settles, or this check\'s route predicate no longer describes the app. Confirm the predicate before reading this as a regression.',
+        "Either the surface genuinely never settles, or this check's route predicate no longer describes the app. Confirm the predicate before reading this as a regression.",
         ...result.page.details,
       ],
     );
@@ -2097,10 +2375,7 @@ async function measureInteraction(ctx: SuiteContext, spec: InteractionMeasureSpe
  * recorded on the timeline (the fresh-binary wdio harness drives them cold).
  * ok:false with a detail when no measure has been emitted this session.
  */
-async function readLatestInteractionMeasure(
-  ctx: SuiteContext,
-  name: string,
-): Promise<InteractionMeasureResult> {
+async function readLatestInteractionMeasure(ctx: SuiteContext, name: string): Promise<InteractionMeasureResult> {
   const nameJson = JSON.stringify(name);
   const res = await runTauriEvalResultJson<{ measuredMs?: number | null }>(
     ctx,
@@ -2228,7 +2503,13 @@ async function measureRoute(
   // Report time-to-first-render as a LOWER BOUND — flagged, never silently
   // presented as a full settle time.
   if (lastMatched && firstMatchAt > 0) {
-    return { ok: true, elapsedMs: Math.max(0, firstMatchAt - startedAt), page: lastMatched, stabilized: false, navKind };
+    return {
+      ok: true,
+      elapsedMs: Math.max(0, firstMatchAt - startedAt),
+      page: lastMatched,
+      stabilized: false,
+      navKind,
+    };
   }
   const fallback = await readRoutePage(ctx);
   return {

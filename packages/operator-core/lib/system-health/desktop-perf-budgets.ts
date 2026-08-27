@@ -48,6 +48,11 @@ export const DESKTOP_PERF_BUDGETS: DesktopPerfBudgets = {
     // Matches PERF_INTERACTIONS.planPopupOpen in
     // apps/operator/app/_components/perf/perf-marks.ts.
     'plan-popup-open': 1500,
+    // Inbox command-strip Review click → grouped report committed. This is a
+    // route-scale data+render transition; 1.5s catches a return of the measured
+    // 13.6s full-attention-feed regression without treating normal IPC/render
+    // work as an INP-scale 200ms interaction.
+    'inbox-bulk-report-open': 1500,
     // The broader real-interaction budgets (P-006). Each key mirrors a
     // PERF_INTERACTIONS entry; the driven interaction reads its named measure
     // and asserts it here. Budgets are user-perceived-latency ceilings — lower

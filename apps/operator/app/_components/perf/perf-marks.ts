@@ -63,18 +63,22 @@ export const PERF_INTERACTIONS = {
   /** Sidebar Plans face: row click → plan body rendered in Vditor. The "several
    *  seconds to load a plan" path (WI-5547); the measure spans click → the
    *  first Vditor.preview parse of the plan body. */
-  planPopupOpen: 'plan-popup-open',
+  planPopupOpen: "plan-popup-open",
+  /** Inbox command strip: Review decisions click → the grouped bulk report's
+   *  first committed render. Guards the high-cardinality report-open path that
+   *  previously hydrated the full attention feed before it could paint. */
+  inboxBulkReportOpen: "inbox-bulk-report-open",
   /** Global command palette (⌘K/Ctrl+P): open toggle → the lazy cmdk+Radix
    *  chunk loads and the palette content first renders. First-open pays the
    *  dynamic-import cost, so this guards a regression in that chunk. */
-  commandPaletteOpen: 'command-palette-open',
+  commandPaletteOpen: "command-palette-open",
   /** A conversation is opened (chatId set) → the agent_chats detail resolves
    *  and the thread transcript first renders. The "open a conversation and wait
    *  for it to load" path. */
-  conversationThreadLoad: 'conversation-thread-load',
+  conversationThreadLoad: "conversation-thread-load",
   /** Harness dock (/adv, /workbench): mount → the dockview API binds after the
    *  PG layout hydrates and panels are created. Guards the dock-hydration cost. */
-  harnessDockOpen: 'harness-dock-open',
+  harnessDockOpen: "harness-dock-open",
   /** Learning tab: a VIEW SWITCH (`?lview=` changes) → the newly-selected
    *  panel's primary read resolves and its content first renders.
    *
@@ -91,7 +95,7 @@ export const PERF_INTERACTIONS = {
    *  panel can end the shared interaction on its own settle point and a view
    *  whose panel is not yet wired simply emits nothing (its stale start is
    *  discarded past STALE_START_MS) — never a garbage measure. */
-  learningViewSwitch: 'learning-view-switch',
+  learningViewSwitch: "learning-view-switch",
 } as const;
 
 export type PerfInteractionName =
@@ -103,20 +107,20 @@ export type PerfInteractionName =
  *  later, unrelated render on a shared code path. */
 export const STALE_START_MS = 30_000;
 
-const START_SUFFIX = ':start';
+const START_SUFFIX = ":start";
 
 /** The User Timing surface, or null when unavailable (SSR / stripped env). */
 function perf(): Performance | null {
-  if (typeof performance === 'undefined') return null;
-  return typeof performance.mark === 'function' &&
-    typeof performance.measure === 'function'
+  if (typeof performance === "undefined") return null;
+  return typeof performance.mark === "function" &&
+    typeof performance.measure === "function"
     ? performance
     : null;
 }
 
 function latestMeasureDuration(p: Performance, name: string): number | null {
   try {
-    const entries = p.getEntriesByName(name, 'measure');
+    const entries = p.getEntriesByName(name, "measure");
     const last = entries[entries.length - 1];
     return last ? last.duration : null;
   } catch {
@@ -149,12 +153,14 @@ export function beginInteraction(name: PerfInteractionName | string): void {
  * produces a measure; the other mount contexts of a shared component emit
  * nothing).
  */
-export function endInteraction(name: PerfInteractionName | string): number | null {
+export function endInteraction(
+  name: PerfInteractionName | string,
+): number | null {
   const p = perf();
   if (!p) return null;
   const startName = name + START_SUFFIX;
   try {
-    const starts = p.getEntriesByName(startName, 'mark');
+    const starts = p.getEntriesByName(startName, "mark");
     const start = starts[starts.length - 1];
     if (!start) return null;
     // Discard a stale start (a begin whose timely end never came).
@@ -165,10 +171,10 @@ export function endInteraction(name: PerfInteractionName | string): number | nul
     const measure = p.measure(name, startName);
     p.clearMarks?.(startName);
     const duration =
-      measure && typeof (measure as PerformanceMeasure).duration === 'number'
+      measure && typeof (measure as PerformanceMeasure).duration === "number"
         ? (measure as PerformanceMeasure).duration
         : latestMeasureDuration(p, name);
-    return typeof duration === 'number' ? Math.round(duration) : null;
+    return typeof duration === "number" ? Math.round(duration) : null;
   } catch {
     return null;
   }
@@ -179,7 +185,9 @@ export function endInteraction(name: PerfInteractionName | string): number | nul
  * packaged-binary wdio runner + unit tests read the timing synchronously
  * (via performance.getEntriesByName under the hood).
  */
-export function getLatestMeasure(name: PerfInteractionName | string): number | null {
+export function getLatestMeasure(
+  name: PerfInteractionName | string,
+): number | null {
   const p = perf();
   if (!p) return null;
   const d = latestMeasureDuration(p, name);
