@@ -109,7 +109,7 @@ const IMPLAUSIBLE_READING_ABSOLUTE_CEILING = MODEL_WINDOW_1M * IMPLAUSIBLE_READI
 /** In-memory escalation dedup: warn only on the FIRST crossing; clear on recovery. */
 const overLimitOwners = new Set<string>();
 
-/** P-019 context-death dedup: one coord escalation per dead owner per process. */
+/** P-019 context-death dedup: one fallback coord escalation per dead owner per process. */
 const contextDeathEscalated = new Set<string>();
 
 /** P-012 force-compact dedup + EI-9982 retry: owner → last SUCCESSFUL force-inject
@@ -349,8 +349,9 @@ export function resetBootConfigAssertForTests(): void {
  * turn — a single-exchange overflow cannot be compacted), and it died
  * SILENTLY: presence keeps beating until the process reaps, so leaders see
  * "alive" while nothing works (6 fleet members died this way on 2026-07-01).
- * Raise ONE coord escalation per dead owner so the leader/owner relaunches it
- * (fleet persona tier / trimmed context / a wider-window model).
+ * Attempt the deterministic carry-respawn path first; if no live capable host can
+ * accept it, raise ONE coord escalation per dead owner so the leader/owner can
+ * relaunch it (fleet persona tier / trimmed context / a wider-window model).
  */
 async function escalateContextDeath(ownerId: string, ownerLabel: string): Promise<void> {
   if (contextDeathEscalated.has(ownerId)) return;
@@ -591,10 +592,13 @@ async function healPresenceGap(sql: Sql, gap: PresencelessLoopOwner): Promise<bo
  * through as an empty string boots the fresh CLI and then parks it forever unless
  * a loop/event/human happens to wake it (WI-39942).
  */
-function softThresholdContinueNote(): string {
+function watchdogCarryContinueNote(reason: 'soft-threshold' | 'context-death'): string {
+  const opening =
+    reason === 'context-death'
+      ? 'The compaction watchdog detected that the previous session hit a model-window "Prompt is too long" error and moved you onto fresh context. '
+      : 'The compaction watchdog moved this session onto fresh context at its configured soft threshold. ';
   return (
-    'The compaction watchdog moved this session onto fresh context at its configured soft ' +
-    'threshold. ' +
+    opening +
     MARKER_AWARE_POST_COMPACTION_RECOVERY_INSTRUCTION +
     ' Then resume your current unit ' +
     'of work from the carry document. Anything the carry dropped remains searchable with ' +
@@ -811,13 +815,13 @@ async function escalateCarryRespawnLoop(
 }
 
 /**
- * P-018 live actuation: at the session's soft threshold, ask a capable managed
- * psu host to replace the settled Claude child with a fresh successor carrying
- * the deterministic launch-context document. The shared P-017/P-018 cutover flag
- * defaults ON by owner release direction (2026-07-15); OFF remains the emergency
- * kill-switch. Every miss is fail-soft: the current child
- * remains alive with native auto-compact, and the older force-compact rung below
- * remains the hard safety backstop.
+ * P-018 live actuation: at the session's soft threshold, or after P-019 detects a
+ * terminal "Prompt is too long" response, ask a capable managed psu host to
+ * replace the settled child with a fresh successor carrying the deterministic
+ * launch-context document. The shared P-017/P-018 cutover flag defaults ON by
+ * owner release direction (2026-07-15); OFF remains the emergency kill-switch.
+ * Every miss is fail-soft: the soft-threshold path leaves native auto-compact and
+ * the older force-compact rung as backstops, while the death path escalates below.
  */
 async function maybeCarryRespawn(
   ownerId: string,
@@ -871,16 +875,19 @@ async function maybeCarryRespawn(
         ownerLabel,
         transcriptPath,
         transcriptSourceKind,
-        // Clean/idle-gated (deliberate ⇒ the P-010 refuse-once gate applies) but
-        // NOT self-requested: the session never ran its flush discipline, and the
-        // rendered continuation must not claim "state was flushed" (the
-        // 2026-07-18 provenance mislabel).
-        boundaryDeliberate: true,
+        // Soft-threshold cuts are clean/idle-gated (deliberate ⇒ the P-010
+        // refuse-once gate applies). A Prompt-is-too-long death is already a
+        // terminal response, so its recovery cut is forced/non-deliberate and
+        // carries any open owner message rather than refusing the only recovery
+        // path. Neither path is self-requested: the session never ran its flush
+        // discipline, and the rendered continuation must not claim "state was
+        // flushed" (the 2026-07-18 provenance mislabel).
+        boundaryDeliberate: reason !== 'context-death',
         boundarySelfRequested: false,
       },
     });
     if (!spec) return false;
-    if (spec.openOwnerQuestion.crossesOpenOwnerMessage) {
+    if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason !== 'context-death') {
       console.warn(
         `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
           reason === 'context-death' ? 'was detected dead and' : 'reached the deterministic carry threshold and'
@@ -894,7 +901,7 @@ async function maybeCarryRespawn(
     // with no loop/event wake cannot respawn into a fully-briefed silent park.
     const firstPrompt =
       spec.firstPrompt ??
-      (await tagWatchdogContinuation(ownerId, softThresholdContinueNote()));
+      (await tagWatchdogContinuation(ownerId, watchdogCarryContinueNote(reason)));
     const ok = await injectIntoHost(host.sock, {
       mode: 'carry-respawn',
       data: firstPrompt,
@@ -916,6 +923,38 @@ async function maybeCarryRespawn(
     );
     return false;
   }
+}
+
+/**
+ * P-019 recovery-first policy: a Prompt-is-too-long death gets one forced
+ * carry-respawn attempt before the blocker escalation. A socket-acknowledged
+ * recovery is given the same grace as the soft/force rungs so repeated death
+ * sweeps do not queue duplicate successors while the host replaces the child.
+ * Escalation remains the fallback for a disabled flag, missing/old host,
+ * unavailable transcript/spec, or failed injection.
+ */
+async function recoverContextDeath(
+  ownerId: string,
+  ownerLabel: string,
+  workspaceId: string,
+  effectiveWindowTokens: number,
+): Promise<boolean> {
+  if (contextDeathEscalated.has(ownerId)) return false;
+  const lastCarryAt = carryRespawnRequestedAt.get(ownerId);
+  if (lastCarryAt != null && Date.now() - lastCarryAt < FORCE_RETRY_GRACE_MS) return false;
+  const recovered = await maybeCarryRespawn(
+    ownerId,
+    ownerLabel,
+    workspaceId,
+    effectiveWindowTokens,
+    'context-death',
+  );
+  if (!recovered) {
+    await escalateContextDeath(ownerId, ownerLabel);
+    return false;
+  }
+  carryRespawnRequestedAt.set(ownerId, Date.now());
+  return true;
 }
 
 /**
@@ -1392,7 +1431,32 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       try {
         if (await detectContextDeathForOwner(r.owner_id)) {
           out.contextDeaths.push(r.owner_id);
-          await escalateContextDeath(r.owner_id, r.owner_label);
+          // P-019 recovery-first: use the effective model window for the carry
+          // budget, preferring the measured backend value and then the spec
+          // resolver. A configured limit is the safe bounded fallback when
+          // neither can resolve; clamp to the platform maximum so a bad/stale
+          // setting cannot create an oversized successor context.
+          let deathWindow: number | null = null;
+          try {
+            deathWindow = await estimateContextWindowForOwner(r.owner_id);
+          } catch {
+            /* resolver fallback below */
+          }
+          if (deathWindow == null) deathWindow = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+          const carryWindow = Math.min(
+            MODEL_WINDOW_1M,
+            Math.max(1, deathWindow ?? r.compaction_limit),
+          );
+          if (
+            await recoverContextDeath(
+              r.owner_id,
+              r.owner_label,
+              r.workspace_id,
+              carryWindow,
+            )
+          ) {
+            out.carryRespawned.push(r.owner_id);
+          }
           continue; // no point estimating/flagging a dead session
         }
       } catch {

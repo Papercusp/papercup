@@ -1193,6 +1193,99 @@ describe('live-config reach (agent-managed-compaction P-017)', () => {
 });
 
 describe('context-death detector (context-trimming-tiers P-019)', () => {
+  it('carry-respawns a dead session before escalating, using a forced boundary and measured window', async () => {
+    resetContextDeathEscalationsForTests();
+    estimateMock.mockResolvedValue(40_000);
+    contextWindowMock.mockResolvedValue(258_400);
+    deathMock.mockImplementation(async (owner: string) => owner === 'dead');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-dead' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/dead.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    buildOwnerRespawnMock.mockResolvedValue({
+      systemPromptAddendum: 'deterministic carry',
+      firstPrompt: 'resume after the overflow',
+      budgetChars: 32_000,
+      // A death recovery is FORCED, so even an open owner message is carried
+      // rather than refused at the deliberate-boundary gate.
+      openOwnerQuestion: { crossesOpenOwnerMessage: true },
+    });
+    const seeded = [
+      {
+        owner_id: 'dead',
+        owner_label: 'bee · dead',
+        workspace_id: 'ws-dead',
+        compaction_limit: 158_000,
+      },
+    ];
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.contextDeaths).toEqual(['dead']);
+    expect(out.carryRespawned).toEqual(['dead']);
+    expect(openEscalationMock).not.toHaveBeenCalled();
+    expect(buildOwnerRespawnMock).toHaveBeenCalledWith(
+      'dead',
+      expect.objectContaining({
+        effectiveWindowTokens: 258_400,
+        buildOpts: expect.objectContaining({
+          workspaceId: 'ws-dead',
+          ownerLabel: 'bee · dead',
+          transcriptPath: '/tmp/live-session.jsonl',
+          transcriptSourceKind: 'claude',
+          boundaryDeliberate: false,
+          boundarySelfRequested: false,
+        }),
+      }),
+    );
+    expect(injectMock).toHaveBeenCalledWith('/tmp/dead.sock', {
+      mode: 'carry-respawn',
+      data: 'resume after the overflow',
+      systemPromptAddendum: 'deterministic carry',
+      ownerId: 'dead',
+    });
+
+    // The detector may still see the dead tail while the host is replacing the
+    // child; the socket-ACK grace prevents a duplicate successor or fallback.
+    const again = await checkCompactionCompliance(fakeSql({ seeded }));
+    expect(again.contextDeaths).toEqual(['dead']);
+    expect(again.carryRespawned).toEqual([]);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    expect(openEscalationMock).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the blocker escalation when death recovery injection fails', async () => {
+    resetContextDeathEscalationsForTests();
+    contextWindowMock.mockResolvedValue(200_000);
+    deathMock.mockImplementation(async (owner: string) => owner === 'dead');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'claude', sessionId: 'native-dead' });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/dead.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+    injectMock.mockResolvedValue(false);
+    const seeded = [
+      {
+        owner_id: 'dead',
+        owner_label: 'bee · dead',
+        workspace_id: 'ws-dead',
+        compaction_limit: 158_000,
+      },
+    ];
+
+    const out = await checkCompactionCompliance(fakeSql({ seeded }));
+
+    expect(out.contextDeaths).toEqual(['dead']);
+    expect(out.carryRespawned).toEqual([]);
+    expect(injectMock).toHaveBeenCalledTimes(1);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const [, input] = openEscalationMock.mock.calls[0] as unknown as [
+      { ownerId: string },
+      { summary: string },
+    ];
+    expect(input.summary).toContain('Prompt is too long');
+    expect(input.summary).toContain('dead');
+  });
+
   it('a "Prompt is too long" transcript raises ONE blocker escalation, deduped across passes', async () => {
     resetContextDeathEscalationsForTests();
     estimateMock.mockResolvedValue(40_000);
