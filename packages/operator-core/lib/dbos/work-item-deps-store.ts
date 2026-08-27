@@ -218,17 +218,22 @@ function normalizedStatus(row: WorkItemNodeRow): string {
 
 function workItemRowIsTerminal(row: WorkItemNodeRow): boolean {
   const status = normalizedStatus(row);
-  const lifecycleTerminal = ISSUE_ITEM_KINDS.has(row.item_kind)
+  const issueFamily = ISSUE_ITEM_KINDS.has(row.item_kind);
+  const lifecycleTerminal = issueFamily
     ? ISSUE_TERMINAL_STATUSES.has(status)
     : TERMINAL_STATUSES.has(status);
-  return isCompletionSettled(row.authority, lifecycleTerminal);
+  const abandoned = issueFamily
+    ? status === 'closed' || status === 'dropped'
+    : status === 'deprecated' || status === 'dropped';
+  return isCompletionSettled(row.authority, lifecycleTerminal, abandoned);
 }
 
 function workItemRowIsSuccessful(row: WorkItemNodeRow): boolean {
   const status = normalizedStatus(row);
-  return ISSUE_ITEM_KINDS.has(row.item_kind)
+  const successful = ISSUE_ITEM_KINDS.has(row.item_kind)
     ? status === 'resolved' || status === 'done'
     : status === 'passed' || status === 'done';
+  return isCompletionSettled(row.authority, successful);
 }
 
 function edgeIsSatisfiedByRow(edge: StoredDependencyEdge, row: WorkItemNodeRow): boolean {

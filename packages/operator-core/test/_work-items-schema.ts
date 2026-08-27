@@ -614,10 +614,13 @@ export const WORK_ITEM_DEPS_DDL = `
     blocker_kind  text        NOT NULL,
     blocker_ref   text        NOT NULL,
     dep_type      text        NOT NULL DEFAULT 'blocks',
+    satisfaction  text        NOT NULL DEFAULT 'settled',
     created_by    text,
     created_at    timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT work_item_deps_no_self
-      CHECK (NOT (blocked_kind = blocker_kind AND blocked_ref = blocker_ref))
+      CHECK (NOT (blocked_kind = blocker_kind AND blocked_ref = blocker_ref)),
+    CONSTRAINT work_item_deps_satisfaction_check
+      CHECK (satisfaction IN ('settled', 'success'))
   );
   CREATE UNIQUE INDEX IF NOT EXISTS work_item_deps_edge_uniq
     ON harness_shared.work_item_deps (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type);
@@ -650,11 +653,15 @@ export const WORK_ITEM_DEPS_DDL = `
                             WHERE bf.item_kind <> ALL (ARRAY['bug','change','task'])
                               AND bf.workspace_id = p_workspace
                               AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                              AND bf.status NOT IN ('passed','deprecated','done','dropped'))
+                              AND ((bf.authority IS NOT NULL AND bf.authority NOT IN ('committed','validated')
+                                AND lower(COALESCE(bf.status, '')) NOT IN ('deprecated','dropped'))
+                                OR bf.status NOT IN ('passed','deprecated','done','dropped')))
                    OR EXISTS (SELECT 1 FROM harness_shared.work_items bi
                             WHERE bi.item_kind = ANY (ARRAY['bug','change','task'])
                               AND bi.workspace_id = p_workspace AND bi.feature_id = d.blocker_ref
-                              AND bi.status NOT IN ('resolved','closed','done','dropped')) )
+                              AND ((bi.authority IS NOT NULL AND bi.authority NOT IN ('committed','validated')
+                                AND lower(COALESCE(bi.status, '')) NOT IN ('closed','dropped'))
+                                OR bi.status NOT IN ('resolved','closed','done','dropped'))) )
       );
   $WIB$;
   CREATE OR REPLACE FUNCTION harness_shared.sync_work_item_blocked(p_ws text, p_harness text, p_feature text)
@@ -700,12 +707,18 @@ export const WORK_ITEM_DEPS_DDL = `
   EXCEPTION WHEN OTHERS THEN RETURN NEW; END;
   $WSS$;
   DROP TRIGGER IF EXISTS wir_status_sync_dependents_trg ON harness_shared.work_items;
-  CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE OF status ON harness_shared.work_items
+  CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE OF status, authority ON harness_shared.work_items
       -- Keep the fixture in parity with migration 640: setIssueState canonicalizes
       -- legacy resolved/closed requests to unified done/dropped before updating the
       -- base table, and those canonical terminal flips must refresh dependents too.
-      FOR EACH ROW WHEN ((OLD.status IN ('passed','deprecated','resolved','closed','done','dropped'))
-        IS DISTINCT FROM (NEW.status IN ('passed','deprecated','resolved','closed','done','dropped')))
+      FOR EACH ROW WHEN (
+        ((OLD.status IN ('passed','deprecated','resolved','closed','done','dropped'))
+          AND (OLD.status IN ('deprecated','closed','dropped')
+            OR COALESCE(OLD.authority IN ('committed','validated'), true)))
+        IS DISTINCT FROM
+        ((NEW.status IN ('passed','deprecated','resolved','closed','done','dropped'))
+          AND (NEW.status IN ('deprecated','closed','dropped')
+            OR COALESCE(NEW.authority IN ('committed','validated'), true))))
       EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();
   CREATE OR REPLACE FUNCTION harness_shared.wir_insert_sync_own() RETURNS trigger LANGUAGE plpgsql AS $WIS$
   BEGIN

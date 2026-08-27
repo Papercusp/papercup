@@ -19,8 +19,10 @@ import {
   goalToGoalGraph,
   parsePlanRef,
   planStatusSeverity,
+  resolveBlockerStatuses,
   type GoalBlockerEndpoint,
 } from './goal-deps';
+import type { GoalSqlTag } from './_core';
 import {
   PLAN_INVALIDATING_STATUSES,
   PLAN_SATISFYING_STATUSES,
@@ -76,6 +78,10 @@ describe('goalBlockerVerdict (D-002 policy)', () => {
     expect(goalBlockerVerdict(ISSUE_DEP_KIND, 'open')).toBe('pending');
     expect(goalBlockerVerdict(ISSUE_DEP_KIND, 'wip')).toBe('pending');
   });
+
+  it('a terminal proposed completion remains pending until git settlement', () => {
+    expect(goalBlockerVerdict(ISSUE_DEP_KIND, 'completion-proposed')).toBe('pending');
+  });
 });
 
 describe('goalReadiness (the fold behind actionable / premiseInvalidated)', () => {
@@ -116,6 +122,32 @@ describe('goalReadiness (the fold behind actionable / premiseInvalidated)', () =
     ]);
     expect(r.actionable).toBe(false);
     expect(r.blockers.map((b) => b.verdict)).toEqual(['satisfied', 'pending']);
+  });
+});
+
+describe('resolveBlockerStatuses settlement projection', () => {
+  it('projects successful proposed issues as pending and preserves settled, legacy, and abandonment closes', async () => {
+    const sql = (() => Promise.resolve([
+      { issue_id: 'WI-1', state: 'done', authority: 'proposed' },
+      { issue_id: 'WI-2', state: 'done', authority: 'committed' },
+      { issue_id: 'WI-3', state: 'done', authority: null },
+      { issue_id: 'WI-4', state: 'dropped', authority: 'proposed' },
+      { issue_id: 'WI-5', state: 'closed', authority: 'invalid' },
+    ])) as unknown as GoalSqlTag;
+
+    const statuses = await resolveBlockerStatuses(sql, 'ws', [
+      { kind: ISSUE_DEP_KIND, ref: 'WI-1' },
+      { kind: ISSUE_DEP_KIND, ref: 'WI-2' },
+      { kind: ISSUE_DEP_KIND, ref: 'WI-3' },
+      { kind: ISSUE_DEP_KIND, ref: 'WI-4' },
+      { kind: ISSUE_DEP_KIND, ref: 'WI-5' },
+    ]);
+
+    expect(statuses.get(`${ISSUE_DEP_KIND}:WI-1`)).toBe('completion-proposed');
+    expect(statuses.get(`${ISSUE_DEP_KIND}:WI-2`)).toBe('done');
+    expect(statuses.get(`${ISSUE_DEP_KIND}:WI-3`)).toBe('done');
+    expect(statuses.get(`${ISSUE_DEP_KIND}:WI-4`)).toBe('dropped');
+    expect(statuses.get(`${ISSUE_DEP_KIND}:WI-5`)).toBe('closed');
   });
 });
 

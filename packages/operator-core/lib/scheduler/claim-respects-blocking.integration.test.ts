@@ -78,14 +78,15 @@ let db: FreshPgDb;
 interface SeedOpts {
   createdTs?: number;
   status?: string;
+  authority?: string | null;
   takenBy?: string | null;
   tags?: string[];
 }
 async function seedFeature(id: string, opts: SeedOpts = {}) {
   await db.sql`
     INSERT INTO harness_shared.harness_features_consolidated
-      (harness_slug, feature_id, item_kind, status, taken_by, workspace_id, created_ts, updated_ts, tags)
-    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.takenBy ?? null}, ${WS},
+      (harness_slug, feature_id, item_kind, status, authority, taken_by, workspace_id, created_ts, updated_ts, tags)
+    VALUES (${H}, ${id}, 'feature', ${opts.status ?? 'open'}, ${opts.authority ?? null}, ${opts.takenBy ?? null}, ${WS},
        ${opts.createdTs ?? 0}, 0, ${opts.tags ? db.sql.json(opts.tags) : null})`;
 }
 
@@ -185,6 +186,9 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('379-maintained-ready-column.sql')).simple();
   // 719: workspace-scoped oracle (required 3rd arg). See EI-19313459163394127.
   await db.sql.unsafe(readMigration('719-fix-work-item-is-blocked-workspace-scope.sql')).simple();
+  // 996: lifecycle-terminal proposed completions remain blocked, and an
+  // authority-only proposed→committed promotion refreshes the sidecar.
+  await db.sql.unsafe(readMigration('996-work-item-completion-settlement-readiness.sql')).simple();
 }, 180_000);
 afterAll(async () => {
   await db.cleanup();
@@ -230,6 +234,7 @@ describe('scheduler claim respects blocking — NEVER hands out a blocked item (
     // The inline ORACLE and the MAINTAINED sidecar agree: F-blocked is NOT ready.
     expect(await oracleSaysBlocked('F-blocked')).toBe(true);
     expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
+    expect(await claimViaBothPaths('settlement-proposed')).toEqual({ legacy: null, spec: null });
 
     // Neither claim entry point hands it out.
     const { legacy, spec } = await claimViaBothPaths('w1');
@@ -432,6 +437,7 @@ describe('maintained readiness sidecar tracks the inline oracle through the life
     await blockByFeature('F-blocked', 'F-blocker');
     expect(await oracleSaysBlocked('F-blocked')).toBe(true);
     expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
+    expect(await claimViaBothPaths('settlement-invalid')).toEqual({ legacy: null, spec: null });
 
     // Blocker → terminal ⇒ ready in both (wir_status_sync_dependents_trg).
     await db.sql`UPDATE harness_shared.harness_features_consolidated SET status='passed' WHERE feature_id='F-blocker'`;
@@ -447,6 +453,48 @@ describe('maintained readiness sidecar tracks the inline oracle through the life
     await db.sql`DELETE FROM harness_shared.work_item_deps WHERE blocked_ref = ${`${H}#F-blocked`}`;
     expect(await oracleSaysBlocked('F-blocked')).toBe(false);
     expect(await sidecarSaysBlocked('F-blocked')).toBe(false);
+    expect(await claimViaBothPaths('settlement-committed')).toEqual({
+      legacy: 'F-blocked',
+      spec: 'F-blocked',
+    });
+  });
+
+  it('terminal proposed stays blocked, then authority-only settlement refreshes oracle and sidecar', async () => {
+    await seedFeature('F-blocker', { status: 'passed', authority: 'proposed', createdTs: 100 });
+    await seedFeature('F-blocked', { status: 'open', createdTs: 200 });
+    await blockByFeature('F-blocked', 'F-blocker');
+
+    expect(await oracleSaysBlocked('F-blocked')).toBe(true);
+    expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
+
+    await db.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET authority = 'invalid'
+       WHERE feature_id = 'F-blocker'`;
+    expect(await oracleSaysBlocked('F-blocked')).toBe(true);
+    expect(await sidecarSaysBlocked('F-blocked')).toBe(true);
+
+    await db.sql`
+      UPDATE harness_shared.harness_features_consolidated
+         SET authority = 'committed'
+       WHERE feature_id = 'F-blocker'`;
+
+    expect(await oracleSaysBlocked('F-blocked')).toBe(false);
+    expect(await sidecarSaysBlocked('F-blocked')).toBe(false);
+  });
+
+  it('deprecated and dropped blockers remain settled without waiting on completion authority', async () => {
+    await seedFeature('F-deprecated', { status: 'deprecated', authority: 'proposed', createdTs: 100 });
+    await seedFeature('F-dropped', { status: 'dropped', authority: 'invalid', createdTs: 110 });
+    await seedFeature('F-after-deprecated', { status: 'open', createdTs: 200 });
+    await seedFeature('F-after-dropped', { status: 'open', createdTs: 210 });
+    await blockByFeature('F-after-deprecated', 'F-deprecated');
+    await blockByFeature('F-after-dropped', 'F-dropped');
+
+    for (const dependent of ['F-after-deprecated', 'F-after-dropped']) {
+      expect(await oracleSaysBlocked(dependent)).toBe(false);
+      expect(await sidecarSaysBlocked(dependent)).toBe(false);
+    }
   });
 });
 

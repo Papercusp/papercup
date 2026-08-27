@@ -300,8 +300,16 @@ export function transitionsFrom(from: CompletionAuthorityFrom, by?: CompletionAu
  * Callers must pass whether the row's lifecycle state is terminal; this module does not
  * know the per-family terminal sets (feature: passed|deprecated, issue: resolved|closed).
  */
-export function countsTowardBurnDown(authority: CompletionAuthorityFrom, isTerminal: boolean): boolean {
+export function countsTowardBurnDown(
+  authority: CompletionAuthorityFrom,
+  isTerminal: boolean,
+  isAbandoned = false,
+): boolean {
   if (!isTerminal) return false;
+  // Dropped/deprecated/closed outcomes settle the lifecycle without claiming code landed.
+  // They are outside the causal Git receipt contract, so an incidental authority value must
+  // never make them wait on git-sync.
+  if (isAbandoned) return true;
   if (authority === null) return true; // legacy pre-authority close — D-005
   return authority === 'committed' || authority === 'validated';
 }
@@ -311,8 +319,12 @@ export function countsTowardBurnDown(authority: CompletionAuthorityFrom, isTermi
  * from the claim queue; this answers whether downstream consumers may rely on
  * the close. Null remains the legacy compatibility case.
  */
-export function isCompletionSettled(authority: CompletionAuthorityFrom, isTerminal: boolean): boolean {
-  return countsTowardBurnDown(authority, isTerminal);
+export function isCompletionSettled(
+  authority: CompletionAuthorityFrom,
+  isTerminal: boolean,
+  isAbandoned = false,
+): boolean {
+  return countsTowardBurnDown(authority, isTerminal, isAbandoned);
 }
 
 /**

@@ -10,6 +10,7 @@ import {
   canTransition,
   countsTowardBurnDown,
   insufficientEvidenceReason,
+  isCompletionSettled,
   isLegacyClose,
   isSufficientEvidence,
   isWorkItemCompletionAuthority,
@@ -139,6 +140,25 @@ describe('burn-down semantics', () => {
       expect(countsTowardBurnDown(a, false)).toBe(false);
     }
     expect(isLegacyClose(null, false)).toBe(false);
+  });
+
+  it('preserves abandonment closes regardless of incidental authority', () => {
+    for (const a of [null, ...WORK_ITEM_COMPLETION_AUTHORITIES]) {
+      expect(countsTowardBurnDown(a, true, true)).toBe(true);
+      expect(isCompletionSettled(a, true, true)).toBe(true);
+    }
+  });
+});
+
+describe('shared delivery-settlement semantics', () => {
+  it('matches burn-down authority while naming the downstream dependency contract', () => {
+    expect(isCompletionSettled('committed', true)).toBe(true);
+    expect(isCompletionSettled('validated', true)).toBe(true);
+    expect(isCompletionSettled(null, true)).toBe(true);
+    expect(isCompletionSettled('proposed', true)).toBe(false);
+    expect(isCompletionSettled('pending_human', true)).toBe(false);
+    expect(isCompletionSettled('invalid', true)).toBe(false);
+    expect(isCompletionSettled('committed', false)).toBe(false);
   });
 });
 

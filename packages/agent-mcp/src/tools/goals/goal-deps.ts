@@ -328,9 +328,10 @@ export async function resolveBlockerStatuses(
        WHERE issue_id = ANY(${issueRefs as string[]}::text[])`;
     for (const r of rows) {
       const terminal = ISSUE_TERMINAL_STATUSES.has(r.state);
+      const abandoned = r.state === 'closed' || r.state === 'dropped';
       out.set(
         blockerStatusKey({ kind: ISSUE_DEP_KIND, ref: r.issue_id }),
-        isCompletionSettled(r.authority, terminal) ? r.state : terminal ? 'completion-proposed' : r.state,
+        isCompletionSettled(r.authority, terminal, abandoned) ? r.state : terminal ? 'completion-proposed' : r.state,
       );
     }
   }
