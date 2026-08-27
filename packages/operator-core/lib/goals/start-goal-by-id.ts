@@ -60,6 +60,7 @@ import {
 } from '../harness/routines/goal-holder-launch-action';
 import { resolveGoalHolders, type GoalHolders } from './holder';
 import { setMode } from '../modes/store';
+import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 // Same direction the sibling package-start door already imports (start-from-package.ts):
 // lib/goals → lib/agent-tools/goals/start. No cycle; start.ts does not import this file.
 import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
@@ -146,6 +147,12 @@ export interface StartGoalByIdDeps {
     goalTitle: string;
     setBy: string;
   }) => Promise<{ ok: boolean; error?: string | null }>;
+  /**
+   * Refreshes the compact control projection after a direct GOAL attachment.
+   * Injectable so this activation path can prove the projection refresh without
+   * requiring the whole session/control-anchor substrate in a unit fixture.
+   */
+  refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
   /**
    * Stamps the denormalized owner identity after the GOAL-mode row attaches.
    * This is deliberately a separate, fail-soft post-start step: attachment is
@@ -339,13 +346,14 @@ export async function startGoalById(
     kickoffPrompt,
   });
 
+  const setBy = input.launcherOwnerId ?? 'goal-start-by-id';
   const attach = await deps.attach({
     sql,
     workspaceId,
     goalId,
     ownerId: launched.ownerId,
     goalTitle: goal.title,
-    setBy: input.launcherOwnerId ?? 'goal-start-by-id',
+    setBy,
   });
   if (!attach.ok) {
     // The spawn is irreversible; the holder row is what failed. Name the
@@ -356,6 +364,25 @@ export async function startGoalById(
         `attachment failed (${attach.error ?? 'mode store refused'}) — ` +
         `the session is up without a holder row; attach it or let the liveness watchdog report it`,
     );
+  }
+
+  // `setMode` is also called directly by this activation primitive's default
+  // attach closure, bypassing the mode tool's normal projection refresh. The
+  // control anchor is safety context, so a refresh failure must never undo the
+  // already-committed holder attachment.
+  try {
+    await (deps.refreshControlAnchor ?? refreshControlAnchorAfterMutation)({
+      ownerId: launched.ownerId,
+      workspaceId,
+      origin: 'system',
+      actorId: setBy,
+      source: 'mode:set',
+      ownerDirected: false,
+      sql,
+    });
+  } catch {
+    // The shared refresh is fail-soft by contract; preserve that contract for
+    // injected implementations as well.
   }
 
   // The GOAL-mode row is the source-of-truth holder attachment. Keep the

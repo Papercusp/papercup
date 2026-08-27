@@ -27,10 +27,12 @@ import {
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { spawn as spawnChild } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { sseResponse } from '@papercusp/sse';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
-  killPty, markActive, resizePty, spawnPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
+  killPty, markActive, resizePty, spawnGovernedPty, writePty, getPty, getPtyMeta, getHistory, PtyError,
+  type PtyHandle,
 } from '../../../pty-bridge';
 import {
   issuePtyTicket,
@@ -222,7 +224,7 @@ function resolvePiBinary(): string {
 // in-flight prewarm. Module-level (was a closure inside `registerPty`).
 
 type PrewarmEntry = {
-  promise: Promise<ReturnType<typeof spawnPty> | null>;
+  promise: Promise<PtyHandle | null>;
   reaper: NodeJS.Timeout | null;
 };
 const prewarmed = new Map<string, PrewarmEntry>();
@@ -247,9 +249,9 @@ function reservePrewarmSlot(opts: {
   const existing = prewarmed.get(key);
   if (existing) return existing;
 
-  let resolveHandle: (h: ReturnType<typeof spawnPty> | null) => void = () => {};
+  let resolveHandle: (h: PtyHandle | null) => void = () => {};
   const entry: PrewarmEntry = {
-    promise: new Promise<ReturnType<typeof spawnPty> | null>((r) => { resolveHandle = r; }),
+    promise: new Promise<PtyHandle | null>((r) => { resolveHandle = r; }),
     reaper: null,
   };
   // Register the slot SYNCHRONOUSLY so a concurrent /pty/spawn sees it.
@@ -263,9 +265,14 @@ function reservePrewarmSlot(opts: {
         resolveHandle(null);
         return;
       }
-      const handle = spawnPty({
+      const handle = await spawnGovernedPty({
         accessScope,
         command: cfg.command, args: cfg.args, cwd: cfg.cwd, cols: 80, rows: 24, env: cfg.env,
+      }, {
+        workspaceId: accessScope.workspaceId,
+        idempotencyKey: `pty-prewarm:${randomUUID()}`,
+        owner: accessScope.principalId,
+        payloadRef: `pty-prewarm:${slug}:${laneId ?? 'default'}`,
       });
       attachAuditExport(handle, cfg.sd, cfg.command, laneId);
       entry.reaper = setTimeout(() => {
@@ -336,7 +343,7 @@ async function buildSpawnConfig(opts: {
   return { kind: 'ok', command, args, cwd, env: { ...env, ...body.env }, sd };
 }
 
-function attachAuditExport(handle: ReturnType<typeof spawnPty>, sd: string | null, command: string, laneId?: string): void {
+function attachAuditExport(handle: PtyHandle, sd: string | null, command: string, laneId?: string): void {
   if (!sd || !command.includes('omp')) return;
   const agentDir = join(sd, 'pi-sessions');
   const auditDir = join(sd, 'audit', 'pi-sessions');
@@ -416,9 +423,14 @@ const spawn = defineTool({
     }
 
     try {
-      const handle = spawnPty({
+      const handle = await spawnGovernedPty({
         accessScope,
         command: cfg.command, args: cfg.args, cwd: cfg.cwd, cols, rows, env: cfg.env,
+      }, {
+        workspaceId: accessScope.workspaceId,
+        idempotencyKey: `pty-http:${randomUUID()}`,
+        owner: accessScope.principalId,
+        payloadRef: `pty-http:${slug}:${body.laneId ?? 'default'}`,
       });
       attachAuditExport(handle, cfg.sd, cfg.command, body.laneId);
       refill();

@@ -307,6 +307,15 @@ export function countsTowardBurnDown(authority: CompletionAuthorityFrom, isTermi
 }
 
 /**
+ * Shared delivery-settlement predicate. Lifecycle terminality removes an item
+ * from the claim queue; this answers whether downstream consumers may rely on
+ * the close. Null remains the legacy compatibility case.
+ */
+export function isCompletionSettled(authority: CompletionAuthorityFrom, isTerminal: boolean): boolean {
+  return countsTowardBurnDown(authority, isTerminal);
+}
+
+/**
  * Is a terminal row a LEGACY close — made before the authority contract existed, and
  * therefore exempt from nagging, reopening, and reclassification (D-005)?
  */

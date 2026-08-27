@@ -1,3 +1,8 @@
+import {
+  readEventConditionReachability,
+  type ExternalConditionReachability,
+} from './external-condition-reachability';
+
 export type ExternalBlockerKind = 'event' | 'gate' | 'runtime' | 'human';
 
 /** What capability is actually missing. The trigger shape (`kind`) and the
@@ -101,6 +106,34 @@ export interface ExternalBlockerRecord {
   nextVerb?: string;
   clearedAt?: string;
   clearedBy?: string;
+  /** Advisory, evidence-bearing condition verdict. Absence means not measured. */
+  reachability?: ExternalConditionReachability;
+}
+
+/** Preserve blocker history while attaching a separately resolved condition verdict. */
+export function attachExternalBlockerReachability(
+  blocker: ExternalBlockerRecord,
+  reachability: ExternalConditionReachability,
+): ExternalBlockerRecord {
+  return { ...blocker, reachability };
+}
+
+/**
+ * Resolve event/gate blockers through the existing event authority. Runtime and
+ * human blockers keep an honest unmeasured shape until their own typed resolver
+ * is supplied; they are never guessed from age or prose.
+ */
+export async function readExternalBlockersWithReachability(
+  payload: unknown,
+  opts: { resolveEvent?: typeof readEventConditionReachability } = {},
+): Promise<ExternalBlockerRecord[]> {
+  const resolveEvent = opts.resolveEvent ?? readEventConditionReachability;
+  return Promise.all(
+    readExternalBlockers(payload).map(async (blocker) => {
+      if (blocker.kind !== 'event' && blocker.kind !== 'gate') return blocker;
+      return attachExternalBlockerReachability(blocker, await resolveEvent(blocker.ref));
+    }),
+  );
 }
 
 /** Parse defensively because payload is federated/untrusted JSON. */

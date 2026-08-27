@@ -28,6 +28,7 @@ import {
 } from '../scheduler/dependency-graph-analysis';
 import { getDependencyPolicy, type DependencyPolicyRule } from '../scheduler/dependency-invariants';
 import { TERMINAL_STATUSES } from './frontier-readiness';
+import { isCompletionSettled, type CompletionAuthorityFrom } from '../work-item-completion-authority';
 
 /** The polymorphic endpoints accepted by work_item_deps (issue/feature today). */
 export interface WorkItemDepEndpoint {
@@ -152,6 +153,7 @@ interface WorkItemNodeRow {
   readonly item_kind: string;
   readonly status: string | null;
   readonly taken_by: string | null;
+  readonly authority: CompletionAuthorityFrom;
 }
 
 const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
@@ -216,7 +218,10 @@ function normalizedStatus(row: WorkItemNodeRow): string {
 
 function workItemRowIsTerminal(row: WorkItemNodeRow): boolean {
   const status = normalizedStatus(row);
-  return ISSUE_ITEM_KINDS.has(row.item_kind) ? ISSUE_TERMINAL_STATUSES.has(status) : TERMINAL_STATUSES.has(status);
+  const lifecycleTerminal = ISSUE_ITEM_KINDS.has(row.item_kind)
+    ? ISSUE_TERMINAL_STATUSES.has(status)
+    : TERMINAL_STATUSES.has(status);
+  return isCompletionSettled(row.authority, lifecycleTerminal);
 }
 
 function workItemRowIsSuccessful(row: WorkItemNodeRow): boolean {
@@ -279,7 +284,7 @@ async function loadDependencyNodes(
   if (bareIds.size === 0) return { nodes: [], lifecycleRows: [], outOfScopeIdentityKeys: new Set() };
   const ids = [...bareIds].sort();
   const rows = await tx<WorkItemNodeRow[]>`
-    SELECT workspace_id, harness_slug, feature_id, item_kind, status, taken_by
+    SELECT workspace_id, harness_slug, feature_id, item_kind, status, taken_by, authority
       FROM harness_shared.work_items
      WHERE feature_id = ANY(${ids}::text[])
      ORDER BY (workspace_id = ${workspaceId}) DESC, workspace_id, harness_slug, feature_id, item_kind`;

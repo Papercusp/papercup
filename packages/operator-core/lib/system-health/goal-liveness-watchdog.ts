@@ -91,6 +91,7 @@ import { resolveGoalHolderPolicy } from '../goal-launch-settings-shared';
 import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-id';
 import { launchGoalHolderSession } from '../harness/routines/goal-holder-launch-action';
 import { setMode } from '../modes/store';
+import { refreshControlAnchorAfterMutation } from '../agent-tools/coordination/control-anchor';
 import {
   decideFlapDamping,
   initialFlapDampingState,
@@ -1021,6 +1022,8 @@ export interface GoalHolderRespawnDeps {
   flagEnabled: () => Promise<boolean>;
   launch: (goal: GoalRowLike) => Promise<{ ownerId: string; warnings: string[] }>;
   attach: (goal: GoalRowLike, ownerId: string) => Promise<void>;
+  /** Refreshes control context after the direct respawn GOAL-mode write. */
+  refreshControlAnchor?: typeof refreshControlAnchorAfterMutation;
   escalateGiveUp: (goal: GoalRowLike, restartsInWindow: number) => Promise<void>;
   now: () => number;
   states: Map<string, FlapDampingState>;
@@ -1242,6 +1245,24 @@ export async function runGoalHolderRespawnOnce(
       // launch. A failed launch can therefore never leave a phantom holder row.
       await deps.attach(goal, launched.ownerId);
       summary.respawned += 1;
+      // The default attach closure writes through `setMode` directly, so it
+      // does not pass through the mode tool's projection refresh. Keep this
+      // safety projection fail-soft: a committed holder must stay committed
+      // even if its compact context cannot be persisted right now.
+      try {
+        await (deps.refreshControlAnchor ?? refreshControlAnchorAfterMutation)({
+          ownerId: launched.ownerId,
+          workspaceId: goal.workspaceId,
+          origin: 'system',
+          actorId: HOLDER_RESPAWNER_IDENTITY.ownerId,
+          source: 'mode:set',
+          ownerDirected: false,
+          sql,
+        });
+      } catch {
+        // The shared refresh is fail-soft by contract; preserve that contract
+        // for injected implementations as well.
+      }
     } catch (error) {
       summary.attachFailed += 1;
       console.warn(

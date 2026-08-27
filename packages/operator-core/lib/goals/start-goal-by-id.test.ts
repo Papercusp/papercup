@@ -91,13 +91,16 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
   deps: StartGoalByIdDeps;
   launch: ReturnType<typeof vi.fn>;
   attach: ReturnType<typeof vi.fn>;
+  refreshControlAnchor: ReturnType<typeof vi.fn>;
 } {
   const launch = vi.fn().mockResolvedValue({ ownerId: 'su-new-holder', warnings: ['w1'] });
   const attach = vi.fn().mockResolvedValue({ ok: true, error: null });
+  const refreshControlAnchor = vi.fn().mockResolvedValue(null);
   const stampAgentOwner = vi.fn().mockResolvedValue(undefined);
   const deps: StartGoalByIdDeps = {
     launch,
     attach,
+    refreshControlAnchor,
     stampAgentOwner,
     resolveHolders: vi.fn().mockResolvedValue(holdersFixture('unheld')),
     readReadiness: vi.fn().mockResolvedValue(READY),
@@ -109,7 +112,7 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
     ) as unknown as StartGoalByIdDeps['buildBrief'],
     ...overrides,
   };
-  return { deps, launch, attach };
+  return { deps, launch, attach, refreshControlAnchor };
 }
 
 function run(
@@ -211,7 +214,7 @@ describe('startGoalById — the readiness gate (activation, never dispatch)', ()
 
 describe('startGoalById — launch then attach', () => {
   it('launches into the goal row harness and attaches the launched identity to THIS goal', async () => {
-    const { deps, launch, attach } = makeDeps();
+    const { deps, launch, attach, refreshControlAnchor } = makeDeps();
     const res = await run(deps, { input: { launcherOwnerId: 'trigger-binding-7' } });
     expect(res).toMatchObject({ ok: true, goalId: GOAL, ownerId: 'su-new-holder', warnings: ['w1'] });
     expect(launch).toHaveBeenCalledWith({
@@ -234,6 +237,17 @@ describe('startGoalById — launch then attach', () => {
         goalId: GOAL,
         ownerId: 'su-new-holder',
         setBy: 'trigger-binding-7',
+      }),
+    );
+    expect(refreshControlAnchor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerId: 'su-new-holder',
+        workspaceId: WS,
+        origin: 'system',
+        actorId: 'trigger-binding-7',
+        source: 'mode:set',
+        ownerDirected: false,
+        sql: expect.anything(),
       }),
     );
   });

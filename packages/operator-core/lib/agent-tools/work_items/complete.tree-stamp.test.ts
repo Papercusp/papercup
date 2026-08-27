@@ -57,6 +57,7 @@ import { join } from 'node:path';
 
 import {
   completionRepoRootsFromRegistry,
+  completionSettlementManifest,
   completionTreeStamp,
   completionTreeStampForEvidence,
 } from './complete';
@@ -68,6 +69,32 @@ const TEMP_ROOTS: string[] = [];
 
 afterEach(() => {
   for (const root of TEMP_ROOTS.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+describe('completionSettlementManifest', () => {
+  const identity = {
+    path: 'src/fix.ts', workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40),
+  };
+  it('derives a versioned, deterministic receipt from server-stamped evidence', () => {
+    const evidence = {
+      filesChanged: ['src/fix.ts'], testsRun: 'npm test',
+      treeStamp: { repositoryRoot: '/repo/../repo', headSha: SHA, contentIdentity: [identity] },
+    };
+    const first = completionSettlementManifest(evidence);
+    expect(first).toEqual(completionSettlementManifest({
+      treeStamp: evidence.treeStamp, testsRun: evidence.testsRun, filesChanged: evidence.filesChanged,
+    }));
+    expect(first).toMatchObject({
+      version: 1, generation: 1, repositoryRoot: ROOT, headSha: SHA,
+      normalizedPaths: ['src/fix.ts'], contentIdentity: [identity],
+    });
+    expect(first?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+  it('does not invent a receipt without server-observed content identities', () => {
+    expect(completionSettlementManifest({
+      filesChanged: ['src/fix.ts'], treeStamp: { repositoryRoot: ROOT, headSha: SHA },
+    })).toBeUndefined();
+  });
 });
 
 /** Build a probe over a pretend git dir; also records every path read. */

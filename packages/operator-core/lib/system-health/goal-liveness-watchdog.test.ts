@@ -713,6 +713,7 @@ function respawnDeps(overrides: Partial<GoalHolderRespawnDeps> = {}): GoalHolder
     flagEnabled: async () => true,
     launch: async (g) => ({ ownerId: `replacement-${g.goalId}`, warnings: [] }),
     attach: async () => {},
+    refreshControlAnchor: vi.fn().mockResolvedValue(null),
     escalateGiveUp: async () => {},
     now: () => NOW,
     states: new Map(),
@@ -758,6 +759,7 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
   it('launches first and attaches the returned identity for a lost holder', async () => {
     const target = respawnGoal();
     const operations: string[] = [];
+    const refreshControlAnchor = vi.fn().mockResolvedValue(null);
     const result = await runGoalHolderRespawnOnce(
       sql,
       respawnDeps({
@@ -769,10 +771,22 @@ describe('runGoalHolderRespawnOnce (P-009)', () => {
         attach: async (g, ownerId) => {
           operations.push(`attach:${g.goalId}:${ownerId}`);
         },
+        refreshControlAnchor,
       }),
     );
 
     expect(operations).toEqual(['launch', `attach:${target.goalId}:su-replacement`]);
+    expect(refreshControlAnchor).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ownerId: 'su-replacement',
+        workspaceId: target.workspaceId,
+        origin: 'system',
+        actorId: 'goal-holder-respawner',
+        source: 'mode:set',
+        ownerDirected: false,
+        sql,
+      }),
+    );
     expect(result).toEqual({
       scanned: 1,
       eligible: 1,

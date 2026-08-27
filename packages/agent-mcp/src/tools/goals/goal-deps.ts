@@ -34,6 +34,7 @@
  */
 
 import { ISSUE_TERMINAL_STATUSES } from '@papercusp/operator-core/lib/work-item-blocking';
+import { isCompletionSettled, type CompletionAuthorityFrom } from '@papercusp/operator-core/lib/work-item-completion-authority';
 import { wouldCreateCycle } from '@papercusp/operator-core/lib/dbos/work-item-deps-store';
 import {
   GOAL_INVALIDATING_STATUSES,
@@ -322,11 +323,15 @@ export async function resolveBlockerStatuses(
   if (issueRefs.length > 0) {
     // engineer_issues' lifecycle column is `state` (open/resolved/closed/done/dropped),
     // not `status` — normalized here into the shared status slot the verdict reads.
-    const rows = await sql<Array<{ issue_id: string; state: string }>>`
-      SELECT issue_id, state FROM harness_shared.engineer_issues
+    const rows = await sql<Array<{ issue_id: string; state: string; authority: CompletionAuthorityFrom }>>`
+      SELECT issue_id, state, authority FROM harness_shared.engineer_issues
        WHERE issue_id = ANY(${issueRefs as string[]}::text[])`;
     for (const r of rows) {
-      out.set(blockerStatusKey({ kind: ISSUE_DEP_KIND, ref: r.issue_id }), r.state);
+      const terminal = ISSUE_TERMINAL_STATUSES.has(r.state);
+      out.set(
+        blockerStatusKey({ kind: ISSUE_DEP_KIND, ref: r.issue_id }),
+        isCompletionSettled(r.authority, terminal) ? r.state : terminal ? 'completion-proposed' : r.state,
+      );
     }
   }
   if (planRefs.length > 0) {

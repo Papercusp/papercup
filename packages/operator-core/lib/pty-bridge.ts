@@ -11,8 +11,8 @@
  *   - Handles register an onData listener to fan bytes out to subscribers.
  *   - The router calls `kill()` on disconnect; idle handles auto-kill via
  *     `markActive()` not having been called for `IDLE_TIMEOUT_MS`.
- *   - A process-wide cap (`maxConcurrentPtys()`, host-scaled) prevents
- *     fork-bombs from bugged UIs.
+ *   - Every production start enters the durable resource governor before the
+ *     node-pty fork; health feedback controls admission without a local cap.
  *
  * This module is server-only — it imports `node-pty`, which loads a native
  * binding. Don't import it from a client component.
@@ -21,8 +21,6 @@ import { spawn, type IPty } from '@lydell/node-pty';
 import { randomUUID } from 'node:crypto';
 import * as xtermHeadless from '@xterm/headless';
 import * as xtermAddonSerialize from '@xterm/addon-serialize';
-import { getCachedRateLimitConfig } from './rate-limit-config';
-import { getResourceProfile } from './resource-profile';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import {
   samePtyAccessScope,
@@ -149,31 +147,6 @@ export interface PtyHandle {
 const HISTORY_CAP_BYTES = 1024 * 1024;
 const HEADLESS_SCROLLBACK = 1000;
 
-// Absolute backstop; the LIVE cap is min(this, the user's maxSimultaneousAgents) — the
-// rate-limit-layer-v2 D-004 fleet knob also bounds interactive panes. F-E2 of
-// app-wide-load-traps: the backstop SCALES to the host (resource-profile's cores-derived
-// agent budget, 2× buffer over it, capped at the original 16) instead of a fixed big-box
-// literal — so a 4-core laptop's fork-bomb backstop is ~2-4, not 16. Pure, exported for tests.
-const MAX_CONCURRENT_PTYS_CEILING = 16;
-export function deriveMaxConcurrentPtys(maxSimultaneousAgents: number): number {
-  const agents =
-    Number.isFinite(maxSimultaneousAgents) && maxSimultaneousAgents > 0 ? maxSimultaneousAgents : 1;
-  return Math.min(Math.ceil(agents * 2), MAX_CONCURRENT_PTYS_CEILING);
-}
-
-/** The host-scaled absolute pty backstop (F-E2): 2× the resource-profile agent budget,
-    capped at the legacy 16. Memoized via getResourceProfile(). */
-function maxConcurrentPtys(): number {
-  return deriveMaxConcurrentPtys(getResourceProfile().maxSimultaneousAgents);
-}
-
-/** The live pty cap: the user's fleet-wide maxSimultaneousAgents (live-editable, D-004)
-    clamped by the host-scaled maxConcurrentPtys() backstop. */
-function livePtyCap(): number {
-  const fleet = getCachedRateLimitConfig().maxSimultaneousAgents;
-  const backstop = maxConcurrentPtys();
-  return Number.isFinite(fleet) && fleet > 0 ? Math.min(backstop, fleet) : backstop;
-}
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const REAPER_INTERVAL_MS = 30 * 1000;
 
@@ -252,18 +225,9 @@ export async function spawnGovernedPty(
   return handle;
 }
 
-/** Create a new pty-backed subprocess. Throws on cap or spawn failure. */
+/** Create a new pty-backed subprocess. Admission belongs to spawnGovernedPty. */
 export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
   startReaper();
-
-  const live = Array.from(handles.values()).filter((h) => !h.killed).length;
-  const cap = livePtyCap();
-  if (live >= cap) {
-    throw new PtyError(
-      `pty cap reached (${live}/${cap})`,
-      'PTY_CAP_REACHED',
-    );
-  }
 
   const env: Record<string, string> = {};
   if (opts.inheritEnv !== false) {
@@ -381,8 +345,8 @@ export function spawnPty(opts: SpawnPtyOpts): PtyHandle {
     handle.onExit.clear();
     // Drop the handle from the map after a grace period so a late-
     // arriving subscriber can still read the final screen state, but
-    // we don't accumulate dead entries that count against the cap or
-    // grow the map indefinitely. 30 s is well past any realistic
+    // we don't accumulate dead entries or grow the map indefinitely.
+    // 30 s is well past any realistic
     // reconnect window.
     setTimeout(() => {
       handles.delete(id);
@@ -556,8 +520,8 @@ export function findPtyByPid(pid: number, ownerSid?: string | null): PtyHandle |
 }
 
 /** Stats for an `/api/desktop/pty/stats` debug endpoint or similar. */
-export function ptyStats(): { live: number; cap: number; total: number } {
+export function ptyStats(): { live: number; total: number } {
   let live = 0;
   for (const h of handles.values()) if (!h.killed) live++;
-  return { live, cap: livePtyCap(), total: handles.size };
+  return { live, total: handles.size };
 }

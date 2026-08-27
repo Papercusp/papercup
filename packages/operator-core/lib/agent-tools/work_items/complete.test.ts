@@ -1015,6 +1015,11 @@ describe('work_items:complete (keyed-array)', () => {
         }),
       }),
     );
+    const persisted = setWorkItemStateWithAliasInfo.mock.calls[0][2].completionEvidence;
+    expect(persisted?.settlementManifest).toMatchObject({
+      version: 1, generation: 1, normalizedPaths: ['packages/operator-core/package.json'],
+    });
+    expect(persisted?.settlementManifest?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
     expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
   });
 

@@ -900,6 +900,11 @@ export default defineTool({
     ],
   },
   capability: 'work_items:write',
+  // Claiming the same item for the same assignee is an atomic no-op on the
+  // assignment (claimWorkItem's compare-and-claim contract). If the handler
+  // commits before a transport timeout, surface that completed claim instead
+  // of making the caller retry an already-landed write.
+  idempotent: true,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z

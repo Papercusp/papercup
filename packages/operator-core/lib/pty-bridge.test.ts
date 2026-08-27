@@ -4,11 +4,23 @@
  * tests exercise the same node-pty + xterm-headless wiring the
  * operator uses in production. Requires bash on PATH.
  */
-import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, beforeEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+
+const governorMocks = vi.hoisted(() => ({
+  finish: vi.fn(async () => true),
+  cancel: vi.fn(async () => true),
+  begin: vi.fn(),
+}));
+vi.mock('./resource-governor/execution', () => ({
+  governedExecutionRuntime: () => ({ governor: {}, driver: {} }),
+  beginGovernedExecution: (...args: unknown[]) => governorMocks.begin(...args),
+}));
+
 import {
   spawnPty,
+  spawnGovernedPty,
   killPty,
   getHistory,
   getPty,
@@ -18,9 +30,7 @@ import {
   resizePty,
   writePty,
   findPtyByPid,
-  deriveMaxConcurrentPtys,
 } from './pty-bridge';
-import { getResourceProfile } from './resource-profile';
 import type { PtyAccessScope } from './pty-ticket';
 
 const require = createRequire(import.meta.url);
@@ -55,15 +65,35 @@ function reap(): void {
   }
 }
 
-// These ptys used to be reaped only in afterAll, so all six stayed alive at once.
-// That is fine on a big box (the F-E2 backstop resolves to 16) but a hard
-// `pty cap reached (2/2)` on a small host, because maxConcurrentPtys() scales to the
-// host's resource-profile agent budget — see the derivation suite at the bottom of
-// this file, where a 4-core laptop's budget of 1 yields a backstop of 2. The result
-// was a file that passed on the 128-core dev box and failed on a laptop, a CI runner,
-// or a packaged install. No test depends on a previous test's pty, so reap per test.
+// No test depends on a previous test's pty, so reap each real shell promptly
+// rather than leaving it resident until the whole file completes.
 afterEach(reap);
 afterAll(reap);
+beforeEach(() => {
+  governorMocks.finish.mockClear();
+  governorMocks.cancel.mockClear();
+  governorMocks.begin.mockReset();
+  governorMocks.begin.mockResolvedValue({
+    context: {
+      contractVersion: 1,
+      requestId: 'pty-request',
+      rootRequestId: 'pty-request',
+      parentRequestId: null,
+      parentReceiptId: null,
+      receiptId: 'WI-pty',
+      idempotencyKey: 'pty-test',
+      admissionClass: 'process',
+      priority: 0,
+      demand: { cpuWeight: 1 },
+      depth: 0,
+      createdAtMs: 1,
+      decisionGeneration: 2,
+      leaseId: 'lease-pty',
+    },
+    finish: governorMocks.finish,
+    cancel: governorMocks.cancel,
+  });
+});
 
 async function waitForOutput(id: string, predicate: (s: string) => boolean, timeoutMs = 2000): Promise<string> {
   const start = Date.now();
@@ -101,6 +131,24 @@ describe('xterm ESM export shape (EI-13212)', () => {
 });
 
 describe('pty-bridge', () => {
+  it('holds a durable admission lease until the governed PTY exits', async () => {
+    const handle = await spawnGovernedPty({
+      accessScope: TEST_SCOPE,
+      command: 'bash',
+      args: ['-c', 'exit 0'],
+      cwd: process.cwd(),
+      cols: 80,
+      rows: 24,
+    }, {
+      workspaceId: TEST_SCOPE.workspaceId,
+      idempotencyKey: 'pty-test',
+      owner: TEST_SCOPE.principalId,
+    });
+    liveIds.push(handle.id);
+    await vi.waitFor(() => expect(governorMocks.finish).toHaveBeenCalledOnce());
+    expect(governorMocks.cancel).not.toHaveBeenCalled();
+  });
+
   it('spawns a process and accumulates byte history', async () => {
     const handle = spawnPty({
       accessScope: TEST_SCOPE,
@@ -261,33 +309,5 @@ describe('pty-bridge', () => {
       expect(findPtyByPid(pid, 'su-anyone')?.id).toBe(handle.id);
       expect(findPtyByPid(pid)?.id).toBe(handle.id);
     });
-  });
-});
-
-// F-E2 of app-wide-load-traps: the absolute pty backstop is no longer a fixed
-// big-box literal (16) but scales to the host's resource-profile agent budget,
-// so a 4-core laptop's fork-bomb backstop is ~2-4 instead of 16. The pure
-// derivation is exported so we can test the formula without injecting host state.
-describe('maxConcurrentPtys backstop derivation (F-E2 adaptive caps)', () => {
-  it('is 2× the agent budget, capped at the legacy 16 absolute backstop', () => {
-    expect(deriveMaxConcurrentPtys(1)).toBe(2); // 4-core laptop sharing an embedded PG
-    expect(deriveMaxConcurrentPtys(2)).toBe(4); // small native host
-    expect(deriveMaxConcurrentPtys(4)).toBe(8);
-    expect(deriveMaxConcurrentPtys(8)).toBe(16); // ceil(16) hits the cap
-    expect(deriveMaxConcurrentPtys(16)).toBe(16); // server — capped, preserves old behavior
-    expect(deriveMaxConcurrentPtys(64)).toBe(16); // never exceeds the absolute backstop
-  });
-
-  it('floors a non-positive / non-finite budget to 1 agent (backstop 2), never 0 or NaN', () => {
-    expect(deriveMaxConcurrentPtys(0)).toBe(2);
-    expect(deriveMaxConcurrentPtys(-5)).toBe(2);
-    expect(deriveMaxConcurrentPtys(Number.NaN)).toBe(2);
-    expect(deriveMaxConcurrentPtys(Number.POSITIVE_INFINITY)).toBe(2);
-  });
-
-  it('is wired to the live resource profile (scales with host), not a fixed literal', () => {
-    const expected = deriveMaxConcurrentPtys(getResourceProfile().maxSimultaneousAgents);
-    expect(expected).toBeGreaterThanOrEqual(2);
-    expect(expected).toBeLessThanOrEqual(16);
   });
 });

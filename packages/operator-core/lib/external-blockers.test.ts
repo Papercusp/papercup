@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyExternalBlockerUpdate,
+  attachExternalBlockerReachability,
   activeExternalBlockers,
   externalBlockerCapabilityPolicy,
   readExternalBlockers,
+  readExternalBlockersWithReachability,
   updateExternalBlockerHistory,
 } from './external-blockers';
 
@@ -114,5 +116,44 @@ describe('typed external blocker history', () => {
       requiresOwnerCapability: true,
       resolutionOwner: 'device-holder',
     });
+  });
+
+  it('attaches reachability evidence without clearing or rewriting blocker history', () => {
+    const blocker = updateExternalBlockerHistory(
+      {},
+      { kind: 'event', ref: 'deploy:ready:staging' },
+      'su-a',
+      T1,
+    ).blockers[0]!;
+    const out = attachExternalBlockerReachability(blocker, {
+      verdict: 'unknown',
+      basis: 'missing-registration',
+      authoritative: false,
+      evidence: 'no producer registration or catalogued resolver was found',
+      checkedAt: T2,
+    });
+    expect(out.status).toBe('active');
+    expect(out.reachability).toMatchObject({ verdict: 'unknown', authoritative: false });
+    expect(blocker.reachability).toBeUndefined();
+  });
+
+  it('resolves event/gate blockers but never guesses runtime or human reachability', async () => {
+    const payload = {
+      externalBlockers: [
+        updateExternalBlockerHistory({}, { kind: 'event', ref: 'release:green' }, 'su-a', T1).blockers[0],
+        updateExternalBlockerHistory({}, { kind: 'runtime', ref: 'service-x' }, 'su-a', T1).blockers[0],
+      ],
+    };
+    const out = await readExternalBlockersWithReachability(payload, {
+      resolveEvent: async () => ({
+        verdict: 'reachable',
+        basis: 'live-resolver',
+        authoritative: true,
+        evidence: 'catalogued emitter',
+        checkedAt: T2,
+      }),
+    });
+    expect(out[0]!.reachability).toMatchObject({ verdict: 'reachable', authoritative: true });
+    expect(out[1]!.reachability).toBeUndefined();
   });
 });

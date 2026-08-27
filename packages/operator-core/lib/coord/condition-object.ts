@@ -51,6 +51,11 @@ import { WORK_ITEM_TAG_SRC_KIND } from '../agent-tools/coordination/coupled-topi
 import { EVENT_SUBSCRIPTION_KIND } from '../agent-tools/coordination/event-subscriptions';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { linkWorkItem, readWorkItemClaimHoldProvenance, unlinkWorkItem } from '../work-items';
+import {
+  classifyExternalConditionReachability,
+  readEventConditionReachability,
+  type ExternalConditionReachability,
+} from '../external-condition-reachability';
 
 /**
  * The rel that joins a work-item to the condition it concerns. Existing
@@ -107,6 +112,8 @@ export interface ConditionObject {
    * duplicate-filing problem this plan exists to remove, reported rather than hidden.
    */
   duplicates: readonly string[];
+  /** Authoritative where the existing event ledger or live owning object proves it. */
+  reachability?: ExternalConditionReachability;
 }
 
 /**
@@ -136,6 +143,7 @@ export function resolveConditionObject(
       lastProgressAt: null,
       expiresAt: null,
       duplicates: [],
+      reachability: classifyExternalConditionReachability({ registration: 'unmeasured' }, new Date(nowMs).toISOString()),
     };
   }
 
@@ -160,6 +168,10 @@ export function resolveConditionObject(
     lastProgressAt: canonical.lastProgressAt,
     expiresAt: canonical.expiresAt,
     duplicates,
+    reachability: classifyExternalConditionReachability(
+      { liveResolver: true, registration: 'live' },
+      new Date(nowMs).toISOString(),
+    ),
   };
 }
 
@@ -294,7 +306,16 @@ export async function findConditionObjects(
     return out;
   }
 
-  for (const k of keys) out.set(k, resolveConditionObject(k, byKey.get(k) ?? [], now));
+  await Promise.all(
+    keys.map(async (k) => {
+      const object = resolveConditionObject(k, byKey.get(k) ?? [], now);
+      if (object.workItem) {
+        out.set(k, object);
+        return;
+      }
+      out.set(k, { ...object, reachability: await readEventConditionReachability(k) });
+    }),
+  );
   return out;
 }
 

@@ -101,6 +101,12 @@ beforeEach(() => {
   pilotReceipts.persistBinding.mockReset();
 });
 
+describe('work_items:claim idempotent-completion opt-in (EI-21593186656422114)', () => {
+  it('declares idempotent:true so a committed-but-slow claim surfaces success, not a false timeout', () => {
+    expect((tool as { idempotent?: boolean }).idempotent).toBe(true);
+  });
+});
+
 describe('work_items:claim handler (keyed-array)', () => {
   it('claims one inline for the caller and returns the workItem', async () => {
     const b = await body({ id: 'WI-1' });

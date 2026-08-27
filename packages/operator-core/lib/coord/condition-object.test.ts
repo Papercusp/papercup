@@ -51,6 +51,7 @@ describe('resolveConditionObject', () => {
     // The key is echoed back even with no rows, so a batched caller can key its
     // map off the result without tracking which requests came back empty.
     expect(got.conditionKey).toBe(KEY);
+    expect(got.reachability).toMatchObject({ verdict: 'unknown', authoritative: false });
   });
 
   it('reports claimable for a linked item nobody holds', () => {
@@ -58,6 +59,7 @@ describe('resolveConditionObject', () => {
     expect(got.claimState).toBe('claimable');
     expect(got.workItem).toBe('EI-1');
     expect(got.takenBy).toBeNull();
+    expect(got.reachability).toMatchObject({ verdict: 'reachable', basis: 'live-resolver' });
   });
 
   it('reports held for a claim whose lease has not lapsed', () => {
