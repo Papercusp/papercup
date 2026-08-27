@@ -79,7 +79,6 @@ import { parseAsBoolean, parseAsInteger, parseAsString, useQueryState } from 'nu
 import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxOption } from '@/app/harness/Combobox';
-import { FLEET_MAX_MEMBERS } from '@papercusp/operator-core/lib/agent-config-constants';
 import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
 import { usePlanList } from '@/app/admin/plans/plans-api';
 import {
@@ -139,7 +138,7 @@ export const WINDOW_MODE_OPTIONS: ComboboxOption[] = [
  */
 export function clampMemberCount(n: number): number {
   if (!Number.isFinite(n)) return 1;
-  return Math.min(FLEET_MAX_MEMBERS, Math.max(1, Math.trunc(n)));
+  return Math.max(1, Math.trunc(n));
 }
 
 /** One member's outcome, as the launch loop records it. */
@@ -448,14 +447,13 @@ export default function FleetLaunchRow({ className, onLaunched }: FleetLaunchRow
             className="pc-new-session-launcher__input pc-fleet-launch-row__count"
             type="number"
             min={1}
-            max={FLEET_MAX_MEMBERS}
             value={count}
             // Clamped on COMMIT, not on every keystroke: clamping as you type makes
             // the field impossible to clear and retype (a "1" you are turning into
             // "12" snaps back), so the raw value is held and bounded at launch.
             onChange={(e) => void setCount(Number.parseInt(e.target.value, 10) || 1)}
             onBlur={() => void setCount(clampMemberCount(count))}
-            title={`How many members (1–${FLEET_MAX_MEMBERS})`}
+            title="How many members"
             data-testid="fleet-launch-count"
           />
         </div>
