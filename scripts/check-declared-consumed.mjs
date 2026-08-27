@@ -355,6 +355,36 @@ export const DECLARED_COLUMNS = [
     why: 'Bumped when a derivation changes, so a trend is never drawn across a definition change without the reader being able to see it happened. Unread, that is exactly what happens.' },
 ];
 
+/**
+ * Where a declared COLUMN's declaration lives: the migration that adds it. The
+ * sweep reads it below to tell `inert` (declared, nobody uses it) apart from
+ * `not-declared` (the row describes a column that no longer exists).
+ */
+export const DB_MIGRATION_DIR = 'libs/papercusp/libs/db/sql';
+
+/** This module, repo-relative — a registry row edited here is a policed edit too. */
+export const REGISTRY_SOURCE_PATH = path.relative(REPO_ROOT, new URL(import.meta.url).pathname);
+
+/**
+ * Every repo-relative path whose edit can change this sweep's verdict statically:
+ * the two registries' declaration sites, plus this file (adding a row is the most
+ * common such edit and must select the guard that judges it).
+ *
+ * EI-21082046676950143 — exported so `scripts/affected-tests.mjs` DERIVES which
+ * edits select `lint:declared-consumed` instead of restating the paths. A copy
+ * there would drift in the SILENT direction: a field declared under a new
+ * `declaredIn`, or a column added by a new migration, would quietly stop
+ * selecting this guard — the same orphaned-guard failure the guard exists to
+ * catch, one layer up.
+ */
+export function declaringPaths() {
+  return [
+    REGISTRY_SOURCE_PATH,
+    ...DECLARED_FIELDS.map((t) => t.declaredIn),
+    ...DECLARED_COLUMNS.map((t) => `${DB_MIGRATION_DIR}/${t.migration}`),
+  ];
+}
+
 // ── SOURCE NORMALISATION ────────────────────────────────────────────────────
 
 /**
@@ -720,7 +750,7 @@ async function main() {
     // A column's DECLARATION is its migration — the static analogue of `no-data`.
     let declared = 0;
     try {
-      const mig = readFileSync(path.join(REPO_ROOT, 'libs/papercusp/libs/db/sql', target.migration), 'utf8');
+      const mig = readFileSync(path.join(REPO_ROOT, DB_MIGRATION_DIR, target.migration), 'utf8');
       declared = new RegExp(`\\b${target.name}\\b`).test(mig) ? 1 : 0;
     } catch { declared = 0; }
     rows.push({
