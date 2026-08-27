@@ -20,7 +20,7 @@ import {
   type DocSource,
 } from '@papercusp/docs-engine';
 import { DOCS_CONTENT_ROOT } from './_repo-paths';
-import { listAuthoredDocContents } from '../../harness/docs/doc-record';
+import { getAuthoredDocContentsByIds, listAuthoredDocContents } from '../../harness/docs/doc-record';
 
 type InvalidatableDocSource = DocSource & { invalidate?: () => void };
 
@@ -39,6 +39,17 @@ function slugFromDocId(docId: string): string {
   return docId.replace(/^\.\//, '').replace(/\.(?:md|mdx)$/i, '');
 }
 
+function docIdsForSlugs(slugs: readonly string[]): string[] {
+  const docIds = new Set<string>();
+  for (const raw of slugs) {
+    const slug = slugFromDocId(raw.trim());
+    if (!slug) continue;
+    docIds.add(`${slug}.mdx`);
+    docIds.add(`${slug}.md`);
+  }
+  return [...docIds];
+}
+
 function extractHeadings(content: string): DocPage['toc'] {
   const out: DocPage['toc'] = [];
   for (const line of content.split('\n')) {
@@ -52,20 +63,17 @@ function extractHeadings(content: string): DocPage['toc'] {
   return out;
 }
 
-function canonicalDoc(
-  docId: string,
-  raw: string,
-  fallback: DocPage | undefined,
-): CanonicalDoc | null {
+function canonicalDoc(docId: string, raw: string, fallback: DocPage | undefined): CanonicalDoc | null {
   const slug = slugFromDocId(docId);
   if (!slug) return null;
   const frontmatter = parseFrontmatterBlock(raw, { dates: 'string' });
   const meta = frontmatter.ok ? (frontmatter.data ?? {}) : {};
   const body = raw.replace(FRONTMATTER_RE, '');
   const title =
-    (typeof meta.title === 'string' && meta.title.trim()) || fallback?.title || humanize(slug.split('/').at(-1) ?? 'index');
-  const description =
-    (typeof meta.description === 'string' && meta.description.trim()) || fallback?.description;
+    (typeof meta.title === 'string' && meta.title.trim()) ||
+    fallback?.title ||
+    humanize(slug.split('/').at(-1) ?? 'index');
+  const description = (typeof meta.description === 'string' && meta.description.trim()) || fallback?.description;
   const searchable =
     meta.searchable !== undefined
       ? meta.searchable === false || meta.searchable === 'false'
@@ -150,9 +158,7 @@ export function overlayCanonicalDocs(
       }
       return entry.rendered;
     },
-    ...(base.getSectionMeta
-      ? { getSectionMeta: (sectionSlug: string) => base.getSectionMeta!(sectionSlug) }
-      : {}),
+    ...(base.getSectionMeta ? { getSectionMeta: (sectionSlug: string) => base.getSectionMeta!(sectionSlug) } : {}),
     invalidate(): void {
       canonicalCache = null;
       base.invalidate?.();
@@ -160,11 +166,34 @@ export function overlayCanonicalDocs(
   };
 }
 
+/**
+ * A request-local canonical overlay for a bounded set of docs:get slugs.
+ *
+ * The process singleton below is appropriate for corpus-wide outline/search
+ * work, but its invalidation cannot cross worker boundaries. A fresh overlay
+ * makes every docs:get request re-read only the canonical rows it asks for,
+ * while caching that result for listPages/getPage/getContent within the request.
+ */
+export function overlayRequestedCanonicalDocs(
+  base: InvalidatableDocSource,
+  readCanonical: (harnessSlug: string, docIds: readonly string[]) => Promise<Map<string, string>>,
+  harnessSlug: string,
+  slugs: readonly string[],
+): InvalidatableDocSource {
+  const docIds = docIdsForSlugs(slugs);
+  return overlayCanonicalDocs(base, (slug) => readCanonical(slug, docIds), harnessSlug);
+}
+
 const engineeringBase = starlightContentAdapter({
   name: 'papercusp-engineering',
   contentRoot: DOCS_CONTENT_ROOT,
   baseUrl: '/internal/docs',
 });
+
+/** Fresh, targeted engineering source for one docs:get request. */
+export function engineeringAdapterForSlugs(slugs: readonly string[]): InvalidatableDocSource {
+  return overlayRequestedCanonicalDocs(engineeringBase, getAuthoredDocContentsByIds, 'papercusp', slugs);
+}
 
 let engineeringAdapterRevision = 0;
 

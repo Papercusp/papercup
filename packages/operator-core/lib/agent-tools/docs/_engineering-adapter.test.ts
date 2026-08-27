@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { DocPage, DocSource } from '@papercusp/docs-engine';
-import { overlayCanonicalDocs } from './_engineering-adapter';
+import { overlayCanonicalDocs, overlayRequestedCanonicalDocs } from './_engineering-adapter';
 
 const releasePage: DocPage = {
   slug: 'agent-insights/existing',
@@ -23,21 +23,24 @@ function releaseSource(): DocSource & { invalidate: () => void } {
 describe('overlayCanonicalDocs', () => {
   it('lets a release-rooted reader see a staging-authored page and canonical replacement content', async () => {
     const base = releaseSource();
-    const readCanonical = vi.fn(async () =>
-      new Map([
-        [
-          'agent-insights/existing.mdx',
-          '---\ntitle: Canonical title\ndescription: Canonical description\n---\n# Canonical heading\n\nStaging-authored body',
-        ],
-        ['agent-insights/new-page.mdx', '---\ntitle: New page\n---\n# New heading\n\nNew body'],
-      ]),
+    const readCanonical = vi.fn(
+      async () =>
+        new Map([
+          [
+            'agent-insights/existing.mdx',
+            '---\ntitle: Canonical title\ndescription: Canonical description\n---\n# Canonical heading\n\nStaging-authored body',
+          ],
+          ['agent-insights/new-page.mdx', '---\ntitle: New page\n---\n# New heading\n\nNew body'],
+        ]),
     );
     const source = overlayCanonicalDocs(base, readCanonical, 'papercusp');
 
     const pages = await source.listPages();
     expect(pages.map((page) => page.slug)).toEqual(['agent-insights/existing', 'agent-insights/new-page']);
     expect(pages.find((page) => page.slug === 'agent-insights/existing')?.title).toBe('Canonical title');
-    expect(await source.getContent((await source.getPage('agent-insights/existing'))!)).toContain('Staging-authored body');
+    expect(await source.getContent((await source.getPage('agent-insights/existing'))!)).toContain(
+      'Staging-authored body',
+    );
     expect(await source.getPage('agent-insights/new-page')).toMatchObject({
       slug: 'agent-insights/new-page',
       title: 'New page',
@@ -54,9 +57,7 @@ describe('overlayCanonicalDocs', () => {
     const source = overlayCanonicalDocs(base, readCanonical, 'papercusp');
 
     expect(await source.getPage('agent-insights/new-page')).toBeNull();
-    contents = new Map([
-      ['agent-insights/new-page.mdx', '---\ntitle: Arrived after author\n---\n# Heading\n\nBody'],
-    ]);
+    contents = new Map([['agent-insights/new-page.mdx', '---\ntitle: Arrived after author\n---\n# Heading\n\nBody']]);
     source.invalidate?.();
 
     expect(await source.getPage('agent-insights/new-page')).toMatchObject({
@@ -64,5 +65,39 @@ describe('overlayCanonicalDocs', () => {
     });
     expect(readCanonical).toHaveBeenCalledTimes(2);
     expect(base.invalidate).toHaveBeenCalledOnce();
+  });
+
+  it('lets a separate request worker observe a canonical update without process-local invalidation', async () => {
+    const base = releaseSource();
+    let body = 'First canonical version';
+    const readCanonical = vi.fn(
+      async (_harnessSlug: string, docIds: readonly string[]) =>
+        new Map(
+          docIds.includes('agent-insights/existing.mdx')
+            ? [['agent-insights/existing.mdx', `---\ntitle: Canonical title\n---\n# Heading\n\n${body}`]]
+            : [],
+        ),
+    );
+
+    const workerARequest = overlayRequestedCanonicalDocs(base, readCanonical, 'papercusp', ['agent-insights/existing']);
+    expect(await workerARequest.getContent((await workerARequest.getPage(releasePage.slug))!)).toContain(
+      'First canonical version',
+    );
+
+    body = 'Second canonical version';
+    // The first request has a deliberate within-request cache. A different
+    // worker/request gets a new overlay and must not inherit that old promise.
+    expect(await workerARequest.getContent((await workerARequest.getPage(releasePage.slug))!)).toContain(
+      'First canonical version',
+    );
+    const workerBRequest = overlayRequestedCanonicalDocs(base, readCanonical, 'papercusp', ['agent-insights/existing']);
+    expect(await workerBRequest.getContent((await workerBRequest.getPage(releasePage.slug))!)).toContain(
+      'Second canonical version',
+    );
+    expect(readCanonical).toHaveBeenCalledTimes(2);
+    expect(readCanonical).toHaveBeenLastCalledWith('papercusp', [
+      'agent-insights/existing.mdx',
+      'agent-insights/existing.md',
+    ]);
   });
 });

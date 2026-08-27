@@ -7,17 +7,16 @@
 
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import {
-  genericFsAdapter,
-  getDocs,
-  harnessFsAdapter,
-  withPreamble,
-  type DocSource,
-} from '@papercusp/docs-engine';
+import { genericFsAdapter, getDocs, harnessFsAdapter, withPreamble, type DocSource } from '@papercusp/docs-engine';
 import { loadHarnessRegistry, resolveHarnessContentPath } from '../../harness-registry';
-import { engineeringAdapter as engineeringBase } from './_engineering-adapter';
-import { HARNESS_REQUIRED_DETAIL, isEngineeringDocsSentinel, resolveHarnessScope, type HarnessScope } from '../_harness-scope';
-import { coerceDocsGetSlugs } from './get-coerce';
+import { engineeringAdapter as engineeringBase, engineeringAdapterForSlugs } from './_engineering-adapter';
+import {
+  HARNESS_REQUIRED_DETAIL,
+  isEngineeringDocsSentinel,
+  resolveHarnessScope,
+  type HarnessScope,
+} from '../_harness-scope';
+import { coerceDocsGetSlugs, normalizeDocsGetRef } from './get-coerce';
 
 function wrapWithPreamble(base: DocSource): DocSource {
   return {
@@ -35,7 +34,7 @@ function wrapWithPreamble(base: DocSource): DocSource {
 
 export async function resolveAdapter(
   harnessSlug: string | undefined,
-  opts: { isSuperuser?: boolean } = {},
+  opts: { isSuperuser?: boolean; slugs?: readonly string[] } = {},
 ): Promise<{
   adapter: DocSource;
   surface: 'harness' | 'engineering' | 'project';
@@ -58,7 +57,8 @@ export async function resolveAdapter(
     }
     // D-005 / P-016: engineering branch is for papercusp-su (SU/engineer) only.
     if (opts.isSuperuser) {
-      return { adapter: wrapWithPreamble(engineeringBase), surface: 'engineering' };
+      const adapter = opts.slugs?.length ? engineeringAdapterForSlugs(opts.slugs) : engineeringBase;
+      return { adapter: wrapWithPreamble(adapter), surface: 'engineering' };
     }
     return {
       adapter: wrapWithPreamble(engineeringBase),
@@ -113,7 +113,7 @@ const argsSchema = z.preprocess(
           "Harness slug whose docs to read. Pass 'all' for Papercusp's own framework docs / your project docs (operator scope) — " +
             "but only on an UNSCOPED (--all-workspaces) session; a workspace-scoped su session gets harness_forbidden for 'all'/'*'. " +
             "To reach the SAME framework/agent-insights corpus from a workspace-scoped session, pass 'engineering' instead — a " +
-            "distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the session is " +
+            'distinct literal the workspace clamp does not intercept (EI-18894866320087268). Omit only when the session is ' +
             "already scoped to a harness — otherwise you'll get harness_required.",
         ),
     })
@@ -130,13 +130,10 @@ export default defineTool({
   guidance: {
     when: 'You have slugs from docs:outline and need page contents. Use `heading` (single-slug) when only one section of a long page is relevant.',
     notWhen:
-      'You do not yet know the slug — call docs:outline first. To fetch another harness\'s docs from outside, use cross_harness:docs_get.',
+      "You do not yet know the slug — call docs:outline first. To fetch another harness's docs from outside, use cross_harness:docs_get.",
     chaining:
-      'docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page\'s reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today.',
-    seeAlso: [
-      'docs:outline (find slugs to read)',
-      'docs:search (locate the right page by term first)',
-    ],
+      "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today.",
+    seeAlso: ['docs:outline (find slugs to read)', 'docs:search (locate the right page by term first)'],
   },
   capability: 'docs:read',
   requirePrincipal: false,
@@ -170,12 +167,27 @@ export default defineTool({
       : resolveHarnessScope(args.harness, ctxAny);
     if (scope.kind === 'none') {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }) }],
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ error: 'harness_required', detail: HARNESS_REQUIRED_DETAIL }),
+          },
+        ],
         isError: true,
       };
     }
+    // Keep routing-only fields out of the source-agnostic engine call, and make
+    // the direct handler boundary as strict as the zod-preprocessed dispatch
+    // path. Tests and internal callers invoke handlers directly as well.
+    const getArgs = {
+      slugs: args.slugs.map(normalizeDocsGetRef),
+      ...(args.heading ? { heading: args.heading } : {}),
+    };
     const effectiveSlug = scope.kind === 'all' ? '*' : scope.slug;
-    const resolved = await resolveAdapter(effectiveSlug, { isSuperuser: ctxAny.isSuperuser });
+    const resolved = await resolveAdapter(effectiveSlug, {
+      isSuperuser: ctxAny.isSuperuser,
+      slugs: getArgs.slugs,
+    });
     if (resolved.error) {
       return {
         content: [
@@ -186,7 +198,7 @@ export default defineTool({
     }
     ctxAny.metadata?.({ surface: resolved.surface, ...(scope.kind === 'harness' ? { harness_slug: scope.slug } : {}) });
 
-    const response = await getDocs(resolved.adapter, args, {
+    const response = await getDocs(resolved.adapter, getArgs, {
       ...(ctxAny.signal && { signal: ctxAny.signal }),
       ...(ctxAny.metadata && { metadata: ctxAny.metadata }),
     });

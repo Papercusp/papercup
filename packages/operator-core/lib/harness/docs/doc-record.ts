@@ -236,6 +236,35 @@ export async function getAuthoredDocContent(
 }
 
 /**
+ * Canonical authored prose for a bounded set of exact doc ids.
+ *
+ * `docs:get` uses this targeted form for read-after-write correctness across
+ * operator workers. Each request asks for at most ten slugs (twenty `.md` /
+ * `.mdx` candidates), so refreshing those rows is both cheaper and more precise
+ * than discarding the process-wide adapter and re-reading the whole corpus.
+ */
+export async function getAuthoredDocContentsByIds(
+  harnessSlug: string,
+  docIds: readonly string[],
+  workspaceId?: string,
+): Promise<Map<string, string>> {
+  const requested = [...new Set(docIds.filter((docId) => docId.length > 0))];
+  if (requested.length === 0) return new Map();
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ doc_id: string; content: string | null }[]>`
+    SELECT doc_id, content FROM harness_shared.harness_docs
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+       AND doc_id = ANY(${requested}::text[])
+       AND content IS NOT NULL AND content <> ''`;
+  const out = new Map<string, string>();
+  for (const row of rows) {
+    if (typeof row.content === 'string' && row.content.length > 0) out.set(row.doc_id, row.content);
+  }
+  return out;
+}
+
+/**
  * Canonical authored prose for every populated doc in a harness, keyed by doc id.
  *
  * Read surfaces use this bulk form when they need to overlay the filesystem

@@ -52,6 +52,9 @@ const searchDocs = vi.fn(
     query?: string;
   }> => ({ hits: [{ slug: 'p1', title: 'P1', excerpt: 'ex' }] }),
 );
+const engineeringAdapterForSlugs = vi.hoisted(() =>
+  vi.fn((slugs: readonly string[]) => ({ __adapter: 'engineering-request', slugs })),
+);
 
 vi.mock('@papercusp/docs-engine', () => ({
   buildOutline,
@@ -76,6 +79,12 @@ vi.mock('@papercusp/docs-engine', () => ({
       this.m.set(this.k(ctx, scope), v);
     }
   },
+}));
+
+vi.mock('../_engineering-adapter', () => ({
+  engineeringAdapter: { __adapter: 'engineering-shared' },
+  engineeringAdapterForSlugs,
+  getEngineeringAdapterRevision: () => 0,
 }));
 
 type RegistryProject = { slug: string; path: string };
@@ -111,6 +120,7 @@ beforeEach(() => {
   buildOutline.mockClear();
   getDocs.mockClear();
   searchDocs.mockClear();
+  engineeringAdapterForSlugs.mockClear();
   delete process.env.PAPERCUSP_PROJECT_DOCS_ROOT;
 });
 
@@ -380,6 +390,23 @@ describe('docs:get handler', () => {
     const p = payloadOf(res);
     expect(p.surface).toBe('engineering');
     expect(p.error).toBeUndefined();
+  });
+
+  it('uses a request-local canonical adapter for exactly the requested engineering slugs', async () => {
+    mockRegistry([{ slug: 'sheets', path: '/tmp/h' }]);
+    const tool = (await import('../get')).default;
+    await tool.handler(
+      { slugs: ['agent-insights/one', 'reference/two'], harness: 'engineering' } as never,
+      { harnessSlug: 'sheets', isSuperuser: true } as never,
+    );
+
+    expect(engineeringAdapterForSlugs).toHaveBeenCalledOnce();
+    expect(engineeringAdapterForSlugs).toHaveBeenCalledWith(['agent-insights/one', 'reference/two']);
+    expect(getDocs).toHaveBeenCalledWith(
+      expect.objectContaining({ __adapter: 'engineering-request' }),
+      { slugs: ['agent-insights/one', 'reference/two'] },
+      expect.anything(),
+    );
   });
 
   it('accepts the authored projected path together with its returned engineering scope', async () => {
