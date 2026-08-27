@@ -431,6 +431,7 @@ describe('assembleRolePrompt — deploy-pipeline note (deploy-pipeline-legibilit
     const { assembleRolePrompt } = await import('./prompt-assembly');
     const out = assembleRolePrompt({ role: 'oracle', toolNames: [] });
     expect(out.text).toContain('## The deploy pipeline is ASYNC');
+    expect(out.text.match(/## The deploy pipeline is ASYNC/g)).toHaveLength(1);
     expect(out.text).toContain('DEFAULT implementation and plan-item acceptance plane');
     expect(out.text).toContain('reserved ONLY for final promotion and shipment verification');
     expect(out.text).toContain('held or red green-checkpoint gate does NOT block non-final work');
