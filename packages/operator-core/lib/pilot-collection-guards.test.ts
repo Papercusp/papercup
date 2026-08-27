@@ -3,10 +3,9 @@ import {
   derivePilotReceiptCostWindows,
   validatePilotGradeBindings,
   validatePilotGradeReceipt,
-  type PilotCollectionBindingReceipt,
-  type PilotCollectionDispatchReceipt,
   type PilotGradeBinding,
 } from './pilot-collection-guards';
+import type { PilotParticipantBindingReceipt, PilotParticipantDispatchReceipt } from './pilot-participant-receipts';
 import type { ScorecardRow } from './scorecards';
 
 const FP = 'a'.repeat(64);
@@ -42,7 +41,7 @@ function card(over: Partial<ScorecardRow> = {}): ScorecardRow {
   };
 }
 
-function binding(over: Partial<PilotCollectionBindingReceipt> = {}): PilotCollectionBindingReceipt {
+function binding(over: Partial<PilotParticipantBindingReceipt> = {}): PilotParticipantBindingReceipt {
   return {
     receiptId: 'bind-1',
     itemId: 'WI-1',
@@ -55,7 +54,7 @@ function binding(over: Partial<PilotCollectionBindingReceipt> = {}): PilotCollec
   };
 }
 
-function dispatch(over: Partial<PilotCollectionDispatchReceipt> = {}): PilotCollectionDispatchReceipt {
+function dispatch(over: Partial<PilotParticipantDispatchReceipt> = {}): PilotParticipantDispatchReceipt {
   return {
     receiptId: 'dispatch-1',
     bindingReceiptId: 'bind-1',

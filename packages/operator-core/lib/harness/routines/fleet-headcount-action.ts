@@ -402,7 +402,15 @@ async function refreshGovernorWorkerAttestation(
 
     if (verdict.agentStarted === false) {
       const phase = verdict.note.includes('ATTESTATION MISMATCH') ? 'attestation' : 'verification';
-      for (const ownerId of probeOwnerIds) {
+      const failedOwnerIds = verdict.sessions
+        .filter((session) =>
+          session.ownerId != null && (
+            phase === 'verification' ||
+            (session.successfulCalls > 0 && session.attestationDiffs.length > 0)
+          ),
+        )
+        .map((session) => session.ownerId as string);
+      for (const ownerId of failedOwnerIds) {
         if (!transaction.failed.some((failure) => failure.ownerId === ownerId && failure.phase === phase)) {
           transaction.failed.push({ ownerId, phase, reason: verdict.note });
         }
@@ -632,8 +640,36 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
   const fleet = await getFleet(workspaceId, fleetSlug);
   if (!fleet) return;
   let transaction = fleet.lastLaunchTransaction;
+  let persistedLaunchRevision = transaction
+    ? { transactionId: transaction.transactionId, updatedAt: transaction.updatedAt }
+    : null;
   let liveMemberIds: string[] = [];
   let assessment: FleetHeadcountGovernorAssessment | null = null;
+  let claimedLaunchSlotAt: number | null = null;
+  let spawnAttempted = false;
+  const persistTransaction = async (next: FleetLaunchTransaction): Promise<void> => {
+    next.updatedAt = Math.max(
+      Date.now(),
+      persistedLaunchRevision?.transactionId === next.transactionId
+        ? persistedLaunchRevision.updatedAt + 1
+        : next.updatedAt,
+    );
+    const persisted = await setFleetLaunchTransaction({
+      workspaceId,
+      fleetSlug,
+      transaction: next,
+      expectedRevision: persistedLaunchRevision,
+    });
+    if (persisted === false) {
+      throw new Error(
+        'the durable launch transaction changed concurrently; stale governor evidence was not persisted',
+      );
+    }
+    persistedLaunchRevision = {
+      transactionId: next.transactionId,
+      updatedAt: next.updatedAt,
+    };
+  };
   try {
     const config = resolveFleetHeadcountProfile(attempt.config);
     const productiveCapacityFloor = resolveProductiveCapacityFloor(
@@ -661,7 +697,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         });
         recordGovernorVerdict(transaction, verdict);
         transaction.recovery.nextAction = verdict.reason;
-        await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+        await persistTransaction(transaction);
         await recordFleetHeadcountAttempt({
           workspaceId,
           fleetSlug,
@@ -690,7 +726,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       const verdict = governorVerdictForAssessment(assessment, now);
       recordGovernorVerdict(transaction, verdict);
       transaction.recovery.nextAction = verdict.reason;
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+      await persistTransaction(transaction);
       await recordFleetHeadcountAttempt({
         workspaceId,
         fleetSlug,
@@ -714,7 +750,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         reason: 'fleet has no durable leader identity; unattended governor launch is refused',
       });
       recordGovernorVerdict(transaction, verdict);
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+      await persistTransaction(transaction);
       await recordFleetHeadcountAttempt({
         workspaceId,
         fleetSlug,
@@ -771,7 +807,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       });
       recordGovernorVerdict(transaction, verdict);
       transaction.recovery.nextAction = verdict.reason;
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+      await persistTransaction(transaction);
       await recordFleetHeadcountAttempt({
         workspaceId,
         fleetSlug,
@@ -864,7 +900,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         reason: `repair suppressed by launch window; prior wave at ${slot.priorAt}`,
       });
       recordGovernorVerdict(transaction, verdict);
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+      await persistTransaction(transaction);
       await recordFleetHeadcountAttempt({
         workspaceId,
         fleetSlug,
@@ -873,6 +909,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       });
       return;
     }
+    claimedLaunchSlotAt = slot.at;
 
     if (pruneOwnerId) {
       const killed = killOutcome(await killTool.handler(
@@ -894,6 +931,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       ));
       if (!killed.ok && !killed.alreadyGone) {
         await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at }).catch(() => {});
+        claimedLaunchSlotAt = null;
         transaction = transactionForGovernorVerdict({
           transaction,
           liveMemberIds,
@@ -906,7 +944,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
           reason: `typed prune was refused: ${killed.error ?? 'unknown fleet:kill failure'}`,
         });
         recordGovernorVerdict(transaction, verdict);
-        await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+        await persistTransaction(transaction);
         await recordFleetHeadcountAttempt({
           workspaceId,
           fleetSlug,
@@ -931,7 +969,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
           reason: assessment.reason,
         });
         transaction.updatedAt = now;
-        await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction });
+        await persistTransaction(transaction);
       }
       liveMemberIds = liveMemberIds.filter((ownerId) => ownerId !== pruneOwnerId);
     }
@@ -958,9 +996,10 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
         reason: assessment.reason,
       });
     }
-    await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
+    await persistTransaction(launchTransaction);
 
     const logDir = config.headless ? `${papercuspPathForWorkspace(workspaceId)}/fleet-logs` : null;
+    spawnAttempted = true;
     const results = await Promise.all(
       newMemberIds.map((ownerId, i) =>
         config.headless
@@ -994,10 +1033,11 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       (ownerId) => !openedMemberIds.includes(ownerId),
     );
     launchTransaction.waves[0].state = 'partial';
-    await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
+    await persistTransaction(launchTransaction);
 
     if (openedMemberIds.length === 0) {
       await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at }).catch(() => {});
+      claimedLaunchSlotAt = null;
     }
 
     const refresh = openedMemberIds.length > 0
@@ -1044,7 +1084,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
           : {});
     recordGovernorVerdict(launchTransaction, terminalVerdict);
     launchTransaction.recovery.nextAction = terminalVerdict.reason;
-    await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction: launchTransaction });
+    await persistTransaction(launchTransaction);
     await recordFleetHeadcountAttempt({
       workspaceId,
       fleetSlug,
@@ -1053,6 +1093,14 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
+    if (claimedLaunchSlotAt != null && !spawnAttempted) {
+      await releaseFleetLaunchSlot({
+        workspaceId,
+        fleetSlug,
+        at: claimedLaunchSlotAt,
+      }).catch(() => {});
+      claimedLaunchSlotAt = null;
+    }
     if (transaction && assessment) {
       const verdict = governorVerdictForAssessment(assessment, Date.now(), {
         action: 'wait',
@@ -1061,7 +1109,7 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
       });
       recordGovernorVerdict(transaction, verdict);
       transaction.recovery.nextAction = verdict.reason;
-      await setFleetLaunchTransaction({ workspaceId, fleetSlug, transaction }).catch(() => {});
+      await persistTransaction(transaction).catch(() => {});
     }
     await recordFleetHeadcountAttempt({
       workspaceId,

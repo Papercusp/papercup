@@ -373,6 +373,65 @@ describe('fleet launch transaction state (P-003 / mig 830)', () => {
     await setFleetLaunchTransaction({ workspaceId: WS, fleetSlug: 'transaction-fleet', transaction, sql: rootSql });
     expect((await getFleet(WS, 'transaction-fleet', rootSql))?.lastLaunchTransaction).toEqual(transaction);
   });
+
+  it('refuses stale same-transaction and superseded-transaction writers', async () => {
+    await insertFleet('transaction-cas-fleet');
+    const initial = {
+      version: 1 as const,
+      transactionId: 'tx-initial',
+      state: 'partial' as const,
+      requestedAt: 1_000,
+      updatedAt: 2_000,
+      requestedMemberIds: ['su-a'],
+      openedMemberIds: ['su-a'],
+      verifiedMemberIds: [],
+      failed: [],
+      waves: [{ index: 0, ownerIds: ['su-a'], state: 'partial' as const }],
+      recovery: { retryOwnerIds: ['su-a'], nextAction: 'observe' },
+    };
+    expect(await setFleetLaunchTransaction({
+      workspaceId: WS, fleetSlug: 'transaction-cas-fleet', transaction: initial, sql: rootSql,
+    })).toBe(true);
+
+    const refreshed = { ...initial, updatedAt: 3_000, recovery: { retryOwnerIds: [], nextAction: 'ready' } };
+    expect(await setFleetLaunchTransaction({
+      workspaceId: WS,
+      fleetSlug: 'transaction-cas-fleet',
+      transaction: refreshed,
+      expectedRevision: { transactionId: initial.transactionId, updatedAt: initial.updatedAt },
+      sql: rootSql,
+    })).toBe(true);
+    expect(await setFleetLaunchTransaction({
+      workspaceId: WS,
+      fleetSlug: 'transaction-cas-fleet',
+      transaction: { ...initial, updatedAt: 4_000 },
+      expectedRevision: { transactionId: initial.transactionId, updatedAt: initial.updatedAt },
+      sql: rootSql,
+    })).toBe(false);
+
+    const replacement = {
+      ...refreshed,
+      transactionId: 'tx-replacement',
+      previousTransactionId: refreshed.transactionId,
+      updatedAt: 5_000,
+    };
+    expect(await setFleetLaunchTransaction({
+      workspaceId: WS,
+      fleetSlug: 'transaction-cas-fleet',
+      transaction: replacement,
+      expectedRevision: { transactionId: refreshed.transactionId, updatedAt: refreshed.updatedAt },
+      sql: rootSql,
+    })).toBe(true);
+    expect(await setFleetLaunchTransaction({
+      workspaceId: WS,
+      fleetSlug: 'transaction-cas-fleet',
+      transaction: { ...refreshed, updatedAt: 6_000 },
+      expectedRevision: { transactionId: refreshed.transactionId, updatedAt: refreshed.updatedAt },
+      sql: rootSql,
+    })).toBe(false);
+    expect((await getFleet(WS, 'transaction-cas-fleet', rootSql))?.lastLaunchTransaction)
+      .toEqual(replacement);
+  });
 });
 
 describe('releaseFleetLaunchSlot (all-spawns-failed retry path)', () => {

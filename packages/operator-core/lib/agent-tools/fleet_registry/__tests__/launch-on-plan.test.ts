@@ -387,7 +387,8 @@ beforeEach(() => {
   resolveProjectDirMock.mockResolvedValue('/tmp/fleet');
   launchTransaction.verify.mockReset();
   launchTransaction.verify.mockResolvedValue({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
-  launchTransaction.persist.mockClear();
+  launchTransaction.persist.mockReset();
+  launchTransaction.persist.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockReset();
   getFleetHeadcountTargetMock.mockResolvedValue(null);
   getFleetMock.mockReset();
@@ -2182,6 +2183,28 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
     expect(payload.launchTransaction.launcherOwnerId).toBe('owner-1');
     expect(command).toContain('--launched-by=owner-1');
     expect(command).toContain(`--owner-id=${payload.launchTransaction.requestedMemberIds[0]}`);
+  });
+
+  it('opens no member and releases its slot when a concurrent transaction wins the initial CAS', async () => {
+    const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    releaseSlot.mockClear();
+    launchTransaction.persist.mockResolvedValueOnce(false);
+
+    const res = await invokeLaunchHandler(
+      { name: 'CAS Loss Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(false);
+    expect(payload.error).toContain('changed concurrently');
+    expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
+      expectedRevision: null,
+    }));
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws-1', fleetSlug: 'cas-loss-fleet', at: 1 });
   });
 
   it('merges typed worker attestations across verifier waves into the durable transaction', async () => {

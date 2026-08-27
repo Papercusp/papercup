@@ -265,4 +265,114 @@ describe('fleet headcount governor I/O ordering (P-004)', () => {
     ]));
     expect(persisted.governor.terminalVerdict).toMatchObject({ outcome: 'productive', action: 'none' });
   });
+
+  it('releases its launch slot and opens nothing when a concurrent transaction wins the CAS', async () => {
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.setTransaction.mockResolvedValue(false);
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.setTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRevision: null }),
+    );
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.spawnConsole).not.toHaveBeenCalled();
+    expect(mocks.releaseSlot).toHaveBeenCalledWith({ workspaceId: 'ws', fleetSlug: 'fleet-a', at: 10 });
+    expect(mocks.recordAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+      succeeded: false,
+      error: expect.stringContaining('changed concurrently'),
+    }));
+  });
+
+  it('attributes an attestation mismatch only to the mismatched member and bounds retained history', async () => {
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 2,
+      config: { ...baseConfig, productiveCapacityFloor: 1 },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-mismatch',
+      launcherOwnerId: 'su-leader',
+      state: 'partial' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-mismatch', 'su-waiting'],
+      openedMemberIds: ['su-mismatch', 'su-waiting'],
+      verifiedMemberIds: [],
+      unconfirmedMemberIds: ['su-mismatch', 'su-waiting'],
+      workerReadyMemberIds: [],
+      workerAttestations: [
+        readyAttestation('su-mismatch', false),
+        readyAttestation('su-waiting', false),
+      ],
+      failed: [],
+      waves: [{
+        index: 0,
+        ownerIds: ['su-mismatch', 'su-waiting'],
+        state: 'partial' as const,
+      }],
+      recovery: { retryOwnerIds: ['su-mismatch', 'su-waiting'], nextAction: 'retry' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: ['su-mismatch', 'su-waiting'],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: Array.from({ length: 40 }, (_value, index) => ({
+          at: index,
+          action: 'observe' as const,
+          reason: `prior event ${index}`,
+        })),
+        terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: transaction,
+    });
+    mocks.liveMemberIds.mockResolvedValue(['su-mismatch', 'su-waiting']);
+    mocks.verify.mockResolvedValue({
+      agentStarted: false,
+      workerReady: false,
+      waitedMs: 1,
+      sessions: [
+        {
+          ...verifierResult('su-mismatch', false).sessions[0],
+          attestationDiffs: [{ field: 'model', requested: 'gpt-a', actual: 'gpt-b' }],
+        },
+        verifierResult('su-waiting', false).sessions[0],
+      ],
+      note: '✗ ATTESTATION MISMATCH — su-mismatch.model differs',
+    });
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.kill).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    const persistedCall = mocks.setTransaction.mock.calls.at(-1)?.[0];
+    expect(persistedCall.expectedRevision).toEqual({ transactionId: 'tx-mismatch', updatedAt: 1 });
+    expect(persistedCall.transaction.failed).toEqual([
+      expect.objectContaining({ ownerId: 'su-mismatch', phase: 'attestation' }),
+    ]);
+    expect(persistedCall.transaction.governor.history).toHaveLength(32);
+    expect(persistedCall.transaction.governor.terminalVerdict).toMatchObject({
+      outcome: 'unverified',
+      action: 'retry',
+    });
+  });
 });

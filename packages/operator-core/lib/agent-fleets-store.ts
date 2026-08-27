@@ -744,20 +744,49 @@ export async function setFleetLaunchTransaction(opts: {
   workspaceId: string;
   fleetSlug: string;
   transaction: FleetLaunchTransaction | null;
+  /** Optional compare-and-set guard for a caller that read, derived, then writes
+   * a launch transaction. The governor and launch completion path share this
+   * JSONB cell; without the revision guard an older governor snapshot can erase
+   * a newer launch after it loses the independent launch slot. Omit only for an
+   * authoritative/unconditional replacement. */
+  expectedRevision?: {
+    transactionId: string | null;
+    updatedAt: number | null;
+  } | null;
   sql?: Sql;
-}): Promise<void> {
+}): Promise<boolean> {
   const s = pg(opts.sql);
-  await s.unsafe(
+  const guarded = opts.expectedRevision !== undefined;
+  const expectedTransactionId = opts.expectedRevision?.transactionId ?? null;
+  const expectedUpdatedAt = opts.expectedRevision?.updatedAt ?? null;
+  const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
         SET last_launch_transaction = $3::jsonb, updated_at = $4
-      WHERE workspace_id = $1 AND fleet_slug = $2`,
+      WHERE workspace_id = $1 AND fleet_slug = $2
+        AND (
+          $5::boolean = FALSE
+          OR (
+            $6::text IS NULL
+            AND last_launch_transaction IS NULL
+          )
+          OR (
+            $6::text IS NOT NULL
+            AND last_launch_transaction->>'transactionId' = $6::text
+            AND (last_launch_transaction->>'updatedAt') IS NOT DISTINCT FROM $7::text
+          )
+        )
+      RETURNING fleet_slug`,
     [
       opts.workspaceId,
       opts.fleetSlug,
       opts.transaction == null ? null : JSON.stringify(opts.transaction),
       Date.now(),
+      guarded,
+      expectedTransactionId,
+      expectedUpdatedAt == null ? null : String(expectedUpdatedAt),
     ],
-  );
+  )) as unknown as Array<{ fleet_slug: string }>;
+  return rows.length > 0;
 }
 
 /** Persist or disable the target recipe. This is intentionally separate from COLS so
