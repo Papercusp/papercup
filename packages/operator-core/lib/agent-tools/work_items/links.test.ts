@@ -112,6 +112,16 @@ describe('work_items:links handler', () => {
     expect(issueInM).not.toHaveBeenCalled();
   });
 
+  it('projects the dependency satisfaction requirement from canonical edge rows', async () => {
+    issueOutM.mockResolvedValue([
+      row({ rel: 'blocks', dst: { kind: 'feature', ref: 'papercusp#F-2' }, satisfaction: 'success' }),
+    ] as never);
+    const b = await run({ direction: 'out' });
+    expect(b.results[0].links).toEqual([
+      { rel: 'blocks', dst: { kind: 'feature', ref: 'papercusp#F-2' }, satisfaction: 'success' },
+    ]);
+  });
+
   it('applies the limit independently to every requested id', async () => {
     getM.mockImplementation(async (id: string) => ({ family: 'issue', harness: 'papercusp', id }) as never);
     refM.mockImplementation((item) => ({ kind: 'issue', ref: item.id }) as never);

@@ -68,6 +68,21 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', { harness: undefined, by: 'me' });
   });
 
+  it('threads an explicit success requirement only for work-item blocks edges', async () => {
+    resolveM.mockResolvedValue({ kind: 'issue', ref: 'WI-T' } as never);
+    const accepted = await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T', satisfaction: 'success' });
+    expect(accepted.counts).toEqual({ ok: 1, failed: 0 });
+    expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'issue', ref: 'WI-T' }, 'blocks', {
+      harness: undefined,
+      by: 'me',
+      satisfaction: 'success',
+    });
+
+    const rejected = await body({ id: 'WI-1', rel: 'relates', target_id: 'WI-T', satisfaction: 'success' });
+    expect(rejected.counts).toEqual({ ok: 0, failed: 1 });
+    expect(String(rejected.results[0].error)).toMatch(/only for rel=blocks/);
+  });
+
   it('persists a revision edge with source=new revision and target=original', async () => {
     await body({ id: 'EI-2', rel: 'revises', target_id: 'EI-1' });
     expect(linkM).toHaveBeenCalledWith(
