@@ -70,6 +70,133 @@ function standingWakeFloorSec(): number {
   return Number.isFinite(n) && n >= 0 ? n : 60;
 }
 
+const watchPatternSchema = z
+  .string()
+  .min(1)
+  .max(200)
+  .describe('What to watch: an exact event key (wake) or a topic slug (inject). Exact match.');
+
+const watchWakeSchema = z
+  .boolean()
+  .optional()
+  .describe(
+    'Delivery mode. false (DEFAULT) = inject into your inbox (cheap, seen next turn). true = re-invoke you (a turn = tokens) — opt-in, for specific readiness only.',
+  );
+
+const watchOnceSchema = z
+  .boolean()
+  .optional()
+  .describe(
+    'Cardinality. Default follows wake (one-shot for a wake grant; standing for an inject subscription). true = fires once then clears; false = standing (re-fires).',
+  );
+
+const watchTargetKindDescription =
+  '"topic" (DEFAULT; wake:false only) — pattern is a curated topic slug (topics:list). "event" (wake:false only; WI-4014 Part 2) — pattern is an EXACT event key (see events:catalog): a standing, no-token-cost subscription so every future events:emit on that key lands in your inbox, without ever waking you. "interest" (EITHER wake mode; P-008 push-interjection) — pattern is FREE TEXT: a standing interest, embedded once at registration and matched against peers\' NEW transcript turns by similarity (>= min_similarity); fires coalesced matches with owner+excerpt+sim evidence on a synthetic interest:<id> key. Cancel via events:cancel (wake) / events:unsubscribe (inject) — the watch GCs itself.';
+
+const watchMinSimilaritySchema = z
+  .number()
+  .min(INTEREST_MIN_SIM_FLOOR)
+  .max(INTEREST_MAX_SIM_FLOOR)
+  .optional()
+  .describe(
+    `targetKind:"interest" only — cosine floor a peer turn must clear to fire (default ${INTEREST_DEFAULT_SIM_FLOOR}, precision-biased: an interjection channel prefers silence over spam). Lower it only if a too-quiet watch proves it.`,
+  );
+
+const watchPayloadFilterSchema = dataConditionSchema
+  .optional()
+  .describe(
+    "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
+  );
+
+const predicateInputSchema = z.object({
+  tool: z.string().min(1).max(200).describe('READ-ONLY tool to poll, by mcp name (e.g. "work_items:list").'),
+  args: z.record(z.string(), z.unknown()).optional().describe('Args passed on every poll.'),
+  path: z.string().min(1).max(300).describe('Dot-path into the tool result, e.g. "counts.open" or "rows.0.status".'),
+  op: z.enum(PREDICATE_OPS),
+  value: z.unknown().optional().describe('Comparison operand (omit for exists).'),
+});
+
+const predicateDescription =
+  'P-008 predicate watch (wake:true only): the engine polls `tool` every interval_sec UNDER YOUR ROLE (role gate enforced per poll, audited), extracts `path`, compares with `op` against `value`, and EDGE-fires your wake on the false→true cross. `pattern` becomes a label; the real key is synthetic (predicate:<id>). once:true deactivates after the first fire; once:false re-fires per cross. Registration runs ONE inline eval — a broken tool/role/args fails loudly NOW, and an already-true predicate fires immediately. DEDUPE (P-004): an IDENTICAL predicate (same scope/tool/args/path/op/value/interval_sec/once) already active JOINS that poller instead of starting a second one — response carries `deduped.joined_watch_id` when this happens.';
+
+const watchSharedShape = {
+  pattern: watchPatternSchema,
+  once: watchOnceSchema,
+  min_sleep_sec: z
+    .number()
+    .int()
+    .nonnegative()
+    .max(MAX_TIMEOUT_SEC)
+    .optional()
+    .describe(
+      'Per-subscriber wake floor (wake:true only): never re-wake you within this window; a burst inside it coalesces into ONE wake. Default: a sane floor for a standing watch, 0 (no floor — wake promptly) for a one-shot grant.',
+    ),
+  urgency: z
+    .boolean()
+    .optional()
+    .describe('This watch’s wakes always bypass the floor (a human-message / escalation watch).'),
+  timeout_sec: z
+    .number()
+    .int()
+    .positive()
+    .max(MAX_TIMEOUT_SEC)
+    .optional()
+    .describe('Deadline. wake:true → see on_timeout (default 4h for a one-shot). wake:false → auto-drops the subscription (TTL).'),
+  on_timeout: z
+    .enum(['wake', 'expire'])
+    .optional()
+    .describe('wake:true only — at the deadline without the event: wake (default — a TIMEOUT marker) or expire (silent lapse, visible in events:status).'),
+  mode: z
+    .enum(['full', 'digest', 'mention'])
+    .optional()
+    .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
+  note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
+  plan_run_id: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe('wake:true from a plan run — the wake resumes the run via the plans:resume path instead of a session resume.'),
+};
+
+const watchIntervalSchema = z
+  .number()
+  .int()
+  .min(15)
+  .max(3600)
+  .optional()
+  .describe('Predicate poll cadence in seconds (predicate only; default 60).');
+
+/**
+ * Keep matcher alternatives explicit in the callable schema. A runtime-only
+ * superRefine cannot publish that predicate is a different matcher from the
+ * topic/event/interest fields, so callers could send a representable payload
+ * that the handler had to reject after dispatch.
+ */
+const nonPredicateWatchSchema = z.object({
+  ...watchSharedShape,
+  wake: watchWakeSchema,
+  targetKind: z.enum(['topic', 'event', 'interest']).optional().describe(watchTargetKindDescription),
+  min_similarity: watchMinSimilaritySchema,
+  payload_filter: watchPayloadFilterSchema,
+  producer_health: producerHealthInputSchema.optional(),
+  progress_lease: progressLeaseInputSchema.optional(),
+  predicate: z.never().optional().describe('Only valid for the predicate matcher branch.'),
+  interval_sec: watchIntervalSchema,
+});
+
+const predicateWatchSchema = z.object({
+  ...watchSharedShape,
+  wake: z.literal(true).describe('Predicate watches require wake:true.'),
+  targetKind: z.never().optional().describe('Predicate watches do not use a topic, event, or interest targetKind.'),
+  min_similarity: z.never().optional().describe('Only valid with targetKind:"interest".'),
+  payload_filter: z.never().optional().describe('Payload filters are not used by predicate watches.'),
+  producer_health: z.never().optional().describe('Producer health is only valid for a one-shot event watch.'),
+  progress_lease: z.never().optional().describe('Progress leases are only valid for a non-predicate watch.'),
+  predicate: predicateInputSchema.describe(predicateDescription),
+  interval_sec: watchIntervalSchema,
+});
+
 export default defineTool({
   name: 'watch:create',
   description:
@@ -90,115 +217,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
-  args: z.object({
-    pattern: z
-      .string()
-      .min(1)
-      .max(200)
-      .describe('What to watch: an exact event key (wake) or a topic slug (inject). Exact match.'),
-    wake: z
-      .boolean()
-      .optional()
-      .describe(
-        'Delivery mode. false (DEFAULT) = inject into your inbox (cheap, seen next turn). true = re-invoke you (a turn = tokens) — opt-in, for specific readiness only.',
-      ),
-    once: z
-      .boolean()
-      .optional()
-      .describe(
-        'Cardinality. Default follows wake (one-shot for a wake grant; standing for an inject subscription). true = fires once then clears; false = standing (re-fires).',
-      ),
-    min_sleep_sec: z
-      .number()
-      .int()
-      .nonnegative()
-      .max(MAX_TIMEOUT_SEC)
-      .optional()
-      .describe(
-        'Per-subscriber wake floor (wake:true only): never re-wake you within this window; a burst inside it coalesces into ONE wake. Default: a sane floor for a standing watch, 0 (no floor — wake promptly) for a one-shot grant.',
-      ),
-    urgency: z
-      .boolean()
-      .optional()
-      .describe('This watch’s wakes always bypass the floor (a human-message / escalation watch).'),
-    timeout_sec: z
-      .number()
-      .int()
-      .positive()
-      .max(MAX_TIMEOUT_SEC)
-      .optional()
-      .describe('Deadline. wake:true → see on_timeout (default 4h for a one-shot). wake:false → auto-drops the subscription (TTL).'),
-    on_timeout: z
-      .enum(['wake', 'expire'])
-      .optional()
-      .describe('wake:true only — at the deadline without the event: wake (default — a TIMEOUT marker) or expire (silent lapse, visible in events:status).'),
-    mode: z
-      .enum(['full', 'digest', 'mention'])
-      .optional()
-      .describe('wake:false only — inject delivery tiering: full (default), digest (high-churn), mention (the quiet floor).'),
-    targetKind: z
-      .enum(['topic', 'event', 'interest'])
-      .optional()
-      .describe(
-        '"topic" (DEFAULT; wake:false only) — pattern is a curated topic slug (topics:list). "event" (wake:false only; WI-4014 Part 2) — pattern is an EXACT event key (see events:catalog): a standing, no-token-cost subscription so every future events:emit on that key lands in your inbox, without ever waking you. Unsubscribe with events:unsubscribe (matching targetKind:"event"). "interest" (EITHER wake mode; P-008 push-interjection) — pattern is FREE TEXT: a standing interest, embedded once at registration and matched against peers\' NEW transcript turns by similarity (>= min_similarity); fires coalesced matches with owner+excerpt+sim evidence on a synthetic interest:<id> key. Cancel via events:cancel (wake) / events:unsubscribe (inject) — the watch GCs itself.',
-      ),
-    min_similarity: z
-      .number()
-      .min(INTEREST_MIN_SIM_FLOOR)
-      .max(INTEREST_MAX_SIM_FLOOR)
-      .optional()
-      .describe(
-        `targetKind:"interest" only — cosine floor a peer turn must clear to fire (default ${INTEREST_DEFAULT_SIM_FLOOR}, precision-biased: an interjection channel prefers silence over spam). Lower it only if a too-quiet watch proves it.`,
-      ),
-    note: softText(LIMITS.ANNOTATION).optional().describe('Why you are watching — echoed into the wake turn (wake:true). Auto-truncated to 2000 chars if longer.'),
-    payload_filter: dataConditionSchema
-      .optional()
-      .describe(
-        "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
-      ),
-    producer_health: producerHealthInputSchema.optional(),
-    progress_lease: progressLeaseInputSchema.optional(),
-    plan_run_id: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe('wake:true from a plan run — the wake resumes the run via the plans:resume path instead of a session resume.'),
-    predicate: z
-      .object({
-        tool: z.string().min(1).max(200).describe('READ-ONLY tool to poll, by mcp name (e.g. "work_items:list").'),
-        args: z.record(z.string(), z.unknown()).optional().describe('Args passed on every poll.'),
-        path: z.string().min(1).max(300).describe('Dot-path into the tool result, e.g. "counts.open" or "rows.0.status".'),
-        op: z.enum(PREDICATE_OPS),
-        value: z.unknown().optional().describe('Comparison operand (omit for exists).'),
-      })
-      .optional()
-      .describe(
-        'P-008 predicate watch (wake:true only): the engine polls `tool` every interval_sec UNDER YOUR ROLE (role gate enforced per poll, audited), extracts `path`, compares with `op` against `value`, and EDGE-fires your wake on the false→true cross. `pattern` becomes a label; the real key is synthetic (predicate:<id>). once:true deactivates after the first fire; once:false re-fires per cross. Registration runs ONE inline eval — a broken tool/role/args fails loudly NOW, and an already-true predicate fires immediately. DEDUPE (P-004): an IDENTICAL predicate (same scope/tool/args/path/op/value/interval_sec/once) already active JOINS that poller instead of starting a second one — response carries `deduped.joined_watch_id` when this happens.',
-      ),
-    interval_sec: z
-      .number()
-      .int()
-      .min(15)
-      .max(3600)
-      .optional()
-      .describe('Predicate poll cadence in seconds (predicate only; default 60).'),
-  }).superRefine((args, refinementCtx) => {
-    if (args.predicate && args.wake !== true) {
-      refinementCtx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['wake'],
-        message: 'predicate watches require wake:true (the predicate engine has no inject leg).',
-      });
-    }
-    if (args.targetKind === 'interest' && args.predicate) {
-      refinementCtx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['predicate'],
-        message: 'targetKind:"interest" and predicate are mutually exclusive (one watch, one matcher).',
-      });
-    }
-  }),
+  args: z.union([nonPredicateWatchSchema, predicateWatchSchema]),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const wake = args.wake ?? false;
