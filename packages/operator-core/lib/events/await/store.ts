@@ -1410,6 +1410,30 @@ export async function listWakeAwaitsForSubscriber(
   };
 }
 
+/** Exact, non-composed live-await identity used by the monitor/await dedup gate. */
+export async function hasLiveExactAwaitForSubscriberKey(
+  subscriberId: string,
+  eventKey: string,
+): Promise<boolean> {
+  const ws = eventsWs();
+  const normalized = normalizeEventKey(eventKey);
+  const rows = await boundedOrgTxn((tx) => tx`
+    SELECT 1
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ${subscriberId}
+       AND event_key = ${normalized}
+       AND policy = 'wake'
+       AND root_id IS NULL
+       AND fired_at IS NULL
+       AND cancelled_at IS NULL
+       AND superseded_at IS NULL
+       AND (expires_ts IS NULL OR expires_ts > now())
+     LIMIT 1
+  `);
+  return rows.length > 0;
+}
+
 /** Active awaits matching an event key — peek without firing (sources may use
  *  this to decide whether anyone is waiting at all).
  *
