@@ -285,8 +285,10 @@ export default defineTool({
           // `limit`), NOT the session's total turn count — see the tool
           // description. sessions:list's `turns` is the total; do not conflate.
           turn_count: rows.length,
-          turns: rows.map((r: { source_kind: string; session_id: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
-            ref: formatSessionTurnRef(r.source_kind, r.session_id, r.turn_idx),
+          turns: rows.map((r: { source_kind: string; session_id?: string; turn_idx: number; speaker: string; owner: string | null; ts: string | null; text: string }) => ({
+            // The indexed query always returns session_id; retain the requested
+            // session as a defensive fallback for archive/test-shaped rows.
+            ref: formatSessionTurnRef(r.source_kind, r.session_id ?? sessionId, r.turn_idx),
             turn_idx: r.turn_idx, speaker: r.speaker,
             ...(r.owner ? { owner: r.owner } : {}), ...(r.ts ? { ts: r.ts } : {}),
             text: r.text,
