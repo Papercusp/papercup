@@ -46,7 +46,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The REAL exports of the lint, so the roots below cannot drift from the roots it scans.
@@ -88,6 +88,7 @@ const GUARD_TASK = `${HOST_WORKSPACE} :: ${GUARD_SCRIPT}`;
  * case from the filing: it routes to @papercusp/web, never to operator-core.
  */
 const OUTSIDE_TS_PATH = 'apps/operator/lib/release/deploy-cli.ts';
+const OUTSIDE_TS_BASENAME = basename(OUTSIDE_TS_PATH);
 /** A test-only TS path the vimock export guard deliberately refuses to inspect. */
 const OUTSIDE_TEST_PATH = 'apps/operator/lib/verify-tauri-headless-quoting.test.ts';
 /** A TS path INSIDE the host workspace, whose full `test` task already covers the guard. */
@@ -209,6 +210,20 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
     ).toContain(GUARD_TASK);
   });
 
+  it('expands a file-level basename before selecting workspaces or forwarding guard files', () => {
+    const base = 'HEAD^';
+    const out = dryTasks(OUTSIDE_TS_BASENAME, base);
+    expect(
+      out,
+      `a file runner may report only ${OUTSIDE_TS_BASENAME}; affected-tests must resolve it ` +
+        `to ${OUTSIDE_TS_PATH} before computing the workspace closure`,
+    ).toContain('@papercusp/web :: test');
+    expect(
+      out,
+      'repo-wide guards must receive the resolved repository-relative path, not an unresolvable basename',
+    ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base}) (guard args: --files=${OUTSIDE_TS_PATH})`);
+  });
+
   it('does NOT double-run it when the host workspace is already affected', () => {
     const out = dryTasks(INSIDE_TS_PATH);
     expect(out, 'the host workspace should run its own suite here').toContain(`${HOST_WORKSPACE} :: test`);
@@ -271,6 +286,48 @@ describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', ()
       `a runtime export added inside ${submodule} reaches affected-tests only as the bare ` +
         'gitlink path; a TS-extension-only predicate silently omits the guard for the whole submodule',
     ).toContain(`${VIMOCK_GUARD_TASK} (guard base: ${base}) ` + `(guard args: --files=${submodule})`);
+  });
+});
+
+/**
+ * EI-21618443971639284 — committed generated su.md projections must not silently
+ * fall behind the canonical base persona. The guard is deliberately registered
+ * without a hostSuiteRatchet: this exact-byte check is a repo-root artifact
+ * comparison, not something operator-core's ordinary Vitest suite executes.
+ */
+const PROMPT_PROJECTION_SCRIPT = 'lint:prompt-projections';
+const PROMPT_PROJECTION_TASK = HOST_WORKSPACE + ' :: ' + PROMPT_PROJECTION_SCRIPT;
+const PROMPT_CANONICAL_PATH = 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md';
+const PROMPT_DESKTOP_PROJECTION_PATH =
+  'papercusp-desktop/src-tauri/env-sidecars/staging/harness/blueprints/base/prompts/su.md';
+const PROMPT_UNRELATED_PATH = 'apps/operator/docs/nuqs-audit-2026-05-11.md';
+
+describe('affected-tests: generated su.md projection guard (EI-21618443971639284)', () => {
+  it.each([PROMPT_CANONICAL_PATH, PROMPT_DESKTOP_PROJECTION_PATH])(
+    'attaches for a changed projection input: %s',
+    (changedPath) => {
+      expect(
+        dryTasks(changedPath),
+        changedPath + ' can change the bytes served by a generated su.md consumer, so ' +
+          'the exact-byte projection guard must run even when no ordinary workspace test ' +
+          'would inspect the generated artifact',
+      ).toContain(PROMPT_PROJECTION_TASK);
+    },
+  );
+
+  it('does not attach for an unrelated prose path', () => {
+    expect(
+      dryTasks(PROMPT_UNRELATED_PATH),
+      'a documentation edit outside the canonical prompt and generated projections cannot ' +
+        'change this byte-equality invariant',
+    ).not.toContain(PROMPT_PROJECTION_TASK);
+  });
+
+  it('keeps the guard script defined on the host workspace', () => {
+    const pkg = JSON.parse(readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    expect(pkg.scripts?.[PROMPT_PROJECTION_SCRIPT]).toContain('check-prompt-projections.mjs');
   });
 });
 
@@ -1113,7 +1170,13 @@ describe('affected-tests: required-field-strands guard (WI-38401)', () => {
     // remaining below Linux's own single-argument ceiling for THIS probe's
     // --changed-paths input. The 2026-08-25 gate incident carried 5,976 distinct paths
     // and exceeded the kernel ceiling before the guard process could start.
-    const changedPaths = Array.from({ length: 1_000 }, () => RFS_OUTSIDE_TS_PATH).join(',');
+    // Explicit changed paths are normalized and de-duplicated before forwarding. Use
+    // distinct TS-shaped paths here so the fixture still models a genuinely large
+    // triggering population instead of collapsing to one inline argument.
+    const changedPaths = Array.from(
+      { length: 1_000 },
+      (_, index) => `${RFS_OUTSIDE_TS_PATH.replace(/\.ts$/, '')}-${index}.ts`,
+    ).join(',');
     expect(Buffer.byteLength(changedPaths, 'utf8')).toBeGreaterThan(32 * 1024);
 
     const out = dryTasks(changedPaths, 'HEAD^');

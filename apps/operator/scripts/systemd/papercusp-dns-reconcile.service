@@ -1,0 +1,9 @@
+[Unit]
+Description=Reconcile direct authenticated DNS for Papercusp hostnames
+Documentation=man:systemd-resolved(8)
+After=NetworkManager.service systemd-resolved.service
+Wants=NetworkManager.service systemd-resolved.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/papercusp/papercusp-dns-reconcile.sh --apply

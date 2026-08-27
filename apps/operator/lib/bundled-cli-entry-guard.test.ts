@@ -1,18 +1,43 @@
 import { describe, expect, it } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS build guard, imported for its scanner predicate.
 import { findBundledCliEntryGuards } from '../../../scripts/check-bundled-cli-entry-guards.mjs';
 
+const TEST_FILE = fileURLToPath(import.meta.url);
+
+function repositoryRoot(): string {
+  // Resolve from this module rather than process.cwd(): root-level Vitest
+  // invocations run with the repository itself as cwd, while package-scoped
+  // invocations run from apps/operator.
+  return resolve(dirname(TEST_FILE), '../../..');
+}
+
 describe('check-bundled-cli-entry-guards', () => {
+  it('resolves the repository root when Vitest is launched from the repository root', () => {
+    const originalCwd = process.cwd();
+    const root = repositoryRoot();
+    try {
+      process.chdir(root);
+      expect(repositoryRoot()).toBe(root);
+      expect(resolve(process.cwd(), '../..')).not.toBe(root);
+      expect(readFileSync(join(root, 'apps/operator/bin/bundle-host.sh'), 'utf8')).toContain(
+        'check-bundled-cli-entry-guards.mjs',
+      );
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it('rejects a raw guard in an esbuild input and ignores non-repo inputs', () => {
     // The production scanner deliberately ignores files outside the repository.
     // Keep the synthetic repo-owned inputs under an allowed source root while
     // retaining a real system-temp file to exercise that boundary.
-    const repoRoot = resolve(process.cwd(), '../..');
+    const repoRoot = repositoryRoot();
     const root = mkdtempSync(join(repoRoot, 'apps', '.bundled-cli-entry-guard-'));
     try {
       const apps = join(root, 'operator');
@@ -124,7 +149,7 @@ describe('check-bundled-cli-entry-guards', () => {
   // it still is. Source-level by necessity: running the real 47MB bundle in a unit test is
   // not viable, and the defect lives in the shell control flow, not in any JS module.
   it('bundle-host.sh aborts on an esbuild failure before running this scanner', () => {
-    const repoRoot = resolve(process.cwd(), '../..');
+    const repoRoot = repositoryRoot();
     // Subject path is overridable so falsifiability can be proved against a COPY or a
     // historical snapshot (scripts/mutation-probe.sh) instead of mutating the shared tree —
     // the sweep commits the whole tree every few minutes, so an in-tree mutation probe can

@@ -478,23 +478,25 @@ function main() {
   const changedImporters = [];
   const workspacePackageNames = discoverWorkspacePackageNames();
   for (const { status, file } of candidates) {
-    if (!file || status.startsWith('A') || status.startsWith('D')) continue;
+    if (!file || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
     // A test file's own exports are not a mocked surface; skip to keep the signal about
     // production modules.
     if (/\.(?:test|spec)\.[cm]?[jt]sx?$/.test(file)) continue;
 
     const beforeText = showAtBase(file, base);
-    if (beforeText === null) continue;
     const abs = resolve(ROOT, file);
     if (!existsSync(abs)) continue;
     const afterText = readFileSync(abs, 'utf8');
+    // A present file absent at the comparison base is an addition. Examine it against an
+    // empty before-image so JSON/status report a checked addition instead of NOT_CHECKED.
+    const before = beforeText ?? '';
 
     examinedFiles.push(file);
-    if (declaredFiles && beforeText === afterText) identicalFiles.push(file);
-    const added = diffAddedRuntimeExports(beforeText, afterText, file);
+    if (declaredFiles && beforeText !== null && beforeText === afterText) identicalFiles.push(file);
+    const added = diffAddedRuntimeExports(before, afterText, file);
     if (added.length) changed.push({ file, added });
-    const addedImports = diffAddedRuntimeImports(beforeText, afterText, file).filter(({ specifier }) =>
+    const addedImports = diffAddedRuntimeImports(before, afterText, file).filter(({ specifier }) =>
       isWorkspacePackageSpecifier(specifier, workspacePackageNames),
     );
     if (addedImports.length) changedImporters.push({ file, imports: addedImports });

@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch machine DNS inputs for Papercusp resolver drift
+
+[Path]
+PathChanged=/etc/hosts
+PathChanged=/etc/systemd/resolved.conf.d/99-papercusp-dns-over-tls.conf
+PathChanged=/etc/opt/chrome/policies/managed/papercusp-direct-dns.json
+Unit=papercusp-dns-reconcile.service
+
+[Install]
+WantedBy=multi-user.target

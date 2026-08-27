@@ -1,0 +1,6 @@
+{
+  "BuiltInDnsClientEnabled": true,
+  "DnsOverHttpsMode": "secure",
+  "DnsOverHttpsTemplates": "https://cloudflare-dns.com/dns-query{?dns}",
+  "EncryptedClientHelloEnabled": true
+}

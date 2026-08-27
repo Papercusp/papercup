@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically verify direct authenticated DNS for Papercusp
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=papercusp-dns-reconcile.service
+
+[Install]
+WantedBy=timers.target

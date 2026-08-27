@@ -588,9 +588,13 @@ describe('immutable dependency generation', () => {
     expect(entries.filter((entry) => entry.startsWith('.build-'))).toEqual([]);
   });
 
-  it('ignores and prunes npm/Astro/Vitest cache churn without weakening dependency drift detection', () => {
+  it('ignores and prunes npm/Astro/Vitest/Storybook cache churn without weakening dependency drift detection', () => {
     const integration = makeIntegration();
     const npmMetadata = join(integration, 'node_modules/.package-lock.json');
+    const storybookCache = join(
+      integration,
+      'node_modules/.cache/storybook/10.3.6/default/dev-server',
+    );
     const astroCache = join(
       integration,
       'packages/a/node_modules/.astro',
@@ -604,6 +608,7 @@ describe('immutable dependency generation', () => {
       'packages/a/node_modules/.vite/vitest/project-hash',
     );
     writeFileSync(npmMetadata, '{"before":true}\n');
+    mkdirSync(storybookCache, { recursive: true });
     mkdirSync(astroCache, { recursive: true });
     mkdirSync(tempCache, { recursive: true });
     mkdirSync(resultsCache, { recursive: true });
@@ -611,21 +616,29 @@ describe('immutable dependency generation', () => {
       join(astroCache, 'data-store.json'),
       '{"before":true}\n',
     );
+    writeFileSync(
+      join(storybookCache, 'storybook-before'),
+      'ephemeral\n',
+    );
     writeFileSync(join(tempCache, 'before.tmp'), 'ephemeral\n');
     writeFileSync(join(resultsCache, 'results.json'), '{}\n');
     const result = publish(integration, {
       DG_TEST_NPM_METADATA: npmMetadata,
+      DG_TEST_STORYBOOK_CACHE: storybookCache,
       DG_TEST_ASTRO_CACHE: astroCache,
       DG_TEST_TEMP_CACHE: tempCache,
       DG_TEST_RESULTS_CACHE: resultsCache,
       DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
-        'printf "{\\"during\\":true}\\n" > "$DG_TEST_NPM_METADATA"; printf "{\\"during\\":true}\\n" > "$DG_TEST_ASTRO_CACHE/data-store.json"; printf "churn\\n" > "$DG_TEST_TEMP_CACHE/during.tmp"; printf "{\\"updated\\":true}\\n" > "$DG_TEST_RESULTS_CACHE/results.json"',
+        'printf "{\\"during\\":true}\\n" > "$DG_TEST_NPM_METADATA"; printf "churn\\n" > "$DG_TEST_STORYBOOK_CACHE/storybook-during"; printf "{\\"during\\":true}\\n" > "$DG_TEST_ASTRO_CACHE/data-store.json"; printf "churn\\n" > "$DG_TEST_TEMP_CACHE/during.tmp"; printf "{\\"updated\\":true}\\n" > "$DG_TEST_RESULTS_CACHE/results.json"',
     });
 
     expect(result.status, result.stderr).toBe(0);
     const generation = publishedPath(result.stdout);
     expect(
       existsSync(join(generation, 'tree/node_modules/.package-lock.json')),
+    ).toBe(false);
+    expect(
+      existsSync(join(generation, 'tree/node_modules/.cache')),
     ).toBe(false);
     expect(
       existsSync(

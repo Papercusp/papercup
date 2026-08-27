@@ -556,8 +556,10 @@ function main() {
   const explicitFiles = parseExplicitFiles(argv);
   const declaredFiles = explicitFiles == null ? null : [...explicitFiles];
 
-  // Changed .ts/.tsx files vs the base. A file with no base version is skipped: a brand-new
-  // exported interface has no pre-existing construction sites, so it cannot strand anything.
+  // Changed .ts/.tsx files vs the base. A file with no base version is an addition. It still
+  // counts as examined (with an empty before-image) so a caller gets a real clean verdict
+  // instead of NOT_CHECKED; diffRequiredAdditions suppresses types that did not exist at the
+  // base, because a brand-new exported interface has no pre-existing construction sites.
   // `typeScriptCandidatesAtBase` also expands a DECLARED submodule root — the exact path shape
   // affected-tests forwards from a superproject diff — into that submodule's internal diff.
   const candidates = typeScriptCandidatesAtBase(base, declaredFiles);
@@ -579,18 +581,18 @@ function main() {
   // a listed file is, by construction, never identical to base.
   const identicalFiles = [];
   for (const { status, file } of candidates) {
-    if (!file || status.startsWith('A') || status.startsWith('D')) continue;
+    if (!file || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
 
     const beforeText = showAtBase(file, base);
-    if (beforeText === null) continue;
     const abs = resolve(ROOT, file);
     if (!existsSync(abs)) continue;
     const afterText = readFileSync(abs, 'utf8');
+    const before = beforeText ?? '';
 
     examinedFiles.push(file);
-    if (declaredFiles && beforeText === afterText) identicalFiles.push(file);
-    const added = diffRequiredAdditions(beforeText, afterText, file);
+    if (declaredFiles && beforeText !== null && beforeText === afterText) identicalFiles.push(file);
+    const added = diffRequiredAdditions(before, afterText, file);
     if (added.length) findings.push({ file, added });
   }
 

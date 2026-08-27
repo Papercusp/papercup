@@ -155,6 +155,10 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/agent-tools/work_items/completion-freshness.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'git ls-tree — cheap metadata read over one commit, awaited, exits immediately' },
   ],
+  [
+    'apps/operator/bin/ascii-escape-bundle.mjs::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'node --check over one staged bundle — awaited syntax validation before atomic replacement, not resident runtime work' },
+  ],
   // ── liveness/capability probes: ask the OS a question, start nothing ─────────
   [
     'apps/operator/bin/serve.ts::resource-start-outside-admission',
@@ -168,6 +172,14 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/agent-tools/computer/desktop-provisioner.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'xdpyinfo -display — X display liveness probe; the provisioning start it guards is governed separately' },
   ],
+  [
+    'packages/operator-core/lib/agent-tools/capability/exec-sandbox.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'bwrap /bin/true — one cached sandbox capability probe with a five-second timeout; starts no resident work' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/coordination/machine-capability-tags.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'docker info — one cached machine-capability probe with a 1.5-second timeout; starts no resident work' },
+  ],
   // ── release / control path: D-004 names these explicitly ─────────────────────
   // Admission must never gate the path that RELEASES resources, or a saturated host
   // cannot recover: the kill that would free capacity would itself queue behind the
@@ -175,6 +187,10 @@ export const BYPASS_REGISTRY = new Map([
   [
     'packages/operator-core/lib/agent-tools/capability/bash-jobs.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'systemctl --user kill — cancellation/release of an already-admitted job; gating release on admission deadlocks recovery under saturation' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/dev/restart.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'delayed systemd restart — control/recovery path that releases the current operator and must remain runnable under saturation' },
   ],
 ]);
 
@@ -203,7 +219,7 @@ function inventory(id, migration, paths, resourceDimensions) {
 const START =
   /(?:\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(|new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\()/;
 const GOVERNED =
-  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
+  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
@@ -284,28 +300,53 @@ export function validateInventory(rows = RESOURCE_GOVERNOR_INVENTORY) {
   return findings;
 }
 
-export function scanInventory(files, { migrations = [] } = {}) {
+export function scanInventory(
+  files,
+  { migrations = [], validateRegistry = false } = {},
+) {
   const selected = RESOURCE_GOVERNOR_INVENTORY.filter(
     (row) =>
       row.enforcement === "active" ||
       migrations.some((migration) => row.enforcement === `pending-${migration}`),
   );
   const findings = [];
+  const scannedPaths = new Set();
+  const observedRegistryKeys = new Set();
   for (const [path, source] of files) {
     if (
       !selected.some((row) => row.paths.some((prefix) => path.startsWith(prefix)))
     )
       continue;
+    scannedPaths.add(path);
     for (const code of inspectGovernorSource(source)) {
-      if (!BYPASS_REGISTRY.has(registryKey(path, code)))
+      const key = registryKey(path, code);
+      observedRegistryKeys.add(key);
+      if (!BYPASS_REGISTRY.has(key))
         findings.push(`${path}:${code}`);
+    }
+  }
+  if (validateRegistry) {
+    for (const key of BYPASS_REGISTRY.keys()) {
+      const separator = key.lastIndexOf("::");
+      const path = key.slice(0, separator);
+      const selectedPath = selected.some((row) =>
+        row.paths.some((prefix) => path.startsWith(prefix)),
+      );
+      if (!selectedPath) continue;
+      if (!scannedPaths.has(path)) {
+        if (validateRegistry === "strict")
+          findings.push(`stale-bypass-registry:${key}:path-not-scanned`);
+        continue;
+      }
+      if (!observedRegistryKeys.has(key))
+        findings.push(`stale-bypass-registry:${key}:finding-absent`);
     }
   }
   return findings;
 }
 
-export function scanActiveInventory(files) {
-  return scanInventory(files);
+export function scanActiveInventory(files, options = {}) {
+  return scanInventory(files, options);
 }
 
 function scanTree() {
@@ -325,7 +366,10 @@ function scanTree() {
     }
   }
   return {
-    findings: [...validateInventory(), ...scanActiveInventory(sourceFiles)],
+    findings: [
+      ...validateInventory(),
+      ...scanActiveInventory(sourceFiles, { validateRegistry: "strict" }),
+    ],
     unscanned,
   };
 }

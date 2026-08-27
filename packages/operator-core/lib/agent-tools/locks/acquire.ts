@@ -25,6 +25,8 @@
  */
 
 import { z } from 'zod';
+import { existsSync } from 'node:fs';
+import { isAbsolute } from 'node:path';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readFileLockIdentity } from './identity';
@@ -70,9 +72,10 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
-import { externalHomePathToLockKey } from './external-path';
+import { EXTERNAL_HOME_LOCK_PREFIX, externalHomePathToLockKey } from './external-path';
 import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
+import { validateExplicitRepoPaths } from '../work_items/_derive-paths';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
  *  SLEEPING waiter's ticket stays grant-eligible. It must cover the longest
@@ -413,6 +416,7 @@ export default defineTool({
         undefined,
         shaToken,
         first.newly_held,
+        missingRepoPathWarning(paths, coordinationDomain),
       );
     }
 
@@ -456,7 +460,17 @@ export default defineTool({
         };
       }
       if ('self_granted' in inserted) {
-        return ok(ownerId, ownerLabel, inserted.lock_id, inserted.expires_ts, inserted.held);
+        return ok(
+          ownerId,
+          ownerLabel,
+          inserted.lock_id,
+          inserted.expires_ts,
+          inserted.held,
+          undefined,
+          undefined,
+          undefined,
+          missingRepoPathWarning(paths, coordinationDomain),
+        );
       }
 
       const identity = resolveAgentIdentity(ctx);
@@ -600,6 +614,9 @@ export default defineTool({
           inserted.expires_ts,
           inserted.held,
           Math.floor((Date.now() - startedAt) / 1000),
+          undefined,
+          undefined,
+          missingRepoPathWarning(paths, coordinationDomain),
         );
       }
 
@@ -679,6 +696,9 @@ export default defineTool({
             status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
             status.paths ?? paths,
             Math.floor((Date.now() - startedAt) / 1000),
+            undefined,
+            undefined,
+            missingRepoPathWarning(status.paths ?? paths, coordinationDomain),
           );
         }
       } catch (err: unknown) {
@@ -749,6 +769,9 @@ export default defineTool({
               status.granted_expires_ts ?? new Date(Date.now() + ttlSec * 1000),
               status.paths ?? paths,
               Math.floor((Date.now() - startedAt) / 1000),
+              undefined,
+              undefined,
+              missingRepoPathWarning(status.paths ?? paths, coordinationDomain),
             );
           }
           if (
@@ -820,6 +843,9 @@ export default defineTool({
           finalBusy.expires,
           finalBusy.held,
           Math.floor((Date.now() - startedAt) / 1000),
+          undefined,
+          undefined,
+          missingRepoPathWarning(finalBusy.held, coordinationDomain),
         );
       }
 
@@ -884,6 +910,7 @@ function ok(
   // release. Present on fast-path grants of hive-scoped file locks.
   shaToken?: ShaTokenGrant,
   newlyHeld?: string[],
+  pathWarning?: string,
 ) {
   return {
     content: [
@@ -903,10 +930,47 @@ function ok(
           ...(shaToken
             ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
             : {}),
+          ...(pathWarning ? { path_warning: pathWarning } : {}),
         }),
       },
     ],
   };
+}
+
+/**
+ * Warn when a successful grant names an in-tree path that is absent from the
+ * physical checkout. This is deliberately advisory: lock callers may reserve
+ * a file they are about to create, and unit/integration callers may use
+ * synthetic lock keys. External home-directory keys are logical reservations,
+ * not repository paths, so they are excluded from the probe.
+ */
+function missingRepoPathWarning(
+  paths: readonly string[],
+  coordinationDomain: string,
+): string | undefined {
+  const repoPaths = paths.filter(
+    (path) => path !== EXTERNAL_HOME_LOCK_PREFIX && !path.startsWith(`${EXTERNAL_HOME_LOCK_PREFIX}/`),
+  );
+  // A relative or unavailable domain is a synthetic/uninspectable lock
+  // namespace. Do not turn that absence of filesystem evidence into a warning.
+  if (!isAbsolute(coordinationDomain) || repoPaths.length === 0 || !existsSync(coordinationDomain)) {
+    return undefined;
+  }
+
+  try {
+    const unresolved = validateExplicitRepoPaths(repoPaths, { repoRoot: coordinationDomain });
+    if (!unresolved || unresolved.missing.length === 0) return undefined;
+    const noun = unresolved.missing.length === 1 ? 'path' : 'paths';
+    return (
+      `locks:acquire granted ${unresolved.missing.length} repo-relative ${noun} that do NOT exist under ` +
+      `coordination_domain ${JSON.stringify(coordinationDomain)}: ${unresolved.missing.join(', ')}. ` +
+      'This is advisory only; the lock remains held so new-file and synthetic-path workflows continue to work. ' +
+      'Re-read the canonical path spelling before editing an existing file.'
+    );
+  } catch {
+    // A filesystem advisory must never fail an otherwise valid lock grant.
+    return undefined;
+  }
 }
 
 function errorResult(error: string) {

@@ -35,9 +35,13 @@ export default defineTool({
     ],
   },
   // The criteria are the machine-readable grading contract, not browseable list
-  // detail. Let the result door spill the complete rubric instead of allowing the
-  // ambient trimmed session tier to rebuild the response and silently remove
-  // criterion keys/methods (EI-21406267171411887).
+  // detail. Keep the complete rubric inline for model-facing grading: the generic
+  // result door would replace a full response with a projection whose preview can
+  // omit model/method/driftMarkers, even though this read has no narrower recovery
+  // argument. The payload-tier hard ceiling remains the guard for pathological bulk
+  // reads; this exemption is specifically for the deliberate full correctness body
+  // (EI-21406267171411887).
+  skipResultDoor: 'oversize-by-design',
   ignoreSessionPayloadTier: true,
   capability: 'coord:read',
   requirePrincipal: false,

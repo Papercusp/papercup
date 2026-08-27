@@ -22,8 +22,12 @@ export function validateInventory(
 ): string[];
 export function scanActiveInventory(
   files: readonly (readonly [string, string])[],
+  options?: { validateRegistry?: boolean | "strict" },
 ): string[];
 export function scanInventory(
   files: readonly (readonly [string, string])[],
-  options?: { migrations?: readonly string[] },
+  options?: {
+    migrations?: readonly string[];
+    validateRegistry?: boolean | "strict";
+  },
 ): string[];

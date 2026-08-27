@@ -343,6 +343,45 @@ describe('submoduleRevisionAt — follow the superproject gitlink before queryin
   }, 120_000);
 });
 
+describe('declared additions absent at the comparison base', () => {
+  it('examines a present file that did not exist at base instead of returning NOT_CHECKED', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'required-field-strands-added-file-'));
+    const file = 'packages/operator-core/lib/newly-added.ts';
+    try {
+      cpSync(join(ROOT, 'scripts'), join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(join(ROOT, 'node_modules'), join(tmp, 'node_modules'));
+      mkdirSync(join(tmp, 'packages/operator-core/lib'), { recursive: true });
+
+      const git = (...args: string[]) =>
+        execFileSync('git', args, { cwd: tmp, encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' });
+      writeFileSync(join(tmp, 'README.md'), 'base\n');
+      git('init', '-q', '.');
+      git('config', 'user.email', 'required-field-strands@test.invalid');
+      git('config', 'user.name', 'required-field-strands');
+      git('add', 'scripts', 'README.md');
+      git('commit', '-qm', 'base');
+
+      // The declared file is present now but has no before-image at HEAD. A real empty
+      // before-image is still an examined comparison; skipping it would manufacture
+      // NOT_CHECKED for every newly added file.
+      writeFileSync(join(tmp, file), 'export interface Fresh { required: number; }\n');
+      const result = spawnSync(
+        'node',
+        ['scripts/check-required-field-strands.mjs', '--base', 'HEAD', `--files=${file}`, '--json'],
+        { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      const report = JSON.parse(result.stdout);
+
+      expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(report.examined).toEqual([file]);
+      expect(report.findings).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
+});
+
 /**
  * EI-18717671811306780. The guard's detection was already sound; what was missing sat one
  * step later, at the moment the author decides HOW to confirm. The prescribed command is

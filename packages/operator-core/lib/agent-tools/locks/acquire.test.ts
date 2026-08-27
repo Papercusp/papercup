@@ -14,8 +14,9 @@
  * In-tree (operator-core, tab-visible).
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/acquire.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { homedir } from 'node:os';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 
@@ -89,6 +90,15 @@ const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const readStampM = vi.mocked(readAgentStateStamp);
 const recordAttributionM = vi.mocked(recordEditAttribution);
 const tool = (await import('./acquire')).default;
+const warningRoot = mkdtempSync(join(tmpdir(), 'locks-acquire-warning-'));
+
+beforeAll(() => {
+  writeFileSync(join(warningRoot, 'existing.ts'), 'export const existing = true;\n');
+});
+
+afterAll(() => {
+  rmSync(warningRoot, { recursive: true, force: true });
+});
 
 /** postgres-js's own shape for a connection drop mid-query (EI-19324204900062056). */
 const connectionClosedError = () =>
@@ -161,6 +171,45 @@ describe('locks:acquire — outcome branches', () => {
       workspaceId: 'ws-1',
       goalRef: 'WI-current',
     }));
+  });
+
+  it('fast-path success keeps missing repo-relative paths acquirable and adds a precise advisory warning', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-missing',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['existing.ts', 'new-file.ts'],
+      },
+      via: 'local-authority',
+    });
+    const b = body(await call({
+      paths: ['existing.ts', 'new-file.ts'],
+      coordination_domain: warningRoot,
+    }));
+    expect(b).toMatchObject({ ok: true, lock_id: 'L-missing', held: ['existing.ts', 'new-file.ts'] });
+    expect(b.path_warning).toContain('new-file.ts');
+    expect(b.path_warning).toContain(warningRoot);
+    expect(b.path_warning).toMatch(/advisory only/);
+    expect(b.path_warning).not.toContain('existing.ts');
+  });
+
+  it('does not probe logical external-home keys as repository paths', async () => {
+    routeM.mockResolvedValue({
+      value: {
+        ok: true,
+        lock_id: 'L-home-warning',
+        expires_ts: new Date('2026-02-01T00:00:00Z'),
+        held: ['@external/home/.config/mimeapps.list'],
+      },
+      via: 'local-authority',
+    });
+    const b = body(await call({
+      paths: ['@external/home/.config/mimeapps.list'],
+      coordination_domain: warningRoot,
+    }));
+    expect(b).toMatchObject({ ok: true, lock_id: 'L-home-warning' });
+    expect(b.path_warning).toBeUndefined();
   });
 
   it('uses the client edit hook domain when supplied, so a release-tree operator cannot split the lock namespace', async () => {

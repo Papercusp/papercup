@@ -16,11 +16,19 @@ import type { Readable } from 'node:stream';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createServer } from 'node:net';
+import { randomUUID } from 'node:crypto';
 import { getHarnessAdminUrl } from '../../../embedded-pg-discovery';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import {
+  beginGovernedExecution,
+  governedExecutionRuntime,
+  type GovernedExecution,
+} from '../../../resource-governor/execution';
 
 interface StudioProc {
   child: ChildProcessByStdio<null, Readable, Readable>;
+  execution: GovernedExecution;
   port: number;
   since: number;
   lastStderr: string;
@@ -130,22 +138,44 @@ const post = defineTool({
 
     const requested = Number(process.env.DRIZZLE_STUDIO_PORT ?? 4983);
     const port = await pickFreePort(requested);
-
-    const child = spawn(bin, ['studio', '--config', cfg, '--port', String(port), '--host', '127.0.0.1'], {
-      cwd: resolve(cfg, '../..'),
-      stdio: ['ignore', 'pipe', 'pipe'],
-      env: {
-        ...process.env,
-        HARNESS_ADMIN_DATABASE_URL: getHarnessAdminUrl(),
+    const workspaceId = activeWorkspaceId();
+    const execution = await beginGovernedExecution(
+      {
+        idempotencyKey: `drizzle-studio:${process.pid}:${randomUUID()}`,
+        admissionClass: 'process',
+        demand: { cpuWeight: 0.5, memoryBytes: 256 * 1024 * 1024, fileDescriptors: 4 },
+        payloadRef: `drizzle-studio:${port}`,
+        metadata: { port },
       },
-    });
+      { owner: `drizzle-studio:${process.pid}`, leaseTtlMs: 30 * 24 * 60 * 60_000 },
+      governedExecutionRuntime(workspaceId, 'drizzle-studio'),
+    );
 
-    const proc: StudioProc = { child, port, since: Date.now(), lastStderr: '' };
+    let child: ChildProcessByStdio<null, Readable, Readable>;
+    try {
+      child = spawn(bin, ['studio', '--config', cfg, '--port', String(port), '--host', '127.0.0.1'], {
+        cwd: resolve(cfg, '../..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          HARNESS_ADMIN_DATABASE_URL: getHarnessAdminUrl(),
+        },
+      });
+    } catch (error) {
+      await execution.cancel(`drizzle studio spawn failed: ${error instanceof Error ? error.message : String(error)}`);
+      throw error;
+    }
+
+    const proc: StudioProc = { child, execution, port, since: Date.now(), lastStderr: '' };
     STATE.proc = proc;
     child.stderr.on('data', (b) => {
       proc.lastStderr = (proc.lastStderr + b.toString()).slice(-4096);
     });
+    child.once('error', (error) => {
+      void execution.cancel(`drizzle studio child error: ${error.message}`);
+    });
     child.on('exit', (code) => {
+      void execution.finish();
       if (STATE.proc === proc) {
         STATE.lastExitStderr = proc.lastStderr;
         STATE.lastExitCode = code;

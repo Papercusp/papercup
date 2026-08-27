@@ -11,6 +11,8 @@ import { createInterface } from 'node:readline';
 import { sseResponse } from '@papercusp/sse';
 import { getCommand } from '../../../admin-commands';
 import { defineTool } from '@papercusp/agent-mcp';
+import { activeWorkspaceId } from '../../../workspace-registry';
+import { runGovernedOperation } from '../../../resource-governor/execution';
 
 interface AdminRunVocab extends Record<string, unknown> {
   meta: { commandId: string; label: string; command: string; cwd?: string; pid: number; startedAt: number };
@@ -40,64 +42,81 @@ export default defineTool({
       heartbeatMs: 15_000,
       initialHeartbeat: true,
       setup: async (sink) => {
-        // -lic = login + interactive + command. The user's ~/.bashrc has
-        // Ubuntu's non-interactive-return guard at the top; passing -i
-        // flips $- to include `i` so the guard passes and the env exports
-        // below it (NVM, BUN, ELEVENLABS_API_KEY, cargo env, …) run.
-        const child = spawn('bash', ['-lic', entry.command], {
-          cwd: entry.cwd,
-          stdio: ['ignore', 'pipe', 'pipe'],
-          env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '0' },
-          detached: true, // own process group so process.kill(-pid) reaches all children
-        });
+        if (sink.closed) return;
+        await runGovernedOperation(
+          {
+            workspaceId: activeWorkspaceId(),
+            namespace: 'admin-command',
+            owner: `admin:run:${entry.id}`,
+            admissionClass: 'process',
+            demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024, fileDescriptors: 3 },
+            payloadRef: `admin:run:${entry.id}`,
+            metadata: { commandId: entry.id },
+          },
+          async () => new Promise<void>((resolve, reject) => {
+            // -lic = login + interactive + command. The user's ~/.bashrc has
+            // Ubuntu's non-interactive-return guard at the top; passing -i
+            // flips $- to include `i` so the guard passes and the env exports
+            // below it (NVM, BUN, ELEVENLABS_API_KEY, cargo env, …) run.
+            const child = spawn('bash', ['-lic', entry.command], {
+              cwd: entry.cwd,
+              stdio: ['ignore', 'pipe', 'pipe'],
+              env: { ...process.env, TERM: 'xterm-256color', FORCE_COLOR: '0' },
+              detached: true, // own process group so process.kill(-pid) reaches all children
+            });
 
-        sink.event('meta', {
-          commandId: entry.id,
-          label: entry.label,
-          command: entry.command,
-          cwd: entry.cwd,
-          pid: child.pid ?? -1,
-          startedAt: Date.now(),
-        });
+            sink.event('meta', {
+              commandId: entry.id,
+              label: entry.label,
+              command: entry.command,
+              cwd: entry.cwd,
+              pid: child.pid ?? -1,
+              startedAt: Date.now(),
+            });
 
-        const outRl = createInterface({ input: child.stdout, crlfDelay: Infinity });
-        outRl.on('line', (line) => {
-          if (!sink.closed) sink.event('log', { stream: 'stdout', line });
-        });
-        const errRl = createInterface({ input: child.stderr, crlfDelay: Infinity });
-        errRl.on('line', (line) => {
-          // Silence bash's two `-i without TTY` complaints — cosmetic.
-          if (
-            line === 'bash: cannot set terminal process group (-1): Inappropriate ioctl for device' ||
-            line === 'bash: no job control in this shell'
-          ) return;
-          if (!sink.closed) sink.event('log', { stream: 'stderr', line });
-        });
+            const outRl = createInterface({ input: child.stdout, crlfDelay: Infinity });
+            outRl.on('line', (line) => {
+              if (!sink.closed) sink.event('log', { stream: 'stdout', line });
+            });
+            const errRl = createInterface({ input: child.stderr, crlfDelay: Infinity });
+            errRl.on('line', (line) => {
+              // Silence bash's two `-i without TTY` complaints — cosmetic.
+              if (
+                line === 'bash: cannot set terminal process group (-1): Inappropriate ioctl for device' ||
+                line === 'bash: no job control in this shell'
+              ) return;
+              if (!sink.closed) sink.event('log', { stream: 'stderr', line });
+            });
 
-        child.on('error', (err) => {
-          if (!sink.closed) sink.event('error', { message: String(err?.message ?? err) });
-        });
+            child.once('error', (err) => {
+              if (!sink.closed) sink.event('error', { message: String(err?.message ?? err) });
+              reject(err);
+            });
 
-        child.on('exit', (code, signal) => {
-          if (sink.closed) return;
-          sink.event('exit', { code, signal });
-          sink.done();
-        });
-
-        sink.onClose(() => {
-          if (!child.killed && child.exitCode == null) {
-            try {
-              process.kill(-child.pid!, 'SIGTERM');
-            } catch {
-              try { child.kill('SIGTERM'); } catch { /* nothing to do */ }
-            }
-            setTimeout(() => {
-              if (!child.killed && child.exitCode == null) {
-                try { process.kill(-child.pid!, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* nothing to do */ } }
+            child.once('exit', (code, signal) => {
+              if (!sink.closed) {
+                sink.event('exit', { code, signal });
+                sink.done();
               }
-            }, 3000);
-          }
-        });
+              resolve();
+            });
+
+            sink.onClose(() => {
+              if (!child.killed && child.exitCode == null) {
+                try {
+                  process.kill(-child.pid!, 'SIGTERM');
+                } catch {
+                  try { child.kill('SIGTERM'); } catch { /* nothing to do */ }
+                }
+                setTimeout(() => {
+                  if (!child.killed && child.exitCode == null) {
+                    try { process.kill(-child.pid!, 'SIGKILL'); } catch { try { child.kill('SIGKILL'); } catch { /* nothing to do */ } }
+                  }
+                }, 3000);
+              }
+            });
+          }),
+        );
       },
     });
   },

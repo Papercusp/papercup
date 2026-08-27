@@ -190,6 +190,13 @@ describe('rubrics:get handler (bulk keyed-array)', () => {
     );
     expect(payload?.results[0]?.rubric?.criteria.every((criterion) => criterion.method.length > 120)).toBe(true);
   });
+
+  it("declares the full rubric body oversize-by-design so the outer result door cannot hide criteria", () => {
+    const projected = lookupByMcpName('rubrics:get');
+    expect(projected).toBeDefined();
+    expect(projected?.skipResultDoor).toBe('oversize-by-design');
+    expect(projected?.ignoreSessionPayloadTier).toBe(true);
+  });
 });
 
 describe('rubrics:ratify handler (bulk keyed-array)', () => {

@@ -17,7 +17,9 @@
  *      guard rots while looking thoroughly covered.
  */
 import { describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -256,4 +258,47 @@ describe('REAL TREE — the guard executes over this repository', () => {
     expect(Array.isArray(parsed.findings)).toBe(true);
     expect(run.status).toBe(parsed.examined.length > 0 ? 0 : EXIT_NOT_CHECKED);
   });
+});
+
+describe('declared additions absent at the comparison base', () => {
+  it('examines a present file that did not exist at base instead of returning NOT_CHECKED', () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), 'vimock-export-strands-added-file-'));
+    const file = 'packages/operator-core/lib/newly-added.ts';
+    try {
+      cpSync(path.join(REPO_ROOT, 'scripts'), path.join(tmp, 'scripts'), { recursive: true });
+      symlinkSync(path.join(REPO_ROOT, 'node_modules'), path.join(tmp, 'node_modules'));
+      mkdirSync(path.join(tmp, 'packages/operator-core/lib'), { recursive: true });
+
+      const git = (...args: string[]) =>
+        execFileSync('git', args, {
+          cwd: tmp,
+          encoding: 'utf8',
+          timeout: 30_000,
+          killSignal: 'SIGKILL',
+        });
+      writeFileSync(path.join(tmp, 'README.md'), 'base\n');
+      git('init', '-q', '.');
+      git('config', 'user.email', 'vimock-export-strands@test.invalid');
+      git('config', 'user.name', 'vimock-export-strands');
+      git('add', 'scripts', 'README.md');
+      git('commit', '-qm', 'base');
+
+      // The declared file is present now but has no before-image at HEAD. The guard must
+      // compare it with an empty before-image so JSON reports a checked addition.
+      writeFileSync(path.join(tmp, file), 'export const freshRuntime = 1;\n');
+      const result = spawnSync(
+        'node',
+        ['scripts/check-vimock-export-strands.mjs', '--base', 'HEAD', `--files=${file}`, '--json'],
+        { cwd: tmp, encoding: 'utf8', timeout: 60_000, killSignal: 'SIGKILL' },
+      );
+      const report = JSON.parse(result.stdout);
+
+      expect(result.error, `guard failed to spawn: ${result.error?.message}`).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(report.examined).toEqual([file]);
+      expect(report.findings).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  }, 120_000);
 });

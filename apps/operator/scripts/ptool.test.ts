@@ -211,6 +211,16 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('backup:snapshot_create')).toBe(PTOOL_BACKUP_SNAPSHOT_CREATE_TIMEOUT_MS);
     expect(timeoutForTool('templates:new-app')).toBe(PTOOL_TEMPLATES_NEW_APP_TIMEOUT_MS);
     expect(timeoutForTool('scorecards:emit')).toBe(PTOOL_SCORECARD_EMIT_TIMEOUT_MS);
+    // WI-2944 / EI-21637077415806005: a 30s client cutoff on a visible
+    // capability:launch-agent left the first handler running, then the stale
+    // Windows ptool replayed the mutation on a fresh MCP session. Pin both
+    // direct and deferred routes above the transport cap; the replay guard
+    // below independently proves mutations cannot reconnect and re-dispatch.
+    expect(timeoutForTool('capability:launch-agent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'capability:launch-agent',
+      args: { agent: 'claude', headless: false },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('computer:provision_desktop')).toBe(60_000);
     expect(timeoutForTool('events:await')).toBe(PTOOL_EVENTS_AWAIT_TIMEOUT_MS);
     expect(timeoutForTool('plans:get')).toBe(PTOOL_PLANS_GET_TIMEOUT_MS);
