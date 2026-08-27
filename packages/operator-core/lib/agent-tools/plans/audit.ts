@@ -112,11 +112,11 @@ const argsSchema = z.object({
   items: z.array(itemSchema).min(1).max(200).optional().describe('Completion phase only: one entry per plan item audited.'),
   findings: z.array(findingSchema).max(50).optional().describe('Completion phase only: out-of-scope discoveries.'),
   auditedSha: z.string().min(7).max(64).optional().describe('Completion phase only: commit audited against; resolved from the local tree when omitted.'),
-  sourceRanges: z.array(sourceRangeSchema).min(1).max(50).optional().describe(
-    'Activation phase: bounded source conversations covered by this pass.',
+  sourceRanges: z.array(sourceRangeSchema).max(50).optional().describe(
+    'Activation phase: bounded source conversations covered by this pass. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior ranges forward.',
   ),
-  mappings: z.array(activationMappingSchema).min(1).max(300).optional().describe(
-    'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current P-NNN, D-NNN, or section:<heading> targets.',
+  mappings: z.array(activationMappingSchema).max(300).optional().describe(
+    'Activation phase: every requirement/constraint/decision mapped from canonical session_turn refs to current P-NNN, D-NNN, or section:<heading> targets. Required and nonempty for the first audit; omitted or empty on a re-audit carries prior mappings forward.',
   ),
   repairedOmissions: z.array(z.string().min(1).max(2000)).max(100).optional(),
   rejectedOrSuperseded: z.array(z.string().min(1).max(2000)).max(100).optional(),
@@ -124,12 +124,10 @@ const argsSchema = z.object({
   summary: z.string().max(4000).optional(),
 }).superRefine((args, ctx) => {
   if (args.phase === 'activation') {
-    if (!args.sourceRanges) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['sourceRanges'], message: 'sourceRanges is required for phase:activation' });
-    }
-    if (!args.mappings) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mappings is required for phase:activation' });
-    } else if (new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
+    // Whether coverage is required depends on whether this is the first audit.
+    // The prior-audit lookup is async and belongs in the handler, so the input
+    // schema must admit omitted/empty arrays for carry-forward re-audits.
+    if (args.mappings && new Set(args.mappings.map((mapping) => mapping.id)).size !== args.mappings.length) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['mappings'], message: 'mapping ids must be unique within an activation audit' });
     }
     for (const field of ['items', 'findings', 'auditedSha'] as const) {
@@ -226,6 +224,31 @@ export default defineTool({
 
       const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
       const previousAudit = await getLatestActivationAudit(args.slug, { workspaceId });
+      if (!previousAudit) {
+        const missingCoverage: Problem[] = [];
+        if (submittedActivation.sourceRanges.length === 0) {
+          missingCoverage.push({
+            code: 'source_ranges_required',
+            detail: 'sourceRanges must contain at least one conversation range on the first activation audit',
+          });
+        }
+        if (submittedActivation.mappings.length === 0) {
+          missingCoverage.push({
+            code: 'mappings_required',
+            detail: 'mappings must contain at least one requirement mapping on the first activation audit',
+          });
+        }
+        if (missingCoverage.length > 0) {
+          return { data: {
+            ok: false as const,
+            slug: args.slug,
+            phase: 'activation' as const,
+            error: 'activation_audit_invalid',
+            problems: missingCoverage,
+            message: 'The first activation audit requires nonempty sourceRanges and mappings; nothing was recorded.',
+          } };
+        }
+      }
       const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation);
       if (!merged.ok) {
         return { data: {

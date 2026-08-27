@@ -214,6 +214,83 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('admits omitted or empty coverage arrays at the schema for carry-forward re-audits', () => {
+    expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
+    expect(tool.args.safeParse({
+      slug: 'plan-a',
+      harness: 'papercusp',
+      phase: 'activation',
+      sourceRanges: [],
+      mappings: [],
+    }).success).toBe(true);
+  });
+
+  it('keeps first activation audits nonempty in handler validation', async () => {
+    const result = ((await tool.handler({
+      slug: 'plan-a',
+      harness: 'papercusp',
+      phase: 'activation',
+    } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_audit_invalid',
+      problems: expect.arrayContaining([
+        expect.objectContaining({ code: 'source_ranges_required' }),
+        expect.objectContaining({ code: 'mappings_required' }),
+      ]),
+    });
+    expect(mockResolveSourceRefs).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
+  it('carries prior coverage when a re-audit has no new source ranges or mappings', async () => {
+    mockPreviousActivation.mockResolvedValue({
+      auditSeq: 7,
+      activation: {
+        sourceRanges: [{ sourceKind: 'codex', sessionId: 'prior-session', fromTurn: 1, toTurn: 9 }],
+        mappings: [{
+          id: 'M-001',
+          sourceRefs: ['session_turn:codex:prior-session:4'],
+          requirement: 'the original owner boundary remains represented',
+          planTargets: ['P-001'],
+          disposition: 'covered',
+        }],
+        repairedOmissions: ['prior repair'],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+    } as never);
+    mockResolveSourceRefs.mockImplementation(async (_sql, _workspaceId, refs) =>
+      refs.map((ref) => ({ ref, ok: true as const, source: 'index' as const })),
+    );
+
+    const result = ((await tool.handler({
+      slug: 'plan-a',
+      harness: 'papercusp',
+      phase: 'activation',
+      summary: 'decision-only re-audit',
+    } as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      mappings: 1,
+      sourceRanges: 1,
+      carriedMappings: 1,
+      carriedMappingIds: ['M-001'],
+      coverageBaseAuditSeq: 7,
+      sourceRefsResolved: 1,
+    });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        sourceRanges: [{ sourceKind: 'codex', sessionId: 'prior-session', fromTurn: 1, toTurn: 9 }],
+        mappings: [expect.objectContaining({ id: 'M-001' })],
+      }),
+    }));
+  });
+
   it('uses callable org SQL when skipWorkspaceTx leaves ctx.tx absent', async () => {
     const noTxCtx = {
       ...(ctx as unknown as Record<string, unknown>),
