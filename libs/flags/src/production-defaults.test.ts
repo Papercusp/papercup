@@ -84,11 +84,10 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // papercusp-queen-warm-session GRADUATED to default-ON 2026-07-02 (owner flip
   // directive — see libs/flags/src/types.ts DARK_FLAGS) — removed from this
   // snapshot; the count assertion below dropped from 11 to 10 to match.
-  // 2026-07-04 — codex ChatGPT-subscription OAuth streaming reverse-proxy (WI-2198,
-  // owner-chosen Option B): reverse-engineered proprietary transport, dark until an
-  // owner-attended live canary against production ChatGPT; direct native auth is the
-  // fallback. Pending-flip (count 10 → 11).
-  "papercusp-codex-gateway-oauth-proxy",
+  // papercusp-codex-gateway-oauth-proxy GRADUATED to default-ON 2026-08-27
+  // (WI-272118): the owner-directed production canary completed a native Luna tool
+  // turn through oauth-http and delivered LUNA_AUTO_FLEET_OK. Removed from this
+  // snapshot; the runtime key remains an emergency kill-switch.
   // papercusp-gateway-maintenance-carry GRADUATED to default-ON 2026-07-15 by
   // explicit owner release direction: behavioral cutover now ships live, with one
   // clean post-deploy smoke per class instead of ten pre-cutover drills.
@@ -558,11 +557,12 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     ).length;
     expect(offCount).toBe(PRE_INVERSION_DEFAULT_OFF.size);
     // 9 pre-inversion + papercusp-accept-delegated-seats (2026-07-03,
-    // agent-allocation-framework P-008 owner-authority trust gate)
-    // + papercusp-codex-gateway-oauth-proxy (2026-07-04, WI-2198 Option B — dark until the canary).
+    // agent-allocation-framework P-008 owner-authority trust gate).
     // Graduated to default-ON and removed from the snapshot: papercusp-queen-warm-session
     // (2026-07-02, owner flip directive), papercusp-per-hive-release-gate (2026-07-03, D-008 met),
-    // papercusp-presence-gossip (2026-07-16, LIVE-1 P-059 2-machine verify met the cutover gate).
+    // papercusp-presence-gossip (2026-07-16, LIVE-1 P-059 2-machine verify met the cutover gate),
+    // and papercusp-codex-gateway-oauth-proxy (2026-08-27, WI-272118 owner-directed
+    // production Luna tool-turn canary).
     // 2026-07-04 — papercusp-onboarding-preview-features (deterministic-onboarding-tutorial
     // P-001, owner-directed): gates not-ready tutorial items. Count 11 → 12.
     // 2026-07-04 — papercusp-the-hive flips default-OFF (restore-pot-lexicon-public-release,
@@ -723,7 +723,11 @@ describe("production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)", (
     // measured), which is a property of the evidence rather than a flag anyone can
     // forget to flip. The parking subset and DARK_FLAGS_HIGH_WATERMARK both stay 14.
     // Count 36 → 35.
-    expect(offCount).toBe(35);
+    // 2026-08-27 (WI-272118) — papercusp-codex-gateway-oauth-proxy GRADUATED
+    // after the owner-directed production Luna tool-turn canary satisfied the
+    // entry's exact live gate. Count 35 → 34; incomplete parking subset and its
+    // watermark both ratchet 14 → 13.
+    expect(offCount).toBe(34);
   });
 
   it("sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark", () => {
