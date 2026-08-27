@@ -21,9 +21,24 @@ export const FROZEN_REPAIR_STAGING_MISMATCH_SIGNATURE = 'repair-staging-mismatch
  * the default: raising it changes which commit the gate judges and promotes, for every
  * co-hosted install, with no deploy hop. It is therefore wired only as part of the
  * owner-gated Phase-2 activation batch, exactly like P-005..P-009. */
+/* `maxAgeMs` was 4h until 2026-08-27 [owner:aviynw8 2026-08-27, approved in-session].
+ * WHY IT MOVED (WI-85288): the 4h budget was calibrated against fixers that never ran.
+ * From 2026-08-24 16:57Z to 2026-08-27, EVERY dispatched release-fixer was SIGTERM'd at
+ * exactly 300000ms by the release-fixer first-turn guard — measured lifetimes 301/301/300/301s
+ * across four consecutive attempts, versus 31 healthy 'exited' runs averaging 1118s before
+ * that cutoff. So a repair could burn all 3 attempts in ~15 minutes of wall clock and still
+ * never produce a commit, and 4h never had to accommodate a fixer that actually worked.
+ * With that guard fixed, a real fixer needs ~17min and the queue must outlive: dispatch +
+ * fixer run + the NEXT hourly gate tick that verifies its commit. 4h could not: the
+ * d513ccbc repair opened 09:24:23Z, its budget expired 13:24:23Z, and a live, healthy fixer
+ * dispatched at 13:23:19Z was already inside a queue reading `hold-exhausted` — its commit
+ * would have been discarded unverified at the 14:22:37Z evaluation.
+ * 8h covers dispatch + a full fixer run + up to two hourly verification ticks.
+ * NOT CHANGED: maxAttempts and maxCandidateEscapes: 0 (still the owner-gated Phase-2 lever
+ * described above — raising it changes which commit the gate promotes, for every install). */
 export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
   maxAttempts: 3,
-  maxAgeMs: 4 * 60 * 60 * 1_000,
+  maxAgeMs: 8 * 60 * 60 * 1_000,
   maxCandidateEscapes: 0,
 });
 
