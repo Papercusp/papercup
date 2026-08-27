@@ -53,6 +53,15 @@ function breakdown(
       remoteOrigin: 0,
       ...over,
     },
+    queueControl: {
+      activeClaims: 0,
+      rawClaimHolds: 0,
+      holdOpenLeases: 0,
+      durableParks: 0,
+      unattributedClaimHolds: 0,
+      pendingAgentReview: 0,
+      revisionRequestedAgentReview: 0,
+    },
   };
 }
 
