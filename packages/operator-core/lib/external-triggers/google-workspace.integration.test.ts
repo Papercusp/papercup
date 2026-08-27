@@ -136,6 +136,139 @@ describe('Google Workspace owned trigger-source provisioning', () => {
     ]);
   });
 
+  it('keeps a second account and its reconnect isolated across sources, cursors, credentials, and bindings', async () => {
+    const first = await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'first@example.com',
+      field: 'first-field',
+    });
+    const firstGmail = first.find((row) => row.kind === 'gmail')!;
+    await sql`
+      UPDATE harness_shared.trigger_sources
+         SET cursor = '{"historyId":"keep-first-history"}'::jsonb,
+             status = 'degraded',
+             last_error = 'first-account-transient'
+       WHERE workspace_id = ${WS} AND id = ${firstGmail.id}::uuid`;
+
+    const second = await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'second@example.com',
+      field: 'second-field',
+    });
+    expect(second.map((row) => row.kind).sort()).toEqual(['contacts', 'gcal', 'gmail']);
+    expect(second.every((row) => row.credentialRef === 'google-workspace:second-field')).toBe(true);
+    expect(second.every((row) => first.every((candidate) => candidate.id !== row.id))).toBe(true);
+
+    const rowsBeforeReconnect = await sql<
+      Array<{
+        id: string;
+        kind: string;
+        providerAccountId: string;
+        credentialRef: string;
+        status: string;
+        cursor: Record<string, unknown>;
+      }>
+    >`
+      SELECT id::text,
+             kind,
+             provider_account_id AS "providerAccountId",
+             credential_ref AS "credentialRef",
+             status,
+             cursor
+        FROM harness_shared.trigger_sources
+       WHERE workspace_id = ${WS}
+         AND owner_user_id = ${userId}::uuid
+       ORDER BY provider_account_id, kind`;
+    expect(rowsBeforeReconnect).toHaveLength(6);
+    expect(
+      rowsBeforeReconnect
+        .filter((row) => row.providerAccountId === 'first@example.com')
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(first.map((row) => row.id).sort());
+    expect(
+      rowsBeforeReconnect
+        .filter((row) => row.providerAccountId === 'second@example.com')
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual(second.map((row) => row.id).sort());
+    expect(rowsBeforeReconnect.find((row) => row.id === firstGmail.id)).toMatchObject({
+      credentialRef: 'google-workspace:first-field',
+      status: 'degraded',
+      cursor: { historyId: 'keep-first-history' },
+    });
+
+    const bindingsBeforeReconnect = await sql<
+      Array<{ id: string; sourceId: string; providerAccountId: string; armed: boolean }>
+    >`
+      SELECT b.id::text,
+             b.source_id::text AS "sourceId",
+             s.provider_account_id AS "providerAccountId",
+             b.armed
+        FROM harness_shared.trigger_bindings b
+        JOIN harness_shared.trigger_sources s
+          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+       WHERE b.workspace_id = ${WS}
+       ORDER BY s.provider_account_id`;
+    expect(bindingsBeforeReconnect).toEqual([
+      expect.objectContaining({ providerAccountId: 'first@example.com', armed: false }),
+      expect.objectContaining({ providerAccountId: 'second@example.com', armed: false }),
+    ]);
+
+    const reconnectedSecond = await provisionOwnedGoogleWorkspaceSources(sql, {
+      workspaceId: WS,
+      ownerUserId: userId,
+      providerAccountId: 'second@example.com',
+      field: 'second-rotated',
+    });
+    expect(reconnectedSecond.map((row) => row.id).sort()).toEqual(second.map((row) => row.id).sort());
+    expect(reconnectedSecond.every((row) => row.credentialRef === 'google-workspace:second-rotated')).toBe(true);
+
+    const rowsAfterReconnect = await sql<
+      Array<{
+        id: string;
+        providerAccountId: string;
+        credentialRef: string;
+        status: string;
+        cursor: Record<string, unknown>;
+      }>
+    >`
+      SELECT id::text,
+             provider_account_id AS "providerAccountId",
+             credential_ref AS "credentialRef",
+             status,
+             cursor
+        FROM harness_shared.trigger_sources
+       WHERE workspace_id = ${WS}
+         AND owner_user_id = ${userId}::uuid
+       ORDER BY provider_account_id, kind`;
+    const firstAfterReconnect = rowsAfterReconnect.filter(
+      (row) => row.providerAccountId === 'first@example.com',
+    );
+    expect(firstAfterReconnect.map((row) => row.id).sort()).toEqual(first.map((row) => row.id).sort());
+    expect(firstAfterReconnect.every((row) => row.credentialRef === 'google-workspace:first-field')).toBe(true);
+    expect(firstAfterReconnect.find((row) => row.id === firstGmail.id)).toMatchObject({
+      status: 'degraded',
+      cursor: { historyId: 'keep-first-history' },
+    });
+
+    const bindingsAfterReconnect = await sql<
+      Array<{ id: string; sourceId: string; providerAccountId: string; armed: boolean }>
+    >`
+      SELECT b.id::text,
+             b.source_id::text AS "sourceId",
+             s.provider_account_id AS "providerAccountId",
+             b.armed
+        FROM harness_shared.trigger_bindings b
+        JOIN harness_shared.trigger_sources s
+          ON s.workspace_id = b.workspace_id AND s.id = b.source_id
+       WHERE b.workspace_id = ${WS}
+       ORDER BY s.provider_account_id`;
+    expect(bindingsAfterReconnect).toEqual(bindingsBeforeReconnect);
+  });
+
   it('serializes concurrent reconnects onto the same disarmed Calendar binding', async () => {
     await Promise.all([
       provisionOwnedGoogleWorkspaceSources(sql, {
