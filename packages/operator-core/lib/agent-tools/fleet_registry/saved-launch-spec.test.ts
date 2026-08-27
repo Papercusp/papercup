@@ -352,6 +352,39 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
     });
   });
 
+  it('accepts a stale source fleet when launch_spec and launch_argv agree', () => {
+    const historicalFleet = 'byoc-before-rejoin';
+    const staleRecord: AdvSessionLaunchRecord = {
+      ...legacyRecord,
+      launchSpec: {
+        ...(legacyRecord.launchSpec as Record<string, unknown>),
+        fleet: { slug: historicalFleet, role: 'member' },
+      },
+      launchArgv: legacyRecord.launchArgv?.map((item) =>
+        item === '--fleet=byoc' ? `--fleet=${historicalFleet}` : item,
+      ) ?? null,
+    };
+
+    expect(savedFleetLaunchSpecFromLegacyRecord(staleRecord, 'ws-test', 'byoc')).toMatchObject({
+      ok: true,
+      config: { harness: 'papercusp', agent: 'codex', model: 'gpt-5.6-sol' },
+    });
+  });
+
+  it('fails closed when the two persisted source fleet fields disagree', () => {
+    const mismatchedRecord: AdvSessionLaunchRecord = {
+      ...legacyRecord,
+      launchArgv: legacyRecord.launchArgv?.map((item) =>
+        item === '--fleet=byoc' ? '--fleet=other-historical-fleet' : item,
+      ) ?? null,
+    };
+
+    expect(savedFleetLaunchSpecFromLegacyRecord(mismatchedRecord, 'ws-test', 'byoc')).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('fleet differs between launch_spec'),
+    });
+  });
+
   it('threads trusted legacy fallbacks through the resolver without changing canonical behavior', async () => {
     const result = await resolveSavedFleetLaunchSpec({
       workspaceId: 'ws-test',

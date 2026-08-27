@@ -247,9 +247,27 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     return { ok: false, message: 'Legacy adv_sessions launch_argv is missing or malformed.' };
   }
   const argv = record.launchArgv as string[];
-  const recordedFleet = argFlag(argv, 'fleet');
-  if (recordedFleet !== fleetSlug) {
-    return { ok: false, message: `Legacy launch_argv fleet does not match requested fleet \`${fleetSlug}\`.` };
+  const recordedFleet = argFlag(argv, 'fleet')?.trim() || null;
+  const rawFleet =
+    rawLaunchSpec.fleet && typeof rawLaunchSpec.fleet === 'object' && !Array.isArray(rawLaunchSpec.fleet)
+      ? rawLaunchSpec.fleet as Record<string, unknown>
+      : null;
+  const storedFleet = typeof rawFleet?.slug === 'string' && rawFleet.slug.trim()
+    ? rawFleet.slug.trim()
+    : null;
+  if (!recordedFleet || !storedFleet) {
+    return { ok: false, message: 'Legacy launch record fleet is missing from launch_spec or launch_argv.' };
+  }
+  // The member target has already established the live fleet. A legacy member
+  // can legitimately have been moved/rejoined since its launch record was
+  // written, so compare the two persisted source attestations with each other
+  // rather than rejecting a stale source fleet against the live target. The
+  // caller supplies `fleetSlug` to the replacement launch separately.
+  if (storedFleet !== recordedFleet) {
+    return {
+      ok: false,
+      message: `fleet differs between launch_spec (${storedFleet}) and launch_argv (${recordedFleet})`,
+    };
   }
 
   // Older launch_spec/argv rows can omit agent even though adv_sessions.agent
@@ -279,8 +297,8 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   if (launch.workspaceId !== workspaceId) {
     return { ok: false, message: `Legacy launch_spec workspace \`${launch.workspaceId}\` does not match \`${workspaceId}\`.` };
   }
-  if (launch.fleet?.slug !== fleetSlug) {
-    return { ok: false, message: `Legacy launch_spec fleet does not match requested fleet \`${fleetSlug}\`.` };
+  if (launch.fleet?.slug !== storedFleet) {
+    return { ok: false, message: `Legacy launch_spec fleet does not match its recorded fleet \`${storedFleet}\`.` };
   }
 
   const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
