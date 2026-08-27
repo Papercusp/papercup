@@ -30,6 +30,7 @@ vi.mock('../../plan-audits', async (orig) => {
     ...actual,
     getPlanItemStatuses: vi.fn(),
     getEffectiveItemAudits: vi.fn(),
+    getLatestActivationAudit: vi.fn(),
     repoCitationContextForHarness: vi.fn(),
     recordPlanAudit: vi.fn(),
     recordCurrentActivationAudit: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock('../../plan-audits', async (orig) => {
 
 import {
   getEffectiveItemAudits,
+  getLatestActivationAudit,
   getPlanItemStatuses,
   recordCurrentActivationAudit,
   recordPlanAudit,
@@ -48,6 +50,7 @@ import tool from './audit';
 
 const mockItems = vi.mocked(getPlanItemStatuses);
 const mockPrevious = vi.mocked(getEffectiveItemAudits);
+const mockPreviousActivation = vi.mocked(getLatestActivationAudit);
 const mockContext = vi.mocked(repoCitationContextForHarness);
 const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
@@ -69,6 +72,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockItems.mockResolvedValue([{ itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' }]);
   mockPrevious.mockResolvedValue([]);
+  mockPreviousActivation.mockResolvedValue(null);
   mockContext.mockResolvedValue({
     repoRoot: '/repo',
     rootSource: 'canonical-repo',
@@ -276,6 +280,98 @@ describe('plans:audit phase:activation', () => {
       }),
     );
     expect(mockItems).not.toHaveBeenCalled();
+  });
+
+  it('carries prior activation mappings and source ranges into a partial additive re-audit', async () => {
+    mockPreviousActivation.mockResolvedValue({
+      auditSeq: 7,
+      activation: {
+        sourceRanges: [{ sourceKind: 'codex', sessionId: 'prior-session', fromTurn: 1, toTurn: 9 }],
+        mappings: [{
+          id: 'M-001',
+          sourceRefs: ['session_turn:codex:prior-session:4'],
+          requirement: 'the original owner boundary remains represented',
+          planTargets: ['P-001'],
+          disposition: 'covered',
+        }],
+        repairedOmissions: ['prior repair'],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+    } as never);
+    mockResolveSourceRefs.mockImplementation(async (_sql, _workspaceId, refs) =>
+      refs.map((ref) => ({ ref, ok: true as const, source: 'index' as const })),
+    );
+
+    const result = ((await tool.handler(activationArgs({
+      sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
+      mappings: [{
+        id: 'M-002',
+        sourceRefs: ['session_turn:codex:session-full-id:7'],
+        requirement: 'the new material change is mapped additively',
+        planTargets: ['P-001'],
+        disposition: 'repaired',
+      }],
+      repairedOmissions: ['new repair'],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: true,
+      phase: 'activation',
+      mappings: 2,
+      sourceRanges: 2,
+      carriedMappings: 1,
+      carriedMappingIds: ['M-001'],
+      coverageBaseAuditSeq: 7,
+    });
+    expect(mockRecordActivation).toHaveBeenCalledWith(expect.objectContaining({
+      activation: expect.objectContaining({
+        mappings: [
+          expect.objectContaining({ id: 'M-001' }),
+          expect.objectContaining({ id: 'M-002' }),
+        ],
+        repairedOmissions: ['prior repair', 'new repair'],
+      }),
+    }));
+  });
+
+  it('refuses reuse of a stable mapping id for a different requirement', async () => {
+    mockPreviousActivation.mockResolvedValue({
+      auditSeq: 7,
+      activation: {
+        sourceRanges: [{ sourceKind: 'codex', sessionId: 'session-full-id', fromTurn: 0, toTurn: 20 }],
+        mappings: [{
+          id: 'M-001',
+          sourceRefs: ['session_turn:codex:session-full-id:7'],
+          requirement: 'the original owner boundary remains represented',
+          planTargets: ['P-001'],
+          disposition: 'covered',
+        }],
+        repairedOmissions: [],
+        rejectedOrSuperseded: [],
+        unresolvedBlockers: [],
+      },
+    } as never);
+
+    const result = ((await tool.handler(activationArgs({
+      mappings: [{
+        id: 'M-001',
+        sourceRefs: ['session_turn:codex:session-full-id:7'],
+        requirement: 'a different requirement tried to steal the old id',
+        planTargets: ['P-001'],
+        disposition: 'covered',
+      }],
+    }) as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'activation_coverage_regression',
+      previousAuditSeq: 7,
+      conflicts: [expect.objectContaining({ mappingId: 'M-001', code: 'mapping_id_reused' })],
+    });
+    expect(mockResolveSourceRefs).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
   });
 
   it('refuses a source ref that sessions:read cannot resolve', async () => {

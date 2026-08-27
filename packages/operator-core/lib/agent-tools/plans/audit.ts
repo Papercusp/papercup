@@ -33,9 +33,11 @@ import {
   CITATION_KINDS,
   citationBlobSha,
   getEffectiveItemAudits,
+  getLatestActivationAudit,
   getPlanItemStatuses,
   isVerifyingCitation,
   isCitationContextFailure,
+  mergeActivationAuditCoverage,
   prepareAuditPassEntries,
   recordCurrentActivationAudit,
   recordPlanAudit,
@@ -196,19 +198,17 @@ export default defineTool({
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     if (args.phase === 'activation') {
-      const sourceRanges = args.sourceRanges ?? [];
-      const mappings = args.mappings ?? [];
-      const activation: ActivationAuditPayload = {
-        sourceRanges,
-        mappings,
+      const submittedActivation: ActivationAuditPayload = {
+        sourceRanges: args.sourceRanges ?? [],
+        mappings: args.mappings ?? [],
         repairedOmissions: args.repairedOmissions ?? [],
         rejectedOrSuperseded: args.rejectedOrSuperseded ?? [],
         unresolvedBlockers: args.unresolvedBlockers ?? [],
       };
 
       if (
-        activation.unresolvedBlockers.length > 0 ||
-        activation.mappings.some((mapping) => mapping.disposition === 'open')
+        submittedActivation.unresolvedBlockers.length > 0 ||
+        submittedActivation.mappings.some((mapping) => mapping.disposition === 'open')
       ) {
         return { data: {
           ok: false as const,
@@ -217,12 +217,32 @@ export default defineTool({
           error: 'activation_blocked',
           message:
             'Activation audit has unresolved blockers or open mappings. Repair/map them before ready/active; no audit was recorded.',
-          unresolvedBlockers: activation.unresolvedBlockers,
-          openMappingIds: activation.mappings
+          unresolvedBlockers: submittedActivation.unresolvedBlockers,
+          openMappingIds: submittedActivation.mappings
             .filter((mapping) => mapping.disposition === 'open')
             .map((mapping) => mapping.id),
         } };
       }
+
+      const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
+      const previousAudit = await getLatestActivationAudit(args.slug, { workspaceId });
+      const merged = mergeActivationAuditCoverage(previousAudit?.activation, submittedActivation);
+      if (!merged.ok) {
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          phase: 'activation' as const,
+          error: 'activation_coverage_regression' as const,
+          previousAuditSeq: previousAudit?.auditSeq ?? null,
+          conflicts: merged.conflicts,
+          message:
+            'This re-audit would replace or shrink prior source-conversation coverage. ' +
+            'Keep existing M-NNN ids stable and additive; allocate new ids for new requirements. Nothing was recorded.',
+        } };
+      }
+      const activation = merged.activation;
+      const sourceRanges = activation.sourceRanges;
+      const mappings = activation.mappings;
 
       const sourceProblems: Problem[] = [];
       const sourceRefs: string[] = [];
@@ -265,7 +285,6 @@ export default defineTool({
         } };
       }
 
-      const workspaceId = sctx.workspaceId ?? activeWorkspaceId();
       // This tool opts out of the ambient workspace transaction because the
       // activation writer takes its own advisory-locked transaction below.
       // Consequently ctx.tx is intentionally absent at runtime; resolve the
@@ -325,6 +344,9 @@ export default defineTool({
         auditedPlanRevision: recorded.auditedPlanRevision,
         sourceRanges: sourceRanges.length,
         mappings: mappings.length,
+        carriedMappings: merged.carriedMappingIds.length,
+        carriedMappingIds: merged.carriedMappingIds,
+        coverageBaseAuditSeq: previousAudit?.auditSeq ?? null,
         sourceRefsResolved: resolutions.length,
         sourceRefsFromArchive: resolutions.filter((resolution) => resolution.source === 'archive').length,
         repairedOmissions: activation.repairedOmissions.length,

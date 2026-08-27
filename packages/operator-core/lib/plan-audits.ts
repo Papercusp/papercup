@@ -169,6 +169,127 @@ export interface ActivationAuditPayload {
   unresolvedBlockers: string[];
 }
 
+export interface ActivationAuditCoverageConflict {
+  mappingId?: string;
+  code:
+    | 'mapping_id_reused'
+    | 'mapping_source_refs_dropped'
+    | 'mapping_targets_dropped'
+    | 'coverage_limit_exceeded';
+  detail: string;
+}
+
+export type MergeActivationAuditCoverageResult =
+  | {
+      ok: true;
+      activation: ActivationAuditPayload;
+      carriedMappingIds: string[];
+    }
+  | {
+      ok: false;
+      conflicts: ActivationAuditCoverageConflict[];
+    };
+
+/**
+ * Preserve the complete conversation map across a material re-audit.
+ *
+ * Activation rows are append-only snapshots and the reader deliberately selects
+ * the newest one. That means a caller submitting only the NEW requirement would
+ * otherwise replace (not extend) every prior mapping. The result still looks like
+ * a valid activation audit while silently forgetting most of the source
+ * conversation — the exact opposite of the gate's purpose.
+ *
+ * Mapping ids are stable across passes. A caller may extend an existing mapping's
+ * refs/targets, but may not reuse its id for a different requirement or remove
+ * prior coverage. Omitted ids are carried mechanically, just like unchanged
+ * completion-audit entries. Intentional supersession stays explicit: keep the
+ * mapping, change its disposition/targets additively, and describe the ruling in
+ * rejectedOrSuperseded.
+ */
+export function mergeActivationAuditCoverage(
+  previous: ActivationAuditPayload | null | undefined,
+  submitted: ActivationAuditPayload,
+): MergeActivationAuditCoverageResult {
+  if (!previous) {
+    return { ok: true, activation: submitted, carriedMappingIds: [] };
+  }
+
+  const conflicts: ActivationAuditCoverageConflict[] = [];
+  const submittedById = new Map(submitted.mappings.map((mapping) => [mapping.id, mapping]));
+  const carriedMappingIds: string[] = [];
+  const mappings: ActivationAuditMapping[] = [];
+
+  for (const prior of previous.mappings) {
+    const next = submittedById.get(prior.id);
+    if (!next) {
+      mappings.push(prior);
+      carriedMappingIds.push(prior.id);
+      continue;
+    }
+    if (next.requirement !== prior.requirement) {
+      conflicts.push({
+        mappingId: prior.id,
+        code: 'mapping_id_reused',
+        detail:
+          `${prior.id} already identifies ${JSON.stringify(prior.requirement)}; ` +
+          `allocate a new M-NNN id for ${JSON.stringify(next.requirement)} instead of replacing prior coverage`,
+      });
+    }
+    const nextSources = new Set(next.sourceRefs);
+    const droppedSources = prior.sourceRefs.filter((ref) => !nextSources.has(ref));
+    if (droppedSources.length) {
+      conflicts.push({
+        mappingId: prior.id,
+        code: 'mapping_source_refs_dropped',
+        detail: `${prior.id} drops prior source ref(s): ${droppedSources.join(', ')}`,
+      });
+    }
+    const nextTargets = new Set(next.planTargets);
+    const droppedTargets = prior.planTargets.filter((target) => !nextTargets.has(target));
+    if (droppedTargets.length) {
+      conflicts.push({
+        mappingId: prior.id,
+        code: 'mapping_targets_dropped',
+        detail: `${prior.id} drops prior plan target(s): ${droppedTargets.join(', ')}`,
+      });
+    }
+  }
+
+  if (conflicts.length) return { ok: false, conflicts };
+
+  const priorIds = new Set(previous.mappings.map((mapping) => mapping.id));
+  mappings.push(...submitted.mappings.filter((mapping) => priorIds.has(mapping.id)));
+  mappings.push(...submitted.mappings.filter((mapping) => !priorIds.has(mapping.id)));
+
+  const rangeKey = (range: ActivationAuditSourceRange) =>
+    `${range.sourceKind}\u0000${range.sessionId}\u0000${range.fromTurn}\u0000${range.toTurn}`;
+  const ranges = new Map<string, ActivationAuditSourceRange>();
+  for (const range of [...previous.sourceRanges, ...submitted.sourceRanges]) ranges.set(rangeKey(range), range);
+
+  if (mappings.length > 300 || ranges.size > 50) {
+    conflicts.push({
+      code: 'coverage_limit_exceeded',
+      detail:
+        `effective activation coverage would contain ${mappings.length} mappings and ${ranges.size} source ranges; ` +
+        'compact equivalent entries without dropping requirements before re-auditing',
+    });
+    return { ok: false, conflicts };
+  }
+
+  const unique = (values: readonly string[]) => [...new Set(values)];
+  return {
+    ok: true,
+    carriedMappingIds,
+    activation: {
+      sourceRanges: [...ranges.values()],
+      mappings,
+      repairedOmissions: unique([...previous.repairedOmissions, ...submitted.repairedOmissions]),
+      rejectedOrSuperseded: unique([...previous.rejectedOrSuperseded, ...submitted.rejectedOrSuperseded]),
+      unresolvedBlockers: unique([...previous.unresolvedBlockers, ...submitted.unresolvedBlockers]),
+    },
+  };
+}
+
 export interface AuditedPlanRevision {
   id: number;
   seq: number;
@@ -532,7 +653,7 @@ export type RepoCitationContext =
 export function isCitationContextFailure(
   value: RepoCitationContext | null,
 ): value is CitationContextFailure {
-  return value?.kind === 'citation_unresolvable';
+  return value !== null && 'kind' in value && value.kind === 'citation_unresolvable';
 }
 
 /**
