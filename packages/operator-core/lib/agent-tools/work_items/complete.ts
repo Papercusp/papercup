@@ -74,10 +74,11 @@ import {
 } from '../../coord-lifecycle/records';
 import {
   committedCloseDowngradedForUnprovenContentIdentity,
+  completionSettlementManifest,
   completionTreeStamp,
   completionTreeStampForEvidence,
 } from './completion-freshness';
-export { completionTreeStamp, completionTreeStampForEvidence };
+export { completionSettlementManifest, completionTreeStamp, completionTreeStampForEvidence };
 export type {
   CompletionTreeStampProbe,
   CompletionTreeStampForEvidenceProbe,
@@ -2292,7 +2293,11 @@ async function completeOne(
     : undefined;
   const completionEvidenceToPersist: PersistedCompletionEvidence | undefined =
     completionEvidenceBeforeStamp && treeStamp
-      ? { ...completionEvidenceBeforeStamp, treeStamp }
+      ? (() => {
+          const stamped = { ...completionEvidenceBeforeStamp, treeStamp };
+          const settlementManifest = completionSettlementManifest(stamped);
+          return settlementManifest ? { ...stamped, settlementManifest } : stamped;
+        })()
       : completionEvidenceBeforeStamp;
   const committedContentIdentityMissing = committedCloseDowngradedForUnprovenContentIdentity(
     authorityByEvidence,
