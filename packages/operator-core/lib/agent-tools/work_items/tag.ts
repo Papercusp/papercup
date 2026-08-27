@@ -41,6 +41,20 @@ export default defineTool({
   guidance: {
     when: 'You want a work-item visible to agents following an area (topics:list to see topics), OR you want it to match a claim-spec filter on `tags` (this is the only writer for that field — work_items:update deliberately rejects a `tags` key). Tag several at once via ids:[…]+topic or items:[…].',
     chaining: 'topics:list → work_items:tag { topic } (or { ids, topic }). For claim-spec lane-scoping: work_items:tag { id, topic:"<lane-tag>" } → CHECK each result\'s `mirrored` → scheduler:set_claim_spec { …filter: { field:"tags", op:"contains", value:"<lane-tag>" } }. Any row that came back mirrored:false is NOT covered by that leg — scope it by id.',
+    // EI-18825410151745437: a caller naturally reaches for `tags:[…]` here.
+    // The strict rejection used to list this tool's args without saying that
+    // `topic` is the one-at-a-time writer for the claim-spec-visible tags field,
+    // reinforcing the false belief that no public writer exists. Put the
+    // correction on the failure path where that belief is formed. The generic
+    // argRedirects renderer owns the error shape and structured correction
+    // metadata; this tool contributes only its domain-specific fact.
+    argRedirects: {
+      tags: {
+        tool: 'work_items:tag',
+        args: { id: '<work-item-id>', topic: '<topic>' },
+        note: 'pass `topic`; it mirrors that topic into the claim-spec-visible `tags` field. Check `mirrored` in the result, not just `ok`',
+      },
+    },
   },
   capability: 'work_items:write',
   requirePrincipal: false,
