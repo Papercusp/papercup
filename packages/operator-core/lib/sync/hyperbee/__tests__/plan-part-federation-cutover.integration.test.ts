@@ -27,7 +27,7 @@
  * Owns its schema (mig 102 outbox/capture-fn + column-faithful harness_plans stub +
  * mig 125 plans capture + mig 214 stamp + mig 270/271 parts); does not touch the dev DB.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
@@ -286,6 +286,27 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
     expect((await p.getPlan())!.status).toBe('active'); // scalar re-derived from frontmatter part
   });
 
+  it('P-009: per-part recomposition refuses a cycle and preserves the last valid live candidate', async () => {
+    const c0 = planMarkdown('one', 'two', 'ready');
+    await p.recvWholeBlob(c0, 100);
+    await capturePlanParts(p.store, SLUG, c0, 100, 'seed');
+    const p1 = await p.partRowFor(SLUG, 'P-001');
+    const p2 = await p.partRowFor(SLUG, 'P-002');
+
+    // First leg is a valid DAG and may land.
+    await p.recvPart({ ...p1, body: '- **P-001** `todo` one blocked-by: P-002' }, 201);
+    const valid = (await p.getPlan())!.content;
+    expect(valid).toContain('one blocked-by: P-002');
+
+    // The reciprocal leg would make the recomposed candidate cyclic. It remains
+    // staged in harness_plan_parts, but cannot overwrite the live plan row.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await p.recvPart({ ...p2, body: '- **P-002** `todo` two blocked-by: P-001' }, 202);
+    expect(warn.mock.calls.flat().join(' ')).toContain('rejected federated part recompose');
+    warn.mockRestore();
+    expect((await p.getPlan())!.content).toBe(valid);
+  });
+
   it('7. flag ON RECEIVE baseline (P-010): a parts-empty peer (content via whole-blob) merges a lone incoming part — not a broken one-part doc', async () => {
     const c0 = planMarkdown('one', 'two');
     await p.recvWholeBlob(c0, 100); // content present via whole-blob bootstrap…
@@ -324,6 +345,40 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
     await p.recvWholeBlob(c0, 100); // full upsert (insert)
     await p.recvWholeBlob(planMarkdown('one-NEW', 'two-NEW'), 200); // newer → applies
     expect((await p.getPlan())!.content).toBe(planMarkdown('one-NEW', 'two-NEW')); // whole-doc LWW (the legacy behavior)
+  });
+
+  it('P-009: whole-blob import rejects a newly cyclic candidate without changing the live row', async () => {
+    const valid = planMarkdown('one', 'two', 'ready');
+    await p.recvWholeBlob(valid, 100, 'ready');
+    const cyclic = planMarkdown(
+      'one blocked-by: P-002',
+      'two blocked-by: P-001',
+      'ready',
+    );
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    await p.recvWholeBlob(cyclic, 200, 'ready');
+    expect(warn.mock.calls.flat().join(' ')).toContain('rejected federated whole-plan write');
+    warn.mockRestore();
+    expect((await p.getPlan())!.content).toBe(valid);
+  });
+
+  it('P-009: whole-blob import permits a strict-subset repair of a legacy-invalid row', async () => {
+    const legacy = planMarkdown(
+      'one blocked-by: P-099',
+      'two blocked-by: P-098',
+      'ready',
+    );
+    await p.sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, origin, fed_ts)
+      VALUES (${WS}, ${H}, ${SLUG}, ${legacy}, ${hashPlanContent(legacy)}, 'Cutover Test', 'ready', 'remote', 100)
+    `;
+    const repair = planMarkdown('one blocked-by: P-099', 'two', 'ready');
+
+    await p.recvWholeBlob(repair, 200, 'ready');
+
+    expect((await p.getPlan())!.content).toBe(repair);
   });
 });
 

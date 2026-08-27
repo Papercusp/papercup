@@ -26,6 +26,7 @@ import { observeMergedOp } from '../clobber-events';
 import { decideMemberContentOp } from '../member-content-guard';
 import type { PendingMembershipContent } from '../pending-membership-content';
 import { summarizeForcedPast } from '../../../agent-tools/plans/forced-past-stamp';
+import { withPlanDependencyAdmissionTransaction } from '../../../agent-tools/plans/plan-dependency-admission-transaction';
 import {
   decideContentWriteAuthority,
   resolveContentWriteMode,
@@ -323,105 +324,102 @@ async function writeToPg(
     if (!auth.ok) return;
     if (auth.bindOwner) ownerToBind = sourceLogDevice;
   }
-  // plan-federation-regrain D-004: when per-part federation is ON, the per-part
-  // recompose owns content + scalars. This whole-blob path drops to BOOTSTRAP-
-  // ONLY: INSERT a never-seen plan (so a brand-new plan still lands on a remote
-  // peer) but DO NOTHING on an existing row — never updating content or scalars,
-  // so a stale whole-blob snapshot cannot clobber a per-part merge. The single
-  // fed_ts stays a single LWW stream (recompose owns updates).
-  if (await planPartFederationOn(opts)) {
-    await sql`
-      INSERT INTO harness_shared.harness_plans
-        (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-         title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
-       output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-         archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
-      VALUES
-        (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
-         ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
-         ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
-         ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
-         ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
-         -- property_schema and properties are NOT NULL DEFAULT '{}' locally, so an
-         -- absent wire value must land as '{}' and never as NULL.
-         COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
-         COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
-         ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
-         ${row.supersedes}, ${row.superseded_by},
-         ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
-      ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
-    `;
-    flagPlanClobber(row.plan_slug, provenance);
+  const partFederationOn = await planPartFederationOn(opts);
+  const admission = await withPlanDependencyAdmissionTransaction(
+    {
+      sql,
+      workspaceId: opts.workspaceId,
+      harnessSlug: row.harness_slug,
+      planSlug: row.plan_slug,
+      candidateContent: row.content,
+      candidateStatus: row.status,
+    },
+    async (tx) => {
+      // plan-federation-regrain D-004: when per-part federation is ON, the
+      // recompose owns content + scalars. This whole-blob path is bootstrap-only.
+      if (partFederationOn) {
+        await tx`
+          INSERT INTO harness_shared.harness_plans
+            (workspace_id, harness_slug, plan_slug, content, content_hash, version,
+             title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
+             output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
+             archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+          VALUES
+            (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
+             ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
+             ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+             ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+             ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
+             COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
+             COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
+             ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
+             ${row.supersedes}, ${row.superseded_by},
+             ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+          ON CONFLICT (workspace_id, harness_slug, plan_slug) DO NOTHING
+        `;
+        return;
+      }
+
+      // workspace_id is the LOCAL projection's bound workspace. version is the
+      // local CAS counter; op_* remains machine-local and is preserved on update.
+      await tx`
+        INSERT INTO harness_shared.harness_plans
+          (workspace_id, harness_slug, plan_slug, content, content_hash, version,
+           title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
+           output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
+           archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
+        VALUES
+          (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
+           ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
+           ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
+           ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
+           ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
+           COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
+           COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
+           ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
+           ${row.supersedes}, ${row.superseded_by},
+           ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
+        ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
+          content       = EXCLUDED.content,
+          content_hash  = EXCLUDED.content_hash,
+          version       = harness_shared.harness_plans.version + 1,
+          title         = EXCLUDED.title,
+          status        = EXCLUDED.status,
+          created       = EXCLUDED.created,
+          updated       = EXCLUDED.updated,
+          owner         = EXCLUDED.owner,
+          initiative    = EXCLUDED.initiative,
+          template       = EXCLUDED.template,
+          template_data  = EXCLUDED.template_data,
+          promote_policy = EXCLUDED.promote_policy,
+          input_schema   = EXCLUDED.input_schema,
+          output_schema  = EXCLUDED.output_schema,
+          property_schema = COALESCE(
+            ${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb,
+            harness_shared.harness_plans.property_schema),
+          properties      = COALESCE(
+            ${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb,
+            harness_shared.harness_plans.properties),
+          forced_past    = EXCLUDED.forced_past,
+          supersedes    = EXCLUDED.supersedes,
+          superseded_by = EXCLUDED.superseded_by,
+          archived      = EXCLUDED.archived,
+          is_legacy     = EXCLUDED.is_legacy,
+          author_pubkey = EXCLUDED.author_pubkey,
+          origin        = EXCLUDED.origin,
+          fed_ts        = EXCLUDED.fed_ts,
+          fed_hlc       = EXCLUDED.fed_hlc
+        WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.harness_plans.fed_hlc, harness_shared.harness_plans.fed_ts)
+      `;
+    },
+  );
+  if (!admission.admitted) {
+    console.warn(
+      `[plan-dependency-admission] rejected federated whole-plan write for '${row.plan_slug}': ` +
+        admission.verdict.diagnostics.map((diagnostic) => diagnostic.message).join('; '),
+    );
     return;
   }
-  // workspace_id is the LOCAL projection's bound workspace (not the sender's) —
-  // a remote plan lands in the workspace this harness is bound to here. version
-  // is the local CAS counter: 0 on first insert, bumped on every remote apply so
-  // an in-flight local optimistic-CAS edit is correctly invalidated. op_* are
-  // NOT set (preserved on update / NULL on insert) — operational state is local.
-  await sql`
-    INSERT INTO harness_shared.harness_plans
-      (workspace_id, harness_slug, plan_slug, content, content_hash, version,
-       title, status, created, updated, owner, initiative, template, template_data, promote_policy, input_schema,
-       output_schema, property_schema, properties, forced_past, supersedes, superseded_by,
-       archived, is_legacy, author_pubkey, owner_author_pubkey, origin, fed_ts, fed_hlc)
-    VALUES
-      (${opts.workspaceId}, ${row.harness_slug}, ${row.plan_slug}, ${row.content}, ${row.content_hash}, 0,
-       ${row.title}, ${row.status}, ${row.created}, ${row.updated}, ${row.owner}, ${row.initiative ?? null},
-       -- jsonb: bind via JSON.stringify(x)::text::jsonb (sql.json throws under getOrgPg)
-       ${row.template ?? null}, ${row.template_data == null ? null : JSON.stringify(row.template_data)}::text::jsonb, ${row.promote_policy == null ? null : JSON.stringify(row.promote_policy)}::text::jsonb,
-       ${row.input_schema == null ? null : JSON.stringify(row.input_schema)}::text::jsonb,
-       ${row.output_schema == null ? null : JSON.stringify(row.output_schema)}::text::jsonb,
-       -- property_schema and properties are NOT NULL DEFAULT '{}' locally, so an
-       -- absent wire value must land as '{}' and never as NULL.
-       COALESCE(${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb, '{}'::jsonb),
-       COALESCE(${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb, '{}'::jsonb),
-       ${forcedPast == null ? null : JSON.stringify(forcedPast)}::text::jsonb,
-       ${row.supersedes}, ${row.superseded_by},
-       ${row.archived}, ${row.is_legacy}, ${authorPubkey}, ${ownerToBind}, ${origin}, ${fedTs}, ${fedHlc})
-    ON CONFLICT (workspace_id, harness_slug, plan_slug) DO UPDATE SET
-      -- owner_author_pubkey is NOT updated here — the original owner binding is PRESERVED across
-      -- every later overwrite (P-018/D-012); only an authorized op reaches this UPDATE anyway.
-      content       = EXCLUDED.content,
-      content_hash  = EXCLUDED.content_hash,
-      version       = harness_shared.harness_plans.version + 1,
-      title         = EXCLUDED.title,
-      status        = EXCLUDED.status,
-      created       = EXCLUDED.created,
-      updated       = EXCLUDED.updated,
-      owner         = EXCLUDED.owner,
-      initiative    = EXCLUDED.initiative,
-      template       = EXCLUDED.template,
-      template_data  = EXCLUDED.template_data,
-      promote_policy = EXCLUDED.promote_policy,
-      input_schema   = EXCLUDED.input_schema,
-      output_schema  = EXCLUDED.output_schema,
-      -- NOT EXCLUDED for these two. Their INSERT coerces an absent wire value to
-      -- '{}', so EXCLUDED cannot distinguish "peer sent empty" from "peer omitted
-      -- the key" — taking it blindly would let a peer predating these columns
-      -- overwrite real local properties with an empty object. Bind the raw
-      -- parameter again instead and fall back to the row already stored.
-      property_schema = COALESCE(
-        ${row.property_schema == null ? null : JSON.stringify(row.property_schema)}::text::jsonb,
-        harness_shared.harness_plans.property_schema),
-      properties      = COALESCE(
-        ${row.properties == null ? null : JSON.stringify(row.properties)}::text::jsonb,
-        harness_shared.harness_plans.properties),
-      forced_past    = EXCLUDED.forced_past,
-      supersedes    = EXCLUDED.supersedes,
-      superseded_by = EXCLUDED.superseded_by,
-      archived      = EXCLUDED.archived,
-      is_legacy     = EXCLUDED.is_legacy,
-      author_pubkey = EXCLUDED.author_pubkey,
-      origin        = EXCLUDED.origin,
-      fed_ts        = EXCLUDED.fed_ts,
-      fed_hlc       = EXCLUDED.fed_hlc
-    -- PG-level LWW guard (D-001, transitivity-fixed EI-1698): both sides compared
-    -- in ONE order space via fed_order_key() -- an op's real HLC when it has one,
-    -- else a derived HLC built from its wall-clock fed_ts (mirrors lwwPick exactly,
-    -- so the guard never rejects what the in-process merge fold would pick).
-    WHERE harness_shared.fed_order_key(EXCLUDED.fed_hlc, EXCLUDED.fed_ts) >= harness_shared.fed_order_key(harness_shared.harness_plans.fed_hlc, harness_shared.harness_plans.fed_ts)
-  `;
   flagPlanClobber(row.plan_slug, provenance);
 }
 

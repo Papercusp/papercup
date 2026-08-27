@@ -311,19 +311,60 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
 
   // ── the vetting stamp (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
 
-  it('surfaces a well-formed vetting stamp, extra keys dropped', () => {
+  it('surfaces a well-formed consult vetting stamp, including critique metadata', () => {
     const out = asStructuredObservation({
       rubricRef: 'meta-acceptance-rubric',
       subject: { kind: 'rubric', ref: 'ar-some-plan' },
-      vetting: { consultId: 'conv-1', rubricRevision: 7, junk: 'nope' },
+      vetting: {
+        consultId: 'conv-1',
+        rubricRevision: 7,
+        critiquePosts: 2,
+        critics: ['su-reviewer'],
+        unanswered: true,
+        unansweredReason: 'No reviewer answered before the bounded deadline.',
+        junk: 'nope',
+      },
     });
-    expect(out?.vetting).toEqual({ consultId: 'conv-1', rubricRevision: 7 });
+    expect(out?.vetting).toEqual({
+      consultId: 'conv-1',
+      rubricRevision: 7,
+      critiquePosts: 2,
+      critics: ['su-reviewer'],
+      unanswered: true,
+      unansweredReason: 'No reviewer answered before the bounded deadline.',
+    });
     expect(out?.subject).toEqual({ kind: 'rubric', ref: 'ar-some-plan' });
   });
 
-  it('discards a vetting block that cannot name its consult (consultId is load-bearing)', () => {
+  it('surfaces the work-item critique channel used by launched independent reviewers', () => {
+    const out = asStructuredObservation({
+      rubricRef: 'meta-acceptance-rubric',
+      vetting: {
+        workItemId: 'WI-42379',
+        rubricRevision: 8,
+        critiquePosts: 1,
+        critics: ['su-critic', 42, ''],
+        unanswered: true,
+        unansweredReason: 'not valid on this channel',
+      },
+    });
+    expect(out?.vetting).toEqual({
+      workItemId: 'WI-42379',
+      rubricRevision: 8,
+      critiquePosts: 1,
+      critics: ['su-critic'],
+    });
+  });
+
+  it('discards a vetting block without exactly one critique-channel link', () => {
     expect(asStructuredObservation({ rubricRef: 'r', vetting: { rubricRevision: 7 } })?.vetting).toBeUndefined();
     expect(asStructuredObservation({ rubricRef: 'r', vetting: { consultId: '  ' } })?.vetting).toBeUndefined();
+    expect(
+      asStructuredObservation({
+        rubricRef: 'r',
+        vetting: { consultId: 'conv-1', workItemId: 'WI-1', rubricRevision: 7 },
+      })?.vetting,
+    ).toBeUndefined();
     expect(asStructuredObservation({ rubricRef: 'r', vetting: 'conv-1' })?.vetting).toBeUndefined();
     expect(asStructuredObservation({ rubricRef: 'r', vetting: ['conv-1'] })?.vetting).toBeUndefined();
   });

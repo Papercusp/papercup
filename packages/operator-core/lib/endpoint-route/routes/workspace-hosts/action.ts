@@ -2,9 +2,16 @@
 import { defineTool } from '@papercusp/agent-mcp';
 import {
   startWorkspaceHostDestroyWorkflow,
+  startWorkspaceHostLifecycleWorkflow,
   WorkspaceHostProvisioningConflictError,
   type StartWorkspaceHostDestroyInput,
+  type StartWorkspaceHostLifecycleInput,
 } from '../../../dbos/workspace-host-provision-workflow';
+import type {
+  WorkspaceHostDesiredSpec,
+  WorkspaceHostImageRef,
+  WorkspaceHostSnapshotRef,
+} from '@papercusp/deployment-driver';
 import { dbosStarted } from '../../../dbos/bootstrap';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import {
@@ -28,7 +35,15 @@ interface WorkspaceHostActionBody {
   operationId?: unknown;
   confirmation?: unknown;
   canary?: unknown;
+  name?: unknown;
+  image?: unknown;
+  rollbackImage?: unknown;
+  snapshot?: unknown;
+  desired?: unknown;
 }
+
+const LIFECYCLE_ACTIONS = ['start', 'stop', 'restart', 'repair', 'snapshot', 'upgrade', 'restore'] as const;
+type LifecycleAction = (typeof LIFECYCLE_ACTIONS)[number];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -86,6 +101,7 @@ export interface WorkspaceHostActionRouteDependencies {
   readTarget: (workspaceId: string, hostId: string) => Promise<StoredWorkspaceHostDestroyTarget | null>;
   readConnection: (workspaceId: string, connectionId: string) => Promise<StoredWorkspaceHostConnection | null>;
   startDestroy: (input: StartWorkspaceHostDestroyInput) => ReturnType<typeof startWorkspaceHostDestroyWorkflow>;
+  startLifecycle: (input: StartWorkspaceHostLifecycleInput) => ReturnType<typeof startWorkspaceHostLifecycleWorkflow>;
 }
 
 const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
@@ -94,6 +110,7 @@ const DEFAULT_DEPENDENCIES: WorkspaceHostActionRouteDependencies = {
   readTarget: readWorkspaceHostDestroyTarget,
   readConnection: readWorkspaceHostConnection,
   startDestroy: startWorkspaceHostDestroyWorkflow,
+  startLifecycle: startWorkspaceHostLifecycleWorkflow,
 };
 
 function requestError(error: string, status = 400, extra: Record<string, unknown> = {}): Response {
@@ -115,30 +132,37 @@ export function createWorkspaceHostActionRoute(
         return requestError('invalid json');
       }
       if (!isRecord(body)) return requestError('body must be an object');
-      if (body.action !== 'destroy') {
+      const action = typeof body.action === 'string' ? body.action : '';
+      if (action !== 'destroy' && !LIFECYCLE_ACTIONS.includes(action as LifecycleAction)) {
         return requestError('workspace-host lifecycle action is not implemented', 501, {
-          action: typeof body.action === 'string' ? body.action : null,
+          action: action || null,
         });
       }
 
       const hostId = typeof body.workspaceId === 'string' ? body.workspaceId.trim() : '';
       if (!SAFE_ID.test(hostId)) return requestError('invalid workspaceId');
-      if (body.disposition !== 'discard') {
-        return requestError('production destroy currently requires disposition=discard', 422);
-      }
       if (body.operationId !== undefined && (typeof body.operationId !== 'string' || !SAFE_ID.test(body.operationId))) {
         return requestError('invalid operationId');
       }
-      if (!isRecord(body.confirmation)) return requestError('destroy confirmation is required');
-      const expectedHostId =
-        typeof body.confirmation.expectedHostId === 'string' ? body.confirmation.expectedHostId.trim() : '';
-      const confirmedBy = typeof body.confirmation.confirmedBy === 'string' ? body.confirmation.confirmedBy.trim() : '';
-      const confirmedAt = typeof body.confirmation.confirmedAt === 'string' ? body.confirmation.confirmedAt.trim() : '';
-      if (expectedHostId !== hostId || !confirmedBy || !Number.isFinite(Date.parse(confirmedAt))) {
-        return requestError('destroy confirmation must name this host, an actor, and an ISO timestamp');
+      let destroyAdmission:
+        | { expectedHostId: string; confirmedBy: string; confirmedAt: string; canary: WorkspaceHostDestroyCanaryEvidence }
+        | undefined;
+      if (action === 'destroy') {
+        if (body.disposition !== 'discard') {
+          return requestError('production destroy currently requires disposition=discard', 422);
+        }
+        if (!isRecord(body.confirmation)) return requestError('destroy confirmation is required');
+        const expectedHostId =
+          typeof body.confirmation.expectedHostId === 'string' ? body.confirmation.expectedHostId.trim() : '';
+        const confirmedBy = typeof body.confirmation.confirmedBy === 'string' ? body.confirmation.confirmedBy.trim() : '';
+        const confirmedAt = typeof body.confirmation.confirmedAt === 'string' ? body.confirmation.confirmedAt.trim() : '';
+        if (expectedHostId !== hostId || !confirmedBy || !Number.isFinite(Date.parse(confirmedAt))) {
+          return requestError('destroy confirmation must name this host, an actor, and an ISO timestamp');
+        }
+        const canary = parseCanaryEvidence(body.canary);
+        if (!canary) return requestError('valid destroy canary evidence is required');
+        destroyAdmission = { expectedHostId, confirmedBy, confirmedAt, canary };
       }
-      const canary = parseCanaryEvidence(body.canary);
-      if (!canary) return requestError('valid destroy canary evidence is required');
       if (!dependencies.provisioningAvailable()) {
         return requestError('workspace-host provisioning workflow is unavailable on this operator', 503);
       }
@@ -155,21 +179,40 @@ export function createWorkspaceHostActionRoute(
         });
       }
       if (stored.target !== target.target || target.target !== 'gcp') {
-        return requestError('workspace-host destroy target is not implemented', 501, { target: target.target });
+        return requestError('workspace-host lifecycle target is not implemented', 501, { target: target.target });
       }
 
       try {
-        const result = await dependencies.startDestroy({
+        const common = {
           workspaceId,
           hostId,
-          connectionId: target.connectionId,
           connection: { ...stored.connection, scope: target.desired.scope },
-          disposition: 'discard',
-          confirmation: { expectedHostId, confirmedBy, confirmedAt },
-          canary,
           ...(typeof body.operationId === 'string' ? { operationId: body.operationId } : {}),
-          actorId: confirmedBy,
-        });
+        };
+        const result = action === 'destroy'
+          ? await dependencies.startDestroy({
+              ...common,
+              connectionId: target.connectionId,
+              disposition: 'discard',
+              confirmation: {
+                expectedHostId: destroyAdmission!.expectedHostId,
+                confirmedBy: destroyAdmission!.confirmedBy,
+                confirmedAt: destroyAdmission!.confirmedAt,
+              },
+              canary: destroyAdmission!.canary,
+              actorId: destroyAdmission!.confirmedBy,
+            })
+          : await dependencies.startLifecycle({
+              ...common,
+              action: action as LifecycleAction,
+              ...(typeof body.name === 'string' && body.name.trim() ? { name: body.name.trim() } : {}),
+              ...(isRecord(body.image) ? { image: body.image as unknown as WorkspaceHostImageRef } : {}),
+              ...(isRecord(body.rollbackImage)
+                ? { rollbackImage: body.rollbackImage as unknown as WorkspaceHostImageRef }
+                : {}),
+              ...(isRecord(body.snapshot) ? { snapshot: body.snapshot as unknown as WorkspaceHostSnapshotRef } : {}),
+              ...(isRecord(body.desired) ? { desired: body.desired as unknown as WorkspaceHostDesiredSpec } : {}),
+            });
         const response = {
           ok: result.status !== 'failed',
           status: result.status,
@@ -184,12 +227,13 @@ export function createWorkspaceHostActionRoute(
           })),
           ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
           ...(result.evidence ? { evidence: result.evidence } : {}),
-          message:
-            result.status === 'succeeded'
+          message: result.status === 'succeeded'
+            ? action === 'destroy'
               ? 'Workspace-host discard teardown completed with terminal evidence'
-              : result.status === 'in-progress'
-                ? 'Workspace-host discard teardown is in progress'
-                : 'Workspace-host discard teardown failed; see the host timeline for details',
+              : `Workspace-host ${action} completed`
+            : result.status === 'in-progress'
+              ? `Workspace-host ${action} is in progress`
+              : `Workspace-host ${action} failed; see the host timeline for details`,
         };
         return Response.json(response, {
           status: result.status === 'succeeded' ? 200 : result.status === 'in-progress' ? 202 : 500,
@@ -202,9 +246,9 @@ export function createWorkspaceHostActionRoute(
           return requestError('workspace-host connection validation failed', 409, { problems: error.problems });
         }
         if (error instanceof WorkspaceHostProvisioningRequestError) {
-          return requestError('workspace-host destroy request rejected', 422, { problems: error.problems });
+          return requestError(`workspace-host ${action} request rejected`, 422, { problems: error.problems });
         }
-        return requestError('workspace-host destroy failed; see the host timeline for details', 500);
+        return requestError(`workspace-host ${action} failed; see the host timeline for details`, 500);
       }
     },
   });

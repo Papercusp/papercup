@@ -22,6 +22,10 @@ import {
   type WorkspaceHostDestroyResult,
   type WorkspaceHostProvisioningResult,
 } from '../workspace-host/provisioning-runner';
+import {
+  runWorkspaceHostLifecycle,
+  type RunWorkspaceHostLifecycleInput,
+} from '../workspace-host/lifecycle-runner';
 import { idempotentRegisterWorkflow, idempotentWorkflowQueue } from './idempotent-register-workflow';
 import { queueConcurrency } from './queue-concurrency';
 
@@ -55,6 +59,11 @@ export interface StartWorkspaceHostDestroyInput {
   actorId?: string;
 }
 
+export type StartWorkspaceHostLifecycleInput = Omit<
+  RunWorkspaceHostLifecycleInput,
+  'provider' | 'store' | 'signal'
+>;
+
 type WorkspaceHostProvisioningWorkflowInput = StartWorkspaceHostProvisioningInput & {
   action: 'provision';
   operationId: string;
@@ -65,7 +74,14 @@ type WorkspaceHostDestroyWorkflowInput = StartWorkspaceHostDestroyInput & {
   operationId: string;
 };
 
-type WorkspaceHostWorkflowInput = WorkspaceHostProvisioningWorkflowInput | WorkspaceHostDestroyWorkflowInput;
+type WorkspaceHostLifecycleWorkflowInput = StartWorkspaceHostLifecycleInput & {
+  operationId: string;
+};
+
+type WorkspaceHostWorkflowInput =
+  | WorkspaceHostProvisioningWorkflowInput
+  | WorkspaceHostDestroyWorkflowInput
+  | WorkspaceHostLifecycleWorkflowInput;
 
 export type WorkspaceHostProvisioningExecutor = (
   input: WorkspaceHostWorkflowInput,
@@ -93,6 +109,9 @@ async function execute(input: WorkspaceHostWorkflowInput): Promise<WorkspaceHost
   const provider = createConfiguredGcpWorkspaceHostProvider(input.connection);
   if (input.action === 'destroy') {
     return runWorkspaceHostDestroy({ ...input, provider });
+  }
+  if (input.action !== 'provision') {
+    return runWorkspaceHostLifecycle({ ...input, provider });
   }
   return runWorkspaceHostProvisioning({
     ...input,
@@ -217,6 +236,27 @@ export async function startWorkspaceHostDestroyWorkflow(
       enqueueOptions: { deduplicationID: keys.deduplicationId },
     })(workflowInput);
     return (await handle.getResult()) as WorkspaceHostDestroyResult;
+  } catch (error) {
+    if (isWorkspaceHostProvisioningDedupConflict(error)) {
+      throw new WorkspaceHostProvisioningConflictError(input.hostId);
+    }
+    throw rehydrateWorkspaceHostProvisioningError(error);
+  }
+}
+
+export async function startWorkspaceHostLifecycleWorkflow(
+  input: StartWorkspaceHostLifecycleInput,
+): Promise<WorkspaceHostProvisioningResult> {
+  const operationId = input.operationId ?? randomUUID();
+  const workflowInput: WorkspaceHostLifecycleWorkflowInput = { ...input, operationId };
+  const keys = workspaceHostWorkflowKeys({ workspaceId: input.workspaceId, hostId: input.hostId, operationId });
+  try {
+    const handle = await DBOS.startWorkflow(workspaceHostProvisioningWorkflow, {
+      workflowID: keys.workflowId,
+      queueName: workspaceHostProvisioningQueue.name,
+      enqueueOptions: { deduplicationID: keys.deduplicationId },
+    })(workflowInput);
+    return (await handle.getResult()) as WorkspaceHostProvisioningResult;
   } catch (error) {
     if (isWorkspaceHostProvisioningDedupConflict(error)) {
       throw new WorkspaceHostProvisioningConflictError(input.hostId);

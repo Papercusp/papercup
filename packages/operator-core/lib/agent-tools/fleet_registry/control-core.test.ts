@@ -166,6 +166,8 @@ describe('fleetControlCueText (pure)', () => {
     expect(body).toContain('[system-derived:fleet-control]');
     expect(lintCarrySurfaceProvenance(body)).toEqual({ flagged: false, matches: [] });
     expect(body).toContain('work_items:checkpoint');
+    expect(body).toContain('acknowledgeWakeLessAutonomy:true');
+    expect(body).toContain('events:await');
     expect(body).toContain('coord:ack { msg_id }');
     expect(body).toContain('fleet:resume');
     expect(fleetControlCueText('wind-down', 'backend', null, '4c85f', 'm-cue').body).toContain(
@@ -227,6 +229,8 @@ describe('fleetControlCueText (pure)', () => {
     // otherwise the guard is decorative.
     expect(PRE_FIX_CUE_BODY).not.toContain("coord:send { expects:'none', summary:'…' }");
     expect(PRE_FIX_CUE_BODY).not.toMatch(/carries no free text/i);
+    expect(PRE_FIX_CUE_BODY).not.toContain('acknowledgeWakeLessAutonomy:true');
+    expect(PRE_FIX_CUE_BODY).not.toContain('events:await');
     expect(PRE_FIX_CUE_BODY).toMatch(/coord:ack \{[^}]*\}\s*to send your one-line disposition/i);
   });
 

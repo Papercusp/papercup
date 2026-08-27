@@ -809,16 +809,39 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     }
   }
   // P-004 (consult-min-max-and-rubric-vetting-2026-08-17): the vetting stamp.
-  // `consultId` is load-bearing (a vetting block that cannot name its consult is
-  // exactly the unlinked attestation the gate refuses), so a malformed block is
-  // discarded rather than half-kept — same posture as `provisional` above.
+  // Exactly ONE critique-channel link is load-bearing: `consultId` for a routed
+  // consult, or `workItemId` for a launched reviewer's durable comments (WI-41477).
+  // A block with neither or both is ambiguous/unlinked, so discard it rather than
+  // half-keeping an attestation the acceptance gate must not trust.
   if (o.vetting && typeof o.vetting === 'object' && !Array.isArray(o.vetting)) {
     const vet = o.vetting as Record<string, unknown>;
-    if (typeof vet.consultId === 'string' && vet.consultId.trim()) {
+    const consultId = typeof vet.consultId === 'string' && vet.consultId.trim() ? vet.consultId.trim() : null;
+    const workItemId =
+      typeof vet.workItemId === 'string' && vet.workItemId.trim() ? vet.workItemId.trim() : null;
+    if (Boolean(consultId) !== Boolean(workItemId)) {
+      const critics = Array.isArray(vet.critics)
+        ? vet.critics.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
+        : [];
+      const unansweredReason =
+        consultId && typeof vet.unansweredReason === 'string' && vet.unansweredReason.trim()
+          ? vet.unansweredReason.trim()
+          : null;
       out.vetting = {
-        consultId: vet.consultId,
+        ...(consultId ? { consultId } : { workItemId: workItemId! }),
         ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
           ? { rubricRevision: vet.rubricRevision }
+          : {}),
+        ...(typeof vet.critiquePosts === 'number' &&
+        Number.isInteger(vet.critiquePosts) &&
+        vet.critiquePosts >= 0
+          ? { critiquePosts: vet.critiquePosts }
+          : {}),
+        ...(critics.length > 0 ? { critics } : {}),
+        // Only the consult channel admits the explicit unanswered waiver, and its
+        // reason is required. A malformed partial waiver stays invisible instead of
+        // accidentally weakening the non-vacuity gate on read.
+        ...(consultId && vet.unanswered === true && unansweredReason
+          ? { unanswered: true as const, unansweredReason }
           : {}),
       };
     }
