@@ -275,8 +275,8 @@ describe('ADC-backed GCP workspace-host API client', () => {
         queryPath: 'hostkeys/',
         queryValue: {
           items: [
-            { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'ecdsa-sha2-nistp256 AAAA' },
-            { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'ssh-ed25519 AAAA' },
+            { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'AAAA' },
+            { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'AAAA' },
           ],
         },
       });
@@ -285,8 +285,8 @@ describe('ADC-backed GCP workspace-host API client', () => {
     await expect(
       makeClient(fetchImpl).getInstanceGuestAttributes(PROJECT, ZONE, 'pc-host-vm', 'hostkeys/'),
     ).resolves.toEqual([
-      { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'ecdsa-sha2-nistp256 AAAA' },
-      { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'ssh-ed25519 AAAA' },
+      { namespace: 'hostkeys', key: 'ecdsa-sha2-nistp256', value: 'AAAA' },
+      { namespace: 'hostkeys', key: 'ssh-ed25519', value: 'AAAA' },
     ]);
   });
 

@@ -104,7 +104,10 @@ function positiveInteger(value: number, label: string): number {
   return value;
 }
 
-function hostKeyAlias(profile: GcpIapWorkspaceHostInitializationProfile): string {
+/** The one canonical alias derivation shared by command construction and trust enrollment. */
+export function gcpIapHostKeyAlias(
+  profile: Pick<GcpIapWorkspaceHostInitializationProfile, 'projectId' | 'zone' | 'instanceName'>,
+): string {
   return `gcp-iap-${createHash('sha256')
     .update(`${profile.projectId}\0${profile.zone}\0${profile.instanceName}`)
     .digest('hex')
@@ -185,7 +188,7 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
       '-o',
       `UserKnownHostsFile=${knownHostsFile}`,
       '-o',
-      `HostKeyAlias=${hostKeyAlias(profile)}`,
+      `HostKeyAlias=${gcpIapHostKeyAlias(profile)}`,
       ...(identityFile ? ['-o', 'IdentitiesOnly=yes', '-i', identityFile] : []),
       '-o',
       `ProxyCommand=${proxyCommand}`,

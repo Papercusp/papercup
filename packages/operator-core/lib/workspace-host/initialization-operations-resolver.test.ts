@@ -91,15 +91,19 @@ function publicKey(algorithm: TestHostKeyAlgorithm, marker: string = algorithm):
   return line;
 }
 
+function publicKeyBlob(algorithm: TestHostKeyAlgorithm, marker: string = algorithm): string {
+  return publicKey(algorithm, marker).split(' ')[1]!;
+}
+
 function guestHostKeys(marker = 'first'): readonly GcpInstanceGuestAttribute[] {
   return [
     {
       namespace: 'hostkeys',
       key: 'ecdsa-sha2-nistp256',
-      value: publicKey('ecdsa-sha2-nistp256', marker),
+      value: publicKeyBlob('ecdsa-sha2-nistp256', marker),
     },
-    { namespace: 'hostkeys', key: 'ssh-ed25519', value: publicKey('ssh-ed25519', marker) },
-    { namespace: 'hostkeys', key: 'ssh-rsa', value: publicKey('ssh-rsa', marker) },
+    { namespace: 'hostkeys', key: 'ssh-ed25519', value: publicKeyBlob('ssh-ed25519', marker) },
+    { namespace: 'hostkeys', key: 'ssh-rsa', value: publicKeyBlob('ssh-rsa', marker) },
   ];
 }
 
@@ -433,10 +437,13 @@ describe('GCP IAP controller known_hosts enrollment', () => {
           identity,
           knownHostsFile,
           attributes: [
-            { namespace: 'hostkeys', key: 'ssh-ed25519', value: `ssh-ed25519 ${truncatedEd25519}` },
+            { namespace: 'hostkeys', key: 'ssh-ed25519', value: truncatedEd25519 },
           ],
         }),
-      ).rejects.toThrow(/truncated|missing/);
+      ).rejects.toThrow(/truncated/);
+      await expect(
+        enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys().slice(0, 2) }),
+      ).rejects.toThrow(/missing 'ssh-rsa'/);
 
       await enrollGcpIapHostKeys({ identity, knownHostsFile, attributes: guestHostKeys('trusted') });
       const trusted = await readFile(knownHostsFile, 'utf8');

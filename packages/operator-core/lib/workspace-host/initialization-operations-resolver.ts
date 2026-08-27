@@ -19,7 +19,7 @@
  *    transfer, pairing or credential-delivery parity — the contract says so explicitly — so
  *    falling back to "some other adapter" would be actively wrong. Refusing names the gap.
  */
-import { createHash, createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
+import { createPublicKey, randomUUID, type KeyObject } from 'node:crypto';
 import { chmod, lstat, mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import {
@@ -33,6 +33,7 @@ import { createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-prefl
 import { createGcpWorkspaceHostApiClient } from './gcp-api-client';
 import {
   GcpIapWorkspaceHostInitializationOperations,
+  gcpIapHostKeyAlias,
   type GcpIapWorkspaceHostInitializationProfile,
 } from './gcp-iap-initialization-operations';
 import {
@@ -82,13 +83,6 @@ const HOST_KEY_BY_ATTRIBUTE = new Map<string, (typeof HOST_KEY_ALGORITHMS)[numbe
 ]);
 
 const hostKeyEnrollmentQueues = new Map<string, Promise<void>>();
-
-function gcpIapHostKeyAlias(identity: GcpIapHostKeyEnrollmentInput['identity']): string {
-  return `gcp-iap-${createHash('sha256')
-    .update(`${identity.projectId}\0${identity.zone}\0${identity.instanceName}`)
-    .digest('hex')
-    .slice(0, 32)}`;
-}
 
 function hostKeyFailure(message: string): never {
   throw new WorkspaceHostInitializationHostKeyError(message);
@@ -186,18 +180,23 @@ function validatePublicKeyBlob(algorithm: HostKeyAlgorithm, blob: Buffer): void 
   );
 }
 
-function parsePublicKeyLine(value: string): { algorithm: HostKeyAlgorithm; key: string } {
-  const match = /^(ecdsa-sha2-nistp256|ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]*)?$/.exec(value);
-  if (!match) throw new WorkspaceHostInitializationHostKeyError('host key material is malformed');
-  const algorithm = match[1] as HostKeyAlgorithm;
-  const key = match[2]!;
+function parsePublicKeyBlob(algorithm: HostKeyAlgorithm, key: string): { algorithm: HostKeyAlgorithm; key: string } {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(key)) {
+    throw new WorkspaceHostInitializationHostKeyError('host key material is malformed');
+  }
   const blob = Buffer.from(key, 'base64');
   const canonical = blob.toString('base64');
   if (blob.length < 4 || (key !== canonical && key !== canonical.replace(/=+$/, ''))) {
     throw new WorkspaceHostInitializationHostKeyError('host key material is malformed');
   }
   validatePublicKeyBlob(algorithm, blob);
-  return { algorithm, key };
+  return { algorithm, key: canonical };
+}
+
+function parsePublicKeyLine(value: string): { algorithm: HostKeyAlgorithm; key: string } {
+  const match = /^(ecdsa-sha2-nistp256|ssh-ed25519|ssh-rsa) ([A-Za-z0-9+/]+={0,2})(?: [^\r\n]*)?$/.exec(value);
+  if (!match) throw new WorkspaceHostInitializationHostKeyError('host key material is malformed');
+  return parsePublicKeyBlob(match[1] as HostKeyAlgorithm, match[2]!);
 }
 
 function guestHostKeys(attributes: readonly GcpInstanceGuestAttribute[]): Map<string, string> {
@@ -208,21 +207,20 @@ function guestHostKeys(attributes: readonly GcpInstanceGuestAttribute[]): Map<st
     }
     const expected = HOST_KEY_BY_ATTRIBUTE.get(attribute.key);
     if (!expected) throw new WorkspaceHostInitializationHostKeyError(`unsupported host-key attribute '${attribute.key}'`);
-    const parsed = parsePublicKeyLine(attribute.value);
-    if (parsed.algorithm !== expected) {
-      throw new WorkspaceHostInitializationHostKeyError(
-        `host-key attribute '${attribute.key}' contains '${parsed.algorithm}'`,
-      );
-    }
+    // Compute's JSON contract keeps the algorithm in item.key and the SSH wire blob in
+    // item.value. Keep this separate from the known_hosts full-line parser: accepting a guessed
+    // prefix here would hide a response-shape mismatch.
+    const parsed = parsePublicKeyBlob(expected, attribute.value);
     if (keys.has(parsed.algorithm)) {
       throw new WorkspaceHostInitializationHostKeyError(`duplicate '${parsed.algorithm}' host-key attribute`);
     }
     keys.set(parsed.algorithm, parsed.key);
   }
-  // Images may intentionally configure a subset of the guest agent's supported host-key types;
-  // an empty namespace is the missing-material failure, while any non-empty supported subset is
-  // sufficient for OpenSSH negotiation.
-  if (keys.size === 0) throw new WorkspaceHostInitializationHostKeyError('hostkeys/ returned no usable host keys');
+  for (const algorithm of HOST_KEY_ALGORITHMS) {
+    if (!keys.has(algorithm)) {
+      throw new WorkspaceHostInitializationHostKeyError(`hostkeys/ is missing '${algorithm}'`);
+    }
+  }
   return keys;
 }
 
