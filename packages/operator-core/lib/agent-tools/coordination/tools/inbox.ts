@@ -120,6 +120,12 @@ const COORD_KINDS = [
   ...COORD_CONVERSATIONAL_KINDS,
 ] as [CoordKind, ...CoordKind[]];
 
+const COORD_KIND_FILTER_DESCRIPTION =
+  `Supported narrowing filters are \`kinds\`, \`from\`, and \`unanswered_only\` (alias \`unansweredOnly\`). ` +
+  `The \`kinds\` filter accepts canonical \`CoordKind\` wire values only: ${COORD_KINDS.join(', ')}. ` +
+  `\`interrupt\` is conceptual language for actionable coordination traffic, not a \`kinds\` value; ` +
+  `a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind \`yield\`.`;
+
 // The default-visibility rules (ambient exclusion, intent-declare exclusion,
 // repeated-broadcast coalescing) were RELOCATED to `../inbox-visibility` so the
 // owner-visible unread counter can apply the SAME rules without importing this
@@ -604,7 +610,9 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. " +
+      COORD_KIND_FILTER_DESCRIPTION +
+      " Free-text `q` is not an inbox argument — use `coord:feed` for query matching. Time bounds (`since`) are also not inbox arguments; use `coord:feed` for a `since` window. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
