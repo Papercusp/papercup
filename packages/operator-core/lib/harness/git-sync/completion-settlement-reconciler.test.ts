@@ -28,6 +28,21 @@ describe('residualPathsForCommit', () => {
     ]))).toEqual([]);
   });
 
+  it('reads identities from the emitted commit SHA, independent of later working-tree edits', () => {
+    const lookup = vi.fn(() => new Map([
+      ['a.ts', 'd'.repeat(40)],
+      ['nested/b.ts', 'e'.repeat(40)],
+    ]));
+    const laterWorkingTreeIdentity = new Map([
+      ['a.ts', 'f'.repeat(40)],
+      ['nested/b.ts', 'f'.repeat(40)],
+    ]);
+
+    expect(residualPathsForCommit(manifest, SHA, lookup)).toEqual([]);
+    expect(lookup).toHaveBeenCalledWith('/repo', SHA, ['a.ts', 'nested/b.ts']);
+    expect(laterWorkingTreeIdentity).not.toEqual(lookup.mock.results[0]?.value);
+  });
+
   it('persists deterministic residue for partial and mismatched commits', () => {
     expect(residualPathsForCommit(manifest, SHA, () => new Map([
       ['a.ts', 'f'.repeat(40)],
@@ -118,6 +133,27 @@ describe('reconcileProposedCompletionsAtCommit — P-004 settled event', () => {
 
     expect(residue).toMatchObject({ upgraded: [], residual: 2 });
     expect(missed.upgraded).toEqual([]);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('keeps stale or out-of-order generations silent behind the evidence-scoped CAS', async () => {
+    const emit = settlementEmitMock();
+    const sql = settlementSql({ updateHits: [false] });
+
+    const result = await reconcileProposedCompletionsAtCommit(SHA, scope, {
+      sql,
+      lookup: matchingLookup,
+      emit,
+    });
+
+    const updateCall = vi.mocked(sql).mock.calls.find(([strings]) =>
+      (strings as unknown as TemplateStringsArray).join('?').includes('UPDATE harness_shared.work_items'));
+    expect(updateCall?.slice(1)).toEqual(expect.arrayContaining([
+      'proposed',
+      String(manifest.generation),
+      manifest.evidenceHash,
+    ]));
+    expect(result).toMatchObject({ inspected: 1, upgraded: [] });
     expect(emit).not.toHaveBeenCalled();
   });
 });
