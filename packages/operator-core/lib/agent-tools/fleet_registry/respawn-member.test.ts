@@ -20,10 +20,13 @@ const wakeRecipients = vi.fn();
 const resolveSessionStates = vi.fn();
 const resolveSavedFleetLaunchSpec = vi.fn();
 const getSessionBrief = vi.fn();
+const resolveProjectDir = vi.fn();
+const assembleRolePrompt = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
 const SLUG = 'rocket';
+let persistedRole = 'su';
 
 vi.mock('./member-target', () => ({
   resolveFleetMemberTarget: (...a: unknown[]) => resolveFleetMemberTarget(...a),
@@ -50,6 +53,12 @@ vi.mock('./saved-launch-spec', () => ({
 }));
 vi.mock('../../session-brief', () => ({
   getSessionBrief: (...a: unknown[]) => getSessionBrief(...a),
+}));
+vi.mock('../../spawn-config', () => ({
+  resolveProjectDir: (...a: unknown[]) => resolveProjectDir(...a),
+}));
+vi.mock('@papercusp/orchestrator/role-prompt', () => ({
+  assembleRolePrompt: (...a: unknown[]) => assembleRolePrompt(...a),
 }));
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
@@ -86,8 +95,11 @@ describe('fleet:respawn-member — ambient workspace transaction safety (EI-2021
 
 beforeEach(() => {
   vi.clearAllMocks();
+  persistedRole = 'su';
   getPresence.mockResolvedValue({ potSlug: 'papercusp' });
   getSessionBrief.mockResolvedValue(null);
+  resolveProjectDir.mockResolvedValue('/tmp/papercusp');
+  assembleRolePrompt.mockReturnValue({ text: 'role prompt', meta: { projectDir: '/tmp/papercusp' } });
   resolveFleetMemberTarget.mockResolvedValue({
     ok: true,
     callerId: LEADER,
@@ -127,7 +139,7 @@ beforeEach(() => {
       headless: true,
       carry: 'warm',
       contextSize: 'trimmed',
-      role: 'su',
+      role: persistedRole,
     };
     for (const [field, value] of Object.entries(opts.requested ?? {})) {
       if (value !== undefined) member[field] = value;
@@ -189,6 +201,39 @@ describe('fleet:respawn-member (P-008)', () => {
     );
     expect(p.launched).toContain('Launched su-new');
     expect(p.newMember).toBe(p.replacementOwner);
+  });
+
+  it('preflights a persisted persona role before killing, preserving the diagnostic on refusal', async () => {
+    persistedRole = 'implementer';
+    const roleError = new Error('assembleRolePrompt: no prompt file found for role "implementer"');
+    assembleRolePrompt.mockImplementationOnce(() => {
+      throw roleError;
+    });
+
+    const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
+    const p = parse(res);
+
+    expect(p).toMatchObject({
+      ok: false,
+      error: 'saved_role_invalid',
+      fleet: SLUG,
+      member: MEMBER,
+      role: 'implementer',
+      killed: false,
+      launched: false,
+    });
+    expect(p.message).toContain('Invalid persona role `implementer`');
+    expect(p.message).toContain('The old member was NOT killed and no replacement was launched.');
+    expect(p.message).toContain('NO agents were spawned and NO terminals were opened');
+    expect(resolveProjectDir).toHaveBeenCalledWith('papercusp', 'ws');
+    expect(assembleRolePrompt).toHaveBeenCalledWith({
+      slug: 'papercusp',
+      projectDir: '/tmp/papercusp',
+      role: 'implementer',
+      mode: 'chat',
+    });
+    expect(killHandler).not.toHaveBeenCalled();
+    expect(launchHandler).not.toHaveBeenCalled();
   });
 
   it('correlates the exact replacement when concurrent respawns add multiple fresh rows', async () => {

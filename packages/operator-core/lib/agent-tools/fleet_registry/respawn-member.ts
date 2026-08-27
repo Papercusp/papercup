@@ -16,6 +16,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { assembleRolePrompt } from '@papercusp/orchestrator/role-prompt';
 import type { MemberSpec } from '../../agent-launch-core';
 import killTool from '../fleet/kill';
 import launchTool from '../capability/launch-agent';
@@ -26,6 +27,8 @@ import { sendMessage } from '../coordination/messages';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { getSessionBrief } from '../../session-brief';
+import { resolveProjectDir } from '../../spawn-config';
+import { isSuTierRole } from '../../su-role-addendum';
 import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
@@ -242,6 +245,72 @@ function launchOutcome(res: unknown): { ok: boolean; text: string } {
   return { ok: !env.isError, text: env.content?.[0]?.text ?? '' };
 }
 
+/**
+ * Validate the persisted persona before respawn-member performs its destructive drain.
+ * capability:launch-agent runs the same prompt assembly check, but that check occurs only
+ * after this orchestration has already killed the old member. Recovery must fail closed before
+ * that side effect when a saved role has gone stale or was never registered for the harness.
+ */
+async function preflightSavedPersonaRole(opts: {
+  role?: string;
+  harness: string;
+  workspaceId: string;
+}): Promise<
+  | { ok: true }
+  | { ok: false; error: 'saved_role_invalid' | 'saved_role_preflight_failed'; role: string; message: string }
+> {
+  const role = opts.role?.trim();
+  if (!role || role === 'su' || isSuTierRole(role)) return { ok: true };
+
+  let projectDir: string | null;
+  try {
+    projectDir = await resolveProjectDir(opts.harness, opts.workspaceId);
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'saved_role_preflight_failed',
+      role,
+      message:
+        `Could not validate persisted persona role \`${role}\` for harness \`${opts.harness}\`: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+  if (!projectDir) {
+    return {
+      ok: false,
+      error: 'saved_role_preflight_failed',
+      role,
+      message:
+        `Could not validate persisted persona role \`${role}\`: harness \`${opts.harness}\` ` +
+        `is not registered in workspace \`${opts.workspaceId}\`. ` +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+
+  try {
+    assembleRolePrompt({
+      slug: opts.harness,
+      projectDir,
+      role,
+      mode: 'chat',
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: 'saved_role_invalid',
+      role,
+      message:
+        `Invalid persona role \`${role}\` for the persisted respawn member: ` +
+        `${error instanceof Error ? error.message : String(error)}. ` +
+        'Omit the stale role, use `role:"su"`, or choose a registered persona. ' +
+        'Put lane/job names in `brief` or `label`. NO agents were spawned and NO terminals were opened. ' +
+        'The old member was NOT killed and no replacement was launched.',
+    };
+  }
+  return { ok: true };
+}
+
 export default defineTool({
   name: 'fleet:respawn-member',
   description:
@@ -405,6 +474,33 @@ export default defineTool({
           member: memberOwnerId,
           message: `No canonical saved launch spec exists for fleet '${slug}'; old member was NOT killed.`,
           killed: false,
+        },
+        true,
+      );
+    }
+
+    const rolePreflight = await preflightSavedPersonaRole({
+      role: savedLaunchSpec.effective.member.role,
+      harness: savedLaunchSpec.effective.harness,
+      workspaceId,
+    });
+    if (!rolePreflight.ok) {
+      return json(
+        {
+          ok: false,
+          error: rolePreflight.error,
+          fleet: slug,
+          member: memberOwnerId,
+          role: rolePreflight.role,
+          message: rolePreflight.message,
+          killed: false,
+          launched: false,
+          launchSpec: {
+            provenance: savedLaunchSpec.provenance,
+            reusePath: savedLaunchSpec.reusePath,
+            overrides: savedLaunchSpec.overrides,
+            preservedFields: savedLaunchSpec.preservedFields,
+          },
         },
         true,
       );
