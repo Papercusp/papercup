@@ -39,7 +39,11 @@ function mockFetch() {
     if (method === 'POST') posted.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null });
     else getUrls.push(url);
 
-    if (url.endsWith('/api/gym/harnesses')) return json([{ harnessSlug: 'gymtest', pendingCount: 1, lastCycle: 2, autoloop: null }]);
+    // Real backend shape (control.ts `GET /gym/harnesses`): { harnesses: [...] }, not a bare
+    // array — a mock that returned the bare array here (matching the frontend's former bug,
+    // not the real endpoint) let GymDashboard.tsx's `harnesses.map` crash ship past this suite;
+    // caught live by the P-004 Tauri surface verification instead (gui-e2e-tauri-surface-2026-08-27).
+    if (url.endsWith('/api/gym/harnesses')) return json({ harnesses: [{ harnessSlug: 'gymtest', pendingCount: 1, lastCycle: 2, autoloop: null }] });
     if (url.includes('/api/gym/gymtest/proposals')) return json({ proposals: proposalsFixture });
     if (url.endsWith('/api/gym/gymtest/accept')) return json({ ok: true, promoted: true });
     if (url.endsWith('/api/gym/gymtest/reject')) return json({ ok: true, promoted: false });

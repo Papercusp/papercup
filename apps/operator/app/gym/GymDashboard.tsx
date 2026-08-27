@@ -93,8 +93,8 @@ export default function GymDashboard() {
 
   useEffect(() => {
     let live = true;
-    api<HarnessRow[]>('/harnesses')
-      .then((rows) => { if (live) { setHarnesses(rows); setHarnessErr(null); if (!slug && rows[0]) void setSlug(rows[0].harnessSlug); } })
+    api<{ harnesses: HarnessRow[] }>('/harnesses')
+      .then(({ harnesses: rows }) => { if (live) { setHarnesses(rows); setHarnessErr(null); if (!slug && rows[0]) void setSlug(rows[0].harnessSlug); } })
       .catch((e) => { if (live) setHarnessErr(String(e)); });
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
