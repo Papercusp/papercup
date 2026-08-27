@@ -27,6 +27,9 @@ describe('resource governor enforcement lint', () => {
       'governor-core',
     ]);
     expect(validateInventory()).toEqual([]);
+    expect(
+      RESOURCE_GOVERNOR_INVENTORY.find((row) => row.id === 'mcp-http-operator-transport')?.enforcement,
+    ).toBe('active');
   });
 
   it('rejects a resource start outside Governor.admit or a valid lease', () => {
@@ -103,7 +106,9 @@ describe('resource governor enforcement lint', () => {
     expect(scanInventory(files, { migrations: ['P-014'] })).toEqual([
       'packages/operator-core/lib/agent-tools/example.ts:resource-start-outside-admission',
     ]);
-    expect(scanActiveInventory(files)).toEqual([]);
+    expect(scanActiveInventory(files)).toEqual([
+      'packages/operator-core/lib/agent-tools/example.ts:resource-start-outside-admission',
+    ]);
   });
 
   it('rejects a stale exact bypass entry once its registered path no longer has that finding', () => {
@@ -127,5 +132,5 @@ describe('resource governor enforcement lint', () => {
       timeout: 120_000,
     });
     expect(output).toContain('[resource-governor-enforcement] OK');
-  });
+  }, 30_000);
 });

@@ -29,6 +29,7 @@ import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
+import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
   buildDetachedTestRunRequest,
   detachedTestTimeoutHint,
@@ -307,9 +308,9 @@ describe('testing:run (integration)', () => {
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
     const relativeFixture = `packages/operator-core/lib/__testing-run-sidecar-${randomUUID()}.test.ts`;
-    // Vitest runs this package's integration config with cwd at
-    // packages/operator-core, while testing:run receives repo-root-relative paths.
-    const absoluteFixture = join(dirname(dirname(process.cwd())), relativeFixture);
+    // testing:run receives repo-root-relative paths. Resolve from the same
+    // canonical root under both package-local and repository-root Vitest runs.
+    const absoluteFixture = join(REPO_ROOT, relativeFixture);
     await writeFile(
       absoluteFixture,
       [
@@ -367,7 +368,10 @@ describe('testing:run (integration)', () => {
   }, 180_000);
 
   it('accepts a workspace-relative test path and expands it before routing', async () => {
-    const out = await body(call({ files: [OPERATOR_CORE_RELATIVE_GREEN_TARGET] }));
+    const out = await body(call(
+      { files: [OPERATOR_CORE_RELATIVE_GREEN_TARGET] },
+      { projectDir: REPO_ROOT },
+    ));
 
     expect(out.ok).toBe(true);
     expect(out.failed).toBe(0);

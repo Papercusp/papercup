@@ -65,6 +65,8 @@ import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { runGovernedOperation } from '../../resource-governor/execution';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -388,7 +390,18 @@ function runTestProcess(
   timeoutMs: number,
   signal?: AbortSignal,
 ): Promise<RouterOutcome> {
-  return new Promise((resolve) => {
+  const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
+  return runGovernedOperation(
+    {
+      workspaceId: activeWorkspaceId(),
+      namespace: 'testing-run-process',
+      owner: `testing:run:${runGroup}`,
+      admissionClass: 'process',
+      demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024, fileDescriptors: 4 },
+      payloadRef: `testing:run:${runGroup}`,
+      metadata: { command, timeoutMs },
+    },
+    async (admissionContext) => new Promise((resolve) => {
     let output = '';
     let timedOut = false;
     let aborted = false;
@@ -410,7 +423,7 @@ function runTestProcess(
     // router and every child/grandchild it spawned — instead of just the router itself.
     const child = spawn(command, [...commandArgs, ...args], {
       cwd,
-      env,
+      env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -465,7 +478,8 @@ function runTestProcess(
       finish({ code: null, timedOut, aborted, output: `${output}\n[spawn-error] ${e.message}` }),
     );
     child.on('close', (code) => finish({ code, timedOut, aborted, output }));
-  });
+    }),
+  );
 }
 
 /** Spawn the Papercusp router, preserving its owning-workspace guarantees. */
