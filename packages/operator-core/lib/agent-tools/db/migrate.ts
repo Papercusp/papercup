@@ -24,15 +24,14 @@ import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '..
 import { assertMigrationPassesPreApplyLints } from '../../migration-preapply-lint';
 import { resolveCanonicalStagingRoot, resolveCanonicalStagingSqlDir } from '../../migration-drift';
 import { migrationReservationGuardSql } from '../../migration-reservation';
+import { activeWorkspaceId } from '../../workspace-registry';
+import { runGovernedOperation } from '../../resource-governor/execution';
 // Local bindings for this module's own use — the `export { … } from` below
 // re-exports the same names for existing importers but creates no local binding.
 import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
 import { openEscalation } from '../coordination/escalations';
 import { checkResourceAction, recordResourceAction, getTxPool, type ResourceHolder } from '../locks/su-lock-store';
-import {
-  managedSetInterval,
-  type ManagedHandle,
-} from '@papercusp/scheduled-registry';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
   BACKUP_MIGRATION_ADVISORY_LOCK_KEY,
   BACKUP_APPLICATION_NAMES,
@@ -135,9 +134,7 @@ export function migrationBackupAdvisoryLockSql(): string {
   return `SELECT pg_advisory_xact_lock(hashtext('${key}'));\n`;
 }
 
-const BACKUP_APPLICATION_NAMES_SQL = BACKUP_APPLICATION_NAMES
-  .map((name) => `'${name}'`)
-  .join(', ');
+const BACKUP_APPLICATION_NAMES_SQL = BACKUP_APPLICATION_NAMES.map((name) => `'${name}'`).join(', ');
 
 /**
  * SQL guard inserted immediately before a migration's `\\i`.
@@ -266,50 +263,72 @@ type PsqlRunner = (
  * deadline. The child receives its SQL through stdin just as the old sync
  * path did. */
 const runPsql: PsqlRunner = (cmd, args, opts) =>
-  new Promise((resolve, reject) => {
-    const startedAt = Date.now();
-    let settled = false;
-    let heartbeatTimer: ManagedHandle | undefined;
-    const finish = (result: PsqlResult) => {
-      if (settled) return;
-      settled = true;
-      heartbeatTimer?.stop();
-      heartbeatTimer = undefined;
-      resolve(result);
-    };
-    const fail = (error: unknown) => {
-      if (settled) return;
-      settled = true;
-      heartbeatTimer?.stop();
-      heartbeatTimer = undefined;
-      reject(error);
-    };
+  runGovernedOperation(
+    {
+      workspaceId: activeWorkspaceId(),
+      namespace: 'db-migrate-psql',
+      owner: 'db:migrate',
+      admissionClass: 'database',
+      demand: {
+        cpuWeight: 0.25,
+        memoryBytes: 128 * 1024 * 1024,
+        databaseConnections: 1,
+        fileDescriptors: 3,
+      },
+      payloadRef: 'db:migrate:psql',
+      metadata: { binary: cmd },
+    },
+    async () =>
+      new Promise((resolve, reject) => {
+        const startedAt = Date.now();
+        let settled = false;
+        let heartbeatTimer: ManagedHandle | undefined;
+        const finish = (result: PsqlResult) => {
+          if (settled) return;
+          settled = true;
+          heartbeatTimer?.stop();
+          heartbeatTimer = undefined;
+          resolve(result);
+        };
+        const fail = (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          heartbeatTimer?.stop();
+          heartbeatTimer = undefined;
+          reject(error);
+        };
 
-    if (opts.onHeartbeat) {
-      heartbeatTimer = managedSetInterval('db-migrate-psql-progress', PSQL_PROGRESS_INTERVAL_MS, () => {
-        if (settled) return;
-        try {
-          opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000));
-        } catch {
-          // Progress is advisory; a disconnected transport must not abort psql.
+        if (opts.onHeartbeat) {
+          heartbeatTimer = managedSetInterval(
+            'db-migrate-psql-progress',
+            PSQL_PROGRESS_INTERVAL_MS,
+            () => {
+              if (settled) return;
+              try {
+                opts.onHeartbeat?.(Math.floor((Date.now() - startedAt) / 1000));
+              } catch {
+                // Progress is advisory; a disconnected transport must not abort psql.
+              }
+            },
+            { category: 'lifecycle', classification: 'must-sample' },
+          );
         }
-      }, { category: 'lifecycle', classification: 'must-sample' });
-    }
 
-    try {
-      const child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
-        const status = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
-        finish({
-          status,
-          stdout: stdout ?? '',
-          stderr: stderr ?? (error?.message ?? ''),
-        });
-      });
-      child.stdin?.end(opts.input);
-    } catch (error) {
-      fail(error);
-    }
-  });
+        try {
+          const child = execFile(cmd, args, { encoding: opts.encoding }, (error, stdout, stderr) => {
+            const status = error == null ? 0 : typeof error.code === 'number' ? error.code : 1;
+            finish({
+              status,
+              stdout: stdout ?? '',
+              stderr: stderr ?? error?.message ?? '',
+            });
+          });
+          child.stdin?.end(opts.input);
+        } catch (error) {
+          fail(error);
+        }
+      }),
+  );
 
 /** Query harness_shared.schema_migrations directly (a fresh psql
  *  invocation — NOT the pool that may have just dropped) for whether
