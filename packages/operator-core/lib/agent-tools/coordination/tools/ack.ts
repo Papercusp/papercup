@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { appendAck, getMessageById } from '../messages';
+import { appendAck, resolveMessageRef } from '../messages';
 import { COORD_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
 
@@ -55,19 +55,35 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (it) => {
-        // Find the original message so we can address the ack
-        // back at its sender. This is an exact, indexed lookup on the PG backend;
-        // readThread would load and fold the entire messages surface for every ack.
-        const target = await getMessageById(it.msg_id);
-        if (!target) {
+        // Resolve the original so we can address the ack back at its sender.
+        // resolveMessageRef includes the open-escalation projection, whose source
+        // event may have been pruned while the escalation remains actionable.
+        const resolution = await resolveMessageRef(it.msg_id);
+        if (resolution.status === 'ambiguous') {
+          return {
+            ok: false as const,
+            msg_id: it.msg_id,
+            error: 'msg_id_ambiguous',
+            candidates: resolution.candidates,
+            detail:
+              `msg_id=${it.msg_id} matches multiple coord messages (${resolution.candidates.join(', ')}) — ` +
+              'use the full msg_id or a longer unique leading prefix',
+          };
+        }
+        if (resolution.status !== 'found') {
           return { ok: false as const, msg_id: it.msg_id, error: 'unknown_msg_id', detail: `no coord message with msg_id=${it.msg_id}` };
         }
+        const target = resolution.message;
+        // Keep the canonical id when a unique leading prefix was supplied. The
+        // related_msg_id on the ack must point at the durable projection id, and
+        // the response should tell callers which id was actually acknowledged.
+        const resolvedMsgId = resolution.msgId;
         // Preserve the original message's federation scope. `null` is
         // deliberate for operator-local rows: leaving the option undefined
         // would let sendMessage's AUTO scope resolver stamp the ack into a
         // shared hive even though the target was local.
-        const acked = await appendAck(identity, it.msg_id, target.from, target.harness_slug ?? null);
-        return { ok: true as const, msg_id: it.msg_id, ack_msg_id: acked.msg_id, acked: target.msg_id, acked_from: target.from };
+        const acked = await appendAck(identity, resolvedMsgId, target.from, target.harness_slug ?? null);
+        return { ok: true as const, msg_id: resolvedMsgId, ack_msg_id: acked.msg_id, acked: resolvedMsgId, acked_from: target.from };
       },
       { keyOf: (it) => ({ msg_id: it.msg_id }) },
     );

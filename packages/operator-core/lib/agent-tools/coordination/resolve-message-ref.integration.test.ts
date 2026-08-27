@@ -19,6 +19,7 @@ import { sendMessage, resolveMessageRef, getMessageById } from './messages';
 import { openHandoff } from './handoffs';
 import { openEscalation, resolveEscalation } from './escalations';
 import { coordWorkspaceId } from './log';
+import ackTool from './tools/ack';
 
 let fx: BaselineCoordFixture;
 
@@ -100,6 +101,62 @@ describe('resolveMessageRef (WI-6725)', () => {
     expect(res.msgId).toBe(fullId);
     expect(res.message.kind).toBe('escalation');
     expect(res.message.summary).toBe('projection-only open escalation');
+  });
+
+  it('EI-21648471742359115: coord:ack acknowledges an escalation retained only in the projection', async () => {
+    const fullId = 'mqlfq7me-0000-18f69a47da0046dd85a61f17ff88f880';
+    const escalation = {
+      ts: '2026-06-19T21:22:38.388Z',
+      msg_id: fullId,
+      from: ASKER.ownerId,
+      to: ['human'],
+      kind: 'escalation',
+      severity: 'question',
+      summary: 'ack projection-only open escalation',
+      resolved: null,
+    };
+    const workspaceId = coordWorkspaceId();
+    await fx.admin`
+      INSERT INTO harness_shared.coord_open_escalations (workspace_id, msg_id, ts, body)
+      VALUES (${workspaceId}, ${fullId}, ${escalation.ts}, ${fx.admin.json(escalation)})
+    `;
+
+    const eventRows = await fx.admin`
+      SELECT 1 FROM harness_shared.coord_event_log
+       WHERE workspace_id = ${workspaceId} AND msg_id = ${fullId}
+    `;
+    expect(eventRows).toHaveLength(0);
+
+    const result = await ackTool.handler(
+      { msg_id: fullId } as never,
+      {
+        principal: { kind: 'principal', slug: READER.ownerId, workspaceId: 'default' },
+        harnessSlug: 'papercusp',
+      } as never,
+    );
+    const body = (result as { data?: unknown; content?: { text: string }[] }).data ??
+      JSON.parse((result as { content: { text: string }[] }).content![0].text);
+    const payload = body as {
+      ok: boolean;
+      results: Array<{ ok: boolean; msg_id: string; ack_msg_id?: string; acked?: string; acked_from?: string }>;
+    };
+
+    expect(payload).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(payload.results[0]).toMatchObject({
+      ok: true,
+      msg_id: fullId,
+      acked: fullId,
+      acked_from: ASKER.ownerId,
+    });
+    expect(payload.results[0].ack_msg_id).toBeTruthy();
+
+    const ack = await getMessageById(payload.results[0].ack_msg_id!);
+    expect(ack).toMatchObject({
+      kind: 'ack',
+      from: READER.ownerId,
+      to: [ASKER.ownerId],
+      related_msg_id: fullId,
+    });
   });
 
   it('EI-21550703014946163: a resolved escalation remains a valid reply target', async () => {
