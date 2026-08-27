@@ -120,6 +120,15 @@ export interface DurableAdmissionQueueStore {
     nowMs: number,
     selection?: QueueLeaseSelection,
   ): Promise<QueueMutationResult | null>;
+  /** Target one already-persisted receipt during observe-only migration. */
+  leaseReceipt(
+    namespace: string,
+    receiptId: string,
+    owner: string,
+    leaseId: string,
+    ttlMs: number,
+    nowMs: number,
+  ): Promise<QueueMutationResult | null>;
   markRunning(receiptId: string, leaseId: string, nowMs: number): Promise<QueueMutationResult | null>;
   complete(
     receiptId: string,
@@ -275,13 +284,15 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
     this.onActualDemand = options.onActualDemand;
   }
 
-  private readonly onActualDemand: ((input: {
-    readonly receiptId: string;
-    readonly context: AdmissionContext;
-    readonly plannedDemand: Readonly<ResourceDemand>;
-    readonly actualDemand: Readonly<ResourceDemand>;
-    readonly releasedAtMs: number;
-  }) => void | Promise<void>) | undefined;
+  private readonly onActualDemand:
+    | ((input: {
+        readonly receiptId: string;
+        readonly context: AdmissionContext;
+        readonly plannedDemand: Readonly<ResourceDemand>;
+        readonly actualDemand: Readonly<ResourceDemand>;
+        readonly releasedAtMs: number;
+      }) => void | Promise<void>)
+    | undefined;
 
   async admit(request: NormalizedAdmissionRequest, context: AdmissionContext): Promise<AdmissionOutcome> {
     const nowMs = this.now();
@@ -356,6 +367,44 @@ export class WorkItemAdmissionQueueDriver implements AdmissionDriver {
       input.selection,
     );
     if (!result?.record.lease) return null;
+    const lease = result.record.lease;
+    return {
+      receiptId: result.receiptId,
+      record: result.record,
+      context: {
+        ...result.record.context,
+        receiptId: result.receiptId,
+        decisionGeneration: result.record.decision.generation,
+        leaseId: lease.leaseId,
+      },
+      lease: {
+        leaseId: lease.leaseId,
+        owner: lease.owner,
+        generation: lease.generation,
+        admissionClass: result.record.admissionClass,
+        expiresAtMs: lease.expiresAtMs,
+      },
+    };
+  }
+
+  async leaseReceipt(input: {
+    receiptId: string;
+    owner: string;
+    ttlMs: number;
+  }): Promise<AdmissionQueueLeaseClaim | null> {
+    const owner = input.owner.trim();
+    if (!owner) throw new Error('queue lease owner must be non-empty');
+    if (!Number.isFinite(input.ttlMs) || input.ttlMs <= 0) throw new Error('queue lease ttlMs must be positive');
+    const leaseId = this.leaseIdFactory();
+    const result = await this.store.leaseReceipt(
+      this.namespace,
+      input.receiptId,
+      owner,
+      leaseId,
+      input.ttlMs,
+      this.now(),
+    );
+    if (!result?.changed || !result.record.lease) return null;
     const lease = result.record.lease;
     return {
       receiptId: result.receiptId,
@@ -779,6 +828,39 @@ export class PgWorkItemAdmissionQueueStore implements DurableAdmissionQueueStore
         lease: { leaseId, owner, generation, expiresAtMs: nowMs + ttlMs },
       };
       return { ...(await this.writeRecord(tx, stored.receiptId, next, owner)), changed: true };
+    });
+  }
+
+  async leaseReceipt(
+    namespace: string,
+    receiptId: string,
+    owner: string,
+    leaseId: string,
+    ttlMs: number,
+    nowMs: number,
+  ): Promise<QueueMutationResult | null> {
+    return this.transaction(async (tx) => {
+      const row = await this.findReceiptRow(tx, receiptId, true);
+      if (!row) return null;
+      const stored = storedFromRow(row);
+      if (stored.record.namespace !== namespace) return { ...stored, changed: false };
+      if (stored.record.state !== 'queued' && stored.record.state !== 'eligible') {
+        return { ...stored, changed: false };
+      }
+      if (row.taken_by?.trim()) return { ...stored, changed: false };
+      if (stored.record.deadlineAtMs !== null && stored.record.deadlineAtMs <= nowMs) {
+        const expired = {
+          ...nextDecision(stored.record, 'expired', nowMs, 'deadline-expired'),
+          lease: undefined,
+        };
+        return { ...(await this.writeRecord(tx, receiptId, expired, null)), changed: false };
+      }
+      const generation = stored.record.decision.generation + 1;
+      const next = {
+        ...nextDecision(stored.record, 'leased', nowMs, 'observe-only-targeted-lease', { owner }),
+        lease: { leaseId, owner, generation, expiresAtMs: nowMs + ttlMs },
+      };
+      return { ...(await this.writeRecord(tx, receiptId, next, owner)), changed: true };
     });
   }
 
