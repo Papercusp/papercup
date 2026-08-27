@@ -2090,17 +2090,19 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       ].join('\n'));
 
       writeFileSync(psiFile, '9\n');
-      await waitFor('the deterministic newest ordinary root freezing first', () =>
+      await waitFor('the deterministic newest ordinary root freezing', () =>
         admissionState('ordinary-new').includes('state=frozen'));
       expect(admissionState('ordinary-old')).toContain('state=active');
       expect(existsSync(join(admissionDir, 'stale.state'))).toBe(false);
-      await waitFor('the second ordinary root yielding under sustained pressure', () =>
-        admissionState('ordinary-old').includes('state=frozen'));
-      await waitFor('both child process groups reaching the stopped state', () =>
-        ['T', 't'].includes(processState(oldPid)) && ['T', 't'].includes(processState(newPid)));
+      await waitFor('the chosen child process group reaching the stopped state', () =>
+        ['T', 't'].includes(processState(newPid)));
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(admissionState('ordinary-old')).toContain('state=active');
+      expect(['T', 't']).not.toContain(processState(oldPid));
 
-      // The gate completes while both ordinary roots remain stopped. It never
-      // published an admission record and cannot receive STOP from this policy.
+      // The gate completes while the one elected ordinary root remains stopped
+      // and the episode latch prevents a cascade through the older peer. It
+      // never publishes an admission record and cannot receive STOP.
       writeFileSync(gateRelease, 'go\n');
       await waitFor('the protected release gate completing', () => existsSync(gateDone));
       expect(gateErr.peek()).not.toContain('PC_HEAVY_ADMISSION');
@@ -2112,22 +2114,19 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
 
       writeFileSync(psiFile, '0\n');
       await new Promise((resolve) => setTimeout(resolve, 250));
-      expect(admissionState('ordinary-old')).toContain('state=frozen');
+      expect(admissionState('ordinary-old')).toContain('state=active');
       expect(admissionState('ordinary-new')).toContain('state=frozen');
 
-      // Recovery order is highest-priority then oldest. Both roots share one
-      // cgroup in this fixture; the event's 128 MiB total proves deduplication.
-      await waitFor('only the older root thawing after the first quiet window', () =>
-        admissionState('ordinary-old').includes('state=active') &&
-        admissionState('ordinary-new').includes('state=frozen'));
-      expect(Number(readFileSync(oldPidFile, 'utf8').trim())).toBe(oldPid);
-      expect(oldErr.peek()).toContain(
-        'PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered priority=10 psiFullAvg10=0 admittedCgroupMiB=128 admissionId=ordinary-old retryHandle=psi-recovery:ordinary-old',
-      );
-      await waitFor('the second quiet window thawing the remaining root', () =>
+      // Both roots share one cgroup in this fixture; the event's 128 MiB total
+      // proves deduplication. The elected victim alone thaws after the window.
+      await waitFor('the elected root thawing after the quiet window', () =>
         admissionState('ordinary-new').includes('state=active'));
+      expect(Number(readFileSync(oldPidFile, 'utf8').trim())).toBe(oldPid);
       expect(Number(readFileSync(newPidFile, 'utf8').trim())).toBe(newPid);
-      expect(newErr.peek()).toContain('PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered');
+      expect(newErr.peek()).toContain(
+        'PC_HEAVY_ADMISSION status=thawed reason=memory-psi-recovered priority=10 psiFullAvg10=0 admittedCgroupMiB=128 admissionId=ordinary-new retryHandle=psi-recovery:ordinary-new',
+      );
+      expect(oldErr.peek()).not.toContain('PC_HEAVY_ADMISSION status=frozen');
     } finally {
       writeFileSync(psiFile, '0\n');
       killGroup(old);
