@@ -593,7 +593,7 @@ class PgPilotMaterializationTransaction implements PilotMaterializationTransacti
     );
     const rows = (await this.sql.unsafe(
       'WITH expected AS MATERIALIZED (' +
-        'SELECT * FROM jsonb_to_recordset($5::jsonb) AS e(' +
+        'SELECT * FROM jsonb_to_recordset($5::text::jsonb) AS e(' +
         'id text, expected_updated_ts bigint, expected_assignee text, expected_taken_at timestamptz, ' +
         'next_updated_ts bigint, patch jsonb)), eligible AS MATERIALIZED (' +
         'SELECT wi.feature_id FROM harness_shared.work_items wi JOIN expected e ON e.id = wi.feature_id ' +
@@ -631,7 +631,7 @@ class PgPilotMaterializationTransaction implements PilotMaterializationTransacti
   async appendAudit(input: PilotMaterializationAuditInput): Promise<void> {
     await this.sql.unsafe(
       'INSERT INTO harness_shared.audit_log (id, ts, actor, action, subject, details, workspace_id) ' +
-        'VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7)',
+        'VALUES ($1,$2,$3,$4,$5,$6::text::jsonb,$7)',
       [
         randomUUID(),
         input.atMs,
