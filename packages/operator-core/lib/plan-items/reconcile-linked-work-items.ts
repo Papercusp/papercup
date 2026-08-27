@@ -45,7 +45,7 @@ import {
   SETTLED_WORK_ITEM_STATES,
   type WorkItem,
 } from '../work-items';
-import { getPlanRow, planItemsForRow } from '../agent-tools/plans/source';
+import { getPlanRow, planItemsForRow, type PlanRow } from '../agent-tools/plans/source';
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import { getFeatureBlockers, syncFeatureBlockEdges } from '../dbos/feature-blockers-edges';
 import {
@@ -553,6 +553,75 @@ async function clearStaleLaneHold(wi: WorkItem, laneRef: string): Promise<void> 
  *  it out of self-select; `actionable` UN-parks a lane-parked item. */
 export type PlanLaneSyncStatus = 'blocked' | 'needs-human' | 'actionable';
 
+/** Where a lane's prose asserted that its linked work-item is its own exit
+ * condition. The source labels are intentionally narrow: they identify the
+ * plan text that made the circularity visible, not a second dependency graph. */
+export type CircularPrerequisiteSource = 'lane-item-text' | 'plan-now-next' | 'item-decision';
+
+/**
+ * A gated plan lane is about to park the work-item that the lane itself names
+ * as its completion prerequisite. This is a finding rather than a lifecycle
+ * action: parking it would manufacture a deadlock, so the caller must surface
+ * the cycle and leave the work-item untouched.
+ */
+export interface CircularPrerequisiteFinding {
+  kind: 'circular-prerequisite';
+  planSlug: string;
+  itemId: string;
+  workItemId: string;
+  sources: CircularPrerequisiteSource[];
+}
+
+/** The fresh plan projection needed by the pure circularity detector. */
+export type CircularPrerequisitePlanRow = Pick<PlanRow, 'planSlug' | 'content' | 'items' | 'decisions' | 'nowNext'>;
+
+function containsWorkItemId(text: unknown, workItemId: string): boolean {
+  if (typeof text !== 'string' || !text || !workItemId.trim()) return false;
+  const escaped = workItemId.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Work-item ids are token-like (WI-123, F-123, ...). Do not let WI-12
+  // match WI-123, or an id embedded in a longer identifier, while allowing
+  // normal markdown punctuation around the token.
+  return new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, 'i').test(text);
+}
+
+/**
+ * Pure detector for the silent lane-sync deadlock (WI-131638).
+ *
+ * A linked work-item is circular only when the plan's own lane evidence names
+ * that exact id: the lane item's text, the `## Now` next instruction, or a
+ * decision explicitly scoped to the item. Unscoped decisions are deliberately
+ * ignored so a plan-wide note cannot block an otherwise independent lane.
+ */
+export function detectCircularPrerequisite(
+  row: CircularPrerequisitePlanRow,
+  itemId: string,
+  workItemId: string,
+): CircularPrerequisiteFinding | null {
+  const laneItem = planItemsForRow(row as PlanRow).find((item) => item.id === itemId);
+  const sources: CircularPrerequisiteSource[] = [];
+
+  if (containsWorkItemId(laneItem?.text, workItemId)) sources.push('lane-item-text');
+  if (containsWorkItemId(row.nowNext, workItemId)) sources.push('plan-now-next');
+
+  const decisionRefs = new Set(laneItem?.decisionRefs ?? []);
+  for (const decision of row.decisions ?? []) {
+    if (!decision.itemRefs?.includes(itemId) && !decisionRefs.has(decision.id)) continue;
+    if (containsWorkItemId(decision.title, workItemId) || containsWorkItemId(decision.body, workItemId)) {
+      sources.push('item-decision');
+      break;
+    }
+  }
+
+  if (sources.length === 0) return null;
+  return {
+    kind: 'circular-prerequisite',
+    planSlug: row.planSlug,
+    itemId,
+    workItemId,
+    sources,
+  };
+}
+
 export type LaneGateOp =
   | { op: 'gate'; capability: ExternalBlockerCapability }
   /** `via` says WHICH un-park this is: the normal one (our blocker is still active),
@@ -901,6 +970,8 @@ export interface PlanLaneSyncResult {
    * lockstep with the canonical row.
    */
   skippedDuplicates: string[];
+  /** Gated lanes whose linked canonical row was named as their own prerequisite. */
+  circularPrerequisites: CircularPrerequisiteFinding[];
 }
 
 /**
@@ -912,6 +983,9 @@ export interface PlanLaneSyncResult {
 export async function syncLinkedWorkItemsToPlanLane(
   item: CompletedPlanItem,
   laneStatus: PlanLaneSyncStatus,
+  /** Fresh plan projection, when available. Required for cycle detection; the
+   * legacy mint-time caller may omit it and the periodic/inline callers pass it. */
+  planRow?: CircularPrerequisitePlanRow | null,
 ): Promise<PlanLaneSyncResult> {
   const out: PlanLaneSyncResult = {
     gated: [],
@@ -919,6 +993,7 @@ export async function syncLinkedWorkItemsToPlanLane(
     skippedInFlight: [],
     skippedAlreadyTerminal: [],
     skippedDuplicates: [],
+    circularPrerequisites: [],
   };
   try {
     const laneRef = planLaneBlockerRef(item.planSlug, item.itemId);
@@ -934,6 +1009,13 @@ export async function syncLinkedWorkItemsToPlanLane(
       if (wi !== canonical) {
         out.skippedDuplicates.push(wi.id);
         continue;
+      }
+      if (laneStatus !== 'actionable' && planRow) {
+        const finding = detectCircularPrerequisite(planRow, item.itemId, wi.id);
+        if (finding) {
+          out.circularPrerequisites.push(finding);
+          continue;
+        }
       }
       const action = await applyLaneGateToWorkItem(wi, laneStatus, laneRef, {
         planSlug: item.planSlug,
@@ -1002,6 +1084,7 @@ export async function resyncPlanItemLaneNow(
     const result = await syncLinkedWorkItemsToPlanLane(
       { planSlug, itemId, harnessSlug: harnessSlug ?? null },
       laneStatus,
+      row,
     );
     // D-049/D-050: the SAME reaction that resyncs the lane also reconciles the promoted
     // dependency graph — before this, plans:set-item-blocked-by updated the plan + lane
@@ -1226,6 +1309,8 @@ export interface OrphanReconcileSweepResult {
    * (never conflate an unmeasured population with an empty one).
    */
   planSaysDoneOpen: number;
+  /** Gated lanes whose linked canonical row was named as their own prerequisite. */
+  circularPrerequisites: CircularPrerequisiteFinding[];
 }
 
 /** Default per-tick candidate cap — a generous bound (orphan residue is bursty at
@@ -1277,6 +1362,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
     skippedAlreadyTerminal: [],
     skippedUnprovenLink: [],
     planSaysDoneOpen: -1,
+    circularPrerequisites: [],
   };
 
   const { sql } = getOrgPg();
@@ -1391,11 +1477,13 @@ export async function reconcileOrphanedPlanItemWorkItems(
           const r = await syncLinkedWorkItemsToPlanLane(
             { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
             laneStatus,
+            row,
           );
           out.gated.push(...r.gated);
           out.ungated.push(...r.ungated);
           out.skippedInFlight.push(...r.skippedInFlight);
           out.skippedAlreadyTerminal.push(...r.skippedAlreadyTerminal);
+          out.circularPrerequisites.push(...r.circularPrerequisites);
         }
       } catch {
         // fail-closed — a lane-classify/sync hiccup must never wedge the sweep.

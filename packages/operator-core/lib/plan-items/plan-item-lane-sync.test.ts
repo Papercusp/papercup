@@ -19,6 +19,7 @@ import { describe, expect, it } from 'vitest';
 import { updateExternalBlockerHistory } from '../external-blockers';
 import {
   decideLaneGate,
+  detectCircularPrerequisite,
   planLaneBlockerRef,
   restoreStateAfterUngate,
   selectCanonicalLinkedWorkItem,
@@ -380,3 +381,64 @@ describe('selectCanonicalLinkedWorkItem — one mutable row per plan lane [D-046
 // Type-only guard: PlanLaneSyncStatus stays the closed set the sweep classifies to.
 const _statuses: PlanLaneSyncStatus[] = ['blocked', 'needs-human', 'actionable'];
 void _statuses;
+
+describe('detectCircularPrerequisite — gated lane exit condition [WI-131638]', () => {
+  const row = (over: Record<string, unknown> = {}) =>
+    ({
+      planSlug: 'cycle-plan',
+      content: '',
+      items: [
+        {
+          id: 'P-007',
+          status: 'todo',
+          text: 'require terminal proof',
+          importance: 'normal',
+          blockedBy: [],
+          decisionRefs: [],
+          phase: null,
+        },
+      ],
+      decisions: [],
+      nowNext: null,
+      ...over,
+    }) as Parameters<typeof detectCircularPrerequisite>[0];
+
+  it('matches an exact linked id in the lane item text', () => {
+    expect(detectCircularPrerequisite(row({ items: [{ ...row().items[0], text: 'require WI-41764 terminal proof' }] }), 'P-007', 'WI-41764')).toEqual({
+      kind: 'circular-prerequisite',
+      planSlug: 'cycle-plan',
+      itemId: 'P-007',
+      workItemId: 'WI-41764',
+      sources: ['lane-item-text'],
+    });
+  });
+
+  it('matches the plan ## Now next projection', () => {
+    expect(detectCircularPrerequisite(row({ nowNext: 'require WI-41764 terminal proof with status=passed' }), 'P-007', 'WI-41764')).toMatchObject({
+      kind: 'circular-prerequisite',
+      sources: ['plan-now-next'],
+    });
+  });
+
+  it('matches only decisions scoped to the lane item, including decisionRefs', () => {
+    const scoped = row({
+      items: [{ ...row().items[0], decisionRefs: ['D-041'] }],
+      decisions: [
+        { id: 'D-040', title: 'WI-41764 is unrelated here', body: '', itemRefs: [] },
+        { id: 'D-041', title: 'P-007 requires WI-41764 terminal proof', body: '', itemRefs: [] },
+      ],
+    });
+    expect(detectCircularPrerequisite(scoped, 'P-007', 'WI-41764')).toMatchObject({
+      kind: 'circular-prerequisite',
+      sources: ['item-decision'],
+    });
+  });
+
+  it('does not match an unscoped decision or a longer id prefix', () => {
+    const unrelated = row({
+      decisions: [{ id: 'D-040', title: 'WI-41764 is unrelated here', body: '', itemRefs: [] }],
+      nowNext: 'WI-417640 is a different item',
+    });
+    expect(detectCircularPrerequisite(unrelated, 'P-007', 'WI-41764')).toBeNull();
+  });
+});
