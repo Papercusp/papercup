@@ -396,7 +396,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('rejects the removed generic checkpoint field instead of treating it as a raw note', () => {
-    expect(() => parse({ checkpoint: 'legacy generic carry note' })).toThrow(/unrecognized_keys.*checkpoint/i);
+    expect(() => parse({ checkpoint: 'legacy generic carry note' })).toThrow(/unrecognized_keys[\s\S]*checkpoint/i);
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
