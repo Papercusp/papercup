@@ -1,6 +1,9 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
 import PlanProvenanceBadge from './PlanProvenanceBadge';
+
+afterEach(cleanup);
 
 describe('PlanProvenanceBadge', () => {
   it('renders the Blender class with the literal appliance glyph and text', () => {
