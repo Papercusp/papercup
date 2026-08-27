@@ -65,6 +65,37 @@ function firstString(...values: unknown[]): string | null {
   return null;
 }
 
+function textFromUnknown(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  const record = asRecord(value);
+  if (!record) return null;
+  return firstString(
+    record.message,
+    record.detail,
+    record.reason,
+    record.description,
+    textFromUnknown(record.error),
+  );
+}
+
+function codeFromUnknown(...values: unknown[]): string | null {
+  for (const value of values) {
+    const direct = firstString(value);
+    if (direct) return direct;
+    const record = asRecord(value);
+    if (!record) continue;
+    const nested = firstString(
+      record.codex_error_info,
+      record.error_code,
+      record.code,
+      record.kind,
+      record.type,
+    );
+    if (nested) return nested;
+  }
+  return null;
+}
+
 function clipProviderText(value: string | null): string | null {
   if (!value) return null;
   return value.length <= PROVIDER_ERROR_TEXT_LIMIT
@@ -106,19 +137,32 @@ export function classifyCodexProviderError(line: string): CodexProviderError | n
   const payloadType = typeof payload.type === 'string' ? payload.type : '';
   if (payloadType !== 'error' && payloadType !== 'task_complete') return null;
   const error = asRecord(payload.error);
-  const hasError = payloadType === 'error' || payload.error != null || payload.codex_error_info != null;
+  const hasError =
+    payloadType === 'error' ||
+    payload.error != null ||
+    payload.codex_error_info != null ||
+    payload.status === 'error' ||
+    payload.status === 'failed' ||
+    payload.status === 'failure';
   if (!hasError) return null;
 
   const rawCode =
-    firstString(
+    codeFromUnknown(
       payload.codex_error_info,
       error?.codex_error_info,
       payload.error_code,
       error?.code,
       payload.code,
+      payload.error,
     ) ?? 'provider_error';
   const message = clipProviderText(
-    firstString(payload.message, error?.message, error?.detail, error?.error, payload.error),
+    firstString(
+      payload.message,
+      error?.message,
+      error?.detail,
+      textFromUnknown(payload.error),
+      textFromUnknown(payload.codex_error_info),
+    ),
   );
   const account = firstString(
     payload.account,
@@ -159,7 +203,13 @@ function isCodexSuccessfulTerminal(line: string): boolean {
   if (!payload) return false;
   const payloadType = typeof payload.type === 'string' ? payload.type : '';
   if (payloadType !== 'task_complete' && payloadType !== 'turn_completed') return false;
-  return payload.error == null && payload.codex_error_info == null && payload.status !== 'error';
+  return (
+    payload.error == null &&
+    payload.codex_error_info == null &&
+    payload.status !== 'error' &&
+    payload.status !== 'failed' &&
+    payload.status !== 'failure'
+  );
 }
 
 /**
@@ -188,13 +238,14 @@ export function evaluateCodexProviderFailureRecurrence(
         previous.error.source === 'event_msg:error' &&
         (
           (error.turnKey != null && error.turnKey === previous.error.turnKey) ||
-          (
-            error.turnKey == null &&
-            previous.error.turnKey == null &&
-            error.code === previous.error.code &&
-            error.message === previous.error.message &&
-            lineIndex - previous.lineIndex <= 3
-          )
+            (
+              error.turnKey == null &&
+              previous.error.turnKey == null &&
+              (error.code === previous.error.code ||
+                error.code === 'provider_error' ||
+                previous.error.code === 'provider_error') &&
+              lineIndex - previous.lineIndex <= 8
+            )
         );
       if (duplicateTaskError) {
         terminals[terminals.length - 1] = { kind: 'failure', error, lineIndex };
@@ -287,9 +338,14 @@ async function statMtime(path: string): Promise<number | null> {
   }
 }
 
-async function latestRolloutMtime(codexHome: string): Promise<number | null> {
+interface LatestCodexRollout {
+  path: string;
+  mtimeMs: number;
+}
+
+async function latestRollout(codexHome: string): Promise<LatestCodexRollout | null> {
   const root = join(codexHome, 'sessions');
-  let best: number | null = null;
+  let best: LatestCodexRollout | null = null;
   let years: string[];
   try { years = await fs.readdir(root); } catch { return null; }
   for (const year of years) {
@@ -303,8 +359,11 @@ async function latestRolloutMtime(codexHome: string): Promise<number | null> {
         try { files = await fs.readdir(join(root, year, month, day)); } catch { continue; }
         for (const file of files) {
           if (!file.startsWith('rollout-') || !file.endsWith('.jsonl')) continue;
-          const mtime = await statMtime(join(root, year, month, day, file));
-          if (mtime != null && (best == null || mtime > best)) best = mtime;
+          const path = join(root, year, month, day, file);
+          const mtimeMs = await statMtime(path);
+          if (mtimeMs != null && (best == null || mtimeMs > best.mtimeMs)) {
+            best = { path, mtimeMs };
+          }
         }
       }
     }
@@ -312,21 +371,47 @@ async function latestRolloutMtime(codexHome: string): Promise<number | null> {
   return best;
 }
 
+/** Read at most `maxBytes` from the end of a rollout without loading the file. */
+export async function readCodexRolloutTail(
+  path: string,
+  maxBytes = CODEX_PROVIDER_ERROR_TAIL_BYTES,
+): Promise<string | null> {
+  const limit = Number.isFinite(maxBytes)
+    ? Math.max(1, Math.floor(maxBytes))
+    : CODEX_PROVIDER_ERROR_TAIL_BYTES;
+  let handle: Awaited<ReturnType<typeof fs.open>> | null = null;
+  try {
+    handle = await fs.open(path, 'r');
+    const size = (await handle.stat()).size;
+    const length = Math.min(size, limit);
+    const buffer = Buffer.alloc(length);
+    await handle.read(buffer, 0, length, Math.max(0, size - length));
+    return buffer.toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
 async function readSnapshot(
   row: { id: number; owner_id: string; pid: number | null },
   pidAlive: (pid: number) => boolean,
-): Promise<CodexRolloutPersistenceSnapshot> {
+): Promise<{ snapshot: CodexRolloutPersistenceSnapshot; rolloutPath: string | null }> {
   const codexHome = codexHomeForSessionKey(row.id);
-  const [historyMtimeMs, rolloutMtimeMs] = await Promise.all([
+  const [historyMtimeMs, rollout] = await Promise.all([
     statMtime(join(codexHome, 'history.jsonl')),
-    latestRolloutMtime(codexHome),
+    latestRollout(codexHome),
   ]);
   return {
-    sessionId: String(row.id),
-    ownerId: row.owner_id,
-    pidAlive: row.pid != null && pidAlive(row.pid),
-    historyMtimeMs,
-    rolloutMtimeMs,
+    snapshot: {
+      sessionId: String(row.id),
+      ownerId: row.owner_id,
+      pidAlive: row.pid != null && pidAlive(row.pid),
+      historyMtimeMs,
+      rolloutMtimeMs: rollout?.mtimeMs ?? null,
+    },
+    rolloutPath: rollout?.path ?? null,
   };
 }
 
@@ -353,14 +438,105 @@ export interface CodexRolloutPersistenceWatchdogResult {
   stalledSessionIds: string[];
   alarmed: string[];
   recovered: string[];
+  providerFailureSessionIds: string[];
+  providerAlarmed: string[];
+  providerEndedSessionIds: string[];
+  providerCleanupFailed: string[];
+  providerRecovered: string[];
+}
+
+export interface CodexRolloutPersistenceWatchdogOptions extends CodexRolloutPersistenceThresholds {
+  pidAlive?: (pid: number) => boolean;
+  intervalMs?: number;
+  providerFailureConsecutive?: number;
+  providerErrorTailBytes?: number;
+  readRolloutTail?: typeof readCodexRolloutTail;
+  endSession?: typeof markAdvSessionEnded;
+  cancelInboxWake?: typeof cancelInboxWakeAwaits;
+  cancelClaimable?: typeof cancelClaimableAwaits;
+  retireLifecycleWatches?: typeof retireLifecycleBoundWatchesForOwners;
+  releaseWorkItems?: typeof releaseAllWorkItemLeasesForOwner;
+}
+
+interface ProviderFailureObservation {
+  advSessionId: number;
+  snapshot: CodexRolloutPersistenceSnapshot;
+  recurrence: CodexProviderFailureRecurrence;
+  workspaceId: string | null;
+}
+
+function providerFailureReason(item: ProviderFailureObservation): string {
+  const latest = item.recurrence.latest;
+  const retry = latest?.retryAt ? `; retry hint: ${latest.retryAt}` : '';
+  return (
+    `Codex process ${item.snapshot.ownerId} (session ${item.snapshot.sessionId}) has ` +
+    `${item.recurrence.consecutiveFailures} consecutive provider failures ` +
+    `(threshold ${item.recurrence.threshold}); latest=${latest?.code ?? 'unknown'}${retry}. ` +
+    'The provider is not accepting turns; ending the tracked session prevents further wakes and releases its lane.'
+  );
+}
+
+function providerEscalationBody(item: ProviderFailureObservation, nowMs: number): string {
+  return JSON.stringify({
+    kind: 'codex-provider-failure-watchdog',
+    owner_id: item.snapshot.ownerId,
+    session_id: item.snapshot.sessionId,
+    emitted_at: nowMs,
+    consecutive_failures: item.recurrence.consecutiveFailures,
+    threshold: item.recurrence.threshold,
+    detail: providerFailureReason(item),
+    failures: item.recurrence.failures.slice(-PROVIDER_ERROR_EVIDENCE_LIMIT),
+  });
+}
+
+async function endProviderFailureSession(
+  item: ProviderFailureObservation,
+  opts: CodexRolloutPersistenceWatchdogOptions,
+): Promise<{ ended: boolean; cleanupFailed: boolean }> {
+  try {
+    await (opts.endSession ?? markAdvSessionEnded)(item.advSessionId, null, 'reconciler', {
+      throwOnError: true,
+    });
+  } catch (e) {
+    console.warn(
+      `[codex-rollout-watchdog] provider session ${item.snapshot.sessionId} end write failed: ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+    return { ended: false, cleanupFailed: false };
+  }
+
+  const ownerId = item.snapshot.ownerId;
+  const effects = await Promise.allSettled([
+    (opts.cancelInboxWake ?? cancelInboxWakeAwaits)(ownerId),
+    (opts.cancelClaimable ?? cancelClaimableAwaits)(ownerId),
+    (opts.retireLifecycleWatches ?? retireLifecycleBoundWatchesForOwners)([ownerId]),
+    (opts.releaseWorkItems ?? releaseAllWorkItemLeasesForOwner)(ownerId),
+  ]);
+  const failed = effects.filter((effect) => effect.status === 'rejected');
+  if (failed.length > 0) {
+    console.warn(
+      `[codex-rollout-watchdog] provider session ${item.snapshot.sessionId} cleanup had ` +
+        `${failed.length} failed effect(s) after ended_at was written`,
+    );
+  }
+  return { ended: true, cleanupFailed: failed.length > 0 };
 }
 
 /** One cross-process-safe watchdog pass. Never throws to its scheduler. */
 export async function checkCodexRolloutPersistence(
   sql: Sql,
-  opts: CodexRolloutPersistenceThresholds & { pidAlive?: (pid: number) => boolean } = {},
+  opts: CodexRolloutPersistenceWatchdogOptions = {},
 ): Promise<CodexRolloutPersistenceWatchdogResult> {
-  const out: CodexRolloutPersistenceWatchdogResult = { stalledSessionIds: [], alarmed: [], recovered: [] };
+  const out: CodexRolloutPersistenceWatchdogResult = {
+    stalledSessionIds: [],
+    alarmed: [],
+    recovered: [],
+    providerFailureSessionIds: [],
+    providerAlarmed: [],
+    providerEndedSessionIds: [],
+    providerCleanupFailed: [],
+    providerRecovered: [],
+  };
   try {
     const rows = await sql<Array<{ id: number; owner_id: string; pid: number | null; workspace_id: string | null }>>`
       SELECT id, coord_owner_id AS owner_id, pid, workspace_id
@@ -374,14 +550,44 @@ export async function checkCodexRolloutPersistence(
       reason: string;
       workspaceId: string | null;
     }> = [];
+    const providerFailures: ProviderFailureObservation[] = [];
     for (const row of rows) {
-      const snapshot = await readSnapshot(row, alive);
+      const read = await readSnapshot(row, alive);
+      const snapshot = read.snapshot;
       const verdict = evaluateCodexRolloutPersistence(snapshot, now, opts);
       if (verdict.stalled && verdict.reason) {
         stalled.push({ snapshot, reason: verdict.reason, workspaceId: row.workspace_id });
       }
+      if (snapshot.pidAlive && read.rolloutPath) {
+        let tail: string | null = null;
+        try {
+          tail = await (opts.readRolloutTail ?? readCodexRolloutTail)(
+            read.rolloutPath,
+            opts.providerErrorTailBytes ?? CODEX_PROVIDER_ERROR_TAIL_BYTES,
+          );
+        } catch (e) {
+          console.warn(
+            `[codex-rollout-watchdog] provider tail read failed for session ${snapshot.sessionId}: ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        if (tail != null) {
+          const recurrence = scanCodexProviderFailureTail(tail, {
+            consecutiveFailures: opts.providerFailureConsecutive,
+          });
+          if (recurrence.dead) {
+            providerFailures.push({
+              advSessionId: row.id,
+              snapshot,
+              recurrence,
+              workspaceId: row.workspace_id,
+            });
+          }
+        }
+      }
     }
     out.stalledSessionIds = stalled.map((item) => item.snapshot.sessionId);
+    out.providerFailureSessionIds = providerFailures.map((item) => item.snapshot.sessionId);
 
     const newly: typeof stalled = [];
     for (const item of stalled) {
@@ -414,6 +620,49 @@ export async function checkCodexRolloutPersistence(
       console.warn(`[codex-rollout-watchdog] ALARM: ${list}`);
     }
 
+    const newlyProviderFailed: ProviderFailureObservation[] = [];
+    for (const item of providerFailures) {
+      const phase = PROVIDER_FAILURE_PHASE_PREFIX + item.snapshot.sessionId;
+      const claimed = await sql`
+        INSERT INTO harness_shared.harness_escalations
+          (harness_slug, phase, escalation, mtime_ms, workspace_id)
+        VALUES ('papercusp', ${phase}, ${providerEscalationBody(item, now)}, ${now}, ${item.workspaceId})
+        ON CONFLICT (harness_slug, phase) DO NOTHING
+        RETURNING phase
+      `;
+      if (claimed.length === 1) newlyProviderFailed.push(item);
+    }
+    if (newlyProviderFailed.length > 0) {
+      out.providerAlarmed = newlyProviderFailed.map((item) => item.snapshot.sessionId);
+      const list = newlyProviderFailed
+        .map((item) => `${item.snapshot.ownerId} (session ${item.snapshot.sessionId})`)
+        .join(', ');
+      try {
+        const { notifyAttention } = await import('../attention-notify');
+        await notifyAttention({
+          kind: 'intervention',
+          title: 'Codex provider failures repeated',
+          body: `Live Codex session(s) repeatedly failed at the provider: ${list}. ${providerFailureReason(newlyProviderFailed[0])}`,
+          importance: 'high',
+          workspaceId: newlyProviderFailed[0].workspaceId ?? undefined,
+          data: {
+            sessionIds: newlyProviderFailed.map((item) => item.snapshot.sessionId),
+            owners: newlyProviderFailed.map((item) => item.snapshot.ownerId),
+            codes: newlyProviderFailed.map((item) => item.recurrence.latest?.code ?? 'unknown'),
+          },
+        });
+      } catch (e) {
+        console.warn(`[codex-rollout-watchdog] provider notify failed: ${e instanceof Error ? e.message : e}`);
+      }
+      console.warn(`[codex-rollout-watchdog] PROVIDER ALARM: ${list}`);
+    }
+
+    for (const item of providerFailures) {
+      const cleanup = await endProviderFailureSession(item, opts);
+      if (cleanup.ended) out.providerEndedSessionIds.push(item.snapshot.sessionId);
+      if (cleanup.cleanupFailed) out.providerCleanupFailed.push(item.snapshot.sessionId);
+    }
+
     const alertedRows = await sql<Array<{ phase: string }>>`
       SELECT phase FROM harness_shared.harness_escalations
        WHERE harness_slug = 'papercusp' AND phase LIKE ${PHASE_PREFIX + '%'} AND escalation IS NOT NULL
@@ -428,6 +677,25 @@ export async function checkCodexRolloutPersistence(
       `;
       out.recovered = toRecover.map((phase) => phase.slice(PHASE_PREFIX.length));
     }
+
+    const alertedProviderRows = await sql<Array<{ phase: string }>>`
+      SELECT phase FROM harness_shared.harness_escalations
+       WHERE harness_slug = 'papercusp' AND phase LIKE ${PROVIDER_FAILURE_PHASE_PREFIX + '%'} AND escalation IS NOT NULL
+    `;
+    const activeProviderPhases = new Set(
+      providerFailures.map((item) => PROVIDER_FAILURE_PHASE_PREFIX + item.snapshot.sessionId),
+    );
+    const providerToRecover = alertedProviderRows
+      .map((row) => row.phase)
+      .filter((phase) => !activeProviderPhases.has(phase));
+    if (providerToRecover.length > 0) {
+      await sql`
+        UPDATE harness_shared.harness_escalations
+           SET escalation = NULL, mtime_ms = ${now}
+         WHERE harness_slug = 'papercusp' AND phase = ANY(${providerToRecover}) AND escalation IS NOT NULL
+      `;
+      out.providerRecovered = providerToRecover.map((phase) => phase.slice(PROVIDER_FAILURE_PHASE_PREFIX.length));
+    }
   } catch (e) {
     console.warn(`[codex-rollout-watchdog] pass failed (non-fatal): ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -439,15 +707,23 @@ let watchdogTimer: ManagedHandle | null = null;
 /** Start the process-level watchdog; idempotent and kill-switchable. */
 export function startCodexRolloutPersistenceWatchdog(
   sql: Sql,
-  opts: CodexRolloutPersistenceThresholds & { intervalMs?: number } = {},
+  opts: CodexRolloutPersistenceWatchdogOptions = {},
 ): void {
   if (process.env.PAPERCUSP_CODEX_ROLLOUT_WATCHDOG === '0') return;
   const intervalMs = opts.intervalMs ?? DEFAULT_WATCHDOG_INTERVAL_MS;
   const run = (): void => {
     void checkCodexRolloutPersistence(sql, opts).then((result) => {
-      if (result.alarmed.length > 0 || result.recovered.length > 0) {
+      if (
+        result.alarmed.length > 0 ||
+        result.recovered.length > 0 ||
+        result.providerAlarmed.length > 0 ||
+        result.providerRecovered.length > 0 ||
+        result.providerEndedSessionIds.length > 0
+      ) {
         console.warn(
-          `[codex-rollout-watchdog] alarmed=${result.alarmed.length} recovered=${result.recovered.length}`,
+          `[codex-rollout-watchdog] alarmed=${result.alarmed.length} recovered=${result.recovered.length} ` +
+            `providerAlarmed=${result.providerAlarmed.length} providerRecovered=${result.providerRecovered.length} ` +
+            `providerEnded=${result.providerEndedSessionIds.length}`,
         );
       }
     });
