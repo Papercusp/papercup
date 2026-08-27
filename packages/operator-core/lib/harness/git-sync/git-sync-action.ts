@@ -112,6 +112,7 @@ import {
   type RunGit as PotGitRunGit,
 } from '../../sync/pot-git/storage';
 import { STAGING_REF } from '../../sync/pot-git/integrator';
+import { reconcileProposedCompletionsAtCommit } from './completion-settlement-reconciler';
 // EI-19442274898324113: the ONLY sanctioned way to build an `integrator_progress`
 // metadata value — same top-level-jsonb-merge hazard as `worktree_bridge` above,
 // one layer more costly because this state GATES A TAKEOVER rather than merely
@@ -2055,6 +2056,9 @@ async function handleGitSync(
   // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
   // fire-and-forget, never gates the tick, benign to replay past the record step.
   if (outcome.status === 'synced') {
+    await reconcileProposedCompletionsAtCommit(outcome.headSha, { installSlug: slug, workspaceId }).catch((error) => {
+      console.warn(`[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
     emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
   }
 

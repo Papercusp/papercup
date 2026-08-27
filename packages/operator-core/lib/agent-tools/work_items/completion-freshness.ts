@@ -12,6 +12,7 @@ import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import type {
+  CompletionSettlementManifest,
   CompletionTreeStamp,
   CompletionTreeContentIdentity,
   CompletionVerificationEvidence,
@@ -22,6 +23,41 @@ const MAX_PATHS_PROBED = 60;
 const OBJECT_SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
 
 export type { CompletionTreeContentIdentity } from '../../coord-lifecycle/records';
+
+function canonicalEvidence(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalEvidence).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => key !== 'settlementManifest')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalEvidence(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** Build the immutable generation-1 receipt for a newly closed code item. */
+export function completionSettlementManifest(
+  evidence: CompletionVerificationEvidence,
+  generation = 1,
+): CompletionSettlementManifest | undefined {
+  const stamp = evidence.treeStamp;
+  if (!stamp?.repositoryRoot || !stamp.contentIdentity?.length) return undefined;
+  const contentIdentity = [...stamp.contentIdentity]
+    .map((identity) => ({ ...identity, path: identity.path.replaceAll('\\', '/') }))
+    .sort((a, b) => a.path.localeCompare(b.path));
+  const normalizedPaths = [...new Set(contentIdentity.map(({ path }) => path))];
+  if (normalizedPaths.length === 0) return undefined;
+  return {
+    version: 1,
+    generation,
+    evidenceHash: createHash('sha256').update(canonicalEvidence(evidence)).digest('hex'),
+    repositoryRoot: nodePath.resolve(stamp.repositoryRoot),
+    headSha: stamp.headSha,
+    normalizedPaths,
+    contentIdentity,
+  };
+}
 
 /** Injected reads for {@link completionTreeStamp}, so it is unit-testable. */
 export interface CompletionTreeStampProbe {
@@ -50,7 +86,7 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
   return createHash(algorithm).update(header).update(bytes).digest('hex');
 }
 
-function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
+export function completionHeadBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
   try {
     const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) => execFileSync(
       'git',
@@ -114,7 +150,7 @@ function headBlobMap(repoRoot: string, headSha: string, paths: readonly string[]
         grouped.set(prefix, group);
       }
       for (const [prefix, group] of grouped) {
-        const nested = headBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths);
+        const nested = completionHeadBlobMap(nodePath.join(repoRoot, prefix), group.sha, group.paths);
         if (!nested) continue;
         for (const path of group.paths) {
           const sha = nested.get(path);
@@ -136,7 +172,7 @@ function contentIdentity(
 ): CompletionTreeContentIdentity[] | undefined {
   const paths = [...new Set(filesChanged.slice(0, MAX_PATHS_PROBED).map((path) => normalizedRepoPath(repositoryRoot, path)))] as string[];
   if (paths.length === 0 || paths.some((path) => !path)) return undefined;
-  const head = (probe.headBlobs ?? headBlobMap)(repositoryRoot, headSha, paths);
+  const head = (probe.headBlobs ?? completionHeadBlobMap)(repositoryRoot, headSha, paths);
   if (!head) return undefined;
   const readBytes =
     probe.readBytes ??

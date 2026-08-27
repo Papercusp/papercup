@@ -207,6 +207,26 @@ export const CompletionTreeStampSchema = z
   .describe(COMPLETION_TREE_STAMP_CONTRACT);
 export type CompletionTreeStamp = z.infer<typeof CompletionTreeStampSchema>;
 
+/** Durable receipt used to reconcile a proposed code completion with git-sync. */
+export const CompletionSettlementManifestSchema = z.object({
+  version: z.literal(1),
+  generation: z.number().int().positive(),
+  evidenceHash: z.string().regex(/^[0-9a-f]{64}$/),
+  repositoryRoot: z.string().min(1),
+  headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/),
+  normalizedPaths: z.array(z.string().min(1)).min(1).max(60),
+  contentIdentity: z.array(z.object({
+    path: z.string().min(1),
+    workingTreeBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+    headBlobSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/).nullable(),
+  })).min(1).max(60),
+  residualPaths: z.array(z.object({
+    path: z.string().min(1),
+    reason: z.enum(['identity-unavailable', 'missing-from-commit', 'content-mismatch']),
+  })).max(60).optional(),
+});
+export type CompletionSettlementManifest = z.infer<typeof CompletionSettlementManifestSchema>;
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: z.array(z.string().min(1)).optional(),
@@ -264,6 +284,8 @@ export const CompletionVerificationEvidenceSchema = z.object({
    * refs). Absence means "not observed", never "clean" or "unknown-but-fine".
    */
   treeStamp: CompletionTreeStampSchema.optional().describe(COMPLETION_TREE_STAMP_CONTRACT),
+  /** Server-derived causal receipt for code completions awaiting git-sync settlement. */
+  settlementManifest: CompletionSettlementManifestSchema.optional(),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
