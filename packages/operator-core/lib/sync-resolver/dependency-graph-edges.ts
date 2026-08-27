@@ -97,6 +97,11 @@ export interface DependencyGraphEdge {
   blockerTitle: string | null;
   /** The BLOCKER row's originating plan, or null (no row, or no plan). */
   blockerPlanSlug: string | null;
+  blockedPlanItemId: string | null;
+  blockerPlanItemId: string | null;
+  blockedPhase: string | null;
+  blockerPhase: string | null;
+  blockedPlanBlockedBy: string[];
 }
 
 /** Bound the payload. The pane renders a filtered subgraph (D-003), never the whole corpus. */
@@ -132,6 +137,11 @@ export async function resolveDependencyGraphEdges(
       blocked_plan_slug: string | null;
       blocker_title: string | null;
       blocker_plan_slug: string | null;
+      blocked_plan_item_id: string | null;
+      blocker_plan_item_id: string | null;
+      blocked_phase: string | null;
+      blocker_phase: string | null;
+      blocked_plan_blocked_by: string[] | null;
     }>
   >`
     SELECT bd.feature_id  AS blocked_id,
@@ -147,7 +157,12 @@ export async function resolveDependencyGraphEdges(
            bd.status           AS blocked_status,
            bd.source_plan_slug AS blocked_plan_slug,
            bk.title            AS blocker_title,
-           bk.source_plan_slug AS blocker_plan_slug
+           bk.source_plan_slug AS blocker_plan_slug,
+           bpi.item_id         AS blocked_plan_item_id,
+           kpi.item_id         AS blocker_plan_item_id,
+           bpi.phase           AS blocked_phase,
+           kpi.phase           AS blocker_phase,
+           bpi.blocked_by      AS blocked_plan_blocked_by
       FROM harness_shared.work_item_deps d
       -- BLOCKED side: inner. An edge whose dependant is not in this harness is not ours.
       JOIN harness_shared.work_items bd
@@ -189,6 +204,24 @@ export async function resolveDependencyGraphEdges(
          (bk.item_kind <> ALL (${ISSUE_KINDS as unknown as string[]})
            AND d.blocker_ref = bk.harness_slug || '#' || bk.feature_id)
        )
+      LEFT JOIN LATERAL (
+        SELECT pi.item_id, pi.phase, pi.blocked_by
+          FROM harness_shared.plan_items pi
+         WHERE pi.workspace_id = bd.workspace_id
+           AND pi.harness_slug = bd.harness_slug
+           AND pi.plan_slug = bd.source_plan_slug
+           AND pi.item_id = COALESCE(bd.source_plan_item_ids[1], bd.payload -> 'plan_item' ->> 'item_id')
+         LIMIT 1
+      ) bpi ON true
+      LEFT JOIN LATERAL (
+        SELECT pi.item_id, pi.phase
+          FROM harness_shared.plan_items pi
+         WHERE pi.workspace_id = bk.workspace_id
+           AND pi.harness_slug = bk.harness_slug
+           AND pi.plan_slug = bk.source_plan_slug
+           AND pi.item_id = COALESCE(bk.source_plan_item_ids[1], bk.payload -> 'plan_item' ->> 'item_id')
+         LIMIT 1
+      ) kpi ON true
      WHERE d.dep_type = 'blocks'
        AND d.workspace_id = ${COORD_WORKSPACE}
      ORDER BY bd.feature_id, d.blocker_ref
@@ -207,5 +240,10 @@ export async function resolveDependencyGraphEdges(
     blockedPlanSlug: r.blocked_plan_slug,
     blockerTitle: r.blocker_title,
     blockerPlanSlug: r.blocker_plan_slug,
+    blockedPlanItemId: r.blocked_plan_item_id,
+    blockerPlanItemId: r.blocker_plan_item_id,
+    blockedPhase: r.blocked_phase,
+    blockerPhase: r.blocker_phase,
+    blockedPlanBlockedBy: r.blocked_plan_blocked_by ?? [],
   }));
 }

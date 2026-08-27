@@ -79,6 +79,11 @@ interface DepEdgeRow {
   blockedPlanSlug?: string | null;
   blockerTitle?: string | null;
   blockerPlanSlug?: string | null;
+  blockedPlanItemId?: string | null;
+  blockerPlanItemId?: string | null;
+  blockedPhase?: string | null;
+  blockerPhase?: string | null;
+  blockedPlanBlockedBy?: string[];
 }
 
 const NODE_W = 210;
@@ -1031,6 +1036,23 @@ export default function DepGraphPanel({ params }: PanelComponentProps) {
     <div className="pc-advpanel pc-depgraph">
       {bar}
       {legendOpen && <DepGraphLegend />}
+
+      {healthOnly && (
+        <aside className="pc-depgraph__integrity" aria-label="Dependency integrity findings">
+          <strong>{graph.findings.length} integrity finding{graph.findings.length === 1 ? '' : 's'}</strong>
+          <span>
+            Width {graph.topologyRisk.readyWidth} · depth {graph.topologyRisk.criticalPathDepth} · max fan-in {graph.topologyRisk.maxFanIn} · max fan-out {graph.topologyRisk.maxFanOut}
+          </span>
+          {graph.findings.map((f, index) => (
+            <details key={`${f.code}:${index}`}>
+              <summary>{f.classification}: {f.code} ({f.confidence})</summary>
+              <p>{f.nodes.join(' → ')}</p>
+              {f.suggestedAction && <p>Suggested review: {f.suggestedAction}</p>}
+              <small>Advisory only — no dependency is changed automatically.</small>
+            </details>
+          ))}
+        </aside>
+      )}
 
       {layoutError && <div className="pc-advpanel__empty">Layout failed: {layoutError}</div>}
 

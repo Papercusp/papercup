@@ -206,6 +206,17 @@ describe('P-002 — the "Issues only" toggle cannot fragment', () => {
   });
 });
 
+describe('P-014 — integrity evidence is visible and never presented as an auto-fix', () => {
+  it('renders the shared finding contract and topology-risk summary in issues mode', () => {
+    edgesState = { loading: false, data: [{ ...EDGES[0]!, blockerId: null, blockerRef: 'WI-missing', blockerStatus: null }], error: null };
+    renderPanel('?dgh=issues');
+    expect(screen.getByLabelText('Dependency integrity findings')).toBeTruthy();
+    expect(screen.getByText(/1 integrity finding/)).toBeTruthy();
+    expect(screen.getByText(/hard-block: executable-endpoint-missing/)).toBeTruthy();
+    expect(screen.getByText(/Advisory only — no dependency is changed automatically/)).toBeTruthy();
+  });
+});
+
 describe('P-003 / P-007 — the bar wraps, and the way out of a selection is prominent', () => {
   it('opts the bar into wrapping instead of letting one row fragment its controls', () => {
     const { container } = renderPanel();

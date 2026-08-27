@@ -646,6 +646,33 @@ describe('buildDepSubgraph — window vs filter: WHY an endpoint is missing deci
     });
   });
 
+  describe('integrity mode (P-014)', () => {
+    it('surfaces a cycle with the shared hard-block contract', () => {
+      const g = buildDepSubgraph({ items: [item('A'), item('B'), item('C')], edges: [edge('B', 'A'), edge('C', 'B'), edge('A', 'C')], healthOnly: true });
+      expect(g.findings).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'cycle', classification: 'hard-block', confidence: 'deterministic' })]));
+      expect(g.edges).toHaveLength(3);
+    });
+
+    it('reports phase inversion, promotion drift, and transitive redundancy as advisories only', () => {
+      const g = buildDepSubgraph({
+        items: [item('A'), item('B'), item('C')],
+        edges: [edge('B', 'A'), edge('C', 'B'), edge('C', 'A', { blockedPlanSlug: 'p', blockerPlanSlug: 'p', blockedPlanItemId: 'P-003', blockerPlanItemId: 'P-001', blockedPlanBlockedBy: ['P-002'], blockedPhase: 'Phase 1', blockerPhase: 'Phase 3' })],
+      });
+      expect(g.findings.map((f) => f.code)).toEqual(expect.arrayContaining(['phase-inversion', 'promoted-graph-extra-edge', 'transitive-redundancy']));
+      expect(g.findings.filter((f) => f.code !== 'cycle').every((f) => f.classification === 'advisory')).toBe(true);
+    });
+
+    it('keeps a healthy diamond silent', () => {
+      const g = buildDepSubgraph({ items: ['A', 'B', 'C', 'D'].map((id) => item(id)), edges: [edge('B', 'A'), edge('C', 'A'), edge('D', 'B'), edge('D', 'C')] });
+      expect(g.findings).toEqual([]);
+    });
+
+    it('keeps an intentional serial chain silent', () => {
+      const g = buildDepSubgraph({ items: ['A', 'B', 'C'].map((id) => item(id)), edges: [edge('B', 'A'), edge('C', 'B')] });
+      expect(g.findings).toEqual([]);
+    });
+  });
+
   // dependency-health-pane-2026-08-02 P-012 (D-003 req 2: "all the plan and work items").
   //
   // Plan items are NOT a second node kind here — a plan item IS a work_items row

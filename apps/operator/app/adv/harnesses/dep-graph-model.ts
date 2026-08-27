@@ -30,6 +30,11 @@
  * avoid.
  */
 
+import {
+  getDependencyPolicy,
+  type DependencyPolicyFinding,
+} from '@papercusp/operator-core/lib/scheduler/dependency-invariants';
+
 /** A node as the graph needs it. A structural subset of the list's row — same corpus (D-003). */
 export interface DepGraphItem {
   id: string;
@@ -78,6 +83,11 @@ export interface DepGraphEdgeInput {
   blockedPlanSlug?: string | null;
   blockerTitle?: string | null;
   blockerPlanSlug?: string | null;
+  blockedPlanItemId?: string | null;
+  blockerPlanItemId?: string | null;
+  blockedPhase?: string | null;
+  blockerPhase?: string | null;
+  blockedPlanBlockedBy?: string[];
 }
 
 export interface DepGraphNode extends DepGraphItem {
@@ -128,6 +138,64 @@ export interface DepSubgraph {
   filteredEdgeCount: number;
   /** Nodes drawn from edge-carried fields because they fell outside the list's window. */
   hydratedNodeCount: number;
+  findings: DependencyPolicyFinding[];
+  topologyRisk: { readyWidth: number; criticalPathDepth: number; maxFanIn: number; maxFanOut: number };
+}
+
+function finding(code: string, nodes: string[], edges: Array<{ subject: string; dependency: string }>, evidence: Record<string, unknown>): DependencyPolicyFinding {
+  const policy = getDependencyPolicy(code);
+  if (!policy || policy.classification === 'healthy') throw new Error(`missing visible dependency policy: ${code}`);
+  return { code: policy.code, classification: policy.classification, confidence: policy.confidence, nodes, edges, evidence, provenance: [...policy.provenance], suggestedAction: policy.suggestedAction };
+}
+
+function integrityFindings(inputs: readonly DepGraphEdgeInput[], edges: readonly DepGraphEdge[], nodes: readonly DepGraphNode[]) {
+  const out: DependencyPolicyFinding[] = [];
+  const byPair = new Map(inputs.filter((e) => e.blockerId).map((e) => [`${e.blockerId}->${e.blockedId}`, e]));
+  const next = new Map<string, string[]>();
+  const prev = new Map<string, string[]>();
+  for (const e of edges.filter((edge) => !edge.dangling && !edge.satisfied)) {
+    (next.get(e.source) ?? (next.set(e.source, []), next.get(e.source)!)).push(e.target);
+    (prev.get(e.target) ?? (prev.set(e.target, []), prev.get(e.target)!)).push(e.source);
+  }
+  const colour = new Map<string, number>();
+  const stack: string[] = [];
+  const visit = (id: string) => {
+    colour.set(id, 1); stack.push(id);
+    for (const child of next.get(id) ?? []) {
+      if (!colour.get(child)) visit(child);
+      else if (colour.get(child) === 1) {
+        const path = [...stack.slice(stack.indexOf(child)), child];
+        out.push(finding('cycle', [...new Set(path)], path.slice(1).map((subject, i) => ({ subject, dependency: path[i]! })), { path }));
+      }
+    }
+    stack.pop(); colour.set(id, 2);
+  };
+  for (const n of nodes) if (!colour.get(n.id)) visit(n.id);
+  const terminal = new Set(['passed', 'deprecated', 'done', 'dropped', 'resolved', 'closed']);
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
+  for (const e of edges) {
+    if (e.dangling) {
+      out.push(finding('executable-endpoint-missing', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { exactEdge: e.id, blockerRef: e.source.replace(/^dangling:/, '') }));
+      continue;
+    }
+    const input = byPair.get(e.id);
+    if (e.satisfied) out.push(finding('satisfied-edge-retained', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { lifecycle: { subject: nodeById.get(e.target)?.state, dependency: nodeById.get(e.source)?.state } }));
+    if (terminal.has(nodeById.get(e.target)?.state ?? '') && !e.satisfied) out.push(finding('terminal-dependant-live-blocker', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { lifecycle: { subject: nodeById.get(e.target)?.state, dependency: nodeById.get(e.source)?.state } }));
+    if (input?.blockedPlanItemId && input.blockerPlanItemId && input.blockedPlanSlug === input.blockerPlanSlug && !input.blockedPlanBlockedBy?.includes(input.blockerPlanItemId)) out.push(finding('promoted-graph-extra-edge', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { planItems: { subject: input.blockedPlanItemId, dependency: input.blockerPlanItemId } }));
+    const phaseNumber = (value?: string | null) => Number(value?.match(/\d+/)?.[0] ?? NaN);
+    const subjectPhase = phaseNumber(input?.blockedPhase), dependencyPhase = phaseNumber(input?.blockerPhase);
+    if (Number.isFinite(subjectPhase) && Number.isFinite(dependencyPhase) && subjectPhase < dependencyPhase) out.push(finding('phase-inversion', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { phases: { subject: input?.blockedPhase, dependency: input?.blockerPhase } }));
+    const seen = new Set<string>(); const queue = [...(next.get(e.source) ?? []).filter((id) => id !== e.target)];
+    while (queue.length) { const id = queue.shift()!; if (seen.has(id)) continue; seen.add(id); queue.push(...(next.get(id) ?? [])); }
+    if (seen.has(e.target)) out.push(finding('transitive-redundancy', [e.target, e.source], [{ subject: e.target, dependency: e.source }], { directEdge: e.id }));
+  }
+  const roots = nodes.filter((n) => !(prev.get(n.id)?.length));
+  const maxFanIn = Math.max(0, ...[...prev.values()].map((v) => v.length));
+  const maxFanOut = Math.max(0, ...[...next.values()].map((v) => v.length));
+  const criticalPathDepth = Math.max(0, ...nodes.map((n) => n.depth));
+  if (nodes.length >= 3 && roots.length <= 1 && criticalPathDepth >= 3) out.push(finding('narrow-or-deep-topology', nodes.map((n) => n.id), [], { topologyMetrics: { readyWidth: roots.length, criticalPathDepth } }));
+  if (maxFanIn >= 4 || maxFanOut >= 4) out.push(finding('high-degree-node', nodes.filter((n) => (prev.get(n.id)?.length ?? 0) >= 4 || (next.get(n.id)?.length ?? 0) >= 4).map((n) => n.id), [], { topologyMetrics: { maxFanIn, maxFanOut } }));
+  return { findings: out, topologyRisk: { readyWidth: roots.length, criticalPathDepth, maxFanIn, maxFanOut } };
 }
 
 /**
@@ -410,8 +478,18 @@ export function buildDepSubgraph(opts: {
     });
   }
 
+  const allIds = new Set<string>();
+  for (const e of allEdges) { allIds.add(e.source); allIds.add(e.target); }
+  const allDepths = computeDepths(allIds, allEdges);
+  const allNodes: DepGraphNode[] = [...allIds].map((id) => {
+    const row = itemFor(id);
+    if (row) return { ...row, depth: allDepths.get(id) ?? 0, ...(byId.has(id) ? {} : { hydrated: true }) };
+    return { id, kind: 'unknown', title: danglingRefs.get(id) ?? id, state: 'missing', depth: allDepths.get(id) ?? 0, dangling: true };
+  });
+  const completeIntegrity = integrityFindings(opts.edges, allEdges, allNodes);
+  const findingEdgeIds = new Set(completeIntegrity.findings.flatMap((row) => row.edges.map((edge) => `${edge.dependency}->${edge.subject}`)));
   const rawEdges = opts.healthOnly
-    ? allEdges.filter((e) => e.dangling || e.satisfied)
+    ? allEdges.filter((e) => e.dangling || e.satisfied || findingEdgeIds.has(e.id))
     : allEdges;
 
   // Which nodes are in scope, before the budget.
@@ -476,5 +554,7 @@ export function buildDepSubgraph(opts: {
     // Counted over the nodes actually RETURNED, not over the hydration map: a node the budget
     // elided is reported by `hiddenCount`, and counting it here too would double-report it.
     hydratedNodeCount: nodes.reduce((n, node) => n + (node.hydrated ? 1 : 0), 0),
+    findings: completeIntegrity.findings.filter((row) => row.nodes.some((id) => kept.has(id))),
+    topologyRisk: completeIntegrity.topologyRisk,
   };
 }
