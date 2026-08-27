@@ -695,11 +695,14 @@ export async function getRubric(rubricId: string): Promise<Rubric | null> {
 }
 
 /**
- * The acceptance rubric FOR a plan (acceptance-rubrics-on-every-plan-2026-08-11): the
- * most recently updated valid acceptance-kind rubric whose subjectPlan names `planSlug`.
- * The read behind the completion gate and the plans:get surfacing. Never throws.
+ * Read every LIVE acceptance rubric FOR a plan (acceptance-rubrics-on-every-plan-
+ * 2026-08-11). A plan may have at most one active/ready, unarchived acceptance rubric;
+ * returning all rows lets callers fail closed when old data or a concurrent write has
+ * violated that invariant. The client-side mapping/filter remains intentional: mocked
+ * SQL fixtures often return a wider row set than the query predicates describe.
+ * Never throws — reads degrade to an empty result, matching the other rubric reads.
  */
-export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubric | null> {
+export async function getAcceptanceRubricsForPlan(planSlug: string): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<RubricPlanRow[]>`
@@ -709,17 +712,27 @@ export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubr
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
+         AND archived = false
+         AND status IN ('active', 'ready')
          AND template_data->>'kind' = 'acceptance'
          AND template_data->>'subjectPlan' = ${planSlug}
-       ORDER BY updated_at DESC
-       LIMIT 5`;
-    const mapped = rows
+       ORDER BY updated_at DESC NULLS LAST, plan_slug ASC`;
+    return rows
       .map(planRowToRubric)
       .filter((r): r is Rubric => r !== null && r.kind === 'acceptance' && r.subjectPlan === planSlug);
-    return mapped[0] ?? null;
   } catch {
-    return null;
+    return [];
   }
+}
+
+/**
+ * Backward-compatible singleton view of the plan acceptance rubric. Existing callers
+ * retain the historical nullable API; the completion gate uses
+ * getAcceptanceRubricsForPlan so duplicate live rows cannot be silently hidden behind
+ * whichever one happens to be newest.
+ */
+export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubric | null> {
+  return (await getAcceptanceRubricsForPlan(planSlug))[0] ?? null;
 }
 
 /**
