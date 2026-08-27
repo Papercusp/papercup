@@ -642,6 +642,51 @@ export default defineTool({
       ).catch(() => {});
     };
 
+    // EI-21642857846058648: acquire the atomic git-sync barrier BEFORE entering
+    // guardResource. The old order drained the target first, then discovered
+    // that git-sync had acquired this barrier in the meantime, returning
+    // `drained:true` while refusing to restart. A barrier refusal must leave the
+    // target untouched, and a held barrier must cover the entire drain through
+    // the delayed systemctl handoff.
+    let gitSyncBarrier: Awaited<ReturnType<typeof acquireGitSyncRestartBarrier>> | null = null;
+    try {
+      gitSyncBarrier =
+        isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
+          ? await acquireGitSyncRestartBarrier(ownerLabel)
+          : null;
+    } catch (error) {
+      await releaseCooldownOnAbort();
+      throw error;
+    }
+    if (gitSyncBarrier && !gitSyncBarrier.acquired) {
+      await releaseCooldownOnAbort();
+      return json({
+        ok: false,
+        target,
+        reason: `git_sync_barrier_${gitSyncBarrier.reason.replace(/-/g, '_')}`,
+        restarted: false,
+        drained: false,
+        resource: gitSyncBarrier.resource,
+        holders: gitSyncBarrier.holders.map((holder) => ({
+          owner: holder.owner,
+          owner_label: holder.owner_label ?? null,
+          mode: holder.mode,
+          status: holder.status,
+        })),
+        note:
+          `Restart REFUSED before draining — a git-sync operation holds the atomic ${gitSyncBarrier.resource} ` +
+          'barrier after the earlier cgroup preflight. No target users were drained; retry when that operation settles.',
+      });
+    }
+
+    let restartScheduled = false;
+    let barrierReleaseAttempted = false;
+    const releaseGitSyncBarrierOnAbort = async () => {
+      if (!gitSyncBarrier?.acquired || restartScheduled || barrierReleaseAttempted) return;
+      barrierReleaseAttempted = true;
+      await gitSyncBarrier.release().catch(() => {});
+    };
+
     const outcome = await guardResource(
       {
         // coordinationDomain is the resourceLockDomain(cfg.resource) computed
@@ -666,7 +711,6 @@ export default defineTool({
         // than restarting out from under the agent that now owns the resource.
         const fc = await fence.assertCurrent();
         if (!fc.current) {
-          await releaseCooldownOnAbort();
           return json({
             ok: false,
             target,
@@ -680,7 +724,6 @@ export default defineTool({
         if (target === 'desktop-dev') {
           const desktopRestart = await restartDesktopDev();
           if (!desktopRestart.ok) {
-            await releaseCooldownOnAbort();
             return json({
               ok: false,
               target,
@@ -718,36 +761,6 @@ export default defineTool({
             verifyWith:
               'dev:listening_ports { port: 3270 } (the helper already observed a different owner-visible hono-host listener under dev-operator-ifneeded.sh; this is an independent re-check)',
             note: desktopRestart.note,
-          });
-        }
-        // The cgroup read above is a precise explanation, not a barrier. Close
-        // its TOCTOU window on the existing legacy superproject seam while the
-        // target fence is current and immediately before the destructive handoff.
-        // A successful restart intentionally leaves this unique 60s lease to
-        // expire: the shell sleeps 1s before systemctl, so releasing on callback
-        // return would let a new fire enter during that gap. Abort paths release.
-        const gitSyncBarrier =
-          isGitSyncSensitiveTarget(target) && args.override_git_sync_collision !== true
-            ? await acquireGitSyncRestartBarrier(ownerLabel)
-            : null;
-        if (gitSyncBarrier && !gitSyncBarrier.acquired) {
-          await releaseCooldownOnAbort();
-          return json({
-            ok: false,
-            target,
-            reason: `git_sync_barrier_${gitSyncBarrier.reason.replace(/-/g, '_')}`,
-            restarted: false,
-            drained: true,
-            resource: gitSyncBarrier.resource,
-            holders: gitSyncBarrier.holders.map((holder) => ({
-              owner: holder.owner,
-              owner_label: holder.owner_label ?? null,
-              mode: holder.mode,
-              status: holder.status,
-            })),
-            note:
-              `Restart ABORTED before signaling — a git-sync operation acquired the atomic ${gitSyncBarrier.resource} ` +
-              'barrier after the earlier cgroup preflight. The target drain is being released; retry when that operation settles.',
           });
         }
         // EI-11137: capture the pre-restart MainPID so the caller can VERIFY a
@@ -800,11 +813,10 @@ export default defineTool({
             stdio: 'ignore',
           });
         } catch (error) {
-          if (gitSyncBarrier?.acquired === true) await gitSyncBarrier.release().catch(() => {});
-          await releaseCooldownOnAbort();
           throw error;
         }
         child.unref();
+        restartScheduled = true;
         return json({
           ok: true,
           target,
@@ -845,9 +857,20 @@ export default defineTool({
           }${gitSync.overridden || gitSync.kind === 'probe-failed' || gitSync.kind === 'operation-in-flight-unknown' ? ` ⚠ ${gitSync.note}` : ''}${gate.overridden || gate.kind === 'probe-failed' ? ` ⚠ ${gate.note}` : ''}`,
         });
       },
-    );
+    ).catch(async (error) => {
+      await releaseGitSyncBarrierOnAbort();
+      await releaseCooldownOnAbort();
+      throw error;
+    });
 
-    if (outcome.acquired) return outcome.result;
+    if (outcome.acquired) {
+      if (!restartScheduled) {
+        await releaseGitSyncBarrierOnAbort();
+        await releaseCooldownOnAbort();
+      }
+      return outcome.result;
+    }
+    await releaseGitSyncBarrierOnAbort();
     await releaseCooldownOnAbort();
     return json({
       ok: false,

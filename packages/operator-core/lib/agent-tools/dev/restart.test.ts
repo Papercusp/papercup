@@ -4,8 +4,9 @@
  * is mocked — it already has its own coverage via
  * locks/__tests__/resource-lock-guard.integration.test.ts; this file's job
  * is the NEW behavior layered on top: target→{unit,resource} dispatch, the
- * cooldown-marker acquire-before-drain short-circuit, and releasing the
- * cooldown marker when a real restart attempt aborts after claiming it.
+ * cooldown-marker and git-sync-barrier acquire-before-drain short-circuits,
+ * and releasing those markers when a real restart attempt aborts after claiming
+ * them.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/dev/restart.test.ts
  */
@@ -634,7 +635,7 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
     });
   });
 
-  it('closes the post-check race: an operation that acquires before spawn aborts the restart', async () => {
+  it('closes the post-check race: a held barrier refuses before the target drains', async () => {
     gitSyncCollisionM.mockResolvedValue(clearGitSyncCollision());
     gitSyncBarrierM.mockResolvedValue({
       acquired: false,
@@ -649,21 +650,36 @@ describe('dev:restart git-sync operation collision guard (WI-222053)', () => {
         },
       ],
     });
-    guardM.mockImplementation(runGuard(fenceOk(18)) as never);
-
     const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
 
     expect(b).toMatchObject({
       ok: false,
       reason: 'git_sync_barrier_held_exclusive',
       restarted: false,
-      drained: true,
+      drained: false,
       resource: 'git-sync',
       holders: [{ owner: 'system:git-sync:99:late' }],
     });
     expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
+    expect(guardM).not.toHaveBeenCalled();
+    expect(b.note).toMatch(/before draining/i);
     expect(spawnM).not.toHaveBeenCalled();
     expect(auditUnsafeM).not.toHaveBeenCalled();
+  });
+
+  it('releases an acquired barrier when the target drain never grants', async () => {
+    guardM.mockResolvedValue({ acquired: false, reason: 'drain_timeout', holders: [] } as never);
+
+    const b = body(await call({ confirm: true, authorize: true, target: 'dev', reason: 'reload operator' }));
+
+    expect(b).toMatchObject({
+      ok: false,
+      target: 'dev',
+      reason: 'resource_drain_timeout',
+    });
+    expect(gitSyncBarrierM).toHaveBeenCalledTimes(1);
+    expect(gitSyncBarrierReleaseM).toHaveBeenCalledTimes(1);
+    expect(spawnM).not.toHaveBeenCalled();
   });
 
   it('keeps the successful barrier lease through the delayed systemctl handoff', async () => {
