@@ -29,8 +29,9 @@ import { join, relative, resolve, sep } from 'node:path';
 
 const LIB_ROOT = resolve(__dirname, '..');
 
-/** The four store-level primitives that put a row into (or take one out of) work_item_deps. */
+/** Canonical mutation plus every compatibility facade that submits to it. */
 const WRITER_FNS = [
+  'mutateWorkItemDependencies',
   'mirrorWorkItemBlockingEdge',
   'removeMirroredWorkItemBlockingEdge',
   'syncWorkItemDepEdges',
@@ -58,9 +59,9 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
     {
       role: 'definition',
       provenBy:
-        'The store itself — the ONE module holding raw work_item_deps DML. Its ref-form guard ' +
-        'is unit-tested in dbos/work-item-deps-store.test.ts; every effectiveness proof below ' +
-        'reaches the table through it.',
+        'The store itself — the ONE normal-runtime module holding raw work_item_deps DML. ' +
+        'mirror/remove/sync submit typed batches to mutateWorkItemDependencies; the build guard ' +
+        'fails if a facade stops doing so or raw DML appears outside a named capability.',
     },
   ],
   [
@@ -78,7 +79,7 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
     {
       role: 'entry-point',
       provenBy:
-        'The work-item LINK door (linkWorkItem / unlinkWorkItem → mirror + remove-mirror). ' +
+        'The work-item LINK door (linkWorkItem / unlinkWorkItem → canonical mirror + remove). ' +
         "Effectiveness: dependency-writer-effectiveness.integration.test.ts 'the link door' " +
         'cases — gates after link, released by terminality AND by unlink.',
     },
@@ -88,7 +89,7 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
     {
       role: 'entry-point',
       provenBy:
-        'The ISSUE link door (linkIssue / unlinkIssue). Reached through linkWorkItem for an ' +
+        'The ISSUE link door (linkIssue / unlinkIssue → canonical mirror/remove). Reached through linkWorkItem for an ' +
         'issue-family source, which is how the tool surface reaches it. Effectiveness: the ' +
         "'issue family' link-door case, asserted through the issue floor (D-002).",
     },
@@ -98,7 +99,8 @@ const EDGE_WRITERS: ReadonlyMap<string, WriterEntry> = new Map([
     {
       role: 'entry-point',
       provenBy:
-        'PROMOTION and BACKFILL. Promotion + the issue-family backfill: the P-010 cases in ' +
+        'PROMOTION and BACKFILL through syncFeatureBlockEdges → canonical replace. ' +
+        'Promotion + the issue-family backfill: the P-010 cases in ' +
         "plan-workitem-promotion-run.integration.test.ts. The backfill's UNION obligation " +
         '(INV-10): the INV-10 case in dependency-writer-effectiveness.integration.test.ts, ' +
         'with a replace-semantics negative control.',
@@ -275,10 +277,9 @@ describe('dependency edge WRITERS are an enumerated set (P-008)', () => {
     expect(
       offenders,
       'These modules write work_item_deps rows directly instead of going through the store. ' +
-        'The store is where the kind↔ref-form guard (D-009) and the family resolution (D-017) ' +
-        'live, so a direct write can mint an edge that is well-formed, mirrored, acyclic — and ' +
-        'invisible to both blocking floors. Call mirrorWorkItemBlockingEdge / ' +
-        'syncWorkItemDepEdges instead.',
+        'The store is where typed candidate analysis, kind↔ref-form enforcement, and serializable ' +
+        'commit live, so a direct write can mint an edge that is well-formed and still strand work. ' +
+        'Call a canonical store facade instead.',
     ).toEqual([]);
   });
 });
@@ -294,6 +295,7 @@ describe('dependency edge WRITERS are an enumerated set (P-008)', () => {
 describe('the census DETECTS a writer (so its empty results mean something)', () => {
   it('a real call site is detected; a prose mention is not', () => {
     expect(callsWriter('await mirrorWorkItemBlockingEdge(src, dst);')).toBe(true);
+    expect(callsWriter('await mutateWorkItemDependencies(batch);')).toBe(true);
     expect(callsWriter('  await syncFeatureBlockEdges(harness, id, blockers);')).toBe(true);
     // The exact shape five live modules have: the writer named only in documentation. If this
     // read as a call, the allowlist would have to absorb the drift monitor and the invariant
