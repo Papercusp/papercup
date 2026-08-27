@@ -13,7 +13,7 @@ vi.mock('../../testing-run-store', async (orig) => ({
   getRun: vi.fn(),
 }));
 
-import { getRun } from '../../testing-run-store';
+import { getRun, type RunSnapshot } from '../../testing-run-store';
 import { detachedTestTimeoutHint } from './run';
 
 const getRunMock = vi.mocked(getRun);
@@ -29,7 +29,7 @@ beforeEach(() => {
 
 describe('testing:run-status handler', () => {
   it('returns the bounded snapshot for a known detached run', async () => {
-    const snapshot = {
+    const snapshot: RunSnapshot = {
       runId: 'run-1',
       kind: 'vitest',
       label: 'detached test',
@@ -40,7 +40,7 @@ describe('testing:run-status handler', () => {
       finishedAt: null,
       output: 'collected 1 test',
       truncated: false,
-    } as const;
+    };
     getRunMock.mockReturnValue(snapshot);
 
     const out = await call(snapshot.runId);

@@ -241,7 +241,7 @@ describe('dev:restart dry run', () => {
   });
 
   it('keeps the registered prompt weight within the budget and hard cap', () => {
-    const weight = promptWeight(tool);
+    const weight = promptWeight(tool as Parameters<typeof promptWeight>[0]);
     expect(weight).toBeLessThanOrEqual(BUDGET);
     expect(weight).toBeLessThanOrEqual(HARD_CAP);
   });
