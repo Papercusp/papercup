@@ -228,6 +228,19 @@ describe('resolveFleetClaimSpec (EI-18672834165659298 — resolve BOTH the fleet
     expect(resolved!.record.source).toBe('fleet');
   });
 
+  it('resolves via an already-prefixed fleet sentinel identifier', async () => {
+    const fleetSlug = 'drain-fleet-prefixed-slug';
+    await setClaimSpec(
+      { cupId: fleetSpecBeeKey(fleetSlug), spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-prefixed-lane' }, updatedBy: 'leader-prefixed' },
+      db.sql,
+    );
+    const resolved = await resolveFleetClaimSpec({ spec: fleetSpecBeeKey(fleetSlug) }, db.sql);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.matchedBy).toBe('fleet-slug');
+    expect(resolved!.fleetSlug).toBe(fleetSlug);
+    expect(resolved!.record.spec.specId).toBe('drain-fleet-prefixed-lane');
+  });
+
   it('EI-18694186565089433: a re-steered fleet spec also carries the stamped (non-diverged) revision', async () => {
     const cupId = fleetSpecBeeKey('drain-fleet-restamped');
     await setClaimSpec({ cupId, spec: { ...DEFAULT_CLAIM_SPEC, specId: 'drain-fleet-restamped-lane' }, updatedBy: 'leader-c' }, db.sql);

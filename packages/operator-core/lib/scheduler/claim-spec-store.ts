@@ -960,6 +960,13 @@ export async function resolveFleetClaimSpec(
 ): Promise<ResolvedFleetClaimSpec | null> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
+  // Callers commonly pass the full sentinel identifier returned by fleet-facing
+  // surfaces (`fleet:<slug>`), while the fleet-slug namespace itself is the
+  // suffix. Normalize only this lookup; specId and revN keep their exact input
+  // semantics below.
+  const requestedFleetSlug = args.spec.startsWith('fleet:')
+    ? args.spec.slice('fleet:'.length)
+    : args.spec;
 
   type Row = {
     bee_id: string;
@@ -992,9 +999,9 @@ export async function resolveFleetClaimSpec(
   const bySlugRows = (await sql`
     SELECT bee_id, spec, revision, updated_by, updated_at, harness_slug
       FROM harness_shared.cup_claim_specs
-     WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(args.spec)} LIMIT 1`) as Row[];
+     WHERE workspace_id = ${ws} AND bee_id = ${fleetSpecBeeKey(requestedFleetSlug)} LIMIT 1`) as Row[];
   if (bySlugRows.length > 0) {
-    const resolved = toRecord(bySlugRows[0]!, args.spec);
+    const resolved = toRecord(bySlugRows[0]!, requestedFleetSlug);
     if (resolved) return { ...resolved, matchedBy: 'fleet-slug' };
   }
 
