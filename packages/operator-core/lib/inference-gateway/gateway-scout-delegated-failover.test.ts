@@ -28,7 +28,8 @@
  */
 import { afterEach, expect, test } from 'vitest';
 import http from 'node:http';
-import { createInferenceGateway, type ActiveAccount } from './gateway';
+import { createInferenceGateway } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { chooseStatelessTransport, resolveDelegatedGatewayUrl, GATEWAY_DELEGATED_AUTH_TOKEN } from '@papercusp/papercusp-shared/agent';
 

@@ -15,7 +15,8 @@
 import { test, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
-import { createInferenceGateway, PRIORITY_HEADER, type ActiveAccount, type AccountPool } from './gateway';
+import { createInferenceGateway, PRIORITY_HEADER } from './gateway';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { DEFAULT_GATEWAY_PRIORITY_MAP } from '@papercusp/papercusp-shared/agent';

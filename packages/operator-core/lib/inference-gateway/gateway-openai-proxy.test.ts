@@ -25,8 +25,8 @@ import {
   ACCOUNT_PIN_HEADER,
   PIN_YIELDED_HEADER,
   ROUTED_ACCOUNT_HEADER,
-  type ActiveAccount,
 } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 

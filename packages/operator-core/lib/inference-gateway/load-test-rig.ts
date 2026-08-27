@@ -26,7 +26,8 @@
  * smoothing fix avoids by never bursting. Storm cases therefore run ~15s; the smoothed (ON) case is
  * fast because it never trips the penalty. Keep storm-case timeouts generous on a loaded box.
  */
-import { createInferenceGateway, type ActiveAccount } from './gateway';
+import { createInferenceGateway } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 
 export interface MockUpstreamOptions {

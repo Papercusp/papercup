@@ -22,7 +22,8 @@ import {
   formatOrphanedClaimsSuffix,
   type OrphanedClaim,
 } from './affected-owners';
-import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type AccountPool, type ActiveAccount, type InferenceGateway } from './gateway';
+import { createInferenceGateway, parseUnifiedWindow, parseUnified7dWindow, type InferenceGateway } from './gateway';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';
 import {

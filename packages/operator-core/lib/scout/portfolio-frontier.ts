@@ -1,0 +1,190 @@
+/**
+ * Portfolio frontier — the bounded transition between idea grading and outcome
+ * verification.
+ *
+ * The grading queue is the priority frontier. Only when it is empty may the
+ * steward spend a bounded slice on pending outcome verification. The cursor is
+ * an idea id, not an array offset, so a checkpoint survives insertions and
+ * terminal removals without silently skipping work.
+ */
+
+export const PORTFOLIO_FRONTIER_CHECKPOINT_VERSION = 1 as const;
+
+export type PortfolioFrontierPhase = 'grading' | 'outcome-verification' | 'drained';
+
+export interface PortfolioOutcomeCandidate {
+  ideaId: string;
+  origin: string;
+  routedRef: string;
+  routedAtMs: number;
+  humanGrade: number | null;
+}
+
+export interface PortfolioEvidenceSource {
+  kind: string;
+  ref: string;
+}
+
+export interface PortfolioFrontierCheckpoint {
+  version: typeof PORTFOLIO_FRONTIER_CHECKPOINT_VERSION;
+  phase: PortfolioFrontierPhase;
+  cursorIdeaId: string | null;
+  currentIdeaId: string | null;
+  itemBudget: number;
+  timeBudgetMs: number;
+  consumedItems: number;
+  elapsedMs: number;
+  gradingBacklog: number;
+  pendingOutcomes: number;
+  evidenceSource: PortfolioEvidenceSource | null;
+  updatedAt: string;
+}
+
+export interface PortfolioFrontierPlan {
+  checkpoint: PortfolioFrontierCheckpoint;
+  selected: PortfolioOutcomeCandidate[];
+}
+
+const finiteNonNegative = (value: unknown, fallback: number): number => {
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+};
+
+/** Decode persisted state fail-safely. Unknown/old shapes restart at the head. */
+export function decodePortfolioFrontierCheckpoint(value: unknown): PortfolioFrontierCheckpoint | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const row = value as Partial<PortfolioFrontierCheckpoint>;
+  if (row.version !== PORTFOLIO_FRONTIER_CHECKPOINT_VERSION) return null;
+  if (!['grading', 'outcome-verification', 'drained'].includes(String(row.phase))) return null;
+  return {
+    version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
+    phase: row.phase as PortfolioFrontierPhase,
+    cursorIdeaId: typeof row.cursorIdeaId === 'string' && row.cursorIdeaId ? row.cursorIdeaId : null,
+    currentIdeaId: typeof row.currentIdeaId === 'string' && row.currentIdeaId ? row.currentIdeaId : null,
+    itemBudget: finiteNonNegative(row.itemBudget, 0),
+    timeBudgetMs: finiteNonNegative(row.timeBudgetMs, 0),
+    consumedItems: finiteNonNegative(row.consumedItems, 0),
+    elapsedMs: finiteNonNegative(row.elapsedMs, 0),
+    gradingBacklog: finiteNonNegative(row.gradingBacklog, 0),
+    pendingOutcomes: finiteNonNegative(row.pendingOutcomes, 0),
+    evidenceSource:
+      row.evidenceSource &&
+      typeof row.evidenceSource.kind === 'string' &&
+      typeof row.evidenceSource.ref === 'string'
+        ? { kind: row.evidenceSource.kind, ref: row.evidenceSource.ref }
+        : null,
+    updatedAt: typeof row.updatedAt === 'string' ? row.updatedAt : new Date(0).toISOString(),
+  };
+}
+
+/** Stable value/age/id order. A grade of zero is still a recorded value. */
+export function orderPortfolioCandidates(
+  candidates: readonly PortfolioOutcomeCandidate[],
+): PortfolioOutcomeCandidate[] {
+  return [...candidates].sort((a, b) => {
+    const gradeA = a.humanGrade ?? Number.NEGATIVE_INFINITY;
+    const gradeB = b.humanGrade ?? Number.NEGATIVE_INFINITY;
+    if (gradeA !== gradeB) return gradeB - gradeA;
+    if (a.routedAtMs !== b.routedAtMs) return a.routedAtMs - b.routedAtMs;
+    return a.ideaId.localeCompare(b.ideaId);
+  });
+}
+
+/**
+ * Plan one bounded step. A non-empty grading frontier always preempts outcome
+ * verification and preserves the outcome cursor for the next drained wake.
+ */
+export function planPortfolioFrontierStep(args: {
+  gradingBacklog: number;
+  pending: readonly PortfolioOutcomeCandidate[];
+  previous?: PortfolioFrontierCheckpoint | null;
+  itemBudget: number;
+  timeBudgetMs: number;
+  nowMs: number;
+}): PortfolioFrontierPlan {
+  const itemBudget = Math.max(0, Math.floor(finiteNonNegative(args.itemBudget, 0)));
+  const timeBudgetMs = Math.max(0, Math.floor(finiteNonNegative(args.timeBudgetMs, 0)));
+  const gradingBacklog = Math.max(0, Math.floor(finiteNonNegative(args.gradingBacklog, 0)));
+  const ordered = orderPortfolioCandidates(args.pending);
+  const previousCursor = args.previous?.cursorIdeaId ?? null;
+  const updatedAt = new Date(args.nowMs).toISOString();
+
+  if (gradingBacklog > 0) {
+    return {
+      selected: [],
+      checkpoint: {
+        version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
+        phase: 'grading',
+        cursorIdeaId: previousCursor,
+        currentIdeaId: null,
+        itemBudget,
+        timeBudgetMs,
+        consumedItems: 0,
+        elapsedMs: 0,
+        gradingBacklog,
+        pendingOutcomes: ordered.length,
+        evidenceSource: args.previous?.evidenceSource ?? null,
+        updatedAt,
+      },
+    };
+  }
+
+  if (ordered.length === 0 || itemBudget === 0 || timeBudgetMs === 0) {
+    return {
+      selected: [],
+      checkpoint: {
+        version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
+        phase: ordered.length === 0 ? 'drained' : 'outcome-verification',
+        cursorIdeaId: previousCursor,
+        currentIdeaId: null,
+        itemBudget,
+        timeBudgetMs,
+        consumedItems: 0,
+        elapsedMs: 0,
+        gradingBacklog: 0,
+        pendingOutcomes: ordered.length,
+        evidenceSource: args.previous?.evidenceSource ?? null,
+        updatedAt,
+      },
+    };
+  }
+
+  const cursorIndex = previousCursor ? ordered.findIndex((candidate) => candidate.ideaId === previousCursor) : -1;
+  const start = cursorIndex >= 0 ? (cursorIndex + 1) % ordered.length : 0;
+  const selected: PortfolioOutcomeCandidate[] = [];
+  const count = Math.min(itemBudget, ordered.length);
+  for (let offset = 0; offset < count; offset += 1) {
+    selected.push(ordered[(start + offset) % ordered.length]!);
+  }
+
+  return {
+    selected,
+    checkpoint: {
+      version: PORTFOLIO_FRONTIER_CHECKPOINT_VERSION,
+      phase: 'outcome-verification',
+      cursorIdeaId: selected.at(-1)?.ideaId ?? previousCursor,
+      currentIdeaId: selected[0]?.ideaId ?? null,
+      itemBudget,
+      timeBudgetMs,
+      consumedItems: selected.length,
+      elapsedMs: 0,
+      gradingBacklog: 0,
+      pendingOutcomes: ordered.length,
+      evidenceSource: null,
+      updatedAt,
+    },
+  };
+}
+
+/** Stamp the observable evidence/duration after the selected batch completes. */
+export function finishPortfolioFrontierStep(
+  checkpoint: PortfolioFrontierCheckpoint,
+  args: { elapsedMs: number; evidenceSource?: PortfolioEvidenceSource | null; nowMs: number },
+): PortfolioFrontierCheckpoint {
+  return {
+    ...checkpoint,
+    elapsedMs: finiteNonNegative(args.elapsedMs, 0),
+    evidenceSource: args.evidenceSource ?? null,
+    updatedAt: new Date(args.nowMs).toISOString(),
+  };
+}

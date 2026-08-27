@@ -14,7 +14,8 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
-import { createInferenceGateway, ACCOUNT_HEADER, ROUTED_ACCOUNT_HEADER, type ActiveAccount } from './gateway';
+import { createInferenceGateway, ACCOUNT_HEADER, ROUTED_ACCOUNT_HEADER } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { gatewaySpawnEnv } from './spawn-env';
 import { bindAccount, emptyPool, registerAccount, selectAccountForSpawn, type AccountPool } from '../deployment/account-pool';

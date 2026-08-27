@@ -5,7 +5,7 @@ import {
   ACCOUNT_INFLIGHT_LOAD_WEIGHT,
   SOFT_PIN_AFFINITY_CREDIT,
 } from './account-failover';
-import type { ActiveAccount } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 
 const acct = (id: string): ActiveAccount => ({ accountId: id, token: async () => `${id}-tok`, invalidateToken: () => {} });
 

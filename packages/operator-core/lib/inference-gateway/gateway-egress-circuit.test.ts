@@ -14,7 +14,8 @@
  */
 import { test, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
-import { createInferenceGateway, type ActiveAccount } from './gateway';
+import { createInferenceGateway } from './gateway';
+import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 
