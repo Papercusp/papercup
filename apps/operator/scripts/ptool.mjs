@@ -205,16 +205,44 @@ export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd
 }
 
 /**
- * Resolve the harness scope for a ptool session. An explicit CLI flag wins;
- * otherwise inherit the harness exported by a tracked su/psu session. A
- * missing harness stays null deliberately — ptool must not guess a project
- * when the caller is not harness-scoped.
- * @param {{harness?: string | null, env?: EnvironmentMap}} [options]
+ * Resolve a harness scope embedded in a parsed ptool payload. Direct calls
+ * carry `harness` at the top level; a `tools:invoke` wrapper carries it in
+ * the nested target `args`. Only the wrapper path is recursive so an
+ * unrelated nested object cannot accidentally become session scope. Pure.
+ * @param {unknown} payload
+ * @param {{toolName?: string | null}} [options]
  * @returns {string | null}
  */
-export function resolveHarnessScope({ harness = null, env = process.env } = {}) {
+export function resolvePayloadHarnessScope(payload, { toolName = null } = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+
+  const direct = typeof payload.harness === 'string' ? payload.harness.trim() : '';
+  if (direct) return direct;
+
+  const isToolsInvoke = toolName === 'tools:invoke' || payload.name === 'tools:invoke';
+  if (!isToolsInvoke || !payload.args || typeof payload.args !== 'object' || Array.isArray(payload.args)) {
+    return null;
+  }
+  return resolvePayloadHarnessScope(payload.args, {
+    toolName: payload.args.name === 'tools:invoke' ? 'tools:invoke' : null,
+  });
+}
+
+/**
+ * Resolve the harness scope for a ptool session. An explicit CLI flag wins;
+ * otherwise use the parsed payload's harness, then inherit the harness
+ * exported by a tracked su/psu session. A missing harness stays null
+ * deliberately — ptool must not guess a project when the caller is not
+ * harness-scoped.
+ * @param {{harness?: string | null, payload?: unknown, toolName?: string | null, env?: EnvironmentMap}} [options]
+ * @returns {string | null}
+ */
+export function resolveHarnessScope({ harness = null, payload, toolName = null, env = process.env } = {}) {
   const explicit = typeof harness === 'string' ? harness.trim() : '';
   if (explicit) return explicit;
+
+  const fromPayload = resolvePayloadHarnessScope(payload, { toolName });
+  if (fromPayload) return fromPayload;
 
   const fromEnv = typeof env?.PAPERCUSP_HARNESS_SLUG === 'string'
     ? env.PAPERCUSP_HARNESS_SLUG.trim()
