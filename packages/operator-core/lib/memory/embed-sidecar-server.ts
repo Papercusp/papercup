@@ -570,6 +570,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // needed — but effective CPU ≈ concurrency × intraOpNumThreads (WI-3792
   // caps 4 per run): raise the unit env only with benchmarked host headroom.
   // Rejections stay per-caller; a failed unit frees its slot via finally.
+  //
+  // Fairness is per REQUEST, not merely per text. A handler can receive a
+  // 256-text batch and enqueue all of its units synchronously; a flat FIFO
+  // would put every one of those units ahead of a later one-text request.
+  // Queue batches as round-robin lanes instead: each drain turn starts at most
+  // one waiting unit from a request, then moves that request behind its peers.
+  // Each request still gets its texts in input order, while a large batch
+  // cannot monopolize the sidecar after its first unit has started.
   const concurrency = Math.max(
     1,
     Math.floor(
@@ -590,12 +598,31 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     start: () => void;
     cancel: () => boolean;
   }
-  const waiting: Array<QueueEntry<unknown>> = [];
+  interface QueueBatch {
+    entries: Array<QueueEntry<unknown>>;
+    queued: boolean;
+    running: number;
+  }
+  const waiting: QueueBatch[] = [];
+  let queued = 0;
+  const createQueueBatch = (): QueueBatch => ({ entries: [], queued: false, running: 0 });
+  const queueBatch = (batch: QueueBatch): void => {
+    if (batch.entries.length === 0 || batch.queued) return;
+    batch.queued = true;
+    waiting.push(batch);
+  };
+  const startNext = (batch: QueueBatch): boolean => {
+    const next = batch.entries.shift();
+    if (!next) return false;
+    queued--;
+    next.start();
+    return true;
+  };
   function drainQueue(): void {
     while (active < concurrency && waiting.length > 0) {
-      const next = waiting.shift()!;
-      if (next.started || next.settled) continue;
-      next.start();
+      const batch = waiting.shift()!;
+      batch.queued = false;
+      startNext(batch);
     }
   }
   // A client disconnect is delivered by the HTTP event loop, while a completed
@@ -605,7 +632,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   const scheduleDrain = (): void => {
     setTimeout(drainQueue, 5);
   };
-  const enqueue = <T>(work: () => Promise<T>): QueueTask<T> => {
+  const enqueue = <T>(work: () => Promise<T>, batch: QueueBatch = createQueueBatch()): QueueTask<T> => {
     let resolveTask!: (value: T | PromiseLike<T>) => void;
     let rejectTask!: (reason?: unknown) => void;
     const promise = new Promise<T>((resolve, reject) => {
@@ -619,26 +646,39 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         if (entry.started || entry.settled) return;
         entry.started = true;
         active++;
+        batch.running++;
         Promise.resolve()
           .then(work)
           .then(resolveTask, rejectTask)
           .finally(() => {
             active--;
+            batch.running--;
+            queueBatch(batch);
             scheduleDrain();
           });
       },
       cancel: () => {
         if (entry.started || entry.settled) return false;
-        const index = waiting.indexOf(entry as QueueEntry<unknown>);
+        const index = batch.entries.indexOf(entry as QueueEntry<unknown>);
         if (index < 0) return false;
-        waiting.splice(index, 1);
+        batch.entries.splice(index, 1);
+        queued--;
         entry.settled = true;
         rejectTask(new SidecarRequestAbortedError());
         return true;
       },
     };
-    if (active < concurrency) entry.start();
-    else waiting.push(entry as QueueEntry<unknown>);
+    batch.entries.push(entry as QueueEntry<unknown>);
+    queued++;
+    // Start immediately only when no peer lane is already waiting. If this
+    // batch is already running, its next unit can use another free slot; if a
+    // peer is waiting, let the round-robin drain choose the next lane.
+    if (active < concurrency && waiting.length === 0 && !batch.queued) {
+      startNext(batch);
+    } else {
+      if (batch.running === 0) queueBatch(batch);
+      drainQueue();
+    }
     return { promise, cancel: entry.cancel };
   };
 
@@ -677,7 +717,12 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   /** Cache + coalesce + enqueue one unit of ONNX work under `key`. Shared by
    *  /embed and /rerank so both get the same fairness and memory bounds, and
    *  neither can starve the other (one FIFO, not two competing ones). */
-  const computeCached = (key: string, work: () => Promise<number[]>, signal: AbortSignal): Promise<number[]> => {
+  const computeCached = (
+    key: string,
+    work: () => Promise<number[]>,
+    signal: AbortSignal,
+    batch: QueueBatch,
+  ): Promise<number[]> => {
     if (signal.aborted) return Promise.reject(new SidecarRequestAbortedError());
     const cached = cacheGet(key);
     if (cached) {
@@ -689,7 +734,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       cacheHits++;
     } else {
       cacheMisses++;
-      entry = { task: enqueue(work), consumers: 0 };
+      entry = { task: enqueue(work, batch), consumers: 0 };
       inflight.set(key, entry);
       const owned = entry;
       void owned.task.promise
@@ -745,11 +790,12 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     kind: GemmaEmbedKind,
     text: string,
     signal: AbortSignal,
+    batch: QueueBatch,
   ): Promise<number[]> =>
     computeCached(`${model}:${kind}\0${text}`, async () => {
       const embed = await getEmbedder(model, kind);
       return embed(text);
-    }, signal);
+    }, signal, batch);
 
   // One PAIR per unit, matching /embed's one-text-per-unit choice. A cross-
   // encoder could score a whole batch in one forward pass, but per-pair units
@@ -759,7 +805,13 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // measured per-pair cost as flat in batch size, so batching would trade those
   // away for nothing. The score is boxed as a 1-element array to reuse the
   // vector cache; the model is in the key, so the namespaces cannot collide.
-  const rerankOneCached = (model: RerankSidecarModel, query: string, text: string, signal: AbortSignal): Promise<number> =>
+  const rerankOneCached = (
+    model: RerankSidecarModel,
+    query: string,
+    text: string,
+    signal: AbortSignal,
+    batch: QueueBatch,
+  ): Promise<number> =>
     computeCached(`${model}\0${query}\0${text}`, async () => {
       const rerankFn = await getReranker(model);
       const scores = await rerankFn(query, [text]);
@@ -767,7 +819,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
       }
       return [scores[0]];
-    }, signal).then((boxed) => boxed[0]);
+    }, signal, batch).then((boxed) => boxed[0]);
 
   const handleEmbed = async (
     req: http.IncomingMessage,
@@ -788,8 +840,9 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       return;
     }
     try {
+      const batch = createQueueBatch();
       const vectors = await Promise.all(
-        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal)),
+        v.texts.map((text) => embedOneCached(v.model, v.kind, text, signal, batch)),
       );
       const body: EmbedResponse = {
         vectors,
@@ -827,7 +880,10 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       // any threshold are the CLIENT's job. The server never reorders — that
       // keeps the ranking policy in one place (@papercusp/rerank) instead of
       // split across a wire.
-      const scores = await Promise.all(v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal)));
+      const batch = createQueueBatch();
+      const scores = await Promise.all(
+        v.texts.map((text) => rerankOneCached(v.model, v.query, text, signal, batch)),
+      );
       const body: RerankResponse = {
         scores,
         runtime: EMBED_SIDECAR_RUNTIME,
@@ -931,7 +987,7 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         //
         // `depth` is the queue no one could see; `saturated` is the predicate a
         // health check should actually alert on (up AND keeping up).
-        queue: { depth: waiting.length, active, saturated: active >= concurrency },
+        queue: { depth: queued, active, saturated: active >= concurrency },
       });
     },
     [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),

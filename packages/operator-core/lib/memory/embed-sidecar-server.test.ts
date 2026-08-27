@@ -550,6 +550,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     await Promise.all([slow, fast]);
     expect(finished).toEqual(['slow', 'fast']);
   });
+
 });
 
 describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)', () => {
@@ -627,6 +628,41 @@ describe('bounded concurrency (P-004 memory-public-release-hardening-2026-07-11)
     await waitFor(() => gated.started.length === 2);
     gated.release.get('b')!();
     expect((await req).status).toBe(200);
+  });
+
+  it('round-robins request batches so a later single request is not behind a giant batch', async () => {
+    gated = makeGated();
+    await boot(1);
+    const batch = post(['batch-a', 'batch-b', 'batch-c']);
+    await waitFor(() => gated.started.length === 1);
+
+    // Wait until all three batch units are admitted before adding the later
+    // request. This makes the old flat FIFO's ordering failure deterministic.
+    const later = post(['interactive']);
+    const deadline = Date.now() + 1_000;
+    let depth = 0;
+    while (depth < 3 && Date.now() < deadline) {
+      const health = (await (await fetch(`${baseUrl}/healthz`)).json()) as { queue: { depth: number } };
+      depth = health.queue.depth;
+      if (depth < 3) await new Promise((r) => setTimeout(r, 5));
+    }
+    expect(depth).toBe(3);
+
+    gated.release.get('batch-a')!();
+    await waitFor(() => gated.started.length === 2);
+    expect(gated.started).toEqual(['batch-a', 'interactive']);
+
+    gated.release.get('interactive')!();
+    await waitFor(() => gated.started.length === 3);
+    expect(gated.started).toEqual(['batch-a', 'interactive', 'batch-b']);
+
+    gated.release.get('batch-b')!();
+    await waitFor(() => gated.started.length === 4);
+    expect(gated.started).toEqual(['batch-a', 'interactive', 'batch-b', 'batch-c']);
+    gated.release.get('batch-c')!();
+
+    expect((await batch).status).toBe(200);
+    expect((await later).status).toBe(200);
   });
 
   it('an aborted request removes its queued work before it starts', async () => {
