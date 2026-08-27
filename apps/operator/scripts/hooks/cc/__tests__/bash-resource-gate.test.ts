@@ -875,6 +875,21 @@ describe('destructive tree-wide git guard (hive-loop-supervision-2026-06-21, age
   });
 });
 
+describe('GOAL-mode tracked Bash mutation bridge (EI-21567270631276419)', () => {
+  // This file cannot make /ws/... a real Git checkout, so hook/server integration
+  // is pinned in the fake-operator suite below. These local controls prove the
+  // classifier remains quiet for reads, prose, expansions, and out-of-tree work.
+  it.each([
+    ['git status', 'git status'],
+    ['git diff', 'git diff --stat'],
+    ['quoted prose', 'echo "git mv old.ts new.ts"'],
+    ['expansion-bearing rename', 'git mv "$SRC" "$DST"'],
+    ['out-of-tree rename', 'mv /tmp/old.ts /tmp/new.ts'],
+  ])('allows %s without a tracked mutation verdict', (_label, command) => {
+    expectAllow(runGate(bashCmd(command, { cwd: CANON }), CANON_ENV));
+  });
+});
+
 /**
  * EI-19294800751120438 — the WRAPPED/QUOTED command evasion class.
  *
@@ -5161,6 +5176,9 @@ describe('substitution verdict handling', () => {
   });
 
   const CAT = 'cat packages/operator-core/lib/foo.ts';
+  const REPO_ROOT = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+    encoding: 'utf8',
+  }).trim();
   const SUB = {
     intentLabel: 'file-whole-read',
     toolName: 'capability:read',
@@ -5169,6 +5187,59 @@ describe('substitution verdict handling', () => {
     atom: CAT,
   };
   const run = (command = CAT) => runGate(bashCmd(command), { PAPERCUSP_OPERATOR_URL: url });
+
+  it.each([
+    [
+      '`git mv` of a tracked source (the filed bypass)',
+      'git mv packages/operator-core/lib/agent-tools/locks/check_command.ts /tmp/check-command-moved.ts',
+    ],
+    [
+      '`git rm` of a tracked path',
+      'git rm packages/operator-core/lib/agent-tools/locks/check_command.ts',
+    ],
+    [
+      'plain `mv` of a tracked source',
+      'mv packages/operator-core/lib/agent-tools/locks/check_command.ts /tmp/check-command-moved.ts',
+    ],
+  ])('bridges %s into the server-side GOAL edit refusal', (_label, command) => {
+    setReply({
+      decision: 'allow',
+      matched: [],
+      goalModeEditDenyReason: 'GOAL mode: you never implement — route it instead.',
+    });
+    const out = runGate(bashCmd(command, { cwd: REPO_ROOT }), {
+      PAPERCUSP_OPERATOR_URL: url,
+      PAPERCUSP_CANONICAL_TREE: REPO_ROOT,
+    });
+    const hook = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hook.permissionDecision).toBe('deny');
+    expect(hook.permissionDecisionReason).toContain('GOAL mode: you never implement');
+
+    const requests = readFileSync(requestFile, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } });
+    expect(requests.at(-1)?.params?.arguments).toMatchObject({
+      command,
+      cwd: REPO_ROOT,
+      tracked_mutation: true,
+    });
+  });
+
+  it('does not mark a Git read as a tracked mutation', () => {
+    setReply({ decision: 'allow', matched: [], goalModeEditDenyReason: null });
+    expectAllow(runGate(bashCmd('git status', { cwd: REPO_ROOT }), {
+      PAPERCUSP_OPERATOR_URL: url,
+      PAPERCUSP_CANONICAL_TREE: REPO_ROOT,
+    }));
+    const requests = readFileSync(requestFile, 'utf8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { params?: { arguments?: Record<string, unknown> } });
+    expect(requests.at(-1)?.params?.arguments).not.toHaveProperty('tracked_mutation');
+  });
 
   it('forwards the shell cwd to locks:check_command for cwd-scoped substitution policy', () => {
     const scratch = '/tmp/ei-204040-scratch';

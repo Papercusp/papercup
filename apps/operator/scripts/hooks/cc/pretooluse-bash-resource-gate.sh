@@ -4089,6 +4089,143 @@ try:
 except Exception:
     pass  # guard must never wedge a command
 
+# ── Tracked structural-mutation classifier (EI-21567270631276419) ──────────
+# Native Edit/Write calls claim a file lock, whose server path enforces GOAL
+# mode's never-implement contract. Bash-side renames/deletes never reach that
+# hook: a `git mv` can succeed and leave a half-renamed tree before the next
+# native Edit is correctly refused. Classify the missing shell operations here,
+# then send ONE boolean on the existing locks:check_command round-trip; the
+# server reuses the same registered-mode + flag decision as native edits.
+#
+# LITERAL + TRACKED ONLY. Unknown cwd, shell expansions, option ambiguity, or a
+# failed `git ls-files` probe all fail open. `cp` is intentionally absent: the
+# shell-write guard above already denies every literal in-tree copy destination,
+# independent of mode. This classifier covers `git mv`, `git rm`, and plain
+# `mv` when a source or destination is a tracked path in the canonical tree.
+_TRACKED_MUTATION = False
+
+
+def _tracked_repo_path(raw, cwd, canon):
+    """Return a canonical repo-relative literal path, else None."""
+    resolved = _resolve_write_target(raw, cwd)
+    if not resolved or not canon:
+        return None
+    if resolved == canon:
+        return ''
+    if not resolved.startswith(canon + os.sep):
+        return None
+    return os.path.relpath(resolved, canon).replace(os.sep, '/')
+
+
+def _is_tracked_path(canon, rel):
+    if not canon or not rel:
+        return False
+    try:
+        import subprocess
+        return subprocess.run(
+            ['git', '-C', canon, 'ls-files', '--error-unmatch', '--', rel],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+        ).returncode == 0
+    except Exception:
+        return False
+
+
+def _git_command_tail(words):
+    """Words after git's global options, or [] when the argv is ambiguous."""
+    if not words or words[0].split('/')[-1] != 'git':
+        return []
+    i = 1
+    value_opts = {'-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env'}
+    while i < len(words):
+        word = words[i]
+        if word == '--':
+            return words[i + 1:]
+        if not word.startswith('-') or word == '-':
+            return words[i:]
+        key = word.split('=', 1)[0]
+        if key in value_opts and '=' not in word:
+            i += 2
+        else:
+            i += 1
+    return []
+
+
+def _literal_positionals(words):
+    """Conservative positional extraction for mv/rm-like argv tails."""
+    out, after_dash = [], False
+    value_opts = {'-t', '--target-directory', '-S', '--suffix'}
+    i = 0
+    while i < len(words):
+        word = words[i]
+        if word == '--':
+            after_dash = True
+            i += 1
+            continue
+        if not after_dash and word.startswith('-') and word != '-':
+            key = word.split('=', 1)[0]
+            if key in value_opts and '=' not in word:
+                i += 2
+            else:
+                i += 1
+            continue
+        out.append(word)
+        i += 1
+    return out
+
+
+def _classify_tracked_mutation():
+    canon = _canonical_tree_root()
+    if not canon:
+        return False
+    try:
+        base_cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
+    except Exception:
+        return False
+
+    # `_scannable()` already appends recursively-unwrapped shell payloads as
+    # newline-separated commands, so bash -c / timeout / env wrapper forms are
+    # covered without another wrapper-name list here.
+    commands, _nested = _scan_shell(_scannable())
+    for words in commands:
+        start = _scan_command_start(words)
+        if start >= len(words):
+            continue
+        argv = words[start:]
+        exe = argv[0].split('/')[-1]
+        op, operands = None, []
+        if exe == 'git':
+            tail = _git_command_tail(argv)
+            if not tail or tail[0] not in ('mv', 'rm'):
+                continue
+            op = 'git ' + tail[0]
+            operands = _literal_positionals(tail[1:])
+        elif exe == 'mv':
+            op = 'mv'
+            operands = _literal_positionals(argv[1:])
+        else:
+            continue
+        if not operands:
+            continue
+
+        rels = [_tracked_repo_path(raw, base_cwd, canon) for raw in operands]
+        if any(rel and _is_tracked_path(canon, rel) for rel in rels):
+            return True
+        # A rename to a new path is still a tracked mutation when its SOURCE is
+        # tracked; the all-operands scan above covers that source naturally.
+        if op == 'mv' and len(rels) >= 2 and any(
+                rel and _is_tracked_path(canon, rel) for rel in rels[:-1]):
+            return True
+    return False
+
+
+try:
+    _TRACKED_MUTATION = _classify_tracked_mutation()
+except Exception:
+    _TRACKED_MUTATION = False  # classifier failure must never wedge Bash
+
 # ── cd + EXIT-trap/restore path-drift advisory (EI-19409854431997137) ──────
 # The standard "mutate a file to confirm a guard/test actually goes red, then
 # restore it" idiom captures its restore path ONCE, before any `cd`:
@@ -5208,7 +5345,7 @@ def _substitution_prefilter_hit(cmd):
 try:
     _needs_check = bool(
         re.search(r'systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(dev|build)', command)
-    ) or _substitution_prefilter_hit(command)
+    ) or _substitution_prefilter_hit(command) or _TRACKED_MUTATION
 except Exception:
     _needs_check = False  # a pre-filter bug must never wedge a command
 if not _needs_check:
@@ -5261,11 +5398,13 @@ _request_cwd = _payload_cwd if isinstance(_payload_cwd, str) and _payload_cwd.st
 # retry preserves the safety-critical exclusive-hold check in full and degrades
 # only the advisory substitution half. Every failure path still ends at
 # allow(), exactly as before — this can restore blocking, never invent it.
-def _gate_request(include_cwd):
+def _gate_request(include_optional_context):
     """POST one locks:check_command call. Returns the raw body, or None on transport failure."""
     _arguments = {'command': command}
-    if include_cwd:
+    if include_optional_context:
         _arguments['cwd'] = _request_cwd
+        if _TRACKED_MUTATION:
+            _arguments['tracked_mutation'] = True
     body = json.dumps({
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
         'params': {
@@ -5327,8 +5466,9 @@ _schema_skew = (
 )
 if _schema_skew:
     print('[resource-gate] operator rejected an argument (schema skew — hook is ahead of '
-          'the deployed tool; see WI-40602); retrying without `cwd`. Substitution matching '
-          'is degraded until the green gate deploys; resource-gate intact.', file=sys.stderr)
+          'the deployed tool; see WI-40602); retrying without optional context (`cwd` / '
+          '`tracked_mutation`). Cwd-scoped substitution and GOAL Bash-mutation enforcement '
+          'are degraded until the green gate deploys; resource-gate intact.', file=sys.stderr)
     raw_resp = _gate_request(False)
     if raw_resp is None:
         allow()
@@ -5347,6 +5487,9 @@ for item in (result.get('content') or []):
             continue
 if not inner:
     allow()
+
+if isinstance(inner.get('goalModeEditDenyReason'), str) and inner.get('goalModeEditDenyReason'):
+    deny(inner['goalModeEditDenyReason'])
 
 # ── Substitution verdict (bash-to-tool-substitution-2026-07-26, P-016) ──────
 # Same round-trip, second question: did a registry rule claim this command?
