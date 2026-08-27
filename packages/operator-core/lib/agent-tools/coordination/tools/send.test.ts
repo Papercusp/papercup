@@ -748,10 +748,26 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(opts.expectsReply).toBeUndefined();
   });
 
-  it('a DIRECTED send persists wakeOnReply:true in the envelope extra (default ON)', async () => {
-    await body({ to: ['bee-1'], summary: 'hi' });
+  it('a DIRECTED send expecting an answer persists wakeOnReply:true in the envelope extra (default ON)', async () => {
+    await body({ to: ['bee-1'], summary: 'hi', expects: 'answer' });
     expect(sendM).toHaveBeenCalledTimes(1);
     const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra).toMatchObject({ wakeOnReply: true });
+  });
+
+  it("EI-21542997259558722: an expects:'none' acknowledgement does not create a new reply-wake chain unless explicitly opted in", async () => {
+    await body({ to: ['bee-1'], summary: 'cancellation acknowledged', expects: 'none' });
+    let opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
+    expect(opts.extra?.wakeOnReply).toBeUndefined();
+
+    sendM.mockClear();
+    await body({
+      to: ['bee-1'],
+      summary: 'fire-and-forget but wake me on an unexpected reply',
+      expects: 'none',
+      wakeOnReply: true,
+    });
+    opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
     expect(opts.extra).toMatchObject({ wakeOnReply: true });
   });
 

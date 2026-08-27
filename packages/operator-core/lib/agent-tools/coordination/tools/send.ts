@@ -250,7 +250,7 @@ interface SendMsg {
 
 /** Whether `to` is a DIRECTED send: at least one recipient, ALL concrete (none a
  *  selector / wildcard / '*' / 'human' — `isSelectorOrWildcard` already covers
- *  those). Used as the DEFAULT for wakeOnReply (ON for directed, OFF for broadcast). */
+ *  those). Used by the wakeOnReply default only when the sender expects a reply. */
 function isDirected(to: string[]): boolean {
   return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
 }
@@ -310,7 +310,7 @@ const wakeOnReplyArg = z
   .boolean()
   .optional()
   .describe(
-    "When a peer REPLIES to this message (their coord:send sets related_msg_id to this message's msg_id), wake YOU (the sender) so you re-invoke the moment the reply lands — the dual of waking the recipient. Default: ON for DIRECTED sends (concrete recipients), OFF for broadcasts (to '*'/'human'). Set false to opt out (fire-and-forget).",
+    "When a peer REPLIES to this message (their coord:send sets related_msg_id to this message's msg_id), wake YOU (the sender) so you re-invoke the moment the reply lands — the dual of waking the recipient. Default: ON for DIRECTED sends whose expects is ack/answer/action; OFF for expects:'none' and broadcasts (to '*'/'human'). Set true to opt a fire-and-forget message into reply wakes, or false to opt out.",
   );
 
 const replyDeadlineSecArg = z
@@ -632,12 +632,16 @@ async function sendOne(
   // wake-on-reply (coord-wake-on-reply): when a peer REPLIES to this message
   // (their coord:send sets related_msg_id to this msg_id) the ORIGINAL sender
   // should be re-invoked — the dual of deliver-and-wake. Default ON for a
-  // DIRECTED send (concrete recipients), OFF for a broadcast ('*'/'human');
-  // explicit `wakeOnReply:false` always wins, `true` forces on. Flag-gated:
+  // DIRECTED send (concrete recipients) that actually expects ack/answer/action,
+  // OFF for expects:'none' and broadcasts ('*'/'human'); explicit
+  // `wakeOnReply:false` always wins, `true` forces on. EI-21542997259558722:
+  // defaulting an expects:none cancellation ACK on created a fresh reply-wake
+  // chain, resurrecting a reviewer after it had explicitly stood down. Flag-gated:
   // when OFF, neither the opt-in is persisted nor a reply fires the wake
   // (today's behavior). Fail-safe to ON on a flag-read error (the new default).
   const wakeOnReplyFlag = await getFlag(FLAGS.COORD_WAKE_ON_REPLY, 'system').catch(() => true);
-  const effectiveWakeOnReply = wakeOnReplyFlag && (msg.wakeOnReply ?? isDirected(msg.to));
+  const effectiveWakeOnReply =
+    wakeOnReplyFlag && (msg.wakeOnReply ?? (msg.expects !== 'none' && isDirected(msg.to)));
 
   // Reply-threading honesty (WI-5072): related_msg_id is the edge the ENTIRE
   // reply-wake contract fires on — the asker's wakeOnReply can only match a
