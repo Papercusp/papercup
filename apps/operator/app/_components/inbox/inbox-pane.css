@@ -14,7 +14,11 @@
   overflow: hidden;
   padding: 12px;
   background:
-    radial-gradient(circle at 50% -10%, color-mix(in srgb, var(--accent, #38bdf8) 8%, transparent), transparent 36%),
+    radial-gradient(
+      circle at 50% -10%,
+      color-mix(in srgb, var(--accent, #38bdf8) 8%, transparent),
+      transparent 36%
+    ),
     color-mix(in srgb, var(--bg, #06111f) 96%, transparent);
 }
 .op-inbox__master {
@@ -26,10 +30,30 @@
   gap: 11px;
 }
 .op-inbox__masthead {
+  position: relative;
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   gap: 11px;
-  padding: 4px 2px 7px;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid
+    color-mix(in srgb, var(--accent, #38bdf8) 24%, var(--border, transparent));
+  border-radius: 14px;
+  background:
+    radial-gradient(
+      circle at 12% 0%,
+      color-mix(in srgb, #1688ff 18%, transparent),
+      transparent 48%
+    ),
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--bg-3, #112235) 88%, transparent),
+      color-mix(in srgb, var(--bg-1, #0b1220) 96%, transparent)
+    );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--fg, #fff) 5%, transparent),
+    0 10px 28px rgba(0, 0, 0, 0.14);
 }
 .op-inbox__masthead-icon {
   width: 42px;
@@ -41,7 +65,11 @@
   border: 1px solid color-mix(in srgb, var(--accent, #38bdf8) 46%, transparent);
   border-radius: 11px;
   color: #bfdbfe;
-  background: linear-gradient(145deg, color-mix(in srgb, #1688ff 72%, transparent), color-mix(in srgb, #0757b8 74%, transparent));
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #1688ff 72%, transparent),
+    color-mix(in srgb, #0757b8 74%, transparent)
+  );
   box-shadow: 0 8px 24px color-mix(in srgb, #1688ff 22%, transparent);
 }
 .op-inbox__masthead-copy {
@@ -49,7 +77,14 @@
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
+}
+.op-inbox__masthead-eyebrow {
+  color: var(--accent-strong, #7dd3fc) !important;
+  font-size: 9.5px !important;
+  font-weight: 760;
+  line-height: 1.1 !important;
+  text-transform: uppercase;
 }
 .op-inbox__masthead-copy strong {
   color: var(--fg, #e7f7ff);
@@ -57,78 +92,203 @@
   line-height: 1.05;
   letter-spacing: 0;
 }
-.op-inbox__masthead-copy span {
+.op-inbox__masthead-copy .op-inbox__masthead-subtitle {
   color: var(--fg-mute, #8a8a91);
   font-size: 12px;
   line-height: 1.4;
   white-space: normal;
 }
 .op-inbox__masthead-count {
-  min-width: 30px;
-  height: 30px;
-  padding: 0 8px;
+  min-width: 48px;
+  min-height: 44px;
+  padding: 5px 8px;
   flex: 0 0 auto;
   display: inline-flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   border: 1px solid color-mix(in srgb, var(--accent, #38bdf8) 38%, transparent);
-  border-radius: 7px;
+  border-radius: 10px;
   color: var(--fg, #e7f7ff);
   background: color-mix(in srgb, var(--accent, #38bdf8) 9%, transparent);
-  font-size: 14px;
-  font-weight: 750;
   font-variant-numeric: tabular-nums;
 }
-.op-inbox__chips { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.op-inbox__masthead-count-value {
+  font-size: 16px;
+  font-weight: 780;
+  line-height: 1;
+}
+.op-inbox__masthead-count-label {
+  margin-top: 3px;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.op-inbox__controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--border, rgba(255, 255, 255, 0.14)) 82%,
+      transparent
+    );
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-3, #112235) 72%, transparent);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--fg, #fff) 3%, transparent);
+}
+.op-inbox__controls-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+.op-inbox__controls-label {
+  color: var(--fg, #e7e7ea);
+  font-size: 10.5px;
+  font-weight: 740;
+  text-transform: uppercase;
+}
+.op-inbox__controls-scope {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.op-inbox__chips {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
 .op-inbox__chip {
-  min-height: 34px; display: inline-flex; align-items: center; gap: 5px; padding: 0 11px; border-radius: 9px;
-  font-size: 11.5px; font-weight: 680; cursor: pointer;
-  color: var(--fg-mute, #c2c2c9); background: transparent;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 11px;
+  border-radius: 9px;
+  font-size: 11.5px;
+  font-weight: 680;
+  cursor: pointer;
+  color: var(--fg-mute, #c2c2c9);
+  background: transparent;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
 }
-.op-inbox__chip:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.op-inbox__chip:hover {
+  color: var(--fg, #e7e7ea);
+  border-color: var(--fg-mute, #a6a6ad);
+}
 .op-inbox__chip.is-active {
-  color: #eff6ff; border-color: color-mix(in srgb, #1688ff 70%, transparent);
-  background: linear-gradient(145deg, color-mix(in srgb, #1688ff 84%, transparent), color-mix(in srgb, #0766d8 78%, transparent));
+  color: #eff6ff;
+  border-color: color-mix(in srgb, #1688ff 70%, transparent);
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #1688ff 84%, transparent),
+    color-mix(in srgb, #0766d8 78%, transparent)
+  );
   box-shadow: 0 5px 18px color-mix(in srgb, #1688ff 18%, transparent);
 }
-.op-inbox__chip-count { font-variant-numeric: tabular-nums; opacity: 0.85; }
+.op-inbox__chip-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
 
 /* ── Search + kind-facet filter (inbox-pane-active-scope-dates-filters-2026-07-19
    P-3xx) — mimics the Queue's QueueFilterBar: a text search plus a collapsed
    "Filter" trigger revealing per-kind facet chips. ── */
-.op-inbox__toolbar { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.op-inbox__toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
 .op-inbox__search {
-  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px;
-  min-height: 44px; padding: 0 11px; border-radius: 10px;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 0 11px;
+  border-radius: 10px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
   background: var(--bg-3, rgba(255, 255, 255, 0.04));
 }
-.op-inbox__search:focus-within { border-color: color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent); }
-.op-inbox__search-icon { flex: 0 0 auto; color: var(--fg-mute, #8a8a91); }
+.op-inbox__search:focus-within {
+  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent);
+}
+.op-inbox__search-icon {
+  flex: 0 0 auto;
+  color: var(--fg-mute, #8a8a91);
+}
 .op-inbox__search-input {
-  flex: 1 1 auto; min-width: 0; border: none; background: transparent; outline: none;
-  font-size: 13px; color: var(--fg, #e7e7ea);
+  flex: 1 1 auto;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: 13px;
+  color: var(--fg, #e7e7ea);
 }
-.op-inbox__search-input::placeholder { color: var(--fg-mute, #8a8a91); }
+.op-inbox__search-input::placeholder {
+  color: var(--fg-mute, #8a8a91);
+}
 .op-inbox__search-clear {
-  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; min-height: 16px; padding: 0; border: none; border-radius: 999px; cursor: pointer;
-  color: var(--fg-mute, #8a8a91); background: transparent;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  min-height: 16px;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg-mute, #8a8a91);
+  background: transparent;
 }
-.op-inbox__search-clear:hover { color: var(--fg, #e7e7ea); background: var(--bg-1, #0b1220); }
+.op-inbox__search-clear:hover {
+  color: var(--fg, #e7e7ea);
+  background: var(--bg-1, #0b1220);
+}
 /* Sort picker (WI-40982) — the Radix Select trigger, in the slot the retired
    "Kinds" toggle held. Matched to the search field beside it (44px min-height,
    10px radius); `flex: 0 1 auto` + max-width means a long order name yields to
    the search box instead of squeezing it, and the label ellipsises. */
 .op-inbox__sort {
-  min-height: 44px; flex: 0 1 auto; max-width: 48%; display: inline-flex; align-items: center;
-  gap: 5px; padding: 0 9px; border-radius: 10px;
-  font-family: inherit; font-size: 11.5px; font-weight: 650; cursor: pointer;
-  color: var(--fg-mute, #c2c2c9); background: transparent;
+  min-height: 44px;
+  flex: 0 1 auto;
+  max-width: 48%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 9px;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 11.5px;
+  font-weight: 650;
+  cursor: pointer;
+  color: var(--fg-mute, #c2c2c9);
+  background: transparent;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.14));
 }
-.op-inbox__sort:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.op-inbox__sort:hover {
+  color: var(--fg, #e7e7ea);
+  border-color: var(--fg-mute, #a6a6ad);
+}
 /* Radix stamps data-state="open" on the trigger while the menu is up. */
 .op-inbox__sort[data-state="open"] {
   color: var(--accent, #8b5cf6);
@@ -139,70 +299,158 @@
   outline: 2px solid color-mix(in srgb, var(--accent, #8b5cf6) 70%, transparent);
   outline-offset: 1px;
 }
-.op-inbox__sort-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.op-inbox__facets { display: flex; flex-wrap: wrap; gap: 4px; }
+.op-inbox__sort-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.op-inbox__facets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
 .op-inbox__facet {
-  display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px; border-radius: 999px;
-  font-size: 10px; font-weight: 620; cursor: pointer;
-  color: var(--fg-mute, #c2c2c9); background: transparent;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 620;
+  cursor: pointer;
+  color: var(--fg-mute, #c2c2c9);
+  background: transparent;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
 }
-.op-inbox__facet:hover { color: var(--fg, #e7e7ea); border-color: var(--fg-mute, #a6a6ad); }
+.op-inbox__facet:hover {
+  color: var(--fg, #e7e7ea);
+  border-color: var(--fg-mute, #a6a6ad);
+}
 .op-inbox__facet.is-active {
   color: var(--accent, #8b5cf6);
   border-color: color-mix(in srgb, var(--accent, #8b5cf6) 55%, transparent);
   background: color-mix(in srgb, var(--accent, #8b5cf6) 12%, transparent);
 }
-.op-inbox__facet-count { font-variant-numeric: tabular-nums; opacity: 0.8; }
-.op-inbox__facet--clear { color: var(--fg-mute, #8a8a91); font-style: italic; }
+.op-inbox__facet-count {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.8;
+}
+.op-inbox__facet--clear {
+  color: var(--fg-mute, #8a8a91);
+  font-style: italic;
+}
 
 .op-inbox__error {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 8px; border: 1px solid color-mix(in srgb, var(--bad, #f87171) 40%, transparent);
-  border-radius: 8px; font-size: 11px; color: var(--bad, #f87171);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--bad, #f87171) 40%, transparent);
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--bad, #f87171);
   background: color-mix(in srgb, var(--bad, #f87171) 7%, transparent);
 }
 .op-inbox__error button {
-  border: 1px solid currentColor; border-radius: 6px; padding: 2px 7px;
-  color: inherit; background: transparent; cursor: pointer;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  padding: 2px 7px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
 }
-.op-inbox__loading { font-size: 11.5px; color: var(--fg-mute, #8a8a91); }
+.op-inbox__loading {
+  font-size: 11.5px;
+  color: var(--fg-mute, #8a8a91);
+}
 /* WI-5365 design pass 2: empty state reads as a deliberate, centered moment —
    not a stray line of text hugging the top-left. */
 .op-inbox__empty {
-  margin: 22px 10px; display: flex; flex-direction: column; align-items: center; gap: 7px;
-  text-align: center; font-size: 11.5px; line-height: 1.5; color: var(--fg-mute, #8a8a91);
+  margin: 22px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  text-align: center;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--fg-mute, #8a8a91);
 }
-.op-inbox__empty-icon { opacity: 0.4; }
-.op-inbox__list { list-style: none; margin: 0; padding: 0; min-width: 0; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.op-inbox__empty-icon {
+  opacity: 0.4;
+}
+.op-inbox__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
 /* WI-5365: rows carry a tier-colored left accent so "does this need me?" is
    answerable from the row silhouette alone — the 7px dot was the only tier
    signal and vanished at a glance. Selection outranks tier (full ring). */
 .op-inbox__row {
   position: relative;
-  min-width: 0; border-radius: 12px;
+  min-width: 0;
+  border-radius: 12px;
   border: 1px solid var(--border, rgba(255, 255, 255, 0.09));
   border-left-width: 2px;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--bg-3, #112235) 82%, transparent), color-mix(in srgb, var(--bg-1, #0b1220) 95%, transparent));
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-3, #112235) 82%, transparent),
+    color-mix(in srgb, var(--bg-1, #0b1220) 95%, transparent)
+  );
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.12);
-  transition: border-color 0.12s ease, background-color 0.12s ease;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
 }
-.op-inbox__row--decision { border-left-color: color-mix(in srgb, var(--bad, #f87171) 70%, transparent); }
-.op-inbox__row--alert { border-left-color: color-mix(in srgb, var(--warn, #fbbf24) 60%, transparent); }
-.op-inbox__row--handled { border-left-color: color-mix(in srgb, var(--good, #34d399) 45%, transparent); }
+.op-inbox__row--decision {
+  border-left-color: color-mix(in srgb, var(--bad, #f87171) 70%, transparent);
+}
+.op-inbox__row--alert {
+  border-left-color: color-mix(in srgb, var(--warn, #fbbf24) 60%, transparent);
+}
+.op-inbox__row--handled {
+  border-left-color: color-mix(in srgb, var(--good, #34d399) 45%, transparent);
+}
 .op-inbox__row.is-selected {
   border-color: color-mix(in srgb, #1688ff 78%, transparent);
-  background: linear-gradient(135deg, color-mix(in srgb, #1688ff 13%, var(--bg-3, #112235)), color-mix(in srgb, var(--bg-1, #0b1220) 92%, transparent));
-  box-shadow: 0 0 0 1px color-mix(in srgb, #1688ff 18%, transparent), 0 10px 28px color-mix(in srgb, #1688ff 12%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, #1688ff 13%, var(--bg-3, #112235)),
+    color-mix(in srgb, var(--bg-1, #0b1220) 92%, transparent)
+  );
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, #1688ff 18%, transparent),
+    0 10px 28px color-mix(in srgb, #1688ff 12%, transparent);
 }
-.op-inbox__row-summary { position: relative; }
+.op-inbox__row-summary {
+  position: relative;
+}
 .op-inbox__rowbtn {
   position: relative;
-  width: 100%; min-width: 0; min-height: 82px; display: flex; flex-direction: column; gap: 5px; padding: 12px 34px 12px 56px;
-  text-align: left; cursor: pointer; background: transparent; border: none; border-radius: inherit;
+  width: 100%;
+  min-width: 0;
+  min-height: 82px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 12px 34px 12px 56px;
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: inherit;
   color: var(--fg, #e7e7ea);
 }
-.op-inbox__rowbtn:hover { background: var(--bg-3, rgba(255, 255, 255, 0.05)); }
+.op-inbox__rowbtn:hover {
+  background: var(--bg-3, rgba(255, 255, 255, 0.05));
+}
 .op-inbox__row-icon {
   position: absolute;
   z-index: 1;
@@ -216,7 +464,11 @@
   border: 1px solid color-mix(in srgb, #1688ff 48%, transparent);
   border-radius: 9px;
   color: #bfdbfe;
-  background: linear-gradient(145deg, color-mix(in srgb, #1688ff 66%, transparent), color-mix(in srgb, #0757b8 66%, transparent));
+  background: linear-gradient(
+    145deg,
+    color-mix(in srgb, #1688ff 66%, transparent),
+    color-mix(in srgb, #0757b8 66%, transparent)
+  );
   transform: translateY(-50%);
   pointer-events: none;
 }
@@ -238,25 +490,62 @@
   outline-offset: 1px;
 }
 /* 9.5px was below comfortable legibility for the row's who/where line. */
-.op-inbox__rowhead { display: flex; align-items: center; gap: 5px; min-width: 0; font-size: 10.5px; }
-.op-inbox__tierdot { flex: 0 0 7px; width: 7px; height: 7px; border-radius: 999px; background: var(--fg-mute, #8a8a91); }
-.op-inbox__tierdot--decision { background: var(--bad, #f87171); }
-.op-inbox__tierdot--alert { background: var(--warn, #fbbf24); }
-.op-inbox__tierdot--handled { background: var(--good, #34d399); }
-.op-inbox__kind {
-  flex: 0 0 auto; padding: 0 5px; border-radius: 999px; font-weight: 650; text-transform: uppercase;
-  font-size: 9px; color: var(--fg-mute, #c2c2c9);
-  border: 1px solid var(--border, rgba(255, 255, 255, 0.12)); background: var(--bg-1, #0b1220);
+.op-inbox__rowhead {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 10.5px;
 }
-.op-inbox__meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-mute, #8a8a91); }
+.op-inbox__tierdot {
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--fg-mute, #8a8a91);
+}
+.op-inbox__tierdot--decision {
+  background: var(--bad, #f87171);
+}
+.op-inbox__tierdot--alert {
+  background: var(--warn, #fbbf24);
+}
+.op-inbox__tierdot--handled {
+  background: var(--good, #34d399);
+}
+.op-inbox__kind {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-weight: 650;
+  text-transform: uppercase;
+  font-size: 9px;
+  color: var(--fg-mute, #c2c2c9);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--bg-1, #0b1220);
+}
+.op-inbox__meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-mute, #8a8a91);
+}
 /* Pushes the date + chat affordance to the right edge of the row header. */
-.op-inbox__rowhead-spacer { flex: 1 1 auto; min-width: 4px; }
+.op-inbox__rowhead-spacer {
+  flex: 1 1 auto;
+  min-width: 4px;
+}
 /* Relative "how long ago" the underlying event happened
    (inbox-pane-active-scope-dates-filters-2026-07-19 P-2xx). Tabular so a column
    of dates stays aligned; muted so it never competes with the title. */
 .op-inbox__date {
-  flex: 0 0 auto; font-size: 9.5px; font-weight: 600; font-variant-numeric: tabular-nums;
-  color: var(--fg-mute, #8a8a91); white-space: nowrap;
+  flex: 0 0 auto;
+  font-size: 9.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-mute, #8a8a91);
+  white-space: nowrap;
 }
 /* P-007: per-row "open live chat with the originating agent" affordance —
    sits in the row header, so it must not shrink/grow with .op-inbox__meta's
@@ -266,25 +555,56 @@
 .op-inbox__chat-button {
   /* The .op-inbox__rowhead-spacer now right-aligns the date + chat cluster, so
      this no longer needs margin-left:auto (which would split it from the date). */
-  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; padding: 0; border-radius: 999px; cursor: pointer;
-  color: var(--fg-mute, #8a8a91); background: transparent; border: 1px solid transparent;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  color: var(--fg-mute, #8a8a91);
+  background: transparent;
+  border: 1px solid transparent;
 }
-.op-inbox__chat-button:hover { color: var(--accent, #8b5cf6); border-color: color-mix(in srgb, var(--accent, #8b5cf6) 45%, transparent); background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent); }
+.op-inbox__chat-button:hover {
+  color: var(--accent, #8b5cf6);
+  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 45%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent);
+}
 .op-inbox__title {
-  min-width: 0; font-size: 14.5px; font-weight: 720; line-height: 1.3;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  min-width: 0;
+  font-size: 14.5px;
+  font-weight: 720;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .op-inbox__status {
-  min-width: 0; overflow: hidden; color: var(--fg-mute, #8a8a91);
-  font-size: 11px; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .op-inbox__row-chevron {
-  position: absolute; top: 50%; right: 8px; color: var(--fg-mute, #8a8a91);
-  transform: translateY(-50%); transition: color .12s ease, transform .12s ease;
+  position: absolute;
+  top: 50%;
+  right: 8px;
+  color: var(--fg-mute, #8a8a91);
+  transform: translateY(-50%);
+  transition:
+    color 0.12s ease,
+    transform 0.12s ease;
 }
 .op-inbox__rowbtn:hover .op-inbox__row-chevron {
-  color: var(--accent-strong, #7dd3fc); transform: translate(2px, -50%);
+  color: var(--accent-strong, #7dd3fc);
+  transform: translate(2px, -50%);
 }
 .op-inbox__row.is-selected .op-inbox__row-chevron {
   color: var(--accent-strong, #7dd3fc);
@@ -295,12 +615,22 @@
   border-top: 1px solid var(--border, rgba(255, 255, 255, 0.08));
   /* Slightly recessed vs the (orange-tinted) selected row header, so the
      expanded card reads as the row's own drawer rather than more list. */
-  background: color-mix(in srgb, var(--bg-2, rgba(0, 0, 0, 0.18)) 55%, transparent);
+  background: color-mix(
+    in srgb,
+    var(--bg-2, rgba(0, 0, 0, 0.18)) 55%,
+    transparent
+  );
   border-radius: 0 0 7px 7px;
 }
 /* The Queue detail card, compacted for an expanded chat-sidebar row. */
-.op-inbox__detail .pc-items__detail { min-width: 0; padding: 6px 0 0; }
-.op-inbox__detail .pc-items__detail-toolbar { flex-wrap: wrap; row-gap: 3px; }
+.op-inbox__detail .pc-items__detail {
+  min-width: 0;
+  padding: 6px 0 0;
+}
+.op-inbox__detail .pc-items__detail-toolbar {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
 .op-inbox__detail .pc-items__detail-body {
   display: flex;
   flex-direction: column;
@@ -326,17 +656,47 @@
   min-height: 34px;
 }
 .op-inbox__foot {
-  display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding-top: 3px; color: var(--fg-mute, #8a8a91); font-size: 10.5px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 2px 0;
+  color: var(--fg-mute, #8a8a91);
+  font-size: 10.5px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--border, rgba(255, 255, 255, 0.1)) 72%, transparent);
 }
 .op-inbox__queue-link {
-  font-size: 11px; color: var(--accent, #8b5cf6); background: none; border: none;
-  padding: 0; cursor: pointer; text-decoration: none;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent, #8b5cf6) 46%, transparent);
+  border-radius: 8px;
+  color: var(--accent-strong, #7dd3fc);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 10%, transparent);
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  text-decoration: none;
 }
-.op-inbox__queue-link:hover { text-decoration: underline; }
+.op-inbox__queue-link:hover {
+  border-color: color-mix(in srgb, var(--accent, #8b5cf6) 70%, transparent);
+  background: color-mix(in srgb, var(--accent, #8b5cf6) 17%, transparent);
+  transform: translateY(-1px);
+}
 
 @container op-chat (max-width: 420px) {
-  .op-inbox__chips { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
-  .op-inbox__chips::-webkit-scrollbar { display: none; }
-  .op-inbox__chip { flex: 0 0 auto; }
+  .op-inbox__chips {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .op-inbox__chips::-webkit-scrollbar {
+    display: none;
+  }
+  .op-inbox__chip {
+    flex: 0 0 auto;
+  }
 }
