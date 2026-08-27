@@ -283,6 +283,15 @@ describe('P-007: the four verdict cells', () => {
     expect(GATE_VERDICT_CELL.assessment!.evidence).toContain('verdictProvenance.mainBehindStaging');
   });
 
+  it('held-live stops only LIVE_GATE_OPS and does not reserve generic gate-system development', () => {
+    const safeAction = GATE_OWNERSHIP_CELL.assessment?.codes['held-live']?.safeAction;
+
+    expect(safeAction).toContain('Do not take over or duplicate `LIVE_GATE_OPS`');
+    expect(safeAction).toContain('current-verdict reruns');
+    expect(safeAction).toContain('does not reserve independently registered `GATE_SYSTEM_DEV`');
+    expect(safeAction).toContain('under its own work-item/plan lane and file locks');
+  });
+
   /**
    * #D-065 IS THE ASSERTION. Five cells naming one resolver is axis 5 satisfied (many
    * lenses over one derivation), and the thing that would break it is someone "fixing"

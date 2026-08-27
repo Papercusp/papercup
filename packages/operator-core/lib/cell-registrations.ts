@@ -686,7 +686,7 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
       'held-live': {
         meaning: "Held, and the presence oracle positively says the holder's session is alive.",
         safeAction:
-          'Do not take it over. Coordinate with the holder (coord:send) if you need it moved.',
+          'Do not take over or duplicate `LIVE_GATE_OPS` — current-verdict reruns, deploy actions, current-red triage, repair-queue mutation, or monitoring. Coordinate with the holder (`coord:send`) if that live lane needs to move. This ownership does not reserve independently registered `GATE_SYSTEM_DEV`; continue cache, instrumentation, selection, retention, alerting, test, doc, or refactor work under its own work-item/plan lane and file locks.',
       },
       'held-needs-confirmation': {
         meaning:
