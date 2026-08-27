@@ -60,7 +60,11 @@ beforeEach(() => {
   homeSlug = 'papercusp';
   tmpDirs = [];
   savedDsnEnv = Object.fromEntries(DSN_ENV_KEYS.map((k) => [k, process.env[k]]));
-  vi.doMock('../../harness-registry', () => ({
+  // Keep the real registry exports available to transitive imports (notably the
+  // p2p revocation-reaper). A full mock here makes unrelated newly-added exports
+  // fail module linking before any release-env assertion can run.
+  vi.doMock('../../harness-registry', async (importOriginal) => ({
+    ...(await importOriginal<Record<string, unknown>>()),
     loadHarnessRegistry: async () => ({ projects: registryProjects }),
   }));
   vi.doMock('../operator-home-harness', () => ({
