@@ -8,14 +8,28 @@
  */
 import type { Sql } from 'postgres';
 import { z } from 'zod';
-import { getFleet, type AgentFleetRecord } from '../../agent-fleets-store';
-import { getPresence, type PresenceRecord } from '../../agent-tools/coordination/presence';
 import { OWNER_CANDIDATE_TURN_VERDICTS, quoteMatchesTurn } from '../../turn-provenance/turn-ref';
 import { parseTurnRef } from '../../agent-tools/sessions/_shared';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
-import { getWorkItem, type WorkItem } from '../../work-items';
 import { STALE_CLAIM_GRACE_MS } from '../../work-items-stale-claims';
-import { boundedPgReadTxn } from '../../pg-read-query';
+// P-004 LOAD-GRAPH RAIL: the four I/O seams below (`agent-fleets-store`, `coordination/presence`,
+// `work-items`, `pg-read-query`) are TYPE-ONLY here and are `await import(...)`-ed at their call
+// sites instead. They are used ONLY inside async resolvers and inside the default-dependency
+// lambdas, so nothing needs them at module-evaluation time.
+//
+// WHY THIS IS LOAD-BEARING, not style: a static value import of `coordination/presence` drags
+// presence -> control-anchor -> presence-selfwake -> inbox-wake -> events/await/engine ->
+// progress-lease -> predicate-watch -> projected-tool-deps -> capability-envelope/policy, and
+// `capability-envelope/policy.ts` evaluates `AGENT_ROLES.filter(...)` at MODULE SCOPE. Any
+// consumer that wants only this module's PURE half (parsePersistedMonitorConfig,
+// decideMonitorAdmission) would otherwise pay for that whole chain — and any test that mocks
+// `@papercusp/agent-mcp` without `AGENT_ROLES` fails on import alone. That is exactly how
+// `continuity-probes.test.ts` broke when `harness/routines/loop.ts` began value-importing this
+// module's parser (it had previously been an erased `import type`). Guarded by
+// `monitor-policy-load-graph.test.ts` — keep these type-only.
+import type { AgentFleetRecord } from '../../agent-fleets-store';
+import type { PresenceRecord } from '../../agent-tools/coordination/presence';
+import type { WorkItem } from '../../work-items';
 
 export const MONITOR_NO_DELTA_BUDGET_DEFAULT = 1;
 /** A monitor may be deliberately long-lived, but never unbounded. */
@@ -377,6 +391,7 @@ export async function listActiveMonitorOwnersForPredicate(
   input: { workspaceId: string; predicateKey: string; excludeOwnerId: string },
   opts: { sql?: Sql } = {},
 ): Promise<string[]> {
+  const { boundedPgReadTxn } = await import('../../pg-read-query');
   const rows = await boundedPgReadTxn<Array<{ owner_id: string }>>(
     (tx) => tx`
       SELECT DISTINCT r.target_owner_id AS owner_id
@@ -402,6 +417,7 @@ export async function hasActiveMonitorForOwnerPredicate(
 ): Promise<boolean> {
   const normalized = normalizeMonitorPredicateKey(input.predicateKey);
   if (!normalized) return false;
+  const { boundedPgReadTxn } = await import('../../pg-read-query');
   const rows = await boundedPgReadTxn<Array<{ found: number }>>(
     (tx) => tx`
       SELECT 1 AS found
@@ -428,6 +444,7 @@ export async function readMonitorOwnerTurnEvidence(
 ): Promise<MonitorOwnerTurnEvidence | null> {
   const parsed = parseTurnRef(turnRef);
   if (!parsed || !turnRef.startsWith('session_turn:')) return null;
+  const { boundedPgReadTxn } = await import('../../pg-read-query');
   const rows = await boundedPgReadTxn<
     Array<{
       owner: string | null;
@@ -475,9 +492,13 @@ export async function readMonitorOwnerTurnEvidence(
 }
 
 const defaultMonitorAdmissionDependencies: MonitorAdmissionDependencies = {
-  loadWorkItem: (id, harness) => getWorkItem(id, harness),
-  loadPresence: (ownerId) => getPresence(ownerId),
-  loadFleet: (workspaceId, fleetSlug) => getFleet(workspaceId, fleetSlug),
+  // Deferred imports (see the LOAD-GRAPH RAIL note at the top): these lambdas only ever run
+  // on the resolved `admitMonitorArm` path, so the I/O modules load then, not at import time.
+  loadWorkItem: async (id, harness) => (await import('../../work-items')).getWorkItem(id, harness),
+  loadPresence: async (ownerId) =>
+    (await import('../../agent-tools/coordination/presence')).getPresence(ownerId),
+  loadFleet: async (workspaceId, fleetSlug) =>
+    (await import('../../agent-fleets-store')).getFleet(workspaceId, fleetSlug),
   verifyOwnerTurn: readMonitorOwnerTurnEvidence,
   listActiveMonitorOwners: (input) => listActiveMonitorOwnersForPredicate(input),
   nowMs: () => Date.now(),
