@@ -176,6 +176,42 @@ describe('authored-doc projection (P-008)', () => {
       expect(projectionVerdict({ onDisk: older, contentHash, nextText })).toMatchObject({ ok: true, reason: 'matches-canonical' });
     });
 
+    it('accepts an older bannered projection when PG was updated later', () => {
+      const previous = content.replace('Some prose.', 'The previous canonical prose.');
+      const verdict = projectionVerdict({
+        onDisk: applyProjectionBanner(previous, 'agent-insights/a-doc.mdx'),
+        contentHash,
+        nextText,
+        fileMtimeMs: Date.parse('2026-08-27T03:21:09.130Z'),
+        canonicalUpdatedAt: '2026-08-27 20:57:12.132593+00',
+      });
+      expect(verdict).toMatchObject({ ok: true, reason: 'matches-prior-projection' });
+    });
+
+    it('REFUSES a bannered file newer than the canonical PG update', () => {
+      const edited = content.replace('Some prose.', 'A newer hand edit.');
+      const verdict = projectionVerdict({
+        onDisk: applyProjectionBanner(edited, 'agent-insights/a-doc.mdx'),
+        contentHash,
+        nextText,
+        fileMtimeMs: Date.parse('2026-08-27T21:00:00.000Z'),
+        canonicalUpdatedAt: '2026-08-27 20:57:12.132593+00',
+      });
+      expect(verdict).toMatchObject({ ok: false, reason: 'drifted' });
+    });
+
+    it('requires the provenance banner before accepting older bytes', () => {
+      const previous = content.replace('Some prose.', 'The previous canonical prose.');
+      const verdict = projectionVerdict({
+        onDisk: previous,
+        contentHash,
+        nextText,
+        fileMtimeMs: Date.parse('2026-08-27T03:21:09.130Z'),
+        canonicalUpdatedAt: '2026-08-27 20:57:12.132593+00',
+      });
+      expect(verdict).toMatchObject({ ok: false, reason: 'drifted' });
+    });
+
     it('accepts an un-bannered file that is exactly the canonical text', () => {
       // The state right after --ingest, before the first --write. Must not read as drift.
       expect(projectionVerdict({ onDisk: content, contentHash, nextText })).toMatchObject({ ok: true, reason: 'matches-canonical' });

@@ -146,7 +146,11 @@ export function deriveFrontmatterIndex(content: string): Record<string, unknown>
 }
 
 export type ProjectionVerdict =
-  | { ok: true; reason: 'absent' | 'already-current' | 'matches-canonical'; live?: string }
+  | {
+      ok: true;
+      reason: 'absent' | 'already-current' | 'matches-canonical' | 'matches-prior-projection';
+      live?: string;
+    }
   | { ok: false; reason: 'drifted'; live: string };
 
 /**
@@ -156,9 +160,10 @@ export type ProjectionVerdict =
  * projector reads PG, never the file, so on its own it cannot notice that somebody edited
  * the .mdx after the row was written — those edits would simply be erased. The file is safe
  * to overwrite only when its bytes are something we already know about: nothing
- * (`absent`), the bytes we are about to write (`already-current`), or the canonical text
- * modulo our own banner (`matches-canonical`, which also covers the state right after an
- * ingest, before any banner exists).
+ * (`absent`), the bytes we are about to write (`already-current`), the canonical text modulo
+ * our own banner (`matches-canonical`, which also covers the state right after an ingest,
+ * before any banner exists), or an older projection whose banner and mtime prove it predates
+ * the current PG row (`matches-prior-projection`).
  *
  * Anything else means somebody changed the prose, and `drifted` REFUSES. That is a
  * deliberate softening of the D-003 slogan "a hand-edit is overwritten by the next
@@ -170,13 +175,34 @@ export function projectionVerdict(args: {
   onDisk: string | null;
   contentHash: string | null;
   nextText: string | null;
+  /** Filesystem mtime, required to recognize a stale bannered projection safely. */
+  fileMtimeMs?: number | null;
+  /** Canonical row timestamp observed in the same snapshot as `contentHash`. */
+  canonicalUpdatedAt?: string | null;
 }): ProjectionVerdict {
-  const { onDisk, contentHash, nextText } = args;
+  const { onDisk, contentHash, nextText, fileMtimeMs, canonicalUpdatedAt } = args;
   if (onDisk === null) return { ok: true, reason: 'absent' };
   const live = sha256(onDisk);
   if (nextText !== null && live === sha256(nextText)) return { ok: true, reason: 'already-current', live };
-  const bare = stripProjectionBanner(onDisk).content;
+  const stripped = stripProjectionBanner(onDisk);
+  const bare = stripped.content;
   if (contentHash && sha256(bare) === contentHash) return { ok: true, reason: 'matches-canonical', live };
+
+  // A legacy projection can carry the correct provenance banner while its prose reflects an
+  // older PG row. Once PG changes, the content hash no longer matches and the old guard called
+  // this a hand edit. The banner alone is not enough — an edited file can retain it — so accept
+  // this recovery path only when the file's mtime is no newer than the canonical row update.
+  const canonicalUpdatedAtMs = canonicalUpdatedAt ? Date.parse(canonicalUpdatedAt) : Number.NaN;
+  if (
+    stripped.stripped &&
+    fileMtimeMs != null &&
+    Number.isFinite(fileMtimeMs) &&
+    Number.isFinite(canonicalUpdatedAtMs) &&
+    fileMtimeMs <= canonicalUpdatedAtMs
+  ) {
+    return { ok: true, reason: 'matches-prior-projection', live };
+  }
+
   return { ok: false, reason: 'drifted', live };
 }
 

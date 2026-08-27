@@ -514,7 +514,14 @@ async function main(): Promise<number> {
         const abs = join(outRoot, row.doc_id);
         const nextText = applyProjectionBanner(row.content, row.doc_id);
         const onDisk = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
-        const verdict = projectionVerdict({ onDisk, contentHash: row.content_hash, nextText });
+        const fileMtimeMs = onDisk === null ? null : statSync(abs).mtimeMs;
+        const verdict = projectionVerdict({
+          onDisk,
+          contentHash: row.content_hash,
+          nextText,
+          fileMtimeMs,
+          canonicalUpdatedAt: row.updated_at,
+        });
         if (!verdict.ok) {
           clobbered.push(row.doc_id);
           continue;
@@ -615,7 +622,14 @@ async function main(): Promise<number> {
         const abs = join(docsRoot, docId);
         const nextText = applyProjectionBanner(row.content, docId);
         const onDisk = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
-        const verdict = projectionVerdict({ onDisk, contentHash: row.content_hash, nextText });
+        const fileMtimeMs = onDisk === null ? null : statSync(abs).mtimeMs;
+        const verdict = projectionVerdict({
+          onDisk,
+          contentHash: row.content_hash,
+          nextText,
+          fileMtimeMs,
+          canonicalUpdatedAt: row.updated_at,
+        });
         if (!verdict.ok) {
           drifted.push(docId);
           failed = true;
