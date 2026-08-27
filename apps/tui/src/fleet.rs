@@ -827,6 +827,7 @@ pub(crate) enum FrontierRow<'a> {
         Option<&'a crate::models::BeeAssignment>,
     ),
     NeedsYou(&'a crate::models::WorkFrontierParkedRow),
+    Controlled(&'a crate::models::WorkFrontierParkedRow),
     Stuck(
         &'a crate::models::WorkFrontierRow,
         Option<&'a crate::models::BeeAssignment>,
@@ -875,6 +876,13 @@ fn frontier_rows(app: &App) -> Vec<FrontierRow<'_>> {
             .iter()
             .filter(|row| row.mechanism == "needs-human")
             .map(FrontierRow::NeedsYou),
+    );
+    rows.extend(
+        frontier
+            .parked
+            .iter()
+            .filter(|row| row.mechanism != "needs-human")
+            .map(FrontierRow::Controlled),
     );
     rows.extend(frontier.in_flight.iter().filter_map(|row| {
         let assignment = frontier_assignment(app, row);
@@ -958,6 +966,12 @@ fn frontier_detail_lines(row: FrontierRow<'_>) -> Vec<Line<'static>> {
             None,
             Some(parked.reason.as_str()),
         ),
+        FrontierRow::Controlled(parked) => (
+            frontier_control_bucket(parked),
+            &parked.item,
+            None,
+            Some(parked.reason.as_str()),
+        ),
         FrontierRow::Stuck(item, assignment) => ("STUCK", item, assignment, None),
     };
     let mut lines = vec![
@@ -1011,7 +1025,50 @@ fn frontier_detail_lines(row: FrontierRow<'_>) -> Vec<Line<'static>> {
             Span::raw(reason.to_string()),
         ]));
     }
+    if let Some(control) = item.queue_control.as_ref() {
+        if let Some(lease) = control.hold_open_lease.as_ref() {
+            lines.push(Line::from(format!(
+                "lease    {} · since {} · {}",
+                lease.holder,
+                lease.held_at.as_deref().unwrap_or("unknown"),
+                lease.reason.as_deref().unwrap_or("no reason")
+            )));
+        }
+        if let Some(park) = control.durable_park.as_ref() {
+            lines.push(Line::from(format!(
+                "park     {} · at {} · {}",
+                park.parker.as_deref().unwrap_or("unattributed"),
+                park.parked_at.as_deref().unwrap_or("unknown"),
+                park.reason.as_deref().unwrap_or("no reason")
+            )));
+            lines.push(Line::from(format!(
+                "UNPARK   {} · {} · {}",
+                park.unpark_condition.status,
+                park.release_liveness.status,
+                park.unpark_condition.text.as_deref().unwrap_or("condition not stated")
+            )));
+        }
+        if let Some(review) = control.agent_review.as_ref() {
+            lines.push(Line::from(format!(
+                "review   {} · submitted by {} · round {}",
+                review.status, review.submitted_by, review.round
+            )));
+        }
+    }
     lines
+}
+
+fn frontier_control_bucket(row: &crate::models::WorkFrontierParkedRow) -> &'static str {
+    let control = row.item.queue_control.as_ref();
+    if control.and_then(|c| c.durable_park.as_ref()).is_some() {
+        "DURABLE PARK"
+    } else if control.and_then(|c| c.hold_open_lease.as_ref()).is_some() {
+        "HOLD-OPEN LEASE"
+    } else if control.and_then(|c| c.agent_review.as_ref()).is_some() || row.mechanism == "agent-review" {
+        "AGENT REVIEW"
+    } else {
+        "BLOCKED"
+    }
 }
 
 /// The detail-popup body for one work item (id · kind · status · rank · who
@@ -1070,6 +1127,11 @@ fn frontier_row_line(row: FrontierRow<'_>) -> Line<'static> {
             format!(" · {}", trunc(&parked.reason, 34)),
             Theme::warn(),
         ),
+        FrontierRow::Controlled(parked) => (
+            &parked.item,
+            format!(" · {} · {}", frontier_control_bucket(parked), trunc(&parked.reason, 28)),
+            Theme::warn(),
+        ),
         FrontierRow::InFlight(item, assignment) | FrontierRow::Stuck(item, assignment) => {
             let owner = assignment
                 .and_then(|a| a.name.as_deref().or(a.label.as_deref()))
@@ -1115,6 +1177,7 @@ fn frontier_bucket(row: FrontierRow<'_>) -> &'static str {
         FrontierRow::Ready(_) => "READY NOW",
         FrontierRow::InFlight(_, _) => "IN FLIGHT",
         FrontierRow::NeedsYou(_) => "NEEDS YOU",
+        FrontierRow::Controlled(parked) => frontier_control_bucket(parked),
         FrontierRow::Stuck(_, _) => "STUCK",
     }
 }

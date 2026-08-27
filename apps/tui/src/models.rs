@@ -2074,6 +2074,74 @@ pub struct WorkFrontierRow {
     pub last_progress_at: Option<String>,
     #[serde(skip)]
     pub blocks: usize,
+    #[serde(default)]
+    pub queue_control: Option<WorkQueueControl>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkQueueControl {
+    #[serde(default)]
+    pub active_claim: Option<QueueControlClaim>,
+    #[serde(default)]
+    pub hold_open_lease: Option<QueueControlLease>,
+    #[serde(default)]
+    pub durable_park: Option<QueueControlPark>,
+    #[serde(default)]
+    pub agent_review: Option<QueueControlReview>,
+    #[serde(default)]
+    pub unattributed_claim_hold: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlClaim {
+    #[serde(default)] pub owner: String,
+    #[serde(default)] pub claimed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlLease {
+    #[serde(default)] pub holder: String,
+    #[serde(default)] pub reason: Option<String>,
+    #[serde(default)] pub held_at: Option<String>,
+    #[serde(default)] pub age: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlCondition {
+    #[serde(default)] pub status: String,
+    #[serde(default)] pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlReleaseLiveness {
+    #[serde(default)] pub status: String,
+    #[serde(default)] pub owner: Option<String>,
+    #[serde(default)] pub trigger: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlPark {
+    #[serde(default)] pub parker: Option<String>,
+    #[serde(default)] pub reason: Option<String>,
+    #[serde(default)] pub parked_at: Option<String>,
+    #[serde(default)] pub age: serde_json::Value,
+    #[serde(default)] pub unpark_condition: QueueControlCondition,
+    #[serde(default)] pub release_liveness: QueueControlReleaseLiveness,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct QueueControlReview {
+    #[serde(default)] pub status: String,
+    #[serde(default)] pub submitted_by: String,
+    #[serde(default)] pub ledger_idea_id: String,
+    #[serde(default)] pub round: usize,
 }
 
 /// A parked frontier row. `mechanism == "needs-human"` is the NEEDS YOU

@@ -65,7 +65,7 @@ export default defineTool({
     //     kind='bug' filter matches ZERO rows and reads exactly like a drained queue.
     //   · An unrecognized or ambiguous `spec` returns { ok:false, error, candidates } — never a silent
     //     whole-backlog fallback, which would look like a suddenly-huge lane.
-    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all ~12 real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `claimableCount` is the trustworthy drain number; `excludedBreakdown` buckets OVERLAP so they do not sum; `affinityCoverage` warns when fewer than 50% of claimable rows carry non-empty `payload.paths`; `sampleExcluded` (1-10) adds `excludedSample` — ids per floor for stale-hold triage.",
+    "The authoritative issue-family \"claimable right now\" read — bug/change/task rows surviving the spec filter + all real claim floors, via the SAME oracle scheduler:get_next uses. READ-ONLY. `queueControl` separates active claims, hold-open leases, durable parks, and agent review (overlapping axes); `sampleExcluded` adds provenance, age, and UNPARK-condition detail without changing legacy floor fields.",
   guidance: {
     when: "How many/which issue-family items (bug/change/task) are ACTUALLY claimable — before a drain/wind-down call, a backlog read, or picking work. SSOT, not raw SQL or the claimable view.",
     notWhen:
@@ -287,6 +287,9 @@ export default defineTool({
       rows: claimable,
       /** Per-floor stranding counts (INDEPENDENT/overlapping — they do NOT sum). */
       excludedBreakdown: breakdown.excluded,
+      /** P-018: additive, independent queue-control axes. A row may appear on more
+       * than one axis; this is intentionally not a partition. */
+      queueControl: breakdown.queueControl,
       /** WI-6673: what the admitted set is MADE OF — byKind, bySeverity, lowSeverityShare,
        *  degenerate, peakDay. The counterpart to excludedBreakdown (what was REJECTED).
        *  Always present, because the failure this prevents is a caller quoting the count

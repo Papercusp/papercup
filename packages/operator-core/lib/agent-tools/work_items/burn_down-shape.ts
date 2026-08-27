@@ -41,6 +41,7 @@ const TIER_CAPS = {
 
 const PARKED_MECHANISMS = new Set([
   'claimHold',
+  'agent-review',
   'blocked',
   'needs-human',
   'external-blocker',
@@ -69,6 +70,43 @@ function numberOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function projectQueueControl(value: unknown, textCap: number): JsonObject | undefined {
+  const source = object(value);
+  if (!source) return undefined;
+  const active = object(source.activeClaim);
+  const lease = object(source.holdOpenLease);
+  const park = object(source.durablePark);
+  const review = object(source.agentReview);
+  const age = (value: unknown) => {
+    const row = object(value);
+    return row ? { status: stringOrNull(row.status), ageMs: numberOrNull(row.ageMs), bucket: stringOrNull(row.bucket) } : null;
+  };
+  const release = park ? object(park.releaseLiveness) : null;
+  const condition = park ? object(park.unparkCondition) : null;
+  return {
+    activeClaim: active ? { owner: stringOrNull(active.owner), claimedAt: stringOrNull(active.claimedAt) } : null,
+    holdOpenLease: lease ? {
+      holder: stringOrNull(lease.holder), reason: clip(lease.reason, textCap),
+      heldAt: stringOrNull(lease.heldAt), age: age(lease.age),
+    } : null,
+    durablePark: park ? {
+      parker: stringOrNull(park.parker), reason: clip(park.reason, textCap),
+      parkedAt: stringOrNull(park.parkedAt), age: age(park.age),
+      unparkCondition: condition ? { status: stringOrNull(condition.status), text: clip(condition.text, textCap) } : null,
+      releaseLiveness: release ? {
+        status: stringOrNull(release.status), owner: stringOrNull(release.owner),
+        trigger: clip(release.trigger, textCap), reachability: stringOrNull(release.reachability),
+        findings: Array.isArray(release.findings) ? release.findings.map(String) : [],
+      } : null,
+    } : null,
+    agentReview: review ? {
+      status: stringOrNull(review.status), submittedBy: stringOrNull(review.submittedBy),
+      ledgerIdeaId: stringOrNull(review.ledgerIdeaId), round: numberOrNull(review.round),
+    } : null,
+    unattributedClaimHold: source.unattributedClaimHold === true,
+  };
+}
+
 function clip(value: unknown, max: number): string {
   const text = requiredString(value);
   if (text.length <= max) return text;
@@ -79,6 +117,7 @@ function clip(value: unknown, max: number): string {
 function projectRow(value: unknown, titleCap: number): JsonObject | null {
   const row = object(value);
   if (!row || typeof row.id !== 'string' || typeof row.kind !== 'string') return null;
+  const queueControl = projectQueueControl(row.queueControl, titleCap);
   return {
     id: row.id,
     kind: requiredString(row.kind),
@@ -93,6 +132,7 @@ function projectRow(value: unknown, titleCap: number): JsonObject | null {
     updatedAt: requiredString(row.updatedAt),
     severity: stringOrNull(row.severity),
     priority: numberOrNull(row.priority),
+    ...(queueControl ? { queueControl } : {}),
   };
 }
 

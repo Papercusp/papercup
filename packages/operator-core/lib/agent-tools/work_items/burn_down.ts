@@ -30,6 +30,15 @@ import { shapeBurnDown } from './burn_down-shape';
 import { getModes } from '../../modes/store';
 import { readDrainFlow, type DrainFlowReport } from './drain-flow';
 import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
+import { readAgentReviewState } from '../../harness/improvements/agent-review-policy';
+import {
+  classifyAuditAge,
+  classifyDurableParkReleaseLiveness,
+  classifyUnparkCondition,
+  type AuditAge,
+  type DurableParkReleaseLiveness,
+  type UnparkConditionStatus,
+} from '../../work-items-durable-park-audit';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   FLEET_METRIC_ADMISSION_PARITY,
@@ -159,11 +168,28 @@ export interface BurnDownRow {
   updatedAt: string;
   severity: string | null;
   priority: number | null;
+  /** Independent queue-control axes; omitted only when all four are absent. */
+  queueControl?: BurnDownQueueControl;
+}
+
+export interface BurnDownQueueControl {
+  activeClaim: { owner: string; claimedAt: string | null } | null;
+  holdOpenLease: { holder: string; reason: string | null; heldAt: string | null; age: AuditAge } | null;
+  durablePark: {
+    parker: string | null;
+    reason: string | null;
+    parkedAt: string | null;
+    age: AuditAge;
+    unparkCondition: { status: UnparkConditionStatus; text: string | null };
+    releaseLiveness: DurableParkReleaseLiveness;
+  } | null;
+  agentReview: ReturnType<typeof readAgentReviewState>;
+  unattributedClaimHold: boolean;
 }
 
 export interface BurnDownParkedRow extends BurnDownRow {
   reason: string;
-  mechanism: 'claimHold' | 'blocked' | 'needs-human' | 'external-blocker' | 'state';
+  mechanism: 'claimHold' | 'agent-review' | 'blocked' | 'needs-human' | 'external-blocker' | 'state';
   aliasedState?: string;
 }
 
@@ -448,7 +474,46 @@ function hasActiveExternalBlocker(item: WorkItem): boolean {
   );
 }
 
-function toRow(item: WorkItem, assigneeLive?: boolean): BurnDownRow {
+function queueControlFor(item: WorkItem, nowMs: number): BurnDownQueueControl | undefined {
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown>
+    : {};
+  const { heldOpen, parked, attributed } = readWorkItemClaimHoldProvenance(payload);
+  const rawClaimHold = hasClaimHold(item);
+  const review = readAgentReviewState(payload);
+  const control: BurnDownQueueControl = {
+    activeClaim: item.assignee ? { owner: item.assignee, claimedAt: item.takenAt } : null,
+    holdOpenLease: heldOpen ? {
+      holder: heldOpen.by,
+      reason: heldOpen.reason,
+      heldAt: heldOpen.at,
+      age: classifyAuditAge(heldOpen.at, nowMs),
+    } : null,
+    durablePark: rawClaimHold && !heldOpen && !parked ? {
+      parker: null,
+      reason: null,
+      parkedAt: null,
+      age: classifyAuditAge(null, nowMs),
+      unparkCondition: classifyUnparkCondition(null),
+      releaseLiveness: classifyDurableParkReleaseLiveness(payload, null),
+    } : parked ? {
+      parker: parked.by,
+      reason: parked.reason,
+      parkedAt: parked.at,
+      age: classifyAuditAge(parked.at, nowMs),
+      unparkCondition: classifyUnparkCondition(parked.reason),
+      releaseLiveness: classifyDurableParkReleaseLiveness(payload, parked.reason),
+    } : null,
+    agentReview: review,
+    unattributedClaimHold: rawClaimHold && !attributed,
+  };
+  return control.activeClaim || control.holdOpenLease || control.durablePark || control.agentReview
+    ? control
+    : undefined;
+}
+
+function toRow(item: WorkItem, assigneeLive: boolean | undefined, nowMs: number): BurnDownRow {
+  const queueControl = queueControlFor(item, nowMs);
   return {
     id: item.id,
     kind: item.kind,
@@ -463,6 +528,7 @@ function toRow(item: WorkItem, assigneeLive?: boolean): BurnDownRow {
     updatedAt: item.updatedAt,
     severity: item.severity,
     priority: item.priority,
+    ...(queueControl ? { queueControl } : {}),
   };
 }
 
@@ -756,6 +822,7 @@ export function buildBurnDownResult(
   },
 ): BurnDownResult {
   const generatedAt = opts.generatedAt ?? new Date().toISOString();
+  const generatedAtMs = Number.isFinite(Date.parse(generatedAt)) ? Date.parse(generatedAt) : Date.now();
   const fleetMembers = opts.fleet?.members ?? null;
   const deltaBy = { fleet: 0, otherAgents: 0, system: 0, unattributed: 0 };
   const sinceMs = opts.since ? Date.parse(opts.since) : NaN;
@@ -803,7 +870,7 @@ export function buildBurnDownResult(
   let deltaClosedUndated = 0;
 
   for (const item of items) {
-    const row = toRow(item, item.assignee ? liveOwners.has(item.assignee) : undefined);
+    const row = toRow(item, item.assignee ? liveOwners.has(item.assignee) : undefined, generatedAtMs);
     const state = item.state;
     if (hasSince && Date.parse(item.createdAt) > sinceMs) {
       openedRows.push({ id: item.id, kind: item.kind, title: item.title, state, harness: item.harness, ts: item.createdAt });
@@ -859,6 +926,15 @@ export function buildBurnDownResult(
         reason: claimHoldReason(item),
         mechanism: 'claimHold',
         aliasedState: state,
+      });
+      continue;
+    }
+
+    if (row.queueControl?.agentReview && row.queueControl.agentReview.status !== 'approved') {
+      parked.push({
+        ...row,
+        reason: `awaiting agent review by ${row.queueControl.agentReview.submittedBy}`,
+        mechanism: 'agent-review',
       });
       continue;
     }
@@ -1020,7 +1096,7 @@ export default defineTool({
   name: 'work_items:burn_down',
   profile: 'engineer',
   description:
-    "One-call leader census for a harness work queue: terminal counts, in-flight rows with assignee liveness, parked rows (blocked/needs-human/claimHold), and unclaimed rows. Pass `ids` for an exact fixed-cohort census plus one audit row per requested ID. Pass `since` for itemized closed/opened deltas. Pass `fleet` plus `window:'fleet-lifetime'` for the canonical stored-spec fleet snapshot (current-spec or at-event-spec flow), including explicit population, unit, exactness, and attribution metadata.",
+    "One-call leader census for a harness work queue. Additive `queueControl` fields distinguish active claims, liveness-bound hold-open leases, durable parks, and agent-review gates; durable parks include parker/reason/time/age plus UNPARK-condition and release-liveness status. Legacy buckets/mechanisms remain compatible.",
   guidance: {
     when:
       'You are leading a drain/fleet/Mug pass and need to know what is done, actively held by a live or dead assignee, intentionally parked, and still unclaimed.',
@@ -1160,7 +1236,7 @@ export default defineTool({
     inFlight: z.array(rowSchema),
     parked: z.array(rowSchema.extend({
       reason: z.string(),
-      mechanism: z.enum(['claimHold', 'blocked', 'needs-human', 'external-blocker', 'state']),
+      mechanism: z.enum(['claimHold', 'agent-review', 'blocked', 'needs-human', 'external-blocker', 'state']),
       aliasedState: z.string().optional(),
     })),
     unclaimed: z.array(rowSchema),

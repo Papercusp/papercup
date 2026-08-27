@@ -88,7 +88,18 @@ import {
 import { resolveIssuesScopeWorkspace } from '../issues-engineer';
 import { admittedWhereSqlWi, isIssueLocallyClaimableWhereSql } from '../work-items-admission';
 import { trackDetached } from '../detached-imports';
-import { agentReviewNormalExclusionSql } from '../harness/improvements/agent-review-policy';
+import {
+  agentReviewNormalExclusionSql,
+  readAgentReviewState,
+} from '../harness/improvements/agent-review-policy';
+import {
+  classifyAuditAge,
+  classifyDurableParkReleaseLiveness,
+  classifyUnparkCondition,
+  type AuditAge,
+  type DurableParkReleaseLiveness,
+  type UnparkConditionStatus,
+} from '../work-items-durable-park-audit';
 
 /** A composed `sql` WHERE/ORDER-BY fragment (porsager pending-query — the type a bare
  *  `sql`...`` tagged template returns, so fragments compose by `${}` interpolation). */
@@ -877,6 +888,19 @@ export interface IssueClaimExclusionBreakdown {
     /** Born-pending duplicate screening has not yet been adjudicated. */
     admissionPending?: number;
   };
+  /** Independent queue-control axes over the spec-matched population. These counts
+   * deliberately overlap: one row may be actively claimed, lease-held, durably
+   * parked, and awaiting agent review at the same instant. The legacy
+   * excluded.claimHold/agentReview totals remain unchanged for compatibility. */
+  queueControl: {
+    activeClaims: number;
+    rawClaimHolds: number;
+    holdOpenLeases: number;
+    durableParks: number;
+    unattributedClaimHolds: number;
+    pendingAgentReview: number;
+    revisionRequestedAgentReview: number;
+  };
 }
 
 /** The AND of every per-row claim-floor predicate (the `ok_*` booleans decorated by
@@ -983,6 +1007,7 @@ export function issueClaimCandidateSubquery(
           wi.created_ts,
           wi.updated_ts,
           wi.taken_by,
+          wi.taken_at,
           wi.author_pubkey,
           wi.admission,
           wi.terminal_owner,
@@ -1168,7 +1193,26 @@ export async function aggregateIssueClaimExclusions(
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_no_blocker)::int      AS blocked_dep,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_cooldown)::int        AS cooldown,
       count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_origin)::int          AS remote_origin,
-      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_admission)::int       AS admission_pending
+      count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_admission)::int       AS admission_pending,
+      count(*) FILTER (
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NOT NULL
+      )::int AS hold_open_leases,
+      count(*) FILTER (
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NOT NULL
+      )::int AS durable_parks,
+      count(*) FILTER (
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NULL
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NULL
+      )::int AS unattributed_claim_holds,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'pending'
+      )::int AS pending_agent_review,
+      count(*) FILTER (
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' = 'revision-requested'
+      )::int AS revision_requested_agent_review
     FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} sub
   `) as Array<{
     matched: number;
@@ -1189,6 +1233,11 @@ export async function aggregateIssueClaimExclusions(
     cooldown: number;
     remote_origin: number;
     admission_pending: number;
+    hold_open_leases: number;
+    durable_parks: number;
+    unattributed_claim_holds: number;
+    pending_agent_review: number;
+    revision_requested_agent_review: number;
   }>;
   const r = rows[0];
   const claimable = r?.claimable ?? 0;
@@ -1219,6 +1268,15 @@ export async function aggregateIssueClaimExclusions(
       remoteOrigin: r?.remote_origin ?? 0,
       admissionPending: r?.admission_pending ?? 0,
     },
+    queueControl: {
+      activeClaims: r?.taken ?? 0,
+      rawClaimHolds: r?.claim_hold ?? 0,
+      holdOpenLeases: r?.hold_open_leases ?? 0,
+      durableParks: r?.durable_parks ?? 0,
+      unattributedClaimHolds: r?.unattributed_claim_holds ?? 0,
+      pendingAgentReview: r?.pending_agent_review ?? 0,
+      revisionRequestedAgentReview: r?.revision_requested_agent_review ?? 0,
+    },
   };
 }
 
@@ -1244,6 +1302,34 @@ export interface IssueClaimExclusionSample {
   /** WI-6409: sampled ids of true-remote-origin rows — see {@link IssueClaimExclusionBreakdown.excluded}'s remoteOrigin. */
   remoteOrigin: string[];
   admissionPending?: string[];
+  queueControl: IssueQueueControlSample;
+}
+
+export interface IssueQueueControlSample {
+  activeClaims: Array<{ id: string; owner: string; claimedAt: string | null }>;
+  holdOpenLeases: Array<{
+    id: string;
+    holder: string;
+    reason: string | null;
+    heldAt: string | null;
+    age: AuditAge;
+  }>;
+  durableParks: Array<{
+    id: string;
+    parker: string | null;
+    reason: string | null;
+    parkedAt: string | null;
+    age: AuditAge;
+    unparkCondition: { status: UnparkConditionStatus; text: string | null };
+    releaseLiveness: DurableParkReleaseLiveness;
+  }>;
+  agentReview: Array<{
+    id: string;
+    status: 'pending' | 'revision-requested' | 'approved';
+    submittedBy: string;
+    ledgerIdeaId: string;
+    round: number;
+  }>;
 }
 
 /**
@@ -1349,6 +1435,88 @@ export async function sampleIssueClaimExclusions(
     remote_origin: string[];
     admission_pending: string[];
   }>;
+  const controlRows = (await sql`
+    SELECT * FROM (
+      (SELECT 'active-claim'::text AS axis, feature_id, taken_by, taken_at, payload
+         FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
+        WHERE spec_match AND NOT ok_untaken
+        ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
+      UNION ALL
+      (SELECT 'hold-open-lease'::text AS axis, feature_id, taken_by, taken_at, payload
+         FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NOT NULL
+        ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
+      UNION ALL
+      (SELECT 'durable-park'::text AS axis, feature_id, taken_by, taken_at, payload
+         FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NOT NULL
+        ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
+      UNION ALL
+      (SELECT 'unattributed-park'::text AS axis, feature_id, taken_by, taken_at, payload
+         FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
+        WHERE spec_match AND NOT ok_claim_hold
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'held_open_by', '')), '') IS NULL
+          AND NULLIF(BTRIM(COALESCE(payload ->> 'claim_hold_by', '')), '') IS NULL
+        ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
+      UNION ALL
+      (SELECT 'agent-review'::text AS axis, feature_id, taken_by, taken_at, payload
+         FROM ${candidateFromSource(sql, sub, opts.precomputedTable)} c
+        WHERE spec_match AND payload -> 'agentReview' ->> 'status' IN ('pending', 'revision-requested')
+        ORDER BY updated_ts DESC NULLS LAST LIMIT ${sampleLimit})
+    ) queue_control
+  `) as Array<{
+    axis: 'active-claim' | 'hold-open-lease' | 'durable-park' | 'unattributed-park' | 'agent-review';
+    feature_id: string;
+    taken_by: string | null;
+    taken_at: number | null;
+    payload: unknown;
+  }>;
+  const nowMs = Date.now();
+  const queueControl: IssueQueueControlSample = {
+    activeClaims: [],
+    holdOpenLeases: [],
+    durableParks: [],
+    agentReview: [],
+  };
+  for (const row of controlRows) {
+    const payload = row.payload && typeof row.payload === 'object' && !Array.isArray(row.payload)
+      ? row.payload as Record<string, unknown>
+      : {};
+    if (row.axis === 'active-claim' && row.taken_by) {
+      queueControl.activeClaims.push({
+        id: row.feature_id,
+        owner: row.taken_by,
+        claimedAt: Number.isFinite(row.taken_at) ? new Date(Number(row.taken_at)).toISOString() : null,
+      });
+    } else if (row.axis === 'hold-open-lease' && typeof payload.held_open_by === 'string') {
+      const heldAt = typeof payload.held_open_at === 'string' ? payload.held_open_at : null;
+      queueControl.holdOpenLeases.push({
+        id: row.feature_id,
+        holder: payload.held_open_by,
+        reason: typeof payload.held_open_reason === 'string' ? payload.held_open_reason : null,
+        heldAt,
+        age: classifyAuditAge(heldAt, nowMs),
+      });
+    } else if (row.axis === 'durable-park' || row.axis === 'unattributed-park') {
+      const parker = typeof payload.claim_hold_by === 'string' ? payload.claim_hold_by : null;
+      const reason = typeof payload.claim_hold_reason === 'string' ? payload.claim_hold_reason : null;
+      const parkedAt = typeof payload.claim_hold_at === 'string' ? payload.claim_hold_at : null;
+      queueControl.durableParks.push({
+        id: row.feature_id,
+        parker,
+        reason,
+        parkedAt,
+        age: classifyAuditAge(parkedAt, nowMs),
+        unparkCondition: classifyUnparkCondition(reason),
+        releaseLiveness: classifyDurableParkReleaseLiveness(payload, reason),
+      });
+    } else if (row.axis === 'agent-review') {
+      const review = readAgentReviewState(payload);
+      if (review) queueControl.agentReview.push({ id: row.feature_id, ...review });
+    }
+  }
   const r = rows[0];
   return {
     taken: r?.taken ?? [],
@@ -1366,6 +1534,7 @@ export async function sampleIssueClaimExclusions(
     cooldown: r?.cooldown ?? [],
     remoteOrigin: r?.remote_origin ?? [],
     admissionPending: r?.admission_pending ?? [],
+    queueControl,
   };
 }
 
