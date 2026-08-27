@@ -710,19 +710,40 @@ export function makeReadHolderProductivity(
 
     // One hold per (goal, owner); an owner is answerable only for calls made
     // after IT picked the goal up, so `since` travels per-row, not as a floor.
-    const ownerIds = holds.map((h) => h.ownerId);
-    const workspaceIds = holds.map((h) => h.workspaceId);
-    const goalIds = holds.map((h) => h.goalId);
-    const sinceIso = holds.map((h) => new Date(h.setAtMs).toISOString());
+    //
+    // WI-42466: carried as ONE json parameter, NOT as four parallel
+    // `unnest($1::text[], …)` arrays. The array form threw on every real tick —
+    //   TypeError: The "string" argument must be of type string or an instance
+    //   of Buffer or ArrayBuffer. Received an instance of Array
+    //     at Buffer.byteLength → postgres/src/bytes.js str → Bind → prepared
+    //     → ParameterDescription
+    // — i.e. on the PREPARED-statement path the driver bound each array
+    // parameter through a scalar string serializer. The caller catches that and
+    // substitutes an empty map, which by design reads as "not measured" and
+    // SUPPRESSES every wedge alert, so the only detector for a held-but-idle
+    // holder was dark from 05:43Z with nothing failing except a log line.
+    //
+    // It survived review because the unit suite mocks `sql`: a mocked tag never
+    // runs the serializer, and the fixture's own client does not use the
+    // prepared path, so BOTH green paths missed it. The guard is therefore an
+    // integration test that calls this through `getOrgPg().sql` specifically —
+    // goal-holder-productivity.integration.test.ts.
+    //
+    // `jsonb_to_recordset` over a single `::text::jsonb` parameter is the
+    // repo's existing idiom for the same shape (work-items-admission-promoter,
+    // pilot-cohort): one scalar parameter, no array binding, explicit column
+    // types at the SQL boundary.
+    const holdRows = holds.map((h) => ({
+      owner_id: h.ownerId,
+      workspace_id: h.workspaceId,
+      goal_id: h.goalId,
+      since: new Date(h.setAtMs).toISOString(),
+    }));
 
     const rows = await sql<{ goal_key: string; n: string }[]>`
       WITH holds AS (
-        SELECT * FROM unnest(
-          ${ownerIds}::text[],
-          ${workspaceIds}::text[],
-          ${goalIds}::text[],
-          ${sinceIso}::timestamptz[]
-        ) AS t(owner_id, workspace_id, goal_id, since)
+        SELECT * FROM jsonb_to_recordset(${JSON.stringify(holdRows)}::text::jsonb)
+          AS t(owner_id text, workspace_id text, goal_id text, since timestamptz)
       )
       SELECT h.workspace_id || ':' || h.goal_id AS goal_key,
              count(ti.id) AS n
