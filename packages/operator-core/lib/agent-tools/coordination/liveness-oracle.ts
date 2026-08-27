@@ -268,9 +268,30 @@ export function deriveVerdict(
   // session-log P-001; PRESENCE_DEAD_MS note). A fresh turn is stronger
   // evidence than the launch-window fallback: an actively tool-calling
   // successor must remain `live` even before it arms an inbox wake.
+  // EI-21572355077403526: an affirmative ESRCH DISQUALIFIES the session-log
+  // rescue. `recorded` infers liveness from `adv_sessions.ended_at IS NULL`,
+  // but that column is written by a session-end hook that SIGKILL bypasses —
+  // so for a killed session the row is STALE, not live, and the inference is
+  // simply wrong. Left unguarded it outranked the pid probe permanently: a
+  // killed goal holder read `recorded`, `holderCountsAsAlive` counts that as
+  // alive (goals/holder.ts), and the goal became unrelaunchable forever with
+  // `already-held` while `launch_settings.holder.onLoss: 'deactivate'` could
+  // never fire either.
+  //
+  // This restores the precedence this module already documents for
+  // `pidConfirmedDead` ("authoritative FIRST ... a DIRECT OS-level observation
+  // that the process is gone, not a timing heuristic, so it beats even
+  // `hardStale`"). It is deliberately the NARROWEST possible disqualifier:
+  // `probePidFn` returns `false` ONLY for an affirmative ESRCH on a row whose
+  // host is this machine. Every ambiguous case — remote host, no pid recorded,
+  // EPERM — returns `null`, which leaves `recorded` untouched. The generosity
+  // the goal-holder predicate depends on is preserved for genuine ambiguity;
+  // only a KNOWN-dead process loses it.
+  const pidConfirmedDead = probePidFn({ host: subject.host, pid: subject.pid }) === false;
   const recordedLiveOnly =
     !w.wakeable &&
     !w.liveTurn &&
+    !pidConfirmedDead &&
     (subject.source === RECORDED_SESSION_SOURCE ||
       recordedLive.has(subject.ownerId) ||
       (psuHostLive && psuHost?.positive === true));
@@ -288,7 +309,10 @@ export function deriveVerdict(
       wakeable: w.wakeable,
       liveTurn: w.liveTurn,
       hardStale: isHardStale(hbMs, nowMs),
-      pidConfirmedDead: probePidFn({ host: subject.host, pid: subject.pid }) === false,
+      // Reuses the single probe taken above — same value, one syscall, and it
+      // cannot drift between the two decision points the way two separate
+      // probes could.
+      pidConfirmedDead,
       // EI-21356139961831796: this signal was already computed by the
       // wakeability leg and emitted on the verdict below, but was never fed
       // INTO the state machine — so a session we woke that never took a turn
