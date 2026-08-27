@@ -229,6 +229,26 @@ describe("prepareForward — classify + inject idempotencyKey", () => {
     expect(r.body).toBe(body);
     expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
   });
+  it.each([
+    ["underscore alias", "docs_search"],
+    ["fully mangled alias", "mcp__papercusp-su__docs_search"],
+  ])("normalizes the %s before checking the read-only set", (_label, name) => {
+    const body = Buffer.from(
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name, arguments: { query: "compaction critical-continuation queue" } },
+      }),
+    );
+    const r = prepareForward("POST", {}, body, {
+      keyingEnabled: true,
+      genKey: gen,
+    });
+    expect(r.klass).toBe("readonly");
+    expect(r.body).toBe(body);
+    expect(JSON.parse(r.body.toString()).params._meta).toBeUndefined();
+  });
   it('a batch mixing a read-only call with an unknown tool degrades to "keyed" (conservative)', () => {
     const body = Buffer.from(
       JSON.stringify([

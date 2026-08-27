@@ -635,7 +635,7 @@ function isReadOnlyToolCall(m: unknown): boolean {
   const params = (m as { params?: unknown }).params;
   if (!params || typeof params !== "object") return false;
   const name = (params as { name?: unknown }).name;
-  return typeof name === "string" && READ_ONLY_TOOLS.has(name);
+  return typeof name === "string" && READ_ONLY_TOOLS.has(normalizeMcpName(name));
 }
 /**
  * Classify a forward and, for a tools/call, inject a per-request `_meta.idempotencyKey`
