@@ -523,6 +523,32 @@ describe('fleet headcount target (WI-2479)', () => {
     });
   });
 
+  it('normalizes an already-stored historical full recipe on read and marks the deprecation', async () => {
+    const fleetSlug = 'headcount-stored-legacy-context';
+    await insertFleet(fleetSlug);
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET headcount_target = $3, headcount_config = $4::jsonb
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, fleetSlug, 1, JSON.stringify({ ...config, contextSize: 'full' })],
+    );
+
+    expect(await getFleetHeadcountTarget(WS, fleetSlug, rootSql)).toMatchObject({
+      config: { contextSize: 'trimmed' },
+      normalizedLegacyContextSize: true,
+    });
+    const [stored] = await rootSql.unsafe<{ headcount_config: typeof config | string }[]>(
+      `SELECT headcount_config
+         FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, fleetSlug],
+    );
+    const storedConfig = typeof stored?.headcount_config === 'string'
+      ? JSON.parse(stored.headcount_config)
+      : stored?.headcount_config;
+    expect(storedConfig).toMatchObject({ contextSize: 'full' });
+  });
+
   it('resets on success and doubles a failed retry delay with a cap', async () => {
     await insertFleet('headcount-backoff');
     await setFleetHeadcountTarget({ workspaceId: WS, fleetSlug: 'headcount-backoff', target: 2, config, sql: rootSql });
