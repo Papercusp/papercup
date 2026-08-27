@@ -156,6 +156,7 @@ import {
   evidenceFirst,
   normalizeCheckEntries,
   patchExistingCheckEntries,
+  renderCarryNote,
   sanitizeCarryRowId,
   splitCarryNoteChecks,
   splitCarryNoteWalls,
@@ -356,6 +357,44 @@ class ReplaceWouldDropError extends Error {
 /** Hard cap on a stored checkpoint (matches the `checkpoint` arg's max). */
 const CHECKPOINT_CAP = 32000;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
+
+/**
+ * Normalize the structured carry-note shape accepted by loop:checkpoint when it
+ * arrives in work_items:checkpoint's historical `checkpoint` field. This stays a
+ * narrow compatibility envelope: only the four canonical narrative fields and
+ * loop:checkpoint's documented aliases are accepted, and strict validation keeps
+ * an unrelated object from being silently rendered with data dropped.
+ */
+const structuredCheckpointSchema = z
+  .object({
+    did: z.string().max(CHECKPOINT_CAP).optional(),
+    left: z.string().max(CHECKPOINT_CAP).optional(),
+    insight: z.string().max(CHECKPOINT_CAP).optional(),
+    next: z.string().max(CHECKPOINT_CAP).optional(),
+    keyInsight: z.string().max(CHECKPOINT_CAP).optional(),
+    nextAction: z.string().max(CHECKPOINT_CAP).optional(),
+    goal: z.string().max(CHECKPOINT_CAP).optional(),
+  })
+  .strict();
+
+function normalizeStructuredCheckpoint(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+
+  const parsed = structuredCheckpointSchema.safeParse(value);
+  if (!parsed.success) return value;
+
+  return renderCarryNote({
+    did: parsed.data.did,
+    left: parsed.data.left,
+    insight: parsed.data.insight ?? parsed.data.keyInsight,
+    next: parsed.data.next ?? parsed.data.nextAction ?? parsed.data.goal,
+  });
+}
+
+/** Shared by the single shorthand and each items[] entry. */
+function checkpointBodySpec() {
+  return z.preprocess(normalizeStructuredCheckpoint, z.string().max(CHECKPOINT_CAP).nullish());
+}
 
 /**
  * P-013 compatibility: `rowsMode` controls only supplied check rows. The
@@ -618,13 +657,9 @@ const itemSpec = z.object({
   /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
    *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
    *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845). */
-  checkpoint: z
-    .string()
-    .max(32000)
-    .nullish()
-    .describe(
-      'compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
-    ),
+  checkpoint: checkpointBodySpec().describe(
+    'compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept); accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+  ),
   harness: z
     .string()
     .max(80)
@@ -706,13 +741,9 @@ export default defineTool({
       /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
        *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
        *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845). */
-      checkpoint: z
-        .string()
-        .max(32000)
-        .nullish()
-        .describe(
-          'single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
-        ),
+      checkpoint: checkpointBodySpec().describe(
+        'single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept); accepts the structured { did, left, insight, next } carry-note shape and loop aliases',
+      ),
       items: z
         .array(itemSpec)
         .min(1)

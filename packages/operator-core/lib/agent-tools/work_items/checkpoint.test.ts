@@ -196,6 +196,61 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
   });
 
+  it('accepts the structured carry-note checkpoint shape in both shorthand forms', () => {
+    const checkpointBody = {
+      did: 'implemented the compatibility path',
+      left: 'run the focused test',
+      insight: 'the work-item checkpoint shares the loop carry-note shape',
+      next: 'run Vitest',
+    };
+    const expected =
+      '## Did\nimplemented the compatibility path\n\n' +
+      '## Left\nrun the focused test\n\n' +
+      '## Key insight\nthe work-item checkpoint shares the loop carry-note shape\n\n' +
+      '## Next action\nrun Vitest';
+
+    expect(parse({ id: 'WI-7', checkpoint: checkpointBody })).toMatchObject({ checkpoint: expected });
+    expect(parse({ items: [{ id: 'WI-7', checkpoint: checkpointBody }] })).toMatchObject({
+      items: [{ checkpoint: expected }],
+    });
+  });
+
+  it('accepts loop checkpoint aliases while canonical fields win, and rejects unrelated object keys', () => {
+    const parsed = parse({
+      id: 'WI-7',
+      checkpoint: {
+        did: 'progress',
+        keyInsight: 'alias insight',
+        insight: 'canonical insight',
+        nextAction: 'alias next',
+        goal: 'older goal alias',
+        next: 'canonical next',
+      },
+    }) as { checkpoint: string };
+
+    expect(parsed.checkpoint).toContain('## Key insight\ncanonical insight');
+    expect(parsed.checkpoint).toContain('## Next action\ncanonical next');
+    expect(parsed.checkpoint).not.toContain('alias insight');
+    expect(parsed.checkpoint).not.toContain('alias next');
+    expect(() => parse({ id: 'WI-7', checkpoint: { did: 'progress', notAField: 'drop me' } })).toThrow();
+  });
+
+  it('renders a structured checkpoint before the handler persists it', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
+    setWorkItemCheckpoint.mockImplementation(async (_ref: unknown, text: string) => text);
+
+    const r = await one({
+      id: 'WI-7',
+      checkpoint: { did: 'stored structured progress', nextAction: 'verify the focused test' },
+    });
+
+    expect(r).toMatchObject({ ok: true, cleared: false, verified: true });
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' },
+      '## Did\nstored structured progress\n\n## Next action\nverify the focused test',
+    );
+  });
+
   it('EI-21631530729522909: lifts a flattened executable tool probe into the nested probe field', () => {
     const probe = {
       kind: 'tool' as const,
