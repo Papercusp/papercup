@@ -42,7 +42,7 @@ import {
   type ResourceAcquireResult,
 } from '../../agent-tools/locks/su-lock-store';
 import { reclaimDeadExclusiveHolders } from '../../agent-tools/locks/resource-acquire-wait';
-import { liveLockHoldings } from '../../agent-tools/locks/live-lock-paths';
+import { liveLockHoldingsStrict } from '../../agent-tools/locks/live-lock-paths';
 import { agentsForScopedFiles, type AttributionRosterEntry } from './git-sync-attribution';
 import { loadHarnessRegistry, type ProjectEntry } from '../../harness-registry';
 import { loopbackFetch } from '../../loopback-fetch';
@@ -1898,7 +1898,11 @@ async function handleGitSync(
     } else {
       console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
     }
-    if (lock.blockedOn) {
+    // A held_exclusive refusal means the peer's resource row is still live. The
+    // release/grant cascade owns the truthful wake for that row; emitting here
+    // wakes waiters into the same no-delta refusal while the peer still holds it.
+    // Other refusal classes retain the retry signal for their existing callers.
+    if (lock.blockedOn && reason !== 'held_exclusive') {
       emitGitSyncLockRetryEvent(lock.blockedOn, reason, lock.holders ?? [], {
         scope: { installSlug: slug, workspaceId },
       });
@@ -1952,7 +1956,51 @@ async function handleGitSync(
   // File locks are the automatic edit-plane authority. Keep git-sync's broad
   // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
   // maps these superproject-root-relative paths into each submodule before add.
-  const liveLockHoldingRows = await liveLockHoldings();
+  let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
+  try {
+    liveLockHoldingRows = await liveLockHoldingsStrict();
+  } catch (error) {
+    // This read is a safety gate: treating an unreadable lock plane as [] lets
+    // runGitSync stage a peer's transiently-truncated file. Refuse the tick,
+    // make the reason visible, and release the resource locks acquired above.
+    const detail = error instanceof Error ? error.message : String(error);
+    const skippedAt = Date.now();
+    console.error(
+      `[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`,
+    );
+    try {
+      await patchRoutineMetadata(slug, workspaceId, {
+        last_status: 'skipped',
+        local_sync_status: 'skipped',
+        last_skip_reason: 'live-lock-read-failed',
+        last_skipped_at: skippedAt,
+        last_skipped_paths: [],
+        last_lock_read_error: detail,
+        last_error: `live lock read failed (fail-closed): ${detail}`,
+        last_errors: [`live-lock-read: ${detail}`],
+        git_sync_activity: {
+          active: false,
+          phase: 'error',
+          started_at: activityStartedAt,
+          updated_at: skippedAt,
+          completed_at: skippedAt,
+          outcome_status: null,
+        },
+      });
+    } catch (metadataError) {
+      // The primary console error above remains the visible signal if the
+      // metadata store is unavailable; cleanup must still run below.
+      console.warn(
+        `[git-sync] ${slug}: could not record live lock read failure metadata: ${
+          metadataError instanceof Error ? metadataError.message : String(metadataError)
+        }`,
+      );
+    } finally {
+      await releaseAll(cd, lockOwner, acquired);
+      acquired.length = 0;
+    }
+    return { status: 'skipped', reason: 'live-lock-read-failed' };
+  }
   const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.

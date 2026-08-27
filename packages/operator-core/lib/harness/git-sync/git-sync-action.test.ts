@@ -64,8 +64,12 @@ vi.mock('../../agent-tools/locks/su-lock-store', () => ({
 const liveLockHoldingsMock = vi.fn(
   async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
 );
+const liveLockHoldingsStrictMock = vi.fn(
+  async (): Promise<Array<{ path: string; owner: string; intent: string }>> => [],
+);
 vi.mock('../../agent-tools/locks/live-lock-paths', () => ({
   liveLockHoldings: () => liveLockHoldingsMock(),
+  liveLockHoldingsStrict: () => liveLockHoldingsStrictMock(),
 }));
 
 // inWorkspaceTxn hands the callback a CALLABLE tagged-template fake tx — the lock
@@ -436,6 +440,8 @@ beforeEach(() => {
   tryReleaseResourceMock.mockReset();
   liveLockHoldingsMock.mockReset();
   liveLockHoldingsMock.mockResolvedValue([]);
+  liveLockHoldingsStrictMock.mockReset();
+  liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
@@ -645,14 +651,14 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     };
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
       (opts as { resource: string }).resource === 'libs-papercusp-submodule'
-        ? { ok: false, reason: 'held_exclusive', holders: [holder] }
+        ? { ok: false, reason: 'held by agent:peer', holders: [holder] }
         : { ok: true });
 
     await action(ctx);
 
     expect(emitGitSyncLockRetryEventMock).toHaveBeenCalledWith(
       'libs-papercusp-submodule',
-      'held_exclusive',
+      'held by agent:peer',
       [{
         ...holder,
         acquired_ts: '2026-08-21T10:00:00.000Z',
@@ -660,6 +666,92 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       }],
       { scope: { installSlug: 'papercup', workspaceId: 'ws-42' } },
     );
+  });
+
+  it('fails closed when the live-lock read is unavailable — records the error and releases acquired resources', async () => {
+    const lockReadError = new Error('side-DB unreachable');
+    tryAcquireResourceMock.mockResolvedValue({ ok: true });
+    liveLockHoldingsStrictMock.mockRejectedValue(lockReadError);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(liveLockHoldingsStrictMock).toHaveBeenCalledOnce();
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(appendPipelineEventMock).not.toHaveBeenCalled();
+      expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
+      expect(releasedResources()).toEqual([
+        'libs-papercusp-submodule',
+        'git-sync',
+        'git-sync:papercup',
+      ]);
+      expect(allRoutinePatches()).toContainEqual(expect.objectContaining({
+        last_status: 'skipped',
+        local_sync_status: 'skipped',
+        last_skip_reason: 'live-lock-read-failed',
+        last_skipped_at: expect.any(Number),
+        last_lock_read_error: 'side-DB unreachable',
+        last_error: 'live lock read failed (fail-closed): side-DB unreachable',
+        last_errors: ['live-lock-read: side-DB unreachable'],
+      }));
+      expect(gitSyncActivityPatches()).toContainEqual(expect.objectContaining({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      }));
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('live lock read failed (fail-closed)'));
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('does not emit a retry signal while a held_exclusive peer row is still live', async () => {
+    const holder = {
+      owner: 'su-peer',
+      owner_label: 'peer agent',
+      mode: 'exclusive' as const,
+      status: 'held' as const,
+      lock_id: 'lock-live-peer',
+      reason: 'manual git work',
+      acquired_ts: new Date('2026-08-21T10:00:00.000Z'),
+      expires_ts: new Date('2026-08-21T10:10:00.000Z'),
+      fence_seq: 42,
+    };
+    const sequence: string[] = [];
+    let peerRowLive = false;
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource === 'libs-papercusp-submodule') {
+        peerRowLive = true;
+        sequence.push('peer-held-refusal');
+        return { ok: false, reason: 'held_exclusive', holders: [holder] };
+      }
+      return { ok: true };
+    });
+    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
+      sequence.push(`released:${(opts as { resource: string }).resource}`);
+      return { ok: true };
+    });
+    emitGitSyncLockRetryEventMock.mockImplementation(() => {
+      sequence.push(peerRowLive ? 'retry-event-while-peer-live' : 'retry-event-after-peer-release');
+    });
+
+    await action(ctx);
+
+    // Releasing our partial acquisitions cannot release the peer's exclusive row.
+    // A retry event here would therefore wake callers into the same no-delta refusal;
+    // the resource release/grant path owns the truthful wake instead.
+    expect(sequence).toEqual([
+      'peer-held-refusal',
+      'released:git-sync',
+      'released:git-sync:papercup',
+    ]);
+    expect(peerRowLive).toBe(true);
+    expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
   });
 
   it('SKIPS after workspace-lock contention exhausts retries — it never runs unlocked', async () => {
@@ -780,12 +872,12 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       owner: `su-lock-holder-${index}`,
       intent: `editing ${path}`,
     }));
-    liveLockHoldingsMock.mockResolvedValue(protectedHoldings);
+    liveLockHoldingsStrictMock.mockResolvedValue(protectedHoldings);
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 
     await action(ctx);
 
-    expect(liveLockHoldingsMock).toHaveBeenCalledOnce();
+    expect(liveLockHoldingsStrictMock).toHaveBeenCalledOnce();
     expect(runGitSyncMock.mock.calls[0]?.[1]).toMatchObject({
       excludePaths: protectedPaths,
       liveLockHoldings: protectedHoldings,
