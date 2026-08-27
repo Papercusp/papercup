@@ -299,6 +299,60 @@ describe('session-port managed seed + native persistence helpers', () => {
 
 describe('hostThroughPty real round-trip', () => {
   it(
+    'selects Claude resume-compaction summary before delivering a scripted kickoff',
+    async () => {
+      const ownerId = `su-resume-compaction-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const { captured, io } = fakeIo();
+      const childCode = [
+        "process.stdin.setEncoding('utf8');",
+        "let selected=0,input='',kickoffReceived=false;",
+        "setTimeout(()=>{process.stdout.write('\\x1b[31mAutocompact is th');setTimeout(()=>process.stdout.write(\"rashing\\x1b[0m\\n1. Resume from summary (recommended)\\n2. Resume full session as-is\\n3. Don't ask again\\n\"),30);},20);",
+        "process.stdin.on('data',d=>{input+=d;if(!selected&&input.includes('KICKOFF')){process.stdout.write('EARLY_KICKOFF\\n');process.exit(3);return;}if(!selected&&input.includes('\\r')){selected++;input='';process.stdout.write('RESUME_SELECTED\\n\\n\\x1b[32m❯\\x1b[0m \\n');return;}if(selected&&!kickoffReceived&&input.includes('KICKOFF')){kickoffReceived=true;process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),100);}});",
+        "setTimeout(()=>process.exit(2),5000);",
+      ].join('');
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_PSU_PTY_RESUME_COMPACTION_STARTUP_MS: '1000',
+          PAPERCUSP_PSU_PTY_RESUME_COMPACTION_RECOVERY_MS: '1000',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
+          PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '2000',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '500',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+          TERM: 'xterm-256color',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        kickoff: 'KICKOFF',
+        onExit: () => undefined,
+      });
+      try {
+        const deadline = Date.now() + 4_000;
+        while (!captured().includes('KICKOFF_RECEIVED') && Date.now() < deadline) await sleep(10);
+        expect(captured()).not.toContain('EARLY_KICKOFF');
+        expect(captured()).toContain('RESUME_SELECTED');
+        expect(captured()).toContain('KICKOFF_RECEIVED');
+        expect(await done).toBe(0);
+      } finally {
+        // The child has a bounded self-exit; this cleanup only removes the
+        // owner-specific discovery artifacts if an assertion fails early.
+        await done;
+      }
+    },
+    10_000,
+  );
+
+  it(
     'acknowledges a managed session-port seed only after the target-native transcript persists its exact marker',
     async () => {
       const root = mkdtempSync(join(tmpdir(), 'psu-port-host-'));
