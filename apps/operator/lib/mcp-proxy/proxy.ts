@@ -1793,11 +1793,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     );
   // EI-21567903270684307 — loop:end is the cleanup action that stops a worker's wake source
   // after a blocked or drained turn. Expiring it at a finite queue dwell boundary leaves the
-  // loop running while its caller has already lost the outcome. The FIFO remains hard-bounded,
-  // and a client disconnect still cancels the waiter, so this terminal cleanup must wait for the
-  // single continuation slot rather than becoming an ambiguous 429. Other continuation writes
-  // retain the configured finite dwell when an operator explicitly enables it.
-  const nonExpiringCriticalContinuationTools = new Set(["loop:end"]);
+  // loop running while its caller has already lost the outcome. EI-21582773337412658 extends
+  // the same rule to session:request-compaction: compaction is the recovery boundary for the
+  // context that is about to disappear, so shedding it at a configured dwell cap strands the
+  // very session that needs the cut. The FIFO remains hard-bounded, and a client disconnect
+  // still cancels the waiter, so these terminal/recovery actions must wait for the single
+  // continuation slot rather than becoming an ambiguous 429. Other continuation writes retain
+  // the configured finite dwell when an operator explicitly enables it.
+  const nonExpiringCriticalContinuationTools = new Set([
+    "loop:end",
+    "session:request-compaction",
+  ]);
   const hasNonExpiringCriticalContinuation = (tools: string[]): boolean =>
     tools.some((tool) => nonExpiringCriticalContinuationTools.has(tool));
 

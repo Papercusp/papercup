@@ -4099,6 +4099,97 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toEqual(["held-continuation", "queued-loop-end"]);
   });
 
+  it("EI-21582773337412658: does not expire queued session:request-compaction at a finite continuation dwell boundary", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-continuation") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"compacted":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 25,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-continuation",
+    );
+    await firstStarted;
+
+    let compactionSettled = false;
+    const compaction = request(
+      port(proxy),
+      body(2, "session:request-compaction"),
+      "/api/mcp?client=queued-compaction",
+    ).then((result) => {
+      compactionSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(compactionSettled).toBe(false);
+    expect(hits).toEqual(["held-continuation"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 1,
+      max: 1,
+      maxWaitMs: 25,
+      requests: [
+        expect.objectContaining({ tools: ["session:request-compaction"] }),
+      ],
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await compaction).status).toBe(200);
+    expect(hits).toEqual(["held-continuation", "queued-compaction"]);
+  });
+
   it("EI-21565454839253843: does not expire a checkpoint behind a long completion by default", async () => {
     // A real work_items:complete held the single critical slot for 61.8s while the old
     // 30s dwell shed a queued checkpoint. The queue itself is hard-bounded, so a client
