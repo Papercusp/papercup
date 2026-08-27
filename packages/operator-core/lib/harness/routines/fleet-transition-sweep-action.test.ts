@@ -9,6 +9,25 @@
  * fired, which would make the sweep permanently blind to the next crossing.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const productionMocks = vi.hoisted(() => ({
+  listFleetAssignments: vi.fn(),
+  reconcileWakeability: vi.fn(),
+  fetchContextPressure: vi.fn(),
+}));
+
+vi.mock('../../fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../fleet/assignments')>()),
+  listFleetAssignments: productionMocks.listFleetAssignments,
+}));
+vi.mock('../../agent-tools/fleet/assignments', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/fleet/assignments')>()),
+  reconcileWakeability: productionMocks.reconcileWakeability,
+}));
+vi.mock('../../agent-tools/coordination/context-pressure', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../agent-tools/coordination/context-pressure')>()),
+  fetchContextPressure: productionMocks.fetchContextPressure,
+}));
 import {
   __resetFleetTransitionSnapshotForTests,
   runFleetTransitionSweep,
@@ -25,6 +44,39 @@ const member = (over: Partial<FleetMemberObservation> = {}): FleetMemberObservat
 
 const settle = () => new Promise((r) => setImmediate(r));
 
+const presenceRow = (detail: string) => ({
+  source: 'presence' as const,
+  workspaceId: 'papercusp-workspace',
+  agentId: 'su-a',
+  agentLabel: 'su-a',
+  agentName: null,
+  harnessSlug: 'papercusp',
+  planSlug: null,
+  itemId: null,
+  workItemId: null,
+  itemKind: null,
+  detail,
+  status: null,
+  claimAcquiredTs: null,
+  claimExpiresTs: null,
+  claimActive: null,
+  livenessMode: null,
+  lastActivityTs: null,
+  holderPresent: true,
+  holderAlive: true,
+  holderHeartbeatAt: '2026-08-27T09:00:00.000Z',
+  holderIntent: null,
+  holderPlanSlug: null,
+  orphaned: false,
+  stalled: null,
+  lastProgressAt: null,
+  declaredPlanMatches: null,
+  assigneeRank: null,
+  rankWriter: null,
+  fleetSlug: 'fleet-a',
+  fleetRole: 'member',
+});
+
 /** Drive a scripted sequence of sweeps, returning the keys emitted per round. */
 async function sweepRounds(rounds: FleetMemberObservation[][]): Promise<string[][]> {
   const perRound: string[][] = [];
@@ -39,6 +91,9 @@ async function sweepRounds(rounds: FleetMemberObservation[][]): Promise<string[]
 
 beforeEach(() => {
   __resetFleetTransitionSnapshotForTests();
+  productionMocks.listFleetAssignments.mockReset();
+  productionMocks.reconcileWakeability.mockReset();
+  productionMocks.fetchContextPressure.mockReset();
 });
 
 describe('runFleetTransitionSweep', () => {
@@ -101,6 +156,33 @@ describe('runFleetTransitionSweep', () => {
     await settle();
 
     expect(currentContextPressure).toHaveBeenCalledWith('su-a');
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('wires member-dead production edges to a last-moment member revalidation', async () => {
+    let gatherState: 'live' | 'ended' = 'live';
+    let currentState: 'live' | 'ended' = 'live';
+    productionMocks.listFleetAssignments.mockImplementation(async (options?: { fleet?: string }) => [
+      presenceRow(options?.fleet ? 'current' : 'gather'),
+    ]);
+    productionMocks.reconcileWakeability.mockImplementation(async (agents: Array<{ intent: string }>) =>
+      agents.map((agent) => ({
+        ...agent,
+        sessionState: agent.intent === 'current' ? currentState : gatherState,
+        wakeable: true,
+      })),
+    );
+    productionMocks.fetchContextPressure.mockResolvedValue(new Map());
+
+    await runFleetTransitionSweep({ gatherAdmissions: async () => [], emit: vi.fn() });
+    gatherState = 'ended';
+    currentState = 'live';
+    const emit = vi.fn().mockResolvedValue(undefined);
+
+    await runFleetTransitionSweep({ gatherAdmissions: async () => [], emit });
+    await settle();
+
+    expect(productionMocks.listFleetAssignments).toHaveBeenCalledWith({ fleet: 'fleet-a', agent: 'su-a' });
     expect(emit).not.toHaveBeenCalled();
   });
 

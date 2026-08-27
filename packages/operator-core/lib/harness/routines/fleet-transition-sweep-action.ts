@@ -194,16 +194,17 @@ export async function runFleetTransitionSweep(deps: FleetTransitionSweepDeps = {
     admissionObservations.map((observation) => [observation.fleetSlug, observation.blockedCount]),
   );
   let emitDeps = deps;
+  const memberDeadEdges = edges.filter((edge) => edge.kind === 'member-dead');
   const contextEdges = edges.filter((edge) => edge.kind === 'context-critical');
-  if (contextEdges.length > 0 && !deps.gather) {
+  if ((memberDeadEdges.length > 0 || contextEdges.length > 0) && !deps.gather) {
     // The production sweep gathers a cached observation first, then supplies a
     // single shared current-state read to all detached edge emits. Keeping the
     // read lazy makes the revalidation happen after the sweep has yielded, which
     // is exactly the recovery-before-delivery race this guard closes.
-    const agentIds = [...new Set(contextEdges.map((edge) => edge.agentId))];
-    let currentPressure: Promise<Map<string, ContextPressureBucket>> | null = null;
     emitDeps = { ...deps };
-    if (!deps.currentContextPressure) {
+    if (contextEdges.length > 0 && !deps.currentContextPressure) {
+      const agentIds = [...new Set(contextEdges.map((edge) => edge.agentId))];
+      let currentPressure: Promise<Map<string, ContextPressureBucket>> | null = null;
       emitDeps.currentContextPressure = async (agentId: string) => {
         currentPressure ??= fetchContextPressure(agentIds);
         return (await currentPressure).get(agentId) ?? null;

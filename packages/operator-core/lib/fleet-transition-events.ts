@@ -305,8 +305,9 @@ export interface FleetTransitionEventsDeps {
   currentContextPressure?: (agentId: string) => Promise<ContextPressureBucket | null>;
   /**
    * Re-read the member's current control state immediately before a queued
-   * context-critical edge emits. `null` means the member is no longer in the
-   * fleet; a rejected read is treated as unknown and preserves the old signal.
+   * member-dead or context-critical edge emits. `null` means the member is no
+   * longer in the fleet; a rejected read is treated as unknown and preserves
+   * the old signal.
    */
   currentMemberObservation?: (
     fleetSlug: string,
@@ -368,7 +369,10 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
       // A queued edge can outlive a graceful stand-down. Revalidate the member
       // control state before delivery so recorded/non-wakeable claimless residue
       // cannot wake a leader after it has become non-actionable.
-      if (edge.kind === 'context-critical' && deps.currentMemberObservation) {
+      if (
+        (edge.kind === 'member-dead' || edge.kind === 'context-critical') &&
+        deps.currentMemberObservation
+      ) {
         let currentMember:
           | Pick<FleetMemberObservation, 'sessionState' | 'wakeable' | 'claimCount'>
           | null
@@ -376,10 +380,20 @@ export function emitFleetTransitionEdge(edge: FleetTransitionEdge, deps: FleetTr
         try {
           currentMember = await deps.currentMemberObservation(edge.fleetSlug, edge.agentId);
         } catch (e: unknown) {
-          failSoft(`context-critical member revalidation for ${edge.fleetSlug}/${edge.agentId}`, e);
+          failSoft(`${edge.kind} member revalidation for ${edge.fleetSlug}/${edge.agentId}`, e);
         }
         if (currentMember === null) return;
-        if (currentMember && !isActionableFleetObservation(currentMember)) return;
+        if (
+          edge.kind === 'member-dead' &&
+          currentMember !== undefined &&
+          currentMember.sessionState !== null &&
+          currentMember.sessionState !== 'ended'
+        ) {
+          return;
+        }
+        if (edge.kind === 'context-critical' && currentMember !== undefined && !isActionableFleetObservation(currentMember)) {
+          return;
+        }
       }
       // The sweep's bucket is a watchdog-cached observation. Revalidate only
       // this derived edge, at the last responsible moment, so recovery between
