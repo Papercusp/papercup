@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   RESOURCE_GOVERNOR_INVENTORY,
+  type ResourceGovernorInventoryRow,
   inspectGovernorSource,
   scanActiveInventory,
   validateInventory,
@@ -50,7 +51,10 @@ describe('resource governor enforcement lint', () => {
   });
 
   it('allows physical upstream constraints only when the writer carries explicit evidence', () => {
-    const rows = [
+    // Annotated so `disposition` keeps its literal type: an un-annotated array literal
+    // widens it to `string`, which stopped satisfying ResourceGovernorInventoryRow once
+    // that field became a union.
+    const rows: readonly Partial<ResourceGovernorInventoryRow>[] = [
       { ...RESOURCE_GOVERNOR_INVENTORY[0], id: 'provider-limit', disposition: 'upstream', writerEvidence: '' },
     ];
     expect(validateInventory(rows)).toContain('inventory-writer-evidence:provider-limit');
