@@ -5,6 +5,7 @@
  */
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
@@ -13,6 +14,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildPrettierArgs,
   buildPrettierCheckArgs,
+  buildPrettierStdinArgs,
   buildPrettierWholeFileArgs,
   characterRangeForLines,
   normalizeScopedPaths,
@@ -23,6 +25,7 @@ import {
 } from '../../../scripts/check-format.mjs';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
+const require = createRequire(import.meta.url);
 
 describe('scoped repository format check', () => {
   it('exposes the changed-line whitespace check as the canonical root command', () => {
@@ -87,6 +90,44 @@ describe('scoped repository format check', () => {
 
     expect(rangeFormattingDiffers(source, formatted, { start: 0, end: 11 })).toBe(false);
     expect(rangeFormattingDiffers('changed ( );\ntrailing();\n', formatted, { start: 0, end: 11 })).toBe(true);
+  });
+
+  it('maps a comment-only range after a reprinted preceding AST node', () => {
+    const source = [
+      'function formatFixture() {',
+      '  const object = {foo:1, bar:2};',
+      '  // added comment that is already formatted',
+      '  return object;',
+      '}',
+      '',
+    ].join('\n');
+    const commentStart = source.indexOf('  // added comment');
+    const commentEnd = source.indexOf('\n', commentStart) + 1;
+    const prettierCli = require.resolve('prettier/bin/prettier.cjs', {
+      paths: [REPO_ROOT],
+    });
+    const result = spawnSync(
+      process.execPath,
+      buildPrettierStdinArgs(prettierCli, 'fixture.ts', {
+        start: commentStart,
+        end: commentEnd,
+      }),
+      {
+        cwd: REPO_ROOT,
+        encoding: 'utf8',
+        input: source,
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).not.toBe(source);
+    expect(result.stdout.indexOf('// added comment')).not.toBe(commentStart + 2);
+    expect(
+      rangeFormattingDiffers(source, result.stdout, {
+        start: commentStart,
+        end: commentEnd,
+      }),
+    ).toBe(false);
   });
 
   it('parses write mode separately from explicit paths', () => {
