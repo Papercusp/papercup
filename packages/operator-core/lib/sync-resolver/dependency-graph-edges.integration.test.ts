@@ -269,3 +269,54 @@ describe('resolveDependencyGraphEdges — the limit CLAMPS rather than rejecting
     ).toHaveLength(1);
   });
 });
+
+describe('resolveDependencyGraphEdges — endpoint lookup stays indexed at production scale', () => {
+  it('resolves 1,000 edges inside a 100k-item harness under a 2s database deadline', async () => {
+    // WI-42428: the old blocker LEFT JOIN had no indexed feature_id equality. Postgres
+    // therefore materialized the whole harness and evaluated the family-aware OR as a
+    // join filter for EVERY edge: ~100m row comparisons for this fixture, matching the
+    // 114k-item / 1,082-edge live shape that hit the sync resolver's 10s timeout.
+    //
+    // One set-based insert keeps the fixture cheap. The DB-side deadline is the guard:
+    // it measures the SQL statement itself (not a scheduler-dependent JS stopwatch) and
+    // leaves ample headroom for the indexed plan, which performs two identity lookups per
+    // edge while preserving the exact family-aware ref check.
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, status, item_kind, workspace_id, taken_by,
+         created_ts, updated_ts, payload)
+      SELECT ${H},
+             'PERF-' || lpad(g::text, 6, '0'),
+             'performance fixture ' || g::text,
+             'open',
+             'bug',
+             ${WS},
+             NULL,
+             0,
+             0,
+             '{}'::jsonb
+        FROM generate_series(1, 100000) AS g`;
+
+    await db.sql`
+      INSERT INTO harness_shared.work_item_deps
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
+      SELECT ${COORD},
+             'issue',
+             'PERF-' || lpad(g::text, 6, '0'),
+             'issue',
+             'PERF-' || lpad((g + 50000)::text, 6, '0'),
+             'blocks'
+        FROM generate_series(1, 1000) AS g`;
+
+    const got = await db.sql.begin(async (tx) => {
+      await tx.unsafe(`SET LOCAL statement_timeout = '2000ms'`);
+      return resolveDependencyGraphEdges(tx as unknown as typeof db.sql, {
+        workspaceId: WS,
+        harnessSlug: H,
+      });
+    });
+
+    expect(got).toHaveLength(1000);
+    expect(got[0]).toMatchObject({ blockedId: 'PERF-000001', blockerId: 'PERF-050001' });
+  }, 60_000);
+});

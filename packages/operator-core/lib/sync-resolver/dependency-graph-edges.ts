@@ -116,6 +116,7 @@ export async function resolveDependencyGraphEdges(
   opts: { workspaceId: string; harnessSlug: string; limit?: number },
 ): Promise<DependencyGraphEdge[]> {
   const limit = Math.min(Math.max(1, Math.trunc(opts.limit ?? DEP_EDGES_MAX_LIMIT)), DEP_EDGES_MAX_LIMIT);
+  const qualifiedPrefix = `${opts.harnessSlug}#`;
   const rows = await sql<
     Array<{
       blocked_id: string;
@@ -149,6 +150,20 @@ export async function resolveDependencyGraphEdges(
       JOIN harness_shared.work_items bd
         ON bd.workspace_id = ${opts.workspaceId}
        AND bd.harness_slug = ${opts.harnessSlug}
+       -- Give Postgres an equality on the indexed endpoint identity BEFORE the
+       -- family-aware exact-ref check below. Without this anchor the blocker-side
+       -- LEFT JOIN becomes a join filter: for every edge Postgres materializes and
+       -- scans the harness's entire work-item corpus (114k rows in papercusp), which
+       -- exceeded the named-query resolver's 10s deadline and left the pane loading.
+       --
+       -- This is only a candidate-id extraction, not a second ref convention. The
+       -- predicate below remains authoritative and rejects a bare feature ref or a
+       -- qualified issue ref exactly as before.
+       AND bd.feature_id = CASE
+         WHEN starts_with(d.blocked_ref, ${qualifiedPrefix})
+           THEN substr(d.blocked_ref, char_length(${qualifiedPrefix}) + 1)
+         ELSE d.blocked_ref
+       END
        AND (
          (bd.item_kind = ANY (${ISSUE_KINDS as unknown as string[]}) AND d.blocked_ref = bd.feature_id)
          OR
@@ -160,6 +175,11 @@ export async function resolveDependencyGraphEdges(
       LEFT JOIN harness_shared.work_items bk
         ON bk.workspace_id = ${opts.workspaceId}
        AND bk.harness_slug = ${opts.harnessSlug}
+       AND bk.feature_id = CASE
+         WHEN starts_with(d.blocker_ref, ${qualifiedPrefix})
+           THEN substr(d.blocker_ref, char_length(${qualifiedPrefix}) + 1)
+         ELSE d.blocker_ref
+       END
        AND (
          (bk.item_kind = ANY (${ISSUE_KINDS as unknown as string[]}) AND d.blocker_ref = bk.feature_id)
          OR
