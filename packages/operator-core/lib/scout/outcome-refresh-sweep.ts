@@ -210,6 +210,8 @@ export interface OutcomeRefreshSweepDeps {
   recentWatchdogFires?: typeof recentWatchdogFires;
   recordFire?: typeof recordFire;
   openEscalation?: typeof openEscalation;
+  /** Monotonic-enough wall clock for cooperative batch deadline enforcement. */
+  clock?: () => number;
   now?: number;
 }
 
@@ -281,7 +283,8 @@ export async function scoutOutcomeRefreshSweep(
       if (seenWorkspaces.has(workspaceId)) continue;
       seenWorkspaces.add(workspaceId);
       try {
-        const startedAt = Date.now();
+        const clock = deps.clock ?? Date.now;
+        const startedAt = clock();
         const refresh = deps.refreshScoutOutcomes ?? refreshScoutOutcomes;
         const previous = await (
           deps.readPortfolioFrontierCheckpoint ?? readPortfolioFrontierCheckpoint
@@ -292,12 +295,14 @@ export async function scoutOutcomeRefreshSweep(
         const pending = await (
           deps.readPendingOutcomeCandidates ?? readPendingOutcomeCandidates
         )({ workspaceId, limit: SCOUT_PORTFOLIO_FRONTIER_CANDIDATE_CAP });
+        const itemBudget = scoutPortfolioFrontierItemBudget();
+        const timeBudgetMs = scoutPortfolioFrontierTimeBudgetMs();
         let planned = planPortfolioFrontierStep({
           gradingBacklog,
           pending,
           previous,
-          itemBudget: scoutPortfolioFrontierItemBudget(),
-          timeBudgetMs: scoutPortfolioFrontierTimeBudgetMs(),
+          itemBudget,
+          timeBudgetMs,
           nowMs: now,
         });
 
@@ -315,8 +320,8 @@ export async function scoutOutcomeRefreshSweep(
               gradingBacklog: latestGradingBacklog,
               pending,
               previous,
-              itemBudget: scoutPortfolioFrontierItemBudget(),
-              timeBudgetMs: scoutPortfolioFrontierTimeBudgetMs(),
+              itemBudget,
+              timeBudgetMs,
               nowMs: now,
             });
           }
@@ -325,36 +330,55 @@ export async function scoutOutcomeRefreshSweep(
         const evidence: RefreshedIdeaOutcomeEvidence[] = [];
         if (planned.selected.length > 0) {
           // EI-20200291159802681: Scout and su-ideate are disjoint learning
-          // partitions. Refresh only the ids the bounded frontier selected;
-          // the routed-ledger still computes/persists Scout lens weights from
-          // the whole authoritative report, while the su pass remains isolated.
-          const scoutIds = planned.selected
-            .filter((candidate) => candidate.origin === 'scout')
-            .map((candidate) => candidate.ideaId);
-          const suIds = planned.selected
-            .filter((candidate) => candidate.origin === 'su-ideate')
-            .map((candidate) => candidate.ideaId);
-          const reports = await Promise.all([
-            ...(scoutIds.length > 0
-              ? [refresh({ workspaceId, harnessSlug: installSlug, ideaIds: scoutIds })]
-              : []),
-            ...(suIds.length > 0
-              ? [refresh({ workspaceId, harnessSlug: installSlug, origin: 'su-ideate', ideaIds: suIds })]
-              : []),
-          ]);
-          for (const report of reports) evidence.push(...(report.refreshed ?? []));
+          // partitions. Refresh one selected candidate at a time so the wall-clock
+          // budget is an enforcement boundary, not checkpoint-only telemetry: once
+          // an atomic authoritative refresh returns at/after the deadline, do not
+          // start another. A single in-flight refresh may cross the deadline, but
+          // no later candidate is launched. Rebase the cursor below to the last
+          // candidate actually processed so a cold resume cannot skip deferred work.
+          const selected = planned.selected;
+          const processed = [] as typeof selected;
+          for (const candidate of selected) {
+            if (clock() - startedAt >= timeBudgetMs) break;
+            const report = await refresh({
+              workspaceId,
+              harnessSlug: installSlug,
+              ...(candidate.origin === 'su-ideate' ? { origin: 'su-ideate' as const } : {}),
+              ideaIds: [candidate.ideaId],
+            });
+            processed.push(candidate);
+            evidence.push(...(report.refreshed ?? []));
+          }
+          if (processed.length !== selected.length) {
+            const lastProcessed = processed.at(-1);
+            planned = {
+              selected: processed,
+              checkpoint: {
+                ...planned.checkpoint,
+                cursorIdeaId: lastProcessed?.ideaId ?? previous?.cursorIdeaId ?? null,
+                cursorGrade: lastProcessed?.humanGrade ?? previous?.cursorGrade ?? null,
+                cursorRoutedAtMs: lastProcessed?.routedAtMs ?? previous?.cursorRoutedAtMs ?? null,
+                currentIdeaId: processed[0]?.ideaId ?? null,
+                consumedItems: processed.length,
+                evidenceSource:
+                  processed.length === 0
+                    ? (previous?.evidenceSource ?? null)
+                    : planned.checkpoint.evidenceSource,
+              },
+            };
+          }
         }
 
         const lastEvidence = evidence.at(-1);
         const frontier = finishPortfolioFrontierStep(planned.checkpoint, {
-          elapsedMs: Math.max(0, Date.now() - startedAt),
+          elapsedMs: Math.max(0, clock() - startedAt),
           evidenceSource: lastEvidence
             ? {
                 kind: lastEvidence.sourceKind,
                 ref: lastEvidence.sourceRef ?? lastEvidence.routedRef,
               }
             : planned.checkpoint.evidenceSource,
-          nowMs: Date.now(),
+          nowMs: clock(),
         });
         await (
           deps.writePortfolioFrontierCheckpoint ?? writePortfolioFrontierCheckpoint

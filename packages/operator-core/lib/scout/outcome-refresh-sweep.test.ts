@@ -156,6 +156,44 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     });
   });
 
+  it('stops before starting another refresh once the wall-clock budget is exhausted', async () => {
+    vi.stubEnv('PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_ITEMS', '3');
+    vi.stubEnv('PAPERCUSP_SCOUT_PORTFOLIO_FRONTIER_MS', '10');
+    let clockMs = NOW;
+    const refreshScoutOutcomes = vi.fn(async () => {
+      clockMs += 10;
+      return { total: 0, byLens: {}, ranked: [] } as never;
+    });
+    const d = deps({
+      clock: () => clockMs,
+      refreshScoutOutcomes,
+      readPendingOutcomeCandidates: vi.fn(async () => [
+        { ideaId: 'a', origin: 'scout', routedRef: 'plan:a', routedAtMs: NOW, humanGrade: 5 },
+        { ideaId: 'b', origin: 'scout', routedRef: 'plan:b', routedAtMs: NOW + 1, humanGrade: 4 },
+        { ideaId: 'c', origin: 'scout', routedRef: 'plan:c', routedAtMs: NOW + 2, humanGrade: 3 },
+      ]),
+    });
+
+    const results = await scoutOutcomeRefreshSweep(d);
+
+    expect(refreshScoutOutcomes).toHaveBeenCalledTimes(1);
+    expect(refreshScoutOutcomes).toHaveBeenCalledWith({
+      workspaceId: 'ws1',
+      harnessSlug: 'papercusp',
+      ideaIds: ['a'],
+    });
+    expect(results[0]?.frontier).toMatchObject({
+      phase: 'outcome-verification',
+      cursorIdeaId: 'a',
+      currentIdeaId: 'a',
+      consumedItems: 1,
+      elapsedMs: 10,
+      itemBudget: 3,
+      timeBudgetMs: 10,
+      pendingOutcomes: 3,
+    });
+  });
+
   it('preempts outcome verification while any grading row is actionable and preserves the cursor', async () => {
     const d = deps({
       readPortfolioGradingBacklog: vi.fn(async () => 2),
