@@ -252,6 +252,12 @@ beforeAll(async () => {
   await db.sql.unsafe(readMigration('333-scout-routed-ideas-source-target-hive.sql')).simple();
   await db.sql.unsafe(readMigration('471-scout-routed-ideas-origin.sql')).simple();
   await db.sql.unsafe(readMigration('558-scout-routed-ideas-created-by.sql')).simple();
+  // Migration 864's guard reads the authoritative registry to distinguish the owner install
+  // from a remote-hive replica.  This focused fixture does not apply the full baseline, so
+  // install the production registry DDL before running that migration; otherwise its empty
+  // bootstrap census fails with `relation harness_shared.harness_registry does not exist` and
+  // every agreement assertion is skipped before the claim paths are exercised.
+  await db.sql.unsafe(readMigration('archive/025-harness-registry-and-feature-notes.sql')).simple();
   // abolish-human-review D-003: floor #15 reserves pending review work to the reviewer lane
   // and revision-requested work to the submitter. Approval re-admits the still-open row.
   // Apply the real migration so the queryable SSOT and the existing TS claim fragment must agree.
