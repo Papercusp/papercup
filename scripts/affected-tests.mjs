@@ -139,6 +139,7 @@ import {
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  namespacePassingTaskVerdictDecision,
   passingTaskVerdictCacheEntry,
   passingTaskVerdictCrossRunIdentityEnvironment,
   passingTaskVerdictDependencyProvenance,
@@ -4083,12 +4084,10 @@ function runCapturedTask(
             ),
             identity: crossRunCacheIdentity,
           });
-          if (crossRunDecision.hit) {
-            cacheDecision = {
-              ...crossRunDecision,
-              reason: `cross-run:${crossRunDecision.reason ?? "hit"}`,
-            };
-          }
+          cacheDecision = namespacePassingTaskVerdictDecision(
+            crossRunDecision,
+            "cross-run",
+          );
         }
       }
     } else {

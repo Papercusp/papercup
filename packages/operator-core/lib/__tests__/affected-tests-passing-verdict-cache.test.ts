@@ -11,6 +11,7 @@ import {
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergePassingTaskVerdictUpdates,
+  namespacePassingTaskVerdictDecision,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
   passingTaskVerdictCacheEntry,
@@ -189,6 +190,17 @@ describe('passing affected-task verdict identity', () => {
       'AFFECTED_TASK_CACHE_SUMMARY hits=1 misses=3 proofIdentity=initial-run group=53ef7ff1e88c ' +
         'reasons={"dependency-closure-changed":1,"environment-changed":2,"identity-match":1}',
     );
+  });
+
+  it('namespaces cache decisions on both hits and misses', () => {
+    expect(namespacePassingTaskVerdictDecision({ hit: true, reason: 'identity-match' }, 'cross-run')).toEqual({
+      hit: true,
+      reason: 'cross-run:identity-match',
+    });
+    expect(namespacePassingTaskVerdictDecision({ hit: false, reason: 'no-prior-verdict' }, 'cross-run')).toEqual({
+      hit: false,
+      reason: 'cross-run:no-prior-verdict',
+    });
   });
 });
 
@@ -432,5 +444,10 @@ describe('cross-run passing-task verdict reuse', () => {
     // The store must reach the cross-run group, or run N+1 has nothing to read.
     expect(AFFECTED_TESTS_SRC).toContain('PASSING_TASK_VERDICT_CROSS_RUN_GROUP');
     expect(AFFECTED_TESTS_SRC).toContain('__crossRunCacheIdentity');
+  });
+
+  it('keeps cross-run miss instrumentation instead of reporting only fallback hits', () => {
+    expect(AFFECTED_TESTS_SRC).toContain('cacheDecision = namespacePassingTaskVerdictDecision(');
+    expect(AFFECTED_TESTS_SRC).not.toContain('if (crossRunDecision.hit)');
   });
 });
