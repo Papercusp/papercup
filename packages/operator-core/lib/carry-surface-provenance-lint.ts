@@ -306,13 +306,15 @@ const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 /**
  * A loop goal can refer to an already-recorded owner order as an object to execute,
  * rather than attributing the goal's own prose to the owner. Keep this exemption
- * deliberately structural: it requires an execution verb and a numeric order id, so
- * an unanchored assertion such as "owner directive 1: hold the deploy" still trips the
- * noun-phrase guard above. The durable order id is the provenance-bearing reference;
- * the goal is only saying which recorded order to run (EI-21580390681737108).
+ * deliberately structural: it requires an execution/honoring verb and a numeric
+ * order id, so an unanchored assertion such as "owner directive 1: hold the deploy"
+ * still trips the noun-phrase guard above. Allow the state adjective used in carry
+ * prose ("honoring open owner directive #10") while keeping the durable order id as
+ * the provenance-bearing reference; the goal is only saying which recorded order to
+ * run (EI-21580390681737108, EI-21585358821019986).
  */
 const RECORDED_OWNER_DIRECTIVE_EXECUTION_RE =
-  /\b(?:execute|follow|carry\s+out|apply)\s+(?:the\s+)?owner\s+(?:directive|mandate)\s+(?:(?:order)\s+)?#?\d+\b/i;
+  /\b(?:execute|follow|carry\s+out|apply|honou?r(?:ing|ed)?)\s+(?:(?:the|an?)\s+)?(?:(?:open|current|existing|recorded)\s+)?owner\s+(?:directive|mandate)\s+(?:(?:order)\s+)?#?\d+\b/i;
 
 function isRecordedOwnerDirectiveExecution(line: string): boolean {
   return RECORDED_OWNER_DIRECTIVE_EXECUTION_RE.test(line);

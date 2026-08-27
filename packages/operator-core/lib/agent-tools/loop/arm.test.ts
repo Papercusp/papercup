@@ -375,6 +375,14 @@ describe('loop:arm — EI-20034001963934568: reject unverified owner tags in rep
     expect(b).not.toHaveProperty('error', 'unverified_goal_provenance');
     expect(materializeM).toHaveBeenCalled();
   });
+
+  it('allows carry prose that honors an open numbered owner directive', async () => {
+    const b = body(await call({ goal: 'honoring open owner directive #10' }));
+
+    expect(b.ok).toBe(true);
+    expect(b).not.toHaveProperty('error', 'unverified_goal_provenance');
+    expect(materializeM).toHaveBeenCalled();
+  });
 });
 
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
