@@ -256,6 +256,7 @@ describe('P-007: the four verdict cells', () => {
     expect(ownership).toBeDefined();
     expect(ownership!.assessment).not.toBeNull();
     expect(ownership!.assessment!.evidence).toContain('gate.ownership.holderSessionState');
+    expect(ownership!.assessment!.evidence).toContain('gate.ownership.takenBy');
     // ...and the cell pointing AT it substantiates its own, unrelated claim. THE INTENT
     // is "not the ownership cell's evidence" — the ancestry field it names is incidental
     // and was legitimately repointed to the polarity-correct projection

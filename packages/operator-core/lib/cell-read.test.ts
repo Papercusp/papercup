@@ -29,7 +29,7 @@ vi.mock('./events/await/predicate-watch', async (importOriginal) => {
 });
 
 import { CELL_READ_TIMEOUT_MS, formatCellPointers, readCell, unknownForDispatchError } from './cell-read';
-import { BUILTIN_CELLS, MEMORY_CGROUP_ATTRIBUTION_CELL } from './cell-registrations';
+import { BUILTIN_CELLS, GATE_OWNERSHIP_CELL, MEMORY_CGROUP_ATTRIBUTION_CELL } from './cell-registrations';
 import { ReadOnlyDispatchError } from './events/await/predicate-watch';
 import { registerCell, __resetCellRegistryForTests, type CellSpec } from './cell-registry';
 
@@ -92,6 +92,31 @@ describe('readCell — the happy path', () => {
       });
     }
     expect(dispatchReadOnlyTool).toHaveBeenCalledWith('dev:pipeline_position', {}, expect.objectContaining({ role: 'su' }));
+  });
+
+  it('projects the gate owner identity as declared assessment evidence', async () => {
+    registerCell(GATE_OWNERSHIP_CELL);
+    dispatchReadOnlyTool.mockResolvedValue({
+      gate: {
+        ownership: {
+          claimState: 'held',
+          takenBy: 'su-gate-holder',
+          holderSessionState: 'live',
+          duplicates: [],
+          expiresAt: '2026-08-27T05:00:00.000Z',
+        },
+      },
+      assessments: { gateOwnership: 'held-live' },
+    });
+
+    const r = await readCell('gate.greenCheckpoint.ownership', READER, ENV);
+
+    expect(r.status).toBe('value');
+    if (r.status !== 'value') return;
+    expect(r.value).toBe('held');
+    expect(r.assessment?.status).toBe('resolved');
+    if (r.assessment?.status !== 'resolved') return;
+    expect(r.assessment.evidence).toContainEqual({ path: 'gate.ownership.takenBy', value: 'su-gate-holder' });
   });
 
   it('projects a declared stage order without a second resolver call', async () => {

@@ -698,7 +698,12 @@ export const GATE_OWNERSHIP_CELL: CellSpec = {
           'Reclaim it. This is the exact case a claim row alone reports as "someone is on it" indefinitely, suppressing the next agent who could have picked it up.',
       },
     },
-    evidence: ['gate.ownership.holderSessionState', 'gate.ownership.duplicates', 'gate.ownership.expiresAt'],
+    evidence: [
+      'gate.ownership.holderSessionState',
+      'gate.ownership.takenBy',
+      'gate.ownership.duplicates',
+      'gate.ownership.expiresAt',
+    ],
   },
 
   /**
