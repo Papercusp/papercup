@@ -11,7 +11,7 @@
  * be worse than no gate: the reconciler is not running to close them, so every
  * spawn would leak a row that stays `running` forever.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // vi.hoisted — the mock factories below are hoisted above ordinary `const`s.
 const m = vi.hoisted(() => ({
@@ -27,7 +27,11 @@ const m = vi.hoisted(() => ({
 const { taskManagerEnabledSync, scopeSupportKnown, registerTask, markSpawned, closeTask } = m;
 
 vi.mock('./enabled', () => ({ taskManagerEnabledSync: () => m.taskManagerEnabledSync() }));
-vi.mock('./managed-spawn', () => ({ scopeSupportKnown: () => m.scopeSupportKnown() }));
+vi.mock('./managed-spawn', () => ({
+  scopeSupportKnown: () => m.scopeSupportKnown(),
+  SCOPE_HANDOFF_GRACE_MS: 250,
+  SCOPE_HANDOFF_RECHECK_MS: 25,
+}));
 vi.mock('./store', () => ({
   registerTask: (...a: unknown[]) => m.registerTask(...a),
   markSpawned: (...a: unknown[]) => m.markSpawned(...a),
@@ -43,6 +47,7 @@ vi.mock('./cgroup-read', () => ({
 }));
 
 import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment, syncEnrolmentScopePath } from './enroll-sync';
+import { SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS } from './managed-spawn';
 import { SYSTEMD_ENV_CREDENTIAL_NAME, SYSTEMD_ENV_RUNNER_PATH } from '../systemd-scope';
 
 const spec = {
@@ -60,6 +65,10 @@ beforeEach(() => {
   registerTask.mockResolvedValue({});
   markSpawned.mockResolvedValue({});
   closeTask.mockResolvedValue({});
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe('with the task manager OFF', () => {
@@ -304,6 +313,48 @@ describe('with the task manager ON', () => {
     releaseRegistration();
     await vi.waitFor(() => expect(closeTask).toHaveBeenCalledWith(e.taskId, { state: 'exited', exitCode: 0 }));
     expect(registerTask.mock.invocationCallOrder[0]).toBeLessThan(closeTask.mock.invocationCallOrder[0]!);
+  });
+
+  it('waits for a delayed confined scope handoff before leaving the row live', async () => {
+    vi.useFakeTimers();
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+
+    // The systemd service can report its client gone before the payload has
+    // joined the named cgroup. The first read is therefore empty even though
+    // the task is about to become live.
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: 0 },
+      { scopeCgroupPath: '/user.slice/papercusp.slice/pc-test.service' },
+    );
+    expect(closeTask).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_RECHECK_MS - 1);
+    expect(closeTask).not.toHaveBeenCalled();
+
+    m.readCgroupProcs.mockReturnValue([4242]);
+    await vi.advanceTimersByTimeAsync(1);
+    await Promise.resolve();
+
+    expect(closeTask).not.toHaveBeenCalled();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('after the delayed handoff window'));
+    info.mockRestore();
+  });
+
+  it('closes an empty scope after the bounded handoff window', async () => {
+    vi.useFakeTimers();
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: 0 },
+      { scopeCgroupPath: '/user.slice/papercusp.slice/pc-test.service' },
+    );
+    expect(closeTask).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(SCOPE_HANDOFF_GRACE_MS + SCOPE_HANDOFF_RECHECK_MS);
+    expect(closeTask).toHaveBeenCalledWith(e.taskId, { state: 'exited', exitCode: 0 });
   });
 
   it('logs a bounded diagnostic when fire-and-forget enrolment fails, while remaining fail-open', async () => {

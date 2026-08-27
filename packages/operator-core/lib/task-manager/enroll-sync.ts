@@ -37,7 +37,7 @@ import {
   type CgroupFs,
 } from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
-import { scopeSupportKnown } from './managed-spawn';
+import { SCOPE_HANDOFF_GRACE_MS, SCOPE_HANDOFF_RECHECK_MS, scopeSupportKnown } from './managed-spawn';
 import { inspectTaskUnitTerminals, resetFailedTaskUnit } from './scope-terminal-state';
 import { bindAgentSessionTaskToLatestNativeSession, closeTask, markSpawned, registerTask } from './store';
 import {
@@ -289,16 +289,20 @@ export function finishSyncEnrolment(
   // handler must not close the row while the scope still holds the real work;
   // doing so turns the live scope into `unaccounted` and removes the safe
   // taskId/scope cleanup handle. This mirrors managedSpawn's WI-37509 guard.
-  if (enrolment.confined && opts.scopeCgroupPath && scopeHasProcesses(opts.scopeCgroupPath, opts.fs ?? nodeCgroupFs)) {
+  const fs = opts.fs ?? nodeCgroupFs;
+  const scopeCgroupPath = opts.scopeCgroupPath;
+  const payloadOutlivedClient = (): boolean =>
+    Boolean(enrolment.confined && scopeCgroupPath && scopeHasProcesses(scopeCgroupPath, fs));
+  const reportPayloadOutlivedClient = (afterDelayedHandoff: boolean): void => {
     const message =
       `[task-manager] sync-enrolled task ${enrolment.taskId}: the systemd-run client exited ` +
+      (afterDelayedHandoff ? 'after the delayed handoff window, ' : '') +
       'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).';
     // Code 0 is the normal systemd-run handoff; reserve warnings for an
     // abnormal client ending while the payload is still alive.
     if (outcome.state === 'exited' && outcome.exitCode === 0) console.info(message);
     else console.warn(message);
-    return;
-  }
+  };
   const close = () => {
     enrolment.releaseEnvironmentTransport();
     void (async () => {
@@ -320,16 +324,56 @@ export function finishSyncEnrolment(
       // fails, so the reconciler can capture and close it on the next tick.
     });
   };
-  // `completeSyncEnrolment` is deliberately fire-and-forget for synchronous spawn
-  // callers, so the INSERT may still be in flight here. UPDATE-before-INSERT is a
-  // lost close: the row is then inserted and marked running forever. Wait only for
-  // registration; `markSpawned` remains independently best-effort and its pending
-  // state guard makes a close that wins after insertion safe.
-  if (enrolment.registrationReady) {
-    void enrolment.registrationReady.then(close, () => {});
-  } else {
-    close();
+
+  const closeAfterRegistration = (): void => {
+    // `completeSyncEnrolment` is deliberately fire-and-forget for synchronous
+    // spawn callers, so the INSERT may still be in flight here. UPDATE-before-
+    // INSERT is a lost close: the row is then inserted and marked running
+    // forever. Wait only for registration; `markSpawned` remains independently
+    // best-effort and its pending state guard makes a close that wins after
+    // insertion safe.
+    if (enrolment.registrationReady) {
+      void enrolment.registrationReady.then(close, () => {});
+    } else {
+      close();
+    }
+  };
+
+  /**
+   * systemd can report the sync spawn client gone before the payload has joined
+   * its named scope/service. Re-read for the same bounded window as
+   * `managedSpawn`; an initially empty cgroup is not yet proof that the payload
+   * never started. Empty, missing and unreadable scopes still close at the
+   * deadline, so this is a race barrier rather than an unbounded keepalive.
+   */
+  const waitForPayloadHandoff = (): void => {
+    const deadline = Date.now() + SCOPE_HANDOFF_GRACE_MS;
+    const recheck = (): void => {
+      if (payloadOutlivedClient()) {
+        reportPayloadOutlivedClient(true);
+        return;
+      }
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) {
+        closeAfterRegistration();
+        return;
+      }
+      const timer = setTimeout(recheck, Math.min(SCOPE_HANDOFF_RECHECK_MS, remaining));
+      timer.unref?.();
+    };
+    const timer = setTimeout(recheck, SCOPE_HANDOFF_RECHECK_MS);
+    timer.unref?.();
+  };
+
+  if (payloadOutlivedClient()) {
+    reportPayloadOutlivedClient(false);
+    return;
   }
+  if (enrolment.confined && scopeCgroupPath) {
+    waitForPayloadHandoff();
+    return;
+  }
+  closeAfterRegistration();
 }
 
 /** True only on a positive cgroup read; an unreadable/empty scope may close normally. */
