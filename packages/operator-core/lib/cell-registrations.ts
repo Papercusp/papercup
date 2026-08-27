@@ -1405,6 +1405,81 @@ export const TESTING_COVERAGE_FLOOR_CELL: CellSpec = {
     '{ verdict: "measured"|"not-measured", censusUnknown: string[]|null, coverage: { floor, floorMeans, surfaces, meets, below, waived, pct: number|null, fidelity, basis, byRung }, byKind[], census }',
 };
 
+const GOVERNOR_CELL_BASE = {
+  registeredOn: '2026-08-27',
+  owner: 'capless-adaptive-resource-governor-2026-08-26',
+  nullable: true,
+  unknownHoist: 'unknown',
+  callerRelativity: { kind: 'global' } as const,
+  provenance: {
+    obtainedBy: 'one atomic GovernorStateSnapshotWriter publish into harness_shared.derived_read_snapshots',
+    liveExercised: true,
+    evidence:
+      'P-010 real snapshot/tool tests publish the complete queue population, read it back through governor:state_snapshot, and verify bounded projections plus explicit unknowns.',
+  },
+  resolver: 'governor:state_snapshot → readGovernorStateSnapshot()',
+  visibility: { kind: 'workspace' } as const,
+  federation: { kind: 'local' } as const,
+} as const;
+
+function governorAssessment(path: string, codes: readonly string[]): NonNullable<CellSpec['assessment']> {
+  return {
+    path,
+    codes: Object.fromEntries(codes.map((code) => [code, {
+      meaning: `The canonical governor snapshot assessed this lens as ${code}.`,
+      safeAction: code === 'unknown'
+        ? 'Treat the value as unmeasured; inspect the snapshot freshness/writer before acting.'
+        : 'Act on the bounded lens and follow its evidenceRef when detail is required.',
+    }])),
+    evidence: ['freshness', 'unknown'],
+  };
+}
+
+export const GOVERNOR_HEALTH_CELL: CellSpec = {
+  ...GOVERNOR_CELL_BASE,
+  cell: 'governor.health',
+  headline: 'health',
+  assessment: governorAssessment('assessments.health', ['healthy', 'degraded', 'unknown']),
+  changeSignal: { kind: 'poll', tool: 'governor:state_snapshot', path: 'health' },
+  shape: '{ state, severity, actionable, confidence, evidenceRef }',
+};
+
+export const GOVERNOR_ADMISSION_CELL: CellSpec = {
+  ...GOVERNOR_CELL_BASE,
+  cell: 'governor.admission',
+  headline: 'admission',
+  assessment: governorAssessment('assessments.admission', ['open', 'constrained', 'paused', 'unknown']),
+  changeSignal: { kind: 'poll', tool: 'governor:state_snapshot', path: 'admission' },
+  shape: '{ state, reason, generation, constrainedClasses[], nextProbeAtMs, confidence }',
+};
+
+export const GOVERNOR_QUEUE_CELL: CellSpec = {
+  ...GOVERNOR_CELL_BASE,
+  cell: 'governor.queue',
+  headline: 'queue',
+  assessment: governorAssessment('assessments.queue', ['empty', 'draining', 'growing', 'unknown']),
+  changeSignal: { kind: 'poll', tool: 'governor:state_snapshot', path: 'queue' },
+  shape: '{ depth, oldestAgeMs, arrivalRatePerSec, drainRatePerSec, trend, byClass[], populationClasses, truncated }',
+};
+
+export const GOVERNOR_RESOURCES_CELL: CellSpec = {
+  ...GOVERNOR_CELL_BASE,
+  cell: 'governor.resources',
+  headline: 'resources',
+  assessment: governorAssessment('assessments.resources', ['unconstrained', 'constrained', 'unknown']),
+  changeSignal: { kind: 'poll', tool: 'governor:state_snapshot', path: 'resources' },
+  shape: '{ constrained[], byResource[], truncated }',
+};
+
+export const GOVERNOR_RECOVERY_CELL: CellSpec = {
+  ...GOVERNOR_CELL_BASE,
+  cell: 'governor.recovery',
+  headline: 'recovery',
+  assessment: governorAssessment('assessments.recovery', ['stable', 'recovering', 'stalled', 'unknown']),
+  changeSignal: { kind: 'poll', tool: 'governor:state_snapshot', path: 'recovery' },
+  shape: '{ state, completed, total, progress, nextProbeAtMs, evidenceRef, confidence }',
+};
+
 /** Every built-in cell, in registration order. */
 export const BUILTIN_CELLS: CellSpec[] = [
   GIT_PIPELINE_POSITION_CELL,
@@ -1419,6 +1494,11 @@ export const BUILTIN_CELLS: CellSpec[] = [
   AGENT_GOAL_CELL,
   TESTING_CENSUS_POPULATION_CELL,
   TESTING_COVERAGE_FLOOR_CELL,
+  GOVERNOR_HEALTH_CELL,
+  GOVERNOR_ADMISSION_CELL,
+  GOVERNOR_QUEUE_CELL,
+  GOVERNOR_RESOURCES_CELL,
+  GOVERNOR_RECOVERY_CELL,
 ];
 
 /** Register every built-in cell. Idempotent — safe to call from more than one entry

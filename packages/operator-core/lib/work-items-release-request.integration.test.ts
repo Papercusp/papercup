@@ -497,7 +497,13 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
         cancelled_at: null,
       }),
     ]);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ other-waiter via inbox'));
+      // The await-event pump is deliberately detached from releaseWorkItem. Wait for its
+      // durable delivery log before restoring the spy, otherwise the warning lands in the
+      // next test (or fail-on-console observes it after this test has finished).
+      await vi.waitFor(
+        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ other-waiter via inbox')),
+        { timeout: 5_000, interval: 20 },
+      );
     } finally {
       warn.mockRestore();
     }
@@ -528,7 +534,12 @@ describe('EI-21585647336393798 — voluntary release does not self-wake the hold
       cancelled_at: null,
     });
     expect(state.fired_at).toBeInstanceOf(Date);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ holder via inbox'));
+      // Delivery is fire-and-forget; synchronize on the asserted trace while the spy is
+      // still installed so the expected warning cannot leak into the following test.
+      await vi.waitFor(
+        () => expect(warn).toHaveBeenCalledWith(expect.stringContaining('→ holder via inbox')),
+        { timeout: 5_000, interval: 20 },
+      );
     } finally {
       warn.mockRestore();
     }

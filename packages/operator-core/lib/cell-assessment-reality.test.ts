@@ -65,6 +65,7 @@ import { assessHostMemoryPressure } from './agent-tools/state/host-memory';
 import { assessTestingCensusPopulation, assessTestingCoverageFloor } from './agent-tools/testing/coverage';
 import hostMemoryPressureTool from './agent-tools/state/host-memory';
 import coverageTool from './agent-tools/testing/coverage';
+import governorStateTool from './agent-tools/state/governor-state';
 
 /**
  * The no-real-PG rail's DOCUMENTED opt-out, taken for the same reason the falsifier
@@ -133,6 +134,9 @@ const HOST_MEMORY_CELLS = BUILTIN_CELLS.filter(
 const COVERAGE_CELLS = BUILTIN_CELLS.filter(
   (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'testing:coverage',
 );
+const GOVERNOR_CELLS = BUILTIN_CELLS.filter(
+  (c) => c.changeSignal.kind === 'poll' && c.changeSignal.tool === 'governor:state_snapshot',
+);
 
 async function livePipelinePayload(path?: string) {
   return gitPipelinePosition(path === undefined ? {} : { path });
@@ -153,6 +157,15 @@ async function liveCoveragePayload(): Promise<unknown> {
 async function liveHostMemoryPayload(): Promise<unknown> {
   const result = await (
     hostMemoryPressureTool as unknown as {
+      handler: (args: unknown, context: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
+    }
+  ).handler({}, {});
+  return JSON.parse(result.content[0].text);
+}
+
+async function liveGovernorPayload(): Promise<unknown> {
+  const result = await (
+    governorStateTool as unknown as {
       handler: (args: unknown, context: unknown) => Promise<{ content: Array<{ type: string; text: string }> }>;
     }
   ).handler({}, {});
@@ -538,6 +551,34 @@ const CONTROLS: Record<string, readonly Control[]> = {
       expect: assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 0, belowUnwaived: 0 }),
     },
   ],
+  'governor.health': [
+    { label: 'healthy snapshot', expect: 'healthy' },
+    { label: 'degraded snapshot', expect: 'degraded' },
+    { label: 'unmeasured snapshot', expect: 'unknown' },
+  ],
+  'governor.admission': [
+    { label: 'ordinary admission open', expect: 'open' },
+    { label: 'one class constrained', expect: 'constrained' },
+    { label: 'one class paused', expect: 'paused' },
+    { label: 'unmeasured snapshot', expect: 'unknown' },
+  ],
+  'governor.queue': [
+    { label: 'measured empty queue', expect: 'empty' },
+    { label: 'drain rate meets arrivals', expect: 'draining' },
+    { label: 'arrivals exceed drain', expect: 'growing' },
+    { label: 'unmeasured snapshot', expect: 'unknown' },
+  ],
+  'governor.resources': [
+    { label: 'no constrained resource', expect: 'unconstrained' },
+    { label: 'one constrained resource', expect: 'constrained' },
+    { label: 'unmeasured snapshot', expect: 'unknown' },
+  ],
+  'governor.recovery': [
+    { label: 'stable state', expect: 'stable' },
+    { label: 'active recovery', expect: 'recovering' },
+    { label: 'stalled recovery', expect: 'stalled' },
+    { label: 'unmeasured snapshot', expect: 'unknown' },
+  ],
 };
 
 /**
@@ -602,6 +643,11 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   'agent.goal': ['nothing-held', 'corroborated', 'sole', 'divergent', 'divergent', null],
   'testing.census.population': ['no-providers', 'census-not-run', 'empty-measured', 'populated'],
   'testing.coverage.floor': ['no-population', 'below-floor', 'measured-with-waivers', 'meets-floor'],
+  'governor.health': ['healthy', 'degraded', 'unknown'],
+  'governor.admission': ['open', 'constrained', 'paused', 'unknown'],
+  'governor.queue': ['empty', 'draining', 'growing', 'unknown'],
+  'governor.resources': ['unconstrained', 'constrained', 'unknown'],
+  'governor.recovery': ['stable', 'recovering', 'stalled', 'unknown'],
 };
 
 describe('P-004: the built-in partition — every cell is assessed, with no residue', () => {
@@ -612,15 +658,16 @@ describe('P-004: the built-in partition — every cell is assessed, with no resi
    * suite green with zero cells examined. The plan item demands an EXPLICIT ten-of-ten
    * partition with zero residue, and this is it.
    */
-  it('registers exactly eleven cells and routes every one to a resolver family', () => {
-    expect(BUILTIN_CELLS).toHaveLength(12);
-    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length).toBe(
+  it('registers exactly seventeen cells and routes every one to a resolver family', () => {
+    expect(BUILTIN_CELLS).toHaveLength(17);
+    expect(PIPELINE_CELLS.length + GOAL_CELLS.length + HOST_MEMORY_CELLS.length + COVERAGE_CELLS.length + GOVERNOR_CELLS.length).toBe(
       BUILTIN_CELLS.length,
     );
     expect(PIPELINE_CELLS).toHaveLength(7);
     expect(GOAL_CELLS).toHaveLength(1);
     expect(HOST_MEMORY_CELLS).toHaveLength(2);
     expect(COVERAGE_CELLS).toHaveLength(2);
+    expect(GOVERNOR_CELLS).toHaveLength(5);
   });
 
   /**
@@ -697,6 +744,18 @@ describe('P-004: every declared assessment path exists in a LIVE resolver payloa
         expect(r.exists, `${spec.cell}: declared ${label} "${path}" is ABSENT (missing at "${r.missingAt}").`).toBe(
           true,
         );
+      }
+    },
+    20_000,
+  );
+
+  it.each(GOVERNOR_CELLS.map((c) => [c.cell, c] as const))(
+    '%s — assessment + evidence paths arrive from the real governor:state_snapshot handler',
+    async (_id, spec) => {
+      const payload = await liveGovernorPayload();
+      for (const { label, path } of assessmentPaths(spec)) {
+        const r = pathExists(payload, path);
+        expect(r.exists, `${spec.cell}: declared ${label} "${path}" is ABSENT (missing at "${r.missingAt}").`).toBe(true);
       }
     },
     20_000,
@@ -939,6 +998,11 @@ describe('P-004: assessments MOVE with their inputs, in the declared direction',
       assessTestingCoverageFloor({ verdict: 'measured', surfaces: 10, below: 2, belowUnwaived: 0 }),
       'a waived gap must not read as an unwaived one',
     ],
+    ['governor.health', 'health.state', 'healthy', 'degraded', 'healthy and degraded must not collapse'],
+    ['governor.admission', 'admission.state', 'open', 'paused', 'open and paused admission must not collapse'],
+    ['governor.queue', 'queue.trend', 'growing', 'draining', 'queue growth direction must not invert'],
+    ['governor.resources', 'resources.constrained', 'constrained', 'unconstrained', 'resource constraint polarity'],
+    ['governor.recovery', 'recovery.state', 'recovering', 'stable', 'active recovery must not read stable'],
   ];
 
   /** Every cell gets an inversion probe — the same ten-of-ten partition, no residue. */

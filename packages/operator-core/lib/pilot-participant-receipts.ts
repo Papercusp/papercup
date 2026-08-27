@@ -169,7 +169,7 @@ export function readPilotParticipantReceiptStore(payload: unknown): PilotPartici
 export function issuePilotParticipantBindingReceipt(
   input: Omit<PilotParticipantBindingReceipt, 'receiptId' | 'bindingIssuedAtMs'>,
   now = Date.now,
-  issueId = randomUUID,
+  issueId: () => string = randomUUID,
 ): PilotParticipantBindingReceipt {
   if (!exactIso(input.claimVersion)) throw new Error('pilot binding claimVersion must be an exact ISO timestamp');
   return { ...input, receiptId: issueId(), bindingIssuedAtMs: now() };
@@ -178,7 +178,7 @@ export function issuePilotParticipantBindingReceipt(
 export function issuePilotParticipantDispatchReceipt(
   binding: PilotParticipantBindingReceipt,
   now = Date.now,
-  issueId = randomUUID,
+  issueId: () => string = randomUUID,
 ): PilotParticipantDispatchReceipt {
   return {
     receiptId: issueId(),

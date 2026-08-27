@@ -716,9 +716,12 @@ export default defineTool({
     // A durable brief is authoritative here only when it names an ACTIVE plan.
     // Requiring currentPlanSlug keeps a populate-once historical harness from
     // overriding an otherwise-valid concrete context after the plan lane is gone.
-    // Explicit args/request-origin scope, an active loop's install scope, and a
-    // canonical work-item scope have all already won above.
-    if (!requestScopeHarnessAvailable && !harness && isConcreteHarness(ctx.harnessSlug)) {
+    // Explicit args, an active loop's install scope, and a canonical work-item scope
+    // have all already won above. A concrete request-origin harness is still useful as
+    // the fallback for a fresh arm, but it is transport state that may be stale after
+    // the session re-oriented; let an active plan brief correct it when the context is
+    // concrete too.
+    if (!harness && isConcreteHarness(ctx.harnessSlug)) {
       const brief = await getSessionBrief({ ownerId }).catch(() => null);
       if (brief?.currentPlanSlug && isConcreteHarness(brief.harnessSlug)) {
         harness = resolvePotHomeSlug(brief.harnessSlug, undefined);

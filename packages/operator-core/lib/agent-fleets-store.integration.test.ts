@@ -392,6 +392,34 @@ describe('fleet launch transaction state (P-003 / mig 830)', () => {
     expect(await setFleetLaunchTransaction({
       workspaceId: WS, fleetSlug: 'transaction-cas-fleet', transaction: initial, sql: rootSql,
     })).toBe(true);
+    const storedRevision = await rootSql.unsafe<[{ json_type: string; transaction_id: string; updated_at: string; matches: boolean }]>(
+      `SELECT jsonb_typeof(last_launch_transaction) AS json_type,
+              last_launch_transaction->>'transactionId' AS transaction_id,
+              last_launch_transaction->>'updatedAt' AS updated_at,
+              last_launch_transaction @> jsonb_build_object(
+                'transactionId', $3::text,
+                'updatedAt', $4::bigint
+              ) AS matches
+         FROM harness_shared.agent_fleets
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'transaction-cas-fleet', initial.transactionId, initial.updatedAt],
+    );
+    expect(storedRevision[0]).toEqual({
+      json_type: 'object',
+      transaction_id: initial.transactionId,
+      updated_at: String(initial.updatedAt),
+      matches: true,
+    });
+    // Backward compatibility: the old `$n::jsonb` unsafe-parameter spelling let
+    // postgres-js encode a JSON string as a JSONB string. The reader historically
+    // accepted that shape, so the CAS must normalize it while new writes use the
+    // canonical `$n::text::jsonb` spelling and remain objects.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets
+          SET last_launch_transaction = to_jsonb($3::text)
+        WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'transaction-cas-fleet', JSON.stringify(initial)],
+    );
 
     const refreshed = { ...initial, updatedAt: 3_000, recovery: { retryOwnerIds: [], nextAction: 'ready' } };
     expect(await setFleetLaunchTransaction({

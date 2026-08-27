@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  DEPENDENCY_QUERY_TIMEOUT_MS,
   dependencyTraversalStartKey,
   readDependencyBottlenecks,
   traverseDependencies,
@@ -82,6 +83,47 @@ describe('traverseDependencies result shaping', () => {
 });
 
 describe('readDependencyBottlenecks result shaping', () => {
+  it('installs the shared hard timeout on the real PostgreSQL path', async () => {
+    const unsafeCalls: string[] = [];
+    const client = {
+      begin: async (fn: (tx: { unsafe: (query: string, params?: unknown[]) => Promise<unknown> }) => Promise<unknown>) =>
+        fn({
+          unsafe: async (query: string) => {
+            unsafeCalls.push(query);
+            return query.trimStart().startsWith('WITH RECURSIVE')
+              ? [{
+                  row_kind: 'population',
+                  blocker_key: null,
+                  blocker_kind: null,
+                  blocker_ref: null,
+                  blocker_status: null,
+                  blocker_title: null,
+                  work_item_refs: null,
+                  last_progress_at: null,
+                  open_blocked_count: null,
+                  open_root_count: 0,
+                  candidate_count: 0,
+                  depth_limited: false,
+                }]
+              : [];
+          },
+        }),
+    } as never;
+
+    await readDependencyBottlenecks(
+      { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', planSlug: 'fleet-plan' },
+      { client },
+    );
+
+    expect(DEPENDENCY_QUERY_TIMEOUT_MS).toBe(30_000);
+    expect(unsafeCalls.slice(0, 3)).toEqual([
+      'SET TRANSACTION READ ONLY',
+      'SET LOCAL statement_timeout = 30000',
+      "SET LOCAL TIME ZONE 'UTC'",
+    ]);
+    expect(unsafeCalls[3]?.trimStart()).toMatch(/^WITH RECURSIVE/);
+  });
+
   it('preserves the population contract, canonical progress, and ranked row', async () => {
     const query = vi.fn(async (_text: string, _params: readonly unknown[]) => [
       {

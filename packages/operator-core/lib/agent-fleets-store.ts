@@ -761,7 +761,7 @@ export async function setFleetLaunchTransaction(opts: {
   const expectedUpdatedAt = opts.expectedRevision?.updatedAt ?? null;
   const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
-        SET last_launch_transaction = $3::jsonb, updated_at = $4
+        SET last_launch_transaction = $3::text::jsonb, updated_at = $4
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND (
           $5::boolean = FALSE
@@ -771,8 +771,15 @@ export async function setFleetLaunchTransaction(opts: {
           )
           OR (
             $6::text IS NOT NULL
-            AND last_launch_transaction->>'transactionId' = $6::text
-            AND (last_launch_transaction->>'updatedAt') IS NOT DISTINCT FROM $7::text
+            AND (
+              CASE jsonb_typeof(last_launch_transaction)
+                WHEN 'string' THEN (last_launch_transaction #>> '{}')::jsonb
+                ELSE last_launch_transaction
+              END
+            ) @> jsonb_build_object(
+              'transactionId', $6::text,
+              'updatedAt', $7::bigint
+            )
           )
         )
       RETURNING fleet_slug`,
@@ -783,7 +790,7 @@ export async function setFleetLaunchTransaction(opts: {
       Date.now(),
       guarded,
       expectedTransactionId,
-      expectedUpdatedAt == null ? null : String(expectedUpdatedAt),
+      expectedUpdatedAt,
     ],
   )) as unknown as Array<{ fleet_slug: string }>;
   return rows.length > 0;

@@ -34,7 +34,7 @@ import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 import { resetResultDoorAggregatesForTests } from '../../result-door';
 import { MAX_PICK_PATHS, NAMED_VIEWS } from '../../result-projection';
-import type { McpCallResult } from '../routes/transport/_mcp-handler';
+import type { BuiltSpawnContext, McpCallResult } from '../routes/transport/_mcp-handler';
 
 const h = vi.hoisted(() => {
   const fakeTx = Object.assign(async (..._a: unknown[]) => [] as unknown[], {
@@ -341,7 +341,7 @@ vi.mock('../../agent-tools/search/embedder', async (importOriginal) => {
 process.env.AGENT_MCP_TOOL_MANIFEST = '/nonexistent/gating-matrix-no-manifest.json';
 delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
 
-await import('../routes/transport/_mcp-handler');
+const { __buildMcpToolContext_forTests } = await import('../routes/transport/_mcp-handler');
 const { registerProjectedTool, unregisterProjectedToolsForPlugin, lookupByMcpName, getCatalog, defineTool } =
   await import('@papercusp/agent-mcp');
 const { currentRequestWorkspaceId } = await import('../../workspace-als');
@@ -967,6 +967,36 @@ describe('tools:invoke inherits the nested target result-door exemption', () => 
     const spill = readFileSync(body._projection.cursor.args.file_path, 'utf8');
     expect(spill).toContain(FULL_SOURCE_CHECKPOINT);
     expect(spill).not.toContain('SHAPED_CHECKPOINT_MARKER');
+  });
+});
+
+/* ─── in-process tools:invoke payload-tier forwarding (EI-21584932731440718) ── */
+
+describe('in-process ctx.dispatchTool forwards an outer payloadTier to tools:invoke targets', () => {
+  const spawn: BuiltSpawnContext = {
+    workspaceId: 'ws-test',
+    harnessSlug: 'papercup',
+    role: 'scoper',
+    featureId: null,
+    chunkId: null,
+    runId: 'in-process-payload-tier-run',
+    spawnId: 'in-process-payload-tier-spawn',
+    parentSpawnId: null,
+    uiClientId: null,
+    isSuperuser: true,
+  };
+
+  it('preserves the target source when code/recipe dispatch supplies payloadTier full on the wrapper', async () => {
+    const ctx = await __buildMcpToolContext_forTests(spawn, undefined, undefined);
+    const res = await ctx.dispatchTool!('tools:invoke', {
+      name: 'gatingtest:full_source_spill',
+      args: {},
+      payloadTier: 'full',
+    });
+
+    expect(res.isError).not.toBe(true);
+    expect(JSON.stringify(res)).toContain(FULL_SOURCE_CHECKPOINT);
+    expect(JSON.stringify(res)).not.toContain('SHAPED_CHECKPOINT_MARKER');
   });
 });
 

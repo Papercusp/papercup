@@ -2195,10 +2195,10 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       { name: 'CAS Loss Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
+    const responseText = (res as any).content[0].text as string;
 
-    expect(payload.ok).toBe(false);
-    expect(payload.error).toContain('changed concurrently');
+    expect((res as any).isError).toBe(true);
+    expect(responseText).toContain('changed concurrently');
     expect(launchTransaction.persist).toHaveBeenCalledWith(expect.objectContaining({
       expectedRevision: null,
     }));

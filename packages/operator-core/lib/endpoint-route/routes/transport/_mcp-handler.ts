@@ -1593,6 +1593,12 @@ async function buildMcpToolContext(
     // `tools:invoke` behaves identically to a direct call.
     let dispatchToolArgs: Record<string, unknown> =
       toolArgs && typeof toolArgs === 'object' ? (toolArgs as Record<string, unknown>) : {};
+    // `ctx.dispatchTool` is also the in-process entry point used by code/recipe
+    // orchestration. The transport `tools/call` path applies this forwarding
+    // before invoking the `tools:invoke` wrapper, but nested callers arrive here
+    // directly and would otherwise lose an outer payloadTier before the wrapper
+    // re-dispatches the target (EI-21584932731440718).
+    dispatchToolArgs = forwardToolsInvokePayloadTier(canonicalName, dispatchToolArgs) as Record<string, unknown>;
     let projectionSpec: ProjectionSpec | null = null;
     let projectionNeedsFullSource = false;
     if (PROJECTION_ARG in dispatchToolArgs) {

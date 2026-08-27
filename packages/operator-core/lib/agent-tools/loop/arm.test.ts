@@ -729,6 +729,47 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
   });
 
+  it('EI-21588980031874016: an active oriented plan scope beats a stale concrete request origin on a fresh arm', async () => {
+    briefM.mockResolvedValueOnce({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'active-plan',
+      intent: 'continue papercusp P-007 / EI-21588980031874016',
+      currentPlanSlug: 'papercusp-plan',
+      currentFiles: [],
+      ambientExcludedRefs: null,
+      harnessSlug: 'papercusp',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      lifecycle: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    // The outer tools:invoke request can retain the old harness even after the
+    // session has oriented onto this active plan. A fresh arm must not install
+    // the loop under that stale concrete request-origin scope.
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? null);
+
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 'continue the papercusp plan' } as never,
+      {
+        harnessSlug: 'sb-devboard-hive',
+        workspaceId: 'ws-1',
+        requestOrigin: { transport: 'mcp', query: { harness: 'sb-devboard-hive' } },
+      } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
+    expect(homePotM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(b.loop.harness).not.toBe('sb-devboard-hive');
+    expect(materializeM).toHaveBeenCalledWith(expect.objectContaining({ harnessSlug: 'papercusp' }));
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+  });
+
   it('EI-21545786648324241: a historical brief with no active plan does not override a concrete context', async () => {
     briefM.mockResolvedValueOnce({
       ownerId: 'su-caller-own-id',

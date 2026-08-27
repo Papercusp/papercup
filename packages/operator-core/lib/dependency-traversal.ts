@@ -20,7 +20,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { ALL_TERMINAL_STATUSES } from './work-item-blocking';
 import {
   PG_READ_QUERY_CALL_OVERHEAD_MS,
-  PG_READ_QUERY_DEFAULT_TIMEOUT_MS,
+  PG_READ_QUERY_HARD_TIMEOUT_MS,
   SET_LOCAL_UTC,
   callTimeoutMessage,
   withCallDeadline,
@@ -172,6 +172,8 @@ type DependencyBottleneckQuery = (
   params: DependencyQueryParams,
 ) => Promise<DependencyBottleneckRow[]>;
 
+type DependencyQueryClient = ReturnType<typeof getOrgPg>['sql'];
+
 const ISSUE_FAMILY_KINDS = ['bug', 'change', 'task'];
 const PLAN_ITEM_RE = /^P-\d{3,}$/;
 const WORK_ITEM_RE = /^(?:WI|EI|F)-\d+$/i;
@@ -182,18 +184,23 @@ export const DEFAULT_DEPENDENCY_TRAVERSAL_MAX_DEPTH = 64;
  * Traversal is a read-only diagnostic, but it is also the query that exposed
  * orphaned recursive backends. Keep the server-side cap and the client-side
  * acquire/execute deadline in one place, borrowing the proven pg-read-query
- * bounds instead of creating a second timeout policy.
+ * hard ceiling instead of creating a second timeout policy. This graph query
+ * builds several cross-store CTEs before it can rank a small exact-plan result;
+ * the generic 5s read default is too short for a healthy graph (the live exact
+ * plan read measured ~8s), while the shared 30s hard ceiling still bounds a
+ * runaway backend.
  */
-const DEPENDENCY_QUERY_TIMEOUT_MS = PG_READ_QUERY_DEFAULT_TIMEOUT_MS;
+export const DEPENDENCY_QUERY_TIMEOUT_MS = PG_READ_QUERY_HARD_TIMEOUT_MS;
 
 async function runDependencyQuery<T>(
   text: string,
   params: DependencyQueryParams,
   injectedQuery?: (text: string, params: DependencyQueryParams) => Promise<T[]>,
+  client?: DependencyQueryClient,
 ): Promise<T[]> {
   if (injectedQuery) return injectedQuery(text, params);
 
-  const sql = getOrgPg().sql;
+  const sql = client ?? getOrgPg().sql;
   const callDeadlineMs = DEPENDENCY_QUERY_TIMEOUT_MS + PG_READ_QUERY_CALL_OVERHEAD_MS;
   let rows: T[] = [];
   const work = sql.begin(async (tx) => {
@@ -943,7 +950,7 @@ export async function traverseDependencies(
     maxDepth?: number;
     coordinationWorkspaceId?: string;
   },
-  deps: { query?: DependencyTraversalQuery } = {},
+  deps: { query?: DependencyTraversalQuery; client?: DependencyQueryClient } = {},
 ): Promise<DependencyTraversalResult> {
   const workspaceId = args.workspaceId.trim();
   const harnessSlug = args.harnessSlug.trim();
@@ -960,7 +967,7 @@ export async function traverseDependencies(
     direction,
     maxDepth,
     ISSUE_FAMILY_KINDS,
-  ], deps.query);
+  ], deps.query, deps.client);
 
   const nodes = new Map<string, DependencyTraversalNode>();
   const edges = new Map<string, DependencyTraversalEdge>();
@@ -1019,7 +1026,7 @@ export async function readDependencyBottlenecks(
     includeGraph?: boolean;
     coordinationWorkspaceId?: string;
   },
-  deps: { query?: DependencyBottleneckQuery } = {},
+  deps: { query?: DependencyBottleneckQuery; client?: DependencyQueryClient } = {},
 ): Promise<DependencyBottleneckResult> {
   const workspaceId = args.workspaceId.trim();
   const harnessSlug = args.harnessSlug.trim();
@@ -1042,7 +1049,7 @@ export async function readDependencyBottlenecks(
     planSlug,
     limit,
     args.includeGraph === true,
-  ], deps.query);
+  ], deps.query, deps.client);
   const populationRow = rows.find((row) => row.row_kind === 'population');
   if (!populationRow) throw new Error('dependency bottleneck query returned no population row');
   const candidates = Number(populationRow.candidate_count);

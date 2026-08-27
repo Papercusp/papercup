@@ -142,6 +142,11 @@ describe('P-007: the four verdict cells', () => {
       'gate.greenCheckpoint.verdict',
       'git.mainBehindStaging',
       'git.pipelinePosition',
+      'governor.admission',
+      'governor.health',
+      'governor.queue',
+      'governor.recovery',
+      'governor.resources',
       'host.memoryPressure',
       'memory.cgroupAttribution',
       // deterministic-coverage-census-2026-08-17 P-005. A PAIR, split along the line
