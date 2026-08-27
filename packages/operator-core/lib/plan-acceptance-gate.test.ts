@@ -8,7 +8,13 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ACCEPTANCE_VERDICT_REQUIRED_AFTER, evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
-import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, type Rubric } from './rubrics';
+import {
+  getAcceptanceRubricForPlan,
+  getAcceptanceRubricsForPlan,
+  getRubric,
+  getRubricPlanRevision,
+  type Rubric,
+} from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -19,8 +25,13 @@ import {
   type PlanSpecCoverageGateVerdict,
 } from './agent-tools/plans/plan-spec-coverage-gate';
 
-vi.mock('./rubrics', () => ({
+const rubricMocks = vi.hoisted(() => ({
   getAcceptanceRubricForPlan: vi.fn(),
+  getAcceptanceRubricsForPlan: vi.fn(),
+}));
+vi.mock('./rubrics', () => ({
+  getAcceptanceRubricForPlan: rubricMocks.getAcceptanceRubricForPlan,
+  getAcceptanceRubricsForPlan: rubricMocks.getAcceptanceRubricsForPlan,
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
@@ -51,6 +62,7 @@ vi.mock('./agent-tools/plans/plan-spec-coverage-gate', () => ({
 // module (it is dependency-free) so RUBRIC_TEMPLATE_NAME stays the real constant.
 
 const mockRubric = vi.mocked(getAcceptanceRubricForPlan);
+const mockRubrics = vi.mocked(getAcceptanceRubricsForPlan);
 const mockGetRubric = vi.mocked(getRubric);
 const mockRevision = vi.mocked(getRubricPlanRevision);
 const mockScorecards = vi.mocked(listScorecards);
@@ -114,6 +126,10 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockRubrics.mockImplementation(async (planSlug) => {
+    const one = await mockRubric(planSlug);
+    return one ? [one] : [];
+  });
   mockAuthorIdentity.mockImplementation(async (author, candidate) => author === candidate);
   // This suite exercises the acceptance-rubric family in isolation. The newer
   // code-truth gates have their own focused suite and deliberately run first in
@@ -209,6 +225,20 @@ describe('evaluatePlanAcceptanceGate', () => {
     expect(v.message).toContain("rubrics:propose { kind:'acceptance'");
     expect(v.message).toContain('some-plan-2026-08-11');
     expect(v.message).toContain('plan-class-investigation');
+  });
+
+  it('multiple active acceptance rubrics → fails closed before grading either one', async () => {
+    mockRubrics.mockResolvedValue([
+      acceptanceRubric({ rubricId: 'ar-first' }),
+      acceptanceRubric({ rubricId: 'ar-second' }),
+    ]);
+
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_ambiguous' });
+    expect(v.message).toContain('ar-first');
+    expect(v.message).toContain('ar-second');
+    expect(mockScorecards).not.toHaveBeenCalled();
   });
 
   it('rubric present but ungraded → acceptance_ungraded naming the rubric + implementer', async () => {

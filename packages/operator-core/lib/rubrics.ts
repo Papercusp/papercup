@@ -1292,6 +1292,24 @@ async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<
   }
 }
 
+/** Keep one live acceptance contract per subject plan; migration 1004 is the
+ * database-level concurrency backstop for proposals racing on different rubric ids. */
+async function assertAcceptanceSubjectPlanAvailable(
+  input: ProposeRubricInput,
+  rubricStatus: RubricStatus,
+): Promise<void> {
+  if (input.kind !== 'acceptance' || !input.subjectPlan || rubricStatus !== 'active') return;
+  const conflicts = (await getAcceptanceRubricsForPlan(input.subjectPlan)).filter(
+    (rubric) => rubric.rubricId !== input.rubricId,
+  );
+  if (conflicts.length === 0) return;
+  throw new Error(
+    `invalid_args: proposeRubric: subjectPlan '${input.subjectPlan}' already has an active acceptance rubric ` +
+      `${conflicts.map((rubric) => `'${rubric.rubricId}'`).join(', ')}. ` +
+      'Retire the existing contract before proposing a replacement; one active acceptance rubric per subject plan is enforced.',
+  );
+}
+
 /** The `template: rubric` plan body (frontmatter + Now + Background + Decisions). The
  *  structured fields live in `template_data` (written separately); the body is narrative
  *  context. Mirrors the Scout rubric-rail draft shape so the plan parses + derives the
@@ -1525,6 +1543,7 @@ export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> 
     kind === 'acceptance' && stored?.status === 'retired'
       ? stored.status
       : (input.status ?? (kind === 'acceptance' ? 'active' : 'proposed'));
+  await assertAcceptanceSubjectPlanAvailable(input, rubricStatus);
   const planStatus = rubricStatusToPlanStatus(rubricStatus);
   // WI-4287 loss-guard: propose is a whole-document replace — refuse to silently drop
   // stored criteria or gut their testing procedures (see assertNoSilentRubricLoss).

@@ -26,7 +26,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
-import { getAcceptanceRubricForPlan, getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from './rubrics';
+import { getAcceptanceRubricsForPlan, getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from './rubrics';
 import { listScorecards } from './scorecards';
 import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
 import {
@@ -48,6 +48,7 @@ import { detectEphemeralDeliverableReferences, type EphemeralDeliverableReferenc
 
 export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_missing'
+  | 'acceptance_rubric_ambiguous'
   // consult-min-max-and-rubric-vetting-2026-08-17 P-004 — the vetting check.
   | 'acceptance_rubric_unvetted'
   | 'acceptance_ungraded'
@@ -476,8 +477,8 @@ export async function evaluatePlanAcceptanceGate(
     };
   }
 
-  const rubric = await getAcceptanceRubricForPlan(planSlug);
-  if (!rubric) {
+  const rubrics = await getAcceptanceRubricsForPlan(planSlug);
+  if (rubrics.length === 0) {
     return {
       satisfied: false,
       code: 'acceptance_rubric_missing',
@@ -488,10 +489,21 @@ export async function evaluatePlanAcceptanceGate(
         `classRef:'<plan-class-feature-ship|plan-class-bugfix|plan-class-migration|plan-class-investigation>', ` +
         `criteria:[3–7 outcomes tracing to the plan's goal + Decisions — never merely describing the diff] } ` +
         `(a pure investigation may pass classRef:'plan-class-investigation' with criteria:[] — D-009). ` +
-        `It activates immediately (no ratification); then a ` +
-        `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
+      `It activates immediately (no ratification); then a ` +
+      `NON-implementer grades it (scorecards:emit) and the ship succeeds.`,
     };
   }
+  if (rubrics.length > 1) {
+    return {
+      satisfied: false,
+      code: 'acceptance_rubric_ambiguous',
+      message:
+        `plan '${planSlug}' cannot be marked shipped: it has multiple active acceptance rubrics ` +
+        `(${rubrics.map((candidate) => `'${candidate.rubricId}'`).join(', ')}). ` +
+        'Retire all but one contract before shipping; the gate fails closed when one subject plan has competing rubrics.',
+    };
+  }
+  const rubric = rubrics[0];
 
   // ── the VETTING check (consult-min-max-and-rubric-vetting-2026-08-17 P-004) ──
   // Ordered BEFORE the grading checks because it is the earlier step of the flow: the

@@ -512,6 +512,48 @@ Preserve this plan body.
     expect(revised.status).toBe('active');
   });
 
+  it('refuses a second active acceptance rubric for the same subject plan', async () => {
+    const subjectPlan = 'acceptance-unique-subject';
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, content, content_hash, version, title, status,
+         created, updated, owner, archived, template, template_data, template_slug, origin)
+      VALUES (${activeWorkspaceId()}, 'papercusp', ${subjectPlan}, '', md5(${subjectPlan}), 1,
+              'Acceptance uniqueness subject', 'active', '2026-08-22', '2026-08-22', 'su-test',
+              false, NULL, '{}'::text::jsonb, NULL, 'local')`;
+
+    await rubrics.proposeRubric({
+      rubricId: 'acceptance-unique-first',
+      kind: 'acceptance',
+      subjectPlan,
+      characteristic: 'acceptance-uniqueness',
+      title: 'Acceptance uniqueness first',
+      criteria: [{ key: 'outcome', title: 'Outcome' }],
+      by: 'su-first',
+    });
+
+    await expect(
+      rubrics.proposeRubric({
+        rubricId: 'acceptance-unique-second',
+        kind: 'acceptance',
+        subjectPlan,
+        characteristic: 'acceptance-uniqueness',
+        title: 'Acceptance uniqueness second',
+        criteria: [{ key: 'outcome', title: 'Outcome' }],
+        by: 'su-second',
+      }),
+    ).rejects.toThrow(/already has an active acceptance rubric.*acceptance-unique-first/i);
+
+    const rows = await db.adminSql<{ count: string }[]>`
+      SELECT count(*)::text AS count
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${activeWorkspaceId()}
+         AND template = 'rubric'
+         AND template_data->>'kind' = 'acceptance'
+         AND template_data->>'subjectPlan' = ${subjectPlan}`;
+    expect(rows[0]?.count).toBe('1');
+  });
+
   it('acceptance amend tolerates omitted optional prose from the legacy projection', async () => {
     const subjectPlan = 'acceptance-amend-subject';
     const rubricId = 'acceptance-amend-empty-prose';
