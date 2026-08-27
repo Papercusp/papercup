@@ -928,6 +928,59 @@ describe('readQueue', () => {
     expect(q.waiting[1].ahead_count).toBe(1);
   });
 
+  it('flags a waiter whose deadline precedes the live holder expiry and exposes the evidence', async () => {
+    const ws = nextWs();
+    const holder = await inWorkspaceTxn(ws, 'expiry-holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'expiry-holder', ownerLabel: 'H',
+        paths: ['expiry.ts'], intent: 'hold past waiter deadline', ttlSec: 60,
+      }),
+    );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
+
+    const waiter = await inWorkspaceTxn(ws, 'expiry-waiter', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: ws, owner: 'expiry-waiter', ownerLabel: 'W',
+        paths: ['expiry.ts'], intent: 'wait with a shorter deadline', ttlSec: 60, maxWaitSec: 30,
+      }),
+    );
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('waiter should be queued');
+
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws });
+    const row = q.waiting.find((entry) => entry.ticket_id === waiter.ticket_id);
+    expect(row?.cannot_be_granted_before_expiry).toBe(true);
+    expect(row?.holder_expires_ts).toBeInstanceOf(Date);
+    expect(row?.holder_expires_ts?.getTime()).toBeGreaterThan(row?.wait_until.getTime() ?? 0);
+    expect(row?.holder_expires_ts?.getTime()).toBe(
+      q.active_locks.find((entry) => entry.lock_id === holder.lock_id)?.expires_ts.getTime(),
+    );
+  });
+
+  it('does not flag a waiter whose deadline extends beyond the live holder expiry', async () => {
+    const ws = nextWs();
+    const holder = await inWorkspaceTxn(ws, 'short-holder', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws, owner: 'short-holder', ownerLabel: 'H',
+        paths: ['viable.ts'], intent: 'short hold', ttlSec: 60,
+      }),
+    );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
+
+    const waiter = await inWorkspaceTxn(ws, 'viable-waiter', (tx) =>
+      tryInsertWaiter(tx, {
+        coordinationDomain: ws, owner: 'viable-waiter', ownerLabel: 'W',
+        paths: ['viable.ts'], intent: 'wait beyond holder expiry', ttlSec: 60, maxWaitSec: 120,
+      }),
+    );
+    if (!waiter.ok || 'self_granted' in waiter) throw new Error('waiter should be queued');
+
+    const q = await readQueue(getTxPool(), { coordinationDomain: ws });
+    const row = q.waiting.find((entry) => entry.ticket_id === waiter.ticket_id);
+    expect(row?.cannot_be_granted_before_expiry).toBe(false);
+    expect(row?.holder_expires_ts).toBeInstanceOf(Date);
+    expect(row?.holder_expires_ts?.getTime()).toBeLessThan(row?.wait_until.getTime() ?? Number.POSITIVE_INFINITY);
+  });
+
   it('treats an explicit empty paths array as an empty filter, not an unfiltered scan', async () => {
     const ws = nextWs();
     const holder = await inWorkspaceTxn(ws, 'empty-filter-holder', (tx) =>
