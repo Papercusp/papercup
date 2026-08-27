@@ -20,7 +20,20 @@ import {
   type StartGoalByIdInput,
 } from './start-goal-by-id';
 
-type GoalRow = { id: string; title: string; status: string; install_slug: string | null };
+type GoalRow = {
+  id: string;
+  title: string;
+  status: string;
+  install_slug: string | null;
+  // The brief-shaped columns (EI-21566842357792802). `budget_cents` is BIGINT,
+  // which postgres-js returns as a STRING — the fixture keeps it a string on
+  // purpose so the coercion is exercised rather than assumed.
+  body: string | null;
+  kill_criterion: string | null;
+  budget_cents: string | number | null;
+  budget_window_sec: string | number | null;
+  standing: boolean | null;
+};
 
 const WS = 'ws-1';
 const GOAL = 'fix-the-roof-a1b2c3';
@@ -30,7 +43,18 @@ function fakeSql(rows: GoalRow[]): Sql {
 }
 
 function goalRow(overrides: Partial<GoalRow> = {}): GoalRow {
-  return { id: GOAL, title: 'Fix the roof', status: 'active', install_slug: 'papercusp', ...overrides };
+  return {
+    id: GOAL,
+    title: 'Fix the roof',
+    status: 'active',
+    install_slug: 'papercusp',
+    body: 'the long form',
+    kill_criterion: 'no dry week by October',
+    budget_cents: '80000',
+    budget_window_sec: null,
+    standing: false,
+    ...overrides,
+  };
 }
 
 function holder(overrides: Partial<ResolvedGoalHolder> = {}): ResolvedGoalHolder {
@@ -75,6 +99,12 @@ function makeDeps(overrides: Partial<StartGoalByIdDeps> = {}): {
     attach,
     resolveHolders: vi.fn().mockResolvedValue(holdersFixture('unheld')),
     readReadiness: vi.fn().mockResolvedValue(READY),
+    // A recognisable stub rather than the real builder: these tests assert that
+    // a brief was built FROM THE GOAL ROW and reached the launch door, which a
+    // stub echoing its own inputs proves and the real prose would only obscure.
+    buildBrief: vi.fn((o: Parameters<StartGoalByIdDeps['buildBrief']>[0]) =>
+      `BRIEF(${o.goalId}|${o.title}|kc=${o.killCriterion ?? 'none'}|cents=${o.budgetCents ?? 'none'})`,
+    ) as unknown as StartGoalByIdDeps['buildBrief'],
     ...overrides,
   };
   return { deps, launch, attach };
@@ -188,7 +218,13 @@ describe('startGoalById — launch then attach', () => {
       harnessSlug: 'papercusp',
       launcherOwnerId: 'trigger-binding-7',
       deferSpawn: false,
-      kickoffPrompt: null,
+      // EI-21566842357792802: this assertion used to read `kickoffPrompt: null`
+      // — i.e. the defect was PINNED BY A PASSING TEST. An unbriefed goal agent
+      // was the documented contract of this door, so nothing was going to catch
+      // it; the failure surfaced only when a real holder spent 18 minutes not
+      // knowing its own goal. A caller who omits the brief now gets one built
+      // from the goal row.
+      kickoffPrompt: 'BRIEF(fix-the-roof-a1b2c3|Fix the roof|kc=no dry week by October|cents=80000)',
     });
     expect(attach).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -227,5 +263,70 @@ describe('startGoalById — launch then attach', () => {
       attach: vi.fn().mockResolvedValue({ ok: false, error: 'mode store down' }),
     });
     await expect(run(deps)).rejects.toThrow(/su-new-holder.*mode store down/s);
+  });
+});
+
+/* ── a goal agent must be TOLD its goal (EI-21566842357792802) ────────────────
+   Omitting `kickoffPrompt` used to send `null`, and the spawned session fell
+   through to the generic fleet-member kickoff — "You are a fleet member with no
+   human at your keyboard" — which names no goal. The session was still stamped
+   `overlay:goal` with the correct subject, so the mode row and the delivered
+   prompt disagreed and the goal read healthy everywhere while its agent worked
+   unrelated backlog.
+
+   These guard the DEFAULT path specifically, because that is the one every
+   trigger / schedule / watchdog leg takes. The explicit-override path already
+   had a test; it was the omission that had no guard and a wrong one. ── */
+describe('startGoalById — an omitted kickoff is BUILT, never left null', () => {
+  it('builds the brief from the goal row and sends it to the launch door', async () => {
+    const { deps, launch } = makeDeps();
+    await run(deps);
+    const sent = (launch.mock.calls[0]?.[0] as { kickoffPrompt: unknown }).kickoffPrompt;
+    // The precise failure being guarded: never null, never empty.
+    expect(sent).not.toBeNull();
+    expect(String(sent)).toContain(GOAL);
+    expect(String(sent)).toContain('Fix the roof');
+    expect(deps.buildBrief).toHaveBeenCalledWith(
+      expect.objectContaining({
+        goalId: GOAL,
+        title: 'Fix the roof',
+        killCriterion: 'no dry week by October',
+        standing: false,
+      }),
+    );
+  });
+
+  it('coerces the BIGINT budget to a number — a string ceiling renders a wrong brief', async () => {
+    const { deps } = makeDeps();
+    await run(deps);
+    const arg = (deps.buildBrief as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(arg.budgetCents).toBe(80000);
+    expect(typeof arg.budgetCents).toBe('number');
+  });
+
+  it('passes null (not NaN) for an absent or unparseable budget', async () => {
+    const { deps } = makeDeps();
+    await run(deps, { rows: [goalRow({ budget_cents: null, kill_criterion: null })] });
+    const arg = (deps.buildBrief as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(arg.budgetCents).toBeNull();
+    expect(arg.killCriterion).toBeNull();
+  });
+
+  it('an explicitly supplied brief still WINS over the built default', async () => {
+    const { deps, launch } = makeDeps();
+    await run(deps, { input: { kickoffPrompt: 'package brief' } });
+    expect(launch).toHaveBeenCalledWith(expect.objectContaining({ kickoffPrompt: 'package brief' }));
+    // The package-start door must not pay for a brief it is about to discard.
+    expect(deps.buildBrief).not.toHaveBeenCalled();
+  });
+
+  /* CONTROL. Every assertion above would also pass if `launch` were never
+     called at all (`mock.calls[0]?.[0]` on an empty array is undefined, and
+     `expect(undefined).not.toBeNull()` passes). This pins that the run really
+     reaches the launch door, so the guards above cannot go vacuous. */
+  it('CONTROL: the fixture actually reaches the launch door', async () => {
+    const { deps, launch } = makeDeps();
+    await run(deps);
+    expect(launch).toHaveBeenCalledTimes(1);
   });
 });
