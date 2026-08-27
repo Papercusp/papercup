@@ -15,7 +15,8 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
-import { findCodexRolloutPath } from './session-transcript-resolvers';
+import { findCodexRolloutPath, findCodexRolloutPathByUuid } from './session-transcript-resolvers';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -113,6 +114,12 @@ export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSn
 
 export interface EstimateContextDeps {
   findCodexRollout?: typeof findCodexRolloutPath;
+  /** WI-42507 seam: resolve a rollout by its native session id under a given home. */
+  findCodexRolloutByUuid?: typeof findCodexRolloutPathByUuid;
+  /** WI-42507 seam: the owner's OTHER codex adv-session row ids, newest first. */
+  codexSiblingSessionKeys?: (ownerId: string, exceptKey: number | string) => Promise<number[]>;
+  /** WI-42507 seam: mtime of a resolved path (null ⇒ vanished / unreadable). */
+  statMtimeMs?: (p: string) => number | null;
 }
 
 /**
@@ -138,6 +145,105 @@ export function codexRolloutSessionId(rolloutPath: string): string | null {
   const base = rolloutPath.slice(rolloutPath.lastIndexOf('/') + 1);
   const m = /^rollout-\d{4}-\d{2}-\d{2}T[\d-]+-([0-9a-f]{8}(?:-[0-9a-f]+)+)\.jsonl$/.exec(base);
   return m ? m[1] : null;
+}
+
+/** How many of the owner's OTHER codex adv rows the WI-42507 repair may search.
+ *  Measured 2026-08-27: an affected owner had 2 rows. 6 is generous headroom and
+ *  still bounds the miss path to a handful of home walks — a blanket scan is not
+ *  an option (1302 codex homes existed on this box at the time). */
+const CODEX_SIBLING_HOME_LIMIT = 6;
+
+/** The owner's OTHER codex adv-session row ids, newest first. */
+async function codexSiblingSessionKeysForOwner(ownerId: string, exceptKey: number | string): Promise<number[]> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const rows = await getOrgPg().sql<{ id: number }[]>`
+      SELECT id
+        FROM harness_shared.adv_sessions
+       WHERE coord_owner_id = ${ownerId}
+         AND agent = 'codex'
+         AND id <> ${Number(exceptKey)}
+       ORDER BY started_at DESC
+       LIMIT ${CODEX_SIBLING_HOME_LIMIT}
+    `;
+    return rows.map((r) => r.id);
+  } catch {
+    return [];
+  }
+}
+
+function statMtimeMsSync(p: string): number | null {
+  try {
+    return fs.statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-42507 — resolve the rollout to read for a codex ref, repairing the case where
+ * the ref's adv ROW and the home its native session actually writes into have come
+ * apart.
+ *
+ * Codex homes are keyed by the adv_sessions ROW id, which is only sound while the row
+ * whose `session_id` names the live native session is also the row whose home that
+ * session writes into. Measured 2026-08-27 on su-e602814a: row 19845 (the newest, so
+ * the one {@link resolveSessionRef} picks) carried session_id `01a04287-…`, whose
+ * rollout lives in row 19993's home; 19845's own home held nothing but frozen
+ * 03:14–03:39 rollouts. Every home-keyed read for that owner therefore returned a dead
+ * predecessor's file, the estimate could never fall, and the respawn-streak guard
+ * suppressed both compaction rungs.
+ *
+ * THE INVARIANT, and why this is a repair rather than the gate that was measured and
+ * rejected (see {@link codexRolloutSessionId}): this may only ever move the reading to
+ * a rollout that is BOTH
+ *   (a) provably the session's — its filename carries `ref.sessionId` — AND
+ *   (b) strictly FRESHER than what the keyed home offered.
+ * It never returns null, never suppresses an estimate, and never substitutes an older
+ * file. (b) is the load-bearing half: without it, a ref naming a DEAD predecessor
+ * whose rollout happens to sit in a sibling home would drag the reading BACK onto that
+ * frozen file — reintroducing WI-38090's pathology by the other door. With it, the
+ * keyed home's newest always wins a tie, so the normal carry-respawn case (where the
+ * DB ref lags the live rollout inside one stable home) is untouched.
+ *
+ * The sibling search runs ONLY on the miss path — when the keyed home's newest rollout
+ * does not belong to `ref.sessionId` — so the healthy majority pays one already-cached
+ * filename parse and no extra I/O at all.
+ */
+export async function resolveCodexRolloutPathForRef(
+  ref: SessionRef,
+  ownerId: string | null | undefined,
+  deps: EstimateContextDeps = {},
+): Promise<string | null> {
+  if (ref.sessionKey == null) return null;
+  const keyed = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
+  // No ref session id ⇒ nothing to check against ⇒ the keyed answer stands (this is
+  // the documented normal state for a codex row, not an anomaly).
+  if (!ref.sessionId || !ownerId) return keyed;
+  // The keyed home already holds the session the ref names: the common healthy path.
+  if (keyed && codexRolloutSessionId(keyed) === ref.sessionId) return keyed;
+
+  const statMtime = deps.statMtimeMs ?? statMtimeMsSync;
+  const keyedMtime = keyed ? statMtime(keyed) : null;
+  const byUuid = deps.findCodexRolloutByUuid ?? findCodexRolloutPathByUuid;
+  const siblingKeys = await (deps.codexSiblingSessionKeys ?? codexSiblingSessionKeysForOwner)(
+    ownerId,
+    ref.sessionKey,
+  );
+  for (const key of siblingKeys) {
+    let candidate: string | null = null;
+    try {
+      candidate = await byUuid(ref.sessionId, { homeOverride: codexHomeForSessionKey(key) });
+    } catch {
+      continue;
+    }
+    if (!candidate) continue;
+    const candidateMtime = statMtime(candidate);
+    if (candidateMtime == null) continue;
+    // (b): strictly fresher only. A tie or an older file keeps the keyed answer.
+    if (keyedMtime == null || candidateMtime > keyedMtime) return candidate;
+  }
+  return keyed;
 }
 
 /** Where a codex owner's context reading actually CAME FROM — the rollout file that
@@ -170,7 +276,7 @@ export async function codexReadingProvenanceForOwner(
   try {
     const ref = await resolveSessionRefReconciled(ownerId);
     if (!ref || ref.agent !== 'codex' || ref.sessionKey == null) return null;
-    const rolloutPath = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
+    const rolloutPath = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
     if (!rolloutPath) return null;
     let rolloutMtimeMs: number | null = null;
     try {
@@ -191,11 +297,12 @@ export async function codexReadingProvenanceForOwner(
 
 async function codexSnapshotForRef(
   ref: SessionRef,
+  ownerId?: string | null,
   deps: EstimateContextDeps = {},
 ): Promise<CodexContextSnapshot | null> {
   if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
   try {
-    const rollout = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
+    const rollout = await resolveCodexRolloutPathForRef(ref, ownerId, deps);
     return rollout ? codexContextSnapshotFromRollout(rollout) : null;
   } catch {
     return null;
@@ -347,7 +454,7 @@ export async function estimateContextTokens(
   deps: EstimateContextDeps = {},
 ): Promise<number | null> {
   if (ref.agent === 'omp') return null;
-  if (ref.agent === 'codex') return (await codexSnapshotForRef(ref, deps))?.tokens ?? null;
+  if (ref.agent === 'codex') return (await codexSnapshotForRef(ref, owner, deps))?.tokens ?? null;
   if (!ref.sessionId) return null;
   try {
     // Pass the coord `owner` hint: an interactive/spawned session's transcript lives under
@@ -444,7 +551,7 @@ export async function estimateContextWindowForOwner(
 ): Promise<number | null> {
   const ref = await resolveSessionRefReconciled(ownerId);
   if (!ref || ref.agent !== 'codex') return null;
-  return (await codexSnapshotForRef(ref, deps))?.modelContextWindow ?? null;
+  return (await codexSnapshotForRef(ref, ownerId, deps))?.modelContextWindow ?? null;
 }
 
 /**
