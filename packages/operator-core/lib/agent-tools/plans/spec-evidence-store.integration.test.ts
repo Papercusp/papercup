@@ -186,6 +186,53 @@ beforeEach(async () => {
 });
 
 describe('exact spec evidence bindings', () => {
+  it('keeps one shared proof reference for distinct spec clauses', async () => {
+    await specs.setSpecClause(clause());
+    await specs.setSpecClause(
+      clause({
+        specId: 'SPEC-004-01',
+        sourceValId: null,
+        planItemId: 'P-004',
+        behavior: 'The stream closes after the terminal acknowledgement.',
+      }),
+    );
+
+    const shared = {
+      workItemId: 'WI-101',
+      evidenceKind: 'test' as const,
+      evidenceRef: 'test/reconnect.integration.ts#shared-run',
+      sourceFingerprint: 'git:abc123',
+      testFingerprint: 'sha256:test-v1',
+    };
+    const first = await evidenceStore.bindSpecEvidence({
+      ...shared,
+      sourceValId: 'VAL-003-01',
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      actorId: 'su-test',
+    });
+    const second = await evidenceStore.bindSpecEvidence({
+      ...shared,
+      specId: 'SPEC-004-01',
+      harnessSlug: HARNESS,
+      planSlug: 'reconnect-plan',
+      actorId: 'su-test',
+    });
+
+    expect(first).toMatchObject({ status: 'created', specId: 'SPEC-003-01' });
+    expect(second).toMatchObject({ status: 'created', specId: 'SPEC-004-01' });
+    expect(second).not.toMatchObject({ id: first.id });
+
+    const rows = await evidenceStore.listSpecEvidence({
+      harnessSlug: HARNESS,
+      planSlugs: ['reconnect-plan'],
+      workItemIds: ['WI-101'],
+      evidenceRefs: [shared.evidenceRef],
+    });
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.specId).sort()).toEqual(['SPEC-003-01', 'SPEC-004-01']);
+  });
+
   it('resolves legacy coversVALs, writes many-to-many exact edges, and deduplicates canonical proof', async () => {
     await specs.setSpecClause(clause());
     await specs.setSpecClause(
