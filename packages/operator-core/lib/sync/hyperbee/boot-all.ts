@@ -1806,7 +1806,7 @@ export function listRelocatedBootedHandles(): BootedHandleSummary[] {
  * Gather each booted harness's eviction-relevant liveness facts for the
  * LAZY_SUBSTRATE_BOOT reaper (P-008). Pure read over the live handle map.
  *
- * ── v2 SAFETY BOUNDARY ── A harness with an admitted remote peer is reported
+ * ── v2 SAFETY BOUNDARY ── A harness with a live swarm connection is reported
  * `hasActivePeer`, so `planSubstrateEviction` NEVER evicts it. An idle swarmed
  * in-process harness is now a candidate: the race-guarded eviction path first
  * transfers its topic to P-012's lightweight wake keepalive and refuses to
@@ -1814,8 +1814,9 @@ export function listRelocatedBootedHandles(): BootedHandleSummary[] {
  * pinned because their real peer/swarm facts live in the sidecar process.
  *
  * `lastAccessMs` defaults to `now` for a handle with no recorded access (treated
- * HOT — never evicted on a missing signal). The own log seeds `admitted` to size
- * 1, so `admitted.size > 1` means ≥1 remote peer log is admitted.
+ * HOT — never evicted on a missing signal). `admitted` is historical log
+ * identity state and therefore is deliberately not used as a live-peer gauge;
+ * `SwarmHandle.liveConnectionCount` is the current connection signal.
  */
 export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
   const facts: BootedHarnessFacts[] = [];
@@ -1831,11 +1832,11 @@ export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
     // engines whose liveness we can actually observe are eviction candidates;
     // every remote handle is pinned until facts come from sidecar status (v2).
     const remote = handle instanceof RemoteBootedHarnessHandle;
-    const hasRemotePeers = !remote && handle.admitted.size > 1;
+    const hasLivePeer = !remote && (handle.swarm?.liveConnectionCount ?? 0) > 0;
     facts.push({
       key: k,
       lastAccessMs: lastAccess.get(k) ?? now,
-      hasActivePeer: hasRemotePeers,
+      hasActivePeer: hasLivePeer,
       // v2: in-process swarmed and private handles both enter the idle/LRU
       // candidate set. evictBootedHarnessEngine owns the load-bearing second
       // check: active peers dominate, and a swarmed engine closes only after
@@ -1853,7 +1854,7 @@ export function gatherBootedHarnessFacts(now: number): BootedHarnessFacts[] {
  * Re-checks freshness + swarm/peer state IMMEDIATELY before close to close the
  * access↔evict race: between the reaper's fact snapshot and this call, a consumer
  * may have grabbed the handle (bumping `lastAccess`) or a peer may have connected
- * (swarm/admitted) — in which case we SKIP, leaving the engine resident.
+ * (live swarm connection) — in which case we SKIP, leaving the engine resident.
  */
 export async function evictBootedHarnessEngine(k: string, guard: { now: number; idleMs: number }): Promise<boolean> {
   const handle = handles.get(k);
@@ -1868,7 +1869,7 @@ export async function evictBootedHarnessEngine(k: string, guard: { now: number; 
   // Acquired a peer since the snapshot? Skip — D-005's dominating rule: a
   // harness with an ACTIVE peer must stay resident and keep merging, or that
   // peer's pushes are silently lost (the EI-126 divergence class).
-  if (handle.admitted.size > 1) return false;
+  if ((handle.swarm?.liveConnectionCount ?? 0) > 0) return false;
   const parsed = parseKey(k);
   if (!parsed) return false;
   // P-012 slice B: a FEDERATING (swarmed) engine may only be evicted once the
