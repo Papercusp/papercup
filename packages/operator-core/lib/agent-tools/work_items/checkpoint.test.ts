@@ -1752,6 +1752,29 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
       });
 
+      it('does not let confirmShrink bypass confirmRetire for a rows replacement', async () => {
+        const prior = await seedThree();
+        withPrior(await prior);
+        const before = setWorkItemCheckpointWithPrior.mock.calls.length;
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'refreshed evidence snapshot',
+          checks: [{ claim: 'replacement check', recheck: 'read replacement' }],
+          rowsMode: 'replace',
+          confirmShrink: true,
+        });
+
+        expect(r).toMatchObject({
+          ok: false,
+          errorCode: 'checkpoint_replace_would_drop_rows',
+          retryable: true,
+          checksDropped: ['gate is green', 'main is at abc123', 'deploy landed'],
+        });
+        expect(r.message).toContain('confirmRetire');
+        expect(setWorkItemCheckpointWithPrior.mock.calls.length).toBe(before + 1);
+        expect(await lastStored()).toBe(await prior);
+      });
+
       it('accepts the same retirement with confirmRetire:true and still reports the dropped rows', async () => {
         const prior = await seedThree();
         withPrior(await prior);
