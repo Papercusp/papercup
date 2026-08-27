@@ -203,14 +203,24 @@ bundle_rc=0
 # file so it can be BOTH echoed to the journal and parsed into the marker.
 if ! (
   flock -w 120 9 || { echo "ERROR: timed out waiting for bundle lock $LOCKFILE (another build stuck?)"; exit 1; }
-  npx --yes esbuild@0.25.0 "$ENTRY" \
+  # WI-55467: the SAME errexit hole the checker comment below describes applies to
+  # esbuild itself, and it was left unplugged. A failed/killed esbuild wrote no
+  # $METAFILE, execution fell through to the checker, and the checker died with a raw
+  # `ENOENT ... hono-host.mjs.tmp.<pid>.meta.json` traceback that BURIED the real
+  # esbuild error under a Node stack — while the fallback banner below still claimed
+  # "the esbuild error is above". Abort here so the real error is the last thing in
+  # $BUILD_LOG and the checker only ever runs on a metafile that exists.
+  if ! npx --yes esbuild@0.25.0 "$ENTRY" \
     --bundle --platform=node --format=esm --target=node22 \
     --outfile="$TMPFILE" \
     --metafile="$METAFILE" \
     --banner:js="$HOST_BANNER" \
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     --log-limit=20 \
-    "${HOST_EXTERNALS[@]}"
+    "${HOST_EXTERNALS[@]}"; then
+    echo "ERROR: esbuild failed to bundle $ENTRY (see the esbuild diagnostics above)."
+    exit 1
+  fi
   # This subshell is the condition of `if ! (...)`; Bash disables errexit inside such a tested
   # compound command. An unwrapped checker failure therefore fell through to ascii-escape + mv,
   # publishing the rejected bundle and returning success. Fail explicitly before the atomic swap.
@@ -233,7 +243,12 @@ if [[ $bundle_rc -ne 0 ]]; then
   if [[ -f "$OUTFILE" ]]; then
     node "$SCRIPT_DIR/write-bundle-stale-marker.mjs" \
       "$STALE_MARKER" "$ENTRY" "$OUTFILE" "$BUILD_LOG" || true
-    echo "🚨 ERROR: bundling $ENTRY FAILED — the esbuild error is above."
+    # WI-55467: this used to assert "the esbuild error is above" unconditionally. The
+    # bundle step is esbuild + the CLI-entry guard check + ascii-escape + the atomic
+    # swap, and ANY of them can set bundle_rc — so naming esbuild sent readers hunting
+    # an esbuild error that did not exist. Point at the log instead of guessing.
+    echo "🚨 ERROR: bundling $ENTRY FAILED — the failing step's output is above (esbuild, the"
+    echo "🚨   bundled CLI-entry guard check, ascii-escape, or the atomic swap); full log: $BUILD_LOG"
     echo "🚨 FALLING BACK to the last-known-good bundle already on disk:"
     echo "🚨   $OUTFILE (built $(date -r "$OUTFILE" -Iseconds 2>/dev/null || echo unknown))"
     echo "🚨 The service STARTS, but on STALE CODE. /api/health reports bundleStale."

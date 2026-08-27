@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, resolve } from 'node:path';
 
@@ -64,5 +64,85 @@ describe('check-bundled-cli-entry-guards', () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  });
+
+  // WI-55467 recurrence guard. papercup-staging-api (:3170) crash-looped six times and
+  // systemd gave up on it. The visible failure was a raw Node traceback out of this
+  // scanner —
+  //   Error: ENOENT ... open 'dist-host/hono-host.mjs.tmp.1710681.meta.json'
+  //     at bundledInputPaths (scripts/check-bundled-cli-entry-guards.mjs:38:31)
+  // — immediately followed by bundle-host.sh announcing "bundling FAILED — the esbuild
+  // error is above". Both statements sent a reader hunting an esbuild error that was not
+  // there: the metafile was absent precisely BECAUSE the esbuild step had already failed,
+  // and Bash disables errexit inside the `if ! ( … )` the bundle runs in, so nothing
+  // stopped execution from reaching this scanner with no metafile to read.
+  it('reports a missing metafile as an upstream bundle failure, not as a guard finding', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bundled-cli-entry-guard-missing-meta-'));
+    try {
+      const absent = join(root, 'never-written.meta.json');
+      let caught: unknown;
+      try {
+        findBundledCliEntryGuards({ metafilePath: absent, baseDir: root });
+      } catch (error) {
+        caught = error;
+      }
+      // A bare ENOENT would satisfy "it threw", so assert the SHAPE that makes the
+      // failure legible, not merely that something was thrown.
+      expect(caught).toBeInstanceOf(Error);
+      const err = caught as Error & { code?: string; metafilePath?: string };
+      expect(err.name).toBe('MissingMetafileError');
+      expect(err.code).toBe('METAFILE_UNREADABLE');
+      expect(err.metafilePath).toBe(absent);
+      // The message must say which of the two failures this is, and must not be
+      // mistakable for a CLI-entry guard finding.
+      expect(err.message).toContain('This check did NOT fail');
+      expect(err.message).toContain(absent);
+      // The real ENOENT is preserved for anyone who wants it, never discarded.
+      expect((err.cause as NodeJS.ErrnoException | undefined)?.code).toBe('ENOENT');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects unparseable metafile JSON the same legible way', () => {
+    const root = mkdtempSync(join(tmpdir(), 'bundled-cli-entry-guard-bad-meta-'));
+    try {
+      const truncated = join(root, 'truncated.meta.json');
+      // A bundler killed mid-write leaves a partial file: readable, not parseable.
+      writeFileSync(truncated, '{"inputs": {"scripts/a.mjs"');
+      expect(() => findBundledCliEntryGuards({ metafilePath: truncated, baseDir: root })).toThrow(
+        /This check did NOT fail/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // The scanner can only be reached with a missing metafile if the esbuild call before it
+  // did not abort the subshell. bundle-host.sh runs that call inside `if ! ( … )`, where
+  // Bash disables errexit — so the abort has to be written out explicitly. This pins that
+  // it still is. Source-level by necessity: running the real 47MB bundle in a unit test is
+  // not viable, and the defect lives in the shell control flow, not in any JS module.
+  it('bundle-host.sh aborts on an esbuild failure before running this scanner', () => {
+    const repoRoot = resolve(process.cwd(), '../..');
+    // Subject path is overridable so falsifiability can be proved against a COPY or a
+    // historical snapshot (scripts/mutation-probe.sh) instead of mutating the shared tree —
+    // the sweep commits the whole tree every few minutes, so an in-tree mutation probe can
+    // commit its own mutant even when nothing goes wrong.
+    const subject = process.env.PROBE_BUNDLE_HOST_SH || join(repoRoot, 'apps/operator/bin/bundle-host.sh');
+    const script = readFileSync(subject, 'utf8');
+    const esbuildIdx = script.indexOf('npx --yes esbuild@');
+    const scannerIdx = script.indexOf('check-bundled-cli-entry-guards.mjs');
+    expect(esbuildIdx).toBeGreaterThan(-1);
+    expect(scannerIdx).toBeGreaterThan(esbuildIdx);
+    // The esbuild invocation itself must be failure-checked.
+    expect(script).toMatch(/if ! npx --yes esbuild@/);
+    // And it must exit between esbuild and the scanner, so the scanner never runs on a
+    // metafile esbuild did not write.
+    const between = script.slice(esbuildIdx, scannerIdx);
+    expect(between).toMatch(/exit 1/);
+    // The fallback banner must not assert a cause it cannot know: the bundle step is
+    // esbuild + this scanner + ascii-escape + the atomic swap, and any of them can fail.
+    expect(script).not.toMatch(/FAILED — the esbuild error is above/);
   });
 });

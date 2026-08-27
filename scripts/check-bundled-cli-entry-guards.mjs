@@ -34,8 +34,38 @@ function isRepoSource(file) {
  * Resolve an esbuild metafile input relative to the directory where the
  * bundler ran (bundle-host.sh runs from apps/operator).
  */
+export class MissingMetafileError extends Error {
+  constructor(metafilePath, cause) {
+    super(
+      `esbuild metafile is missing or unreadable: ${metafilePath}\n` +
+        'This check did NOT fail — the bundle step never produced a metafile, which means the ' +
+        'esbuild run before it failed, was killed, or was never reached. Look ABOVE this message ' +
+        "for the real error; do not read this as a CLI-entry guard finding.",
+      { cause },
+    );
+    this.name = 'MissingMetafileError';
+    this.code = 'METAFILE_UNREADABLE';
+    this.metafilePath = metafilePath;
+  }
+}
+
 export function bundledInputPaths(metafilePath, baseDir) {
-  const metafile = JSON.parse(readFileSync(metafilePath, 'utf8'));
+  // WI-55467: an unhandled ENOENT here printed a raw Node traceback into the host boot
+  // log and buried the actual esbuild failure that caused the metafile to be absent —
+  // then bundle-host.sh reported it as "bundling FAILED — the esbuild error is above".
+  // Fail with a message that says which of the two it actually is.
+  let raw;
+  try {
+    raw = readFileSync(metafilePath, 'utf8');
+  } catch (error) {
+    throw new MissingMetafileError(metafilePath, error);
+  }
+  let metafile;
+  try {
+    metafile = JSON.parse(raw);
+  } catch (error) {
+    throw new MissingMetafileError(metafilePath, error);
+  }
   const inputs = Object.keys(metafile?.inputs ?? {});
   return inputs
     .map((input) => (isAbsolute(input) ? input : resolve(baseDir, input)))
@@ -69,7 +99,19 @@ function main() {
     process.exitCode = 2;
     return;
   }
-  const findings = findBundledCliEntryGuards({ metafilePath, baseDir: resolve(baseDir) });
+  let findings;
+  try {
+    findings = findBundledCliEntryGuards({ metafilePath, baseDir: resolve(baseDir) });
+  } catch (error) {
+    if (error instanceof MissingMetafileError) {
+      // Exit 2 (usage/precondition), never 1 (= real guard findings), so a caller can tell
+      // "the bundle step upstream broke" from "a raw ESM self-exec guard reached the bundle".
+      console.error(`✖ ${error.message}`);
+      process.exitCode = 2;
+      return;
+    }
+    throw error;
+  }
   if (findings.length > 0) {
     console.error(`✖ bundled CLI-entry guard check failed: ${findings.length} raw guard(s) reached the bundle graph.`);
     for (const finding of findings) console.error(`  ${finding.file}:${finding.line}  ${finding.kind}`);
