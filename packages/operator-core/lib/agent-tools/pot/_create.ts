@@ -376,6 +376,8 @@ export async function createPotHarness(opts: CreatePotOpts): Promise<CreatePotRe
     //    P-002 / D-001): plan-started / work-item-created / escalation-raised.
     //    REPLACE — a fresh pot has no tuned policy to preserve. Best-effort:
     //    pot:start re-affirms (ENSURE) so a transient failure here self-heals.
+    //    The helper is retirement-aware: after P-068 it is a no-op, because a
+    //    newly-created Pot is still a valid container but `pot:wake` refuses.
     try {
       const { armDefaultPotWakeSubscriptions, blueprintWakeSubscriptions } = await import(
         '../../pot/wake-defaults'

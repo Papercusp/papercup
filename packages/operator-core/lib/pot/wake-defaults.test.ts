@@ -9,6 +9,14 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
+const runtime = vi.hoisted(() => ({ mugKettleEnabled: true }));
+// These tests preserve the legacy enabled-tier policy as a pure compatibility
+// fixture. The live runtime is permanently retired; the retirement no-op itself
+// is pinned below so the old matching semantics remain independently testable.
+vi.mock('./started', () => ({
+  mugKettleSystemEnabled: async () => runtime.mugKettleEnabled,
+}));
+
 const stateStore = new Map<string, unknown>();
 vi.mock('../operator-state-pg', () => ({
   readOperatorState: async (key: string) => stateStore.get(key) ?? null,
@@ -51,6 +59,7 @@ const potWakeMatches = (e: ToolInvocationEvent) =>
 
 beforeEach(() => {
   stateStore.clear();
+  runtime.mugKettleEnabled = true;
   _resetReactionsForTests();
 });
 
@@ -148,6 +157,17 @@ describe('withDefaultPotWakeSubscriptions (EI-10525 — always-armed demand-wake
 });
 
 describe('armDefaultPotWakeSubscriptions', () => {
+
+  it('does not arm refused wake rules after the Mug/Kettle/Cup tier retires (P-068)', async () => {
+    runtime.mugKettleEnabled = false;
+
+    const result = await armDefaultPotWakeSubscriptions(WS, { mode: 'replace' });
+
+    expect(result).toEqual({ rules: 0, added: 0 });
+    expect((await readPotWakeState(WS)).subscriptions).toEqual([]);
+    expect(potWakeMatches(ev('work_items:create', { ok: true, workItem: { id: 'WI-retired' } }))).toHaveLength(0);
+  });
+
   it("'replace' persists the defaults and projects three live rules", async () => {
     const { rules, added } = await armDefaultPotWakeSubscriptions(WS, { mode: 'replace' });
     expect(rules).toBe(3);

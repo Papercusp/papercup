@@ -20,6 +20,7 @@ import {
   setPotEventSubscriptions,
   type PotEventSubscription,
 } from './wake';
+import { mugKettleSystemEnabled } from './started';
 
 /**
  * Map a blueprint's declared `wake.subscriptions` ({ on, note }) into runtime
@@ -167,6 +168,14 @@ export async function armDefaultPotWakeSubscriptions(
     installSlug?: string;
   },
 ): Promise<{ rules: number; added: number }> {
+  // The Mug/Kettle/Cup actuator tier is permanently retired (P-068/D-098).
+  // Pot creation still owns this legacy best-effort seam, so make the retirement
+  // explicit here: a Pot remains a valid container, but creating one must not
+  // persist event rules whose only target (`pot:wake`) now refuses forever.
+  // Keep the pure/default helpers above available for historical enabled-tier
+  // fixtures and for callers that need to inspect the legacy policy.
+  if (!(await mugKettleSystemEnabled())) return { rules: 0, added: 0 };
+
   // P-013: the blueprint's declared wake.subscriptions WIN over the built-in
   // universal three; a pot that declares none (the coding pot + generic-pot
   // today) falls back to the defaults, so behavior is unchanged.

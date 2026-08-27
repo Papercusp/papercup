@@ -12,6 +12,14 @@ import {
   matchReactions,
 } from '../events/registry';
 
+const runtime = vi.hoisted(() => ({ mugKettleEnabled: true }));
+// Keep the legacy projection tests explicitly in the enabled-tier fixture. The
+// live runtime is permanently retired; registerPotWakeRules has a separate
+// regression below proving stale persisted rules are not re-projected.
+vi.mock('./started', () => ({
+  mugKettleSystemEnabled: async () => runtime.mugKettleEnabled,
+}));
+
 // EI-3282 regression: `registerPotWakeRules` is the boot-time re-projection of
 // PERSISTED event subscriptions into the in-memory reaction registry (see the
 // module doc comment on wake.ts: "Re-registered at boot ... since the rule
@@ -49,6 +57,7 @@ beforeEach(() => {
     delete process.env[k];
   }
   potWakeStateStore.clear();
+  runtime.mugKettleEnabled = true;
 });
 afterEach(() => {
   for (const k of ENV_KEYS) {
@@ -237,6 +246,21 @@ describe('syncPotWakeRules (subscriptions → live reaction rules)', () => {
 
 describe('registerPotWakeRules (EI-3282: event-wake subscriptions survive a host reboot)', () => {
   const WS = 'ws-reboot-test';
+
+  it('does not re-project stale persisted subscriptions after tier retirement (P-068)', async () => {
+    potWakeStateStore.set(WS, {
+      subscriptions: [{ on: 'work_items:create', note: 'legacy default' }],
+      declaredAt: 1,
+    });
+    // Simulate the old rules already being resident in a long-lived worker.
+    syncPotWakeRules(WS, [{ on: 'work_items:create' }]);
+    runtime.mugKettleEnabled = false;
+
+    const n = await registerPotWakeRules(WS);
+
+    expect(n).toBe(0);
+    expect(listReactionRules().filter((r) => r.id.startsWith(`pot-wake:${WS}#`))).toHaveLength(0);
+  });
 
   it('re-projects PERSISTED subscriptions into the live registry when it starts EMPTY (simulated post-reboot boot)', async () => {
     // Simulate a prior process having persisted subscriptions to PG, then dying —

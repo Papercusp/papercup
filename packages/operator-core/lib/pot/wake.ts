@@ -42,6 +42,7 @@ import {
 import { setCarryNote, getCarryNote, getCarryJournal, hiveScope } from '../carry-note';
 import { UNVERIFIED_NOTE_STAMP } from './owner-claim-guard';
 import { trackDetached } from '../detached-imports';
+import { mugKettleSystemEnabled } from './started';
 // The Mug carry-journal converged onto the ONE shared carry-note substrate
 // (su-cold-auto-mode-2026-07-03 P-001 / D-004). The journal ring primitives moved
 // there; re-exported here for back-compat importers (pot/carry-journal.test.ts).
@@ -501,6 +502,14 @@ export async function getPotCarryNote(workspaceId?: string): Promise<string | nu
 export async function registerPotWakeRules(workspaceId?: string): Promise<number> {
   const ws = workspaceId ?? activeWorkspaceId();
   try {
+    // P-068/D-098 retired every Pot actuator, including `pot:wake`. Persisted
+    // subscriptions can outlive that retirement, so never re-project them into
+    // live reaction rules. Clearing the process-local projection here also heals
+    // a worker that loaded the old rules before a restart or invalidation.
+    if (!(await mugKettleSystemEnabled())) {
+      syncPotWakeRules(ws, []);
+      return 0;
+    }
     const state = await readPotWakeState(ws);
     return syncPotWakeRules(ws, state.subscriptions);
   } catch (e) {
