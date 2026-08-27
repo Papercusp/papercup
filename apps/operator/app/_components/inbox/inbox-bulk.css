@@ -199,6 +199,17 @@
   border-color: color-mix(in srgb, var(--good, #34d399) 80%, transparent);
 }
 .op-inbox__bulk-accept-all:disabled { opacity: 0.5; cursor: default; }
+.op-inbox__bulk-continue {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  flex: 1 1 auto; min-height: 38px; border-radius: 9px; cursor: pointer;
+  font-size: 12.5px; font-weight: 750; color: #dbeafe;
+  border: 1px solid color-mix(in srgb, #38bdf8 58%, transparent);
+  background: linear-gradient(145deg, color-mix(in srgb, #0ea5e9 28%, transparent), color-mix(in srgb, #0369a1 36%, transparent));
+}
+.op-inbox__bulk-continue:hover:not(:disabled) {
+  border-color: color-mix(in srgb, #7dd3fc 82%, transparent);
+}
+.op-inbox__bulk-continue:disabled { opacity: 0.5; cursor: default; }
 .op-inbox__bulk-ghost {
   display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
   min-height: 26px; padding: 0 9px; border-radius: 7px;

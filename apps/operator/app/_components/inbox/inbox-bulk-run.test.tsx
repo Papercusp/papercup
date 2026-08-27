@@ -299,6 +299,79 @@ describe("InboxBulkStrip review handoff", () => {
       ),
     ).toHaveLength(1);
   });
+
+  it("continues all 105 untouched rows from a 127-item prior run while preserving its 22 outcomes", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        phase: "running",
+        launched: true,
+        preservedOutcomes: 22,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const recommendations = Array.from({ length: 9 }, (_, position) =>
+      mkRec({ itemId: `review-${position}`, position }),
+    );
+    const resolved = Array.from({ length: 13 }, (_, index) =>
+      mkRec({
+        itemId: `resolved-${index}`,
+        position: recommendations.length + index,
+        outcome: "auto_resolved",
+      }),
+    );
+    const unreached = Array.from({ length: 105 }, (_, index) =>
+      mkRec({
+        itemId: `remaining-${index}`,
+        position: recommendations.length + resolved.length + index,
+        outcome: "pending",
+        actionId: null,
+      }),
+    );
+
+    render(
+      <InboxBulkStrip
+        visible={[]}
+        filterSnapshot={{ tier: "decision" }}
+        run={{
+          runId: "run-partial-127",
+          phase: "review",
+          totalItems: 127,
+          autoResolved: 13,
+          recommended: 9,
+          skipped: 0,
+          failed: 0,
+          error: null,
+          createdAt: "2026-08-25T00:00:00.000Z",
+          startedAt: "2026-08-25T00:00:00.000Z",
+          finishedAt: "2026-08-25T00:05:00.000Z",
+        }}
+        items={[...recommendations, ...resolved, ...unreached]}
+        recommendations={recommendations}
+        unreached={unreached}
+        isRunning={false}
+        isReview
+        onRunStarted={vi.fn()}
+        onReview={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByTestId("inbox-bulk-review-headline").textContent).toContain(
+      "9 need your call · 13 auto-resolved · 105 not reached",
+    );
+    const continueButton = screen.getByTestId("inbox-bulk-continue");
+    expect(continueButton.textContent).toContain("Continue 105 remaining");
+    fireEvent.click(continueButton);
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body).toEqual({
+      op: "resume",
+      runId: "run-partial-127",
+      itemIds: unreached.map((item) => item.itemId),
+    });
+  });
 });
 
 describe("recommendationValidity — LOCKSTEP with attentionItemToCardSpec", () => {

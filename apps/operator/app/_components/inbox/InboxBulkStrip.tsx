@@ -28,7 +28,14 @@
  * item stays individually resolvable by hand in both cases.
  */
 import { useCallback, useState } from "react";
-import { ChevronRight, Loader2, Sparkles, Square, X } from "lucide-react";
+import {
+  ChevronRight,
+  Loader2,
+  RotateCw,
+  Sparkles,
+  Square,
+  X,
+} from "lucide-react";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import {
   deriveRunCounts,
@@ -84,10 +91,11 @@ export default function InboxBulkStrip({
   onRunStarted,
   onReview,
 }: InboxBulkStripProps) {
-  const { start, stop, restart } = useBulkRunOps();
+  const { start, stop, restart, resume } = useBulkRunOps();
   const resolverSettings = useBulkResolverSettings("inbox-resolve");
   const [starting, setStarting] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = deriveRunCounts(items, run);
 
@@ -155,6 +163,30 @@ export default function InboxBulkStrip({
     beginInteraction(PERF_INTERACTIONS.inboxBulkReportOpen);
     onReview(run.runId);
   }, [onReview, run]);
+
+  const onResume = useCallback(async () => {
+    if (!run || resuming || unreached.length === 0) return;
+    const itemIds = unreached.map((item) => item.itemId);
+    setResuming(true);
+    setNotice(null);
+    try {
+      const result = await resume(run.runId, itemIds);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not continue the remaining items");
+      } else if (!result.launched) {
+        setNotice(
+          `resolver could not continue${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
+      } else {
+        const preserved = result.preservedOutcomes ?? 0;
+        setNotice(
+          `Continuing ${itemIds.length} remaining · ${preserved} prior outcome${preserved === 1 ? "" : "s"} preserved`,
+        );
+      }
+    } finally {
+      setResuming(false);
+    }
+  }, [resume, resuming, run, unreached]);
 
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
@@ -263,17 +295,43 @@ export default function InboxBulkStrip({
             type="button"
             className="op-inbox__bulk-accept-all"
             data-testid="inbox-bulk-review-decisions"
-            disabled={pending === 0}
+            disabled={pending === 0 || resuming}
             onClick={openReview}
           >
             Review {pending} decision{pending === 1 ? "" : "s"}
             <ChevronRight size={14} aria-hidden="true" />
           </button>
+          {unreached.length > 0 ? (
+            <button
+              type="button"
+              className="op-inbox__bulk-continue"
+              data-testid="inbox-bulk-continue"
+              disabled={resuming}
+              onClick={() => void onResume()}
+            >
+              {resuming ? (
+                <span className="op-inbox__bulk-spin" aria-hidden="true">
+                  <Loader2 size={14} />
+                </span>
+              ) : (
+                <RotateCw size={14} aria-hidden="true" />
+              )}
+              {resuming
+                ? "Continuing…"
+                : `Continue ${unreached.length} remaining`}
+            </button>
+          ) : null}
         </div>
         <p className="op-inbox__bulk-hint">
-          Each recommendation is pre-picked from that item&rsquo;s real options
-          — open a row to accept, override or edit it.
+          Review returns to the decisions already prepared for you. Continue
+          sends only the untouched remainder back through the same saved run,
+          preserving every earlier outcome.
         </p>
+        {notice ? (
+          <div className="op-inbox__bulk-notice" role="status">
+            {notice}
+          </div>
+        ) : null}
       </div>
     );
   }
