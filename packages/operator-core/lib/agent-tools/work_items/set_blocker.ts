@@ -49,8 +49,13 @@ export default defineTool({
   name: 'work_items:set_blocker',
   profile: 'engineer',
   description:
-    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history. Returns activeBlockers, capabilityDispositions, and lifecycle.",
+    "Set or clear a TYPED external blocker on one or many work-items. `kind` names the trigger shape (event, gate, runtime, human); `capability` names what is actually missing (approval-auto-clearable, credential, physical-device, external-service-action, live-dependency, product-decision). Under AUTO/DRAIN, approval-auto-clearable is history-cleared instead of parking the item; authority cannot fabricate the others. Internal deps stay in work_items:link{rel:'blocks'} / plan blocked-by. clear:true PRESERVES history.",
   guidance: {
+    // P-011: response documentation lives here, not in `description` — `returns` is not
+    // counted against the 1500-char prompt-weight budget and is demand-loaded via
+    // tools:find instead of baked into every system prompt (the WI-9334 pattern).
+    returns:
+      'activeBlockers (the rows still holding this item), capabilityDispositions (what to await/obtain per capability; under AUTO/DRAIN a standing approval is history-cleared rather than parking the item), and lifecycle.',
     when: 'Work cannot proceed until a named event fires, a gate changes, runtime/external state becomes ready, or a human capability becomes available. Always pass capability when you know it; omitted legacy rows infer live-dependency, human rows product-decision. Use a stable ref and name the concrete nextVerb when one exists.',
     notWhen:
       "Another work-item must finish first — use work_items:link with rel:'blocks' (blocker id as source, blocked item as target), preserving the dependency graph. A vague concern with no actual stop condition is a comment, not a blocker.",
