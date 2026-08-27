@@ -476,6 +476,12 @@ export default defineTool({
           .describe(
             'signal provenance (frontier P-002) — default organic. ONLY a frontier loop passes non-organic (vaccination drill, replay counterfactual, shadow ablation); synthetic rows stay out of organic learners',
           ),
+        signalOrigin: z
+          .enum(['organic', 'drill', 'replay', 'shadow'])
+          .optional()
+          .describe(
+            'compatibility alias for origin; the persisted/domain model calls this signalOrigin. Prefer origin for new calls. Do not pass both with different values.',
+          ),
         lane: z
           .enum(['improvement', 'observation'])
           .optional()
@@ -694,6 +700,13 @@ export default defineTool({
       })
       .strict()
       .superRefine((args, ctx) => {
+        if (args.origin !== undefined && args.signalOrigin !== undefined && args.origin !== args.signalOrigin) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['signalOrigin'],
+            message: 'conflicting origin values: pass origin or signalOrigin, not both with different values',
+          });
+        }
         if (!args.title && !args.toolFailure) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
@@ -706,6 +719,15 @@ export default defineTool({
   ),
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
+    // EI-21601117899178959: direct handler callers (including older in-process
+    // dispatchers) may bypass the args preprocessor. Keep the same canonicalization
+    // and conflict guard here so the core never receives a silently dropped alias.
+    if (args.origin !== undefined && args.signalOrigin !== undefined && args.origin !== args.signalOrigin) {
+      throw new ObservationEvidenceError(
+        'conflicting origin values: pass origin or signalOrigin, not both with different values',
+      );
+    }
+    const captureOrigin = args.origin ?? args.signalOrigin;
     const source = id.source === 'omp-hook-session' || id.source === 'static-client' ? 'su' : 'engineer';
     // Resolve the filer's ROLE for per-role observation attribution (close the
     // ~100%-'unknown' gap, 2026-06-21). The caller is LIVE while it files, so its
@@ -902,7 +924,7 @@ export default defineTool({
           force: args.force,
           checkDuplicatesOnly: args.checkDuplicatesOnly,
           requireCompleteDedupCoverage,
-          origin: args.origin,
+          origin: captureOrigin,
           lane: effectiveLane,
           watchdogKey: captureWatchdogKey,
           payloadExtra:

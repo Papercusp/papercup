@@ -82,6 +82,23 @@ export function coerceCaptureKind(raw: unknown): unknown {
   return out;
 }
 
+/**
+ * EI-21601117899178959: the improvement capture core calls this field `origin`,
+ * while the persisted/domain model exposes the same learning provenance as
+ * `signalOrigin`. Accept the latter at the public tool boundary and canonicalize
+ * it before the handler forwards the capture to the core. When both spellings are
+ * present, retain them so the args schema can reject a conflicting pair loudly;
+ * equal values are harmless and collapse to the canonical `origin` field.
+ */
+function coerceSignalOrigin(raw: unknown): unknown {
+  if (!isPlainObject(raw) || raw.signalOrigin === undefined) return raw;
+  if (raw.origin !== undefined && raw.origin !== raw.signalOrigin) return raw;
+
+  const out: Record<string, unknown> = { ...raw, origin: raw.origin ?? raw.signalOrigin };
+  delete out.signalOrigin;
+  return out;
+}
+
 const IDEATE_PROVENANCE_RE = /su-ideate/i;
 
 function hasIdeationContent(v: unknown): boolean {
@@ -121,5 +138,5 @@ export function coerceIdeateProvenance(raw: unknown): unknown {
  *  remember the order — `coerceIdeateProvenance` depends on `coerceCaptureKind` having
  *  already normalised `kind` to a valid enum member or removed it. */
 export function coerceCaptureArgs(raw: unknown): unknown {
-  return coerceIdeateProvenance(coerceCaptureKind(raw));
+  return coerceIdeateProvenance(coerceSignalOrigin(coerceCaptureKind(raw)));
 }
