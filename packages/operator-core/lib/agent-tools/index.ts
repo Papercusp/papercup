@@ -901,6 +901,7 @@ import './db/migrate-policy';
 import './routines/list';
 import './routines/set';
 import './routines/group-set';
+import './routines/revert';
 // git-sync:run — fire git-sync once on demand (WI-1320; the manual lever git-sync lacked,
 // so a force-deploy ships CURRENT staging not stale).
 import './git_sync/run';

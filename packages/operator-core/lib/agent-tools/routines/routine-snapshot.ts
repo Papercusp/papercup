@@ -1,0 +1,110 @@
+import type { Sql } from 'postgres';
+
+/** The complete persisted state needed to restore one routine exactly. */
+export interface RoutineSnap {
+  triggerConfig: Record<string, unknown>;
+  payloadTemplate: Record<string, unknown>;
+  active: boolean;
+  nextFireAtIso: string | null;
+  groupSlug: string | null;
+  metadata: Record<string, unknown>;
+}
+
+interface RoutineRow {
+  trigger_config: Record<string, unknown> | null;
+  payload_template: Record<string, unknown> | null;
+  active: boolean;
+  next_fire_at: Date | string | number | null;
+  group_slug: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validate the JSON stored in a control audit row before using it as a restore
+ * target. Audit rows are durable input, so malformed/legacy rows must fail
+ * closed rather than partially restoring a routine.
+ */
+export function parseRoutineSnap(value: unknown): RoutineSnap | null {
+  if (!isRecord(value)) return null;
+  if (!isRecord(value.triggerConfig) || !isRecord(value.payloadTemplate) || !isRecord(value.metadata)) return null;
+  if (typeof value.active !== 'boolean') return null;
+  if (value.nextFireAtIso !== null && typeof value.nextFireAtIso !== 'string') return null;
+  if (value.groupSlug !== null && typeof value.groupSlug !== 'string') return null;
+  return {
+    triggerConfig: value.triggerConfig,
+    payloadTemplate: value.payloadTemplate,
+    active: value.active,
+    nextFireAtIso: value.nextFireAtIso,
+    groupSlug: value.groupSlug,
+    metadata: value.metadata,
+  };
+}
+
+function stableJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableJson);
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableJson(value[key])]));
+  }
+  return value;
+}
+
+/** Compare snapshots by value, independent of JSON object-key insertion order. */
+export function routineSnapEqual(left: RoutineSnap, right: RoutineSnap): boolean {
+  return JSON.stringify(stableJson(left)) === JSON.stringify(stableJson(right));
+}
+
+export async function readRoutineSnap(
+  sql: Sql,
+  workspaceId: string,
+  installSlug: string,
+  name: string,
+): Promise<RoutineSnap> {
+  const rows = await sql<RoutineRow[]>`
+    SELECT trigger_config, payload_template, active, next_fire_at, group_slug, metadata
+      FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = ${name}
+     LIMIT 1`;
+  if (rows.length === 0) throw new Error(`routine not found: ${installSlug}/${name} (use routines:list to see names)`);
+  const row = rows[0];
+  const nextDate = row.next_fire_at == null ? null : new Date(row.next_fire_at);
+  return {
+    triggerConfig: row.trigger_config ?? {},
+    payloadTemplate: row.payload_template ?? {},
+    active: row.active,
+    nextFireAtIso: nextDate && !Number.isNaN(nextDate.getTime()) ? nextDate.toISOString() : null,
+    groupSlug: row.group_slug ?? null,
+    metadata: row.metadata ?? {},
+  };
+}
+
+export async function writeRoutineSnap(
+  sql: Sql,
+  workspaceId: string,
+  installSlug: string,
+  name: string,
+  snap: RoutineSnap,
+): Promise<void> {
+  // The FK (workspace_id, group_slug) requires an assigned group to exist.
+  // Match routines:set's existing behavior by creating a blank group row on
+  // first assignment; routines:group-set fills in its metadata.
+  if (snap.groupSlug) {
+    await sql`
+      INSERT INTO harness_shared.routine_groups (workspace_id, slug)
+      VALUES (${workspaceId}, ${snap.groupSlug})
+      ON CONFLICT (workspace_id, slug) DO NOTHING`;
+  }
+  await sql`
+    UPDATE harness_shared.routines
+       SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::text::jsonb,
+           payload_template = ${JSON.stringify(snap.payloadTemplate)}::text::jsonb,
+           active = ${snap.active},
+           next_fire_at = ${snap.nextFireAtIso}::timestamptz,
+           group_slug = ${snap.groupSlug},
+           metadata = ${JSON.stringify(snap.metadata)}::text::jsonb,
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = ${name}`;
+}

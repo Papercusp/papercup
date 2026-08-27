@@ -20,6 +20,7 @@ import { checkActiveCheckpointRun } from '../../release-checkpoint-launch';
 import { readCheckpointSerializerAuthority } from '../../release/checkpoint-serializer-authority';
 import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from '../coordination/identity';
+import { readRoutineSnap, writeRoutineSnap, type RoutineSnap } from './routine-snapshot';
 
 /**
  * Best-effort caller ownerId for the pause-attribution stamp. A ctx-supplied
@@ -36,15 +37,6 @@ export function pausedByFrom(ctx: unknown, role: string | undefined): string {
   } catch {
     return `role:${role}`;
   }
-}
-
-interface RoutineSnap {
-  triggerConfig: Record<string, unknown>;
-  payloadTemplate: Record<string, unknown>;
-  active: boolean;
-  nextFireAtIso: string | null;
-  groupSlug: string | null;
-  metadata: Record<string, unknown>;
 }
 
 const isPlainObject = (v: unknown): v is Record<string, unknown> =>
@@ -253,46 +245,8 @@ export default defineTool({
       await assertGreenCheckpointResumeAdmission(slug, args.name, pausedByFrom(ctx, ctx.role));
     }
 
-    const readSnap = async (): Promise<RoutineSnap> => {
-      const rows = await sql<Array<{ trigger_config: Record<string, unknown> | null; payload_template: Record<string, unknown> | null; active: boolean; next_fire_at: Date | null; group_slug: string | null; metadata: Record<string, unknown> | null }>>`
-        SELECT trigger_config, payload_template, active, next_fire_at, group_slug, metadata
-          FROM harness_shared.routines
-         WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}
-         LIMIT 1`;
-      if (rows.length === 0) throw new Error(`routine not found: ${slug}/${args.name} (use routines:list to see names)`);
-      const r = rows[0];
-      const nextIso = r.next_fire_at && !Number.isNaN(new Date(r.next_fire_at).getTime()) ? new Date(r.next_fire_at).toISOString() : null;
-      return {
-        triggerConfig: r.trigger_config ?? {},
-        payloadTemplate: r.payload_template ?? {},
-        active: r.active,
-        nextFireAtIso: nextIso,
-        groupSlug: r.group_slug ?? null,
-        metadata: r.metadata ?? {},
-      };
-    };
-
-    const writeSnap = async (snap: RoutineSnap): Promise<void> => {
-      // Auto-create the group (blank metadata) on first assignment — the FK
-      // (workspace_id, group_slug) -> routine_groups requires the row to exist;
-      // routines:group-set is where a steward fills in description/steward/cadence.
-      if (snap.groupSlug) {
-        await sql`
-          INSERT INTO harness_shared.routine_groups (workspace_id, slug)
-          VALUES (${ws}, ${snap.groupSlug})
-          ON CONFLICT (workspace_id, slug) DO NOTHING`;
-      }
-      await sql`
-        UPDATE harness_shared.routines
-           SET trigger_config = ${JSON.stringify(snap.triggerConfig)}::text::jsonb,
-               payload_template = ${JSON.stringify(snap.payloadTemplate)}::text::jsonb,
-               active = ${snap.active},
-               next_fire_at = ${snap.nextFireAtIso}::timestamptz,
-               group_slug = ${snap.groupSlug},
-               metadata = ${JSON.stringify(snap.metadata)}::text::jsonb,
-               updated_at = now()
-         WHERE workspace_id = ${ws} AND install_slug = ${slug} AND name = ${args.name}`;
-    };
+    const readSnap = (): Promise<RoutineSnap> => readRoutineSnap(sql, ws, slug, args.name);
+    const writeSnap = (snap: RoutineSnap): Promise<void> => writeRoutineSnap(sql, ws, slug, args.name, snap);
 
     const outcome = await runControlMutation<RoutineSnap>(
       {
@@ -445,6 +399,11 @@ export default defineTool({
       })();
     }
 
+    const revertHandle =
+      outcome.auditId && outcome.applied && !outcome.reverted
+        ? { tool: 'routines:revert', args: { auditId: outcome.auditId } }
+        : undefined;
+
     return {
       content: [
         {
@@ -458,6 +417,7 @@ export default defineTool({
             preview: outcome.preview,
             verify: outcome.verify,
             auditId: outcome.auditId,
+            revertHandle,
           }),
         },
       ],
