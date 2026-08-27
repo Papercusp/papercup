@@ -17,7 +17,10 @@ const mocks = vi.hoisted(() => ({
   kill: vi.fn(),
   resolveGoalLaunch: vi.fn(),
   resolveGoalContext: vi.fn(),
+  capacity: vi.fn(),
+  emitEvent: vi.fn(),
   events: [] as string[],
+  headcountEvents: [] as Record<string, unknown>[],
 }));
 
 vi.mock('@papercusp/flags/server', () => ({
@@ -58,6 +61,12 @@ vi.mock('../../goal-launch-settings', () => ({
 }));
 vi.mock('../../modes/goal-context', () => ({
   resolveGoalContext: (...args: unknown[]) => mocks.resolveGoalContext(...args),
+}));
+vi.mock('../../agent-tools/fleet/capacity', () => ({
+  default: { handler: (...args: unknown[]) => mocks.capacity(...args) },
+}));
+vi.mock('../../events/await/engine', () => ({
+  emitAwaitedEvent: (...args: unknown[]) => mocks.emitEvent(...args),
 }));
 vi.mock('../../mcp-base-url', () => ({
   resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070',
@@ -125,6 +134,7 @@ const baseConfig = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.events.length = 0;
+  mocks.headcountEvents.length = 0;
   mocks.getFlag.mockResolvedValue(true);
   mocks.listTargets.mockResolvedValue([{ workspaceId: 'ws', fleetSlug: 'fleet-a' }]);
   mocks.claimAttempt.mockResolvedValue({
@@ -153,9 +163,155 @@ beforeEach(() => {
   });
   mocks.resolveGoalLaunch.mockResolvedValue({ effective: {}, refusal: null });
   mocks.resolveGoalContext.mockResolvedValue(null);
+  mocks.capacity.mockImplementation(async (args: { headroom?: number }) => ({
+    content: [{
+      type: 'text',
+      text: JSON.stringify({
+        ok: true,
+        reachable: true,
+        verdict: 'measured',
+        provider: 'codex',
+        recommendedHeadroom: args.headroom ?? 0,
+        advice: 'fleet provider capacity measured',
+      }),
+    }],
+  }));
+  mocks.emitEvent.mockImplementation(async (args: { payload?: Record<string, unknown> }) => {
+    mocks.headcountEvents.push(args.payload ?? {});
+  });
 });
 
 describe('fleet headcount governor I/O ordering (P-004)', () => {
+  it('clamps a measured bulk refill before opening terminals and persists the residual wall', async () => {
+    mocks.claimAttempt.mockResolvedValue({
+      workspaceId: 'ws',
+      fleetSlug: 'fleet-a',
+      target: 5,
+      config: { ...baseConfig, productiveCapacityFloor: 1 },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+      claimedAt: 1,
+    });
+    const transaction = {
+      version: 1 as const,
+      transactionId: 'tx-ready',
+      launcherOwnerId: 'su-leader',
+      state: 'verified' as const,
+      requestedAt: 1,
+      updatedAt: 1,
+      requestedMemberIds: ['su-a', 'su-b'],
+      openedMemberIds: ['su-a', 'su-b'],
+      verifiedMemberIds: ['su-a', 'su-b'],
+      unconfirmedMemberIds: [],
+      workerReadyMemberIds: ['su-a', 'su-b'],
+      workerAttestations: [readyAttestation('su-a', true), readyAttestation('su-b', true)],
+      failed: [],
+      waves: [{ index: 0, ownerIds: ['su-a', 'su-b'], state: 'verified' as const }],
+      recovery: { retryOwnerIds: [], nextAction: 'observe' },
+      governor: {
+        version: 1 as const,
+        probeOwnerIds: ['su-a', 'su-b'],
+        attestationAttempts: {},
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: null,
+      },
+    };
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: transaction,
+    });
+    mocks.capacity.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          reachable: true,
+          verdict: 'measured',
+          provider: 'codex',
+          recommendedHeadroom: 1,
+          advice: 'provider has one spare slot',
+        }),
+      }],
+    });
+    let rosterRead = 0;
+    mocks.liveMemberIds.mockImplementation(async () => {
+      rosterRead += 1;
+      if (rosterRead === 1) return ['su-a', 'su-b'];
+      const replacement = mocks.spawnHeadless.mock.calls[0]?.[0]?.coordOwnerId;
+      return replacement ? ['su-a', 'su-b', replacement] : ['su-a', 'su-b'];
+    });
+    mocks.verify.mockImplementation(async (args: { expectedOwnerIds: string[] }) =>
+      verifierResult(args.expectedOwnerIds[0]!, true));
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.capacity).toHaveBeenCalledWith(
+      expect.objectContaining({ fleet: 'fleet-a', headroom: 3 }),
+      expect.anything(),
+    );
+    expect(mocks.spawnHeadless).toHaveBeenCalledTimes(1);
+    expect(mocks.claimSlot).toHaveBeenCalledWith(
+      expect.objectContaining({ count: 1 }),
+    );
+    const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+    expect(persisted.governor.capacity).toMatchObject({
+      provider: 'codex', requested: 3, allowance: 1, residualShortfall: 2,
+      measured: true, wall: 'provider has one spare slot',
+    });
+    expect(mocks.headcountEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: 'refill-clamped', requested: 3, allowance: 1, residualShortfall: 2,
+      }),
+    ]));
+  });
+
+  it('refuses a zero-capacity refill before claiming a launch slot or pruning', async () => {
+    mocks.getFleet.mockResolvedValue({
+      fleetSlug: 'fleet-a',
+      leaderOwnerId: 'su-leader',
+      lastLaunchTransaction: null,
+    });
+    mocks.liveMemberIds.mockResolvedValue([]);
+    mocks.capacity.mockResolvedValue({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          ok: true,
+          reachable: true,
+          verdict: 'measured',
+          provider: 'codex',
+          recommendedHeadroom: 0,
+          advice: 'provider is exhausted until its reset window',
+        }),
+      }],
+    });
+
+    await runFleetHeadcountGovernor({
+      installSlug: 'papercusp', workspaceId: 'ws', triggerConfig: {}, payloadTemplate: null,
+    });
+
+    expect(mocks.claimSlot).not.toHaveBeenCalled();
+    expect(mocks.spawnHeadless).not.toHaveBeenCalled();
+    expect(mocks.kill).not.toHaveBeenCalled();
+    const persisted = mocks.setTransaction.mock.calls.at(-1)?.[0].transaction;
+    expect(persisted.governor.capacity).toMatchObject({
+      provider: 'codex', requested: 1, allowance: 0, residualShortfall: 1,
+      measured: true, wall: 'provider is exhausted until its reset window',
+    });
+    expect(persisted.governor.terminalVerdict).toMatchObject({
+      outcome: 'failed', action: 'wait',
+      reason: expect.stringContaining('provider capacity refused'),
+    });
+    expect(mocks.headcountEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'refusal', requested: 1, allowance: 0, residualShortfall: 1 }),
+    ]));
+  });
+
   it('refreshes a late boot to productive and performs no duplicate launch', async () => {
     const transaction = {
       version: 1 as const,

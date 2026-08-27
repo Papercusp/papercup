@@ -84,6 +84,19 @@ export interface FleetLaunchGovernorVerdict {
   reason: string;
 }
 
+/** Latest fleet-owned provider capacity decision used to size a governor wave.
+ * This is persisted alongside the launch transaction so a capacity wall and
+ * any residual shortfall remain visible after the routine tick settles. */
+export interface FleetLaunchCapacitySnapshot {
+  measuredAt: number;
+  provider: string | null;
+  requested: number;
+  allowance: number;
+  residualShortfall: number;
+  measured: boolean;
+  wall: string | null;
+}
+
 export interface FleetLaunchGovernorEvent {
   at: number;
   action: 'observe' | 'retry' | 'prune' | 'spawn' | 'respawn' | 'terminal';
@@ -105,6 +118,8 @@ export interface FleetLaunchGovernorState {
   retiredMemberIds: string[];
   history: FleetLaunchGovernorEvent[];
   terminalVerdict: FleetLaunchGovernorVerdict | null;
+  /** Last fleet-owned provider capacity measurement for a refill wave. */
+  capacity?: FleetLaunchCapacitySnapshot;
 }
 
 export interface FleetLaunchTransaction {
