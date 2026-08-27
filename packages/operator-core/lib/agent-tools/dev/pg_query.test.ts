@@ -105,6 +105,14 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(returns).toContain('`code:run` returns this root directly');
   });
 
+  it('documents PostgreSQL regex repetition limits and larger-excerpt alternatives', () => {
+    const description = (pgQueryTool as unknown as { description?: string }).description ?? '';
+    const chaining = (pgQueryTool as unknown as { guidance?: { chaining?: string } }).guidance?.chaining ?? '';
+    expect(description).toContain('limited to 255');
+    expect(chaining).toContain('left(text, n)');
+    expect(chaining).toContain('substring(text from start for n)');
+  });
+
   it('returns a relation description as structured data for transport-safe shaping', async () => {
     const description = {
       relation: 'harness_shared.tool_invocations',
@@ -503,6 +511,36 @@ describe('dev:pg_query — P-005 guard wiring', () => {
       code: '22P02',
       hint: expect.stringContaining("'harness_shared.engineer_issues_view_dml()'::regprocedure"),
     });
+  });
+
+  it('adds a targeted hint for an oversized PostgreSQL regex repetition', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('invalid regular expression: invalid repetition count(s)'), { code: '2201B' }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT regexp_matches('FOCUSED TEST example text', '(?s)(FOCUSED TEST.{0,1800})')",
+      } as never,
+      {} as never,
+    );
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '2201B',
+      hint: expect.stringContaining('limited to 255'),
+    });
+    expect(String(payloadOf(res as never).hint)).toContain('left(text_expression, n)');
+    expect(String(payloadOf(res as never).hint)).toContain('{0,1800}');
+  });
+
+  it('does not attach the oversized-bound hint to another repetition error shape', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('invalid regular expression: invalid repetition count(s)'), { code: '2201B' }),
+    );
+    const res = await pgQueryTool.handler(
+      { sql: "SELECT regexp_matches('example', '(x){0,255}')" } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).not.toHaveProperty('hint');
   });
 
   // EI-19415142351884573: a whole-call timeout is a distinct failure from a

@@ -34,6 +34,22 @@ export function playwrightOwnedTest(rootDir: string, { readFile }?: {
     readFile?: (p: string) => string;
 }): (absFile: string) => boolean;
 /**
+ * Whether Vitest's default UNIT config universally excludes this test path.
+ *
+ * Keep this contract byte-for-byte aligned with `LAYERED_TEST_FILE` and the unit-layer
+ * exclusion globs in `libs/test-config/src/vitest-config.ts`. A related selection is handed
+ * to the unit `test`/lane scripts as positional filters; allowing an integration or browser
+ * test through makes the unit config reject the entire invocation before any test runs.
+ *
+ * This deliberately does NOT classify every `.spec.*` file. Some workspaces own Vitest specs
+ * through a custom config, while the integration/browser suffixes are excluded by the shared
+ * unit config everywhere.
+ *
+ * @param {string} file test path, absolute or relative
+ * @returns {boolean} true when the unit Vitest layer excludes the file
+ */
+export function unitExcludedVitestTest(file: string): boolean;
+/**
  * A specifier is INTRA-REPO if it points at a path we ought to be able to resolve
  * ourselves — relative, or one of the repo's path aliases. A BARE specifier
  * (`node:fs`, `vitest`, `@papercusp/operator-core`) is deliberately out of graph:

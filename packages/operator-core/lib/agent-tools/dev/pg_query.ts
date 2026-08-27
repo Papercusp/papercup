@@ -84,11 +84,42 @@ function regprocedureSignatureHint(
   );
 }
 
+/**
+ * EI-21579265584174407: PostgreSQL's ARE engine rejects a large bounded
+ * repetition such as `.{0,1800}` (its repetition bounds are capped at 255).
+ * This is a caller-written SQL error, so return a targeted correction instead
+ * of sending the next context into a retry loop with the same PCRE-shaped
+ * extraction query. Only attach it when both the server error and the query
+ * prove this exact failure; unrelated regex errors should retain their native
+ * diagnostics.
+ */
+function postgresRegexRepetitionHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '2201B') return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  if (!/invalid\s+repetition\s+count/i.test(errorText)) return undefined;
+
+  const oversized = [...sql.matchAll(/\{\s*(\d+)\s*,\s*(\d+)\s*\}/g)].find(([, lower, upper]) => {
+    return Number(lower) > 255 || Number(upper) > 255;
+  });
+  if (!oversized) return undefined;
+
+  const [, lower, upper] = oversized;
+  return (
+    `PostgreSQL regular-expression repetition bounds are limited to 255; ` +
+    `the query contains {${lower},${upper}}. For a larger excerpt, use ` +
+    '`left(text_expression, n)` or `substring(text_expression from start for n)`; ' +
+    'use `.{m,n}` only when both bounds are at most 255.'
+  );
+}
+
 export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim.',
+    'Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts.',
   capability: 'intel:read',
   guidance: {
     when:
@@ -96,7 +127,7 @@ export default defineTool({
     notWhen:
       'A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.',
     chaining:
-      'Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`.',
+      'Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts.',
     returns:
       'SQL: `{ rowCount, truncated, fields, elapsedMs, rows, positiveControl?, absence? }`; zero rows is `absence.status:"unverified"` unless the same-transaction control found a row. `code:run` returns this root directly. Describe returns relation metadata. bigint/int8 stays exact.',
     seeAlso: [
@@ -452,6 +483,8 @@ export default defineTool({
       if (info.position) payload.position = info.position;
       const regprocedureHint = regprocedureSignatureHint(sql, info);
       if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
+      const regexRepetitionHint = postgresRegexRepetitionHint(sql, info);
+      if (regexRepetitionHint && !payload.hint) payload.hint = regexRepetitionHint;
       // P-005(a): a 42703 (undefined_column) carries the referenced tables'
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).

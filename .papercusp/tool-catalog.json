@@ -9229,7 +9229,7 @@
           "POST"
         ]
       },
-      "description": "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim.",
+      "description": "Run a bounded read-only SQL query, EXPLAIN a read, or describe a relation in operator Postgres. Tenant reads require scope unless `allowUnscoped`. Pass `positiveControlSql` when zero rows will support an absence claim. PostgreSQL regex repetition bounds are limited to 255; use `left()` or `substring()` for larger excerpts.",
       "capabilities": [
         "intel:read"
       ],
@@ -9248,7 +9248,7 @@
       "guidance": {
         "when": "A one-off analytic read or planner diagnostic not covered by a stable-shape tool.",
         "notWhen": "A documented read tool already covers the question, or to change state. Writes and EXPLAIN of writes are rejected.",
-        "chaining": "Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`."
+        "chaining": "Use `describe` before guessing schema. For an absence claim, pass a known-positive SELECT in `positiveControlSql`; do not use `count(*)`, which always returns a row. Alias duplicate columns and tighten the query when `truncated`. PostgreSQL ARE regex repetition bounds are at most 255 (`{m,n}`); use `left(text, n)` or `substring(text from start for n)` for larger excerpts."
       }
     },
     {
