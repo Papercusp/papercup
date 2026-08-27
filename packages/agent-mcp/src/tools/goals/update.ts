@@ -16,7 +16,6 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
-import type { RoleToolDefinition } from '@papercusp/tooldef/src/types';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
@@ -150,7 +149,7 @@ const goalUpdateArgs = z.object({
     ),
 });
 
-const goalUpdateTool: RoleToolDefinition<typeof goalUpdateArgs> = defineTool({
+const goalUpdateTool = defineTool({
   name: 'goals:update',
   needsWorkspaceTx: true,
   description:
