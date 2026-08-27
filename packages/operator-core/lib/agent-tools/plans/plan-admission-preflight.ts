@@ -222,7 +222,12 @@ export function evaluateExactPlanAdmission(args: {
   const featureZero = needed.has('feature') && args.laneHealth.featureFamily?.claimable === 0;
   const issueZero = needed.has('issue') && args.laneHealth.issueFamily.claimable === 0;
   const somePositive = (args.laneHealth.featureFamily?.claimable ?? 0) > 0 || args.laneHealth.issueFamily.claimable > 0;
-  if (unreachable || ((featureZero || issueZero) && somePositive)) {
+  const familyDisagreement = (featureZero || issueZero) && somePositive;
+  // A mixed plan can still feed a bounded launch from the family that has a
+  // claimable row. Treat the zero family as diagnostic context when the
+  // requested seat count is already satisfied; an unbounded plans:start call
+  // and a request with a real shortfall retain the refusal diagnostics.
+  if (unreachable || (familyDisagreement && seatShortfall !== 0)) {
     return finish(base, 'refused', 'family-disagreement', 'Actionable promoted families disagree with the exact-plan lane reachability/counts.');
   }
   if (callerHoldsAllReadyRows) {

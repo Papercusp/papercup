@@ -270,6 +270,29 @@ describe('evaluateExactPlanAdmission', () => {
     });
   });
 
+  it('admits a capacity-satisfied seat request when the other promoted family is zero', () => {
+    const verdict = evaluateExactPlanAdmission({
+      planSlug: 'plan-a',
+      planItems: [item('P-001'), item('P-002')],
+      workItems: [
+        { id: 'F-1', family: 'feature', sourcePlanItemIds: ['P-001'], payload: null },
+        { id: 'WI-1', family: 'issue', sourcePlanItemIds: ['P-002'], payload: null },
+      ],
+      laneHealth: lane({ issue: 0, feature: 1 }),
+      requestedSeats: 1,
+    });
+
+    expect(verdict).toMatchObject({
+      ready: true,
+      status: 'ready',
+      reason: 'ready',
+      requestedSeats: 1,
+      executableWidth: 1,
+      seatShortfall: 0,
+      promotion: { byFamily: { feature: 1, issue: 1 } },
+    });
+  });
+
   it('refuses a seat request wider than the executable DAG frontier and names exact blockers', () => {
     const verdict = evaluateExactPlanAdmission({
       planSlug: 'plan-a',

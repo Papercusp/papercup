@@ -1238,6 +1238,10 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set(
     "locks:queue",
     "locks:cancel_wait",
     "locks:release",
+    // Event-wait registrations are the liveness/control-plane half of a paired
+    // events:await/events:emit hand-off. Keep them on the reserve while ordinary
+    // traffic is saturated so concurrent recovery waits can actually register.
+    "events:await",
     "events:cancel",
     "work_items:checkpoint",
     "work_items:claimable",

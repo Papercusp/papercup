@@ -2036,7 +2036,7 @@ describe("WI-35737: a departed client stops the retry loop", () => {
  *      32-89 minutes.
  */
 describe("EI-19305299022434394: admission control — shed with 429 before opening an upstream socket", () => {
-  it("recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, loop arming, incident capture, event-wait cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic", () => {
+  it("recognizes the MCP session handshake plus fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, bounded diagnostics, event-wait registration/cancellation, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
     expect(
@@ -2076,6 +2076,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call("locks:queue"))).toBe(true);
     expect(isReservedControlPlaneCall(call("locks:cancel_wait"))).toBe(true);
     expect(isReservedControlPlaneCall(call("locks:release"))).toBe(true);
+    expect(isReservedControlPlaneCall(call("events:await"))).toBe(true);
     expect(isReservedControlPlaneCall(call("events:cancel"))).toBe(true);
     expect(isReservedControlPlaneCall(call("work_items:checkpoint"))).toBe(
       true,
@@ -2610,6 +2611,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     "locks:queue",
     "locks:cancel_wait",
     "locks:release",
+    "events:await",
     "events:cancel",
     "work_items:checkpoint",
     "work_items:claimable",
