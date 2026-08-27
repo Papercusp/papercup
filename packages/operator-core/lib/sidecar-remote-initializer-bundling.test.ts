@@ -95,6 +95,8 @@ const deriveVerifierProtocolVersion = (): string => {
     `| grep -oE "'papercusp-gcp-iap-initialization-v[0-9]+'" | head -1 | tr -d "'"`;
   const result = spawnSync('bash', ['-c', pipeline, 'bash', REMOTE_INITIALIZER_SRC], {
     encoding: 'utf8',
+    timeout: 60_000,
+    killSignal: 'SIGKILL',
   });
   return (result.stdout ?? '').trim();
 };
