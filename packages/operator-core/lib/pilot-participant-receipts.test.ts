@@ -49,15 +49,21 @@ beforeEach(() => db.unsafe.mockReset());
 
 describe('pilot participant receipt authority', () => {
   it('server-issues ids/times and never lets dispatch predate binding', () => {
+    const bindingReceiptId = '00000000-0000-4000-8000-000000000001';
+    const dispatchReceiptId = '00000000-0000-4000-8000-000000000002';
     const b = issuePilotParticipantBindingReceipt(
       { itemId: 'WI-1', ownerId: 'su-1', sessionId: 'session-1', role: 'solo', claimVersion },
       () => 200,
-      () => 'binding-1',
+      () => bindingReceiptId,
     );
-    const d = issuePilotParticipantDispatchReceipt(b, () => 150, () => 'dispatch-1');
+    const d = issuePilotParticipantDispatchReceipt(b, () => 150, () => dispatchReceiptId);
 
-    expect(b).toMatchObject({ receiptId: 'binding-1', bindingIssuedAtMs: 200 });
-    expect(d).toMatchObject({ receiptId: 'dispatch-1', bindingReceiptId: 'binding-1', dispatchedAtMs: 200 });
+    expect(b).toMatchObject({ receiptId: bindingReceiptId, bindingIssuedAtMs: 200 });
+    expect(d).toMatchObject({
+      receiptId: dispatchReceiptId,
+      bindingReceiptId,
+      dispatchedAtMs: 200,
+    });
   });
 
   it('accepts canonical solo and director+implementer role shapes', () => {
