@@ -8,6 +8,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { InMemoryWatermarkStore } from '@papercusp/coordination/watermark-store';
+import {
+  COORD_CONVERSATIONAL_KINDS,
+  COORD_EXECUTABLE_KINDS,
+} from '@papercusp/coordination/core';
 import { configureCoordLog, resetCoordLog } from '../log';
 import {
   configureWatermarkStore,
@@ -169,6 +173,19 @@ describe('coord:inbox `since` steer (EI-21349112990078630)', () => {
 
   it('steers time-bounded reads to coord:feed in the description upfront', () => {
     expect(String(inboxTool.description)).toMatch(/time bounds \(`since`\)[^.]*coord:feed/i);
+  });
+});
+
+describe('coord:inbox kind filter parity', () => {
+  it('accepts every canonical CoordKind, including executable yield', () => {
+    const canonicalKinds = [...COORD_EXECUTABLE_KINDS, ...COORD_CONVERSATIONAL_KINDS];
+
+    for (const kind of canonicalKinds) {
+      expect(
+        inboxTool.args.safeParse({ kinds: [kind] }).success,
+        `coord:inbox should accept canonical kind ${kind}`,
+      ).toBe(true);
+    }
   });
 });
 

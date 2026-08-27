@@ -8,6 +8,11 @@
 
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
+import {
+  COORD_CONVERSATIONAL_KINDS,
+  COORD_EXECUTABLE_KINDS,
+  type CoordKind,
+} from "@papercusp/coordination/core";
 import { resolveAgentIdentity } from "../identity";
 import { resolveActorIdentity, actorMailboxKeys } from "../actor-identity";
 import {
@@ -104,19 +109,14 @@ const BODY_REF_MAX_TOTAL = 8;
  */
 const inboxHeartbeatThrottle = createPresenceBeatThrottle();
 
+// Keep the model-facing filter aligned with the canonical wire vocabulary.
+// Re-listing kinds here allowed executable `yield` (and later additions such as
+// handoff status events) to appear in coord:orient/injections while the inbox
+// schema rejected a caller trying to narrow on that same kind.
 const COORD_KINDS = [
-  "message",
-  "ack",
-  "subscribe",
-  "unsubscribe",
-  "notify",
-  "handoff",
-  "handoff_accepted",
-  "escalation",
-  "escalation_resolved",
-  "contract",
-  "plan_event",
-] as const;
+  ...COORD_EXECUTABLE_KINDS,
+  ...COORD_CONVERSATIONAL_KINDS,
+] as [CoordKind, ...CoordKind[]];
 
 // The default-visibility rules (ambient exclusion, intent-declare exclusion,
 // repeated-broadcast coalescing) were RELOCATED to `../inbox-visibility` so the
