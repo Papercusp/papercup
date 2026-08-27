@@ -1254,12 +1254,13 @@ describe('count arg description (P-006 recurrence guard — the doc must not re-
     expect(parsed.success).toBe(true);
   });
 
-  it('documents the per-call terminal cap separately from the target', () => {
-    expect(String(countDescription)).toMatch(/at most 12 NEW terminals/i);
+  it('documents governed admission without a local per-call terminal cap', () => {
+    expect(String(countDescription)).toMatch(/governed admission/i);
+    expect(String(countDescription)).not.toMatch(/at most 12 NEW terminals/i);
   });
 });
 
-describe('computeFleetTopUpWave (WI-40199 — target size is not the per-wave launch limit)', () => {
+describe('computeFleetTopUpWave (WI-40199 — target size opens only the live deficit)', () => {
   it('opens one canary when a 27-member fleet targets 28', () => {
     expect(computeFleetTopUpWave(28, 27)).toEqual({
       remainingDeficit: 1,
@@ -1268,11 +1269,11 @@ describe('computeFleetTopUpWave (WI-40199 — target size is not the per-wave la
     });
   });
 
-  it('caps only the wave when the target deficit exceeds 12', () => {
+  it('returns the full deficit when it exceeds the former 12-member ceiling', () => {
     expect(computeFleetTopUpWave(50, 27)).toEqual({
       remainingDeficit: 23,
-      requestedOpenCount: 12,
-      waveCapped: true,
+      requestedOpenCount: 23,
+      waveCapped: false,
     });
   });
 });
