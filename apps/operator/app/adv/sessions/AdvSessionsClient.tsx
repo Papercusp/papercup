@@ -882,7 +882,7 @@ export default function AdvSessionsClient() {
               triggerClassName="pc-adv-sessions__select pc-adv-sessions__select--context"
               value={suContext ?? CONTEXT_SELECT_DEFAULT}
               onChange={(value) =>
-                void setSuContext(value === CONTEXT_SELECT_DEFAULT ? null : (value as 'full' | 'trimmed'))
+                void setSuContext(value === CONTEXT_SELECT_DEFAULT ? null : (value as 'trimmed'))
               }
               ariaLabel="Context size for Launch SU"
               options={SU_CONTEXT_OPTIONS}

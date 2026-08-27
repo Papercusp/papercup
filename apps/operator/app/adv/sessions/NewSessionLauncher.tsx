@@ -163,15 +163,12 @@ export function buildModeOptions(): ComboboxOption[] {
  *
  *  Pure — exported for unit-test access. */
 export function buildContextSizeOptions(): ComboboxOption[] {
-  const DETAIL: Record<string, string> = {
-    full: 'Whole tool catalog up-front',
-    trimmed: 'Core spine, native soft-trim',
-  };
+  const DETAIL = { trimmed: 'Growable core spine, lazy catalog' } as const;
   return [
     { value: CONTEXT_SELECT_NATIVE, label: 'Native context', detail: "The client's own default" },
     ...SU_CONTEXT_SIZES.map((v) => ({
       value: v,
-      label: `${v === 'full' ? 'Full' : 'Trimmed'} · ${SU_CONTEXT_TOKEN_ESTIMATES[v]}`,
+      label: `Trimmed · ${SU_CONTEXT_TOKEN_ESTIMATES[v]}`,
       detail: DETAIL[v],
     })),
   ];
