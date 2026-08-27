@@ -35,9 +35,9 @@ export interface CapabilityToolsetOpts {
   /** The principal-bound dispatcher. Required — there is no ungated default. */
   dispatch: ToolDispatcher;
   /** Exact tool names to include (colon form, e.g. 'capability:read'). */
-  names?: string[];
+  names?: readonly string[];
   /** Name prefixes to include. Default: ['capability:'] — the doors. */
-  prefixes?: string[];
+  prefixes?: readonly string[];
   /** Per-tool HITL gate; return true to route the call through the loop's
    *  ApprovalPort. Default: no approval required (the doors are already
    *  confinement-armed; interactive HITL policy is the host's call). */
@@ -51,6 +51,17 @@ export type CapabilityToolSelectionOpts = Pick<
   CapabilityToolsetOpts,
   'names' | 'prefixes' | 'registry'
 >;
+
+/**
+ * The owned chat loop exposes the capability doors plus the canonical task
+ * engine's model-family facades. Keep this selection shared by prompt
+ * assembly and executable tool construction so the model cannot be told about
+ * a task tool that the loop omitted (or vice versa).
+ */
+export const OWNED_LOOP_TOOL_SELECTION: CapabilityToolSelectionOpts = {
+  prefixes: ['capability:'],
+  names: ['tasks:ops', 'tasks:todo_write', 'tasks:update_plan'],
+};
 
 /** A projected tool's MCP name, when it is MCP-exposed. */
 function mcpName(t: ProjectedTool): string | undefined {

@@ -39,6 +39,7 @@ import { dispatchProjectedTool } from '@papercusp/agent-mcp';
 import {
   capabilityToolNames,
   capabilityToolset,
+  OWNED_LOOP_TOOL_SELECTION,
   type DispatchResult,
   type ToolDispatcher,
 } from '../../../agent-loop/capability-toolset';
@@ -436,7 +437,7 @@ const messagesRoute = defineTool({
         ? {
             text: assembleOperatorRolePrompt({
               role: 'operator',
-              toolNames: capabilityToolNames(),
+              toolNames: capabilityToolNames(OWNED_LOOP_TOOL_SELECTION),
             }).text,
             runId: `${Math.floor(Date.now() / 1000)}-operator${chat.feature_id ? `-${chat.feature_id}` : ''}`,
           }
@@ -636,6 +637,7 @@ const messagesRoute = defineTool({
       let tools: LoopTool[] = [];
       try {
         tools = capabilityToolset({
+          ...OWNED_LOOP_TOOL_SELECTION,
           dispatch,
           needsApproval: (toolName) => LOOP_APPROVAL_GATED_DOORS.has(toolName),
         });

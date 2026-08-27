@@ -8,6 +8,7 @@ import {
   capabilityToolNames,
   capabilityToolset,
   flattenDispatchResult,
+  OWNED_LOOP_TOOL_SELECTION,
   type ToolDispatcher,
 } from './capability-toolset';
 
@@ -27,6 +28,13 @@ const registry = () => [
   fakeProjected('coord:send'),
 ];
 
+const ownedLoopRegistry = () => [
+  ...registry(),
+  fakeProjected('tasks:ops'),
+  fakeProjected('tasks:todo_write'),
+  fakeProjected('tasks:update_plan'),
+];
+
 const okDispatch: ToolDispatcher = async (name, args) => ({
   content: [{ type: 'text', text: JSON.stringify({ ok: true, name, args }) }],
 });
@@ -42,6 +50,20 @@ describe('capabilityToolset', () => {
       'capability:read',
       'work_items:get',
     ]);
+  });
+
+  it('selects capability doors and canonical task facades for the owned loop', () => {
+    const expected = [
+      'capability:bash',
+      'capability:read',
+      'tasks:ops',
+      'tasks:todo_write',
+      'tasks:update_plan',
+    ];
+    const selection = { ...OWNED_LOOP_TOOL_SELECTION, registry: ownedLoopRegistry };
+
+    expect(capabilityToolNames(selection).sort()).toEqual(expected);
+    expect(capabilityToolset({ dispatch: okDispatch, ...selection }).map((tool) => tool.name).sort()).toEqual(expected);
   });
 
   it('selects by default capability: prefix and projects def fields', () => {

@@ -12,6 +12,7 @@
  * result, and the approval routes' status mapping.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { ProjectedTool } from '@papercusp/tooldef';
 import type { RouteContext, RouteDefinition } from '../define-route';
 
 // The first case owns the cold mocked dynamic import/transform for this very
@@ -86,6 +87,23 @@ function postReq(body: unknown): Request {
   });
 }
 
+function fakeProjected(name: string): ProjectedTool {
+  return {
+    pluginName: 'route-test',
+    description: `desc of ${name}`,
+    inputSchema: { type: 'object', properties: {} },
+    expose: { mcp: { name } },
+  } as unknown as ProjectedTool;
+}
+
+const ROUTE_TOOL_REGISTRY = [
+  fakeProjected('capability:read'),
+  fakeProjected('capability:bash'),
+  fakeProjected('tasks:ops'),
+  fakeProjected('tasks:todo_write'),
+  fakeProjected('tasks:update_plan'),
+];
+
 const MOCKED_MODULES = [
   '../../agent-tools',
   '../../workspace-registry',
@@ -98,6 +116,7 @@ const MOCKED_MODULES = [
   '@papercusp/db-org',
   '../../agent-loop/chat-engine',
   '../../agent-loop/approval-store',
+  '../../agent-loop/capability-toolset',
 ];
 
 beforeEach(() => {
@@ -198,6 +217,20 @@ async function loopLaneRoutes(
     resolveLoopApproval,
     listPendingLoopApprovals,
   }));
+  // Keep this route test focused on the route's real selector and executable
+  // tool list without booting the full agent-tools registration graph. The
+  // actual capability-toolset implementation still runs against this fixture
+  // registry, so omitting the explicit canonical task names regresses here.
+  vi.doMock('../../agent-loop/capability-toolset', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../agent-loop/capability-toolset')>();
+    return {
+      ...actual,
+      capabilityToolNames: (opts: Parameters<typeof actual.capabilityToolNames>[0] = {}) =>
+        actual.capabilityToolNames({ ...opts, registry: () => ROUTE_TOOL_REGISTRY }),
+      capabilityToolset: (opts: Parameters<typeof actual.capabilityToolset>[0]) =>
+        actual.capabilityToolset({ ...opts, registry: () => ROUTE_TOOL_REGISTRY }),
+    };
+  });
 
   const routes = (await import('../routes/agent-chats/index')).default as RouteDefinition<undefined>[];
   return {
@@ -264,6 +297,13 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
     expect(opts.chatId).toBe(CHAT);
     expect(opts.priority).toBe('interactive');
     expect((mocks.runLoopChatTurn.mock.calls[0][0] as { deferTerminalEvent?: boolean }).deferTerminalEvent).toBe(true);
+    expect((mocks.runLoopChatTurn.mock.calls[0][0] as { tools: Array<{ name: string }> }).tools.map((tool) => tool.name).sort()).toEqual([
+      'capability:bash',
+      'capability:read',
+      'tasks:ops',
+      'tasks:todo_write',
+      'tasks:update_plan',
+    ]);
 
     // Persistence: user turn first (preflight), then the assistant turn with totals.
     expect(mocks.updates.length).toBeGreaterThanOrEqual(2);
@@ -296,7 +336,13 @@ describe('POST messages { engine: "loop" } — the owned-loop lane', () => {
 
     expect(mocks.assembleOperatorRolePrompt).toHaveBeenCalledWith({
       role: 'operator',
-      toolNames: [],
+      toolNames: [
+        'capability:read',
+        'capability:bash',
+        'tasks:ops',
+        'tasks:todo_write',
+        'tasks:update_plan',
+      ],
     });
     expect(mocks.assembleHarnessRolePrompt).not.toHaveBeenCalled();
     expect(mocks.runLoopChatTurn.mock.calls[0][0].system).toContain('OPERATOR ROLE PROMPT');
