@@ -29,7 +29,7 @@ import {
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
-export type CascadeEventKind = 'answer' | 'clarifying_question' | 'new_fact' | 'decline' | 'expired';
+export type CascadeEventKind = 'answer' | 'clarifying_question' | 'new_fact' | 'decline' | 'expired' | 'wake_failed';
 
 export interface CascadeDigestEntry {
   ownerId: string;
