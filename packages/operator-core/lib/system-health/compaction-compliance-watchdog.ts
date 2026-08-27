@@ -18,6 +18,7 @@
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import {
+  codexReadingProvenanceForOwner,
   detectContextDeathForOwner,
   estimateContextTokensForOwner,
   estimateContextWindowForOwner,
@@ -25,7 +26,7 @@ import {
   resolveModelSpecForOwner,
   resolveSessionRefReconciled,
 } from '../compaction-usage';
-import { setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
+import { clearContextEstimate, setContextEstimate, setCompactionLimit } from '../agent-tools/coordination/presence';
 import {
   COMPACTION_LIMIT_DEFAULT_1M_CAP,
   COMPACTION_OVERSHOOT_FACTOR,
@@ -241,6 +242,78 @@ export function resetImplausibleReadingsForTests(): void {
  *  session that stays BLIND — the gauge / per-turn reminder / force-compact all can't
  *  see its usage, the "dark telemetry latent from boot" defect — gets surfaced. */
 const DARK_TELEMETRY_MAX_NULL_SWEEPS = 3;
+
+/**
+ * EI-21595542328480968 — how far a codex rollout's mtime may lag the session's OWN
+ * `last_active_at` before the reading taken from it is treated as FROZEN (belonging
+ * to a dead predecessor) rather than as this session's usage.
+ *
+ * The defect: codex homes are keyed by the adv_sessions ROW id, so an owner holding
+ * more than one non-ended row can have its estimate read out of a DEAD predecessor's
+ * home. That file never moves again, so the reading is pinned above the limit
+ * forever — the force/carry-respawn rung below fires every grace expiry, never sees
+ * recovery, and eventually SELF-SUPPRESSES, leaving a live over-limit session with
+ * its backstop disarmed. That end state was observed on a real session.
+ *
+ * The margin is drawn from the measured population, not from the handful of sessions
+ * that led to the defect (133 live codex sessions, 2026-08-27): the lag is NEGATIVE
+ * for healthy sessions — the rollout is written at least as recently as the last tool
+ * dispatch — with p50 −0.2min, p95 ≈ 0, and only 3 of 133 above +5min. 15min sits ~5×
+ * above the largest healthy positive lag and ~6× below the 90.7min pathology, and is
+ * comfortably wider than any single long turn (which can bump `last_active_at`
+ * repeatedly before codex writes its next token_count event).
+ *
+ * ⚠ `last_active_at` is load-bearing and only works because the 60s keepalive beat
+ * does NOT touch it (presence.ts D-003: `touchHeartbeat` bumps heartbeat_at ONLY).
+ * An idle session therefore has an OLD last_active_at and so a small lag — which is
+ * exactly the class that sank the first attempt at this fix.
+ */
+const CODEX_FROZEN_READING_MAX_LAG_MS = 15 * 60_000;
+
+/** Owners already warned about a frozen codex reading (dedup; per process). */
+const frozenCodexWarned = new Set<string>();
+
+/** Test seam (EI-21595542328480968). */
+export function resetFrozenCodexReadingsForTests(): void {
+  frozenCodexWarned.clear();
+}
+
+/**
+ * Is this codex owner's context reading FROZEN — read from a rollout that belongs to
+ * a different (dead) session and has not moved since well before this session's own
+ * last activity? Returns the evidence when so, else null.
+ *
+ * BOTH conjuncts are required, and each excludes a class the other cannot:
+ *  • IDENTITY (`rolloutSessionId !== refSessionId`) — the file is not this session's.
+ *    Alone it is far too broad: measured 2026-08-27, it holds for 19 of 133 live codex
+ *    sessions, 18 of them healthy, because an IDLE session's ref legitimately churns
+ *    its native id past a rollout nobody has written to since.
+ *  • LIVENESS (`lag > CODEX_FROZEN_READING_MAX_LAG_MS`) — the session has been doing
+ *    work since that file stopped moving, which an idle session never shows.
+ * A null id on either side means "cannot check", never "mismatch" — so an unparseable
+ * filename degrades to trusting the reading, the safe direction.
+ *
+ * ⚠ THE CALL SITE IS PART OF THE FIX: this runs ONLY for a reading that is already
+ * over its limit and therefore about to drive a cut. That placement is what makes the
+ * rule safe rather than merely accurate — one live session (under limit, actively
+ * working) satisfies BOTH conjuncts above and would be wrongly silenced if this were
+ * evaluated for every session. Do not hoist it to the whole population.
+ */
+async function frozenCodexReading(
+  ownerId: string,
+  lastActiveAt: string | Date | null,
+): Promise<{ lagMs: number; rolloutPath: string } | null> {
+  if (lastActiveAt == null) return null;
+  const lastActiveMs = new Date(lastActiveAt).getTime();
+  if (!Number.isFinite(lastActiveMs)) return null;
+  const prov = await codexReadingProvenanceForOwner(ownerId).catch(() => null);
+  if (!prov || prov.rolloutMtimeMs == null) return null;
+  if (prov.rolloutSessionId == null || prov.refSessionId == null) return null;
+  if (prov.rolloutSessionId === prov.refSessionId) return null;
+  const lagMs = lastActiveMs - prov.rolloutMtimeMs;
+  if (lagMs <= CODEX_FROZEN_READING_MAX_LAG_MS) return null;
+  return { lagMs, rolloutPath: prov.rolloutPath };
+}
 
 /** Test seam (P-019). */
 export function resetContextDeathEscalationsForTests(): void {
@@ -1158,6 +1231,12 @@ export interface CompactionComplianceResult {
   /** EI-10434: readings DISCARDED this pass for exceeding the plausibility ceiling —
    *  never cached, never counted toward overLimit/forceCompacted. One entry per owner. */
   implausibleReadings: Array<{ owner: string; est: number; ceiling: number }>;
+  /** EI-21595542328480968: over-limit codex readings PROVEN to come from a dead
+   *  predecessor's frozen rollout (identity mismatch + the session active long after
+   *  that file stopped moving). Never cached, never counted toward
+   *  overLimit/forceCompacted — acting on one is what disarms a live session's
+   *  backstop. One entry per owner per pass. */
+  frozenCodexReadings: Array<{ owner: string; est: number; lagMs: number }>;
   /** EI-18127246030401689: owners discovered via an ACTIVE loop routine with NO
    *  coord_presence row at all — self-healed a minimal row this pass so tracking
    *  resumes (see discoverPresencelessLoopOwners / healPresenceGap). Always paired
@@ -1174,7 +1253,7 @@ export interface CompactionComplianceResult {
  * Never throws (best-effort backstop).
  */
 export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [], presenceGapsHealed: [] };
+  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [], frozenCodexReadings: [], presenceGapsHealed: [] };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -1292,9 +1371,11 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         workspace_id: string;
         fleet_slug: string | null;
         fleet_role: string | null;
+        last_active_at: string | null;
       }[]
     >`
-      SELECT owner_id, owner_label, workspace_id, compaction_limit, compaction_limit_explicit, fleet_slug, fleet_role
+      SELECT owner_id, owner_label, workspace_id, compaction_limit, compaction_limit_explicit, fleet_slug, fleet_role,
+             last_active_at
         FROM harness_shared.coord_presence
        WHERE compaction_limit IS NOT NULL
          AND heartbeat_at > now() - interval '10 minutes'
