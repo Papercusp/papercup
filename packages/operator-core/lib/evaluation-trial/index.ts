@@ -53,3 +53,49 @@ export {
   trialFromTaskRunResult,
   type LlmTestRunRow,
 } from './adapters';
+
+export {
+  EVIDENCE_SEAL_DOMAIN,
+  sealEvidence,
+  type EnvironmentSnapshot,
+  type EvidenceManifest,
+  type EvidencePart,
+  type PreservedArtifact,
+  type PreservedEvidence,
+  type SealedEvidence,
+  type TrajectoryStep,
+  type TrajectoryStepKind,
+} from './evidence';
+
+export {
+  DEFAULT_JUDGE_VIEW_POLICY,
+  JUDGE_VIEW_DOMAIN,
+  deriveJudgeView,
+  hashJudgeView,
+  verifyJudgeView,
+  type CompactArtifact,
+  type CompactJudgeView,
+  type CompactStep,
+  type JudgeViewFailureKind,
+  type JudgeViewPolicy,
+  type JudgeViewVerification,
+} from './judge-view';
+
+export {
+  replayTrialEvidence,
+  verifyEvidence,
+  type IntegrityFailureKind,
+  type IntegrityFinding,
+  type IntegrityReport,
+  type ReplayReport,
+  type VerifyEvidenceInput,
+} from './integrity';
+
+export {
+  toInspectCompatibleEvaluation,
+  toOpenTelemetryOpenInferenceTrace,
+  type CanonicalPortablePayload,
+  type InspectCompatibleEvaluation,
+  type OpenTelemetryOpenInferenceTrace,
+  type PortableSpan,
+} from './portable';
