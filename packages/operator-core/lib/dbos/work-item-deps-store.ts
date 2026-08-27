@@ -253,6 +253,52 @@ async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<
   }));
 }
 
+/**
+ * Hold every concrete endpoint named by this mutation stable until the graph
+ * transaction commits.
+ *
+ * SERIALIZABLE protects the read/candidate/write decision from graph write
+ * skew, but it does not make a later endpoint DELETE invalid by itself: a
+ * history in which the edge commits immediately before the endpoint disappears
+ * is serializable and still leaves a dangling application-level graph.  The
+ * deletion boundary therefore refuses rows with incident edges (migration 988),
+ * and this ordered SHARE lock closes the race between that check and a new edge
+ * insert.  It also serializes harness re-home with mutation; migration 734 then
+ * re-points any edge that committed first in the same UPDATE transaction.
+ *
+ * Lock only mutation-declared endpoints, not every node in the stored graph.
+ * Existing incident edges are already protected by the delete guard, while
+ * locking the whole graph would turn independent mutations into one global
+ * critical section.  All matching rows are locked in a deterministic order so
+ * batches that name the same endpoints cannot manufacture a row-lock deadlock.
+ */
+async function lockDependencyMutationEndpoints(
+  tx: Sql,
+  workspaceId: string,
+  mutations: readonly WorkItemDependencyMutation[],
+): Promise<void> {
+  const bareIds = new Set<string>();
+  for (const mutation of mutations) {
+    const endpoints =
+      mutation.op === 'replace'
+        ? [mutation.blocked, ...mutation.blockers]
+        : [mutation.blocked, mutation.blocker];
+    for (const endpoint of endpoints) {
+      const bareId = endpointBareId(endpoint);
+      if (bareId) bareIds.add(bareId);
+    }
+  }
+  if (bareIds.size === 0) return;
+  const ids = [...bareIds].sort();
+  await tx`
+    SELECT workspace_id, harness_slug, feature_id, item_kind
+      FROM harness_shared.work_items
+     WHERE workspace_id = ${workspaceId}
+       AND feature_id = ANY(${ids}::text[])
+     ORDER BY workspace_id, harness_slug, feature_id, item_kind
+     FOR SHARE`;
+}
+
 function analyseStoredEdges(
   nodes: readonly DependencyGraphNodeInput[],
   edges: readonly StoredDependencyEdge[],
@@ -394,11 +440,13 @@ export async function mutateWorkItemDependencies(
   return withSerializableRetry(
     sql,
     async (tx) => {
+      const itemWorkspaceId = input.itemWorkspaceId ?? input.workspaceId;
+      await lockDependencyMutationEndpoints(tx, itemWorkspaceId, input.mutations);
       const current = await loadStoredDependencyEdges(tx, input.workspaceId);
       const candidate = applyDependencyMutations(current, input.mutations);
       const { nodes, outOfScopeIdentityKeys } = await loadDependencyNodes(
         tx,
-        input.itemWorkspaceId ?? input.workspaceId,
+        itemWorkspaceId,
         [...current, ...candidate],
       );
       const before = analyseStoredEdges(nodes, current);
