@@ -56,6 +56,12 @@ export default defineTool({
         .describe(
           'also return each criterion\'s chronological series as RLE runs {rating, from, to, n} (default false — the summary fields are the payload)',
         ),
+      includeDefinition: z
+        .boolean()
+        .optional()
+        .describe(
+          'also return the resolved full rubric definition (default false — most trend consumers need only aggregates)',
+        ),
     })
     .refine((a) => Boolean(a.rubricRef), {
       message: 'pass `rubricRef` (required)',
@@ -68,6 +74,7 @@ export default defineTool({
       since: args.since,
       limit: args.limit,
       includeSeries: args.includeSeries,
+      includeDefinition: args.includeDefinition,
     });
     return {
       content: [

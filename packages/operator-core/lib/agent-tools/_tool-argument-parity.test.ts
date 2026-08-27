@@ -66,6 +66,14 @@ describe('Tool Argument Parity Guard (EI-11400, WI-4652)', () => {
       }
     });
 
+    it('rubrics:trend exposes the definition opt-in supported by scorecardTrend', () => {
+      const tool = lookupByMcpName('rubrics:trend');
+      expect(tool, 'rubrics:trend not registered').toBeDefined();
+
+      const properties = (tool?.inputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
+      expect(properties?.includeDefinition).toMatchObject({ type: 'boolean' });
+    });
+
     it('rubrics family maintains consistent vocabulary across all tools', () => {
       // This test documents the expected parity set; update when adding a new rubrics tool
       const expectedFamily = new Set(rubricTools);
