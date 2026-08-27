@@ -233,8 +233,19 @@ export default defineTool({
   description:
     'Run `bash -c` in the project dir; stream and spill large output to a log. Operator callers may bind redacted integration credentials.',
   guidance: {
+    // WI-71582: the `jq` tip below was CUT FROM THE PROMPT to clear the 1500-char
+    // prompt-weight HARD CAP (this tool was 1613 — a gate RED). Kept here because a
+    // comment costs ZERO prompt weight (promptWeight() sums description + when +
+    // notWhen + chaining + byRole only, per the note at :247), so the knowledge is
+    // preserved without the budget cost — do NOT paste it back into `when`:
+    //   "For non-trivial `jq` filters, compile first with `jq -n` against no input
+    //    before reading exports; this catches syntax errors without consuming export
+    //    input."
+    // It was the narrowest tip here (it helps only a non-trivial jq filter over a
+    // consumable export), which is why it lost to the rg/backtick and background-job
+    // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'Run builds, tests, checks, or scripts. For non-trivial `jq` filters, compile first with `jq -n` against no input before reading exports; this catches syntax errors without consuming export input. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
+      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',
