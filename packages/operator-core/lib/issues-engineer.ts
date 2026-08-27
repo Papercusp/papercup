@@ -2491,8 +2491,23 @@ export async function releaseIssue(
   // expected caller — atomic compare-and-release, no fetch-then-write race. A row held by
   // someone ELSE matches 0 rows and this returns null, same as "not found"; the caller
   // (release.ts) re-reads to tell the two apart and report an honest `not_holder` + holder.
+  // P-003 / D-002: mirror the feature-family release contract. A released issue that was
+  // mid-flight must return to the single issue claimable token (open), while parked and
+  // terminal states retain their meaning. Without this normalization, an unassigned `wip`
+  // issue is outside coord:dispatch's claimable frontier and remains stranded indefinitely.
+  const releasePreservedStates = ['open', 'blocked', 'needs-human', ...ISSUE_TERMINAL_STATUSES];
   const rows = await sql<IssueRowDb[]>`
-    UPDATE harness_shared.engineer_issues SET assignee = NULL, assigned_at = NULL, origin = 'local', updated_at = now()
+    UPDATE harness_shared.engineer_issues SET
+       assignee = NULL,
+       assigned_at = NULL,
+       -- Preserve parked/terminal lifecycle states; normalize every other release state
+       -- (wip, legacy in-progress spellings, and unknown drift) to the claimable "open".
+       state = CASE
+         WHEN COALESCE(state, '') <> ALL(${releasePreservedStates}::text[]) THEN 'open'
+         ELSE state
+       END,
+       origin = 'local',
+       updated_at = now()
      WHERE workspace_id = ${ws} AND issue_id = ${id}
        AND (${opts.expectedAssignee ?? null}::text IS NULL OR assignee IS NULL OR assignee = ${opts.expectedAssignee ?? null})
      RETURNING ${sql.unsafe(ISSUE_COLS)}`;
