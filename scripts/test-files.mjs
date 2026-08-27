@@ -65,11 +65,11 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
  * @param {string|null|undefined} file
  * @returns {(() => void)|null} cleanup callback when a marker was published
  */
-export function publishPreemptReadyMarker(file = process.env.PC_HEAVY_PREEMPT_READY_FILE) {
+function publishPreemptMarker(file, label) {
   const marker = file?.trim();
   if (!marker) return null;
   writeFileSync(marker, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
-  console.error(`PC_HEAVY_PREEMPT_READY pid=${process.pid}`);
+  console.error(`${label} pid=${process.pid}`);
   let cleaned = false;
   return () => {
     if (cleaned) return;
@@ -80,6 +80,24 @@ export function publishPreemptReadyMarker(file = process.env.PC_HEAVY_PREEMPT_RE
       if (error?.code !== 'ENOENT') throw error;
     }
   };
+}
+
+export function publishPreemptReadyMarker(file = process.env.PC_HEAVY_PREEMPT_READY_FILE) {
+  return publishPreemptMarker(file, 'PC_HEAVY_PREEMPT_READY');
+}
+
+/**
+ * Publish the short PSI-finalization handoff after every requested file has
+ * reported completion. pc-heavy owns the unique path and removes it if the
+ * child is interrupted before this callback can run.
+ *
+ * @param {string|null|undefined} file
+ * @returns {(() => void)|null} cleanup callback when a marker was published
+ */
+export function publishPreemptFinalizationMarker(
+  file = process.env.PC_HEAVY_PSI_FINALIZATION_FILE,
+) {
+  return publishPreemptMarker(file, 'PC_HEAVY_PSI_FINALIZATION');
 }
 
 // WI-5621 (2026-07-20): this is THE most frequently invoked test runner in the
@@ -1492,6 +1510,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
     spawnImpl = spawn,
     killProcessImpl = defaultKillOwnedProcess,
     onProgress = (line) => console.error(line),
+    onAllFilesComplete = () => null,
+    onClose = () => {},
   } = options;
   const ownsProcessGroup = Boolean(setsidPath);
   const spawnCommand = setsidPath ?? command;
@@ -1515,6 +1535,8 @@ export function runCapturedTestProcess(command, args, options = {}) {
     let settled = false;
     let terminationStarted = false;
     let forceTimer = null;
+    let allFilesCompleteObserved = false;
+    let completionCleanup = null;
     const signalForwarders = new Map();
 
     const normalized = (file) => String(file).replaceAll('\\', '/');
@@ -1587,6 +1609,23 @@ export function runCapturedTestProcess(command, args, options = {}) {
       for (const file of progress.completedFilePaths) completedFiles.add(normalized(file));
       return completedFiles.size > before;
     };
+    const notifyAllFilesComplete = () => {
+      if (
+        allFilesCompleteObserved ||
+        requestedFiles.length === 0 ||
+        !requestedFiles.every((file) => completedFiles.has(file))
+      ) {
+        return;
+      }
+      allFilesCompleteObserved = true;
+      try {
+        const cleanup = onAllFilesComplete();
+        completionCleanup = typeof cleanup === 'function' ? cleanup : null;
+      } catch (error) {
+        captureError ??= error;
+        terminate('finalization-marker');
+      }
+    };
     const capture = (channel, chunks) => (value) => {
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(String(value));
       capturedBytes += chunk.length;
@@ -1599,7 +1638,10 @@ export function runCapturedTestProcess(command, args, options = {}) {
         );
         terminate('output-limit');
       }
-      if (noteCompletedFiles(channel, chunk)) emitProgress('file-completed');
+      if (noteCompletedFiles(channel, chunk)) {
+        notifyAllFilesComplete();
+        emitProgress('file-completed');
+      }
     };
 
     child.stdout?.on('data', capture('stdout', stdout));
@@ -1626,6 +1668,18 @@ export function runCapturedTestProcess(command, args, options = {}) {
       if (progressTimer) clearTimeout(progressTimer);
       clearTimeout(timeoutTimer);
       if (forceTimer) clearTimeout(forceTimer);
+      try {
+        completionCleanup?.();
+      } catch (error) {
+        captureError ??= error;
+      } finally {
+        completionCleanup = null;
+      }
+      try {
+        onClose();
+      } catch (error) {
+        captureError ??= error;
+      }
       emitProgress('finished', status, signal, true);
       resolveRun({
         status,
@@ -1658,6 +1712,15 @@ export async function main(
   { runCapturedTestProcessImpl = runCapturedTestProcess } = {},
 ) {
   let cleanupPreemptReadyMarker = null;
+  let cleanupPreemptFinalizationMarker = null;
+  const cleanupPreemptMarkers = () => {
+    const readyCleanup = cleanupPreemptReadyMarker;
+    const finalizationCleanup = cleanupPreemptFinalizationMarker;
+    cleanupPreemptReadyMarker = null;
+    cleanupPreemptFinalizationMarker = null;
+    readyCleanup?.();
+    finalizationCleanup?.();
+  };
   const ensurePreemptReady = () => {
     if (cleanupPreemptReadyMarker) return true;
     try {
@@ -1672,6 +1735,21 @@ export async function main(
       return false;
     }
   };
+  const finalizationCallbacks = () => ({
+    onAllFilesComplete: () => {
+      cleanupPreemptFinalizationMarker?.();
+      cleanupPreemptFinalizationMarker = publishPreemptFinalizationMarker();
+      return () => {
+        cleanupPreemptFinalizationMarker?.();
+        cleanupPreemptFinalizationMarker = null;
+      };
+    },
+    onClose: () => {
+      cleanupPreemptFinalizationMarker?.();
+      cleanupPreemptFinalizationMarker = null;
+    },
+  });
+  try {
   const { dry, files, vitestArgs } = parseCli(argv);
   if (files.length === 0) {
     console.error('usage: npm run test:file -- <test-file> [test-file…] [-- <vitest args>]');
@@ -1876,7 +1954,7 @@ export async function main(
     const result = await runCapturedTestProcessImpl(
       'npx',
       ['vitest', 'run', ...configArgs, ...exact, ...groupVitestArgs],
-      { cwd: group.cwd, env: process.env, files: exact, cwdLabel },
+      { cwd: group.cwd, env: process.env, files: exact, cwdLabel, ...finalizationCallbacks() },
     );
     if (result.stdout) process.stdout.write(result.stdout);
     if (result.stderr) process.stderr.write(result.stderr);
@@ -1936,6 +2014,7 @@ export async function main(
               env: process.env,
               files: [file],
               cwdLabel,
+              ...finalizationCallbacks(),
             },
           );
           if (detailResult.stdout) process.stdout.write(detailResult.stdout);
@@ -2072,8 +2151,10 @@ export async function main(
     `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
       `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)}`,
   );
-  cleanupPreemptReadyMarker?.();
   return summary.anyFailed ? 1 : 0;
+  } finally {
+    cleanupPreemptMarkers();
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

@@ -145,6 +145,12 @@
 #                         it to the child; the child owns publication/cleanup.
 #   PC_HEAVY_PREEMPT_READY_DIR  directory for those per-run marker paths
 #                         (default ${TMPDIR:-/tmp}/pc-heavy-ready).
+#   PC_HEAVY_PSI_FINALIZATION_MAX_SEC
+#                         positive bounded handoff after all requested test
+#                         files report completion (default 30s). While the
+#                         per-run PC_HEAVY_PSI_FINALIZATION_FILE exists, the
+#                         PSI controller defers an active freeze for this
+#                         window, then applies normal freeze behavior.
 #   PC_HEAVY_SCOPED_TIMEOUT_SEC  bounded wait for `test:file`'s
 #                         `scripts/test-files.mjs` command (default 30). Exact-file
 #                         verification is deliberately narrow and must not inherit
@@ -358,12 +364,15 @@ _pc_heavy_internal_preempt_run() {
   local _psi_priority="${PC_HEAVY_ADMISSION_PRIORITY:-10}"
   local _psi_admission_dir="${PC_HEAVY_ADMISSION_DIR:-${PC_HEAVY_PREEMPT_PID_DIR:-$(dirname "$_intent_path")}/psi-admissions}"
   local _psi_admission_id="${PC_HEAVY_ADMISSION_ID:-}"
+  local _psi_finalization_file="${PC_HEAVY_PSI_FINALIZATION_FILE:-}"
+  local _psi_finalization_max="${PC_HEAVY_PSI_FINALIZATION_MAX_SEC:-30}"
   local _psi_record_file='' _psi_recovery_file="$_psi_admission_dir/recovery-low-since"
   local _psi_lock_file="$_psi_admission_dir/coordinator.lock"
   local _psi_retry_handle='' _psi_admitted_at='' _psi_child_start_ticks=''
   local _psi_cgroup_path='' _psi_memory_current_mib='' _psi_state='active'
   local _psi_frozen_since=0
   local _psi_next_sample=0 _psi_last_undetermined=''
+  local _psi_finalization_seen_at='' _psi_finalization_expired=0
   local _psi_selected_id='' _psi_total_mib=0 _psi_record_count=0 _psi_unreadable_count=0
 
   # The outer wrapper uses this private sentinel to distinguish a supervisor
@@ -447,8 +456,18 @@ _pc_heavy_internal_preempt_run() {
     fi
   }
 
+  _preempt_cleanup_finalization_marker() {
+    if [ -n "${_psi_finalization_file:-}" ]; then
+      rm -f "${_psi_finalization_file}" 2>/dev/null || true
+    fi
+  }
+
   _preempt_ready_is_published() {
     [ -n "${_preempt_ready_file:-}" ] && [ -f "${_preempt_ready_file}" ]
+  }
+
+  _preempt_finalization_is_published() {
+    [ -n "${_psi_finalization_file:-}" ] && [ -f "${_psi_finalization_file}" ]
   }
 
   # A signal can arrive in the small window after the supervisor publishes the
@@ -696,6 +715,29 @@ _pc_heavy_internal_preempt_run() {
           [ "$_psi_last_undetermined" = cgroup-memory-unreadable ] && _psi_last_undetermined=''
         fi
         if [ "$_psi_unreadable_count" -eq 0 ] && [ "$_psi_selected_id" = "$_psi_admission_id" ] && [ "$_psi_state" = active ]; then
+          # `file-completed` is emitted before test-files can aggregate and
+          # return terminal evidence. Keep this exact run alive for a short,
+          # bounded handoff when its private finalization marker is present.
+          if _preempt_finalization_is_published; then
+            if [ -z "${_psi_finalization_seen_at:-}" ]; then
+              _psi_finalization_seen_at="$_now"
+              _psi_finalization_expired=0
+              _preempt_notify "[pc-heavy] PSI finalization protection active — deferring freeze for up to ${_psi_finalization_max}s"
+            fi
+            if [ "${_psi_finalization_expired:-0}" = 0 ] &&
+               [ $(( _now - _psi_finalization_seen_at )) -lt "$_psi_finalization_max" ]; then
+              flock -u "$_lock_fd" 2>/dev/null || true
+              eval "exec ${_lock_fd}>&-" 2>/dev/null || true
+              return 0
+            fi
+            if [ "${_psi_finalization_expired:-0}" = 0 ]; then
+              _psi_finalization_expired=1
+              _preempt_notify "[pc-heavy] PSI finalization protection expired after ${_psi_finalization_max}s — applying normal freeze behavior"
+            fi
+          else
+            _psi_finalization_seen_at=''
+            _psi_finalization_expired=0
+          fi
           if kill -STOP -- "-${_preempt_child_pid:-}" 2>/dev/null; then
             _psi_frozen_since="$_now"
             _psi_write_record frozen || true
@@ -743,6 +785,8 @@ _pc_heavy_internal_preempt_run() {
     case "$_psi_recover" in ''|*[!0-9]*) _psi_recover=2 ;; esac
     case "$_psi_recovery_sec" in ''|*[!0-9]*) _psi_recovery_sec=30 ;; esac
     case "$_psi_max_freeze_sec" in ''|*[!0-9]*) _psi_max_freeze_sec=300 ;; esac
+    case "$_psi_finalization_max" in ''|*[!0-9]*) _psi_finalization_max=30 ;; esac
+    [ "$_psi_finalization_max" -gt 0 ] || _psi_finalization_max=30
     case "$_psi_sample_sec" in ''|*[!0-9]*) _psi_sample_sec=2 ;; esac
     case "$_psi_priority" in ''|*[!0-9]*) _psi_priority=10 ;; esac
     if [ "$_psi_recover" -ge "$_psi_high" ]; then
@@ -848,6 +892,7 @@ _pc_heavy_internal_preempt_run() {
     [ -n "${_preempt_wait_pid:-}" ] && wait "${_preempt_wait_pid:-}" 2>/dev/null || true
     [ -n "${_preempt_pid_file:-}" ] && rm -f "${_preempt_pid_file:-}" 2>/dev/null || true
     _preempt_cleanup_ready_marker
+    _preempt_cleanup_finalization_marker
   }
   _preempt_forward_signal() {
     local _sig="$1" _code="$2"
@@ -1013,6 +1058,7 @@ _pc_heavy_internal_preempt_run() {
   rm -f "$_preempt_pid_file" 2>/dev/null || true
   _psi_remove_record
   _preempt_cleanup_ready_marker
+  _preempt_cleanup_finalization_marker
   trap - EXIT TERM INT HUP
   return "$_rc"
 }
@@ -2649,6 +2695,8 @@ fi
 # supplied path here: accepting one would let cleanup remove an unrelated file
 # and would let two concurrent runs share a barrier.
 _preempt_after_ready="${PC_HEAVY_PREEMPT_AFTER_READY:-0}"
+_preempt_finalization_file=''
+unset PC_HEAVY_PSI_FINALIZATION_FILE
 case "$_preempt_after_ready" in
   0|off|OFF|false|FALSE|no|NO)
     unset PC_HEAVY_PREEMPT_READY_FILE
@@ -2664,7 +2712,14 @@ case "$_preempt_after_ready" in
       echo "[pc-heavy] REFUSED after-ready barrier: cannot allocate a unique marker path" >&2
       exit 75
     fi
+    _preempt_finalization_file="$(mktemp "$_preempt_ready_dir/finalization.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$_preempt_finalization_file" ] || ! rm -f "$_preempt_finalization_file" 2>/dev/null; then
+      rm -f "$_preempt_ready_file" 2>/dev/null || true
+      echo "[pc-heavy] REFUSED PSI finalization handoff: cannot allocate a unique marker path" >&2
+      exit 75
+    fi
     export PC_HEAVY_PREEMPT_READY_FILE="$_preempt_ready_file"
+    export PC_HEAVY_PSI_FINALIZATION_FILE="$_preempt_finalization_file"
     ;;
   *)
     echo "[pc-heavy] invalid PC_HEAVY_PREEMPT_AFTER_READY=$_preempt_after_ready; expected auto/off, 1, or 0" >&2
