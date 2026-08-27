@@ -39,6 +39,7 @@ vi.mock('../../plan-audits', async (orig) => {
 vi.mock('./activation-audit-repair', () => ({
   ensureActivationAuditRepairFiling: vi.fn(),
 }));
+vi.mock('./source', () => ({ getPlanRow: vi.fn() }));
 
 import {
   getEffectiveItemAudits,
@@ -49,6 +50,7 @@ import {
   repoCitationContextForHarness,
 } from '../../plan-audits';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
+import { getPlanRow } from './source';
 import { resolveSessionTurnRefs } from '../sessions/_shared';
 import tool from './audit';
 
@@ -60,6 +62,7 @@ const mockRecord = vi.mocked(recordPlanAudit);
 const mockRecordActivation = vi.mocked(recordCurrentActivationAudit);
 const mockResolveSourceRefs = vi.mocked(resolveSessionTurnRefs);
 const mockRepairFiling = vi.mocked(ensureActivationAuditRepairFiling);
+const mockGetPlanRow = vi.mocked(getPlanRow);
 
 const ctx = {
   log: vi.fn(),
@@ -101,6 +104,9 @@ beforeEach(() => {
     id: 'EI-ACTIVATION-REPAIR',
     created: true,
   });
+  mockGetPlanRow.mockResolvedValue({
+    content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Implement the audit gate on staging.\n`,
+  } as never);
 });
 
 const activationArgs = (over: Record<string, unknown> = {}) => ({
@@ -224,6 +230,24 @@ describe('plans:audit D-008 writer contract', () => {
 });
 
 describe('plans:audit phase:activation', () => {
+  it('refuses a non-final main wait with an actionable item diagnostic', async () => {
+    mockGetPlanRow.mockResolvedValue({
+      content: `---\ntitle: Plan A\nslug: plan-a\nstatus: draft\ncreated: 2026-08-27\nupdated: 2026-08-27\nowner: test\n---\n\n## Items\n\n- **P-001** \`todo\` Wait for green-checkpoint before continuing implementation.\n`,
+    } as never);
+
+    const result = ((await tool.handler(activationArgs() as never, ctx)) as { data: any }).data;
+
+    expect(result).toMatchObject({
+      ok: false,
+      phase: 'activation',
+      error: 'staging_first_guard_failed',
+      problems: [expect.objectContaining({ itemId: 'P-001', code: 'non_final_deployed_main_wait' })],
+    });
+    expect(result.problems[0].detail).toContain('name the deployed-only property');
+    expect(mockResolveSourceRefs).not.toHaveBeenCalled();
+    expect(mockRecordActivation).not.toHaveBeenCalled();
+  });
+
   it('admits omitted or empty coverage arrays at the schema for carry-forward re-audits', () => {
     expect(tool.args.safeParse({ slug: 'plan-a', harness: 'papercusp', phase: 'activation' }).success).toBe(true);
     expect(tool.args.safeParse({

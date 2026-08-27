@@ -51,6 +51,9 @@ import {
 import { activeWorkspaceId } from '../../workspace-registry';
 import { parseTurnRef, resolveSessionTurnRefs, SESSION_SOURCE_KINDS } from '../sessions/_shared';
 import { ensureActivationAuditRepairFiling } from './activation-audit-repair';
+import { getPlanRow } from './source';
+import { parsePlan } from './parser';
+import { stagingFirstActivationProblems } from './staging-first-activation-guard';
 
 const citationSchema = z.object({
   kind: z.enum(CITATION_KINDS).describe(
@@ -275,6 +278,28 @@ export default defineTool({
       const activation = merged.activation;
       const sourceRanges = activation.sourceRanges;
       const mappings = activation.mappings;
+
+      const currentPlan = await getPlanRow(args.slug, {
+        workspaceId,
+        harnessSlug: harnessSlug ?? '',
+      });
+      if (currentPlan) {
+        const stagingProblems = stagingFirstActivationProblems(
+          parsePlan(currentPlan.content, { filePath: `${args.slug}.md` }),
+        );
+        if (stagingProblems.length > 0) {
+          return { data: {
+            ok: false as const,
+            slug: args.slug,
+            phase: 'activation' as const,
+            error: 'staging_first_guard_failed' as const,
+            problems: stagingProblems,
+            message:
+              `${stagingProblems.length} non-final item(s) gate implementation on the release plane. ` +
+              'Rewrite them for staging/current-build acceptance or add the narrow deployed-only exception described per item; nothing was recorded.',
+          } };
+        }
+      }
 
       const sourceProblems: Problem[] = [];
       const sourceRefs: string[] = [];
