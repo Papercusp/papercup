@@ -185,6 +185,56 @@ describe('P-012 terminal provenance writer', () => {
     return (await store.getTask(taskId))!;
   }
 
+  it('persists pids.events max monotonically while keeping pids.current at its latest sample', async () => {
+    await liveTask('pidseventstask');
+    await db.sql`
+      UPDATE harness_shared.task_ledger
+         SET detail = jsonb_build_object('bashJobId', 'job-pids-events', 'keep', true)
+       WHERE task_id = 'pidseventstask'
+    `;
+
+    await expect(
+      store.touchAlive([
+        { taskId: 'pidseventstask', metrics: { pidsCurrent: 12, pidsEventsMax: 11 } },
+      ]),
+    ).resolves.toBe(1);
+    let row = (await db.sql`
+      SELECT pids_current, detail FROM harness_shared.task_ledger WHERE task_id = 'pidseventstask'
+    `)[0]!;
+    expect(row).toMatchObject({
+      pids_current: 12,
+      detail: { bashJobId: 'job-pids-events', keep: true, pidsEventsMax: 11 },
+    });
+    expect((await store.getTask('pidseventstask'))).toMatchObject({ pidsCurrent: 12, pidsEventsMax: 11 });
+
+    await expect(
+      store.touchAlive([
+        { taskId: 'pidseventstask', metrics: { pidsCurrent: 3, pidsEventsMax: 4 } },
+      ]),
+    ).resolves.toBe(1);
+    row = (await db.sql`
+      SELECT pids_current, detail FROM harness_shared.task_ledger WHERE task_id = 'pidseventstask'
+    `)[0]!;
+    expect(row).toMatchObject({
+      pids_current: 3,
+      detail: { bashJobId: 'job-pids-events', keep: true, pidsEventsMax: 11 },
+    });
+
+    await expect(
+      store.touchAlive([
+        { taskId: 'pidseventstask', metrics: { pidsCurrent: 2, pidsEventsMax: 17 } },
+      ]),
+    ).resolves.toBe(1);
+    row = (await db.sql`
+      SELECT pids_current, detail FROM harness_shared.task_ledger WHERE task_id = 'pidseventstask'
+    `)[0]!;
+    expect(row).toMatchObject({
+      pids_current: 2,
+      detail: { bashJobId: 'job-pids-events', keep: true, pidsEventsMax: 17 },
+    });
+    expect((await store.getTask('pidseventstask'))).toMatchObject({ pidsCurrent: 2, pidsEventsMax: 17 });
+  });
+
   function terminal(scopeUnit: string, over: Partial<TaskTerminalProvenance> = {}) {
     return {
       capturedAt: '2026-08-24T16:00:00.000Z',

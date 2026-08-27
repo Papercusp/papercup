@@ -336,11 +336,38 @@ describe('terminalResourceLimitFields (EI-21437837415175286)', () => {
           exitCode: 1,
           pidsCurrent: 4_096,
           tasksMax: 4_096,
+          pidsEventsMax: 3,
           detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
         }),
         'Test Files 4 failed | 2827 passed\nTests 4 failed | 41131 passed',
       ),
     ).toBeNull();
+  });
+
+  it('uses cumulative pids.events evidence after workers drain below TasksMax', () => {
+    const result = terminalResourceLimitFields(
+      fakeRow({
+        state: 'exited',
+        exitCode: 254,
+        pidsCurrent: 7,
+        tasksMax: 2_048,
+        pidsEventsMax: 3,
+        detail: { bashJobId: '5f4ad9a1-272', workloadClass: 'test-run' },
+      }),
+    );
+    expect(result).toEqual({
+      failure_class: 'infrastructure-resource-limit',
+      resource_limit: {
+        kind: 'pids',
+        observed_tasks: 7,
+        configured_tasks_max: 2_048,
+        historical_pids_events_max: 3,
+        source: 'task-ledger-historical-pids-events',
+      },
+      test_verdict: 'undetermined',
+      resource_advice:
+        "This task's cgroup recorded 3 refused fork attempts at TasksMax 2048; its latest pids.current sample was 7/2048. This is an UNDETERMINED test run, not a red suite verdict.",
+    });
   });
 
   it('retains the exact bash wait-for-loss fallback when the log itself was lost', () => {
@@ -519,6 +546,11 @@ describe('terminalResourceLimitFields — pre-launch budget refusal (EI-21442389
 
   it('still refuses to classify a clean exit without the marker, or a live task', () => {
     expect(terminalResourceLimitFields(refusedRow({ exitCode: 0 }), 'Test Files 12 passed')).toBeNull();
+    expect(
+      terminalResourceLimitFields(
+        fakeRow({ state: 'exited', exitCode: 0, pidsCurrent: 7, tasksMax: 2_048, pidsEventsMax: 3 }),
+      ),
+    ).toBeNull();
     expect(
       terminalResourceLimitFields(refusedRow({ state: 'running', exitCode: null }), pidsRefusalLog),
     ).toBeNull();

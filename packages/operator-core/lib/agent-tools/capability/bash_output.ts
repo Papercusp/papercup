@@ -449,6 +449,13 @@ export type TerminalResourceLimitFields = {
         source: 'task-ledger-cgroup-sample';
       }
     | {
+        kind: 'pids';
+        observed_tasks: number;
+        configured_tasks_max: number;
+        historical_pids_events_max: number;
+        source: 'task-ledger-historical-pids-events';
+      }
+    | {
         kind: 'pids' | 'memory';
         unit: 'tasks' | 'mb';
         configured_limit: number;
@@ -508,27 +515,72 @@ function terminalCgroupSampleFields(
   if (
     observed == null ||
     configured == null ||
-    !Number.isFinite(observed) ||
-    !Number.isFinite(configured) ||
-    observed < configured
+    !Number.isSafeInteger(observed) ||
+    !Number.isSafeInteger(configured) ||
+    observed < 0 ||
+    configured <= 0
   ) {
     return null;
   }
+  const atCurrentCap = observed >= configured;
   const causalEvidence = hasForkStarvationEvidence(log) || row.exitCode === 254;
-  if (!causalEvidence) return null;
+  if (atCurrentCap && causalEvidence) {
+    return {
+      failure_class: 'infrastructure-resource-limit',
+      resource_limit: {
+        kind: 'pids',
+        observed_tasks: observed,
+        configured_tasks_max: configured,
+        source: 'task-ledger-cgroup-sample',
+      },
+      ...(testRun ? { test_verdict: 'undetermined' as const } : {}),
+      resource_advice:
+        `This task reached its own cgroup TasksMax (${observed}/${configured}); its non-zero shell exit is ` +
+        `${testRun ? 'an UNDETERMINED test run, not a red suite verdict' : 'an infrastructure resource-limit failure'}.`,
+    };
+  }
+
+  // `pids.events:max` is cumulative for the lifetime of this task's unique cgroup. It
+  // remains positive after workers drain, so it is the only surviving evidence when the
+  // final `pids.current` sample has fallen below TasksMax. Do not let that historical signal
+  // replace a complete test result: the cgroup may have experienced pressure earlier while
+  // the runner still produced a trustworthy red summary.
+  const historical = row.pidsEventsMax;
+  if (
+    historical == null ||
+    !Number.isSafeInteger(historical) ||
+    historical <= 0 ||
+    hasCompleteTestVerdict(log)
+  ) {
+    return null;
+  }
   return {
     failure_class: 'infrastructure-resource-limit',
     resource_limit: {
       kind: 'pids',
       observed_tasks: observed,
       configured_tasks_max: configured,
-      source: 'task-ledger-cgroup-sample',
+      historical_pids_events_max: historical,
+      source: 'task-ledger-historical-pids-events',
     },
     ...(testRun ? { test_verdict: 'undetermined' as const } : {}),
     resource_advice:
-      `This task reached its own cgroup TasksMax (${observed}/${configured}); its non-zero shell exit is ` +
-      `${testRun ? 'an UNDETERMINED test run, not a red suite verdict' : 'an infrastructure resource-limit failure'}.`,
+      `This task's cgroup recorded ${historical} refused fork attempt${historical === 1 ? '' : 's'} ` +
+      `at TasksMax ${configured}; its latest pids.current sample was ${observed}/${configured}. ` +
+      `${testRun ? 'This is an UNDETERMINED test run, not a red suite verdict' : 'The non-zero shell exit is an infrastructure resource-limit failure'}.`,
   };
+}
+
+function hasCompleteTestVerdict(log: string): boolean {
+  // Strip SGR before matching Vitest's line-anchored summary. The affected-tests marker is
+  // already plain machine-readable output and is a complete verdict when it says passed or
+  // failed; `aborted` deliberately remains eligible for the historical evidence branch.
+  // eslint-disable-next-line no-control-regex -- SGR is the ANSI sequence being stripped.
+  const plain = log.replace(/\x1b\[[0-9;]*m/g, '');
+  return (
+    /\bAFFECTED_TESTS_RESULT\s+status=(?:passed|failed)\b/i.test(plain) ||
+    /^\s*(?:Test Files|Tests)\s+\d+\s+failed\b/m.test(plain)
+  );
 }
 
 /**
