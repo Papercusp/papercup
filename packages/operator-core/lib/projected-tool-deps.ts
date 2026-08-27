@@ -59,6 +59,33 @@ import { recordMcpTraffic } from './coverage-census/attribution/sink';
 import { observeFailureLoop } from './failure-loop-circuit-breaker';
 
 /**
+ * The role-scoped `papercusp` MCP surface can be discovered alongside the
+ * superuser `papercusp-su` surface by an SU client. A judge-scoped call to the
+ * plan-audit writer is intentionally denied (judge is evidence-only), but the
+ * generic denial used to name only `system:judge`, hiding the authorized route
+ * and making a server/configuration mismatch look like a missing user grant.
+ * Keep judge least-privileged and teach only this precise MCP denial how to
+ * recover through the already-authorized SU surface.
+ */
+export function authorizationFailureHint(input: {
+  toolName: string;
+  missingCapability: string;
+  ctx: UnifiedToolContext;
+}): string | undefined {
+  if (
+    input.ctx.transport !== 'mcp' ||
+    input.ctx.isSuperuser === true ||
+    input.ctx.role !== 'judge' ||
+    input.ctx.principal?.slug !== 'system:judge' ||
+    input.toolName !== 'plans:audit' ||
+    input.missingCapability !== 'plans:write'
+  ) {
+    return undefined;
+  }
+  return 'This is a judge-scoped MCP session; an authorized su/operator must invoke plans:audit through the papercusp-su MCP server (for example, tools:invoke).';
+}
+
+/**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
  * cannot represent a NUL byte (U+0000) and rejects the `::jsonb` cast with
  * `unsupported Unicode escape sequence`. Tool args/metadata occasionally carry NUL
@@ -796,6 +823,7 @@ const overrideToolImpl: ToolDispatchOverrideFn = async (toolName, args, ctx) => 
 /** Shared deps singleton. Same object reference is safe to pass to
  *  multiple dispatchers — the impls are stateless. */
 export const PROJECTED_DEPS: DispatchProjectedDeps = {
+  authorizationFailureHint,
   // Turn-level presence beat (liveness-hardening P-001): mark activity as soon
   // as a projected dispatch starts, so a long-running handler remains visible
   // while it is still in flight rather than only after settlement.

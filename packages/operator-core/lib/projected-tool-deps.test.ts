@@ -40,7 +40,13 @@ vi.mock('./agent-tools/coordination/dispatch-heartbeat', async (importOriginal) 
   maybeBeatPresenceOnDispatch: vi.fn(),
 }));
 
-import { PROJECTED_DEPS, setReactionPostInvoke, jsonbSafeStringify, isPaletteUiPollRead } from './projected-tool-deps';
+import {
+  PROJECTED_DEPS,
+  authorizationFailureHint,
+  setReactionPostInvoke,
+  jsonbSafeStringify,
+  isPaletteUiPollRead,
+} from './projected-tool-deps';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { getOverride, PASS_THROUGH as TESTING_SHELL_PASS_THROUGH } from '@papercusp/testing-shell/llm';
@@ -75,6 +81,53 @@ describe('PROJECTED_DEPS.onDispatchStart — in-flight liveness wiring', () => {
 
     expect(maybeBeatPresenceOnDispatch).toHaveBeenCalledOnce();
     expect(maybeBeatPresenceOnDispatch).toHaveBeenCalledWith(event.ctx);
+  });
+});
+
+describe('authorizationFailureHint — judge MCP route guidance (EI-21543450341912836)', () => {
+  it('names the authorized papercusp-su route without widening judge capabilities', () => {
+    const hint = authorizationFailureHint({
+      toolName: 'plans:audit',
+      missingCapability: 'plans:write',
+      ctx: ctx({
+        transport: 'mcp',
+        role: 'judge',
+        principal: {
+          kind: 'system',
+          slug: 'system:judge',
+          workspaceId: 'default',
+          capabilities: new Set(),
+          authMethod: 'spawn-url',
+          trust: 'trusted',
+        },
+      }),
+    });
+    expect(hint).toContain('papercusp-su');
+    expect(hint).toContain('tools:invoke');
+  });
+
+  it('does not hint unrelated denials or the already-authorized su route', () => {
+    const base = {
+      toolName: 'plans:audit',
+      missingCapability: 'plans:write',
+      ctx: ctx({
+        transport: 'mcp',
+        role: 'judge',
+        principal: {
+          kind: 'system',
+          slug: 'system:judge',
+          workspaceId: 'default',
+          capabilities: new Set(),
+          authMethod: 'spawn-url',
+          trust: 'trusted',
+        },
+      }),
+    };
+    expect(authorizationFailureHint({ ...base, toolName: 'plans:get' })).toBeUndefined();
+    expect(authorizationFailureHint({
+      ...base,
+      ctx: ctx({ ...base.ctx, isSuperuser: true }),
+    })).toBeUndefined();
   });
 });
 
