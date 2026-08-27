@@ -20,6 +20,7 @@ import { projectDirForSlug } from '../../operator-notes';
 import { fireGitSyncNow, type GitSyncFireOutcome } from '../../harness/git-sync/git-sync-action';
 import { GIT_SYNC_LOCK_RETRY_EVENT } from '../../harness/git-sync/git-sync-events';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { clampText, LIMITS, softText } from '../limits';
 
 const execFileP = promisify(execFile);
 
@@ -97,8 +98,13 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Alias for installSlug when using the standard per-call harness scope argument.'),
+    reason: softText(LIMITS.SHORT_TITLE)
+      .optional()
+      .describe(
+        'OPTIONAL: why you are firing git-sync by hand. Recorded to this call\'s tool_invocations metadata as an audit trail; it does not change the synchronization decision. Never rejected for length or terseness; clamped if very long.',
+      ),
   }),
-  async handler(args, _ctx) {
+  async handler(args, ctx) {
     // No in-handler role gate: firing git-sync is a SAFE, idempotent op — it runs
     // the same commit+push action a cron tick already fires on its own ≤3-min
     // cycle, self-locks against a concurrent tick, and mutates no config (see the
@@ -218,6 +224,11 @@ export default defineTool({
             : outcome?.status === 'conflict' || outcome?.status === 'error'
               ? `git-sync completed with status ${outcome.status}; inspect outcome errors/conflicts.`
               : 'git-sync returned no structured outcome; treat the result as unknown and inspect the routine log.';
+    // The metadata seam is overwrite-not-merge. Keep the caller's reason on this same
+    // stamp as any future git-sync outcome metadata so a later stamp cannot erase it.
+    ctx.metadata?.({
+      ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+    });
     return {
       content: [
         {
