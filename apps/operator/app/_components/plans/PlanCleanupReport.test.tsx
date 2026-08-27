@@ -162,9 +162,16 @@ describe("buildPlanCleanupReviewGroups", () => {
       sourceLabel: "p-one",
       referenceLabel: "P-001",
       transition: { from: "todo", to: "done" },
+      accounting: "ready",
     });
-    expect(rows.find((row) => row.id === "now")?.selectable).toBe(false);
-    expect(rows.find((row) => row.id === "claim")?.selectable).toBe(false);
+    expect(rows.find((row) => row.id === "now")).toMatchObject({
+      selectable: false,
+      accounting: "manual",
+    });
+    expect(rows.find((row) => row.id === "claim")).toMatchObject({
+      selectable: false,
+      accounting: "not-applied",
+    });
   });
 });
 

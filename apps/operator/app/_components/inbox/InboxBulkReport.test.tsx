@@ -243,6 +243,7 @@ describe("buildInboxBulkReviewGroups", () => {
     expect(ack?.rows.find((row) => row.id === "a")).toMatchObject({
       status: "pending",
       selectable: true,
+      accounting: "ready",
       confidence: "recommended",
       sourceLabel: "Message",
       referenceLabel: "Acknowledge",
@@ -250,11 +251,16 @@ describe("buildInboxBulkReviewGroups", () => {
     expect(ack?.rows.find((row) => row.id === "b")).toMatchObject({
       status: "applied",
       selectable: false,
+      accounting: "handled",
       confidence: "provable",
     });
     expect(
       groups.find((group) => group.title === "Skipped · Escalation")?.rows[0],
-    ).toMatchObject({ status: "pending", selectable: false });
+    ).toMatchObject({
+      status: "pending",
+      selectable: false,
+      accounting: "not-applied",
+    });
   });
 
   it("keeps only a non-empty drafted Answer selectable among navigate actions", () => {
@@ -267,8 +273,14 @@ describe("buildInboxBulkReviewGroups", () => {
       [runItem({ actionId: "answer", draftAnswer: "   " })],
       items,
     );
-    expect(drafted[0]?.rows[0]?.selectable).toBe(true);
-    expect(empty[0]?.rows[0]?.selectable).toBe(false);
+    expect(drafted[0]?.rows[0]).toMatchObject({
+      selectable: true,
+      accounting: "manual",
+    });
+    expect(empty[0]?.rows[0]).toMatchObject({
+      selectable: false,
+      accounting: "manual",
+    });
   });
 });
 
