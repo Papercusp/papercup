@@ -110,6 +110,30 @@ class MemoryQueueStore implements DurableAdmissionQueueStore {
     return { ...next, changed: true };
   }
 
+  /** Target one already-persisted receipt during observe-only migration.
+   *  Mirrors leaseNext, but selects by receiptId instead of queue order. */
+  async leaseReceipt(
+    namespace: string,
+    receiptId: string,
+    owner: string,
+    leaseId: string,
+    ttlMs: number,
+    nowMs: number,
+  ) {
+    const stored = this.byReceipt(receiptId);
+    if (!stored || stored.record.namespace !== namespace) return null;
+    if (!['queued', 'eligible'].includes(stored.record.state)) return { ...stored, changed: false };
+    const generation = stored.record.decision.generation + 1;
+    const next = this.replace(stored, {
+      ...stored.record,
+      state: 'leased',
+      updatedAtMs: nowMs,
+      decision: { generation, atMs: nowMs, reason: 'leased', evidence: { owner } },
+      lease: { leaseId, owner, generation, expiresAtMs: nowMs + ttlMs },
+    });
+    return { ...next, changed: true };
+  }
+
   private leaseMutation(
     receiptId: string,
     leaseId: string,
