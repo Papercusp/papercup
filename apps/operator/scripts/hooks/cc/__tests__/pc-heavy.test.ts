@@ -2039,6 +2039,33 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
     return stat.slice(stat.lastIndexOf(') ') + 2).split(/\s+/, 1)[0] ?? '';
   };
 
+  it('gives focused test:file commands PSI priority even when no gate activates the focused slot lane', () => {
+    const run = spawnSync(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', 'printf focused-ok', 'scripts/test-files.mjs'],
+      {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_COALESCE: '0',
+          PC_HEAVY_GATE_RESERVE: '0',
+          PC_HEAVY_DEBUG: '1',
+          // The unpreemptible diagnostic reports the computed PSI priority
+          // without starting the asynchronous controller.
+          PC_HEAVY_PREEMPTIBLE: '0',
+        }),
+        cwd: dir,
+        encoding: 'utf8',
+      },
+    );
+
+    expect(run.status).toBe(0);
+    expect(run.stdout).toBe('focused-ok');
+    expect(run.stderr).toContain('focused=0');
+    expect(run.stderr).toContain(
+      'PC_HEAVY_ADMISSION status=undetermined reason=unpreemptible priority=50',
+    );
+  });
+
   it('freezes lower-priority roots deterministically, preserves the release gate, and thaws one per quiet window', async () => {
     const psiFile = join(dir, 'psi-full-avg10');
     const gateRelease = join(dir, 'release-gate-continue');

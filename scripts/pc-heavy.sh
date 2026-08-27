@@ -2617,10 +2617,14 @@ fi
 # The release gate exits through its authoritative bypass before this point and
 # can never become a PSI victim. Exclusive materialization owns the reciprocal
 # all-slots path and likewise never reaches this ordinary runner. Among admitted
-# roots, focused verification outranks ordinary work; ties are resolved by the
-# monitor from persisted admission time + stable id.
+# roots, focused verification outranks ordinary work even when no gate or
+# materializer currently activates the separate focused slot domain. Tying PSI
+# priority to `_focused_lane` made an otherwise quiet-gate `test:file` run an
+# ordinary-priority root and therefore the deterministic victim of sustained
+# pressure. Ties are resolved by the monitor from persisted admission time +
+# stable id.
 _psi_admission_priority=10
-[ "$_focused_lane" = 1 ] && _psi_admission_priority=50
+[ "$_is_focused_command" = 1 ] && _psi_admission_priority=50
 export PC_HEAVY_ADMISSION_PRIORITY="$_psi_admission_priority"
 export PC_HEAVY_ADMISSION_DIR="$_dir/psi-admissions"
 if [ -z "${PC_HEAVY_ADMISSION_ID:-}" ]; then
