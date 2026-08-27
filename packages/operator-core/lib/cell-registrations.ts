@@ -439,7 +439,6 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
       },
     },
     evidence: [
-      'changeInCandidate.judgingContainsPath',
       'changeInCandidate.missingReason',
       'changeInCandidate.nextCandidateSha',
     ],

@@ -249,6 +249,16 @@ describe('P-007: the four verdict cells', () => {
     expect(GATE_CANDIDATE_CELL.doorProjections).toEqual([{ tool: 'release:trace', path: 'target.sha' }]);
   });
 
+  it('does not require the deliberately omitted run-probe containment verdict as evidence', () => {
+    expect(GATE_CANDIDATE_CELL.assessment?.evidence).not.toContain(
+      'changeInCandidate.judgingContainsPath',
+    );
+    expect(GATE_CANDIDATE_CELL.assessment?.evidence).toEqual([
+      'changeInCandidate.missingReason',
+      'changeInCandidate.nextCandidateSha',
+    ]);
+  });
+
   /**
    * D-014, asserted rather than trusted: ownership stays a CELL with its own declared
    * semantics, and the pointer is only a route to it. If someone ever "simplifies" this
