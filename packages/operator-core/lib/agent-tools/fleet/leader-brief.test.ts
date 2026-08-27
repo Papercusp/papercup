@@ -1282,6 +1282,32 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
     }
   });
 
+  it('suppresses non-wakeable recorded rows without suppressing live or parked controls (EI-21578801728078768)', () => {
+    const recorded = projectMember(
+      baseAgent({
+        sessionState: 'recorded',
+        wakeable: false,
+        verdict: 'waiting',
+      }),
+      NOW,
+      5,
+    );
+    expect(recorded.benchSuggestion).toBeUndefined();
+
+    for (const sessionState of ['live', 'parked'] as const) {
+      const control = projectMember(
+        baseAgent({
+          sessionState,
+          wakeable: true,
+          verdict: 'waiting',
+        }),
+        NOW,
+        5,
+      );
+      expect(control.benchSuggestion?.kind).toBe('idle-with-claimable');
+    }
+  });
+
   it('load/queued omitted (pre-EI-13846 call sites) never falsely triggers — undefined reads as "not laneless"', () => {
     expect(
       computeBenchSuggestion({ stalled: false, verdict: 'monitoring', parkedOn: [], doing: null }),

@@ -676,6 +676,10 @@ export function computeBenchSuggestion(
     // above) so pre-existing call sites keep compiling; absent reads as "no pressure
     // signal", never a false suppression.
     contextPressure?: ContextPressureBucket | null;
+    // EI-21578801728078768: session-log-only rows are authoritatively recorded as live but
+    // have no coord wake await, so they are not runnable by a leader-directed wake. Keep
+    // this optional for pre-existing pure callers that do not read the liveness oracle.
+    sessionState?: SessionState | null;
     // EI-18833129079136289: a recent real tool call proves the member is actively
     // working between claims, so do not wake it just because the presence snapshot
     // has not reflected its next claim yet. Absent/null remains unknown and keeps the
@@ -805,6 +809,10 @@ export function computeBenchSuggestion(
       };
     }
   }
+  // EI-21578801728078768: `recorded` is session-log liveness without a live coord
+  // wake await. Such a row cannot receive the member-remediation wake/bench flow below;
+  // excluding it prevents historical session rows from inflating idle_with_claimable.
+  if (a.sessionState === 'recorded') return undefined;
   // WI-5973: a fleet LEADER running its monitor loop (fleetRole:'leader',
   // loopMode:'monitor') is SUPPOSED to hold zero work-item claims — that IS
   // the documented leader contract (monitor each wake: burn-down delta,
