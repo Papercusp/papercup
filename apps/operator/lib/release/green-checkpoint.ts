@@ -9794,6 +9794,10 @@ async function runGreenCheckpointInner(
     }
 
     stampPromotion(false, "not-green");
+    // WI-42350 — the ORDINARY terminal red exit. This is the common path (the frozen-repair
+    // early resolution above is the exception), so the marker must be stamped here or the
+    // short-circuit never engages for a normal red.
+    await stampJudgedRed(candidate);
     return {
       advanced: false,
       candidate,
