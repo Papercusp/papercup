@@ -120,8 +120,11 @@ export function decideFlapDamping(input: FlapDampingInput): { action: FlapDampin
  * command must never consume the give-up budget or masquerade as a successful restart in status
  * output. Consumers call this at the success boundary and persist the returned state.
  */
-export function confirmFlapRestart(state: FlapDampingState, now: number): FlapDampingState {
-  const next = { ...state };
+export function confirmFlapRestart<T extends FlapDampingState>(state: T, now: number): T {
+  // Preserve caller-owned identity/state fields (for example UnitFlapState.unit) in the
+  // returned value. The damping policy only replaces its own fields, so retaining T is both
+  // runtime-accurate and lets consumers thread richer state without a narrowing cast.
+  const next = { ...state } as T;
   const pruned = state.restarts.filter((at) => now - at < GIVE_UP_WINDOW_MS);
   next.restarts = [...pruned, now];
   next.lastRestartAt = now;
