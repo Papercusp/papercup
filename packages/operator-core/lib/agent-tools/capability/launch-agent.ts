@@ -187,7 +187,7 @@ async function readCallerLaunchMode(workspaceId: string, ownerId: string | null)
 export default defineTool({
   name: 'capability:launch-agent',
   description:
-    "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
+    "Launch agents: start one ad-hoc on a free-form `brief`, RESUME a dead agent mid-thread (`resume: { agentId }`, with a required next-turn `brief`), or FORK a live one — visible on the desktop or headless, in a fleet or not, one or many. The flexible superset of fleet:launch-on-plan (which stays the ergonomic one-call door for N members on a plan). The brief becomes the agent's FIRST TURN, so it starts working immediately instead of parking idle.",
   guidance: {
     when: 'GENERAL AGENT-LAUNCH DOOR: launch, resume, or fork one or many agents — visible or headless, fleet or unfleeted. Use fleet:launch-on-plan instead only for the ergonomic “N agents on this plan” workflow.',
     notWhen:
@@ -211,7 +211,7 @@ export default defineTool({
         .max(8000)
         .optional()
         .describe(
-          "The agent's FIRST TURN — a free-form task/brief it starts working immediately (no plan required). Also allowed with `resume`/`fork`, where it becomes the resumed session's next turn (\"here's what changed, carry on\"). Omit for a launch that should open idle.",
+          "The agent's FIRST TURN — a free-form task/brief it starts working immediately (no plan required). Required with `resume`/`fork`, where it becomes the resumed session's next turn (\"here's what changed, carry on\"). Omit only for a FRESH launch bound to a `plan`.",
         ),
       plan: z
         .string()
@@ -246,7 +246,7 @@ export default defineTool({
         })
         .optional()
         .describe(
-          'Resume an existing session mid-thread — its full context comes back. Pass EITHER agentId (usual) or sessionId (exact pin).',
+          'Resume an existing session mid-thread — its full context comes back. A non-empty `brief` is required because it is the resumed session\'s actionable next turn. Pass EITHER agentId (usual) or sessionId (exact pin).',
         ),
       successor: z
         .object({
@@ -350,9 +350,10 @@ export default defineTool({
         ),
     });
     // Keep the fresh/source distinction in the published schema. The handler
-    // already rejects `plan` with a resume or successor, but leaving all three
-    // fields optional here makes callers discover that rule only after dispatch.
-    return z.union([
+    // rejects `plan` with a resume or successor, and a resume/fork must carry its
+    // actionable next turn rather than opening an ambiguous idle CLI.
+    return z
+      .union([
       base.extend({
         resume: z
           .never()
@@ -369,7 +370,16 @@ export default defineTool({
           .optional()
           .describe('Only valid for a FRESH launch; resumed and successor sessions keep their own context.'),
       }),
-    ]);
+      ])
+      .superRefine((value, refinement) => {
+        if (value.resume && !value.brief?.trim()) {
+          refinement.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['brief'],
+            message: '`brief` is required with `resume`/`fork` because it is the resumed session\'s actionable next turn',
+          });
+        }
+      });
   })(),
   async handler(args, ctx) {
     // Internal direct-handler seam used only by fleet:respawn-member after the
@@ -436,6 +446,11 @@ export default defineTool({
     if (isResume && count > 1 && !args.fork) {
       return err(
         'A session cannot be resumed more than once (a second CLI on one transcript collides). Use `fork: true` with `count` to branch N agents off it, or launch fresh agents with a `brief`.',
+      );
+    }
+    if (isResume && !args.brief?.trim()) {
+      return err(
+        '`resume`/`fork` requires a non-empty `brief` — it is the resumed session\'s actionable next turn. A no-brief resume would open an idle CLI and report an ambiguous launch; use a fresh `plan` launch if no next-turn direction is available.',
       );
     }
     const anyMemberBrief = (args.members ?? []).some((m) => m?.brief?.trim());
@@ -780,6 +795,7 @@ export default defineTool({
             workspaceId,
             fleetSlug,
             target: savedLaunchSpec.target,
+            enabled: true,
             config: savedLaunchSpec.config,
             nextAttemptAt: null,
             backoffMs: 0,
