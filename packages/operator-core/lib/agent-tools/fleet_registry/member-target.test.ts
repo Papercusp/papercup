@@ -8,6 +8,7 @@ vi.mock('@papercusp/agent-mcp', () => ({
   classifyAgentPane: vi.fn(),
 }));
 vi.mock('../../agent-fleets-store', () => ({
+  FLEET_TYPES: ['single', 'paired'] as const,
   getFleet: vi.fn(),
   listFleetsLedBy: vi.fn(),
   fleetSlugFromName: (value: string) => value.trim().toLowerCase(),
