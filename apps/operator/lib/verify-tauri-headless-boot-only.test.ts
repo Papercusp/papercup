@@ -3,10 +3,14 @@
  * --boot-only port-lock keeper must clear teardown before waiting, otherwise
  * a normal wrapper exit destroys the isolated app it just handed to the user.
  */
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { resolve } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 
+const ROOT = resolve(__dirname, '../../..');
 const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
 const src = readFileSync(SCRIPT, 'utf8');
 
@@ -67,6 +71,47 @@ describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app a
   it('does not start the keeper before clearing only the parent trap', () => {
     expect(src).not.toMatch(
       /\(\s*while kill -0 "\$XVFB_PID"[\s\S]*?\) &\s*\n\s*PORT_LOCK_KEEPER_PID=\$!\s*\n\s*trap - EXIT INT TERM/,
+    );
+  });
+});
+
+describe('EI-21587904634585710 — boot-only task lifetime is explicit', () => {
+  it('refuses a capability:bash boot-only launch before allocating verifier resources', () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'verify-tauri-headless-task-lifetime.'));
+
+    try {
+      const result = spawnSync('bash', [SCRIPT, '--boot-only'], {
+        cwd: ROOT,
+        env: {
+          ...process.env,
+          PAPERCUSP_REPO_DIR: join(scratch, 'missing-repo'),
+          PAPERCUSP_SID: 'test-boot-only-task-lifetime',
+          PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'task-under-test',
+          TMPDIR: scratch,
+        },
+        encoding: 'utf8',
+      });
+
+      expect(result.status).toBe(2);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toContain('refusing before verifier boot');
+      expect(result.stderr).toContain('task-under-test');
+      expect(result.stderr).toContain('--boot-only-i-accept-task-lifetime');
+      expect(readdirSync(scratch)).toEqual([]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  it('requires the explicit escape and routes it through the existing boot-only branch', () => {
+    expect(src).toContain('--boot-only-i-accept-task-lifetime');
+    expect(src).toContain('$0 --boot-only-i-accept-task-lifetime');
+    expect(src).toContain('BOOT_ONLY_ACCEPT_TASK_LIFETIME=1');
+    expect(src).toMatch(
+      /--boot-only-i-accept-task-lifetime\)[\s\S]*?set -- --boot-only[\s\S]*?if \[ "\$\{1:-\}" = "--boot-only" \]; then/,
+    );
+    expect(src).toContain(
+      'verifier dies when task=${CAPABILITY_BASH_BACKGROUND_TASK_ID} ends',
     );
   });
 });

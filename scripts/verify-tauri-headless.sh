@@ -131,6 +131,15 @@
 #     exporting its variables. Run the printed stop script when done; NEVER
 #     leave it running unattended (mirrors the two-instance-*-smoke.sh
 #     leaked-Xvfb lesson, WI-2115 — a display left up starves the next run).
+#     A capability:bash launch refuses this form before booting because that
+#     managed task tears down its whole cgroup when the call returns. If the
+#     rig is intentionally needed only inside that task, use the explicit
+#     `--boot-only-i-accept-task-lifetime` escape instead.
+#
+#   scripts/verify-tauri-headless.sh --boot-only-i-accept-task-lifetime
+#     Explicitly opts into the capability:bash task lifetime above. The rig
+#     will be gone when that managed task reaches a terminal state; do not
+#     source the printed environment from a later agent tool call.
 #
 # ENV OVERRIDES (all optional)
 #   VERIFY_TAURI_ISOLATED_DB    1 = boot a genuinely isolated, throwaway,
@@ -228,10 +237,13 @@ if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
 Usage:
   $0 -- <assertion-command...>
   $0 --boot-only
+  $0 --boot-only-i-accept-task-lifetime
 
 Boot an isolated headless Tauri verifier, run an assertion command, and tear
 the verifier down. The --boot-only form prints a sourceable environment and
 keeps the verifier alive until its stop script is run.
+When launched by capability:bash, use assertion mode for a later tool call;
+the explicit boot-only escape accepts that the managed task will kill the rig.
 EOF
   exit 0
 fi
@@ -246,6 +258,8 @@ fi
 ASSERTION_MODE=0
 ASSERTION_ARGS=()
 ASSERTION_CWD="$PWD"
+BOOT_ONLY_ACCEPT_TASK_LIFETIME=0
+CAPABILITY_BASH_BACKGROUND_TASK_ID="${PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID:-}"
 case "${1:-}" in
   --)
     [ "$#" -ge 2 ] || {
@@ -256,9 +270,25 @@ case "${1:-}" in
     ASSERTION_ARGS=("${@:2}")
     ;;
   --boot-only)
+    if [ -n "$CAPABILITY_BASH_BACKGROUND_TASK_ID" ]; then
+      echo "FATAL: --boot-only cannot outlive capability:bash task $CAPABILITY_BASH_BACKGROUND_TASK_ID; refusing before verifier boot." >&2
+      echo "       Use $0 -- <assertion-command...> for a managed task, or explicitly opt in with $0 --boot-only-i-accept-task-lifetime when the rig is only needed inside this task." >&2
+      exit 2
+    fi
+    ;;
+  --boot-only-i-accept-task-lifetime)
+    [ "$#" -eq 1 ] || {
+      echo "FATAL: --boot-only-i-accept-task-lifetime does not accept extra arguments." >&2
+      exit 2
+    }
+    BOOT_ONLY_ACCEPT_TASK_LIFETIME=1
+    # Keep the established --boot-only branch (and all of its teardown and
+    # handoff invariants) as the single implementation path for the explicit
+    # escape. The normalization also keeps downstream argument checks honest.
+    set -- --boot-only
     ;;
   *)
-    echo "FATAL: expected -- <assertion-command...> or --boot-only" >&2
+    echo "FATAL: expected -- <assertion-command...>, --boot-only, or --boot-only-i-accept-task-lifetime" >&2
     exit 2
     ;;
 esac
@@ -745,11 +775,14 @@ verifier_caller_is_terminal_scope() {
 # creating a verifier-local sibling scope would put Xvfb/openbox/Tauri outside
 # that ledger row. A direct `setsid` keeps them in the inherited cgroup while
 # still detaching them from the caller's terminal session.
-CAPABILITY_BASH_BACKGROUND_TASK_ID="${PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID:-}"
 if [ -n "$CAPABILITY_BASH_BACKGROUND_TASK_ID" ]; then
   VERIFY_SCOPE_MODE="inherit"
   VERIFY_SCOPE_INHERITED=1
-  log "verifier cgroup inheritance enabled: children stay in capability:bash managed task scope (task=${CAPABILITY_BASH_BACKGROUND_TASK_ID})"
+  if [ "$BOOT_ONLY_ACCEPT_TASK_LIFETIME" = 1 ]; then
+    log "WARNING: --boot-only explicitly accepted capability:bash task lifetime; verifier dies when task=${CAPABILITY_BASH_BACKGROUND_TASK_ID} ends"
+  else
+    log "verifier cgroup inheritance enabled: children stay in capability:bash managed task scope (task=${CAPABILITY_BASH_BACKGROUND_TASK_ID})"
+  fi
 elif verifier_caller_is_terminal_scope; then
   VERIFY_SCOPE_MODE="terminal"
   VERIFY_SCOPE_INHERITED=1
