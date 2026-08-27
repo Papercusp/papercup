@@ -351,6 +351,15 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
   return { repositoryRoot: nodePath.resolve(repositoryRoot), headSha, ...(contentIdentity ? { contentIdentity } : {}) };
 }
 
+function identityByPath(identity: readonly CompletionTreeContentIdentity[]): Map<string, CompletionTreeContentIdentity> | undefined {
+  const byPath = new Map<string, CompletionTreeContentIdentity>();
+  for (const entry of identity) {
+    if (byPath.has(entry.path)) return undefined;
+    byPath.set(entry.path, entry);
+  }
+  return byPath;
+}
+
 /**
  * Compare terminal evidence's stored tree stamp with the current stamp from
  * that same repository.  No tree stamp means no signal; an unobservable current
@@ -419,21 +428,54 @@ export function completionFreshnessForEvidence(
     };
   }
 
-  if (current.repositoryRoot !== stored.repositoryRoot || current.headSha !== stored.headSha) {
+  if (current.repositoryRoot !== stored.repositoryRoot) {
     return {
       verdict: 'stale',
       storedTreeStamp: stored,
       currentTreeStamp: current,
       reason:
-        `Completion verification was observed at ${stored.headSha}, but current HEAD is ${current.headSha}; ` +
+        `Completion verification was observed in ${stored.repositoryRoot}, but current evidence resolved in ${current.repositoryRoot}; ` +
         're-verify before treating the terminal result as current.',
     };
+  }
+
+  const storedByPath = identityByPath(stored.contentIdentity);
+  const currentByPath = identityByPath(current.contentIdentity);
+  const samePaths =
+    storedByPath &&
+    currentByPath &&
+    storedByPath.size === currentByPath.size &&
+    [...storedByPath.keys()].every((path) => currentByPath.has(path));
+  if (!samePaths || !storedByPath || !currentByPath) {
+    return {
+      verdict: 'stale',
+      storedTreeStamp: stored,
+      currentTreeStamp: current,
+      reason: 'Current committed content identity covers a different declared path set; re-verify before trusting it.',
+    };
+  }
+
+  for (const [path, storedEntry] of storedByPath) {
+    const currentEntry = currentByPath.get(path)!;
+    if (storedEntry.headBlobSha !== currentEntry.headBlobSha) {
+      return {
+        verdict: 'stale',
+        storedTreeStamp: stored,
+        currentTreeStamp: current,
+        reason:
+          `Committed content for ${path} changed between verification HEAD ${stored.headSha} and current HEAD ${current.headSha}; ` +
+          're-verify before treating the terminal result as current.',
+      };
+    }
   }
 
   return {
     verdict: 'fresh',
     storedTreeStamp: stored,
     currentTreeStamp: current,
-    reason: `Completion verification and current HEAD both resolve to ${current.headSha}.`,
+    reason:
+      current.headSha === stored.headSha
+        ? `Completion verification and current HEAD both resolve to ${current.headSha}.`
+        : `Completion verification remains fresh across HEAD movement from ${stored.headSha} to ${current.headSha}; declared path content is unchanged.`,
   };
 }

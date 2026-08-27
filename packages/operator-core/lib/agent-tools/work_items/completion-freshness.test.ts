@@ -37,18 +37,58 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
     });
   });
 
-  it('reports stale when a peer advanced the same repository HEAD', () => {
+  it('reports fresh when a peer advanced HEAD without changing declared path content', () => {
     const result = completionFreshnessForEvidence(
       { treeStamp: stored },
       { currentStamp: () => current },
     );
 
     expect(result).toMatchObject({
-      verdict: 'stale',
+      verdict: 'fresh',
       storedTreeStamp: stored,
       currentTreeStamp: current,
     });
-    expect(result?.reason).toMatch(/re-verify/);
+    expect(result?.reason).toMatch(/remains fresh across HEAD movement/);
+  });
+
+  it('reports stale when the declared path content changed across HEADs', () => {
+    const changedCurrent = {
+      repositoryRoot: '/repo',
+      headSha: 'b'.repeat(40),
+      contentIdentity: [
+        { path: 'src/fix.ts', workingTreeBlobSha: 'd'.repeat(40), headBlobSha: 'd'.repeat(40) },
+      ],
+    };
+
+    const result = completionFreshnessForEvidence(
+      { treeStamp: stored },
+      { currentStamp: () => changedCurrent },
+    );
+
+    expect(result).toMatchObject({
+      verdict: 'stale',
+      storedTreeStamp: stored,
+      currentTreeStamp: changedCurrent,
+    });
+    expect(result?.reason).toMatch(/Committed content for src\/fix\.ts changed/);
+  });
+
+  it('reports stale when the declared path set changes', () => {
+    const changedCurrent = {
+      repositoryRoot: '/repo',
+      headSha: 'b'.repeat(40),
+      contentIdentity: [
+        { path: 'src/other.ts', workingTreeBlobSha: 'c'.repeat(40), headBlobSha: 'c'.repeat(40) },
+      ],
+    };
+
+    const result = completionFreshnessForEvidence(
+      { treeStamp: stored },
+      { currentStamp: () => changedCurrent },
+    );
+
+    expect(result?.verdict).toBe('stale');
+    expect(result?.reason).toMatch(/different declared path set/);
   });
 
   it('reports unavailable rather than falsely calling evidence fresh', () => {
