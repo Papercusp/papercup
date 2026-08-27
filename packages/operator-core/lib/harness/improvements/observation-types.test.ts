@@ -53,17 +53,23 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
 
   it('rejects a rating with missing / blank evidence (the core invariant)', () => {
     expect(() =>
-      validateObservationRatings({ rubricRef: 'r', ratings: { 'placement-health': { rating: 'broken', evidence: '' } } }),
+      validateObservationRatings({
+        rubricRef: 'r',
+        ratings: { 'placement-health': { rating: 'broken', evidence: '' } },
+      }),
     ).toThrow(/missing required evidence/);
     expect(() =>
-      validateObservationRatings({ rubricRef: 'r', ratings: { 'placement-health': { rating: 'broken', evidence: '   ' } } }),
+      validateObservationRatings({
+        rubricRef: 'r',
+        ratings: { 'placement-health': { rating: 'broken', evidence: '   ' } },
+      }),
     ).toThrow(ObservationEvidenceError);
   });
 
   it('rejects a blank rating value', () => {
-    expect(() =>
-      validateObservationRatings({ rubricRef: 'r', ratings: { k: { rating: '', evidence: 'e' } } }),
-    ).toThrow(/rating is required/);
+    expect(() => validateObservationRatings({ rubricRef: 'r', ratings: { k: { rating: '', evidence: 'e' } } })).toThrow(
+      /rating is required/,
+    );
   });
 
   it('rejects an empty criterion key', () => {
@@ -75,7 +81,10 @@ describe('validateObservationRatings — the D-002 mandatory-evidence gate', () 
   it('rejects a non-object rating entry', () => {
     expect(() =>
       // a malformed payload (e.g. from a hand-rolled writer) must not slip through.
-      validateObservationRatings({ rubricRef: 'r', ratings: { k: 'healthy' as unknown as { rating: string; evidence: string } } }),
+      validateObservationRatings({
+        rubricRef: 'r',
+        ratings: { k: 'healthy' as unknown as { rating: string; evidence: string } },
+      }),
     ).toThrow(/not a \{rating, evidence\} object/);
   });
 
@@ -243,7 +252,9 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
     });
     expect(out?.rubricRevision).toBe(7);
     expect(out?.vetting?.rubricRevision).toBe(3);
-    expect(asStructuredObservation({ rubricRef: 'goal-mode-e2e', rubricRevision: '7' })?.rubricRevision).toBeUndefined();
+    expect(
+      asStructuredObservation({ rubricRef: 'goal-mode-e2e', rubricRevision: '7' })?.rubricRevision,
+    ).toBeUndefined();
   });
 
   it('round-trips the graded subject (the drill parameter binding)', () => {
@@ -296,8 +307,12 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
   });
 
   it('drops malformed acceptance blocks rather than projecting a partial verdict', () => {
-    expect(asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'maybe', reasoning: 'x' } })?.acceptance).toBeUndefined();
-    expect(asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'accept', reasoning: '   ' } })?.acceptance).toBeUndefined();
+    expect(
+      asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'maybe', reasoning: 'x' } })?.acceptance,
+    ).toBeUndefined();
+    expect(
+      asStructuredObservation({ rubricRef: 'r', acceptance: { verdict: 'accept', reasoning: '   ' } })?.acceptance,
+    ).toBeUndefined();
     expect(asStructuredObservation({ rubricRef: 'r', acceptance: 'accept' })?.acceptance).toBeUndefined();
   });
 
@@ -378,10 +393,7 @@ describe('asStructuredObservation — read-side payload surfacing', () => {
 describe('canonical scorecard ratings (EI-12458)', () => {
   const rubric = {
     ratingScale: ['PASS', 'AT-RISK', 'FAIL', 'UNKNOWN'],
-    criteria: [
-      { key: 'a' },
-      { key: 'b', ratingScale: ['healthy', 'degraded', 'broken', 'unknown'] },
-    ],
+    criteria: [{ key: 'a' }, { key: 'b', ratingScale: ['healthy', 'degraded', 'broken', 'unknown'] }],
   };
 
   it('resolves case-insensitively to the exact rubric spelling', () => {
@@ -431,7 +443,7 @@ describe('validateScorecardRatingValues — the P-002 rating-VALUE gate (rubric-
     ).not.toThrow();
   });
 
-  it("rejects an off-scale rating, naming the key, the value, and the allowed values (the silent-exclusion class of the missing-pass-vocabulary bug)", () => {
+  it('rejects an off-scale rating, naming the key, the value, and the allowed values (the silent-exclusion class of the missing-pass-vocabulary bug)', () => {
     let err: unknown;
     try {
       validateScorecardRatingValues(sc({ placement: { rating: 'pas', evidence: 'e' } }), rubric);
@@ -454,7 +466,9 @@ describe('validateScorecardRatingValues — the P-002 rating-VALUE gate (rubric-
 
   it("'unknown' is always accepted, even off a scale that omits it", () => {
     const noUnknown = { ratingScale: ['healthy', 'degraded'], criteria: [{ key: 'c' }] };
-    expect(() => validateScorecardRatingValues(sc({ c: { rating: 'unknown', evidence: 'e' } }), noUnknown)).not.toThrow();
+    expect(() =>
+      validateScorecardRatingValues(sc({ c: { rating: 'unknown', evidence: 'e' } }), noUnknown),
+    ).not.toThrow();
   });
 
   it('skips when the rubric is null/unloaded or scale-less (unenforceable, like completeness)', () => {

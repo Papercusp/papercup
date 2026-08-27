@@ -121,14 +121,7 @@ export interface SpecTestAdequacyRerunRecipe {
 }
 
 /** v1 free-text observation fields (turn-end-reflection-observations D-005). */
-export const OBSERVATION_KINDS = [
-  'friction',
-  'workaround',
-  'gap',
-  'surprise',
-  'reinforce',
-  'test-failure',
-] as const;
+export const OBSERVATION_KINDS = ['friction', 'workaround', 'gap', 'surprise', 'reinforce', 'test-failure'] as const;
 export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
 export type ObservationScope = 'self' | 'role' | 'harness' | 'papercusp';
 export type ObservationConfidence = 'low' | 'med' | 'high';
@@ -536,7 +529,8 @@ export function validateScorecardRatingValues(
     const allowed = new Set(scale.map((v) => v.toLowerCase()));
     allowed.add('unknown');
     if (!allowed.has(String(entry.rating).trim().toLowerCase())) {
-      const allowedList = allowed.has('unknown') && scale.some((v) => v.toLowerCase() === 'unknown') ? scale : [...scale, 'unknown'];
+      const allowedList =
+        allowed.has('unknown') && scale.some((v) => v.toLowerCase() === 'unknown') ? scale : [...scale, 'unknown'];
       throw new ObservationEvidenceError(
         `observation.ratings['${criterion}'].rating '${entry.rating}' is not on the rubric's rating scale — ` +
           `allowed: ${allowedList.join(' | ')}. An off-scale rating would be silently excluded ` +
@@ -558,10 +552,7 @@ export interface ScorecardRatingRubric {
  * shared lower-case spelling. Unknown/off-scale values are returned unchanged so the
  * existing validation gate can reject them with its teaching error.
  */
-export function canonicalScorecardRating(
-  rating: string,
-  scale: readonly string[] | null | undefined,
-): string {
+export function canonicalScorecardRating(rating: string, scale: readonly string[] | null | undefined): string {
   const trimmed = String(rating).trim();
   const match = (scale ?? []).find((candidate) => candidate.trim().toLowerCase() === trimmed.toLowerCase());
   if (match) return match;
@@ -632,11 +623,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   }
   if (o.acceptance && typeof o.acceptance === 'object' && !Array.isArray(o.acceptance)) {
     const a = o.acceptance as Record<string, unknown>;
-    if (
-      (a.verdict === 'accept' || a.verdict === 'reject') &&
-      typeof a.reasoning === 'string' &&
-      a.reasoning.trim()
-    ) {
+    if ((a.verdict === 'accept' || a.verdict === 'reject') && typeof a.reasoning === 'string' && a.reasoning.trim()) {
       out.acceptance = { verdict: a.verdict, reasoning: a.reasoning };
     }
   }
@@ -666,8 +653,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       ? rawEvidence.map((entry) => {
           if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
           const e = entry as Record<string, unknown>;
-          return typeof e.evidenceKind === 'string' && e.evidenceKind.trim() &&
-            typeof e.evidenceRef === 'string' && e.evidenceRef.trim()
+          return typeof e.evidenceKind === 'string' &&
+            e.evidenceKind.trim() &&
+            typeof e.evidenceRef === 'string' &&
+            e.evidenceRef.trim()
             ? { evidenceKind: e.evidenceKind, evidenceRef: e.evidenceRef }
             : null;
         })
@@ -686,11 +675,16 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           const fixtureFingerprint = nullable('fixtureFingerprint');
           const rubricFingerprint = nullable('rubricFingerprint');
           const environmentFingerprint = nullable('environmentFingerprint');
-          return typeof e.evidenceKind === 'string' && e.evidenceKind.trim() &&
-            typeof e.evidenceRef === 'string' && e.evidenceRef.trim() &&
-            typeof e.sourceFingerprint === 'string' && e.sourceFingerprint.trim() &&
-            testFingerprint !== undefined && fixtureFingerprint !== undefined &&
-            rubricFingerprint !== undefined && environmentFingerprint !== undefined
+          return typeof e.evidenceKind === 'string' &&
+            e.evidenceKind.trim() &&
+            typeof e.evidenceRef === 'string' &&
+            e.evidenceRef.trim() &&
+            typeof e.sourceFingerprint === 'string' &&
+            e.sourceFingerprint.trim() &&
+            testFingerprint !== undefined &&
+            fixtureFingerprint !== undefined &&
+            rubricFingerprint !== undefined &&
+            environmentFingerprint !== undefined
             ? {
                 evidenceKind: e.evidenceKind,
                 evidenceRef: e.evidenceRef,
@@ -707,13 +701,20 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
       recipe.schemaVersion === 1 &&
       recipe.evaluator === 'plans:evaluate-spec-test-adequacy' &&
       selection &&
-      typeof selection.planSlug === 'string' && selection.planSlug.trim() &&
-      typeof selection.specId === 'string' && selection.specId.trim() &&
-      Number.isInteger(selection.specRevision) && Number(selection.specRevision) > 0 &&
-      typeof selection.specFingerprint === 'string' && selection.specFingerprint.trim() &&
-      evidence !== null && evidence.every((entry): entry is { evidenceKind: string; evidenceRef: string } => entry !== null) &&
-      current && typeof current.supplied === 'boolean' &&
-      fingerprints !== null && fingerprints.every((entry): entry is SpecTestAdequacyCurrentFingerprint => entry !== null) &&
+      typeof selection.planSlug === 'string' &&
+      selection.planSlug.trim() &&
+      typeof selection.specId === 'string' &&
+      selection.specId.trim() &&
+      Number.isInteger(selection.specRevision) &&
+      Number(selection.specRevision) > 0 &&
+      typeof selection.specFingerprint === 'string' &&
+      selection.specFingerprint.trim() &&
+      evidence !== null &&
+      evidence.every((entry): entry is { evidenceKind: string; evidenceRef: string } => entry !== null) &&
+      current &&
+      typeof current.supplied === 'boolean' &&
+      fingerprints !== null &&
+      fingerprints.every((entry): entry is SpecTestAdequacyCurrentFingerprint => entry !== null) &&
       derivation?.kind === 'listSpecEvidence.currentness' &&
       derivation.classifier === 'classifySpecEvidenceCurrentness' &&
       derivation.unknownWhenMissing === true
@@ -746,9 +747,12 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.retracted && typeof o.retracted === 'object' && !Array.isArray(o.retracted)) {
     const r = o.retracted as Record<string, unknown>;
     if (
-      typeof r.at === 'string' && r.at.trim() &&
-      typeof r.by === 'string' && r.by.trim() &&
-      typeof r.reason === 'string' && r.reason.trim()
+      typeof r.at === 'string' &&
+      r.at.trim() &&
+      typeof r.by === 'string' &&
+      r.by.trim() &&
+      typeof r.reason === 'string' &&
+      r.reason.trim()
     ) {
       out.retracted = { at: r.at, by: r.by, reason: r.reason };
     }
@@ -775,8 +779,10 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     const g = o.gradingAudit as Record<string, unknown>;
     if (
       (g.state === 'pending' || g.state === 'passed' || g.state === 'failed') &&
-      typeof g.metaRubricRef === 'string' && g.metaRubricRef.trim() &&
-      typeof g.stampedAt === 'string' && g.stampedAt.trim()
+      typeof g.metaRubricRef === 'string' &&
+      g.metaRubricRef.trim() &&
+      typeof g.stampedAt === 'string' &&
+      g.stampedAt.trim()
     ) {
       out.gradingAudit = {
         state: g.state,
@@ -798,12 +804,8 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
     if (typeof s.ref === 'string' && s.ref.trim()) {
       out.subject = {
         ref: s.ref,
-        ...(typeof s.kind === 'string' && s.kind.trim()
-          ? { kind: s.kind as ObservationSubjectKind }
-          : {}),
-        ...(typeof s.windowStart === 'string' && s.windowStart.trim()
-          ? { windowStart: s.windowStart }
-          : {}),
+        ...(typeof s.kind === 'string' && s.kind.trim() ? { kind: s.kind as ObservationSubjectKind } : {}),
+        ...(typeof s.windowStart === 'string' && s.windowStart.trim() ? { windowStart: s.windowStart } : {}),
         ...(typeof s.windowEnd === 'string' && s.windowEnd.trim() ? { windowEnd: s.windowEnd } : {}),
       };
     }
@@ -816,8 +818,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
   if (o.vetting && typeof o.vetting === 'object' && !Array.isArray(o.vetting)) {
     const vet = o.vetting as Record<string, unknown>;
     const consultId = typeof vet.consultId === 'string' && vet.consultId.trim() ? vet.consultId.trim() : null;
-    const workItemId =
-      typeof vet.workItemId === 'string' && vet.workItemId.trim() ? vet.workItemId.trim() : null;
+    const workItemId = typeof vet.workItemId === 'string' && vet.workItemId.trim() ? vet.workItemId.trim() : null;
     if (Boolean(consultId) !== Boolean(workItemId)) {
       const critics = Array.isArray(vet.critics)
         ? vet.critics.filter((x): x is string => typeof x === 'string' && x.trim() !== '')
@@ -831,9 +832,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         ...(typeof vet.rubricRevision === 'number' && Number.isFinite(vet.rubricRevision)
           ? { rubricRevision: vet.rubricRevision }
           : {}),
-        ...(typeof vet.critiquePosts === 'number' &&
-        Number.isInteger(vet.critiquePosts) &&
-        vet.critiquePosts >= 0
+        ...(typeof vet.critiquePosts === 'number' && Number.isInteger(vet.critiquePosts) && vet.critiquePosts >= 0
           ? { critiquePosts: vet.critiquePosts }
           : {}),
         ...(critics.length > 0 ? { critics } : {}),
@@ -893,12 +892,14 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
         // Load-bearing on READ: verdict + floor + the three counts. Without them the
         // record cannot say what it judged or how it came out, so a malformed entry is
         // discarded rather than half-kept — the same posture as the tests arm above.
-        const rawScope = (r.scope && typeof r.scope === 'object' && !Array.isArray(r.scope)
-          ? (r.scope as Record<string, unknown>)
-          : {}) as Record<string, unknown>;
-        const rawFid = (r.fidelity && typeof r.fidelity === 'object' && !Array.isArray(r.fidelity)
-          ? (r.fidelity as Record<string, unknown>)
-          : {}) as Record<string, unknown>;
+        const rawScope = (
+          r.scope && typeof r.scope === 'object' && !Array.isArray(r.scope) ? (r.scope as Record<string, unknown>) : {}
+        ) as Record<string, unknown>;
+        const rawFid = (
+          r.fidelity && typeof r.fidelity === 'object' && !Array.isArray(r.fidelity)
+            ? (r.fidelity as Record<string, unknown>)
+            : {}
+        ) as Record<string, unknown>;
         runs[key] = {
           kind: 'coverage',
           scope: {
@@ -923,9 +924,7 @@ export function asStructuredObservation(v: unknown): StructuredObservation | und
           fidelity: {
             weakest: typeof rawFid.weakest === 'string' && rawFid.weakest.trim() ? rawFid.weakest : null,
             declaredPct:
-              typeof rawFid.declaredPct === 'number' && Number.isFinite(rawFid.declaredPct)
-                ? rawFid.declaredPct
-                : null,
+              typeof rawFid.declaredPct === 'number' && Number.isFinite(rawFid.declaredPct) ? rawFid.declaredPct : null,
           },
           ...(Array.isArray(r.belowSurfaces)
             ? { belowSurfaces: r.belowSurfaces.filter((x): x is string => typeof x === 'string') }
