@@ -256,8 +256,8 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
-    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, ' +
-    'or compatibility alias { checkpoint }; canonical note wins and blank/null clears. Keyed by ownerId. walls/checks default ' +
+    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, nextAction are aliases), { note }, ' +
+    'or compatibility alias { checkpoint }; canonical note wins and blank/null clears. An optional workItem key is accepted as non-scoping metadata. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
     'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
     'contention returns retryable timeout data, not a transport hang.',
@@ -350,6 +350,18 @@ export default defineTool({
         .optional()
         .describe(
           'Compatibility alias for `next`, for callers mirroring loop:arm { goal }. Explicit `next` wins when both are supplied.',
+        ),
+      // EI-21600742704531274: callers that share a loop:arm/work-item payload
+      // may include the associated work-item id when refreshing the loop note.
+      // It is compatibility metadata only: loop scope remains keyed by the
+      // authoritative ownerId + harness pair, so accepting it must not redirect
+      // or otherwise alter the carry-note write.
+      workItem: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'Compatibility metadata for an associated work-item id; accepted but does not change loop scope (ownerId remains authoritative).',
         ),
       // WI-7264: walls deliberately get the cap RELAXATION but NOT the `{status,
       // evidence}` shape coercion that `checks` gets. A wall has no `verified` field,
