@@ -29468,7 +29468,7 @@
           "POST"
         ]
       },
-      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available. `force:true` on another agent's claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.",
+      "description": "Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. Readiness/lifecycle floors such as `_claimHold`, unresolved blockers, and terminal state gate self-select only; a named by-id claim is the deliberate operator override and reports advisory signals where available (issue-family refusals include typed `claimFloor` when the oracle can identify one). `force:true` on another agent's claim is a checked takeover: it requires a per-item or batch `reason`, passes the same liveness/authority guard as release, and reports/audits the forced claim.",
       "capabilities": [
         "work_items:write"
       ],

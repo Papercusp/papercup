@@ -973,6 +973,7 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
       ([sha]) => sha,
     );
     const sameShaFlip = hasSameShaVerdictFlip(failShas, passShas);
+    const latestFailAt = toIsoOrUndefined(r.latest_fail_at);
     return {
       source: 'red-test' as const,
       key: r.file_path,
@@ -981,10 +982,11 @@ export function redTestSignalsFromRows(rows: RedTestRow[], windowHours: number):
         `Watchdog signal (red-test): ${r.file_path} (${r.framework}) failed ${r.fails}× in the last ` +
         `${windowHours}h and its latest run is still red.\n` +
         renderRedTestCommitContext(failShaCounts, lastPassSha, lastPassAt, sameShaFlip) +
-        `\nLast failure tail:\n${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
+        `\nFailure tail AS OF ${latestFailAt ?? 'the latest recorded failing run'} — the specific failing assertion may have changed; re-run this file before acting on the assertion below.\n` +
+        `${(r.sample ?? '').slice(-1500) || '(no output captured)'}`,
       severity: 'major' as const,
       paths: [r.file_path],
-      latestAt: toIsoOrUndefined(r.latest_fail_at),
+      latestAt: latestFailAt,
       earliestAt: toIsoOrUndefined(r.earliest_fail_at),
       redTest: {
         failShas,

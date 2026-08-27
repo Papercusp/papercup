@@ -2920,6 +2920,17 @@ describe('red-test commit context (EI-19363804802198172)', () => {
     expect(s.redTest?.failShas).toEqual([]);
   });
 
+  it('labels the failure tail as point-in-time evidence and requires a claim-time rerun', () => {
+    const s = redTestSignalsFromRows(
+      rows({ latest_fail_at: '2026-07-27T20:15:16.000Z', sample: "expected [ 'old-entry' ] to deeply equal []" }),
+      6,
+    )[0];
+    expect(s.body).toContain('Failure tail AS OF 2026-07-27T20:15:16.000Z');
+    expect(s.body).toContain('the specific failing assertion may have changed');
+    expect(s.body).toContain('re-run this file before acting on the assertion below');
+    expect(s.body).toContain("expected [ 'old-entry' ] to deeply equal []");
+  });
+
   it('merges the commit dimension across the canonical + checkpoint trees', () => {
     const s = redTestSignalsFromRows(
       [
