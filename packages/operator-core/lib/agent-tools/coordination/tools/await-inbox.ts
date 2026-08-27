@@ -1,16 +1,13 @@
 /**
- * coord:await-inbox — idle-state annotation over the always-armed inbox-wake
- * watch (turn-lifecycle-control-2026-06-08 D-005; was the wake scaffold of
- * local-hive-orchestration-2026-06-06 Phase 4 P-041).
+ * coord:await-inbox — idle-state annotation and repair for the standing
+ * inbox-wake watch (turn-lifecycle-control-2026-06-08 D-005; was the wake
+ * scaffold of local-hive-orchestration-2026-06-06 Phase 4 P-041).
  *
- * Arming is now AUTOMATIC: the operator (re-)arms each agent's standing
- * inbox-wake watch on every SessionStart (always-arm, D-001), so a later
- * `coord:send {wake:true, to:[me]}` re-invokes the agent whether or not it ever
- * calls this. This tool is therefore no longer the gate that makes an agent
- * wakeable — it is an ANNOTATION: it refreshes the "why I'm idle" note on the
- * same standing row (the note rides the wake turn) and lets the agent tune its
- * wake floor, via the shared `armInboxWake` upsert. It still ends with "now end
- * your turn".
+ * Arming is normally automatic: the operator (re-)arms each agent's standing
+ * inbox-wake watch at SessionStart (always-arm, D-001). A lifecycle race or
+ * lapsed watch can still leave the current session temporarily unwakeable, so
+ * this tool refreshes the row through `armInboxWake` and reports a live
+ * before/after reachability verdict. It still ends with "now end your turn".
  *
  * The `min_sleep_sec` floor bounds the re-wake burn if a Queen fires several
  * sends in a burst (they coalesce into one wake).
@@ -21,14 +18,55 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
 import { COORD_ROLES } from '../roles';
 import { armInboxWake } from '../../../events/await/inbox-wake-arm';
+import { probeWakeReachability, type WakeReachabilityVerdict } from '../../../events/await/wake-reachability';
 import { softText, clampText, LIMITS } from '../../limits';
+
+type ReachabilitySnapshot = Pick<
+  WakeReachabilityVerdict,
+  'reachable' | 'channel' | 'durableWhileAlive' | 'summary' | 'warning' | 'awaitRepairable' | 'wouldBeChannel'
+>;
+
+function snapshotReachability(verdict: WakeReachabilityVerdict | null): ReachabilitySnapshot | null {
+  if (!verdict) return null;
+  return {
+    reachable: verdict.reachable,
+    channel: verdict.channel,
+    durableWhileAlive: verdict.durableWhileAlive,
+    summary: verdict.summary,
+    ...(verdict.warning ? { warning: verdict.warning } : {}),
+    awaitRepairable: verdict.awaitRepairable,
+    wouldBeChannel: verdict.wouldBeChannel,
+  };
+}
+
+function reachabilityAdvice(
+  before: WakeReachabilityVerdict | null,
+  after: WakeReachabilityVerdict | null,
+): string {
+  if (!after) {
+    return 'Inbox-wake watch refreshed, but live reachability could not be measured. END YOUR TURN now; do not poll.';
+  }
+
+  if (after.reachable) {
+    if (before?.reachable) {
+      return `Inbox-wake watch refreshed. It was already wake-reachable via ${before.channel} before this call and is reachable via ${after.channel} now — END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
+    }
+    if (before?.awaitRepairable) {
+      return `You were unarmed for inbox-wake before this call; the watch is now wake-reachable via ${after.channel}. END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
+    }
+    return `Inbox-wake watch refreshed and is now reachable via ${after.channel}; the prior reachability state was unavailable or not directly repairable. END YOUR TURN; a coord:send with {wake:true} can re-invoke you. Do not poll.`;
+  }
+
+  return `Inbox-wake watch refreshed, but it is still NOT wake-reachable: ${after.summary}. END YOUR TURN only if another wake source will resume you; otherwise fix the reported reachability issue. Do not poll.`;
+}
 
 export default defineTool({
   name: 'coord:await-inbox',
   description:
-    'Annotate your idle state at end-of-turn: refresh the "why I am idle" note on your inbox-wake watch (and optionally its wake floor), then end your turn. You are ALREADY always-armed at session start (turn-lifecycle-control), so a later coord:send {wake:true} re-invokes you whether or not you call this — this just records why you are idle for the wake turn. Returns the watch id + your inbox-wake key.',
+    'Annotate your idle state at end-of-turn: refresh the "why I am idle" note on your inbox-wake watch (and optionally its wake floor), report live reachability before and after the refresh, then end your turn. SessionStart normally arms the watch, but a lifecycle race or lapse can leave it unarmed; use the returned before/after verdict and advice rather than assuming it is armed. Returns the watch id, inbox-wake key, and reachability evidence.',
   guidance: {
-    when: 'Optional, at end-of-turn when idle — to record WHY you are idle (the note rides your wake turn) and tune your wake floor. You are wakeable regardless; arming is automatic at session start. Then END YOUR TURN.',
+    when:
+      'Optional, at end-of-turn when idle — to record WHY you are idle (the note rides the wake turn), tune your wake floor, and verify/repair the standing inbox-wake watch. Read the returned before/after reachability verdict and advice, then END YOUR TURN.',
     notWhen:
       'You still have queued work — keep going. A specific one-shot readiness (a lock grant, a peer\'s artifact) — use events:await on that exact key. A sub-minute wait inside one turn — just block.',
     chaining:
@@ -59,9 +97,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    // You are ALREADY armed at session start (always-arm, D-001) — this refreshes
-    // the same standing row's handle + idle note (+ floor) via the shared upsert;
-    // it is no longer what makes you wakeable (D-005).
+    // SessionStart normally arms this standing row (always-arm, D-001), but a
+    // lifecycle race or lapse can leave it absent. Capture the live verdict on
+    // both sides of the idempotent refresh so the caller sees whether this call
+    // repaired a missing await or merely refreshed an already-armed one.
+    const beforeReachability = await probeWakeReachability(identity.ownerId).catch(() => null);
     const { awaitId, eventKey, handleNote, minSleepSec } = await armInboxWake({
       ownerId: identity.ownerId,
       note: clampText(args.note, LIMITS.ANNOTATION) ?? 'idle — awaiting work/direction (deliver-and-wake)',
@@ -69,6 +109,7 @@ export default defineTool({
       planRunId: args.plan_run_id,
       workspaceId: identity.workspaceId ?? undefined,
     });
+    const afterReachability = await probeWakeReachability(identity.ownerId).catch(() => null);
 
     return {
       content: [
@@ -87,8 +128,11 @@ export default defineTool({
             },
             inbox_wake_key: eventKey,
             wake_handle: handleNote,
-            advice:
-              'Inbox-wake watch refreshed. You are always-armed at session start, so this just annotates WHY you are idle — END YOUR TURN now; you are re-invoked when someone coord:sends you with {wake:true} (bursts coalesce). Do not poll.',
+            reachability: {
+              before: snapshotReachability(beforeReachability),
+              after: snapshotReachability(afterReachability),
+            },
+            advice: reachabilityAdvice(beforeReachability, afterReachability),
           }),
         },
       ],

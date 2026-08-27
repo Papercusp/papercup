@@ -89,6 +89,15 @@ const upsertInboxWakeAwait = vi.fn(
 const cancelInboxWakeAwaits = vi.fn(async () => 0);
 const startAwaitSweeper = vi.fn();
 const captureWakeHandleForOwner = vi.fn(async () => ({ handle: null, note: 'no tracked session — inbox-degraded' }));
+const reachableVerdict = {
+  reachable: true,
+  channel: 'psu-socket' as const,
+  durableWhileAlive: true,
+  summary: 'live psu-host control socket — wakes inject in place as a fresh turn',
+  awaitRepairable: false,
+  wouldBeChannel: null,
+};
+const probeWakeReachability = vi.fn(async (_ownerId: string) => reachableVerdict);
 // EI-5957: the wake-MODE gate + staging leg. Captured (not inline) so a test can
 // drive the `manual` path — a member in manual wake-mode STAGES the leader's wake
 // instead of delivering it. Default `auto` keeps every other test's behavior.
@@ -162,6 +171,9 @@ vi.mock('../presence', async () => ({
 }));
 vi.mock('../../../events/await/handle', () => ({
   captureWakeHandleForOwner: () => captureWakeHandleForOwner(),
+}));
+vi.mock('../../../events/await/wake-reachability', () => ({
+  probeWakeReachability: (ownerId: string) => probeWakeReachability(ownerId),
 }));
 // coord:message-agent opens a PG-backed conversation before the wake half — stub
 // just that one un-caught await so the unit test exercises the wake path without a
@@ -562,10 +574,12 @@ describe('coord:message-agent', () => {
   }, 15_000);
 });
 
-describe('coord:await-inbox (D-005 idle annotation over the always-armed watch)', () => {
+describe('coord:await-inbox (D-005 idle annotation and live reachability evidence)', () => {
   beforeEach(() => {
     upsertInboxWakeAwait.mockClear();
     startAwaitSweeper.mockClear();
+    probeWakeReachability.mockReset();
+    probeWakeReachability.mockResolvedValue(reachableVerdict);
   });
 
   it('refreshes the STANDING wake watch on the caller\'s OWN inbox-wake key (via the always-arm upsert)', async () => {
@@ -581,6 +595,34 @@ describe('coord:await-inbox (D-005 idle annotation over the always-armed watch)'
     expect(body.ok).toBe(true);
     expect(body.inbox_wake_key).toBe(inboxWakeKey('su-self'));
     expect(body.watch).toMatchObject({ wake: true, once: false }); // standing — survives idle→woken→idle
+    expect(probeWakeReachability).toHaveBeenCalledTimes(2);
+    expect(body.reachability).toMatchObject({
+      before: { reachable: true, channel: 'psu-socket' },
+      after: { reachable: true, channel: 'psu-socket' },
+    });
+    expect(body.advice).toContain('already wake-reachable');
+  });
+
+  it('reports when the refresh repairs a missing standing await', async () => {
+    probeWakeReachability
+      .mockResolvedValueOnce({
+        reachable: false,
+        channel: 'none' as const,
+        durableWhileAlive: false,
+        summary: 'no standing coord:inbox-wake await',
+        awaitRepairable: true,
+        wouldBeChannel: 'psu-socket' as const,
+      })
+      .mockResolvedValueOnce(reachableVerdict);
+
+    const body = out(await awaitInbox.handler(parse(awaitInbox, { note: 'drained' }), ctx));
+
+    expect(body.reachability).toMatchObject({
+      before: { reachable: false, channel: 'none', awaitRepairable: true },
+      after: { reachable: true, channel: 'psu-socket' },
+    });
+    expect(body.advice).toContain('You were unarmed for inbox-wake before this call');
+    expect(body.advice).toContain('now wake-reachable via psu-socket');
   });
 
   it('honours an explicit min_sleep_sec floor', async () => {
