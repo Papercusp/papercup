@@ -50,6 +50,8 @@ import type { AgentIdentity } from '../coordination/identity';
 import {
   getFleet,
   type FleetControlState,
+  type FleetLaunchGovernorAction,
+  type FleetLaunchGovernorOutcome,
   type FleetLaunchTransaction,
 } from '../../agent-fleets-store';
 import { takeFleetLeadership } from '../fleet_registry/take-leadership-core';
@@ -446,6 +448,14 @@ export interface LeaderBriefLaunchWorkerAttestation {
   observed: number;
   ready: number;
   workerReadyMemberIds: string[];
+  governorVerdict?: {
+    outcome: FleetLaunchGovernorOutcome;
+    action: FleetLaunchGovernorAction;
+    decidedAt: number;
+    target: number;
+    productiveCapacityFloor: number;
+    reason: string;
+  };
   members: Array<{
     ownerId: string | null;
     ready: boolean;
@@ -463,7 +473,11 @@ export interface LeaderBriefLaunchWorkerAttestation {
 export function compactLaunchWorkerAttestation(
   transaction: FleetLaunchTransaction | null | undefined,
 ): LeaderBriefLaunchWorkerAttestation | undefined {
-  if (!transaction || (transaction.workerAttestations == null && transaction.workerReadyMemberIds == null)) {
+  if (!transaction || (
+    transaction.workerAttestations == null &&
+    transaction.workerReadyMemberIds == null &&
+    transaction.governor?.terminalVerdict == null
+  )) {
     return undefined;
   }
   const workerReadyMemberIds = [...new Set(transaction.workerReadyMemberIds ?? [])];
@@ -485,6 +499,18 @@ export function compactLaunchWorkerAttestation(
     observed: members.length,
     ready: workerReadyMemberIds.length,
     workerReadyMemberIds,
+    ...(transaction.governor?.terminalVerdict
+      ? {
+          governorVerdict: {
+            outcome: transaction.governor.terminalVerdict.outcome,
+            action: transaction.governor.terminalVerdict.action,
+            decidedAt: transaction.governor.terminalVerdict.decidedAt,
+            target: transaction.governor.terminalVerdict.target,
+            productiveCapacityFloor: transaction.governor.terminalVerdict.productiveCapacityFloor,
+            reason: transaction.governor.terminalVerdict.reason,
+          },
+        }
+      : {}),
     members,
   };
 }

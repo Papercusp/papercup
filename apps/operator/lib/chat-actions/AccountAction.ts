@@ -41,7 +41,10 @@
  * no-op in a nicer costume.
  */
 import { fetchSyncQuery } from '@papercusp/sync';
-import { accountFromArgv } from '@papercusp/operator-core/lib/agent-config-constants';
+import {
+  accountFromArgv,
+  isGatewayFreeAccount,
+} from '@papercusp/operator-core/lib/agent-config-constants';
 import { registerChatModeAction } from './registry';
 import type { ChatActionContext, ChatModeOption } from './types';
 
@@ -148,9 +151,13 @@ export function accountOptions(pool: AccountPoolRow[], launchAccount?: string | 
      control does, and the owner needs to learn that a respawn is the lever. `undefined`
      (unknown argv) is deliberately NOT treated as gateway-free: disabling the whole menu on an
      absence would be the same unsourced guess D-005 §5 forbids in the other direction. */
-  const gatewayFree = launchAccount === 'default';
-  const gatewayFreeHint =
-    'This session was launched --account=default, which bypasses the inference gateway — a live pin cannot reach it. Respawn it to change accounts.';
+  /* WI-42439: ASK THE SHARED PREDICATE, never `=== 'default'`. `default` is the spelling psu's
+     grammar documents, but `resolveAccountPin` routes `none` and `system` around the gateway
+     too — and this line tested only the first, so 25 live `--account=system` sessions rendered
+     every pool row as a clickable pin whose click writes durably, returns ok, and re-routes
+     nothing. The failure was invisible precisely because the enabled rows LOOK correct. */
+  const gatewayFree = isGatewayFreeAccount(launchAccount);
+  const gatewayFreeHint = `This session was launched --account=${launchAccount}, which bypasses the inference gateway — a live pin cannot reach it. Respawn it to change accounts.`;
   return [
     {
       id: ACCOUNT_AUTO,
@@ -216,8 +223,12 @@ registerChatModeAction({
          a pin that cannot take effect and saying why. */
       const launched = readLaunchAccount(ctx);
       const title =
-        launched === 'default'
-          ? 'Launched --account=default — this session bypasses the inference gateway entirely, so it cannot be re-pinned live. Respawn it to change accounts.'
+        /* WI-42439: same predicate as `gatewayFree`, for the same reason. Testing `=== 'default'`
+           here sent a `--account=system` session down the LAST branch, which told the owner
+           "pinning here overrides that routing for this session" — the exact opposite of the
+           truth for a session that never reaches the gateway. */
+        isGatewayFreeAccount(launched)
+          ? `Launched --account=${launched} — this session bypasses the inference gateway entirely, so it cannot be re-pinned live. Respawn it to change accounts.`
           : launched === 'auto'
             ? 'Launched --account=auto and carries no pin — the gateway picks an available account per call and fails over.'
             : launched
@@ -271,9 +282,13 @@ registerChatModeAction({
        defensive: `accounts:pin` WOULD return ok for a --account=default session (the durable pin
        really is written) while the session keeps bypassing the gateway. Refusing loudly is the
        only way this control can avoid reporting a success that changes nothing. */
-    if (readLaunchAccount(ctx) === 'default') {
+    const launchedAccount = readLaunchAccount(ctx);
+    /* WI-42439: the third `=== 'default'` site. This one is the LAST line of defence — it is what
+       stops a keyboard/test path from posting a pin that `accounts:pin` will happily persist for a
+       session the gateway never sees, so narrowing it to one spelling defeated the whole guard. */
+    if (isGatewayFreeAccount(launchedAccount)) {
       throw new Error(
-        'This session was launched --account=default, which bypasses the inference gateway — a pin would be saved but could never take effect. Respawn the session to change its account.',
+        `This session was launched --account=${launchedAccount}, which bypasses the inference gateway — a pin would be saved but could never take effect. Respawn the session to change its account.`,
       );
     }
     if (optionId === ACCOUNT_AUTO) {

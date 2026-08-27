@@ -86,6 +86,26 @@ describe('fleet:leader-brief launch worker attestation projection (P-003)', () =
       openedMemberIds: ['su-ready', 'su-no-wake'],
       verifiedMemberIds: ['su-ready', 'su-no-wake'],
       workerReadyMemberIds: ['su-ready'],
+      governor: {
+        version: 1,
+        probeOwnerIds: ['su-no-wake'],
+        attestationAttempts: { 'su-no-wake': 2 },
+        retiredMemberIds: [],
+        history: [],
+        terminalVerdict: {
+          version: 1,
+          outcome: 'unverified',
+          decidedAt: 3,
+          target: 2,
+          productiveCapacityFloor: 1,
+          liveMemberIds: ['su-ready', 'su-no-wake'],
+          workerReadyMemberIds: ['su-ready'],
+          unreadyMemberIds: ['su-no-wake'],
+          unverifiedMemberIds: [],
+          action: 'retry',
+          reason: 'worker stages remain non-ready',
+        },
+      },
       workerAttestations: [
         {
           version: 1,
@@ -129,6 +149,14 @@ describe('fleet:leader-brief launch worker attestation projection (P-003)', () =
       observed: 2,
       ready: 1,
       workerReadyMemberIds: ['su-ready'],
+      governorVerdict: {
+        outcome: 'unverified',
+        action: 'retry',
+        decidedAt: 3,
+        target: 2,
+        productiveCapacityFloor: 1,
+        reason: 'worker stages remain non-ready',
+      },
       members: [
         {
           ownerId: 'su-ready',
@@ -161,6 +189,36 @@ describe('fleet:leader-brief launch worker attestation projection (P-003)', () =
       transactionId: 'legacy',
       requestedMemberIds: [],
     } as never)).toBeUndefined();
+  });
+
+  it('surfaces a governor-only terminal verdict without inventing worker stages', () => {
+    const projected = compactLaunchWorkerAttestation({
+      transactionId: 'governor-observation',
+      state: 'partial',
+      requestedMemberIds: ['su-legacy'],
+      governor: {
+        terminalVerdict: {
+          outcome: 'unverified',
+          action: 'wait',
+          decidedAt: 4,
+          target: 1,
+          productiveCapacityFloor: 1,
+          reason: 'legacy member has no typed attestation',
+        },
+      },
+    } as never);
+
+    expect(projected).toMatchObject({
+      requested: 1,
+      observed: 0,
+      ready: 0,
+      members: [],
+      governorVerdict: {
+        outcome: 'unverified',
+        action: 'wait',
+        reason: 'legacy member has no typed attestation',
+      },
+    });
   });
 });
 

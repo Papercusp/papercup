@@ -12,6 +12,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getChatModeAction } from './registry';
 import { accountOptions, readAccountPin } from './AccountAction';
+// WI-42439: the suite DERIVES its spellings from the shared set rather than restating them,
+// so a spelling added to the writer without teaching the pill fails here.
+import { GATEWAY_FREE_ACCOUNT_SPELLINGS } from '@papercusp/operator-core/lib/agent-config-constants';
 import type { ChatActionContext, ChatModeAction, ChatModeOption } from './types';
 
 const fetchSyncQueryMock = vi.fn();

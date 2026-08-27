@@ -124,7 +124,11 @@ export async function fetchDirectiveActuationSummaries(
     );
     const actuations = await fetchDirectiveActuations(
       flat.map((f) => f.spec),
-      { workspaceId: opts.workspaceId },
+      // The envelope query and the ledger probe must use the SAME resolved
+      // workspace. Dropping `ws` here makes the probe fall back to the ambient
+      // workspace, so a row found in the coord partition is reported as
+      // unprovable when the org ledger is on a different workspace partition.
+      { workspaceId: ws },
     );
     const grouped = new Map<string, DirectiveActuation[]>();
     flat.forEach((f, i) => {
