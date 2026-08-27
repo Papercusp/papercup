@@ -38,6 +38,8 @@ import {
   isAmbientBroadcast,
   excludeIntentDeclares,
   coalesceRepeatedBroadcasts,
+  inboxPriorityBucket,
+  prioritizedInboxWindow,
 } from "../inbox-visibility";
 import { COORD_ROLES } from "../roles";
 import { renderInjection, type CoordLineSource } from "../../../coord-schema";
@@ -125,7 +127,13 @@ const COORD_KINDS = [
 // Imported at the top of this file; re-exported here so this module's public
 // surface — and every existing importer, including the two pure test files —
 // is unchanged.
-export { excludeIntentDeclares, isAmbientBroadcast, coalesceRepeatedBroadcasts };
+export {
+  excludeIntentDeclares,
+  isAmbientBroadcast,
+  coalesceRepeatedBroadcasts,
+  inboxPriorityBucket,
+  prioritizedInboxWindow,
+};
 
 /** EI-13159: per-recipient cap passed to fetchUnansweredDirected for the
  *  `unanswered_only` filter — much larger than the fleet-health display cap
@@ -826,7 +834,10 @@ export default defineTool({
                       afterAmbient as unknown as Array<Record<string, unknown>>,
                       { includeIntents: args.include_intents, from: resolvedFrom },
                     ) as unknown as { kept: Array<Record<string, unknown>> };
-                    return coalesceRepeatedBroadcasts(kept).length >= limit;
+                    return prioritizedInboxWindow(
+                      coalesceRepeatedBroadcasts(kept),
+                      limit,
+                    ).length >= limit;
                   },
                 }
               : undefined,
@@ -886,11 +897,13 @@ export default defineTool({
     );
     const coalescedDupes = filtered.length - coalesced.length;
 
-    // readInbox returns ascending by (ts, msg_id); keep the most-recent `limit`.
-    const truncated = Math.max(0, coalesced.length - limit);
-    const entries = (
-      truncated > 0 ? coalesced.slice(coalesced.length - limit) : coalesced
+    // P-009: order by priority BEFORE slicing, so actionable asks survive a
+    // low-priority flood even when they are older than the newest status rows.
+    const entries = prioritizedInboxWindow(
+      coalesced as unknown as Array<Record<string, unknown>>,
+      limit,
     ) as unknown as typeof filtered;
+    const truncated = Math.max(0, coalesced.length - entries.length);
 
     const byKind: Record<string, number> = {};
     for (const e of filtered) byKind[e.kind] = (byKind[e.kind] ?? 0) + 1;
@@ -924,9 +937,17 @@ export default defineTool({
         ? { unanswered_only: true, unanswered_lookup_failed: unansweredLookupFailed }
         : {}),
       by_kind: byKind,
-      oldest_returned_ts: entries.length ? (entries[0]?.ts ?? null) : null,
+      oldest_returned_ts: entries.length
+        ? entries.reduce<string | null>((min, entry) => {
+            const ts = typeof entry.ts === "string" ? entry.ts : null;
+            return ts && (!min || ts < min) ? ts : min;
+          }, null)
+        : null,
       newest_ts: entries.length
-        ? (entries[entries.length - 1]?.ts ?? null)
+        ? entries.reduce<string | null>((max, entry) => {
+            const ts = typeof entry.ts === "string" ? entry.ts : null;
+            return ts && (!max || ts > max) ? ts : max;
+          }, null)
         : null,
     };
 
@@ -944,13 +965,12 @@ export default defineTool({
           unansweredMsgIds,
         ) as unknown as Array<Record<string, unknown>>,
       );
-      injectionEntries = (
-        withIntents.length > limit
-          ? withIntents.slice(withIntents.length - limit)
-          : withIntents
-      ) as unknown as typeof entries;
+      injectionEntries = prioritizedInboxWindow(withIntents, limit) as unknown as typeof entries;
       const injNewest = injectionEntries.length
-        ? (injectionEntries[injectionEntries.length - 1]?.ts ?? null)
+        ? injectionEntries.reduce<string | null>((max, entry) => {
+            const ts = typeof entry.ts === "string" ? entry.ts : null;
+            return ts && (!max || ts > max) ? ts : max;
+          }, null)
         : null;
       if (injNewest && (!summary.newest_ts || injNewest > summary.newest_ts)) {
         summary.newest_ts = injNewest;

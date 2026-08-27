@@ -47,6 +47,8 @@ vi.mock("../watermarks", () => ({
 }));
 vi.mock("@papercusp/coordination/core", () => ({
   emptyWatermark: () => ({ messages_shown_ts: "" }),
+  COORD_EXECUTABLE_KINDS: ["yield", "handoff", "ack"],
+  COORD_CONVERSATIONAL_KINDS: ["message", "notify"],
 }));
 vi.mock("../presence-snapshot", () => ({
   resolvePresenceScope: async () => ({}),
@@ -63,7 +65,11 @@ vi.mock("../../../cache", () => ({
   ) => fn(),
 }));
 
-import tool, { coalesceRepeatedBroadcasts } from "./inbox";
+import tool, {
+  coalesceRepeatedBroadcasts,
+  inboxPriorityBucket,
+  prioritizedInboxWindow,
+} from "./inbox";
 
 type InboxContextOverrides = {
   contextTier?: "trimmed" | "standard" | "full";
@@ -322,7 +328,66 @@ describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => 
 
     const out = await callInbox();
     expect(out.summary).toMatchObject({ ambient_excluded: 0, total: 3 });
-    expect(out.entries.map((entry) => entry.msg_id)).toEqual(["p-1", "p-2", "p-3"]);
+    // P-009: same-priority rows render newest-first in the default inbox window.
+    expect(out.entries.map((entry) => entry.msg_id)).toEqual(["p-3", "p-2", "p-1"]);
+  });
+});
+
+describe("coord:inbox P-009 priority and ambient broadcast defaults", () => {
+  it("default-excludes deploy/perf/migration/task-manager broadcasts but preserves direct messages", async () => {
+    const rows = [
+      broadcast(1, "deploy status", { category: "deploy" }),
+      broadcast(2, "release deploy status", { category: "release-deploy" }),
+      broadcast(3, "perf status", { category: "perf" }),
+      broadcast(4, "migration status", { category: "migration" }),
+      broadcast(5, "task manager status", { category: "task-manager" }),
+      direct(5, "deploy action for you"),
+    ];
+    M.readInbox.mockImplementation(async () => rows);
+
+    const out = await callInbox();
+    expect(out.summary).toMatchObject({ ambient_excluded: 5, total: 1 });
+    expect(out.entries.map((e) => e.msg_id)).toEqual(["d-5"]);
+
+    const inc = await callInbox({ include_ambient: true });
+    expect(inc.summary).toMatchObject({ ambient_excluded: 0, total: 6 });
+  });
+
+  it("orders action/answer asks before claim/dependency/same-fleet traffic, then ordinary rows", async () => {
+    const rows = [
+      direct(1, "ordinary-old"),
+      { ...direct(2, "same fleet"), audience: ["@fleet:goal-drain-work-on-everything-070565"] },
+      { ...direct(3, "claim"), lifecycle: "claim" },
+      { ...direct(4, "answer me"), expects: "answer" },
+      direct(5, "ordinary-new"),
+      { ...direct(6, "act on this"), expects: "action" },
+    ];
+    M.readInbox.mockImplementation(async () => rows);
+
+    const out = await callInbox({ limit: 4 });
+    expect(out.entries.map((e) => e.summary)).toEqual([
+      "act on this",
+      "answer me",
+      "claim",
+      "same fleet",
+    ]);
+    expect(out.summary).toMatchObject({ total: 6, returned: 4, truncated: 2 });
+    expect(out.summary.newest_ts).toBe(at(6));
+    expect(out.summary.oldest_returned_ts).toBe(at(2));
+  });
+
+  it("pure priority helpers bucket and window rows before a display limit", () => {
+    expect(inboxPriorityBucket({ expects: "action" })).toBe(0);
+    expect(inboxPriorityBucket({ expectsReply: true })).toBe(0);
+    expect(inboxPriorityBucket({ lifecycle: "dependency" })).toBe(1);
+    expect(inboxPriorityBucket({ audience: "@fleet:x" })).toBe(1);
+    expect(inboxPriorityBucket({ summary: "plain" })).toBe(2);
+
+    const rows = [
+      { msg_id: "plain", ts: at(9), summary: "plain" },
+      { msg_id: "ask", ts: at(1), summary: "ask", expects: "answer" },
+    ];
+    expect(prioritizedInboxWindow(rows, 1).map((e) => e.msg_id)).toEqual(["ask"]);
   });
 });
 

@@ -14,7 +14,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/inbox-intent-exclusion.test.ts
  */
 import { describe, expect, it } from "vitest";
-import { excludeIntentDeclares } from "./inbox";
+import { excludeIntentDeclares, prioritizedInboxWindow } from "./inbox";
 
 const entries = [
   { msg_id: "m1", kind: "message", summary: "real directed message" },
@@ -81,5 +81,17 @@ describe("excludeIntentDeclares — P-005 fleet-member-dx", () => {
     const { kept, excluded } = excludeIntentDeclares(plain, {});
     expect(kept).toEqual(plain);
     expect(excluded).toBe(0);
+  });
+
+  it("P-009 priority window still keeps non-intent claim/dependency rows above ordinary messages", () => {
+    const rows = [
+      { msg_id: "ordinary", ts: "2026-08-27T00:03:00Z", kind: "message" },
+      { msg_id: "claim", ts: "2026-08-27T00:01:00Z", kind: "message", lifecycle: "claim" },
+      { msg_id: "ask", ts: "2026-08-27T00:02:00Z", kind: "message", expects: "answer" },
+    ];
+    expect(prioritizedInboxWindow(rows, 2).map((e) => e.msg_id)).toEqual([
+      "ask",
+      "claim",
+    ]);
   });
 });

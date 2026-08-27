@@ -37,6 +37,17 @@ const AMBIENT_CATEGORIES = new Set([
   "service-health",
   "agent-governor",
   "doc-drift",
+  // P-009 (fleet-worker-lifecycle-convergence-2026-08-26): these are
+  // fleet-wide/status-plane broadcasts, useful in topic/audience history but
+  // too noisy for a recipient's default action inbox. The broadcast-only guard
+  // below keeps a direct deploy/perf/migration/task-manager message visible.
+  "deploy",
+  "release-deploy",
+  "deployment",
+  "perf",
+  "performance",
+  "migration",
+  "task-manager",
   // EI-386: named-resource drain/back-up templates (resource-broadcast.ts) —
   // stamped for classification consistency with the others above. In practice
   // these are always sent to specific holders/waiters, never `to: ['*']`, so
@@ -160,4 +171,65 @@ export function coalesceRepeatedBroadcasts<T extends Record<string, unknown>>(
     );
   });
   return out;
+}
+
+const ACTION_EXPECTS = new Set(["action", "answer"]);
+const SECONDARY_LIFECYCLES = new Set(["claim", "dependency", "handoff"]);
+const SECONDARY_CATEGORIES = new Set(["claim", "dependency", "work-item-claim"]);
+
+function hasFleetAudience(e: Record<string, unknown>): boolean {
+  const audience = e["audience"];
+  const to = e["to"];
+  const hasFleet = (v: unknown) => typeof v === "string" && v.startsWith("@fleet:");
+  if (hasFleet(audience)) return true;
+  if (Array.isArray(audience) && audience.some(hasFleet)) return true;
+  return Array.isArray(to) && to.some(hasFleet);
+}
+
+/** P-009 priority bucket for a default inbox read. Lower is more urgent.
+ *
+ * Bucket 0: directed actionable asks (`expects:'action'|'answer'`, including
+ * the legacy `expectsReply:true` stamp).
+ * Bucket 1: claim/dependency/handoff/same-fleet traffic — useful coordination
+ * state, but below explicit asks.
+ * Bucket 2: everything else.
+ *
+ * Pure/read-time only: coord_event_log history remains append-only and feed /
+ * catch-up readers can still use their own ordering. */
+export function inboxPriorityBucket(e: Record<string, unknown>): number {
+  const expects = e["expects"];
+  if ((typeof expects === "string" && ACTION_EXPECTS.has(expects)) || e["expectsReply"] === true) {
+    return 0;
+  }
+  const lifecycle = e["lifecycle"];
+  const category = e["category"];
+  if (
+    (typeof lifecycle === "string" && SECONDARY_LIFECYCLES.has(lifecycle)) ||
+    (typeof category === "string" && SECONDARY_CATEGORIES.has(category)) ||
+    hasFleetAudience(e)
+  ) {
+    return 1;
+  }
+  return 2;
+}
+
+/** Select + order the visible inbox window by P-009 priority before applying
+ * the caller's display limit. Rows within a bucket are newest-first so a flood
+ * of low-priority broadcasts cannot crowd an older actionable ask out of a
+ * bounded default read. */
+export function prioritizedInboxWindow<T extends Record<string, unknown>>(
+  entries: readonly T[],
+  limit: number,
+): T[] {
+  if (limit <= 0) return [];
+  return [...entries]
+    .sort((a, b) => {
+      const bucket = inboxPriorityBucket(a) - inboxPriorityBucket(b);
+      if (bucket !== 0) return bucket;
+      const ats = String(a["ts"] ?? "");
+      const bts = String(b["ts"] ?? "");
+      if (ats !== bts) return bts.localeCompare(ats);
+      return String(b["msg_id"] ?? "").localeCompare(String(a["msg_id"] ?? ""));
+    })
+    .slice(0, limit);
 }
