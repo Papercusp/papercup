@@ -161,6 +161,25 @@ export function formatPassingTaskVerdictSummary(
   );
 }
 
+/**
+ * Preserve which cache layer made a decision without coupling observability to
+ * the outcome. Misses are the diagnostic path operators need most, so callers
+ * must namespace both hits and misses rather than decorating successful reuse
+ * only.
+ */
+export function namespacePassingTaskVerdictDecision(decision, namespace) {
+  const reason =
+    typeof decision?.reason === "string" && decision.reason
+      ? decision.reason
+      : decision?.hit
+        ? "hit"
+        : "miss";
+  return {
+    ...decision,
+    reason: `${namespace}:${reason}`,
+  };
+}
+
 export function emptyPassingTaskVerdictCache() {
   return { version: PASSING_TASK_VERDICT_CACHE_VERSION, groups: {} };
 }

@@ -19,3 +19,7 @@ export function validateInventory(
 export function scanActiveInventory(
   files: readonly (readonly [string, string])[],
 ): string[];
+export function scanInventory(
+  files: readonly (readonly [string, string])[],
+  options?: { migrations?: readonly string[] },
+): string[];
