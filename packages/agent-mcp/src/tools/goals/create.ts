@@ -151,7 +151,29 @@ export default defineTool({
         ],
       };
     }
-    const installSlug = ctx.harnessSlug;
+    // EI-21563406996333542: the line above deliberately rejects the wildcard for
+    // workspaceId; this one used to take `ctx.harnessSlug` RAW, so a session in
+    // workspace-global scope wrote `install_slug = '*'`. That was accepted here and
+    // read healthy on every surface — but launch-su's SLUG_RE (/^[A-Za-z0-9._-]+$/)
+    // rejects '*', so the goal became PERMANENTLY UNLAUNCHABLE, and the failure
+    // surfaced only at the first holder launch as a bare "invalid harness slug"
+    // with nothing pointing back to creation. It stayed invisible because the
+    // autoStart leg is itself unreachable (EI-21562402496780915), so nothing ever
+    // tried to launch such a goal.
+    //
+    // RESOLVE the wildcard rather than refusing it (the asymmetry with workspaceId
+    // above is intentional): '*'/'all' is a RECOGNISED workspace-global scope token
+    // here — loop:arm documents "omit it (or use the workspace-global all/* scope)
+    // to resolve the workspace home pot", and improvements:capture already auto-homes
+    // a workspace-global scope to the platform Pot. PLATFORM_POT_SLUG's own contract
+    // is "a workspace-global ('operator') work item homes here". Refusing instead
+    // would leave a workspace-global session unable to file a goal at all, which is
+    // exactly the session shape that hit this.
+    //
+    // The falsy check below is unchanged: a genuinely ABSENT harness still refuses.
+    const rawHarnessSlug = ctx.harnessSlug;
+    const installSlug =
+      rawHarnessSlug === '*' || rawHarnessSlug === 'all' ? PLATFORM_POT_SLUG : rawHarnessSlug;
     if (!installSlug) {
       return {
         data: null,
