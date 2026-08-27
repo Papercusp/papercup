@@ -274,6 +274,10 @@ export default defineTool({
             .catch(() => null)
         : null;
     if (wakeLessAutonomy && !args.acknowledgeWakeLessAutonomy) {
+      const recoveryArgs = {
+        ...args,
+        acknowledgeWakeLessAutonomy: true,
+      };
       return {
         content: [
           {
@@ -284,10 +288,15 @@ export default defineTool({
               message:
                 `REFUSED — loop:end would leave ${ownerId} in autonomy-implying mode(s) ` +
                 `[${wakeLessAutonomy.autonomyModes.join(', ')}] with no deliberate independent event await. ` +
-                'Keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry with acknowledgeWakeLessAutonomy:true to consciously create a wake-less autonomy state.',
+                'Action required: keep the loop armed, register an events:await wake, exit the autonomy-implying modes, or retry loop:end with the exact arguments in recovery.args to consciously create a wake-less autonomy state.',
               ownerId,
               autonomyModes: wakeLessAutonomy.autonomyModes,
               requiredAcknowledgement: 'acknowledgeWakeLessAutonomy',
+              recovery: {
+                action: 'retry',
+                tool: 'loop:end',
+                args: recoveryArgs,
+              },
             }),
           },
         ],

@@ -91,7 +91,8 @@ vi.mock('../../../papercusp-root', () => ({
   papercuspPathForWorkspace: () => '/tmp/fleet-launch-ctx-test',
 }));
 
-vi.mock('../../../agent-fleets-store', () => ({
+vi.mock('../../../agent-fleets-store', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../agent-fleets-store')>()),
   // The fleet-shape vocabulary, as a REAL value: `goal-launch-settings` builds
   // `goalLaunchSettingsSchema.fleetType` from it with `z.enum(FLEET_TYPES)` at
   // module scope, and this handler imports that module — so an omitted export
@@ -2166,6 +2167,21 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         transactionId: payload.launchTransaction.transactionId,
       },
     });
+  });
+
+  it('persists and launches with the exact provenance join key used by the real verifier', async () => {
+    const res = await invokeLaunchHandler(
+      { name: 'Provenance Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    const command = (spawnConsoleMock.mock.calls[0]?.[0] as {
+      envelope?: { greetingCmd?: string };
+    })?.envelope?.greetingCmd;
+
+    expect(payload.launchTransaction.launcherOwnerId).toBe('owner-1');
+    expect(command).toContain('--launched-by=owner-1');
+    expect(command).toContain(`--owner-id=${payload.launchTransaction.requestedMemberIds[0]}`);
   });
 
   it('merges typed worker attestations across verifier waves into the durable transaction', async () => {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
-import { workspaceBackupFor } from '../../backup';
+import { mergeRepoStatsWithKopia, workspaceBackupFor } from '../../backup';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
@@ -20,7 +20,11 @@ export default defineTool({
   args: z.object({}),
   async handler() {
     const wb = workspaceBackupFor(activeWorkspaceId());
-    const [settings, stats] = await Promise.all([wb.getSettings(), wb.stats()]);
-    return { data: { settings, stats } };
+    const [settings, stats, kopiaStats] = await Promise.all([
+      wb.getSettings(),
+      wb.stats(),
+      wb.kopiaContentStats().catch(() => null),
+    ]);
+    return { data: { settings, stats: mergeRepoStatsWithKopia(stats, kopiaStats) } };
   },
 });

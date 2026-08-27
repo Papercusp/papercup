@@ -23,6 +23,13 @@ export default defineTool({
   args: z.object({
     fleet: z.string().min(1).describe('Existing fleet slug.'),
     target: z.number().int().min(1).max(FLEET_MAX_TARGET_MEMBERS).nullable().describe('Desired live member count, or null to disable the governor.'),
+    productiveCapacityFloor: z
+      .number()
+      .int()
+      .min(1)
+      .max(FLEET_MAX_TARGET_MEMBERS)
+      .optional()
+      .describe('Worker-ready members required before the governor may open a multi-member refill wave. Defaults to one canary.'),
     harness: z.string().min(1).describe('Harness containing the plan.'),
     plan: z.string().min(1).describe('Plan whose work the top-up members should pull.'),
     agent: z.enum(['claude', 'omp', 'codex']).optional().describe('Agent backend. Omit to preserve an existing profile; a new profile defaults to claude.'),
@@ -42,6 +49,13 @@ export default defineTool({
   }).superRefine((args, ctx) => {
     if (args.replaceExisting && !args.reason) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'reason is required when replaceExisting=true' });
+    }
+    if (args.target != null && args.productiveCapacityFloor != null && args.productiveCapacityFloor > args.target) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['productiveCapacityFloor'],
+        message: 'productiveCapacityFloor cannot exceed target',
+      });
     }
   }),
   async handler(args, ctx) {
@@ -92,6 +106,9 @@ export default defineTool({
       ...(args.model ? { model: args.model } : {}),
       ...(args.effort ? { effort: args.effort } : {}),
       ...(args.account ? { account: args.account } : {}),
+      ...(args.productiveCapacityFloor != null
+        ? { productiveCapacityFloor: args.productiveCapacityFloor }
+        : {}),
       headless: args.headless ?? existing?.config.headless ?? true,
       ...(args.role ? { role: args.role } : {}),
       ...(args.brief ? { brief: args.brief } : {}),

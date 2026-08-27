@@ -19,7 +19,11 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, sign as nodeSign } from 'node:crypto';
-import { bootHarnessSubstrate, onSchemaVersionAlert } from '../boot';
+import {
+  bootHarnessSubstrate as bootHarnessSubstrateImpl,
+  onSchemaVersionAlert,
+  type BootHarnessOpts,
+} from '../boot';
 import { schemaVersionEvents, type SchemaVersionAlert, CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { _resetCacheForTests } from '../corestore';
 import { openOwnLog, type RemoteLog } from '../peer-log';
@@ -35,6 +39,15 @@ import {
   dropReplicationLogState,
 } from '../replication-liveness';
 import * as replicationStallEi from '../replication-stall-ei';
+
+/**
+ * Keep this composer suite hermetic. Production resolves re-key dependencies
+ * fail-closed, but these unit cases exercise the substrate with no real PG.
+ * Individual tests can still override this default through the existing seam.
+ */
+function bootHarnessSubstrate(opts: BootHarnessOpts) {
+  return bootHarnessSubstrateImpl({ rekeyDepsOverride: null, ...opts });
+}
 
 /** Build a VALID signed announce with a freshly-generated Ed25519 keypair —
  *  `verifyAnnounce(frame)` (real crypto, runs inside boot's onAnnounce) returns

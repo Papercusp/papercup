@@ -125,4 +125,26 @@ describe('fleet:headcount-target canonical launch profile', () => {
       config: { ...savedProfile.config, headless: false },
     });
   });
+
+  it('persists the productive-capacity floor on the existing canonical recipe', async () => {
+    const result = await tool.handler(
+      {
+        fleet: 'byoc', target: 4, productiveCapacityFloor: 2,
+        harness: 'papercusp', plan: 'byoc-plan',
+      } as never,
+      {} as never,
+    );
+
+    expect(parse(result)).toMatchObject({
+      ok: true,
+      target: 4,
+      config: { ...savedProfile.config, productiveCapacityFloor: 2 },
+    });
+    expect(mocks.setFleetHeadcountTarget).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      target: 4,
+      config: { ...savedProfile.config, productiveCapacityFloor: 2 },
+    });
+  });
 });

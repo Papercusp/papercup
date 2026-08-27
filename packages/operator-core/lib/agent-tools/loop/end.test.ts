@@ -177,6 +177,37 @@ describe('the P-012 wake-less autonomy guard', () => {
     expect(deactivateLoopMock).not.toHaveBeenCalled();
   });
 
+  it('returns an executable retry preserving every original loop:end argument', async () => {
+    getModesMock.mockResolvedValue([mode('auto')]);
+    const originalArgs = {
+      ownerId: 'su-target',
+      reason: 'leader wind-down',
+      disposition: 'handoff',
+      handoffTo: 'su-successor',
+      outputs: { checkpoint: 'saved' },
+      acknowledgeOpenDirectives: true,
+      acknowledgeWakeLessAutonomy: false,
+    };
+
+    const got = await run(originalArgs);
+
+    expect(got).toMatchObject({
+      isError: true,
+      error: 'wake_less_autonomy_refused',
+      recovery: {
+        action: 'retry',
+        tool: 'loop:end',
+        args: {
+          ...originalArgs,
+          acknowledgeWakeLessAutonomy: true,
+        },
+      },
+    });
+    expect(String(got.message)).toContain('Action required:');
+    expect(String(got.message)).toContain('recovery.args');
+    expect(deactivateLoopMock).not.toHaveBeenCalled();
+  });
+
   it('derives autonomous overlays from the registry and checks the TARGET owner, not only the caller', async () => {
     getModesMock.mockResolvedValue([mode('drain')]);
 

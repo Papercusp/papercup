@@ -9,8 +9,18 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ getSettings: vi.fn(), stats: vi.fn() }));
-vi.mock('../../backup', () => ({ workspaceBackupFor: vi.fn(() => ({ getSettings: h.getSettings, stats: h.stats })) }));
+const h = vi.hoisted(() => ({ getSettings: vi.fn(), stats: vi.fn(), kopiaContentStats: vi.fn() }));
+vi.mock('../../backup', async () => {
+  const { mergeRepoStatsWithKopia } = await vi.importActual<typeof import('@papercusp/backup')>('@papercusp/backup');
+  return {
+    workspaceBackupFor: vi.fn(() => ({
+      getSettings: h.getSettings,
+      stats: h.stats,
+      kopiaContentStats: h.kopiaContentStats,
+    })),
+    mergeRepoStatsWithKopia,
+  };
+});
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 
 import { workspaceBackupFor } from '../../backup';
@@ -27,6 +37,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.getSettings.mockResolvedValue({ enabled: true });
   h.stats.mockResolvedValue({ snapshots: 5 });
+  h.kopiaContentStats.mockResolvedValue(null);
 });
 
 describe('backup:settings_get handler', () => {
@@ -34,5 +45,41 @@ describe('backup:settings_get handler', () => {
     const out = (await tool.handler({} as never, {} as never)) as Out;
     expect(forM).toHaveBeenCalledWith('ws-1');
     expect(body(out)).toMatchObject({ settings: { enabled: true }, stats: { snapshots: 5 } });
+  });
+
+  it('uses live Kopia occupancy for bytesOnDisk and dedupRatio', async () => {
+    h.stats.mockResolvedValue({
+      totalSnapshots: 5,
+      bytesOnDisk: 12,
+      bytesRaw: 100,
+      dedupRatio: 0.88,
+      lastSnapshotAt: null,
+      lastFailureAt: null,
+    });
+    h.kopiaContentStats.mockResolvedValue({ totalSize: 40, objectCount: 10 });
+
+    const out = (await tool.handler({} as never, {} as never)) as Out;
+
+    expect(body(out)).toMatchObject({
+      stats: { bytesOnDisk: 40, bytesRaw: 100, dedupRatio: 0.6 },
+    });
+    expect(h.kopiaContentStats).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to ledger stats when Kopia stats are unavailable', async () => {
+    const ledgerStats = {
+      totalSnapshots: 5,
+      bytesOnDisk: 12,
+      bytesRaw: 100,
+      dedupRatio: 0.88,
+      lastSnapshotAt: null,
+      lastFailureAt: null,
+    };
+    h.stats.mockResolvedValue(ledgerStats);
+    h.kopiaContentStats.mockRejectedValue(new Error('kopia unavailable'));
+
+    const out = (await tool.handler({} as never, {} as never)) as Out;
+
+    expect(body(out)).toMatchObject({ settings: { enabled: true }, stats: ledgerStats });
   });
 });

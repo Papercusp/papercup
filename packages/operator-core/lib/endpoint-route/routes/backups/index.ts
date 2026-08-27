@@ -5,7 +5,7 @@
  * Ported from app/api/backups/route.ts. `auth: 'public'`.
  */
 import { z } from 'zod';
-import { workspaceBackupFor, getKopiaDetection } from '../../../backup';
+import { mergeRepoStatsWithKopia, workspaceBackupFor, getKopiaDetection } from '../../../backup';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -43,13 +43,7 @@ const get = defineTool({
         wb.stats(),
         wb.kopiaContentStats().catch(() => null),
       ]);
-      const merged = kopiaStats
-        ? {
-            ...stats,
-            bytesOnDisk: kopiaStats.totalSize,
-            dedupRatio: stats.bytesRaw === 0 ? 0 : Math.max(0, 1 - kopiaStats.totalSize / stats.bytesRaw),
-          }
-        : stats;
+      const merged = mergeRepoStatsWithKopia(stats, kopiaStats);
       // Surface binary availability so the wizard/settings can render an
       // "unavailable in this runtime" state instead of a raw error (the
       // Windows WSL runtime shipped without kopia until 2026-06-11).

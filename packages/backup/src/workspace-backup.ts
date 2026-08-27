@@ -100,6 +100,24 @@ export interface SnapshotReceiptReconciliation {
   note?: string;
 }
 
+/**
+ * Replace the snapshot-ledger estimate of repository occupancy with live
+ * Kopia content stats when they are available. `stats()` intentionally reads
+ * the durable snapshot ledger, but its `bytesOnDisk` value is the cumulative
+ * `bytes_added` delta and is not the current repository size.
+ */
+export function mergeRepoStatsWithKopia(
+  stats: RepoStats,
+  kopiaStats: { totalSize: number; objectCount: number } | null | undefined,
+): RepoStats {
+  if (!kopiaStats) return stats;
+  return {
+    ...stats,
+    bytesOnDisk: kopiaStats.totalSize,
+    dedupRatio: stats.bytesRaw === 0 ? 0 : Math.max(0, 1 - kopiaStats.totalSize / stats.bytesRaw),
+  };
+}
+
 interface KopiaSnapshotManifest {
   id?: string;
   startTime?: string;

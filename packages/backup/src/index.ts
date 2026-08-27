@@ -26,7 +26,11 @@ export {
   type BackupIntervalScheduler,
   type IntervalSnapshotAdmission,
 } from './config';
-export { WorkspaceBackup, type WorkspaceBackupOpts } from './workspace-backup';
+export {
+  WorkspaceBackup,
+  mergeRepoStatsWithKopia,
+  type WorkspaceBackupOpts,
+} from './workspace-backup';
 export {
   RETENTION_PRESETS,
   passthroughStepRunner,
