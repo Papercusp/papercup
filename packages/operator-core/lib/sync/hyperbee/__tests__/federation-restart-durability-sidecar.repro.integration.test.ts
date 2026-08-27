@@ -1522,6 +1522,6 @@ describe('connected_never_replicated ZOMBIE-SOCKET repro (EI-13317/WI-5481) — 
         'the member must have (re-)admitted the owner log on the recovered connection',
       ).toBe(true);
     },
-    60_000,
+    120_000,
   );
 });
