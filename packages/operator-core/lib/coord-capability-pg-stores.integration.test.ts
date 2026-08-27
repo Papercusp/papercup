@@ -24,7 +24,10 @@
 import { afterAll, beforeAll, test, expect } from 'vitest';
 import postgres from 'postgres';
 import { randomBytes } from 'node:crypto';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { getTestPg } from '@papercusp/test-config/pg';
+import { applyMigrationForTest, createFreshPgDb } from '../test/_pg-helpers';
 import {
   describeLinkableStoreConformance,
   describeResolveObjectSubscribers,
@@ -42,6 +45,8 @@ import {
 } from '@papercusp/coordination/capabilities';
 
 let sql: postgres.Sql;
+
+const SQL_DIR = resolve(dirname(fileURLToPath(import.meta.url)), '../../../libs/papercusp/libs/db/sql');
 
 let wsCounter = 0;
 /** A fresh workspace_id per factory() call → each store-set is isolated. */
@@ -143,4 +148,51 @@ test('PgThreadStore.getOrCreateThread tolerates two CONCURRENT calls racing to c
   ]);
   expect(p1).toBeTruthy();
   expect(p2).toBeTruthy();
+});
+
+// EI-11826 regression: the event-await fan-out can read existing event-key
+// subscriptions while the candidate migrations are still pending. Migration
+// 568 permits target_kind='event', but migration 602 adds the optional
+// follow/derived columns that the current read path must tolerate being absent.
+test('PgEntitySubscriptionStore reads event subscribers before migration 602', async () => {
+  const db = await createFreshPgDb('coordcap-pre602');
+  try {
+    await applyMigrationForTest(db.sql, resolve(SQL_DIR, '123-coordination-substrate.sql'));
+    await applyMigrationForTest(db.sql, resolve(SQL_DIR, '429-coord-entity-subscriptions-allow-fleet-kind.sql'));
+    await applyMigrationForTest(db.sql, resolve(SQL_DIR, '568-coord-entity-subscriptions-allow-event-kind.sql'));
+
+    const workspaceId = 'pre602';
+    const eventKey = 'green-checkpoint:red:papercusp';
+    await db.sql`
+      INSERT INTO harness_shared.coord_entity_subscriptions
+        (workspace_id, subscriber_id, target_kind, target_ref, delivery_mode, created_at)
+      VALUES
+        (${workspaceId}, 'subscriber-pre602', 'event', ${eventKey}, 'full', '2026-08-27T00:00:00.000Z')`;
+
+    const store = new PgEntitySubscriptionStore({
+      getSql: () => db.sql,
+      ensureSchema: async () => {},
+      workspaceId,
+    });
+    await expect(store.listTargetSubscribers('event', eventKey)).resolves.toMatchObject([
+      {
+        subscriber_id: 'subscriber-pre602',
+        target_kind: 'event',
+        target_ref: eventKey,
+        delivery_mode: 'full',
+        follow_blockers: false,
+        derived_from: null,
+      },
+    ]);
+    await expect(store.listSubscriptions('subscriber-pre602')).resolves.toMatchObject([
+      {
+        target_kind: 'event',
+        target_ref: eventKey,
+        follow_blockers: false,
+        derived_from: null,
+      },
+    ]);
+  } finally {
+    await db.cleanup();
+  }
 });

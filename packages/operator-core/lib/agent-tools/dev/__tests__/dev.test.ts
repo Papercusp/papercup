@@ -320,7 +320,18 @@ describe('dev:pg_table_sizes', () => {
 describe('dev:processes', () => {
   it('returns count + processes', async () => {
     const processes = [
-      { pid: 1, kind: 'omp', cmdline: 'omp', cwd: '/x', started_seconds_ago: 1, harness_slug: null, workspace_id: null },
+      {
+        pid: 1,
+        kind: 'omp',
+        executable: 'omp',
+        role: 'member',
+        build: '0.1.0+abc123',
+        started_at: '2026-08-27T04:00:00.000Z',
+        cwd: '/x',
+        started_seconds_ago: 1,
+        harness_slug: null,
+        workspace_id: null,
+      },
     ];
     vi.doMock('../../../dev-data', () => ({ listProcesses: vi.fn(async () => ({ processes })) }));
     const { default: tool } = await import('../processes');

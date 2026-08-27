@@ -647,39 +647,11 @@ describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
     expect(reminderBlock).not.toContain("kickoffArgs");
   });
 
-  it("routes a fresh OMP kickoff through the managed pty instead of argv", () => {
+  it("routes every fresh backend kickoff through the managed pty instead of argv", () => {
     const provenanceDir = mkdtempSync(join(tmpdir(), "omp-kickoff-prov-"));
     try {
-      const args = parseArgs(["--no-picker", "--agent=omp", "--plan=p"]);
-      const result = routeFreshKickoff(
-        "omp",
-        {
-          kickoffPrompt: KICK,
-          planSlug: "p",
-          envelopeEnv: { PAPERCUSP_SID: "omp-1" },
-        },
-        args,
-        {
-          PAPERCUSP_SID: "omp-1",
-          PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
-        },
-      );
-
-      expect(result.positionalArgs).toEqual([]);
-      expect(result.kickoffSeeded).toBe(true);
-      expect(result.managedKickoff).toMatch(
-        /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance the admitted work item\.$/,
-      );
-    } finally {
-      rmSync(provenanceDir, { recursive: true, force: true });
-    }
-  });
-
-  it("keeps Claude and Codex fresh kickoffs on their positional argv seam", () => {
-    const provenanceDir = mkdtempSync(join(tmpdir(), "native-kickoff-prov-"));
-    try {
-      const args = parseArgs(["--no-picker", "--agent=claude", "--plan=p"]);
-      for (const backend of ["claude", "codex"]) {
+      for (const backend of ["claude", "codex", "omp"]) {
+        const args = parseArgs(["--no-picker", `--agent=${backend}`, "--plan=p"]);
         const result = routeFreshKickoff(
           backend,
           {
@@ -688,12 +660,16 @@ describe("routeFreshKickoff (EI-20339142329504181 OMP startup barrier)", () => {
             envelopeEnv: { PAPERCUSP_SID: `${backend}-1` },
           },
           args,
-          { PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir },
+          {
+            PAPERCUSP_SID: `${backend}-1`,
+            PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+          },
         );
-        expect(result.managedKickoff).toBeNull();
-        expect(result.positionalArgs).toHaveLength(1);
-        expect(result.positionalArgs[0]).toMatch(
-          /Begin: advance the admitted work item\.$/,
+
+        expect(result.positionalArgs).toEqual([]);
+        expect(result.kickoffSeeded).toBe(true);
+        expect(result.managedKickoff).toMatch(
+          /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: advance the admitted work item\.$/,
         );
       }
     } finally {
@@ -883,12 +859,12 @@ describe("scriptedOmpSetupEnv (headless OMP kickoff reaches the composer)", () =
 describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
   const KICK = "Begin: pull one admitted non-P2P bug.";
 
-  it("appends the tagged first turn after every Codex/Claude launch flag", () => {
+  it("keeps every backend launch argv prompt-free and returns the tagged managed-pty kickoff", () => {
     const provenanceDir = mkdtempSync(
       join(tmpdir(), "su-native-kickoff-prov-"),
     );
     try {
-      for (const backend of ["claude", "codex"]) {
+      for (const backend of ["claude", "codex", "omp"]) {
         const args = parseArgs(["--no-picker", `--agent=${backend}`]);
         const result = finalizeFreshSuArgs(
           backend,
@@ -902,11 +878,10 @@ describe("finalizeFreshSuArgs (fresh SU kickoff reaches the backend)", () => {
         );
 
         expect(result.kickoffSeeded).toBe(true);
-        expect(result.kickoff).toBeNull();
-        expect(result.args.slice(0, -1)).toEqual(["--flag=value"]);
-        expect(result.args.at(-1)).toMatch(
+        expect(result.kickoff).toMatch(
           /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nBegin: pull one admitted non-P2P bug\.$/,
         );
+        expect(result.args).toEqual(["--flag=value"]);
       }
     } finally {
       rmSync(provenanceDir, { recursive: true, force: true });
@@ -4485,7 +4460,7 @@ describe("roleLaunchArgs (interactive role session)", () => {
     mcpJsonPath: "/proj/.mcp.json",
   };
 
-  it("EI-204995: a scripted headless role receives the env kickoff as its final tagged positional turn", () => {
+  it("EI-204995: a scripted headless role keeps the env kickoff out of argv", () => {
     const provenanceDir = mkdtempSync(join(tmpdir(), "role-kickoff-prov-"));
     try {
       const parsed = parseArgs([
@@ -4512,14 +4487,14 @@ describe("roleLaunchArgs (interactive role session)", () => {
       );
 
       expect(result.kickoffSeeded).toBe(true);
-      expect(result.args.slice(0, -1)).toEqual([
+      expect(result.args).toEqual([
         "--permission-mode",
         "bypassPermissions",
         "--add-dir=/evidence",
         "--effort",
         "high",
       ]);
-      expect(result.args.at(-1)).toMatch(
+      expect(result.kickoff).toMatch(
         /^⟦turn-origin:fleet-kickoff nonce:[a-f0-9]{16}⟧\nGrade the frozen acceptance evidence\.$/,
       );
       const rows = readFileSync(

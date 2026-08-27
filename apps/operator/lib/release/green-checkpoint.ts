@@ -7474,6 +7474,17 @@ async function runGreenCheckpointInner(
   // waits, and clear the in-flight marker before the caller releases the run lock.
   const emitTerminalRed = async (result: CheckpointResult): Promise<void> => {
     if (diagnosticOnly) return;
+    // WI-42350 — stamp the judged-red marker HERE, and only here.
+    //
+    // This is the one point every GENUINE terminal red passes through, and it sits AFTER the
+    // infra-fault arm on purpose. An infra-fault red (deleted module cache, materialization
+    // failure, a killed run) means the code was never actually judged — stamping it would make
+    // the next tick skip a candidate nobody ever tested, converting a transient infra problem
+    // into a permanently unexamined sha. That is the one way this optimization could hide a real
+    // regression, so the marker is deliberately unreachable from that path.
+    //
+    // `diagnosticOnly` returns above, so a pinned diagnostic run cannot move the marker either.
+    await deps.recordJudgedRed?.(cfg.integrationRoot, result.candidate);
     const pipeline = pipelineName(cfg.integrationRoot);
     const redSummary = `[${pipeline}] green-checkpoint: ${result.candidate.slice(0, 8)} not green — ${cfg.releaseRef} held`;
     const payload = {

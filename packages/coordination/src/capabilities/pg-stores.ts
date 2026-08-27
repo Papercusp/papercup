@@ -411,10 +411,16 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
   async listSubscriptions(subscriberId: string): Promise<SubscriptionRow[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
+    // Migration 602 is additive, but the event-await fan-out can run against a
+    // candidate database before pending migrations apply. Project the optional
+    // fields from the row JSON so pre-602 tables return their contract defaults
+    // instead of failing while naming columns that do not exist yet.
     const rows = await sql<SubRowDb[]>`
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
-             follow_blockers, derived_from_kind, derived_from_ref
-        FROM harness_shared.coord_entity_subscriptions
+             COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
+             to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
+             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref
+        FROM harness_shared.coord_entity_subscriptions AS sub
        WHERE workspace_id = ${this.ws} AND subscriber_id = ${subscriberId}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
        ORDER BY created_at ASC, id ASC`;
@@ -426,8 +432,10 @@ export class PgEntitySubscriptionStore implements SubscribableStore {
     const sql = this.opts.getSql();
     const rows = await sql<SubRowDb[]>`
       SELECT id, subscriber_id, target_kind, target_ref, delivery_mode, created_at, expires_ts,
-             follow_blockers, derived_from_kind, derived_from_ref
-        FROM harness_shared.coord_entity_subscriptions
+             COALESCE((to_jsonb(sub)->>'follow_blockers')::boolean, FALSE) AS follow_blockers,
+             to_jsonb(sub)->>'derived_from_kind' AS derived_from_kind,
+             to_jsonb(sub)->>'derived_from_ref' AS derived_from_ref
+        FROM harness_shared.coord_entity_subscriptions AS sub
        WHERE workspace_id = ${this.ws} AND target_kind = ${targetKind} AND target_ref = ${targetRef}
          AND cancelled_at IS NULL AND (expires_ts IS NULL OR expires_ts > now())
        ORDER BY created_at ASC, id ASC`;

@@ -1759,9 +1759,10 @@ export function finalizeFreshSuArgs(
  * Finish a fresh ROLE launch argv with the same scripted first-turn seam used by
  * fresh SU launches. Role launches used to stop after flags/passthrough, so a
  * headless acceptance judge could inherit PAPERCUSP_KICKOFF_PROMPT yet open at
- * an empty prompt forever. Keep the native positional prompt last for
- * every backend uses the managed-pty kickoff returned alongside the argv. Tag machine-origin turns and expose whether a
- * turn was actually seeded so the caller can report the launch honestly. Pure
+ * an empty prompt forever. Keep the prompt out of argv for every backend and
+ * return the managed-pty kickoff alongside the argv. Tag machine-origin turns
+ * and expose whether a turn was actually seeded so the caller can report the
+ * launch honestly. Pure
  * except for the existing provenance-ledger write performed by
  * tagKickoffProvenance.
  *
@@ -11904,13 +11905,9 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
   // SCRIPTED plan launch so a fleet/automation member immediately starts working
   // the plan instead of orienting once (reading the plan + brief as system prompt)
   // and then parking idle on its inbox-wake — the gap a leader previously closed by
-  // hand with a coord:send wake. Claude and Codex accept a TRAILING POSITIONAL
-  // prompt that keeps the session INTERACTIVE while submitting it as the first
-  // turn (`claude [prompt]`, `codex [PROMPT]`). OMP's UI startup can submit that
-  // positional prompt before asynchronous MCP discovery settles, so
-  // routeFreshKickoff sends every backend through the managed-pty startup barrier.
-  // The native positional prompt is appended AFTER every Claude/Codex flag (incl.
-  // the launch-context flag's value); their non-interactive modes are NOT used here.
+  // hand with a coord:send wake. A prompt in any backend's argv is visible to shared
+  // host process diagnostics, so routeFreshKickoff sends every backend through the
+  // managed-pty startup barrier and keeps every launch argv prompt-free.
   // Gated to --no-picker launches (an interactive human picker launch still opens at
   // an empty prompt) + an explicit --no-kickoff opt-out. Text is server-supplied
   // (res.kickoffPrompt = the canonical deriveLaunchPromptText, present iff a plan is

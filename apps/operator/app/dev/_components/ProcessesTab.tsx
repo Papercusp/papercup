@@ -12,7 +12,10 @@ import { useLexicon } from '@/lib/useLexicon';
 export interface Process {
   pid: number;
   kind: string;
-  cmdline: string;
+  executable: string | null;
+  role: string | null;
+  build: string | null;
+  started_at: string | null;
   cwd: string | null;
   started_seconds_ago: number;
   harness_slug: string | null;
@@ -178,17 +181,20 @@ export default function ProcessesTab() {
           { key: 'pid', header: 'PID', width: 0.8, align: 'right', toCopyText: (r) => String(r.pid), render: ({ row }) => <span className="pc-dev-muted">{row.pid}</span> },
           { key: 'kind', header: 'Kind', width: 1, toCopyText: (r) => r.kind, render: ({ row }) => <span className="pc-dev-slug">{row.kind}</span> },
           { key: 'age', header: 'Age', width: 0.7, align: 'right', toCopyText: (r) => fmtAge(r.started_seconds_ago), render: ({ row }) => <span className="pc-dev-muted">{fmtAge(row.started_seconds_ago)}</span> },
+          {
+            key: 'started', header: 'Started', width: 1.8,
+            toCopyText: (r) => r.started_at ?? '',
+            render: ({ row }) => <span className="pc-dev-muted" title={row.started_at ?? ''}>{row.started_at ?? '—'}</span>,
+          },
+          { key: 'executable', header: 'Executable', width: 1.3, toCopyText: (r) => r.executable ?? '', render: ({ row }) => <span className="pc-dev-query">{row.executable ?? '—'}</span> },
+          { key: 'role', header: 'Role', width: 1.2, toCopyText: (r) => r.role ?? '', render: ({ row }) => <span className="pc-dev-slug">{row.role ?? '—'}</span> },
+          { key: 'build', header: 'Build', width: 1.5, toCopyText: (r) => r.build ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.build ?? '—'}</span> },
           { key: 'harness', header: t('pot'), width: 1.5, toCopyText: (r) => r.harness_slug ?? '', render: ({ row }) => <>{row.harness_slug ?? '—'}</> },
           { key: 'ws', header: 'Workspace', width: 1.2, toCopyText: (r) => r.workspace_id ?? '', render: ({ row }) => <span className="pc-dev-muted">{row.workspace_id ?? '—'}</span> },
           {
             key: 'cwd', header: 'CWD', width: 2,
             toCopyText: (r) => r.cwd ?? '',
             render: ({ row }) => <span className="pc-dev-muted pc-dev-details" title={row.cwd ?? ''}>{row.cwd ?? '—'}</span>,
-          },
-          {
-            key: 'cmd', header: 'Cmdline', width: 3,
-            toCopyText: (r) => r.cmdline,
-            render: ({ row }) => <span className="pc-dev-query" title={row.cmdline}>{row.cmdline}</span>,
           },
           {
             key: 'kill', header: '', width: 0.6, align: 'center',
@@ -278,10 +284,16 @@ export function KillModal({
           <span className="pc-dev-slug">{p.kind}</span>
           <span>cwd</span>
           <span className="pc-dev-muted">{p.cwd ?? '—'}</span>
+          <span>started</span>
+          <span className="pc-dev-muted">{p.started_at ?? '—'}</span>
+          <span>executable</span>
+          <span className="pc-dev-query">{p.executable ?? '—'}</span>
+          <span>role</span>
+          <span className="pc-dev-slug">{p.role ?? '—'}</span>
+          <span>build</span>
+          <span className="pc-dev-muted">{p.build ?? '—'}</span>
           <span>{t('pot', { lower: true })}</span>
           <span>{p.harness_slug ?? '—'}</span>
-          <span>cmdline</span>
-          <span className="pc-dev-query">{p.cmdline.slice(0, 200)}</span>
         </div>
 
         <div className="pc-dev-modal-row">

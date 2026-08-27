@@ -21,7 +21,8 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { getPlanRow, planItemsForRow, type PlanRow } from './source';
 import { ctxToPlanSourceOpts } from './_ctx-opts';
-import { harnessArg, harnessScopedCtx } from '../_harness-scope';
+import { harnessArg, harnessScopedCtx, resolveHarnessScope } from '../_harness-scope';
+import { recoverHarnessFromSlugs, slugScopeErrorResult } from './slug-scope';
 import { resolveEffectiveStatusForItems } from './effective-status';
 import { getAllBlockedPlanItems, applyPlanItemBlocks, planItemRef } from '../../issue-blocks-merge';
 import { runBulk, bulkContent, type BulkItemResult } from '../_bulk';
@@ -95,6 +96,26 @@ export default defineTool({
         ? args.itemIds.map((itemId) => ({ slug: args.slug as string, itemId, harness: args.harness }))
         : [{ slug: args.slug as string, itemId: args.item as string, harness: args.harness }];
 
+    // Match plans:get / plans:items: an exact homogeneous plan slug is enough to
+    // recover the owning harness in an operator/superuser session whose ambient
+    // scope is only the '*' wildcard. Cross-plan reads still require an explicit
+    // per-item or batch harness because one call must stay within one scope.
+    const homogeneousSlug = args.items?.length ? undefined : args.slug;
+    const scope = resolveHarnessScope(args.harness, ctx);
+    let autoResolvedHarness: string | undefined;
+    if (scope.kind === 'none' && homogeneousSlug) {
+      const decision = await recoverHarnessFromSlugs(ctx, [homogeneousSlug]);
+      if (decision.status !== 'resolved') return slugScopeErrorResult('plans:get-item', decision);
+      autoResolvedHarness = decision.harnessSlug;
+      const ctxAny = ctx as { metadata?: (d: Record<string, unknown>) => void };
+      ctxAny.metadata?.({
+        harnessAutoResolved: decision.bySlug,
+        ...(Object.keys(decision.ambiguous).length > 0
+          ? { harnessAmbiguous: decision.ambiguous }
+          : {}),
+      });
+    }
+
     // The all-blocked overlay is workspace-wide, not per-slug — fetch it ONCE for
     // the whole batch (non-fatal; degrades to resolver-only on error).
     let allBlocked = new Map<string, string[]>();
@@ -111,7 +132,9 @@ export default defineTool({
       const key = `${harness ?? ''}::${slug}`;
       const cached = rowCache.get(key);
       if (cached) return cached;
-      const sctx = harnessScopedCtx(harness, ctx);
+      const effectiveHarness =
+        harness ?? (autoResolvedHarness && homogeneousSlug === slug ? autoResolvedHarness : undefined);
+      const sctx = harnessScopedCtx(effectiveHarness, ctx);
       const opts = await ctxToPlanSourceOpts(sctx);
       const row = await getPlanRow(slug, opts);
       let res: RowResult;

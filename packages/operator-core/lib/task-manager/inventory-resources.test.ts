@@ -15,7 +15,7 @@ const row = (rssBytes: number | null, cpuUsec: number | null) => ({ rssBytes, cp
 const NOW = 1_785_740_000_000;
 
 describe('public process projection', () => {
-  it('redacts credential-bearing argv before it reaches a task-manager client', () => {
+  it('returns stable metadata and never exposes credential-bearing argv to a task-manager client', () => {
     const localBearer = '8c91f74d2e6a4bbf90f44a71d142d095';
     const row: ScannedProcess = {
       pid: 42,
@@ -31,11 +31,20 @@ describe('public process projection', () => {
     };
 
     const projected = projectLiveProcess(row, [localBearer]);
-    expect(projected.cmdline).toContain('--api-key=[redacted]');
-    expect(projected.cmdline).toContain('Authorization: Bearer [redacted]');
-    expect(projected.cmdline).not.toContain('opaque-value');
-    expect(projected.cmdline).not.toContain(localBearer);
-    expect(projected.cmdline).toContain('http://127.0.0.1:9071 [redacted]');
+    expect(projected).toMatchObject({
+      pid: 42,
+      startedAt: null,
+      executable: 'worker.ts',
+      role: null,
+      build: null,
+      cgroupPath: '/papercusp.slice/pc-task.scope',
+      owned: true,
+      scope: 'owned',
+      exemptReason: null,
+    });
+    expect(projected).not.toHaveProperty('cmdline');
+    expect(JSON.stringify(projected)).not.toContain('opaque-value');
+    expect(JSON.stringify(projected)).not.toContain(localBearer);
   });
 });
 

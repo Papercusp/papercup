@@ -15,7 +15,16 @@ vi.mock('./_ctx-opts', () => ({ ctxToPlanSourceOpts: vi.fn(async () => ({})) }))
 // ctx (which carries no harnessSlug) does not trip the harness-required gate.
 vi.mock('../_harness-scope', async (orig) => ({
   ...(await orig<typeof import('../_harness-scope')>()),
-  harnessScopedCtx: (_h: unknown, ctx: unknown) => ctx,
+  harnessScopedCtx: vi.fn((_h: unknown, ctx: unknown) => ctx),
+}));
+vi.mock('./slug-scope', () => ({
+  recoverHarnessFromSlugs: vi.fn(async (_ctx: unknown, slugs: string[]) => ({
+    status: 'resolved',
+    harnessSlug: 'papercusp',
+    bySlug: Object.fromEntries(slugs.map((slug) => [slug, 'papercusp'])),
+    ambiguous: {},
+  })),
+  slugScopeErrorResult: vi.fn(),
 }));
 vi.mock('./source', () => ({ getPlanRow: vi.fn(), planItemsForRow: (row: { items: unknown[] }) => row.items }));
 vi.mock('./effective-status', () => ({
@@ -29,7 +38,11 @@ vi.mock('../../issue-blocks-merge', () => ({
 }));
 
 import { getPlanRow } from './source';
+import { harnessScopedCtx } from '../_harness-scope';
+import { recoverHarnessFromSlugs } from './slug-scope';
 const getRowM = vi.mocked(getPlanRow);
+const scopeM = vi.mocked(harnessScopedCtx);
+const recoverM = vi.mocked(recoverHarnessFromSlugs);
 const tool = (await import('./get-item')).default;
 
 type Out = { data: any };
@@ -55,6 +68,14 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, slug: 'plan-a', itemId: 'P-001', item: { id: 'P-001' } });
   });
 
+  it('auto-resolves the owning harness for an exact slug when ambient scope is absent', async () => {
+    getRowM.mockResolvedValue(rowOf('plan-a', ['P-001']));
+    const b = await body({ slug: 'plan-a', item: 'P-001' });
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(recoverM).toHaveBeenCalledWith({}, ['plan-a']);
+    expect(scopeM).toHaveBeenCalledWith('papercusp', {});
+  });
+
   it('itemIds:[…] reads many of one plan; a missing item fails only itself', async () => {
     getRowM.mockResolvedValue(rowOf('plan-a', ['P-001', 'P-002']));
     const b = await body({ slug: 'plan-a', itemIds: ['P-001', 'P-099', 'P-002'] });
@@ -66,6 +87,8 @@ describe('plans:get-item handler (bulk keyed-array)', () => {
       ['P-099', false],
       ['P-002', true],
     ]);
+    expect(recoverM).toHaveBeenCalledWith({}, ['plan-a']);
+    expect(scopeM).toHaveBeenCalledWith('papercusp', {});
     expect(b.results[1]).toMatchObject({ ok: false, slug: 'plan-a', itemId: 'P-099', error: 'item_not_found' });
     // the per-slug row is fetched ONCE for all three items
     expect(getRowM).toHaveBeenCalledTimes(1);
