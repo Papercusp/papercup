@@ -81,8 +81,7 @@ export function isExecutablePlanCandidate(
   opStatus: string | null | undefined,
 ): boolean {
   return (
-    EXECUTABLE_LIFECYCLE_STATUSES.has(lifecycleStatus ?? '') ||
-    EXECUTABLE_OPERATIONAL_STATUSES.has(opStatus ?? '')
+    EXECUTABLE_LIFECYCLE_STATUSES.has(lifecycleStatus ?? '') || EXECUTABLE_OPERATIONAL_STATUSES.has(opStatus ?? '')
   );
 }
 
@@ -102,14 +101,10 @@ function endpointDiagnostic(args: {
   const ref = defect.declared.ref;
   const isAllowedDraftForwardRef =
     args.draftForwardRefsAllowed && defect.code === 'missing' && defect.role === 'blocker';
-  const disposition: PlanCandidateDependencyDisposition = isAllowedDraftForwardRef
-    ? 'invalid-draft'
-    : 'reject';
+  const disposition: PlanCandidateDependencyDisposition = isAllowedDraftForwardRef ? 'invalid-draft' : 'reject';
   const path = itemId && defect.role === 'blocker' ? [itemId, ref] : [ref];
   const evidence = path.join(' -> ');
-  const prefix = isAllowedDraftForwardRef
-    ? 'Invalid draft forward reference'
-    : 'Invalid plan dependency endpoint';
+  const prefix = isAllowedDraftForwardRef ? 'Invalid draft forward reference' : 'Invalid plan dependency endpoint';
 
   return {
     code: endpointCode(defect.code),
@@ -119,9 +114,7 @@ function endpointDiagnostic(args: {
     ref,
     endpointRole: defect.role,
     path,
-    ...(defect.candidates?.length
-      ? { candidates: defect.candidates.map((candidate) => candidate.ref) }
-      : {}),
+    ...(defect.candidates?.length ? { candidates: defect.candidates.map((candidate) => candidate.ref) } : {}),
     ...(defect.resolvedAs ? { resolvedAs: defect.resolvedAs.ref } : {}),
   };
 }

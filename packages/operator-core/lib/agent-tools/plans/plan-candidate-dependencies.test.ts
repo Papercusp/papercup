@@ -1,14 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
-import {
-  invalidPlanDependenciesValue,
-  validatePlanCandidateDependencies,
-} from './plan-candidate-dependencies';
+import { invalidPlanDependenciesValue, validatePlanCandidateDependencies } from './plan-candidate-dependencies';
 
-function body(
-  status: 'draft' | 'ready' | 'active' | 'shipped' | 'superseded',
-  items: string[],
-): string {
+function body(status: 'draft' | 'ready' | 'active' | 'shipped' | 'superseded', items: string[]): string {
   return `---
 title: candidate dependency test
 slug: candidate-dependency-test
@@ -25,21 +19,14 @@ ${items.join('\n')}
 `;
 }
 
-function verdict(
-  status: Parameters<typeof body>[0],
-  items: string[],
-  opStatus: string | null = null,
-) {
+function verdict(status: Parameters<typeof body>[0], items: string[], opStatus: string | null = null) {
   return validatePlanCandidateDependencies(parsePlan(body(status, items)), opStatus);
 }
 
 describe('validatePlanCandidateDependencies', () => {
   it('adapts a resolved DAG onto the shared analyser as a valid executable candidate', () => {
     expect(
-      verdict('ready', [
-        '- **P-001** `done` foundation',
-        '- **P-002** `todo` dependent blocked-by: P-001',
-      ]),
+      verdict('ready', ['- **P-001** `done` foundation', '- **P-002** `todo` dependent blocked-by: P-001']),
     ).toEqual({
       state: 'valid',
       executable: true,
@@ -69,9 +56,7 @@ describe('validatePlanCandidateDependencies', () => {
   });
 
   it('allows a draft forward ref only as an explicit invalid-draft diagnostic', () => {
-    const result = verdict('draft', [
-      '- **P-001** `todo` future-dependent blocked-by: P-099',
-    ]);
+    const result = verdict('draft', ['- **P-001** `todo` future-dependent blocked-by: P-099']);
 
     expect(result).toMatchObject({
       state: 'invalid-draft',
@@ -91,35 +76,26 @@ describe('validatePlanCandidateDependencies', () => {
     expect(result.diagnostics[0]?.message).toContain('Invalid draft forward reference');
   });
 
-  it.each(['ready', 'active'] as const)(
-    'rejects the same dangling ref when lifecycle status is %s',
-    (status) => {
-      const result = verdict(status, [
-        '- **P-001** `todo` future-dependent blocked-by: P-099',
-      ]);
-      expect(result).toMatchObject({
-        state: 'rejected',
-        executable: true,
-        diagnostics: [
-          {
-            disposition: 'reject',
-            itemId: 'P-001',
-            ref: 'P-099',
-            path: ['P-001', 'P-099'],
-          },
-        ],
-      });
-    },
-  );
+  it.each(['ready', 'active'] as const)('rejects the same dangling ref when lifecycle status is %s', (status) => {
+    const result = verdict(status, ['- **P-001** `todo` future-dependent blocked-by: P-099']);
+    expect(result).toMatchObject({
+      state: 'rejected',
+      executable: true,
+      diagnostics: [
+        {
+          disposition: 'reject',
+          itemId: 'P-001',
+          ref: 'P-099',
+          path: ['P-001', 'P-099'],
+        },
+      ],
+    });
+  });
 
   it.each(['started', 'paused'])(
     'treats a frontmatter draft with op_status=%s as executable and rejects its forward ref',
     (opStatus) => {
-      const result = verdict(
-        'draft',
-        ['- **P-001** `todo` future-dependent blocked-by: P-099'],
-        opStatus,
-      );
+      const result = verdict('draft', ['- **P-001** `todo` future-dependent blocked-by: P-099'], opStatus);
       expect(result).toMatchObject({
         state: 'rejected',
         executable: true,
@@ -131,9 +107,7 @@ describe('validatePlanCandidateDependencies', () => {
   );
 
   it('formats a non-throwing refusal with the exact path evidence', () => {
-    const result = verdict('active', [
-      '- **P-001** `todo` future-dependent blocked-by: P-099',
-    ]);
+    const result = verdict('active', ['- **P-001** `todo` future-dependent blocked-by: P-099']);
     expect(invalidPlanDependenciesValue('candidate-dependency-test', result)).toMatchObject({
       ok: false,
       code: 'invalid_plan_dependencies',
