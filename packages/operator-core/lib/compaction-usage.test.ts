@@ -16,6 +16,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 import {
   codexContextSnapshotFromRollout,
+  codexRolloutSessionId,
   estimateContextTokens,
   estimateContextWindowForOwner,
   fallbackTranscriptFresh,
@@ -89,6 +90,100 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
         { findCodexRollout: async () => rollout },
       ),
     ).toBe(156_981);
+  });
+
+  // EI-21595542328480968: the codex home is keyed by the adv-session ROW id, and an
+  // owner can hold more than one live row, so this path can resolve to a home whose
+  // newest rollout belongs to an already-dead session. Its final token_count is
+  // frozen ABOVE the limit by construction (the predecessor respawned because it was
+  // over), which pins the watchdog in a carry-respawn loop until it self-suppresses.
+  describe('stale predecessor rollout (EI-21595542328480968)', () => {
+    const named = (sessionId: string) => join(dir, `rollout-2026-08-27T03-39-24-${sessionId}.jsonl`);
+    const tokenEvent = (tokens: number) =>
+      `${JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            last_token_usage: { input_tokens: tokens - 100, output_tokens: 100, total_tokens: tokens },
+            model_context_window: 200_000,
+          },
+        },
+      })}\n`;
+    // Shapes taken verbatim from the live failure: the resolver's reconciled ref named
+    // 01a0426c-b998… while the keyed home's newest rollout was 01a04228-cb53…, 71.5
+    // minutes stale, frozen at 227005/200000.
+    const LIVE_SID = '01a0426c-b998-7e00-96ea-fd711dfcaa19';
+    const DEAD_SID = '01a04228-cb53-7af1-ac58-0b3f7a5cf79b';
+
+    it('returns null for a rollout naming a DIFFERENT session that nothing has written for >10min', async () => {
+      const path = named(DEAD_SID);
+      writeFileSync(path, tokenEvent(227_005));
+      const stale = Date.now() - 71.5 * 60_000;
+      utimesSync(path, stale / 1000, stale / 1000);
+
+      expect(codexContextSnapshotFromRollout(path)?.tokens).toBe(227_005);
+      expect(
+        await estimateContextTokens(
+          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
+          null,
+          { findCodexRollout: async () => path },
+        ),
+      ).toBeNull();
+    });
+
+    it('TRUSTS a mismatching rollout that is being actively written — staleness is required, not just a mismatch', async () => {
+      // A resumed session may open a second rollout before the ref catches up. Rejecting
+      // on mismatch alone would disarm the backstop on a HEALTHY session, which is worse
+      // than the bug: this is the case that must keep working.
+      const path = named(DEAD_SID);
+      writeFileSync(path, tokenEvent(120_000));
+      const fresh = Date.now() - 20_000;
+      utimesSync(path, fresh / 1000, fresh / 1000);
+
+      expect(
+        await estimateContextTokens(
+          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
+          null,
+          { findCodexRollout: async () => path },
+        ),
+      ).toBe(120_000);
+    });
+
+    it('TRUSTS a stale rollout whose session id MATCHES the ref — an idle session is not a dead one', async () => {
+      const path = named(LIVE_SID);
+      writeFileSync(path, tokenEvent(150_000));
+      const stale = Date.now() - 71.5 * 60_000;
+      utimesSync(path, stale / 1000, stale / 1000);
+
+      expect(
+        await estimateContextTokens(
+          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
+          null,
+          { findCodexRollout: async () => path },
+        ),
+      ).toBe(150_000);
+    });
+
+    it('cannot check an unparseable filename, so it must not reject one', async () => {
+      // codexRolloutSessionId returns null for a name that is not rollout-<ts>-<uuid>;
+      // null means "cannot check", never "mismatch".
+      expect(codexRolloutSessionId(join(dir, 'rollout.jsonl'))).toBeNull();
+      expect(codexRolloutSessionId(named(DEAD_SID))).toBe(DEAD_SID);
+
+      const path = join(dir, 'rollout-unparseable.jsonl');
+      writeFileSync(path, tokenEvent(99_000));
+      const stale = Date.now() - 71.5 * 60_000;
+      utimesSync(path, stale / 1000, stale / 1000);
+
+      expect(
+        await estimateContextTokens(
+          { agent: 'codex', sessionId: LIVE_SID, sessionKey: 14795 },
+          null,
+          { findCodexRollout: async () => path },
+        ),
+      ).toBe(99_000);
+    });
   });
 
   it('D-007 reads the runtime-capped GPT-5.6 effective window from rollout telemetry', () => {
