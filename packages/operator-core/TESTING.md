@@ -11,6 +11,22 @@ and `/adv` Tests tabs discover suites from its globs, and the repo-root
 `npm run lint:tests` (run from `apps/operator`) fails if a canonical test
 matches no glob. Don't hand-catalog suites here; register them.
 
+## Focused test runs
+
+`npm test` runs this package's full unit suite and forwards extra arguments to
+Vitest. Do not append Jest's `--runInBand`: Vitest rejects that option before
+running any tests. For an exact file or a small set of files, use the repo-root
+router instead:
+
+```bash
+npm run test:file -- packages/operator-core/lib/path/to/example.test.ts
+```
+
+The router selects the owning Vitest config and verifies that the requested
+files actually ran. If serialization is necessary, pass a Vitest option after
+the router's second `--`, for example `--maxWorkers=1` (and, when needed,
+`--no-file-parallelism`), rather than `--runInBand`.
+
 ## Mocking `@papercusp/db-org` — spread `importOriginal` (EI-362)
 
 A test that (even transitively) imports a **tool** pulls `defineTool` from
