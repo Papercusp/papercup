@@ -395,20 +395,9 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
-  it('accepts the generic checkpoint field as a lossless compatibility alias for raw note', async () => {
-    const b = body(await call({ checkpoint: 'legacy generic carry note' }));
-
-    expect(b).toMatchObject({ ok: true, cleared: false });
-    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('legacy generic carry note');
-  });
-
-  it('prefers canonical note over the generic checkpoint alias, including an explicit clear', async () => {
-    await call({ note: 'canonical note', checkpoint: 'legacy note' });
-    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('canonical note');
-
-    setLoopCarryNote.mockClear();
-    await call({ note: null, checkpoint: 'legacy note' });
-    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe('');
+  it('rejects the removed generic checkpoint field instead of treating it as a raw note', () => {
+    expect(() => parse({ checkpoint: 'legacy generic carry note' })).toThrow(/nothing to write/i);
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
   it('warns when left/next imperatively invokes a singleton mutator without its precondition', async () => {

@@ -237,8 +237,8 @@ export default defineTool({
   profile: 'engineer',
   description:
     'Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with ' +
-    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, ' +
-    'or compatibility alias { checkpoint }; canonical fields win and blank/null clears. Keyed by ownerId. walls/checks default ' +
+    '{ read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }; ' +
+    'canonical fields win and blank/null clears. Keyed by ownerId. walls/checks default ' +
     "to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' " +
     'retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL ' +
     'contention returns retryable timeout data, not a transport hang.',
@@ -280,13 +280,6 @@ export default defineTool({
         .max(32000)
         .nullish()
         .describe('Raw carry-note text; blank/null ⇒ clear. Ignored when any of did/left/insight/next is set.'),
-      checkpoint: z
-        .string()
-        .max(32000)
-        .nullish()
-        .describe(
-          'Compatibility alias for `note`; prefer `note`. Blank/null ⇒ clear, and `note` wins when both are supplied.',
-        ),
       // WI-7264: the `.max()` here is a SANITY BACKSTOP, not the real limit. The real
       // limit is CARRY_TEXT_SOFT_CAP, applied by TRUNCATION in the handler and reported
       // back as `repairs`. A hard reject discards the whole multi-KB note over one long
@@ -484,7 +477,6 @@ export default defineTool({
       (a) =>
         a.read === true ||
         a.note !== undefined ||
-        a.checkpoint !== undefined ||
         a.did !== undefined ||
         a.left !== undefined ||
         a.insight !== undefined ||
@@ -496,7 +488,7 @@ export default defineTool({
         a.checks !== undefined,
       {
         message:
-          'pass { did, left, insight, next } (any; goal aliases next), { note } (or compatibility alias { checkpoint }), { walls }, or { checks } — nothing to write',
+          'pass { did, left, insight, next } (any; goal aliases next), { note }, { walls }, or { checks } — nothing to write',
       },
     ),
   async handler(args, ctx) {
@@ -764,13 +756,9 @@ export default defineTool({
       fields.insight !== undefined ||
       fields.next !== undefined;
     // Structured fields win over a raw note (renderCarryNote skips blank sections, so an
-    // all-blank structured write renders '' ⇒ a clear). Otherwise the raw note verbatim.
-    // `checkpoint` is the historical generic carry-note spelling used by
-    // work_items:checkpoint callers. Normalize it at the boundary so every
-    // downstream path (row merge, provenance lint, verify-read, and clear) keeps
-    // the canonical loop:checkpoint semantics. An explicitly supplied `note`
-    // wins even when it is null, preserving the canonical field's precedence.
-    const rawNote = args.note !== undefined ? args.note : args.checkpoint;
+    // all-blank structured write renders '' ⇒ a clear). Otherwise write the raw note
+    // verbatim; an explicitly supplied `note` wins even when it is null.
+    const rawNote = args.note;
     const baseNote = hasStructured ? renderCarryNote(fields) : rawNote;
 
     // P-006 walls merge — commitments are cleared EXPLICITLY, never incidentally:
