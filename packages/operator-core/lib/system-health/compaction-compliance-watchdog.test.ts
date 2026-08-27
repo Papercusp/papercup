@@ -34,7 +34,21 @@ const {
   buildOwnerRespawnMock,
   resolveSelfSessionMock,
   writePresenceMock,
+  clearEstimateMock,
+  codexProvenanceMock,
 } = vi.hoisted(() => ({
+  clearEstimateMock: vi.fn(async () => {}),
+  // EI-21595542328480968: where a codex reading came from. Default null = "not codex /
+  // no rollout", which keeps every pre-existing test on the trusted path.
+  codexProvenanceMock: vi.fn(
+    async (_owner: string) =>
+      null as null | {
+        rolloutPath: string;
+        rolloutMtimeMs: number | null;
+        rolloutSessionId: string | null;
+        refSessionId: string | null;
+      },
+  ),
   estimateMock: vi.fn(),
   contextWindowMock: vi.fn(async (_owner: string) => null as number | null),
   specMock: vi.fn(),
@@ -87,9 +101,11 @@ vi.mock('../compaction-usage', () => ({
   // stub in this file keeps driving both import names identically.
   resolveSessionRefReconciled: resolveSessionRefReconciledMock,
   resolveLaunchCompactionLimitForOwner: resolveLaunchLimitMock,
+  codexReadingProvenanceForOwner: codexProvenanceMock,
 }));
 vi.mock('../agent-tools/coordination/presence', () => ({
   setContextEstimate: setEstimateMock,
+  clearContextEstimate: clearEstimateMock,
   setCompactionLimit: setLimitMock,
   writePresence: writePresenceMock,
 }));
@@ -139,6 +155,7 @@ import {
   resetBootConfigAssertForTests,
   resetNoHostWarnedForTests,
   resetImplausibleReadingsForTests,
+  resetFrozenCodexReadingsForTests,
   staleCutoversForProcessStart,
   resetStaleCutoverEscalationsForTests,
   startCompactionComplianceWatchdog,
@@ -165,6 +182,9 @@ function fakeSql(opts: {
     compaction_limit_explicit?: boolean | null;
     fleet_slug?: string | null;
     fleet_role?: string | null;
+    /** EI-21595542328480968: the session's own last ACTIVITY (never bumped by the
+     *  keepalive beat), against which a codex rollout's mtime is judged. */
+    last_active_at?: string | null;
   }>;
   spawnRecords?: Record<string, { model_spec: string | null; model_tier: string | null }>;
   /** P-003: claim-freshness rows keyed by owner (the work_item_claims⋈carry_notes read). */
@@ -206,6 +226,9 @@ beforeEach(() => {
   setEstimateMock.mockResolvedValue(undefined);
   setLimitMock.mockResolvedValue(undefined);
   deathMock.mockResolvedValue(false);
+  clearEstimateMock.mockResolvedValue(undefined);
+  codexProvenanceMock.mockResolvedValue(null);
+  resetFrozenCodexReadingsForTests();
   resolveLaunchLimitMock.mockResolvedValue(null);
   openEscalationMock.mockResolvedValue({ msg_id: 'esc-1' });
   // Keep the existing gauge + force rung ON, but the shared P-017/P-018 cutover
@@ -1839,5 +1862,92 @@ describe('WI-38347 leg 4 — a streak verdict must be MEASURED, not inferred', (
     expect(body).not.toContain('NaN');
     expect(body).not.toContain('Infinity');
   });
+  });
+});
+
+/**
+ * EI-21595542328480968 — the frozen-codex-reading gate.
+ *
+ * These four tests exist to stop the gate being BROADENED back to the shape that was
+ * measured harmful. A first attempt gated the estimate on the identity mismatch alone
+ * (plus file staleness) inside the resolver, for every codex session: measured across
+ * all 134 live codex sessions it nulled 16, of which exactly ONE was the pathology —
+ * the other 15 were healthy and under their limit, i.e. 15 sessions' compaction
+ * backstop disarmed to fix one. Each test below pins one of the narrowing conditions
+ * that measurement forced, so removing any of them fails here instead of in production.
+ */
+describe('EI-21595542328480968: frozen codex readings never drive a cut', () => {
+  const NOW = 1_800_000_000_000;
+  /** A rollout belonging to some OTHER session, last written `lagMin` before this
+   *  session's own last activity. */
+  const provenance = (lagMin: number, sameSession = false) => ({
+    rolloutPath: '/codex/session-19845/rollout-2026-08-27T01-00-00-dead0000-aaaa-bbbb.jsonl',
+    rolloutMtimeMs: NOW - lagMin * 60_000,
+    rolloutSessionId: sameSession ? 'live1111-cccc-dddd' : 'dead0000-aaaa-bbbb',
+    refSessionId: 'live1111-cccc-dddd',
+  });
+  const sweepRow = (limit = 200_000) => ({
+    owner_id: 'cx',
+    owner_label: 'su · cx',
+    compaction_limit: limit,
+    last_active_at: new Date(NOW).toISOString(),
+  });
+
+  it("IGNORES an over-limit reading proven to come from another session's frozen rollout", async () => {
+    estimateMock.mockResolvedValue(227_005); // over the 200k limit
+    codexProvenanceMock.mockResolvedValue(provenance(90.7)); // the measured pathology
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [sweepRow()] }));
+
+    expect(out.frozenCodexReadings).toEqual([{ owner: 'cx', est: 227_005, lagMs: 90.7 * 60_000 }]);
+    // The whole point: the reading drives NOTHING. Acting on it force-compacts a live
+    // session on a dead predecessor's usage at every grace expiry, forever.
+    expect(out.overLimit).toEqual([]);
+    expect(out.forceCompacted).toEqual([]);
+    expect(out.estimated).toEqual([]);
+    expect(setEstimateMock).not.toHaveBeenCalled();
+    // A frozen cached number is worse than none — it pins a live gauge over-limit.
+    expect(clearEstimateMock).toHaveBeenCalledWith('cx');
+  });
+
+  it('leaves an UNDER-LIMIT session alone even when it satisfies both conjuncts', async () => {
+    // THE LOAD-BEARING PLACEMENT TEST. Measured 2026-08-27: a live, actively-working,
+    // under-limit session (su-da1ed036) had BOTH an identity mismatch and a 186.9min
+    // lag. Evaluating the gate for the whole population would have silenced its
+    // telemetry for nothing — an under-limit reading drives no cut, so there is
+    // nothing to protect it from. Hoisting the check out of the over-limit branch
+    // fails HERE.
+    estimateMock.mockResolvedValue(179_963); // well under the 400k limit
+    codexProvenanceMock.mockResolvedValue(provenance(186.9));
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [sweepRow(400_000)] }));
+
+    expect(out.frozenCodexReadings).toEqual([]);
+    expect(out.estimated).toEqual(['cx']);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 179_963);
+    expect(clearEstimateMock).not.toHaveBeenCalled();
+  });
+
+  it('TRUSTS an idle session whose rollout is merely old (the liveness conjunct)', async () => {
+    // An IDLE session legitimately shows an identity mismatch: nobody has written its
+    // rollout, while its ref's native id churned past it. Its last_active_at is old
+    // too, so the lag stays small — which is the only thing separating it from the
+    // pathology. This is the class (15 of 16) the reverted gate wrongly nulled.
+    estimateMock.mockResolvedValue(219_915);
+    codexProvenanceMock.mockResolvedValue(provenance(0.4));
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [sweepRow()] }));
+
+    expect(out.frozenCodexReadings).toEqual([]);
+    expect(out.overLimit).toEqual(['cx']);
+    expect(setEstimateMock).toHaveBeenCalledWith('cx', 219_915);
+  });
+
+  it("TRUSTS a long lag when the rollout IS this session's (the identity conjunct)", async () => {
+    // A session whose own rollout has not moved in hours is not misrouted — it is
+    // simply quiet, or mid-turn. Dropping the identity check would cut it.
+    estimateMock.mockResolvedValue(219_915);
+    codexProvenanceMock.mockResolvedValue(provenance(3132.6, /* sameSession */ true));
+    const out = await checkCompactionCompliance(fakeSql({ seeded: [sweepRow()] }));
+
+    expect(out.frozenCodexReadings).toEqual([]);
+    expect(out.overLimit).toEqual(['cx']);
   });
 });

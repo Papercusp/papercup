@@ -18,6 +18,7 @@ import {
   sep,
 } from "node:path";
 import { fileURLToPath } from "node:url";
+import { diffLines } from "diff";
 
 export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -357,16 +358,46 @@ function formatRangeWithPrettier(cli, repoPath, source, range) {
 }
 
 /**
- * Prettier's range check compares the formatter output for the whole file.
- * That lets an unrelated change outside the requested range (notably the final
- * newline when the range starts at offset zero) fail an otherwise clean range.
- * Compare only the requested source span so the scoped check remains scoped.
+ * Prettier's range formatter can reprint an enclosing AST node before the
+ * requested range. Comparing equal offsets in its whole-file output then
+ * compares unrelated bytes after that reprint shifts the output. Map formatter
+ * edits back to source offsets instead, so only edits that touch the requested
+ * source range fail the scoped check.
+ *
+ * Ranges from characterRangeForLines are line-aligned. An insertion exactly at
+ * either boundary is treated as adjacent context: Prettier may insert context
+ * while expanding the range, but a formatting change to a requested line is
+ * represented by a removed source line and is still detected.
  */
 export function rangeFormattingDiffers(source, formatted, range) {
-  return (
-    source.slice(range.start, range.end) !==
+  if (
+    source.slice(range.start, range.end) ===
     formatted.slice(range.start, range.end)
-  );
+  ) {
+    return false;
+  }
+
+  let sourceOffset = 0;
+  for (const part of diffLines(source, formatted, { newlineIsToken: true })) {
+    if (part.added) {
+      if (sourceOffset > range.start && sourceOffset < range.end) {
+        return true;
+      }
+      continue;
+    }
+
+    const nextSourceOffset = sourceOffset + part.value.length;
+    if (
+      part.removed &&
+      sourceOffset < range.end &&
+      nextSourceOffset > range.start
+    ) {
+      return true;
+    }
+    sourceOffset = nextSourceOffset;
+  }
+
+  return false;
 }
 
 function splitFileArgs(raw) {
