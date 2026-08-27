@@ -42,6 +42,15 @@ import {
   type ResolvedGoalHolderPolicy,
 } from '../goal-launch-settings-shared';
 import type { GoalHolderLiveness } from './holder';
+// The wedge RULE is subject-agnostic and lives in ONE place (`agent-wedge.ts`),
+// because the same condition is asked of fleet members and of any launched
+// session, not only of goal holders. This module keeps the goal-shaped
+// vocabulary and delegates the decision.
+import {
+  AGENT_PRODUCTIVITY_GRACE_MS,
+  resolveAgentWedge,
+  type AgentPresence,
+} from '../agent-wedge';
 
 /**
  * The statuses a holder-liveness judgement is entitled to be made about.
@@ -328,7 +337,7 @@ export function resolveGoalEffectiveActivity(input: {
  * holder mid-way through one long tool call has already made that call and can
  * never trip this.
  */
-export const GOAL_HOLDER_PRODUCTIVITY_GRACE_MS = 15 * 60_000;
+export const GOAL_HOLDER_PRODUCTIVITY_GRACE_MS = AGENT_PRODUCTIVITY_GRACE_MS;
 
 /**
  * Evidence that a held goal's holder has actually DONE something.
@@ -384,17 +393,33 @@ export function resolveGoalHolderWedge(input: {
   productivity?: GoalHolderProductivity | null;
   graceMs?: number;
 }): GoalWedgeVerdict {
-  if (input.liveness !== 'held') return { wedged: false, reason: 'not-held' };
+  // DELEGATED to the one subject-agnostic rule. Two translations happen here and
+  // nowhere else, which is the whole point of keeping this wrapper:
+  //
+  //  - LIVENESS → PRESENCE. `held` is the only verdict that means "somebody is
+  //    there"; a null verdict is the oracle failing to answer, which stays
+  //    `unknown` rather than collapsing to absence (holder.ts's conservative rule
+  //    — this module only ever ADDS reasons not to cry wolf).
+  //  - `not-present` → `not-held`. The goal-facing vocabulary is unchanged, so
+  //    every existing consumer and test of this function is untouched by the move.
+  //
+  // `phase` is deliberately NOT projected outward: it discriminates a launcher
+  // fault from a session fault, and a goal holder's caller has no separate repair
+  // for the two. A population that does (the agent-wide sweep) reads the general
+  // verdict directly instead of widening this one.
+  const presence: AgentPresence =
+    input.liveness === 'held' ? 'present' : input.liveness == null ? 'unknown' : 'absent';
 
-  const productivity = input.productivity ?? null;
-  if (!productivity) return { wedged: false, reason: 'not-measured' };
+  const { wedged, reason } = resolveAgentWedge({
+    presence,
+    productivity: input.productivity
+      ? {
+          agentOriginCalls: input.productivity.agentOriginCalls,
+          presentForMs: input.productivity.heldForMs,
+        }
+      : null,
+    graceMs: input.graceMs ?? GOAL_HOLDER_PRODUCTIVITY_GRACE_MS,
+  });
 
-  if (productivity.agentOriginCalls > 0) {
-    return { wedged: false, reason: 'has-produced-work' };
-  }
-
-  const graceMs = input.graceMs ?? GOAL_HOLDER_PRODUCTIVITY_GRACE_MS;
-  if (productivity.heldForMs < graceMs) return { wedged: false, reason: 'within-grace' };
-
-  return { wedged: true, reason: 'wedged' };
+  return { wedged, reason: reason === 'not-present' ? 'not-held' : reason };
 }
