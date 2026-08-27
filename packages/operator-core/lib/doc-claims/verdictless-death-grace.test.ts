@@ -131,7 +131,7 @@ describe('verdict-less-death grace is pinned to the gate’s own self-watchdog d
       expect(selfWatchdog).toBeLessThan(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS);
       expect(DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS).toBeLessThan(staleReclaim);
       const minutes = (ms: number) => Math.round(ms / 60_000);
-      const normalizedCommentText = source.replace(/\n\s*\*\s?/g, ' ');
+      const normalizedCommentText = source.replace(/\n\s*\*\s*/g, ' ');
       expect(normalizedCommentText).toContain(
         `GREEN_CHECKPOINT_SUITE_TIMEOUT_MS in packages/operator-core/lib/release/green-checkpoint-schedule.ts — ${minutes(suiteTimeout)}m`,
       );
