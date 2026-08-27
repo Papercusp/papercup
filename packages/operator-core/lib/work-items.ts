@@ -380,17 +380,24 @@ export function isRankWriter(v: unknown): v is RankWriter {
 }
 
 // ── Capability stores (shared coord workspace, mirrors issues-engineer) ────────────
-const coordOpts = { getSql: () => getOrgPg().sql, ensureSchema: async () => {}, workspaceId: DEFAULT_COORD_WORKSPACE };
+// Resolve the workspace at call time: feature rows and their coord threads are
+// both written/read in the request's active workspace. Keep the construction-time
+// default as the no-request fallback used by standalone callers and fixtures.
+const coordOpts = {
+  getSql: () => getOrgPg().sql,
+  ensureSchema: async () => {},
+  workspaceId: DEFAULT_COORD_WORKSPACE,
+  getWorkspaceId: () => activeWorkspaceId(),
+};
 
 /**
- * EI-19398986978436931: `tags`/`threads` below are pinned to DEFAULT_COORD_WORKSPACE,
- * which is correct ONLY for feature-family objects. issues-engineer.ts's equivalent
- * stores resolve their workspace dynamically (→ the real papercusp-workspace), so an
- * issue-family ObjectRef routed through THESE stores instead matches zero rows — and
- * because an absent thread/tag-set legitimately means "nothing yet", the caller gets a
- * confident, well-formed empty result rather than an error (measured live: a 10-post
- * issue thread read back as posts:0, total:0). See the doc comment on
- * {@link getWorkItemThreadWindow} for the full trap writeup.
+ * EI-19398986978436931: `tags`/`threads` below are feature-family stores and must not
+ * receive issue-family ObjectRefs. They resolve the active workspace dynamically,
+ * matching feature work-item reads and comment writes; the construction-time
+ * DEFAULT_COORD_WORKSPACE fallback is retained for standalone callers. Routing an
+ * issue-family ObjectRef through these stores would still be a silent wrong-family
+ * read/write, because an absent thread/tag-set legitimately means "nothing yet".
+ * See the doc comment on {@link getWorkItemThreadWindow} for the dispatch contract.
  *
  * Every CURRENT call site in this file already dispatches issue-family work to
  * issues-engineer.ts BEFORE ever reaching `tags`/`threads` (confirmed by re-reading
@@ -413,8 +420,8 @@ function guardAgainstIssueRef<T extends object>(store: T, storeName: string): T 
           if (arg && typeof arg === 'object' && (arg as { kind?: unknown }).kind === ISSUE_KIND) {
             throw new Error(
               `work-items.ts: ${storeName}.${String(prop)}() was called with an issue-family ObjectRef ` +
-                `(${JSON.stringify(arg)}). This store is pinned to DEFAULT_COORD_WORKSPACE and can only ` +
-                `ever match zero rows for an issue — dispatch issue-family reads/writes to ` +
+                `(${JSON.stringify(arg)}). This store is for feature-family refs only — dispatch ` +
+                `issue-family reads/writes to ` +
                 `issues-engineer.ts instead (see EI-19398986978436931).`,
             );
           }
@@ -1524,14 +1531,12 @@ export interface WorkItemThreadWindow {
  * rides the same query rather than a second one.
  *
  * ⚠ DISPATCHES BY FAMILY, exactly like {@link getWorkItemDetail} — and the reason
- * is a trap worth stating, because getting it wrong FAILS SILENTLY. It is not
- * enough to resolve the family-aware ObjectRef: the two families' threads live
- * behind stores scoped to DIFFERENT COORD WORKSPACES. issues-engineer's store
- * resolves the workspace dynamically; the store in THIS module is pinned to
- * `DEFAULT_COORD_WORKSPACE`. So reading an issue thread here matches zero rows,
- * and since an absent thread legitimately means "nobody has commented", the caller
- * receives a confident `total: 0` rather than an error. Measured live 2026-08-03:
- * WI-6857 has 10 posts and read back as 0/0 through this module's store.
+ * is a trap worth stating, because getting it wrong FAILS SILENTLY. The two
+ * families use different ObjectRef namespaces and separate family-owned stores;
+ * an issue ref sent to the feature store would look like an empty thread rather
+ * than an error. Both stores resolve the active workspace dynamically, so a
+ * feature comment written in a request-scoped workspace is read from that same
+ * workspace rather than the legacy DEFAULT_COORD_WORKSPACE fallback.
  *
  * Returns null when the item does not exist — distinct from a real empty thread,
  * which returns `total: 0`.

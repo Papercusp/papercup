@@ -55,14 +55,14 @@ const COORD_EVENT_LOG_DDL = `
 // the engine's FEATURE_COLS widened (D-014 fixture-completeness debt).
 const HFC_DDL = HARNESS_FEATURES_CONSOLIDATED_DDL;
 
-const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql, activeWorkspace: 'default' }));
 vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
   return { ...(await orig<typeof import('@papercusp/db-org')>()), ...actual, getOrgPg: () => ({ sql: h.sql }) };
 });
 vi.mock('./workspace-registry', async () => {
   const actual = await vi.importActual<typeof import('./workspace-registry')>('./workspace-registry');
-  return { ...actual, activeWorkspaceId: () => 'default' };
+  return { ...actual, activeWorkspaceId: () => h.activeWorkspace };
 });
 vi.mock('./harness-core', async () => {
   const actual = await vi.importActual<typeof import('./harness-core')>('./harness-core');
@@ -143,6 +143,7 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  h.activeWorkspace = 'default';
   wi.resetWorkItemEmbedderWarmup();
   await db.sql`TRUNCATE harness_shared.work_items,
                        harness_shared.work_item_deps, harness_shared.work_item_blocked,
@@ -2114,6 +2115,24 @@ describe('unified work_items surface (real PG)', () => {
     expect(featDetail?.posts.map((p) => p.body)).toContain('feature comment');
 
     expect(await wi.commentWorkItem('WI-404', 'ghost', 'agB')).toBeNull();
+  });
+
+  it('reads a feature comment from the active workspace used by the writer', async () => {
+    h.activeWorkspace = 'papercusp-workspace';
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'scoped feature', harness: 'papercup', createdBy: 'agA' });
+
+    const post = await wi.commentWorkItem(feat.id, 'active workspace comment', 'agB', { harness: 'papercup' });
+    expect(post?.body).toBe('active workspace comment');
+
+    const window = await wi.getWorkItemThreadWindow(feat.id, 3, 'papercup');
+    expect(window?.total).toBe(1);
+    expect(window?.posts.map((p) => p.body)).toEqual(['active workspace comment']);
+
+    const rows = await db.sql<{ workspace_id: string }[]>`
+      SELECT workspace_id
+        FROM harness_shared.coord_threads
+       WHERE thread_id = ${`work-item-thread-${feat.id}`}`;
+    expect(rows).toEqual([{ workspace_id: 'papercusp-workspace' }]);
   });
 
   it('search (cross-kind FTS): matches title/body across both kind-tables', async () => {
