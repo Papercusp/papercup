@@ -15,6 +15,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools, roleScopedToolNames } from '@papercusp/agent-mcp';
 import { deriveRecipeAuthority, recipeRevision, validateRecipeAuthorityProof } from '../../recipe-authority';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -114,7 +115,7 @@ import './list';
 import recipeGetTool from './get';
 import './revise';
 import './search';
-import './run';
+import recipeRunTool from './run';
 import './candidates';
 import './merge';
 import './sweep';
@@ -141,6 +142,14 @@ describe('recipes:* registration (P-005, P-013)', () => {
 
   it('recipes:run is write-effect (capability:bash) — itself dry-run-gateable', () => {
     expect(findTool('recipes:run').effect).toBe('write');
+  });
+
+  it('rejects timeoutSec above the foreground ceiling for single and heterogeneous runs', () => {
+    const maxTimeoutSec = FOREGROUND_TIMEOUT_CEILING_MS / 1000;
+    expect(recipeRunTool.args.safeParse({ id: 'recipe-1', timeoutSec: maxTimeoutSec }).success).toBe(true);
+    expect(recipeRunTool.args.safeParse({ id: 'recipe-1', timeoutSec: maxTimeoutSec + 1 }).success).toBe(false);
+    expect(recipeRunTool.args.safeParse({ items: [{ id: 'recipe-1', timeoutSec: maxTimeoutSec }] }).success).toBe(true);
+    expect(recipeRunTool.args.safeParse({ items: [{ id: 'recipe-1', timeoutSec: maxTimeoutSec + 1 }] }).success).toBe(false);
   });
 
   it('recipes:candidates is a READ-only graduation worklist (P-013 / D-017)', () => {

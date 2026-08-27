@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
 import type { ToolResult } from '@papercusp/tooldef';
 import { DEFAULT_OUTPUT_SUMMARY_BUDGET_CHARS } from '../../output-envelope';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import orchestrateRunTool, {
   runOrchestration,
   runServerScriptAdapter,
@@ -66,7 +67,7 @@ describe('orchestrate:run server-script adapter', () => {
         script: { source: 'return { count: 2, kept: true };', title: 'script title' },
         capture: { mode: 'never', title: 'capture title' },
         execution: { mode: 'auto' },
-        timeoutSec: 120,
+        timeoutSec: FOREGROUND_TIMEOUT_CEILING_MS / 1000,
       },
       { metadata } as unknown as UnifiedToolContext,
       { runCode },
@@ -76,7 +77,7 @@ describe('orchestrate:run server-script adapter', () => {
       {
         script: 'return { count: 2, kept: true };',
         title: 'capture title',
-        timeoutSec: 120,
+        timeoutSec: FOREGROUND_TIMEOUT_CEILING_MS / 1000,
       },
       expect.any(Object),
       'never',
@@ -91,7 +92,7 @@ describe('orchestrate:run server-script adapter', () => {
         backend: 'server',
         toolCalls: 3,
         intermediateBytes: 9_000,
-        requestedTimeoutSec: 120,
+        requestedTimeoutSec: FOREGROUND_TIMEOUT_CEILING_MS / 1000,
         requestedExecutionMode: 'auto',
         executionMode: 'server',
         executionModeDeprecated: true,

@@ -5,6 +5,7 @@ import {
   recipeBindingSchemaV1Schema,
   type RecipeContractFailure,
 } from '../../recipe-contract';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 export const orchestrationScriptSourceSchema = z
   .object({
@@ -55,7 +56,7 @@ export const orchestrationSourceArgsSchema = z
     bindings: orchestrationBindingsSchema.optional(),
     execution: orchestrationExecutionPolicySchema.optional(),
     capture: orchestrationCapturePolicySchema.optional(),
-    timeoutSec: z.number().int().min(1).max(120).optional(),
+    timeoutSec: z.number().int().min(1).max(FOREGROUND_TIMEOUT_CEILING_MS / 1000).optional(),
     /** Compatibility preview carried through code:run / recipes:run. */
     dryRun: z.boolean().optional(),
   })

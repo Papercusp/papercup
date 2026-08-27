@@ -195,20 +195,16 @@ export default defineTool({
       .number()
       .int()
       .min(1)
-      .max(120)
+      .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
       .optional()
       .describe(
-        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). ⚠ THE EFFECTIVE CEILING IS ` +
-          `${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s — a larger value here is ACCEPTED but never in force, so do not ` +
-          `raise this to buy more time (EI-21570021207351896: a caller read the 120 max as a real budget and ` +
-          `could not account for a termination at ${FOREGROUND_TIMEOUT_CEILING_MS}ms; the timeout error now says so ` +
-          `explicitly). EI-9239: code:run has no run_in_background — every call is ` +
-          `foreground, and the papercusp-su MCP transport hard-caps a foreground call at ~55s regardless ` +
-          `of this value. A request above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s is clamped down to it ` +
-          `so the script gets a clean internal script_timeout (with whatever it returned so far) instead ` +
-          `of an opaque transport request_timeout — the script itself may keep running server-side past ` +
-          `that, but this call will not see the result. For work that genuinely needs longer, split it ` +
-          `into multiple code:run calls or fall back to individual tool calls.`,
+        `Wall-clock budget (default ${DEFAULT_SCRIPT_TIMEOUT_MS / 1000}s). EFFECTIVE CEILING IS ` +
+          `${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s. EI-9239: code:run has no run_in_background — ` +
+          `every call is foreground, and the papercusp-su MCP transport hard-caps a foreground call ` +
+          `at ~55s. Values above ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s are rejected by the input ` +
+          `schema; the runtime clamp remains a defense for internal callers that bypass transport ` +
+          `validation. For work that genuinely needs longer, split it into multiple code:run calls ` +
+          `or fall back to individual tool calls.`,
       ),
   }),
   async handler(args, ctx) {

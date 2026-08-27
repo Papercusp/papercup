@@ -51,13 +51,10 @@ export function clampForegroundTimeoutMs(requestedMs: number): number {
 /**
  * EI-21570021207351896 / EI-21569537333182760 — the clamp must SAY it clamped.
  *
- * `clampForegroundTimeoutMs` silently lowers a caller's budget. That is correct behaviour, but a
- * tool whose SCHEMA advertises a wider range (code:run declares `timeoutSec` 1..120) and then
- * fails at the ceiling hands the caller a deadline they never chose and cannot account for:
- * both items above were filed as "I requested timeoutSec:120 and it was terminated at 50000ms",
- * because the number 50000 appears in the error with nothing anywhere connecting it to the 120
- * that was asked for. The caller's only reading is that the published budget is a lie — which,
- * undisclosed, is indistinguishable from a bug in the deadline itself.
+ * `clampForegroundTimeoutMs` still protects internal callers that bypass transport schema
+ * validation, but the public foreground orchestration schemas must use this same ceiling. That
+ * keeps a valid request from silently receiving less time than it authored and makes the accepted
+ * timeout contract match the runtime contract.
  *
  * Deliberately SEPARATE from `foregroundTimeoutHint` rather than folded into it. That hint
  * asserts the process tree "was KILLED — nothing is still running server-side", which is true

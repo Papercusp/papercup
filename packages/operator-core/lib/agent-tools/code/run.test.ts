@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listAllProjectedTools } from '@papercusp/agent-mcp';
 import { applyResultDoor, beginResultDoorAggregate, resetResultDoorAggregatesForTests } from '../../result-door';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 
 // ── Mocks for the CAPTURE wiring (code-recipes-2026-06-21 P-003) ─────────────
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
@@ -75,7 +76,7 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import {
+import codeRunTool, {
   CODE_RUN_SUMMARY_CHAR_BUDGET,
   shapeCodeRunLogs,
   shapeCodeRunSummary,
@@ -910,36 +911,16 @@ describe('code:run → similarRecipes result shaping', () => {
 });
 
 /**
- * EI-9239: a `timeoutSec` above the ~55s papercusp-su MCP transport cap used to fly straight
- * through to `runToolOrchestration` unclamped — the transport would then hard-kill the whole
- * call with an opaque `request_timeout` before the tool's own graceful script_timeout could ever
- * fire (repro: `timeoutSec: 90` on a multi-call script). Fixed by clamping the effective
- * timeoutMs below the cap (mirrors capability:inspect's identical EI-6073 fix) — the schema still
- * ACCEPTS up to 120s (so a caller isn't rejected for asking), it's just honored only up to the
- * clamped ceiling. A fast script well under the ceiling must behave identically either way.
+ * EI-21636457492876715: the public `timeoutSec` contract must not advertise a budget above the
+ * effective foreground ceiling. Runtime clamping remains defensive for internal callers, while
+ * transport callers should receive a schema rejection before dispatch for an ineffective value.
  */
-describe('code:run → timeoutSec clamped below MCP transport cap (EI-9239)', () => {
-  const codeRun = () => {
-    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    if (!tool) throw new Error('code:run not registered');
-    return tool;
-  };
-  const mkCtx = () =>
-    ({
-      log: () => {},
-      workspaceId: 'ws-test',
-      harnessSlug: 'alpha',
-      role: 'su',
-      isSuperuser: true,
-      uiClientId: 'su-test',
-    }) as never;
-
-  it('accepts a timeoutSec above the foreground ceiling without a schema error, and still runs to completion', async () => {
-    const tool = codeRun();
-    const res = await tool.fn({ script: 'return 42;', timeoutSec: 90 }, mkCtx());
-    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.summary).toBe(42);
+describe('code:run → timeoutSec foreground contract (EI-21636457492876715)', () => {
+  it('rejects timeoutSec above the foreground ceiling at the schema boundary', () => {
+    const maxTimeoutSec = FOREGROUND_TIMEOUT_CEILING_MS / 1000;
+    expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec }).success).toBe(true);
+    expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: maxTimeoutSec + 1 }).success).toBe(false);
+    expect(codeRunTool.args.safeParse({ script: 'return 42;', timeoutSec: 120 }).success).toBe(false);
   });
 });
 

@@ -26,6 +26,7 @@ import { describe, expect, it } from 'vitest';
 import { z, type ZodTypeAny } from 'zod';
 import codeRunTool from '../code/run';
 import recipesRunTool from '../recipes/run';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { orchestrationSourceArgsSchema } from './public-contract';
 
 /** Unwrap `.refine()` / `.strict()` wrappers to reach the underlying object shape. */
@@ -166,14 +167,15 @@ describe('WI-41006 — legacy orchestration input-shape parity census', () => {
   });
 
   it('fronted scalar bounds match between the legacy door and the unified contract', () => {
-    // Round-tripping the same VALUE matters as much as the same field name: a
-    // narrower unified bound would reject input the legacy door accepts.
+    // Round-tripping the same VALUE matters as much as the same field name: the
+    // unified and legacy foreground doors must share the effective ceiling.
     const unified = orchestrationSourceArgsSchema;
     const scriptSource = 'x'.repeat(20_000);
+    const maxTimeoutSec = FOREGROUND_TIMEOUT_CEILING_MS / 1000;
 
     expect(
-      unified.safeParse({ script: { source: scriptSource }, timeoutSec: 120 }).success,
-      'unified door must accept the legacy maximum script length and timeout',
+      unified.safeParse({ script: { source: scriptSource }, timeoutSec: maxTimeoutSec }).success,
+      'unified door must accept the foreground timeout ceiling and legacy maximum script length',
     ).toBe(true);
 
     expect(
@@ -184,8 +186,8 @@ describe('WI-41006 — legacy orchestration input-shape parity census', () => {
     ).toBe(true);
 
     expect(
-      unified.safeParse({ script: { source: 'ok' }, timeoutSec: 121 }).success,
-      'unified door must reject beyond the legacy timeout ceiling, not silently widen it',
+      unified.safeParse({ script: { source: 'ok' }, timeoutSec: maxTimeoutSec + 1 }).success,
+      'unified door must reject beyond the foreground timeout ceiling, not silently widen it',
     ).toBe(false);
   });
 });

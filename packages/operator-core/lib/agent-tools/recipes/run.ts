@@ -53,6 +53,7 @@ import { deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { getTxPool } from '../locks/su-lock-store';
 import { readIdentity } from '../locks/identity';
+import { FOREGROUND_TIMEOUT_CEILING_MS } from '../capability/foreground-transport-cap';
 import { validateRecipeScriptAgainstCatalog } from './recipe-schema-validation';
 import { bindCurrentCallerDispatch } from '../orchestration/current-caller-dispatch';
 import { normalizeExecutionTrace } from '../../orchestration-trace';
@@ -232,7 +233,17 @@ export default defineTool({
         .boolean()
         .optional()
         .describe('Preview: record effect:write tool calls without executing them (reads still run). Applies to the inline id / every id in `ids`.'),
-      timeoutSec: z.number().int().min(1).max(120).optional().describe('Wall-clock budget (default 30s). Applies to the inline id / every id in `ids`.'),
+      timeoutSec: z
+        .number()
+        .int()
+        .min(1)
+        .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
+        .optional()
+        .describe(
+          `Wall-clock budget (default 30s; maximum ${FOREGROUND_TIMEOUT_CEILING_MS / 1000}s). ` +
+            `Applies to the inline id / every id in ids; larger values are rejected because ` +
+            `recipe execution is foreground-only.`,
+        ),
       authority: authorityInputSchema.optional().describe('Exact proof from a recommendation\'s runArgs, or authority metadata from recipes:get; required for entity-bound recipes.'),
       bindings: bindingsInputSchema.optional().describe('Runtime values validated against this recipe revision\'s stored binding schema; secret refs never enter the script VM.'),
       ids: z.array(z.string().min(1)).min(1).max(50).optional().describe('run MANY recipes with the same dryRun/timeoutSec (homogeneous)'),
@@ -241,7 +252,12 @@ export default defineTool({
           z.object({
             id: z.string().min(1),
             dryRun: z.boolean().optional(),
-            timeoutSec: z.number().int().min(1).max(120).optional(),
+            timeoutSec: z
+              .number()
+              .int()
+              .min(1)
+              .max(FOREGROUND_TIMEOUT_CEILING_MS / 1000)
+              .optional(),
             authority: authorityInputSchema.optional(),
             bindings: bindingsInputSchema.optional(),
           }),
