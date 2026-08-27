@@ -430,4 +430,72 @@ describe("PlansCleanupStrip", () => {
     expect(p.onRunCleared).toHaveBeenCalledTimes(1);
     expect(H.fetch).not.toHaveBeenCalled();
   });
+
+  it("continues every untouched finding from a prior run without replacing its prepared outcomes", async () => {
+    H.fetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        phase: "running",
+        launched: true,
+        preservedOutcomes: 7,
+      }),
+    });
+    const recommendations = Array.from({ length: 3 }, (_, position) =>
+      finding({
+        findingId: `review-${position}`,
+        position,
+        outcome: "recommended",
+      }),
+    );
+    const applied = Array.from({ length: 4 }, (_, index) =>
+      finding({
+        findingId: `applied-${index}`,
+        position: recommendations.length + index,
+        outcome: "auto_applied",
+      }),
+    );
+    const pending = Array.from({ length: 5 }, (_, index) =>
+      finding({
+        findingId: `remaining-${index}`,
+        position: recommendations.length + applied.length + index,
+        outcome: "pending",
+      }),
+    );
+    render(
+      <PlansCleanupStrip
+        {...props({
+          run: run({
+            runId: "cleanup-partial-12",
+            phase: "review",
+            totalItems: 12,
+            autoResolved: 4,
+            recommended: 3,
+            finishedAt: "2026-08-24T12:05:00.000Z",
+          }),
+          findings: [...recommendations, ...applied, ...pending],
+          recommendations,
+          pending,
+          isReview: true,
+        })}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("plans-cleanup-review-headline").textContent,
+    ).toContain("3 fixes need your call · 4 auto-applied · 5 not reached");
+    const continueButton = screen.getByTestId("plans-cleanup-continue");
+    expect(continueButton.textContent).toContain("Continue 5 remaining");
+    fireEvent.click(continueButton);
+
+    await waitFor(() => expect(H.fetch).toHaveBeenCalledTimes(1));
+    expect(JSON.parse(H.fetch.mock.calls[0]![1].body as string)).toEqual({
+      op: "resume",
+      runId: "cleanup-partial-12",
+      findingIds: pending.map((row) => row.findingId),
+    });
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "Continuing 5 remaining · 7 prior outcomes preserved",
+    );
+  });
 });

@@ -11,6 +11,7 @@ import {
   BrushCleaning,
   ChevronRight,
   Loader2,
+  RotateCw,
   Sparkles,
   Square,
   X,
@@ -59,7 +60,7 @@ export default function PlansCleanupStrip({
   onReview,
   onRunCleared,
 }: PlansCleanupStripProps) {
-  const { start, stop, restart } = usePlanCleanupOps();
+  const { start, stop, restart, resume } = usePlanCleanupOps();
   const resolverSettings = useBulkResolverSettings("plan-cleanup");
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -139,6 +140,30 @@ export default function PlansCleanupStrip({
       setBusy(false);
     }
   }, [run, busy, restart]);
+
+  const onResume = useCallback(async () => {
+    if (!run || busy || pending.length === 0) return;
+    const findingIds = pending.map((finding) => finding.findingId);
+    setBusy(true);
+    setNotice(null);
+    try {
+      const result = await resume(run.runId, findingIds);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not continue the remaining findings");
+      } else if (!result.launched) {
+        setNotice(
+          `resolver could not continue${result.launchError ? `: ${result.launchError}` : ""}`,
+        );
+      } else {
+        const preserved = result.preservedOutcomes ?? 0;
+        setNotice(
+          `Continuing ${findingIds.length} remaining · ${preserved} prior outcome${preserved === 1 ? "" : "s"} preserved`,
+        );
+      }
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, pending, resume, run]);
 
   if (isRunning && run) {
     const scanOnly = counts.total === 0;
@@ -272,6 +297,24 @@ export default function PlansCleanupStrip({
             <ChevronRight size={14} aria-hidden="true" />
             Review {awaiting} fix{awaiting === 1 ? "" : "es"}
           </button>
+          {pending.length > 0 ? (
+            <button
+              type="button"
+              className="op-inbox__bulk-continue"
+              data-testid="plans-cleanup-continue"
+              disabled={busy}
+              onClick={() => void onResume()}
+            >
+              {busy ? (
+                <span className="op-inbox__bulk-spin" aria-hidden="true">
+                  <Loader2 size={14} />
+                </span>
+              ) : (
+                <RotateCw size={14} aria-hidden="true" />
+              )}
+              {busy ? "Continuing…" : `Continue ${pending.length} remaining`}
+            </button>
+          ) : null}
           <button
             type="button"
             className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
@@ -283,8 +326,9 @@ export default function PlansCleanupStrip({
           </button>
         </div>
         <p className="op-inbox__bulk-hint">
-          Review the findings grouped by fix type, with recorded evidence beside
-          every change.
+          Review keeps the prepared findings grouped with their evidence.
+          Continue sends only the untouched remainder through the same saved run
+          and preserves every earlier outcome.
         </p>
         {notice ? (
           <Notice text={notice} onClose={() => setNotice(null)} />
