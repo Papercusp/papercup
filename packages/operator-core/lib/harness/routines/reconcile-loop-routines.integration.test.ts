@@ -46,6 +46,7 @@ afterAll(async () => {
 });
 beforeEach(async () => {
   await sql`DELETE FROM harness_shared.routines WHERE workspace_id = ${WS}`;
+  await sql`DELETE FROM harness_shared.autoloop_state WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.agent_activity WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.coord_presence WHERE workspace_id = ${WS}`;
   await sql`DELETE FROM harness_shared.session_turn_journal WHERE workspace_id = ${WS}`;
@@ -115,6 +116,20 @@ async function seedPresence(ownerId: string, lastActiveMs: number): Promise<void
     ON CONFLICT (owner_id) DO UPDATE SET
       workspace_id = EXCLUDED.workspace_id,
       last_active_at = EXCLUDED.last_active_at`;
+}
+
+/** Prove the claimed routine entered fireLoopWake. The production writer stamps this
+ *  before calling the wake ledger; a newer clock rules out the claim→dispatch gap while
+ *  still allowing this fixture to exercise the later stuck-turn backstop. */
+async function seedFireDispatch(routineName: string, atMs: number): Promise<void> {
+  await sql`
+    INSERT INTO harness_shared.autoloop_state
+      (workspace_id, harness_slug, role, last_fired_at, last_status, consecutive_errors)
+    VALUES (${WS}, ${HARNESS}, ${routineName}, ${new Date(atMs)}, 'queued', 0)
+    ON CONFLICT (workspace_id, harness_slug, role) DO UPDATE SET
+      last_fired_at = EXCLUDED.last_fired_at,
+      last_status = EXCLUDED.last_status,
+      consecutive_errors = EXCLUDED.consecutive_errors`;
 }
 
 /** Read a routine's parked-ness + next_fire_at. Parked-ness is a SQL boolean because
@@ -221,12 +236,29 @@ describe('reconcileLoopRoutines — robustness layers', () => {
     expect((await readFire(id)).parked).toBe(true);
   });
 
+  it('CLAIM-DISPATCH GAP: re-arms when the parked claim advances but no fire or wake writer does', async () => {
+    const interval = 60;
+    const { id } = await seedLoop({
+      ownerId: 'o-dispatch-gap',
+      intervalSec: interval,
+      lastFiredAtMs: T0,
+      parked: true,
+    });
+
+    const res = await reconcile({ sql, nowMs: T0 + 2 * interval * 1_000 });
+
+    expect(res.rearmed).toBe(1);
+    expect(res.loops[0]).toMatchObject({ id, via: 'claim-dispatch-gap' });
+    expect((await readFire(id)).nextFireMs).toBe(T0 + interval * 1_000);
+  });
+
   it('BACKSTOP: re-arms a loop parked long past the fire with no signal at all', async () => {
     // The backstop logs a warning (intended visibility for a wedged loop) — mock + assert it.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const interval = 60;
     // No lifecycle, no presence — a dead/undelivered fire.
     const { id } = await seedLoop({ ownerId: 'o-9', intervalSec: interval, lastFiredAtMs: T0, parked: true });
+    await seedFireDispatch(id, T0 + 1); // dispatched, then produced no completion signal
     const longAfter = T0 + 31 * 60_000; // > the 30m default stuck-park floor
     const res = await reconcile({ sql, nowMs: longAfter });
     expect(res.rearmed).toBe(1);
