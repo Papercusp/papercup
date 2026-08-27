@@ -837,6 +837,14 @@ export const PTOOL_CONNECT_MAX_ATTEMPTS = Math.ceil(
 // shedding and the proxy explicitly asks clients to retry it.
 export const PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS = 2;
 
+// EI-21549712506971072: independent ptool processes receive the same proxy
+// Retry-After hint and otherwise share the same fixed retry cadence. Without a
+// positive per-process offset they re-enter the handshake bulkhead in lockstep,
+// turning a bounded shed into another synchronized retry wave. Keep the jitter
+// additive so Retry-After remains a minimum, and small enough that the outer
+// 120s recovery budget remains authoritative.
+export const PTOOL_RETRY_JITTER_MS = 1_000;
+
 // `tools/list` is the first request after the MCP session initialize. It is still
 // a write-free handshake and can receive the proxy's class-specific 429 after
 // `connect()` has succeeded, so give discovery the same bounded recovery budget
@@ -1123,7 +1131,27 @@ export function timeoutForTool(toolName, callArgs) {
  */
 export function isLoopPressureShed(error) {
   const text = String(error?.message ?? error ?? '');
-  return /loop_pressure_critical|event loop critically saturated/i.test(text);
+  if (/loop_pressure_critical|event loop critically saturated/i.test(text)) return true;
+
+  // The MCP proxy can also refuse a request before forwarding when its normal
+  // admission class or bounded critical-continuation FIFO is full. The SDK
+  // preserves the HTTP status as `code` and includes the proxy's typed JSON
+  // body in the message. Do not treat every 429 as pre-dispatch: an ordinary
+  // tool can surface a provider rate limit after it has already run.
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function')) {
+    if (seen.has(current)) break;
+    seen.add(current);
+    if (
+      Number(current.code) === 429 &&
+      /\bmcp_proxy_(?:overloaded|critical_continuation_queue_(?:full|dwell))\b/i.test(
+        String(current?.message ?? current ?? ''),
+      )
+    ) return true;
+    current = current.cause;
+  }
+  return false;
 }
 
 function errorDetail(error) {
@@ -1161,6 +1189,40 @@ function retryAfterMsFromError(error) {
 }
 
 /**
+ * Add bounded positive jitter AFTER a retry minimum, without overrunning the
+ * caller's remaining total deadline. Returns null when even the minimum cannot
+ * be honored before that deadline, so the caller surfaces the last typed error
+ * instead of retrying early. Pure + injectable for deterministic fanout tests.
+ */
+export function retryWaitMsWithJitter(
+  baseWaitMs,
+  remainingMs,
+  { rand = Math.random, jitterMs = PTOOL_RETRY_JITTER_MS } = {},
+) {
+  const base = Number.isFinite(baseWaitMs) ? Math.max(0, Math.floor(baseWaitMs)) : 0;
+  const remaining = remainingMs == null
+    ? Number.POSITIVE_INFINITY
+    : Math.max(0, Math.floor(remainingMs));
+  if (remaining <= base) return null;
+
+  const jitterCap = Math.min(
+    Math.max(0, Math.floor(jitterMs)),
+    remaining - base,
+  );
+  if (jitterCap <= 0) return base;
+
+  let sample = 0;
+  try {
+    sample = Number(rand());
+  } catch {
+    // Retry pacing must never fail because an injected entropy source did.
+  }
+  const unit = Number.isFinite(sample) ? Math.max(0, Math.min(1, sample)) : 0;
+  const jitter = Math.max(1, Math.ceil(unit * jitterCap));
+  return base + jitter;
+}
+
+/**
  * Format a tools/call failure without implying that the call did not run.
  * Stream transport failures can arrive after the operator has dispatched the
  * tool, so callers must verify mutation state before replaying the payload.
@@ -1175,7 +1237,7 @@ export function formatToolCallFailure(toolName, error, { idempotencyKey } = {}) 
     return `ptool: tools/call ${name} was rejected before dispatch: ${detail}; no tool execution occurred.`;
   }
   const receipt = typeof idempotencyKey === 'string' && idempotencyKey
-    ? ` outcome=unknown; idempotencyKey=${idempotencyKey}; after reconciling state, replay this logical call with --idempotency-key ${idempotencyKey} instead of creating a new invocation.`
+    ? ` outcome=unknown; idempotencyKey=${idempotencyKey}; after reconciling state, replay this logical call with the ptool transport flag --idempotency-key ${idempotencyKey} (MCP _meta.idempotencyKey), not by adding idempotencyKey to the target tool JSON arguments or creating a new invocation.`
     : '';
   return `ptool: tools/call ${name} failed: ${detail}; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.${receipt}`;
 }
@@ -1240,7 +1302,10 @@ export async function callToolWithPressureRetry(
     } catch (error) {
       lastError = error;
       if (!isLoopPressureShed(error) || attempt === maxAttempts) throw error;
-      await sleep(retryDelayMs);
+      await sleep(Math.min(
+        retryAfterMsFromError(error) ?? retryDelayMs,
+        PTOOL_CALL_TOOL_TIMEOUT_MS,
+      ));
     }
   }
   throw lastError;
@@ -1406,6 +1471,8 @@ export async function connectWithLocalRetry(
     attemptTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     totalTimeoutMs = PTOOL_CONNECT_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    rand = Math.random,
+    retryJitterMs = PTOOL_RETRY_JITTER_MS,
     rediscover = null,
     onRebase = null,
   } = {},
@@ -1485,7 +1552,13 @@ export async function connectWithLocalRetry(
       // (`retryAfterSec` in its JSON body — listToolsWithLocalRetry already
       // honors it). Pacing connect retries to the same hint stops this client
       // from re-contending for a bulkhead slot faster than the proxy asks.
-      await sleep(Math.min(retryAfterMsFromError(error) ?? retryDelayMs, remainingTotalMs ?? retryDelayMs));
+      const retryWaitMs = retryWaitMsWithJitter(
+        retryAfterMsFromError(error) ?? retryDelayMs,
+        remainingTotalMs,
+        { rand, jitterMs: retryJitterMs },
+      );
+      if (retryWaitMs == null) break;
+      await sleep(retryWaitMs);
     } finally {
       clearTimeout(timeout);
     }
@@ -1564,6 +1637,8 @@ export async function listToolsWithLocalRetry(
     retryDelayMs = PTOOL_LIST_TOOLS_RETRY_DELAY_MS,
     totalTimeoutMs = PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS,
     sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    rand = Math.random,
+    retryJitterMs = PTOOL_RETRY_JITTER_MS,
   } = {},
 ) {
   const enforceDeadline = timeoutMs > 0 && totalTimeoutMs > 0;
@@ -1604,8 +1679,13 @@ export async function listToolsWithLocalRetry(
         throw error;
       }
       const serverRetryAfterMs = retryAfterMsFromError(error);
-      const retryWaitMs = serverRetryAfterMs ?? retryDelayMs;
-      await sleep(Math.min(retryWaitMs, remainingAfterFailure ?? retryWaitMs));
+      const retryWaitMs = retryWaitMsWithJitter(
+        serverRetryAfterMs ?? retryDelayMs,
+        remainingAfterFailure,
+        { rand, jitterMs: retryJitterMs },
+      );
+      if (retryWaitMs == null) break;
+      await sleep(retryWaitMs);
     }
   }
 
