@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { createTextCollector } from '../child-output';
 import { LIVE_HEALTH_MONITOR_READY_PREFIX } from './live-health-monitor-main';
 
 const REPO_ROOT = join(import.meta.dirname, '../../../../');
@@ -20,17 +21,21 @@ afterEach(async () => {
 
 function waitForReady(child: ChildProcess, timeoutMs = 20_000): Promise<string> {
   return new Promise((resolve, reject) => {
-    let buffer = '';
+    // Boundary-safe incremental read — see createTextCollector.peek().
+    const collector = createTextCollector();
+    let consumedChars = 0;
     const timeout = setTimeout(() => reject(new Error(`monitor readiness timed out after ${timeoutMs}ms`)), timeoutMs);
     const finish = (error: Error | null, line = '') => {
       clearTimeout(timeout);
       if (error) reject(error);
       else resolve(line);
     };
-    child.stdout?.on('data', (chunk: Buffer) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop() ?? '';
+    collector.attach(child.stdout);
+    child.stdout?.on('data', () => {
+      const all = collector.peek();
+      const lines = all.slice(consumedChars).split('\n');
+      const partial = lines.pop() ?? '';
+      consumedChars = all.length - partial.length;
       const ready = lines.find((line) => line.startsWith(LIVE_HEALTH_MONITOR_READY_PREFIX));
       if (ready) finish(null, ready);
     });

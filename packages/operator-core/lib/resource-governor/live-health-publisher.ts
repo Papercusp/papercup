@@ -255,8 +255,17 @@ export class ProcessLiveHealthPublisher {
       // Unsupported runtimes retain an explicit unknown GC reading.
     }
     const first = await this.publishOnce();
+    // Literal name, NOT a per-pid template. `instanced: true` below is exactly the
+    // mechanism for many live timers under one name — it gives each arm a unique
+    // internal key and AGGREGATES them into a single inventory row. The pid suffix
+    // therefore bought nothing and cost two things: it defeated that aggregation,
+    // and a computed name is undeclarable to the recovery-dependency audit, which
+    // reads this argument TEXTUALLY (balanced-paren, like
+    // scripts/check-timer-classification.mjs) and can only verify a literal.
+    // Keep this comment ABOVE the call: anything between `managedSetInterval(` and
+    // the name makes that extraction fail the same way a template did.
     this.timer = managedSetInterval(
-      `resource-governor-live-health-publisher:${this.writer.pid ?? 'unknown'}`,
+      'resource-governor-live-health-publisher',
       this.cadenceMs,
       async () => {
         try {
