@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 /**
- * check-retired-resurrection.mjs — fails when a file exists BOTH under `_retired/`
- * and, byte-identically, at a live path (WI-37422).
+ * check-retired-resurrection.mjs — permanent retirement ratchets.
+ *
+ * It fails when a file exists BOTH under `_retired/` and, byte-identically, at a
+ * live path (WI-37422), or when the retired cell-falsifier API returns to the cell
+ * subsystem (cell-assessment-schema-and-falsifier-removal-2026-08-21 P-006).
  *
  * WHY THIS EXISTS. Retiring a surface here is a `mv` into `_retired/` plus removing
  * its import. Observed live 2026-08-09 while retiring `topics:subscribe`: the moved
@@ -53,10 +56,151 @@
  * committed, which is the point at which it is real.
  */
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import path from 'node:path';
+import ts from 'typescript';
 
 const RETIRED_PREFIX = '_retired/';
+const CELL_REGISTRATIONS_PATH = 'packages/operator-core/lib/cell-registrations.ts';
+const CELL_REGISTRY_PATH = 'packages/operator-core/lib/cell-registry.ts';
+
+const REMOVED_CELL_IDENTIFIERS = [
+  { name: 'CellFalsifier', pattern: /\bCellFalsifier\b/g },
+  { name: 'CellFalsifierRead', pattern: /\bCellFalsifierRead\b/g },
+  { name: 'falsifierFrom', pattern: /\bfalsifierFrom\b/g },
+  { name: 'falsifierPathExists', pattern: /\bfalsifierPathExists\b/g },
+  { name: 'falsifierPath', pattern: /\bfalsifierPath\b/g },
+  { name: 'falsifierLines', pattern: /\bfalsifierLines\b/g },
+  { name: 'CellSpec.falsifier property', pattern: /(?:\.\s*falsifier\b|\[['"]falsifier['"]\]|\bfalsifier\s*\??\s*:)/g },
+];
+
+/** P-006's exact boundary. The ordinary word remains legal outside this subsystem. */
+export function isCellSubsystemPath(file) {
+  return (
+    /^packages\/operator-core\/lib\/cell-[^/]+\.[cm]?[jt]sx?$/.test(file) ||
+    /^packages\/operator-core\/lib\/agent-tools\/cell-[^/]+\.[cm]?[jt]sx?$/.test(file) ||
+    file === 'packages/operator-core/lib/agent-facts/cells.ts' ||
+    file === 'packages/operator-core/lib/coord/cell-thread.ts' ||
+    /^packages\/operator-core\/lib\/events\/await\/[^/]*cell[^/]*\.[cm]?[jt]sx?$/.test(file) ||
+    /^packages\/operator-core\/lib\/shared-pot-loop\/[^/]*cell[^/]*\.[cm]?[jt]sx?$/.test(file) ||
+    file === 'scripts/check-cell-live-matrix.ts'
+  );
+}
+
+/** Find only retired CELL-SYSTEM identifiers; unrelated falsifier vocabulary is legal. */
+export function findRemovedCellIdentifiers(files) {
+  const hits = [];
+  for (const { path: file, source } of files) {
+    if (!isCellSubsystemPath(file)) continue;
+    for (const { name, pattern } of REMOVED_CELL_IDENTIFIERS) {
+      pattern.lastIndex = 0;
+      for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
+        const line = source.slice(0, match.index).split('\n').length;
+        hits.push({ path: file, line, identifier: name });
+      }
+    }
+  }
+  return hits;
+}
+
+function propertyName(node) {
+  const name = node?.name;
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) return name.text;
+  return null;
+}
+
+/**
+ * Parse the canonical BUILTIN_CELLS array and prove every poll/value-bearing member
+ * has exactly one non-null assessment declaration. This is deliberately AST-based:
+ * regex-counting `assessment:` would include nested fixtures/comments and could stay
+ * green after the real registry population disappeared.
+ */
+export function assessBuiltinCellDeclarations(source) {
+  const file = ts.createSourceFile(CELL_REGISTRATIONS_PATH, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const declarations = new Map();
+  let builtinNames = null;
+
+  for (const statement of file.statements) {
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)) continue;
+      const name = declaration.name.text;
+      if (name === 'BUILTIN_CELLS') {
+        if (declaration.initializer && ts.isArrayLiteralExpression(declaration.initializer)) {
+          builtinNames = declaration.initializer.elements.map((element) =>
+            ts.isIdentifier(element) ? element.text : null,
+          );
+        }
+        continue;
+      }
+      if (declaration.initializer && ts.isObjectLiteralExpression(declaration.initializer)) {
+        declarations.set(name, declaration.initializer);
+      }
+    }
+  }
+
+  const violations = [];
+  if (!builtinNames || builtinNames.length === 0) {
+    return { builtinCount: 0, valueBearingCount: 0, violations: ['BUILTIN_CELLS is missing or empty'] };
+  }
+
+  const seen = new Set();
+  let valueBearingCount = 0;
+  for (const name of builtinNames) {
+    if (!name) {
+      violations.push('BUILTIN_CELLS contains a non-identifier entry');
+      continue;
+    }
+    if (seen.has(name)) violations.push(`${name} appears more than once in BUILTIN_CELLS`);
+    seen.add(name);
+
+    const object = declarations.get(name);
+    if (!object) {
+      violations.push(`${name} is not a top-level object-literal CellSpec`);
+      continue;
+    }
+    const assessmentProperties = object.properties.filter((property) => propertyName(property) === 'assessment');
+    const changeSignalProperty = object.properties.find((property) => propertyName(property) === 'changeSignal');
+    const changeSignal =
+      changeSignalProperty && ts.isPropertyAssignment(changeSignalProperty) &&
+      ts.isObjectLiteralExpression(changeSignalProperty.initializer)
+        ? changeSignalProperty.initializer
+        : null;
+    const kindProperty = changeSignal?.properties.find((property) => propertyName(property) === 'kind');
+    const kind =
+      kindProperty && ts.isPropertyAssignment(kindProperty) && ts.isStringLiteral(kindProperty.initializer)
+        ? kindProperty.initializer.text
+        : null;
+
+    if (kind !== 'poll') continue;
+    valueBearingCount += 1;
+    if (assessmentProperties.length !== 1) {
+      violations.push(`${name} declares assessment ${assessmentProperties.length} times (expected exactly 1)`);
+      continue;
+    }
+    const [assessment] = assessmentProperties;
+    if (!ts.isPropertyAssignment(assessment) || assessment.initializer.kind === ts.SyntaxKind.NullKeyword) {
+      violations.push(`${name} is poll/value-bearing but its assessment is null or not a value`);
+    }
+  }
+
+  if (valueBearingCount === 0) violations.push('BUILTIN_CELLS contains no poll/value-bearing cells');
+  return { builtinCount: builtinNames.length, valueBearingCount, violations };
+}
+
+function readCellSubsystem(repoRoot, entries, registryOverride) {
+  const files = [];
+  for (const { path: file } of entries) {
+    if (!isCellSubsystemPath(file)) continue;
+    const diskPath = file === CELL_REGISTRY_PATH && registryOverride
+      ? path.resolve(registryOverride)
+      : path.join(repoRoot, file);
+    if (!existsSync(diskPath)) continue;
+    files.push({ path: file, source: readFileSync(diskPath, 'utf8') });
+  }
+  return files;
+}
 
 /**
  * True only when this file is the process entrypoint. REALPATHED on both sides: node
@@ -114,6 +258,12 @@ export function findResurrections(entries, sizes = new Map()) {
 
 function main() {
   const listOnly = process.argv.includes('--list');
+  const registryOverrideAt = process.argv.indexOf('--cell-registry');
+  const registryOverride = registryOverrideAt >= 0 ? process.argv[registryOverrideAt + 1] : null;
+  if (registryOverrideAt >= 0 && !registryOverride) {
+    console.error('[retired-resurrection] --cell-registry requires a file path.');
+    return 2;
+  }
   const repoRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
     encoding: 'utf8',
   }).trim();
@@ -139,32 +289,57 @@ function main() {
     }
   }
   const hits = findResurrections(entries, sizes);
+  const cellFiles = readCellSubsystem(repoRoot, entries, registryOverride);
+  const removedCellIdentifiers = findRemovedCellIdentifiers(cellFiles);
+  const registrations = cellFiles.find((file) => file.path === CELL_REGISTRATIONS_PATH)?.source ?? '';
+  const assessmentCensus = assessBuiltinCellDeclarations(registrations);
 
   if (listOnly) {
     console.log(
       `[retired-resurrection] scanned ${entries.length} tracked files (${retiredCount} under ${RETIRED_PREFIX}); ${hits.length} resurrection(s).`,
     );
+    console.log(
+      `[cell-retirement] scanned ${cellFiles.length} cell-subsystem file(s); ` +
+        `${removedCellIdentifiers.length} removed identifier hit(s); ` +
+        `${assessmentCensus.valueBearingCount}/${assessmentCensus.builtinCount} value-bearing built-in(s); ` +
+        `${assessmentCensus.violations.length} assessment census violation(s).`,
+    );
   }
-  if (!hits.length) {
-    if (listOnly) console.log('[retired-resurrection] clean.');
+  if (!hits.length && !removedCellIdentifiers.length && !assessmentCensus.violations.length) {
+    if (listOnly) console.log('[retired-resurrection] clean.\n[cell-retirement] clean.');
     return 0;
   }
 
-  console.error(
-    `\n[retired-resurrection] ${hits.length} file(s) exist BOTH under ${RETIRED_PREFIX} and, byte-identically, at a live path.\n` +
-      'A retirement has been partially undone: the file came back, but (as in WI-37422) its\n' +
-      'import very likely did not, so the surface is an orphan that READS as live.\n',
-  );
-  for (const hit of hits) {
-    console.error(`  retired: ${hit.retiredPaths.join(', ')}`);
-    console.error(`  live:    ${hit.livePaths.join(', ')}`);
-    console.error(`  blob:    ${hit.sha}\n`);
+  if (hits.length) {
+    console.error(
+      `\n[retired-resurrection] ${hits.length} file(s) exist BOTH under ${RETIRED_PREFIX} and, byte-identically, at a live path.\n` +
+        'A retirement has been partially undone: the file came back, but (as in WI-37422) its\n' +
+        'import very likely did not, so the surface is an orphan that READS as live.\n',
+    );
+    for (const hit of hits) {
+      console.error(`  retired: ${hit.retiredPaths.join(', ')}`);
+      console.error(`  live:    ${hit.livePaths.join(', ')}`);
+      console.error(`  blob:    ${hit.sha}\n`);
+    }
+    console.error(
+      'FIX: decide which one is real. If the retirement stands, delete the live copy. If the\n' +
+        'surface is being revived, move it out of _retired/ and restore its import — do not\n' +
+        'leave both.\n',
+    );
   }
-  console.error(
-    'FIX: decide which one is real. If the retirement stands, delete the live copy. If the\n' +
-      'surface is being revived, move it out of _retired/ and restore its import — do not\n' +
-      'leave both.\n',
-  );
+
+  if (removedCellIdentifiers.length || assessmentCensus.violations.length) {
+    console.error('\n[cell-retirement] the P-006 hard cutover regressed.');
+    for (const hit of removedCellIdentifiers) {
+      console.error(`  ${hit.path}:${hit.line}: removed cell identifier ${hit.identifier}`);
+    }
+    for (const violation of assessmentCensus.violations) console.error(`  ${CELL_REGISTRATIONS_PATH}: ${violation}`);
+    console.error(
+      'FIX: keep the cell subsystem on CellAssessmentSpec only. Every poll/value-bearing\n' +
+        'BUILTIN_CELLS entry must declare exactly one non-null assessment; unrelated uses\n' +
+        'of the word falsifier outside the scoped cell subsystem remain legal.\n',
+    );
+  }
   return 1;
 }
 

@@ -23,6 +23,7 @@
  * here would make this module and that route mutually dependent for no gain.
  */
 import { join } from 'node:path';
+import { normalizeSuContextSize } from './su-context-size.mjs';
 import {
   buildInstructionPrecedenceTrace,
   lintInstructionText,
@@ -240,7 +241,7 @@ export interface SuLaunchSpecRecord {
    *  `buildSuLaunchSpec` (any unrecognised value falls back to 'engineer'). Making
    *  it a union HERE would be stricter than the value's own source. */
   profile: string;
-  contextSize: 'full' | 'trimmed' | null;
+  contextSize: 'trimmed';
   personaTier: 'full' | 'fleet' | null;
   model: string | null;
   planSlug: string | null;
@@ -261,13 +262,15 @@ export function parseSuLaunchSpecRecord(raw: unknown): SuLaunchSpecRecord | null
   if (typeof r.agent !== 'string' || !r.agent) return null;
   if (typeof r.workspaceId !== 'string' || !r.workspaceId) return null;
   const str = (v: unknown): string | null => (typeof v === 'string' && v ? v : null);
+  const normalizedContextSize = normalizeSuContextSize(r.contextSize);
+  if (!normalizedContextSize.ok) return null;
   return {
     v: 1,
     agent: r.agent,
     workspaceId: r.workspaceId,
     harnessSlug: str(r.harnessSlug),
     profile: str(r.profile) ?? 'engineer',
-    contextSize: str(r.contextSize) as SuLaunchSpecRecord['contextSize'],
+    contextSize: normalizedContextSize.contextSize,
     personaTier: str(r.personaTier) as SuLaunchSpecRecord['personaTier'],
     model: str(r.model),
     planSlug: str(r.planSlug),

@@ -18,7 +18,8 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { isSuAgent, isSuContextSize, type SuAgent, type SuContextSize } from '../../../su-agents';
+import { isSuAgent, type SuAgent, type SuContextSize } from '../../../su-agents';
+import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import { buildKickoffPromptFile } from '../../../agent-kickoff/prompt-file';
 import { validateKickoffKind } from '../../../agent-kickoff/kickoff-kind';
 import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn';
@@ -217,15 +218,15 @@ const launchSu = defineTool({
       }
     }
 
-    // su-context-size-variants: 'full' loads the whole superuser catalog;
-    // 'trimmed' uses each client's native soft-trim. Omitted ⇒ the launcher
-    // leaves each client at its native default (no --context-size flag passed).
-    let contextSize: SuContextSize | null = null;
+    let contextSize: SuContextSize = 'trimmed';
+    let contextSizeNormalization: { requested: 'full'; effective: 'trimmed'; deprecated: true } | null = null;
     if (body.context_size != null && body.context_size !== '') {
-      if (!isSuContextSize(body.context_size)) {
-        return json({ status: 'error', error: 'context_size must be full|trimmed' }, 400);
+      const normalized = normalizeSuContextSize(body.context_size);
+      if (!normalized.ok) return json({ status: 'error', error: `context_size: ${normalized.error}` }, 400);
+      contextSize = normalized.contextSize;
+      if (normalized.normalizedLegacyFull) {
+        contextSizeNormalization = { requested: 'full', effective: 'trimmed', deprecated: true };
       }
-      contextSize = body.context_size;
     }
     const kickoffV = validateKickoffKind(body.kickoff ?? null);
     if (kickoffV.kind === 'error') {
@@ -309,7 +310,7 @@ const launchSu = defineTool({
     if (harness) psuArgs.push(`--harness=${harness}`);
     psuArgs.push(plan ? `--plan=${plan}` : '--no-plan');
     if (model) psuArgs.push(`--model=${model}`);
-    if (contextSize) psuArgs.push(`--context-size=${contextSize}`);
+    psuArgs.push(`--context-size=${contextSize}`);
     // WI-6321 — same flags, same order psu's own psuLaunchArgvRecord emits them,
     // so a GUI launch and a terminal launch produce an identical launch_argv.
     if (account) psuArgs.push(`--account=${account}`);
@@ -351,6 +352,7 @@ const launchSu = defineTool({
       const label = plan ? `${agent} · ${plan}` : agent;
       const advSessionId = await recordAdvSession({
         planSlug: plan,
+        ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
         agent,
         // P-006: record the planner role so BOTH classifiers (pending-launch
         // argv hint + the live presence join on adv.role) type the pane.
@@ -625,6 +627,7 @@ const launchSu = defineTool({
       ...(ownerId ? { ownerId } : {}),
       harnessSlug: harness,
       planSlug: plan,
+      ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
       // WI-6505: the slug this launch resolved the fleet to — the server-side
       // slugify of `fleet_name` when it CREATED one, else the `fleet` it joined.
       // Returned so a multi-member GUI launch can have members 2..N join the

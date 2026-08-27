@@ -22,6 +22,7 @@ import {
 import type { MemberSpec } from '../../agent-launch-core';
 import { readAdvSessionLaunchRecordByOwner, type AdvSessionLaunchRecord } from '../../adv-sessions';
 import { parseSuLaunchSpecRecord } from '../../su-persona-render';
+import { normalizeSuContextSize } from '../../su-context-size.mjs';
 
 export const SAVED_FLEET_LAUNCH_SPEC_SOURCE = 'fleet:headcount-target' as const;
 export const LEGACY_FLEET_LAUNCH_SPEC_SOURCE = 'adv_sessions.launch_spec' as const;
@@ -63,7 +64,7 @@ export interface SavedFleetLaunchSpecRequest {
   role?: string;
   brief?: string;
   launchContext?: string;
-  contextSize?: 'full' | 'trimmed';
+  contextSize?: 'trimmed';
   compactionLimit?: number;
   extraArgs?: readonly string[];
   /** A homogeneous saved profile cannot be silently reconstructed per member. */
@@ -118,6 +119,7 @@ export type SavedFleetLaunchSpecResolution =
       effective: SavedFleetLaunchSpec;
       preservedFields: SavedFleetLaunchField[];
       overrides: SavedFleetLaunchSpecDelta[];
+      deprecations: string[];
       provenance: SavedFleetLaunchSpecProvenance;
       reusePath: string;
     }
@@ -162,6 +164,8 @@ function provenanceFor(
 
 /** Convert the validated headcount recipe to the command-neutral member spec. */
 export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): SavedFleetLaunchSpec {
+  const normalizedContextSize = normalizeSuContextSize((config as { contextSize?: unknown }).contextSize);
+  if (!normalizedContextSize.ok) throw new Error(normalizedContextSize.error);
   return {
     ...(config.plan !== undefined ? { plan: config.plan } : {}),
     harness: config.harness,
@@ -175,7 +179,7 @@ export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): 
       ...(config.role !== undefined ? { role: config.role } : {}),
       ...(config.brief !== undefined ? { brief: config.brief } : {}),
       ...(config.launchContext !== undefined ? { launchContext: config.launchContext } : {}),
-      ...(config.contextSize !== undefined ? { contextSize: config.contextSize } : {}),
+      ...(config.contextSize !== undefined ? { contextSize: normalizedContextSize.contextSize } : {}),
       ...(config.compactionLimit !== undefined ? { compactionLimit: config.compactionLimit } : {}),
       ...(config.extraArgs !== undefined ? { extraArgs: [...config.extraArgs] } : {}),
     },
@@ -183,7 +187,7 @@ export function savedFleetLaunchSpecFromConfig(config: SavedFleetLaunchConfig): 
 }
 
 export type LegacyLaunchParseResult =
-  | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec }
+  | { ok: true; config: SavedFleetLaunchConfig; saved: SavedFleetLaunchSpec; normalizedLegacyContextSize: boolean }
   | { ok: false; message: string };
 
 /** Trusted values a recovery caller may supply only to fill absent legacy fields. */
@@ -196,7 +200,6 @@ export interface LegacyLaunchSpecFallbacks {
 
 const LEGACY_AGENTS = new Set<FleetHeadcountConfig['agent']>(['claude', 'omp', 'codex']);
 const LEGACY_CARRY = new Set<NonNullable<FleetHeadcountConfig['carry']>>(['warm', 'cold']);
-const LEGACY_CONTEXT_SIZES = new Set<NonNullable<FleetHeadcountConfig['contextSize']>>(['full', 'trimmed']);
 
 function argFlag(argv: readonly string[], flag: string): string | null {
   return flagValueFromArgv(argv, flag);
@@ -330,9 +333,8 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     return { ok: false, message: `Legacy launch_argv has invalid carry \`${carryRaw}\`.` };
   }
   const contextSizeRaw = argFlag(argv, 'context-size');
-  if (contextSizeRaw && !LEGACY_CONTEXT_SIZES.has(contextSizeRaw as NonNullable<FleetHeadcountConfig['contextSize']>)) {
-    return { ok: false, message: `Legacy launch_argv has invalid context size \`${contextSizeRaw}\`.` };
-  }
+  const normalizedContextSize = normalizeSuContextSize(contextSizeRaw);
+  if (!normalizedContextSize.ok) return { ok: false, message: `Legacy launch_argv has invalid context size \`${contextSizeRaw}\`.` };
   const compactionRaw = argFlag(argv, 'compaction-limit');
   let compactionLimit: number | undefined;
   if (compactionRaw != null) {
@@ -362,11 +364,16 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     ...(carryRaw ? { carry: carryRaw as FleetHeadcountConfig['carry'] } : {}),
     ...(argFlag(argv, 'role') ? { role: argFlag(argv, 'role')! } : {}),
     ...(argFlag(argv, 'launch-context') ? { launchContext: argFlag(argv, 'launch-context')! } : {}),
-    ...(contextSizeRaw ? { contextSize: contextSizeRaw as FleetHeadcountConfig['contextSize'] } : {}),
+    ...(contextSizeRaw ? { contextSize: normalizedContextSize.contextSize } : {}),
     ...(compactionLimit !== undefined ? { compactionLimit } : {}),
     ...(extraArgs.length ? { extraArgs } : {}),
   };
-  return { ok: true, config, saved: savedFleetLaunchSpecFromConfig(config) };
+  return {
+    ok: true,
+    config,
+    saved: savedFleetLaunchSpecFromConfig(config),
+    normalizedLegacyContextSize: normalizedContextSize.normalizedLegacyFull,
+  };
 }
 
 function cloneSpec(spec: SavedFleetLaunchSpec): SavedFleetLaunchSpec {
@@ -507,6 +514,7 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
   allowDeltas?: readonly SavedFleetLaunchField[];
   reusePath: string;
   requireSaved?: boolean;
+  normalizedLegacyContextSize?: boolean;
 }): SavedFleetLaunchSpecResolution {
   const { target, workspaceId, fleetSlug, reusePath } = opts;
   const provenance = provenanceFor(workspaceId, fleetSlug, target?.target ?? null, opts.source);
@@ -595,6 +603,10 @@ export function resolveLoadedSavedFleetLaunchSpec(opts: {
     effective,
     preservedFields,
     overrides,
+    deprecations:
+      target?.normalizedLegacyContextSize || opts.normalizedLegacyContextSize
+        ? ['Saved contextSize=full is deprecated and was normalized to trimmed before launch.']
+        : [],
     provenance,
     reusePath,
   };
@@ -671,6 +683,7 @@ export async function resolveSavedFleetLaunchSpec(opts: {
         config: parsed.config,
         source: LEGACY_FLEET_LAUNCH_SPEC_SOURCE,
         syntheticTarget: 1,
+        normalizedLegacyContextSize: parsed.normalizedLegacyContextSize,
       });
     }
   }

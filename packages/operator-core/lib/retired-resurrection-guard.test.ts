@@ -27,7 +27,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — plain .mjs guard, no type declarations by design (same treatment as the sibling live-tree guards)
-import { findResurrections, parseLsFiles } from '../../../scripts/check-retired-resurrection.mjs';
+import {
+  assessBuiltinCellDeclarations,
+  findRemovedCellIdentifiers,
+  findResurrections,
+  parseLsFiles,
+} from '../../../scripts/check-retired-resurrection.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const GUARD = path.join(REPO_ROOT, 'scripts/check-retired-resurrection.mjs');
@@ -105,6 +110,63 @@ describe('retired-resurrection guard — capability (both directions)', () => {
   });
 });
 
+describe('cell retirement ratchet — scoped identifiers + assessment census', () => {
+  it('rejects every retired cell identifier shape without banning unrelated vocabulary', () => {
+    const hits = findRemovedCellIdentifiers([
+      {
+        path: 'packages/operator-core/lib/cell-read.ts',
+        source:
+          'CellFalsifier CellFalsifierRead falsifierFrom falsifierPathExists falsifierPath falsifierLines ' +
+          'spec.falsifier spec["falsifier"] falsifier?: unknown',
+      },
+      {
+        path: 'packages/operator-core/lib/leader-blocker-stall-alert.ts',
+        source: 'const falsifier = independentScientificCheck();',
+      },
+    ]);
+
+    expect(new Set(hits.map((hit) => hit.identifier))).toEqual(
+      new Set([
+        'CellFalsifier',
+        'CellFalsifierRead',
+        'falsifierFrom',
+        'falsifierPathExists',
+        'falsifierPath',
+        'falsifierLines',
+        'CellSpec.falsifier property',
+      ]),
+    );
+    expect(hits.every((hit) => hit.path.endsWith('/cell-read.ts'))).toBe(true);
+  });
+
+  it('requires exactly one non-null assessment on every poll/value-bearing built-in', () => {
+    const result = assessBuiltinCellDeclarations(`
+      const GOOD_CELL: CellSpec = {
+        changeSignal: { kind: 'poll', tool: 'state:read', path: 'value' },
+        assessment: assessmentSpec(),
+      };
+      const MISSING_CELL: CellSpec = {
+        changeSignal: { kind: 'poll', tool: 'state:read', path: 'value' },
+      };
+      const NULL_CELL: CellSpec = {
+        changeSignal: { kind: 'poll', tool: 'state:read', path: 'value' },
+        assessment: null,
+      };
+      const EVENT_CELL: CellSpec = {
+        changeSignal: { kind: 'event', key: 'done' },
+        assessment: null,
+      };
+      const BUILTIN_CELLS: CellSpec[] = [GOOD_CELL, MISSING_CELL, NULL_CELL, EVENT_CELL];
+    `);
+
+    expect(result).toMatchObject({ builtinCount: 4, valueBearingCount: 3 });
+    expect(result.violations).toEqual([
+      'MISSING_CELL declares assessment 0 times (expected exactly 1)',
+      'NULL_CELL is poll/value-bearing but its assessment is null or not a value',
+    ]);
+  });
+});
+
 describe('retired-resurrection guard — LIVE verdict over the real tree', () => {
   let stdout = '';
   let exitCode = 0;
@@ -132,6 +194,9 @@ describe('retired-resurrection guard — LIVE verdict over the real tree', () =>
 
   it('reports NO resurrection on the current tree', () => {
     expect(stdout, stdout).toContain('0 resurrection(s)');
+    expect(stdout, stdout).toMatch(/\[cell-retirement\].*0 removed identifier hit\(s\)/);
+    expect(stdout, stdout).toMatch(/\d+\/\d+ value-bearing built-in\(s\); 0 assessment census violation\(s\)/);
+    expect(stdout, stdout).toContain('[cell-retirement] clean.');
     expect(exitCode).toBe(0);
   });
 });

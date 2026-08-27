@@ -456,7 +456,7 @@ export default function NewSessionLauncher({
         // picker, which would hang a GUI-spawned terminal waiting for a human.
         account: account || ACCOUNT_SELECT_DEFAULT,
         contextSize:
-          contextSize === CONTEXT_SELECT_NATIVE ? undefined : (contextSize as 'full' | 'trimmed'),
+          contextSize === CONTEXT_SELECT_NATIVE ? undefined : (contextSize as 'trimmed'),
         // P-042 / D-067 — the launch posture. New sessions default to AUTO because
         // this control is always headless; an inert headless session has no
         // interactive terminal or loop source. "Interactive" sends null, which is

@@ -56,6 +56,7 @@ import { gatherOnDesktopSessions } from '../../../desktop-window-liveness';
 import { setOnDesktopWindowsCache, type WindowsDesktopWindow } from '../../../windows-desktop-windows';
 import { readOmpConfig } from '../../../omp-config';
 import { SESSION_PORT_PROTOCOL_VERSION, SESSION_PORT_TRANSFORM_VERSION } from '../../../session-port/types';
+import { normalizeSuContextSize } from '../../../su-context-size.mjs';
 import {
   classifySessionPortFailure,
   recordSessionPortTelemetry,
@@ -194,10 +195,11 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
   if (targetBackend !== 'codex' && targetBackend !== 'omp') {
     return { response: json({ ok: false, error: 'V1 targetBackend must be codex|omp' }, 400) } as const;
   }
-  const contextSize = body.contextSize == null || body.contextSize === '' ? null : body.contextSize;
-  if (contextSize !== null && contextSize !== 'full' && contextSize !== 'trimmed') {
-    return { response: json({ ok: false, error: 'contextSize must be full|trimmed|null' }, 400) } as const;
+  const normalizedContextSize = normalizeSuContextSize(body.contextSize);
+  if (!normalizedContextSize.ok) {
+    return { response: json({ ok: false, error: `contextSize: ${normalizedContextSize.error}` }, 400) } as const;
   }
+  const contextSize = normalizedContextSize.contextSize;
   const [{ activeWorkspaceId }, { buildLaunchSpec }, service, budgetModule, store] = await Promise.all([
     import('../../../workspace-registry'),
     import('../../../role-launch-spec'),
@@ -262,7 +264,14 @@ async function resolveSessionPortInspection(req: Request, body: SessionPortReque
       contextSize,
     },
   });
-  return { inspection, service, budget } as const;
+  return {
+    inspection,
+    service,
+    budget,
+    contextSizeNormalization: normalizedContextSize.normalizedLegacyFull
+      ? { requested: 'full' as const, effective: 'trimmed' as const, deprecated: true as const }
+      : null,
+  } as const;
 }
 
 /**
@@ -1747,6 +1756,7 @@ const sessionPortInspect = defineTool({
         ok: true,
         inspection: resolved.service.publicSessionPortInspection(resolved.inspection),
         targetBudget: resolved.budget,
+        ...(resolved.contextSizeNormalization ? { contextSizeNormalization: resolved.contextSizeNormalization } : {}),
       });
     } catch (error) {
       return json({ ok: false, error: error instanceof Error ? error.message : String(error) }, 409);

@@ -200,7 +200,7 @@ describe('parseSuLaunchSpecRecord', () => {
     workspaceId: 'ws',
     harnessSlug: 'papercusp',
     profile: 'engineer',
-    contextSize: null,
+    contextSize: 'trimmed',
     personaTier: 'full',
     model: null,
     planSlug: 'plan-x',

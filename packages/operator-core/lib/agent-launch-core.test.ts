@@ -216,7 +216,7 @@ describe('foldMemberSpec (P-002: member field wins; unset falls through, never z
     account: 'default',
     model: 'sonnet',
     headless: true,
-    contextSize: 'full',
+    contextSize: 'trimmed',
   };
 
   it('returns a copy of the base when no member spec is given', () => {
@@ -238,7 +238,7 @@ describe('foldMemberSpec (P-002: member field wins; unset falls through, never z
     expect(folded.model).toBe('sonnet');
     expect(folded.account).toBe('default');
     expect(folded.headless).toBe(true);
-    expect(folded.contextSize).toBe('full');
+    expect(folded.contextSize).toBe('trimmed');
     expect(folded.agent).toBe('claude');
   });
 

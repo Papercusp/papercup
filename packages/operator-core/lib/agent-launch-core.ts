@@ -392,8 +392,8 @@ export function buildAgentLaunchCommand(opts: {
   headless?: boolean;
   /** psu --carry: persist warm/cold recovery behavior on a fresh fleet member. */
   carry?: 'warm' | 'cold' | null;
-  /** psu --context-size: 'full' (~180k, whole tool catalog) or 'trimmed' (~50k spine). */
-  contextSize?: 'full' | 'trimmed' | null;
+  /** psu --context-size: the growable trimmed startup seed. */
+  contextSize?: 'trimmed' | null;
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch. */
   compactionLimit?: number | null;
   /** psu --role for the launched agent. */
@@ -553,7 +553,7 @@ export interface MemberLaunchOpts {
   /** Durable launch-mode overlay inherited from the launching session. */
   launchMode?: LaunchMode | null;
   profile?: string;
-  contextSize?: 'full' | 'trimmed';
+  contextSize?: 'trimmed';
   /** psu --compaction-limit: seed the session's soft compaction limit (tokens) at launch
    *  (per-member-declarative-launch-specs P-005) — removes the brief-instruction workaround. */
   compactionLimit?: number;
@@ -587,7 +587,7 @@ export interface MemberSpec {
   effort?: string;
   account?: string;
   carry?: 'warm' | 'cold';
-  contextSize?: 'full' | 'trimmed';
+  contextSize?: 'trimmed';
   compactionLimit?: number;
   role?: string;
   agent?: string;
@@ -631,7 +631,7 @@ export const memberSpecSchema = z
       ),
     account: z.string().optional().describe("psu --account: this member's account routing (<pool-id>|auto|default)."),
     carry: z.enum(['warm', 'cold']).optional().describe("This member's warm/cold auto-mode carry."),
-    contextSize: z.enum(['full', 'trimmed']).optional().describe("psu --context-size for this member."),
+    contextSize: z.literal('trimmed').optional().describe("psu --context-size for this member (growable trimmed seed)."),
     compactionLimit: z
       .number()
       .int()

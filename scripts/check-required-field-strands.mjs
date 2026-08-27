@@ -27,6 +27,11 @@
  *   node scripts/check-required-field-strands.mjs --base origin/main
  *   node scripts/check-required-field-strands.mjs --json
  *
+ * The --typecheck confirmation can queue behind pc-heavy for several minutes (and may
+ * exceed five minutes under fleet load). From an agent, run it with
+ * `capability:bash { run_in_background: true }`, then read `capability:bash_output` and
+ * trust its `exit_code`; a foreground timeout is not a clean result.
+ *
  * Exit codes:
  *   0 — no required-field additions, or advisory mode, or --typecheck found nothing
  *       ATTRIBUTED TO THE CALLER (peer live-edits and standing committed reds are
@@ -519,9 +524,12 @@ export function formatScopedTypecheckWarning() {
     '    A scoped run — build:typecheck { scopeToFiles: true }, or any scoped tsc —',
     '    compiles your file plus what IT imports. The stranded sites are DEPENDENTS:',
     '    they import you, so they are never in that graph. A scoped run goes GREEN on',
-    '    exactly the class this guard exists to catch. Under fleet load the command',
-    '    above can sit in the pc-heavy queue for minutes — that is the queue working,',
-    '    not a hang. Wait it out or run it detached; never swap in a narrower check.',
+    '    exactly the class this guard exists to catch. Under fleet load the full check',
+    '    can sit in the pc-heavy queue for several minutes (and may exceed five minutes)',
+    '    — that is the queue working, not a hang. Run the command above with',
+    '    `capability:bash { run_in_background: true }`, then read `capability:bash_output`',
+    '    and trust its `exit_code`; a foreground timeout or launch response is not a',
+    '    clean result. Never swap in a narrower check.',
   ].join('\n');
 }
 

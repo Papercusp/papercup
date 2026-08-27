@@ -62,6 +62,8 @@ describe('required-field-strand nudge — fires on the real trap', () => {
     expect(out).toContain('new required field');
     // It must point at the detector, since KNOWING TO RUN IT is the entire gap.
     expect(out).toContain('check-required-field-strands.mjs --typecheck');
+    expect(out).toContain('capability:bash { run_in_background: true }');
+    expect(out).toContain('capability:bash_output');
   });
 
   it('FIRES when an existing field is tightened optional -> required', async () => {
@@ -231,6 +233,8 @@ describe('required-field-strand nudge — the emitted command survives a git-syn
       const after = execFileSync(bin, args, { cwd: tmp, encoding: 'utf8' });
       expect(after).toContain('REQUIRED-FIELD ADDITION');
       expect(after).toContain('Mine.hasListing');
+      expect(after).toContain('capability:bash { run_in_background: true }');
+      expect(after).toContain('capability:bash_output');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

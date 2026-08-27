@@ -150,11 +150,17 @@ export function outranksForSweep(
   incumbent: SweepRankableRow,
   nowMs: number = Date.now(),
 ): boolean {
+  // Each key mirrors `orderAsSweepWould`'s comparator with `candidate` as `a`
+  // and `incumbent` as `b`: that sort returns NEGATIVE when `a` sorts first, so
+  // "candidate outranks incumbent" is exactly "that comparator would be < 0".
   const byConfidence =
     sweepConfidenceRank(candidate.confidence) - sweepConfidenceRank(incumbent.confidence);
   if (byConfidence !== 0) return byConfidence < 0;
+  // DESC on remaining fraction: the LARGER fraction sorts first, so the sort
+  // term is frac(incumbent) - frac(candidate) and the candidate wins when it is
+  // negative — i.e. when the candidate has MORE life left.
   const byFraction =
     sweepRemainingFraction(incumbent, nowMs) - sweepRemainingFraction(candidate, nowMs);
-  if (byFraction !== 0) return byFraction > 0;
+  if (byFraction !== 0) return byFraction < 0;
   return epochMs(incumbent.updated_at) < epochMs(candidate.updated_at);
 }

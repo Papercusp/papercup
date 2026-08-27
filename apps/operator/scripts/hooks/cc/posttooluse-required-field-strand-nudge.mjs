@@ -52,6 +52,14 @@
 //   still cannot go falsely green: the detector reports NOT CHECKED (exit 2) when the
 //   named file turns out byte-identical to the base.
 //
+// WHY THE COMMAND MUST BE BACKGROUNDED (EI-21590234510185238)
+//   The --typecheck leg runs operator-core's full lint:tsc and queues behind pc-heavy.
+//   Under fleet load it can take several minutes or exceed five minutes before it can
+//   report anything. A foreground Bash call can therefore hit its timeout with no output,
+//   which is not evidence that the check passed. The nudge names the managed background
+//   route (`capability:bash { run_in_background: true }`) and its reader so the author can
+//   wait for the real exit_code instead of losing the verdict to a foreground timeout.
+//
 // CONTRACT
 //   - ADVISORY ONLY. PostToolUse cannot block, and must not try to: adding a
 //     required field is usually CORRECT and usually accompanied by updated call
@@ -176,6 +184,12 @@ export function formatNudge(relPath, added, { baseSha = null } = {}) {
     );
   }
   lines.push(
+    '',
+    '  This full check can queue behind pc-heavy for several minutes (and may exceed five',
+    '  minutes under fleet load). Run the command above with',
+    '  `capability:bash { run_in_background: true }` so a foreground Bash timeout cannot kill it.',
+    '  Then read `capability:bash_output` and trust its `exit_code`; a launch or timeout',
+    '  response is not a clean result.',
     '',
     '  Adding a required field is usually CORRECT — this is a prompt to verify, not a',
     '  verdict. Do NOT make the field optional to silence errors: that reintroduces the',

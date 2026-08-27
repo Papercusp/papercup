@@ -18,30 +18,15 @@ export function isSuAgent(x: unknown): x is SuAgent {
   return x === 'claude' || x === 'omp' || x === 'codex';
 }
 
-/**
- * su-context-size-variants — the initial-context SIZE a launched SU session
- * boots with, ORTHOGONAL to the agent. The big lever is the MCP tool catalog
- * (~551 tools / ~141k tokens loaded whole, atop a ~38k static prefix):
- *
- *   'full'    — load the whole superuser catalog up-front (~180k ctx). No
- *               discovery step; every tool callable immediately. Best for a
- *               capable, large-context model.
- *   'trimmed' — only a small core loads up-front (~50k ctx); the rest is
- *               reached on demand via each client's NATIVE soft-trim
- *               (Claude ToolSearch / OMP search_tool_bm25 / Codex hard
- *               ?tools= allowlist). Best for small-context / local models.
- *
- * Omitted at launch ⇒ each client keeps its native default (Claude+OMP defer,
- * Codex loads whole).
- */
-export type SuContextSize = 'full' | 'trimmed';
+/** Effective/public launch context. The trimmed seed remains fully growable via
+ * tools:find/tools:invoke; `full` exists only as a legacy decoder input. */
+export type SuContextSize = 'trimmed';
+export type LegacySuContextSize = 'full' | SuContextSize;
 
-// Public choices are trimmed-only. The union above remains temporarily tolerant
-// so historical launch rows typed before this migration can still be decoded.
 export const SU_CONTEXT_SIZES: readonly SuContextSize[] = ['trimmed'];
 
 export function isSuContextSize(x: unknown): x is SuContextSize {
-  return x === 'full' || x === 'trimmed';
+  return x === 'trimmed';
 }
 
 export { SU_CONTEXT_SIZE, LEGACY_SU_CONTEXT_SIZE, normalizeSuContextSize } from './su-context-size.mjs';

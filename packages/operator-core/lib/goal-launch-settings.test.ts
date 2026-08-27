@@ -184,6 +184,7 @@ describe('goalLaunchSettingsSchema', () => {
     expect(launchProfileSchema.safeParse({ carry: 'warm' }).success).toBe(true);
     expect(launchProfileSchema.safeParse({ carry: 'hot' }).success).toBe(false);
     expect(launchProfileSchema.safeParse({ contextSize: 'trimmed' }).success).toBe(true);
+    expect(launchProfileSchema.safeParse({ contextSize: 'full' }).success).toBe(false);
     expect(launchProfileSchema.safeParse({ contextSize: 'medium' }).success).toBe(false);
   });
 

@@ -280,6 +280,40 @@ describe('saved fleet launch spec resolver (agent-launch-unification P-043)', ()
 });
 
 describe('legacy adv_sessions fleet launch-spec fallback', () => {
+  it('normalizes the retired full spelling before merge and reports the deprecation', async () => {
+    const fullRecord: AdvSessionLaunchRecord = {
+      ...legacyRecord,
+      launchSpec: {
+        ...(legacyRecord.launchSpec as Record<string, unknown>),
+        contextSize: 'full',
+      },
+      launchArgv: legacyRecord.launchArgv?.map((item) =>
+        item === '--context-size=trimmed' ? '--context-size=full' : item,
+      ) ?? null,
+    };
+    const parsed = savedFleetLaunchSpecFromLegacyRecord(fullRecord, 'ws-test', 'byoc');
+    expect(parsed).toMatchObject({
+      ok: true,
+      normalizedLegacyContextSize: true,
+      config: { contextSize: 'trimmed' },
+      saved: { member: { contextSize: 'trimmed' } },
+    });
+    const resolved = await resolveSavedFleetLaunchSpec({
+      workspaceId: 'ws-test',
+      fleetSlug: 'byoc',
+      memberOwnerId: 'su-legacy-member',
+      requireSaved: true,
+      readTarget: vi.fn().mockResolvedValue(null),
+      readLegacy: vi.fn().mockResolvedValue(fullRecord),
+      reusePath: base.reusePath,
+    });
+    expect(resolved).toMatchObject({
+      ok: true,
+      effective: { member: { contextSize: 'trimmed' } },
+      deprecations: [expect.stringMatching(/full.*deprecated.*trimmed/i)],
+    });
+  });
+
   it('reconstructs the command-neutral recipe from the durable launch record', () => {
     const result = savedFleetLaunchSpecFromLegacyRecord(legacyRecord, 'ws-test', 'byoc');
     expect(result).toMatchObject({

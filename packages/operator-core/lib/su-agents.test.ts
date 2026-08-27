@@ -21,8 +21,9 @@ describe('su-context-size guards', () => {
     expect(SU_CONTEXT_SIZES).toEqual(['trimmed']);
   });
 
-  it('isSuContextSize accepts the two valid sizes', () => {
+  it('isSuContextSize accepts only the public trimmed size', () => {
     for (const s of SU_CONTEXT_SIZES) expect(isSuContextSize(s)).toBe(true);
+    expect(isSuContextSize('full')).toBe(false);
   });
 
   it('isSuContextSize rejects typos / non-string / empty / nullish', () => {

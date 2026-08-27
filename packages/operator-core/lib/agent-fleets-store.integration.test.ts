@@ -496,7 +496,7 @@ describe('fleet headcount target (WI-2479)', () => {
   const config = {
     plan: 'drain', harness: 'papercusp', agent: 'codex' as const,
     model: 'gpt-5.6-luna', effort: 'max', account: 'default', headless: true,
-    carry: 'warm' as const, contextSize: 'full' as const, compactionLimit: 825_000,
+    carry: 'warm' as const, contextSize: 'trimmed' as const, compactionLimit: 825_000,
     role: 'su', brief: 'drain bugs',
   };
 
@@ -507,6 +507,20 @@ describe('fleet headcount target (WI-2479)', () => {
     const first = await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_000, sql: rootSql });
     expect(first).toMatchObject({ fleetSlug: 'headcount-fleet', target: 30, claimedAt: 8_000_000 });
     expect(await claimFleetHeadcountAttempt({ workspaceId: WS, fleetSlug: 'headcount-fleet', now: 8_000_001, sql: rootSql })).toBeNull();
+  });
+
+  it('normalizes a legacy full value before persisting the launch recipe', async () => {
+    await insertFleet('headcount-legacy-context');
+    await setFleetHeadcountTarget({
+      workspaceId: WS,
+      fleetSlug: 'headcount-legacy-context',
+      target: 1,
+      config: { ...config, contextSize: 'full' } as unknown as typeof config,
+      sql: rootSql,
+    });
+    expect(await getFleetHeadcountTarget(WS, 'headcount-legacy-context', rootSql)).toMatchObject({
+      config: { contextSize: 'trimmed' },
+    });
   });
 
   it('resets on success and doubles a failed retry delay with a cap', async () => {

@@ -25,6 +25,7 @@ import type {
   FreshLaunchSessionProbe,
   FreshLaunchWorkerAttestation,
 } from './agent-launch-core';
+import { normalizeSuContextSize } from './su-context-size.mjs';
 
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
@@ -260,7 +261,7 @@ export interface FleetHeadcountConfig {
   /** Inline fleet-specific first-turn brief, composed with the member baseline at launch. */
   brief?: string;
   launchContext?: string;
-  contextSize?: 'full' | 'trimmed';
+  contextSize?: 'trimmed';
   compactionLimit?: number;
   carry?: 'warm' | 'cold';
   extraArgs?: string[];
@@ -271,9 +272,22 @@ export interface FleetHeadcountTarget {
   fleetSlug: string;
   target: number;
   config: FleetHeadcountConfig;
+  /** The durable row used the retired spelling and was normalized on read. */
+  normalizedLegacyContextSize?: boolean;
   nextAttemptAt: number | null;
   backoffMs: number;
   lastError: string | null;
+}
+
+/** Canonical mutation/read boundary for durable fleet launch profiles. */
+export function normalizeFleetHeadcountConfig(raw: FleetHeadcountConfig | Record<string, unknown>): FleetHeadcountConfig {
+  const config = { ...raw } as FleetHeadcountConfig & { contextSize?: unknown };
+  if (config.contextSize !== undefined && config.contextSize !== null) {
+    const normalized = normalizeSuContextSize(config.contextSize);
+    if (!normalized.ok) throw new Error(normalized.error);
+    config.contextSize = normalized.contextSize;
+  }
+  return config as FleetHeadcountConfig;
 }
 
 export interface FleetHeadcountAttempt extends FleetHeadcountTarget {
@@ -824,7 +838,7 @@ export async function setFleetHeadcountTarget(opts: {
             headcount_next_attempt_at = NULL, headcount_backoff_ms = 0,
             headcount_last_error = NULL, updated_at = $5
       WHERE workspace_id = $1 AND fleet_slug = $2`,
-    [opts.workspaceId, opts.fleetSlug, opts.target, JSON.stringify(opts.config), Date.now()],
+    [opts.workspaceId, opts.fleetSlug, opts.target, JSON.stringify(normalizeFleetHeadcountConfig(opts.config)), Date.now()],
   );
 }
 
@@ -832,12 +846,14 @@ function headcountRowToTarget(r: {
   workspace_id: string;
   fleet_slug: string;
   headcount_target: number | null;
-  headcount_config: FleetHeadcountConfig;
+  headcount_config: FleetHeadcountConfig | Record<string, unknown> | string;
   headcount_next_attempt_at: string | number | null;
   headcount_backoff_ms: string | number | null;
   headcount_last_error: string | null;
 }): FleetHeadcountTarget {
-  const config = typeof r.headcount_config === 'string' ? JSON.parse(r.headcount_config) : r.headcount_config;
+  const rawConfig = typeof r.headcount_config === 'string' ? JSON.parse(r.headcount_config) : r.headcount_config;
+  const normalizedLegacyContextSize = (rawConfig as { contextSize?: unknown })?.contextSize === 'full';
+  const config = normalizeFleetHeadcountConfig(rawConfig as Record<string, unknown>);
   return {
     workspaceId: r.workspace_id,
     fleetSlug: r.fleet_slug,
@@ -846,6 +862,7 @@ function headcountRowToTarget(r: {
     // continue filtering on headcount_target IS NOT NULL and stay disabled.
     target: Number(r.headcount_target ?? 1),
     config,
+    ...(normalizedLegacyContextSize ? { normalizedLegacyContextSize: true } : {}),
     nextAttemptAt: r.headcount_next_attempt_at == null ? null : Number(r.headcount_next_attempt_at),
     backoffMs: Number(r.headcount_backoff_ms ?? 0),
     lastError: r.headcount_last_error ?? null,

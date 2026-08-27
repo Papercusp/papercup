@@ -286,7 +286,7 @@ export default defineTool({
       model: z.string().max(80).optional().describe('New model spec (e.g. "opus[1m]", "sonnet:high").'),
       effort: z.string().max(40).optional().describe('New reasoning effort (low|medium|high|xhigh|max) — composed onto the model spec.'),
       account: z.string().max(120).optional().describe('New account routing (default | auto | a pool account id).'),
-      contextSize: z.enum(['full', 'trimmed']).optional().describe('New psu --context-size for the relaunched member.'),
+      contextSize: z.literal('trimmed').optional().describe('New psu --context-size for the relaunched member.'),
       agent: z.string().max(40).optional().describe('New agent CLI backing the member (e.g. claude | codex).'),
       compactionLimit: z.number().int().min(20_000).max(900_000).optional().describe('New soft compaction limit (tokens) baked at launch.'),
       headless: z.boolean().optional().describe('Whether the replacement runs headless (default: preserve the fleet norm — headless for a background drain fleet).'),
@@ -405,40 +405,6 @@ export default defineTool({
           member: memberOwnerId,
           message: `No canonical saved launch spec exists for fleet '${slug}'; old member was NOT killed.`,
           killed: false,
-        },
-        true,
-      );
-    }
-
-    // WI-39948/WI-42447 — PRE-MUTATION transport preflight. Codex's code-mode
-    // bridge cannot carry the full Papercusp catalog: the resulting ~128 MiB
-    // request exceeds its hard 64 MiB frame cap. The psu child retains its own
-    // guard, but reaching it here is already too late because respawn would have
-    // drained the healthy predecessor and opened a terminal for a CLI that can
-    // never complete its first tool call. Validate the fully folded saved spec,
-    // not only the explicit delta, so an inherited `full` profile is caught too.
-    if (
-      savedLaunchSpec.effective.member.agent === 'codex' &&
-      savedLaunchSpec.effective.member.contextSize === 'full'
-    ) {
-      return json(
-        {
-          ok: false,
-          error: 'codex_full_context_unlaunchable',
-          fleet: slug,
-          member: memberOwnerId,
-          killed: false,
-          message:
-            "The effective replacement resolves to agent='codex' with contextSize='full', which is not launchable: " +
-            'the full Papercusp tool catalog produces a ~128 MiB code-mode IPC frame above the bridge\'s hard 64 MiB limit. ' +
-            "Use contextSize='trimmed' (tools:find/tools:invoke retain full capability reachability). " +
-            'The old member was NOT drained, no replacement identity was reserved, and no terminal was opened (WI-39948).',
-          launchSpec: {
-            provenance: savedLaunchSpec.provenance,
-            reusePath: savedLaunchSpec.reusePath,
-            overrides: savedLaunchSpec.overrides,
-            preservedFields: savedLaunchSpec.preservedFields,
-          },
         },
         true,
       );

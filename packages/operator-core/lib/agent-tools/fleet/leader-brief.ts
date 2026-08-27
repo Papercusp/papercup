@@ -1257,8 +1257,8 @@ export function computeSpinningAlert(
  *
  * TWO CONSTRAINTS, both learned the hard way:
  *
- * 1. INDEPENDENCE. Adopted from the ratified `CellFalsifier` contract
- *    (`cell-registry.ts`, D-038 axis 1), whose `measurement` field carries the same
+ * 1. INDEPENDENCE. Adopted from the ratified cell-assessment evidence contract
+ *    (`cell-registry.ts`, D-004/D-006), whose evidence paths carry the same
  *    load: "a derived verdict over a raw leg adds interpretation but NO NEW
  *    INFORMATION — it is recomputable from the leg." A falsifier recomputed from the
  *    alert's own inputs can never contradict it, so it launders the alert's confidence

@@ -67,7 +67,7 @@ export async function buildHostMemoryPressurePayload(deps: HostMemoryPressureDep
     }),
     memory,
     /**
-     * Independent falsifier: `freemem()/totalmem()` shares no input with the
+     * Independent evidence: `freemem()/totalmem()` shares no input with the
      * periodic PSI capture. Keys are always present; null means unmeasured, never 0.
      */
     host: {
@@ -82,7 +82,7 @@ export async function buildHostMemoryPressurePayload(deps: HostMemoryPressureDep
 export default defineTool({
   name: 'host:memory_pressure',
   description:
-    'Read the canonical infra-liveness memory-pressure verdict from the latest perf-signals capture, plus an independent free-memory falsifier. Normally call state:read { cell:"host.memoryPressure" }; this is its resolver lens.',
+    'Read the canonical infra-liveness memory-pressure verdict from the latest perf-signals capture, plus an independent free-memory reading. Normally call state:read { cell:"host.memoryPressure" }; this is its resolver lens.',
   guidance: {
     when:
       'As the resolver behind host.memoryPressure. Direct use is mainly for debugging the state-cell wiring.',

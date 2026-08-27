@@ -426,8 +426,7 @@ describe('launch-su', () => {
     expect(realSpawns()).toHaveLength(0);
   });
 
-  // su-context-size-variants (WI-1282): context_size is validated (full|trimmed)
-  // and, when valid, threaded into the psu argv as --context-size=<v>.
+  // Public launch context is trimmed-only; the retired spelling is a decoder alias.
   it('threads a valid context_size=trimmed into the psu oneliner', async () => {
     const res = await callPost({ agent: 'codex', harness_slug: 'papercup', context_size: 'trimmed' });
     expect(res.status).toBe(200);
@@ -435,17 +434,21 @@ describe('launch-su', () => {
     expect(lastOneliner()).toContain('--context-size=trimmed');
   });
 
-  it('threads a valid context_size=full into the psu oneliner', async () => {
-    await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: 'full' });
-    expect(lastOneliner()).toContain('--context-size=full');
+  it('normalizes legacy context_size=full before spawn and signals the deprecation', async () => {
+    const res = await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: 'full' });
+    expect(lastOneliner()).toContain('--context-size=trimmed');
+    expect(lastOneliner()).not.toContain('--context-size=full');
+    expect(await res.json()).toMatchObject({
+      contextSizeNormalization: { requested: 'full', effective: 'trimmed', deprecated: true },
+    });
   });
 
-  it('omits --context-size when context_size is absent or empty (native default)', async () => {
+  it('uses the canonical trimmed context when context_size is absent or empty', async () => {
     await callPost({ agent: 'claude', harness_slug: 'papercup' });
-    expect(lastOneliner()).not.toContain('--context-size');
+    expect(lastOneliner()).toContain('--context-size=trimmed');
     spawnMock.mockClear();
     await callPost({ agent: 'claude', harness_slug: 'papercup', context_size: '' });
-    expect(lastOneliner()).not.toContain('--context-size');
+    expect(lastOneliner()).toContain('--context-size=trimmed');
   });
 
   it('rejects a context_size typo with 400 (no spawn)', async () => {

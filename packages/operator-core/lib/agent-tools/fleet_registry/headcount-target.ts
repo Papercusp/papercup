@@ -40,7 +40,7 @@ export default defineTool({
     role: z.string().min(1).optional(),
     brief: z.string().min(1).max(4000).optional(),
     launchContext: z.string().min(1).optional(),
-    contextSize: z.enum(['full', 'trimmed']).optional(),
+    contextSize: z.literal('trimmed').optional(),
     compactionLimit: z.number().int().min(20_000).max(900_000).optional(),
     carry: z.enum(['warm', 'cold']).optional(),
     extraArgs: z.array(z.string()).max(20).optional(),

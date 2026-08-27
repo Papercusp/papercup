@@ -110,7 +110,7 @@ export const GOAL_HEADCOUNT_BOOT_GRACE_MS = 10 * 60_000;
  */
 export const LAUNCH_PROFILE_AGENTS = ['claude', 'codex', 'omp'] as const;
 export const LAUNCH_PROFILE_CARRY = ['warm', 'cold'] as const;
-export const LAUNCH_PROFILE_CONTEXT_SIZES = ['full', 'trimmed'] as const;
+export const LAUNCH_PROFILE_CONTEXT_SIZES = ['trimmed'] as const;
 
 /**
  * Headed vs headless, as the EDITOR's three states (P-001, D-002).

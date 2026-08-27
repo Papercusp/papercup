@@ -164,26 +164,6 @@ beforeEach(() => {
 });
 
 describe('fleet:respawn-member (P-008)', () => {
-  it('refuses an effective Codex full-context replacement before draining or launching (WI-39948)', async () => {
-    const res = await tool.handler(
-      { member: MEMBER, contextSize: 'full' } as never,
-      {} as never,
-    );
-    const p = parse(res);
-
-    expect(p).toMatchObject({
-      ok: false,
-      error: 'codex_full_context_unlaunchable',
-      fleet: SLUG,
-      member: MEMBER,
-      killed: false,
-    });
-    expect(p.message).toMatch(/contextSize='trimmed'.*old member was NOT drained/is);
-    expect(killHandler).not.toHaveBeenCalled();
-    expect(launchHandler).not.toHaveBeenCalled();
-    expect(listFleetPresence).not.toHaveBeenCalled();
-  });
-
   it('kills the old member then fresh-launches the replacement with the new declarative spec', async () => {
     const res = await tool.handler(
       { member: MEMBER, model: 'opus[1m]', effort: 'high', compactionLimit: 200_000 } as never,
