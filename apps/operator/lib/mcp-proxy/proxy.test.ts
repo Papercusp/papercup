@@ -31,6 +31,7 @@ import {
   DEFAULT_CONTROL_PLANE_RESERVE,
   DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
   DEFAULT_MAX_HANDSHAKE_QUEUE,
+  DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
   isCriticalContinuationCall,
@@ -2196,6 +2197,11 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   it("recognizes only complete continuation-boundary batches for the critical socket", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
+    expect(isCriticalContinuationCall(call("coord:send"))).toBe(true);
+    expect(criticalContinuationToolNames(call("coord:send"))).toEqual([
+      "coord:send",
+    ]);
+    expect(isCriticalContinuationCall(call("improvements:capture"))).toBe(true);
     expect(isCriticalContinuationCall(call("loop:checkpoint"))).toBe(true);
     expect(criticalContinuationToolNames(call("loop:checkpoint"))).toEqual([
       "loop:checkpoint",
@@ -2920,7 +2926,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(results.every((result) => result.status === 200)).toBe(true);
   });
 
-  it("EI-21548622458694037: watchdog and continuation emergency lanes survive a full normal partition", async () => {
+  it("EI-21548622458694037 / EI-21564913101064885: watchdog and every checkpoint wire form survive a full normal partition", async () => {
     let releaseNormal: () => void = () => {};
     const normalGate = new Promise<void>((resolve) => {
       releaseNormal = resolve;
@@ -2932,7 +2938,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
           "http://127.0.0.1",
         ).searchParams.get("client");
         if (
-          client === "critical-continuation" ||
+          client?.startsWith("critical-continuation") ||
           client === "mcp-proxy-watchdog"
         ) {
           res.writeHead(200, { "content-type": "application/json" });
@@ -2979,13 +2985,35 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await new Promise((r) => setTimeout(r, 40));
 
-    const critical = await request(
-      port(proxy),
-      JSON.stringify({
-        method: "tools/call",
-        params: { name: "loop:checkpoint", arguments: {} },
-      }),
-      "/api/mcp?client=critical-continuation",
+    const checkpointArgs = { id: "EI-test", checkpoint: "fixture" };
+    const checkpointForms = [
+      { name: "work_items:checkpoint", arguments: checkpointArgs },
+      { name: "work_items_checkpoint", arguments: checkpointArgs },
+      {
+        name: "mcp__papercusp-su__work_items_checkpoint",
+        arguments: checkpointArgs,
+      },
+      {
+        name: "tools:invoke",
+        arguments: { name: "work_items:checkpoint", args: checkpointArgs },
+      },
+    ];
+    const critical = await Promise.all(
+      checkpointForms.map((params, index) =>
+        request(
+          port(proxy),
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: index + 2,
+            method: "tools/call",
+            params: {
+              ...params,
+              _meta: { idempotencyKey: `checkpoint-fixture-${index}` },
+            },
+          }),
+          `/api/mcp?client=critical-continuation-${index}`,
+        ),
+      ),
     );
     const watchdog = await request(
       port(proxy),
@@ -2998,7 +3026,9 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       "/api/mcp?superuser=1&client=mcp-proxy-watchdog&tools=coord%3Aorient",
     );
 
-    expect(critical.status).toBe(200);
+    expect(critical.map((result) => result.status)).toEqual([
+      200, 200, 200, 200,
+    ]);
     expect(watchdog.status).toBe(200);
     releaseNormal();
     expect((await heldOrdinary).status).toBe(200);
@@ -3371,29 +3401,34 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     await ordinaryStartedGate;
 
-    const critical = request(
-      port(proxy),
-      JSON.stringify({
-        jsonrpc: "2.0",
-        id: 2,
-        method: "tools/call",
-        params: { name: "loop:checkpoint", arguments: {} },
-      }),
-      "/api/mcp?client=critical-continuation",
-    );
-    const criticalBeforeOrdinaryRelease = await Promise.race([
-      critical,
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
-    ]);
-
-    expect(criticalBeforeOrdinaryRelease?.status).toBe(200);
+    for (const [index, name] of [
+      "loop:checkpoint",
+      "coord:send",
+      "improvements:capture",
+    ].entries()) {
+      const critical = request(
+        port(proxy),
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: index + 2,
+          method: "tools/call",
+          params: { name, arguments: {} },
+        }),
+        "/api/mcp?client=critical-continuation",
+      );
+      const criticalBeforeOrdinaryRelease = await Promise.race([
+        critical,
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+      ]);
+      expect(criticalBeforeOrdinaryRelease?.status).toBe(200);
+    }
     releaseOrdinary();
     expect((await ordinary).status).toBe(200);
     criticalContinuationAgent.destroy();
     controlPlaneAgent.destroy();
   });
 
-  it("EI-21556422206126497: queues one concurrent continuation write with bounded identity-rich health", async () => {
+  it("EI-21552316713302755 / EI-21556422206126497: queues loop:end and compaction behind a continuation write", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -3428,7 +3463,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         retryWindowMs: 1_000,
         maxInFlight: 10,
         controlPlaneReserve: 1,
-        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueue: 2,
         maxCriticalContinuationQueueWaitMs: 1_000,
         criticalContinuationQueueWaitLogMs: 50,
         log: (line) => logs.push(line),
@@ -3453,10 +3488,19 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     let secondSettled = false;
     const second = request(
       port(proxy),
-      continuationBody(2, "work_items:checkpoint"),
+      continuationBody(2, "loop:end"),
       "/api/mcp?client=critical-second",
     ).then((result) => {
       secondSettled = true;
+      return result;
+    });
+    let compactionSettled = false;
+    const compaction = request(
+      port(proxy),
+      continuationBody(3, "session:request-compaction"),
+      "/api/mcp?client=critical-compaction",
+    ).then((result) => {
+      compactionSettled = true;
       return result;
     });
     await waitFor(() =>
@@ -3465,6 +3509,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       ),
     );
     expect(secondSettled).toBe(false);
+    expect(compactionSettled).toBe(false);
     expect(hits).toEqual(["critical-first"]);
 
     const health = JSON.parse(
@@ -3477,20 +3522,24 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       }),
     ]);
     expect(health.inFlight.criticalContinuationQueue).toMatchObject({
-      waiting: 1,
-      max: 1,
+      waiting: 2,
+      max: 2,
       maxWaitMs: 1_000,
-      requests: [
+      requests: expect.arrayContaining([
         expect.objectContaining({
           traceId: expect.any(String),
-          tools: ["work_items:checkpoint"],
+          tools: ["loop:end"],
         }),
-      ],
+        expect.objectContaining({
+          traceId: expect.any(String),
+          tools: ["session:request-compaction"],
+        }),
+      ]),
     });
 
     const overflow = await request(
       port(proxy),
-      continuationBody(3, "work_items:complete"),
+      continuationBody(4, "work_items:complete"),
       "/api/mcp?client=critical-overflow",
     );
     expect(overflow.status).toBe(429);
@@ -3502,7 +3551,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     releaseFirst();
     expect((await first).status).toBe(200);
     expect((await second).status).toBe(200);
-    expect(hits).toEqual(["critical-first", "critical-second"]);
+    expect((await compaction).status).toBe(200);
+    expect(hits).toEqual([
+      "critical-first",
+      "critical-compaction",
+      "critical-second",
+    ]);
   });
 
   it("EI-21558462806716442: queues a concurrent work_items:complete instead of shedding it", async () => {
@@ -3597,6 +3651,292 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect((await first).status).toBe(200);
     expect((await second).status).toBe(200);
     expect(hits).toEqual(["complete-first", "complete-second"]);
+  });
+
+  it("EI-21568137857973279: reserves one priority waiter for compaction when the continuation FIFO is full", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-checkpoint") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"queued":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:checkpoint"),
+      "/api/mcp?client=held-checkpoint",
+    );
+    await firstStarted;
+
+    const ordinary = request(
+      port(proxy),
+      body(2, "work_items:complete"),
+      "/api/mcp?client=queued-ordinary",
+    );
+    await waitFor(() =>
+      logs.some((line) => line.includes("queued critical-continuation request")),
+    );
+
+    let compactionSettled = false;
+    const compaction = request(
+      port(proxy),
+      body(3, "session:request-compaction"),
+      "/api/mcp?client=priority-compaction",
+    ).then((result) => {
+      compactionSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.filter((line) => line.includes("queued critical-continuation request"))
+        .length >= 2,
+    );
+    expect(compactionSettled).toBe(false);
+    expect(hits).toEqual(["held-checkpoint"]);
+
+    const secondCompaction = await request(
+      port(proxy),
+      body(4, "session:request-compaction"),
+      "/api/mcp?client=second-compaction",
+    );
+    expect(secondCompaction.status).toBe(429);
+    expect(JSON.parse(secondCompaction.body).error).toBe(
+      "mcp_proxy_critical_continuation_queue_full",
+    );
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await compaction).status).toBe(200);
+    expect((await ordinary).status).toBe(200);
+    expect(hits).toEqual([
+      "held-checkpoint",
+      "priority-compaction",
+      "queued-ordinary",
+    ]);
+  });
+
+  it("EI-21565454839253843: does not expire a checkpoint behind a long completion by default", async () => {
+    // A real work_items:complete held the single critical slot for 61.8s while the old
+    // 30s dwell shed a queued checkpoint. The queue itself is hard-bounded, so a client
+    // disconnect is the safe cancellation boundary and a default dwell expiry is not.
+    expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
+
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "long-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"complete":true}}'));
+          return;
+        }
+        res.end('{"result":{"checkpoint":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=long-completion",
+    );
+    await firstStarted;
+
+    let checkpointSettled = false;
+    const checkpoint = request(
+      port(proxy),
+      body(2, "work_items:checkpoint"),
+      "/api/mcp?client=queued-checkpoint",
+    ).then((result) => {
+      checkpointSettled = true;
+      return result;
+    });
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    expect(checkpointSettled).toBe(false);
+    expect(hits).toEqual(["long-completion"]);
+
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 1,
+      max: 1,
+      maxWaitMs: 0,
+      requests: [expect.objectContaining({ tools: ["work_items:checkpoint"] })],
+    });
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await checkpoint).status).toBe(200);
+    expect(hits).toEqual(["long-completion", "queued-checkpoint"]);
+  });
+
+  it("EI-21568557856490825: reconciliation reads bypass a saturated continuation FIFO", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "critical-first") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"complete":true}}'));
+          return;
+        }
+        res.end('{"result":{"read":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        maxCriticalContinuationQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=critical-first",
+    );
+    await firstStarted;
+    const queued = request(
+      port(proxy),
+      body(2, "work_items:checkpoint"),
+      "/api/mcp?client=queued-checkpoint",
+    );
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+
+    const reconciliationRead = await Promise.race([
+      request(
+        port(proxy),
+        body(3, "work_items:get"),
+        "/api/mcp?client=reconciliation-read",
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 250)),
+    ]);
+    expect(reconciliationRead?.status).toBe(200);
+    expect(hits).toEqual(["critical-first", "reconciliation-read"]);
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await queued).status).toBe(200);
+    expect(hits).toEqual([
+      "critical-first",
+      "reconciliation-read",
+      "queued-checkpoint",
+    ]);
   });
 
   it("EI-21395173692390816: admits a bounded FIFO handshake queue and sheds only once it is full", async () => {
