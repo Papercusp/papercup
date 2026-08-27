@@ -12,7 +12,7 @@
  */
 import { test, beforeEach, expect } from 'vitest';
 import { resetGovernorRegistry, setGlobalConcurrencyCap } from '@papercusp/papercusp-shared/agent';
-import { runGatewayBurstRig } from './load-test-rig';
+import { runGatewayBurstRig, runGatewayLatencyCertRig } from './load-test-rig';
 
 beforeEach(() => {
   // The governor registry + fleet gate are process singletons — clear learned rpmFactor / windows and
@@ -95,3 +95,54 @@ test('the rig surfaces BEE-FACING failures too — a harsh storm under a tight a
   expect(r.upstream429).toBeGreaterThan(0); // storm at the upstream
   expect(r.beeFacing429 + r.beeFacing503).toBeGreaterThan(0); // and it reached the bee (absorb couldn't hide it)
 }, 45_000);
+
+test('P-006 matched-control battery certifies 30 direct+gateway samples at c1/c3/c5 and an ordered rollout', async () => {
+  const report = await runGatewayLatencyCertRig({
+    upstreamLatencyMs: 3,
+    rollout: {
+      killSwitch: 'PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM',
+      killSwitchRetained: true,
+      isolatedOwnerCompletedAt: '2026-08-27T00:00:00.000Z',
+      smallFleetCompletedAt: '2026-08-27T00:05:00.000Z',
+      fixedPathDefaultedOnAt: '2026-08-27T00:10:00.000Z',
+      legacyFallbackRemoved: false,
+    },
+  });
+
+  expect(report.gates.filter((gate) => !gate.passed)).toEqual([]);
+  expect(report.measurementVerdict).toBe('passed');
+  expect(report.rolloutVerdict).toBe('passed');
+  expect(report.shipReady).toBe(true);
+  expect(report.metrics).toMatchObject({
+    samples: 186,
+    stageCoverage: 1,
+    queuedWithIdleViolations: 0,
+    healthyAttemptsPerRequest: 1,
+    failoverRequestRate: 0,
+  });
+  expect(report.metrics.gatewayAddedTtftP95Ms).not.toBeNull();
+  expect(report.metrics.gatewayAddedTtftP95Ms!).toBeLessThanOrEqual(1_000);
+}, 30_000);
+
+test('P-006 battery fails closed on under-sampling, out-of-order rollout, a missing kill switch, and untracked fallback removal', async () => {
+  const report = await runGatewayLatencyCertRig({
+    samplesPerRouteAndConcurrency: 2,
+    upstreamLatencyMs: 3,
+    rollout: {
+      killSwitch: '',
+      killSwitchRetained: false,
+      isolatedOwnerCompletedAt: '2026-08-27T00:10:00.000Z',
+      smallFleetCompletedAt: '2026-08-27T00:05:00.000Z',
+      fixedPathDefaultedOnAt: '2026-08-27T00:00:00.000Z',
+      legacyFallbackRemoved: true,
+    },
+  });
+
+  expect(report.measurementVerdict).toBe('failed');
+  expect(report.rolloutVerdict).toBe('failed');
+  expect(report.shipReady).toBe(false);
+  expect(report.gates.filter((gate) => gate.id.startsWith('samples-')).every((gate) => !gate.passed)).toBe(true);
+  expect(report.gates.find((gate) => gate.id === 'rollout-order')?.passed).toBe(false);
+  expect(report.gates.find((gate) => gate.id === 'rollout-kill-switch')?.passed).toBe(false);
+  expect(report.gates.find((gate) => gate.id === 'legacy-fallback-deprecation')?.passed).toBe(false);
+}, 15_000);
