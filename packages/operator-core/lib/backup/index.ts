@@ -12,6 +12,7 @@ import './configure';
 
 export {
   WorkspaceBackup,
+  mergeRepoStatsWithKopia,
   workspaceBackupFor,
   deriveRepoPassword,
   startKopiaServer,

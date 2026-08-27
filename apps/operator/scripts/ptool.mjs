@@ -1034,6 +1034,11 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   ['events:await', PTOOL_EVENTS_AWAIT_TIMEOUT_MS],
   ['plans:get', PTOOL_PLANS_GET_TIMEOUT_MS],
   ['plans:new', PTOOL_PLANS_NEW_TIMEOUT_MS],
+  // EI-21562635786542847: session:request-compaction declares a 120s server
+  // timeout while assembling carry state and injecting the respawn. Keep the
+  // direct and tools:invoke paths above the effective 125s MCP deadline so a
+  // successful carry request cannot be reported as outcome_unknown at 30s.
+  ['session:request-compaction', PTOOL_COORD_ORIENT_TIMEOUT_MS],
   // EI-21567372634210816: plans:start runs the plan-start consult, approval,
   // idempotent item promotion, exact-plan admission, and claim-spec binding.
   // Its projected dispatcher defaults to 60s when no timeoutSec is declared;
