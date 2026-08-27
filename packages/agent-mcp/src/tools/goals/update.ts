@@ -16,6 +16,7 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import type { RoleToolDefinition } from '@papercusp/tooldef/src/types';
 import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
@@ -60,7 +61,96 @@ function sortedRefs(refs: readonly string[]): string[] {
   return [...refs].sort((a, b) => a.localeCompare(b));
 }
 
-export default defineTool({
+const goalUpdateArgs = z.object({
+  id: z.string().min(1),
+  status: z.enum(GOAL_STATUSES).optional(),
+  title: z.string().min(1).max(500).optional(),
+  body: z.string().max(20000).optional(),
+  killCriterion: z.string().max(2000).optional(),
+  tripwires: z
+    .array(TripwireSchema)
+    .max(12)
+    .nullable()
+    .optional()
+    .describe(
+      'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
+    ),
+  budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
+  spentCents: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe(
+      'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
+    ),
+  parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
+  installSlug: z
+    .string()
+    .min(1)
+    .max(120)
+    .regex(
+      HARNESS_SLUG_RE,
+      'install_slug must match the launch door\'s slug pattern (HARNESS_SLUG_RE) — a wildcard scope token like "*" is rejected here precisely because it is accepted at write time and then fails at every holder launch',
+    )
+    // `'all'` PASSES the pattern above, so the regex alone would admit it and
+    // file the goal against a Pot named `all` that does not exist. This door
+    // refuses both scope tokens rather than resolving them (as goals:create
+    // does): a repair caller is naming its target explicitly and can name the
+    // Pot, so silently retargeting the row would be the wrong kind of helpful.
+    .refine((s) => !isWildcardScopeToken(s), {
+      message:
+        'install_slug names a Pot, not a scope: "*" and "all" are workspace-global scope tokens. Name the concrete Pot to file this goal against (the platform Pot is "papercusp").',
+    })
+    .optional()
+    .describe(
+      'REPAIR the Pot this goal is filed against (EI-21563406996333542). A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',
+    ),
+  blockedBy: z
+    .array(z.string().min(1).max(200))
+    .max(20)
+    .nullable()
+    .optional()
+    .describe(
+      'REPLACE this goal\'s blocked-by set (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.',
+    ),
+  drainFleet: z
+    .string()
+    .min(1)
+    .max(120)
+    .nullable()
+    .optional()
+    .describe(
+      'the STANDING drain fleet slug for this goal (GOAL contract clause 3 — one per goal, always maintained). Record it the moment the fleet is established; null clears it (e.g. re-establishing under a new slug). The goal-liveness watchdog treats an active goal without one as a gap.',
+    ),
+  launchSettings: goalLaunchSettingsSchema
+    .nullable()
+    .optional()
+    .describe(
+      'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. ' +
+        `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
+        `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
+        'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
+    ),
+  reason: z
+    .string()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe(
+      'Why this amendment is being made. REQUIRED when pausing (status:"paused") — ideally name what would end the hold — and persisted both in metadata.pause and the append-only amendment history. On other amendments it is optional; when omitted the audit entry carries an explicit generated reason rather than losing the provenance field.',
+    ),
+  holder: goalHolderPolicySchema
+    .optional()
+    .describe(
+      'Declare (or revise) THIS goal\'s holder policy: does it need a LIVE holder to count as active, and what happens when it loses one. ' +
+        "{ requireLive: true } for a goal a session owns; { requireLive: false } for one driven by routines rather than a held session; onLoss 'deactivate' (default) or 'respawn'. " +
+        'MERGES into the existing launch settings — unlike launchSettings, which replaces the whole document — so declaring a policy cannot disturb a declared ceiling. ' +
+        'This is the door that clears a "no declared holder policy" refusal from goals:create / goals:start / mode:set { mode:"goal" }.',
+    ),
+});
+
+const goalUpdateTool: RoleToolDefinition<typeof goalUpdateArgs> = defineTool({
   name: 'goals:update',
   needsWorkspaceTx: true,
   description:
@@ -89,94 +179,7 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
-  args: z.object({
-    id: z.string().min(1),
-    status: z.enum(GOAL_STATUSES).optional(),
-    title: z.string().min(1).max(500).optional(),
-    body: z.string().max(20000).optional(),
-    killCriterion: z.string().max(2000).optional(),
-    tripwires: z
-      .array(TripwireSchema)
-      .max(12)
-      .nullable()
-      .optional()
-      .describe(
-        'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
-      ),
-    budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
-    spentCents: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe(
-        'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
-      ),
-    parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
-    installSlug: z
-      .string()
-      .min(1)
-      .max(120)
-      .regex(
-        HARNESS_SLUG_RE,
-        'install_slug must match the launch door\'s slug pattern (HARNESS_SLUG_RE) — a wildcard scope token like "*" is rejected here precisely because it is accepted at write time and then fails at every holder launch',
-      )
-      // `'all'` PASSES the pattern above, so the regex alone would admit it and
-      // file the goal against a Pot named `all` that does not exist. This door
-      // refuses both scope tokens rather than resolving them (as goals:create
-      // does): a repair caller is naming its target explicitly and can name the
-      // Pot, so silently retargeting the row would be the wrong kind of helpful.
-      .refine((s) => !isWildcardScopeToken(s), {
-        message:
-          'install_slug names a Pot, not a scope: "*" and "all" are workspace-global scope tokens. Name the concrete Pot to file this goal against (the platform Pot is "papercusp").',
-      })
-      .optional()
-      .describe(
-        'REPAIR the Pot this goal is filed against (EI-21563406996333542). A goal created from a workspace-global session was written with install_slug="*", which reads healthy everywhere but makes the goal PERMANENTLY UNLAUNCHABLE — launch-su rejects the wildcard, so the holder spawn fails with "invalid harness slug". There was previously no way to fix such a row in place; this is that way. Validated against the same slug pattern the launch door enforces, so an unlaunchable value cannot be written through this door either.',
-      ),
-    blockedBy: z
-      .array(z.string().min(1).max(200))
-      .max(20)
-      .nullable()
-      .optional()
-      .describe(
-        'REPLACE this goal\'s blocked-by set (goal-dag-shared-substrate-2026-08-18): goal ids and/or bare WI-/EI- issue ids that must resolve before this goal is actionable. Declarative full-set — the previous set is replaced; null or [] clears it. Every ref must RESOLVE (a goal in this workspace / an existing issue) and the goal graph must stay acyclic. Edges are prerequisites between SEPARATE outcomes — phases of one outcome belong inside the goal as plans/tripwires (D-005). An achieved goal blocker satisfies; a KILLED one flags this goal premiseInvalidated instead of unblocking it.',
-      ),
-    drainFleet: z
-      .string()
-      .min(1)
-      .max(120)
-      .nullable()
-      .optional()
-      .describe(
-        'the STANDING drain fleet slug for this goal (GOAL contract clause 3 — one per goal, always maintained). Record it the moment the fleet is established; null clears it (e.g. re-establishing under a new slug). The goal-liveness watchdog treats an active goal without one as a gap.',
-      ),
-    launchSettings: goalLaunchSettingsSchema
-      .nullable()
-      .optional()
-      .describe(
-        'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. ' +
-          `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
-          `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
-          'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
-      ),
-    reason: z
-      .string()
-      .min(1)
-      .max(500)
-      .optional()
-      .describe(
-        'Why this amendment is being made. REQUIRED when pausing (status:"paused") — ideally name what would end the hold — and persisted both in metadata.pause and the append-only amendment history. On other amendments it is optional; when omitted the audit entry carries an explicit generated reason rather than losing the provenance field.',
-      ),
-    holder: goalHolderPolicySchema
-      .optional()
-      .describe(
-        'Declare (or revise) THIS goal\'s holder policy: does it need a LIVE holder to count as active, and what happens when it loses one. ' +
-          "{ requireLive: true } for a goal a session owns; { requireLive: false } for one driven by routines rather than a held session; onLoss 'deactivate' (default) or 'respawn'. " +
-          'MERGES into the existing launch settings — unlike launchSettings, which replaces the whole document — so declaring a policy cannot disturb a declared ceiling. ' +
-          'This is the door that clears a "no declared holder policy" refusal from goals:create / goals:start / mode:set { mode:"goal" }.',
-      ),
-  }),
+  args: goalUpdateArgs,
   async handler(args, ctx) {
     // ── The criterion gate (P-009) ───────────────────────────────────────────
     //
@@ -633,3 +636,5 @@ export default defineTool({
     };
   },
 });
+
+export default goalUpdateTool;
