@@ -19,6 +19,7 @@ const sendMessage = vi.fn();
 const wakeRecipients = vi.fn();
 const resolveSessionStates = vi.fn();
 const resolveSavedFleetLaunchSpec = vi.fn();
+const getSessionBrief = vi.fn();
 
 const LEADER = 'su-leader';
 const MEMBER = 'su-member-abc';
@@ -46,6 +47,9 @@ vi.mock('../coordination/liveness-oracle', () => ({
 }));
 vi.mock('./saved-launch-spec', () => ({
   resolveSavedFleetLaunchSpec: (...a: unknown[]) => resolveSavedFleetLaunchSpec(...a),
+}));
+vi.mock('../../session-brief', () => ({
+  getSessionBrief: (...a: unknown[]) => getSessionBrief(...a),
 }));
 vi.mock('./_shared', () => ({
   ROUTING_LADDER: 'ladder',
@@ -83,6 +87,7 @@ describe('fleet:respawn-member — ambient workspace transaction safety (EI-2021
 beforeEach(() => {
   vi.clearAllMocks();
   getPresence.mockResolvedValue({ potSlug: 'papercusp' });
+  getSessionBrief.mockResolvedValue(null);
   resolveFleetMemberTarget.mockResolvedValue({
     ok: true,
     callerId: LEADER,
@@ -360,6 +365,8 @@ describe('fleet:respawn-member (P-008)', () => {
   });
 
   it('threads trusted legacy fallbacks and omits plan when respawning a planless member', async () => {
+    getPresence.mockResolvedValueOnce(null);
+    getSessionBrief.mockResolvedValueOnce({ harnessSlug: 'papercusp' });
     resolveSavedFleetLaunchSpec.mockResolvedValueOnce({
       ok: true,
       found: true,
@@ -422,6 +429,7 @@ describe('fleet:respawn-member (P-008)', () => {
         legacyFallbacks: { agent: 'codex', harness: 'papercusp' },
       }),
     );
+    expect(getSessionBrief).toHaveBeenCalledWith({ ownerId: MEMBER });
     expect(launchArgs).toMatchObject({ fleet: SLUG, count: 1, harness: 'papercusp', members: [{ agent: 'codex' }] });
     expect(launchArgs).not.toHaveProperty('plan');
   });

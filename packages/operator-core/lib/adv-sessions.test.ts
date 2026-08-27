@@ -33,11 +33,12 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
     const launchSpec = { v: 1, workspaceId: 'ws-test', fleet: { slug: 'byoc' } };
     const launchArgv = ['psu', '--fleet=byoc'];
     advSessionRowsMock.mockResolvedValueOnce([
-      { workspace_id: 'ws-test', launch_spec: launchSpec, launch_argv: launchArgv },
+      { workspace_id: 'ws-test', agent: 'codex', launch_spec: launchSpec, launch_argv: launchArgv },
     ]);
 
     await expect(readAdvSessionLaunchRecordByOwner('su-member', 'ws-test')).resolves.toEqual({
       workspaceId: 'ws-test',
+      agent: 'codex',
       launchSpec,
       launchArgv,
     });
@@ -45,6 +46,7 @@ describe('readAdvSessionLaunchRecordByOwner', () => {
     expect(Array.isArray(template)).toBe(true);
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_spec'");
     expect((template as readonly string[]).join(' ')).toContain("to_jsonb(a)->'launch_argv'");
+    expect((template as readonly string[]).join(' ')).toContain('agent');
   });
 });
 

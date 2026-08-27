@@ -43,6 +43,7 @@ const base = {
 
 const legacyRecord: AdvSessionLaunchRecord = {
   workspaceId: 'ws-test',
+  agent: 'codex',
   launchSpec: {
     v: 1,
     agent: 'codex',
@@ -82,6 +83,7 @@ const legacyRecord: AdvSessionLaunchRecord = {
 
 const incompleteLegacyRecord: AdvSessionLaunchRecord = {
   workspaceId: 'ws-test',
+  agent: 'codex',
   launchSpec: {
     ...(legacyRecord.launchSpec as Record<string, unknown>),
     agent: undefined,
@@ -305,7 +307,7 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
     });
   });
 
-  it('recovers a planless legacy record only with trusted agent and harness fallbacks', () => {
+  it('recovers a planless legacy record from the persisted backend plus a trusted harness fallback', () => {
     expect(savedFleetLaunchSpecFromLegacyRecord(incompleteLegacyRecord, 'ws-test', 'byoc')).toMatchObject({
       ok: false,
       message: expect.stringMatching(/malformed|harness|agent/i),
@@ -315,7 +317,7 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
       incompleteLegacyRecord,
       'ws-test',
       'byoc',
-      { agent: 'codex', harness: 'papercusp' },
+      { harness: 'papercusp' },
     );
     expect(result).toMatchObject({
       ok: true,
@@ -341,6 +343,15 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
     expect(result.saved).not.toHaveProperty('plan');
   });
 
+  it('fails closed when adv_sessions.agent conflicts with the legacy launch record', () => {
+    expect(
+      savedFleetLaunchSpecFromLegacyRecord({ ...legacyRecord, agent: 'claude' }, 'ws-test', 'byoc'),
+    ).toMatchObject({
+      ok: false,
+      message: expect.stringContaining('adv_sessions.agent'),
+    });
+  });
+
   it('threads trusted legacy fallbacks through the resolver without changing canonical behavior', async () => {
     const result = await resolveSavedFleetLaunchSpec({
       workspaceId: 'ws-test',
@@ -349,7 +360,7 @@ describe('legacy adv_sessions fleet launch-spec fallback', () => {
       requireSaved: true,
       readTarget: vi.fn().mockResolvedValue(null),
       readLegacy: vi.fn().mockResolvedValue(incompleteLegacyRecord),
-      legacyFallbacks: { agent: 'codex', harness: 'papercusp' },
+      legacyFallbacks: { harness: 'papercusp' },
       requested: { headless: false },
       allowDeltas: ['headless'],
       reusePath: base.reusePath,

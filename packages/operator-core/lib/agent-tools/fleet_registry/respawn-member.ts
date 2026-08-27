@@ -25,6 +25,7 @@ import { listFleetPresence, type FleetPresenceRow } from '../coordination/presen
 import { sendMessage } from '../coordination/messages';
 import { wakeRecipients } from '../coordination/inbox-wake';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
+import { getSessionBrief } from '../../session-brief';
 import { json, ROUTING_LADDER } from './_shared';
 import { resolveSavedFleetLaunchSpec } from './saved-launch-spec';
 
@@ -346,8 +347,9 @@ export default defineTool({
     // gaps: the target member's own pot context, the concrete caller harness,
     // and an explicit respawn agent override. Never default either field.
     const memberPresence = await getPresence(memberOwnerId).catch(() => null);
+    const memberBrief = await getSessionBrief({ ownerId: memberOwnerId }).catch(() => null);
     const callerHarness = resolveConcreteHarnessSlug(undefined, ctx) ?? '';
-    const legacyHarness = memberPresence?.potSlug?.trim() ||
+    const legacyHarness = memberBrief?.harnessSlug?.trim() || memberPresence?.potSlug?.trim() ||
       (callerHarness && callerHarness !== '*' && callerHarness !== 'all' ? callerHarness : undefined);
 
     // D-004/P-044: a respawn is a recovery, never a fresh reconstruction. Read

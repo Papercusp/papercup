@@ -252,18 +252,28 @@ export function savedFleetLaunchSpecFromLegacyRecord(
     return { ok: false, message: `Legacy launch_argv fleet does not match requested fleet \`${fleetSlug}\`.` };
   }
 
-  // Older launch_spec rows can omit agent while launch_argv may still attest it.
-  // If both legacy sources omitted it, only an explicit recovery fallback may
-  // fill it; no system/default agent is guessed here.
+  // Older launch_spec/argv rows can omit agent even though adv_sessions.agent
+  // recorded the backend at launch. Reuse that persisted column before an
+  // explicit recovery fallback; never guess a system/default agent.
   const recordedAgent = argFlag(argv, 'agent');
   const storedAgent = typeof rawLaunchSpec.agent === 'string' && rawLaunchSpec.agent.trim()
     ? rawLaunchSpec.agent
     : null;
+  const persistedAgent = typeof record.agent === 'string' && record.agent.trim()
+    ? record.agent
+    : null;
+  const storedVsArgvAgent = matchingValue('agent', storedAgent, recordedAgent);
+  if (storedVsArgvAgent.error) return { ok: false, message: storedVsArgvAgent.error };
+  if (storedVsArgvAgent.value && persistedAgent && storedVsArgvAgent.value !== persistedAgent) {
+    return {
+      ok: false,
+      message: `agent differs between legacy launch record (${storedVsArgvAgent.value}) and adv_sessions.agent (${persistedAgent})`,
+    };
+  }
+  const effectiveAgent = storedVsArgvAgent.value ?? persistedAgent ?? fallbacks.agent ?? null;
   const launch = parseSuLaunchSpecRecord({
     ...rawLaunchSpec,
-    ...(storedAgent || recordedAgent || fallbacks.agent
-      ? { agent: storedAgent ?? recordedAgent ?? fallbacks.agent }
-      : {}),
+    ...(effectiveAgent ? { agent: effectiveAgent } : {}),
   });
   if (!launch) return { ok: false, message: 'Legacy adv_sessions launch_spec is missing or malformed.' };
   if (launch.workspaceId !== workspaceId) {
@@ -275,13 +285,12 @@ export function savedFleetLaunchSpecFromLegacyRecord(
 
   const plan = matchingValue('plan', launch.planSlug, argFlag(argv, 'plan'));
   const harness = matchingValue('harness', launch.harnessSlug, argFlag(argv, 'harness'));
-  const agent = matchingValue('agent', launch.agent, argFlag(argv, 'agent'));
-  if (plan.error || harness.error || agent.error) {
-    return { ok: false, message: plan.error ?? harness.error ?? agent.error! };
+  if (plan.error || harness.error) {
+    return { ok: false, message: plan.error ?? harness.error! };
   }
   const fallbackHarness = fallbacks.harness?.trim() || null;
   const effectiveHarness = harness.value ?? fallbackHarness;
-  if (!effectiveHarness || !agent.value || !LEGACY_AGENTS.has(agent.value as FleetHeadcountConfig['agent'])) {
+  if (!effectiveHarness || !effectiveAgent || !LEGACY_AGENTS.has(effectiveAgent as FleetHeadcountConfig['agent'])) {
     return { ok: false, message: 'Legacy launch record lacks a valid harness or agent.' };
   }
 
@@ -327,7 +336,7 @@ export function savedFleetLaunchSpecFromLegacyRecord(
   const config: SavedFleetLaunchConfig = {
     ...(plan.value ? { plan: plan.value } : {}),
     harness: effectiveHarness,
-    agent: agent.value as FleetHeadcountConfig['agent'],
+    agent: effectiveAgent as FleetHeadcountConfig['agent'],
     ...(model.model ? { model: model.model } : {}),
     ...(model.effort ? { effort: model.effort } : {}),
     ...(account ? { account } : {}),

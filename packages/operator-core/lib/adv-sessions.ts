@@ -1647,6 +1647,8 @@ export async function readSuLaunchSpecByOwner(coordOwnerId: string): Promise<unk
  */
 export interface AdvSessionLaunchRecord {
   workspaceId: string;
+  /** Launch-time backend persisted independently of launch_spec/launch_argv. */
+  agent: SuAgent | null;
   launchSpec: unknown;
   launchArgv: unknown;
 }
@@ -1662,10 +1664,12 @@ export async function readAdvSessionLaunchRecordByOwner(
     const { sql } = getOrgPg();
     const rows = await sql<{
       workspace_id: string;
+      agent: string | null;
       launch_spec: unknown;
       launch_argv: unknown;
     }[]>`
       SELECT workspace_id,
+             agent,
              -- to_jsonb keeps this reader parse-safe on pre-migration legacy
              -- schemas: an absent key becomes NULL instead of a parse error.
              to_jsonb(a)->'launch_spec' AS launch_spec,
@@ -1678,7 +1682,12 @@ export async function readAdvSessionLaunchRecordByOwner(
     `;
     const row = rows[0];
     return row
-      ? { workspaceId: row.workspace_id, launchSpec: row.launch_spec, launchArgv: row.launch_argv }
+      ? {
+          workspaceId: row.workspace_id,
+          agent: (row.agent as SuAgent | null) ?? null,
+          launchSpec: row.launch_spec,
+          launchArgv: row.launch_argv,
+        }
       : null;
   } catch (e) {
     warnUnlessMissingTable(e, 'readAdvSessionLaunchRecordByOwner');
