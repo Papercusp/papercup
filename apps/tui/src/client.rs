@@ -372,6 +372,48 @@ fn session_transcript_turns(inner: &serde_json::Value) -> Vec<SessionTranscriptT
         .collect()
 }
 
+/// The canonical `work_items:list` result is a bare array. Keep accepting the
+/// older `{ items: [...] }` wrapper so a pui can talk to a mixed-version
+/// operator during rollout.
+#[derive(Debug, serde::Deserialize)]
+#[serde(untagged)]
+enum WorkItemsListPayload {
+    Array(Vec<WorkItem>),
+    Legacy(WorkItemsPayload),
+}
+
+fn parse_work_items_list_payload(text: &str) -> Result<Vec<WorkItem>> {
+    match serde_json::from_str::<WorkItemsListPayload>(text)
+        .context("parse work_items:list payload")?
+    {
+        WorkItemsListPayload::Array(items) => Ok(items),
+        WorkItemsListPayload::Legacy(payload) => Ok(payload.items),
+    }
+}
+
+/// Lock-resolve's node:test fixtures use `lockresolve-<pid>-<case>` names.
+/// Older operators may still have leaked manifests on disk, so the TUI keeps
+/// them out even when talking to a mixed-version backend.
+fn is_lock_resolve_fixture_name(name: &str) -> bool {
+    let mut parts = name.splitn(3, '-');
+    matches!(
+        (parts.next(), parts.next(), parts.next()),
+        (Some("lockresolve"), Some(pid), Some(case_name))
+            if !pid.is_empty()
+                && pid.bytes().all(|b| b.is_ascii_digit())
+                && !case_name.is_empty()
+    )
+}
+
+fn filter_lock_resolve_fixtures(
+    plugins: Vec<models::PluginManifest>,
+) -> Vec<models::PluginManifest> {
+    plugins
+        .into_iter()
+        .filter(|plugin| !is_lock_resolve_fixture_name(&plugin.name))
+        .collect()
+}
+
 impl OperatorClient {
     /// Resolve a backend. EXPLICIT selection wins (P-001 refit): `PUI_OPERATOR`
     /// = `staging` (:3170) | `release` (:3070) | a full http(s) URL pins the
@@ -1522,9 +1564,7 @@ impl OperatorClient {
             .and_then(|c| c.get("text"))
             .and_then(|t| t.as_str())
             .context("work_items:list: missing content[0].text")?;
-        Ok(serde_json::from_str::<WorkItemsPayload>(text)
-            .context("parse work_items payload")?
-            .items)
+        parse_work_items_list_payload(text)
     }
 
     /// Recent worker-activity rows via the `activity:recent` agent-tool (worker-
@@ -2135,9 +2175,10 @@ impl OperatorClient {
     /// contribution surfaces + configSchema for the Plugins tab.
     pub async fn plugins_global(&self) -> Result<Vec<models::PluginManifest>> {
         let v = self.get_json("/api/plugins/global").await?;
-        Ok(serde_json::from_value::<models::PluginsGlobalResponse>(v)
+        let plugins = serde_json::from_value::<models::PluginsGlobalResponse>(v)
             .context("decode plugins global")?
-            .plugins)
+            .plugins;
+        Ok(filter_lock_resolve_fixtures(plugins))
     }
 
     /// One plugin's saved per-harness config (D-014). Empty object when unset.
@@ -2665,6 +2706,80 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_current_array_root_work_items_list_shape() {
+        // Current `work_items:list` wire shape: the inner JSON is the rows
+        // array itself, not the legacy `{ "items": [...] }` envelope.
+        let j = r#"[
+            {"id":"EI-7","kind":"bug","family":"issue","harness":null,
+             "title":"role pin","state":"open","assignee":null,"severity":"major"},
+            {"id":"F-9","kind":"feature","family":"feature","harness":"papercusp",
+             "title":"A","state":"passed","assignee":"su-x","severity":null}
+        ]"#;
+
+        let rows = parse_work_items_list_payload(j).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, "EI-7");
+        assert_eq!(rows[0].family, "issue");
+        assert_eq!(rows[1].id, "F-9");
+        assert_eq!(rows[1].state, "passed");
+    }
+
+    #[test]
+    fn parses_legacy_object_root_work_items_list_shape() {
+        let j = r#"{"ok":true,"count":1,"items":[
+            {"id":"EI-7","kind":"bug","family":"issue","title":"role pin","state":"open"}
+        ]}"#;
+
+        let rows = parse_work_items_list_payload(j).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "EI-7");
+    }
+
+    #[test]
+    fn filters_leaked_lock_resolve_fixture_manifests() {
+        let plugins = vec![
+            models::PluginManifest {
+                name: "lockresolve-12345-root".into(),
+                version: "0.1.0".into(),
+                ..Default::default()
+            },
+            models::PluginManifest {
+                name: "real-plugin".into(),
+                version: "1.0.0".into(),
+                ..Default::default()
+            },
+        ];
+
+        let filtered = filter_lock_resolve_fixtures(plugins);
+        assert_eq!(
+            filtered.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            ["real-plugin"]
+        );
+    }
+
+    #[test]
+    fn lock_resolve_fixture_filter_has_a_narrow_name_boundary() {
+        for fixture in ["lockresolve-1-root", "lockresolve-987654-lone"] {
+            assert!(
+                is_lock_resolve_fixture_name(fixture),
+                "{fixture} should be hidden"
+            );
+        }
+        for real_name in [
+            "lockresolve",
+            "lockresolve-dev-root",
+            "lockresolve-abc-root",
+            "lockresolve-123",
+            "my-lockresolve-123-root",
+        ] {
+            assert!(
+                !is_lock_resolve_fixture_name(real_name),
+                "{real_name} should remain visible"
+            );
+        }
+    }
 
     #[test]
     fn frontier_block_counts_fold_one_batched_detail_response() {
