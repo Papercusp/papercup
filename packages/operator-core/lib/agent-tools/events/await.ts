@@ -12,6 +12,7 @@
 import { z } from 'zod';
 import { dataConditionSchema } from '@papercusp/rules';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { getMessageById } from '../coordination/messages';
 import { readGateRefs } from '../coordination/ref-hydrate';
@@ -1031,7 +1032,11 @@ export default defineTool({
       planRunId: args.plan_run_id,
     });
 
-    const harnessRaw = typeof ctx.harnessSlug === 'string' && !['*', 'all'].includes(ctx.harnessSlug) ? ctx.harnessSlug : null;
+    // Was a hand-rolled copy of the canonical resolver, sentinel list and all.
+    // resolveConcreteHarnessSlug(null, ctx) is identical by construction — ctx-only
+    // (no arg override), trimmed, and filtered through isAllHarnessSentinel — with
+    // the sentinel vocabulary owned in ONE place instead of duplicated here.
+    const harnessRaw = resolveConcreteHarnessSlug(null, ctx);
     const producerHealthCertificate = args.producer_health
       ? await resolveProducerHealthCertificate({
           producerHealth: args.producer_health,
