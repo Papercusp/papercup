@@ -59,6 +59,10 @@ import {
   type DependencyIdentity,
 } from './dependency-graph-analysis';
 import { getDependencyPolicy, type DependencyPolicyFinding } from './dependency-invariants';
+import {
+  dependencyGraphPerformanceTelemetry,
+  type DependencyGraphPerformanceTelemetry,
+} from './dependency-performance-budget';
 
 /** The issue-family endpoint kind — the counterpart of FEATURE_KIND for this table. */
 const ISSUE_ENDPOINT_KIND = 'issue';
@@ -148,6 +152,7 @@ export interface DependencyGraphPolicyCensusResult {
   hardBlocks: number;
   advisories: number;
   strandedNodes: number;
+  telemetry: DependencyGraphPerformanceTelemetry;
 }
 
 const ISSUE_ITEM_KINDS = new Set(['bug', 'change', 'task']);
@@ -232,6 +237,7 @@ function findingsForAnalysis(
 export async function reconcileDependencyGraphPolicy(
   sql: Sql = getOrgPg().sql,
 ): Promise<DependencyGraphPolicyCensusResult> {
+  const startedAt = performance.now();
   const nodeRows = await sql<
     Array<{ workspace_id: string; harness_slug: string; feature_id: string; item_kind: string; status: string | null }>
   >`
@@ -288,14 +294,22 @@ export async function reconcileDependencyGraphPolicy(
     },
   ];
   const findings = workspaces.flatMap((workspace) => workspace.findings);
+  const nodesCount = workspaces.reduce((sum, workspace) => sum + workspace.nodes, 0);
+  const edgesCount = workspaces.reduce((sum, workspace) => sum + workspace.edges, 0);
   return {
     workspaces,
-    nodes: workspaces.reduce((sum, workspace) => sum + workspace.nodes, 0),
-    edges: workspaces.reduce((sum, workspace) => sum + workspace.edges, 0),
+    nodes: nodesCount,
+    edges: edgesCount,
     findings,
     hardBlocks: findings.filter((finding) => finding.classification === 'hard-block').length,
     advisories: findings.filter((finding) => finding.classification === 'advisory').length,
     strandedNodes: workspaces.reduce((sum, workspace) => sum + workspace.analysis.stranded.length, 0),
+    telemetry: dependencyGraphPerformanceTelemetry({
+      operation: 'census',
+      durationMs: performance.now() - startedAt,
+      nodes: nodesCount,
+      edges: edgesCount,
+    }),
   };
 }
 

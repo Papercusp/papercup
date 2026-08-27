@@ -250,6 +250,14 @@ describe('reconcileDependencyGraphPolicy — complete-graph positive and negativ
 
     const census = await reconcileDependencyGraphPolicy(db.sql);
     expect(census).toMatchObject({ nodes: 3, edges: 2, findings: [], hardBlocks: 0, advisories: 0 });
+    expect(census.telemetry).toMatchObject({
+      schemaVersion: 'dependency-graph-performance-v1',
+      operation: 'census',
+      nodes: 3,
+      edges: 2,
+      budgetMs: 5_000,
+      budgetStatus: 'within-budget',
+    });
   });
 
   it('CATCHES a seeded cycle and exposes its stranded closure without misclassifying it as a new increase', async () => {
@@ -264,6 +272,7 @@ describe('reconcileDependencyGraphPolicy — complete-graph positive and negativ
     expect(census.findings.map((finding) => finding.code)).toEqual(['cycle']);
     expect(census.hardBlocks).toBe(1);
     expect(census.strandedNodes).toBe(3);
+    expect(census.telemetry.durationMs).toBeGreaterThanOrEqual(0);
     expect(census.workspaces[0]?.analysis.strandedClosure.map((node) => `${node.kind}:${node.ref}`)).toEqual(
       expect.arrayContaining(['feature:papercup#F-1', 'feature:papercup#F-2', 'feature:papercup#F-3']),
     );

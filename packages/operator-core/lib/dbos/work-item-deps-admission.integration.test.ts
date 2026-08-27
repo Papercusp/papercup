@@ -104,6 +104,18 @@ describe('canonical dependency batch admission', () => {
     ]);
 
     expect(result).toMatchObject({ inserted: 1, removed: 0 });
+    expect(result.telemetry).toMatchObject({
+      schemaVersion: 'dependency-graph-performance-v1',
+      event: 'dependency-mutation-committed',
+      operation: 'mutation',
+      policyCodes: [],
+      inserted: 1,
+      removed: 0,
+      nodes: 2,
+      edges: 1,
+      budgetMs: 2_000,
+      budgetStatus: 'within-budget',
+    });
     expect(result.after.endpointDefects).toEqual([]);
     expect(result.after.strandedClosure).toEqual([]);
     expect(await storedEdges()).toEqual([
@@ -128,6 +140,14 @@ describe('canonical dependency batch admission', () => {
     );
 
     expect(error.findings.map((finding) => finding.policy.code)).toEqual(['cycle', 'stranded-set-increase']);
+    expect(error.telemetry).toMatchObject({
+      schemaVersion: 'dependency-graph-performance-v1',
+      event: 'dependency-mutation-rejected',
+      operation: 'mutation',
+      policyCodes: ['cycle', 'stranded-set-increase'],
+      nodes: 2,
+      edges: 2,
+    });
     const cycle = error.findings[0]!.cycles[0]!.cyclePath.map((node) => node.ref);
     expect(cycle[0]).toBe(cycle.at(-1));
     expect(new Set(cycle.slice(0, -1))).toEqual(new Set(['EI-A', 'EI-B']));

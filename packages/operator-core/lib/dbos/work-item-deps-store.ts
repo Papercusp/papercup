@@ -27,6 +27,10 @@ import {
   type DependencyStronglyConnectedComponent,
 } from '../scheduler/dependency-graph-analysis';
 import { getDependencyPolicy, type DependencyPolicyRule } from '../scheduler/dependency-invariants';
+import {
+  dependencyGraphPerformanceTelemetry,
+  type DependencyGraphPerformanceTelemetry,
+} from '../scheduler/dependency-performance-budget';
 import { TERMINAL_STATUSES } from './frontier-readiness';
 import { isCompletionSettled, type CompletionAuthorityFrom } from '../work-item-completion-authority';
 
@@ -47,7 +51,10 @@ export interface WorkItemBlockingEdge {
 
 export const DEPENDENCY_SATISFACTIONS = ['settled', 'success'] as const;
 export type DependencySatisfaction = (typeof DEPENDENCY_SATISFACTIONS)[number];
-export interface WorkItemBlockerRequirement { id: string; satisfaction: DependencySatisfaction }
+export interface WorkItemBlockerRequirement {
+  id: string;
+  satisfaction: DependencySatisfaction;
+}
 
 export type WorkItemDependencyMutation =
   | {
@@ -100,6 +107,14 @@ export interface WorkItemDependencyBatchResult {
   readonly removed: number;
   readonly before: DependencyGraphAnalysis;
   readonly after: DependencyGraphAnalysis;
+  readonly telemetry: WorkItemDependencyMutationTelemetry;
+}
+
+export interface WorkItemDependencyMutationTelemetry extends DependencyGraphPerformanceTelemetry {
+  readonly event: 'dependency-mutation-committed' | 'dependency-mutation-rejected';
+  readonly policyCodes: readonly string[];
+  readonly inserted?: number;
+  readonly removed?: number;
 }
 
 /** Shared options for the compatibility facades routed through the canonical mutation seam. */
@@ -123,6 +138,7 @@ export class WorkItemDependencyAdmissionError extends Error {
     readonly findings: readonly WorkItemDependencyAdmissionFinding[],
     readonly before: DependencyGraphAnalysis,
     readonly after: DependencyGraphAnalysis,
+    readonly telemetry: WorkItemDependencyMutationTelemetry,
   ) {
     const details = findings.flatMap((finding) => [
       ...finding.cycles.map((cycle) => `dependency cycle: ${cycle.cyclePath.map(identityLabel).join(' -> ')}`),
@@ -219,9 +235,7 @@ function normalizedStatus(row: WorkItemNodeRow): string {
 function workItemRowIsTerminal(row: WorkItemNodeRow): boolean {
   const status = normalizedStatus(row);
   const issueFamily = ISSUE_ITEM_KINDS.has(row.item_kind);
-  const lifecycleTerminal = issueFamily
-    ? ISSUE_TERMINAL_STATUSES.has(status)
-    : TERMINAL_STATUSES.has(status);
+  const lifecycleTerminal = issueFamily ? ISSUE_TERMINAL_STATUSES.has(status) : TERMINAL_STATUSES.has(status);
   const abandoned = issueFamily
     ? status === 'closed' || status === 'dropped'
     : status === 'deprecated' || status === 'dropped';
@@ -566,6 +580,7 @@ export async function mutateWorkItemDependencies(
   input: WorkItemDependencyBatchInput,
   opts: { sql?: Sql; retry?: SerializableRetryOptions } = {},
 ): Promise<WorkItemDependencyBatchResult> {
+  const startedAt = performance.now();
   const sql = opts.sql ?? (getOrgPg().sql as Sql);
   return withSerializableRetry(
     sql,
@@ -591,9 +606,35 @@ export async function mutateWorkItemDependencies(
           lifecycleConflicts,
         });
       }
-      if (findings.length > 0) throw new WorkItemDependencyAdmissionError(findings, before, after);
+      if (findings.length > 0) {
+        throw new WorkItemDependencyAdmissionError(findings, before, after, {
+          ...dependencyGraphPerformanceTelemetry({
+            operation: 'mutation',
+            durationMs: performance.now() - startedAt,
+            nodes: after.verdicts.length,
+            edges: candidate.length,
+          }),
+          event: 'dependency-mutation-rejected',
+          policyCodes: findings.map((finding) => finding.policy.code),
+        });
+      }
       const diff = await applyStoredEdgeDiff(tx, input.workspaceId, current, candidate);
-      return { ...diff, before, after };
+      return {
+        ...diff,
+        before,
+        after,
+        telemetry: {
+          ...dependencyGraphPerformanceTelemetry({
+            operation: 'mutation',
+            durationMs: performance.now() - startedAt,
+            nodes: after.verdicts.length,
+            edges: candidate.length,
+          }),
+          event: 'dependency-mutation-committed',
+          policyCodes: [],
+          ...diff,
+        },
+      };
     },
     opts.retry,
   );

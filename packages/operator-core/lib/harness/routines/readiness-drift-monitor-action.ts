@@ -158,13 +158,17 @@ async function sweepDependencyGraphPolicy(): Promise<void> {
     if (census.findings.length === 0) {
       console.log(
         `[readiness-drift-monitor] dependency policy clean across ${census.workspaces.length} workspace(s) ` +
-          `(nodes=${census.nodes} edges=${census.edges} findings=0 stranded=${census.strandedNodes})`,
+          `(nodes=${census.nodes} edges=${census.edges} findings=0 stranded=${census.strandedNodes} ` +
+          `durationMs=${census.telemetry.durationMs} budgetMs=${census.telemetry.budgetMs} ` +
+          `budgetStatus=${census.telemetry.budgetStatus})`,
       );
       return;
     }
     console.warn(
       `[readiness-drift-monitor] DEPENDENCY POLICY FINDINGS findings=${census.findings.length} ` +
-        `hard=${census.hardBlocks} advisory=${census.advisories} nodes=${census.nodes} edges=${census.edges}`,
+        `hard=${census.hardBlocks} advisory=${census.advisories} nodes=${census.nodes} edges=${census.edges} ` +
+        `durationMs=${census.telemetry.durationMs} budgetMs=${census.telemetry.budgetMs} ` +
+        `budgetStatus=${census.telemetry.budgetStatus}`,
     );
     for (const workspace of census.workspaces.filter((row) => row.findings.length > 0).slice(0, SAMPLE)) {
       console.warn(

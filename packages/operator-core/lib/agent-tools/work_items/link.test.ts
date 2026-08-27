@@ -25,7 +25,7 @@ const guardM = vi.mocked(guardFeatureBlockEdgeAcyclic);
 const tool = (await import('./link')).default;
 
 type Out = { data: any };
-const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -36,6 +36,11 @@ beforeEach(() => {
 });
 
 describe('work_items:link args schema (EI-7049)', () => {
+  it('teaches the default-on complete-candidate admission contract', () => {
+    expect(tool.description).toMatch(/default-on.*complete typed candidate graph/i);
+    expect(tool.guidance?.when).toMatch(/refuses cycles, bad endpoints, and newly stranded work/i);
+  });
+
   it('rejects a call missing id/rel/items with a message naming the EXACT field (no truncated ellipsis)', () => {
     const r = tool.args.safeParse({});
     expect(r.success).toBe(false);
@@ -65,7 +70,10 @@ describe('work_items:link handler (bulk keyed-array)', () => {
     const b = await body({ id: 'WI-1', rel: 'blocks', target_id: 'WI-T' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', rel: 'blocks' });
-    expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', { harness: undefined, by: 'me' });
+    expect(linkM).toHaveBeenCalledWith('WI-1', { kind: 'work_item', ref: 'WI-T' }, 'blocks', {
+      harness: undefined,
+      by: 'me',
+    });
   });
 
   it('threads an explicit success requirement only for work-item blocks edges', async () => {
@@ -85,20 +93,22 @@ describe('work_items:link handler (bulk keyed-array)', () => {
 
   it('persists a revision edge with source=new revision and target=original', async () => {
     await body({ id: 'EI-2', rel: 'revises', target_id: 'EI-1' });
-    expect(linkM).toHaveBeenCalledWith(
-      'EI-2',
-      { kind: 'work_item', ref: 'WI-T' },
-      'revises',
-      { harness: undefined, by: 'me' },
-    );
+    expect(linkM).toHaveBeenCalledWith('EI-2', { kind: 'work_item', ref: 'WI-T' }, 'revises', {
+      harness: undefined,
+      by: 'me',
+    });
   });
 
   it('fans out many edges (items:[…]); a missing target fails only that edge', async () => {
-    resolveM.mockImplementation(async (tid: string) => (tid === 'WI-MISS' ? null : ({ kind: 'work_item', ref: tid } as never)));
-    const b = await body({ items: [
-      { id: 'WI-1', rel: 'blocks', target_id: 'WI-2' },
-      { id: 'WI-1', rel: 'relates', target_id: 'WI-MISS' },
-    ] });
+    resolveM.mockImplementation(async (tid: string) =>
+      tid === 'WI-MISS' ? null : ({ kind: 'work_item', ref: tid } as never),
+    );
+    const b = await body({
+      items: [
+        { id: 'WI-1', rel: 'blocks', target_id: 'WI-2' },
+        { id: 'WI-1', rel: 'relates', target_id: 'WI-MISS' },
+      ],
+    });
     expect(b.counts).toEqual({ ok: 1, failed: 1 });
     expect(b.results[1]).toMatchObject({ ok: false, id: 'WI-1', rel: 'relates' });
     expect(String(b.results[1].error)).toMatch(/WI-MISS.*not found/i);

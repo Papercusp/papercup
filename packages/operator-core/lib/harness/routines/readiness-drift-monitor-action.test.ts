@@ -48,6 +48,16 @@ const CLEAN_GRAPH_POLICY = {
   hardBlocks: 0,
   advisories: 0,
   strandedNodes: 0,
+  telemetry: {
+    schemaVersion: 'dependency-graph-performance-v1',
+    operation: 'census',
+    durationMs: 12.3,
+    budgetMs: 5_000,
+    budgetStatus: 'within-budget',
+    nodes: 0,
+    edges: 0,
+    scaleBaseline: { nodes: 130_000, edges: 1_500 },
+  },
 };
 
 const run = async (payloadTemplate: Record<string, unknown> | null = null) => {
@@ -85,6 +95,7 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
     // sweep must still have run.
     expect(reconcileEndpointsMock).toHaveBeenCalledTimes(1);
     expect(reconcileGraphPolicyMock).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringMatching(/durationMs=12\.3.*budgetStatus=within-budget/));
   });
 
   it('still runs the endpoint sweep when the readiness sweep THROWS', async () => {
@@ -118,6 +129,7 @@ describe('system:readiness-drift-monitor — sweep wiring', () => {
       hardBlocks: 1,
       advisories: 0,
       strandedNodes: 2,
+      telemetry: { ...CLEAN_GRAPH_POLICY.telemetry, nodes: 2, edges: 2 },
     });
     await run();
     const logged = warnSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');

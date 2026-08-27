@@ -33,7 +33,16 @@ import { runBulk, bulkContent } from '../_bulk';
  * semantics (the acyclicity guard below); the rest are descriptive edges surfaced
  * in work_items:get { detail:true }.
  */
-export const LINK_RELS = ['blocks', 'relates', 'duplicates', 'fixes', 'about', 'investigates', 'caused-by', 'revises'] as const;
+export const LINK_RELS = [
+  'blocks',
+  'relates',
+  'duplicates',
+  'fixes',
+  'about',
+  'investigates',
+  'caused-by',
+  'revises',
+] as const;
 export type LinkRel = (typeof LINK_RELS)[number];
 
 const itemSpec = z.object({
@@ -41,20 +50,27 @@ const itemSpec = z.object({
   rel: z.enum(LINK_RELS),
   target_id: z.string().max(120).optional().describe('a target work-item id (resolved to its coord ref)'),
   target_harness: z.string().max(80).optional().describe('harness for a feature target_id (disambiguation)'),
-  target_kind: z.string().max(40).optional().describe('explicit coord ObjectRef kind (e.g. plan_item) — use with target_ref'),
+  target_kind: z
+    .string()
+    .max(40)
+    .optional()
+    .describe('explicit coord ObjectRef kind (e.g. plan_item) — use with target_ref'),
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   harness: z.string().max(80).optional().describe('harness for the source id (feature disambiguation)'),
   remove: z.boolean().optional(),
-  satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
+  satisfaction: z
+    .enum(['settled', 'success'])
+    .optional()
+    .describe('blocks-only outcome requirement; omitted defaults to settled'),
 });
 
 export default defineTool({
   name: 'work_items:link',
   profile: 'engineer',
   description:
-    "Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.",
+    'Link one OR many work-items to targets — single inline { id, rel, target_id } or items:[{ id, rel, target_id | target_kind+target_ref, remove? }] (a source can fan out to many targets in one call). DIRECTION — the source `id` is always the subject: src BLOCKS dst (dst is the one held up), src FIXES dst, src DUPLICATES dst (dst stays canonical), src INVESTIGATES dst, src is ABOUT dst, src was CAUSED-BY dst, src REVISES dst; `relates` is symmetric. Targets are polymorphic: another work-item (target_id) or any coord ObjectRef (target_kind+target_ref — a plan_item, event key, topic). Blocking works across kinds and is default-on validated against the complete typed candidate graph; cycles, endpoint defects, and newly stranded work are rejected atomically with exact evidence. Pass remove:true to unlink. Returns { ok, results:[{ ok, id, rel, dst? | error }], counts }.',
   guidance: {
-    when: 'You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; kept acyclic); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst (the regression source); `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].',
+    when: 'You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; the canonical transaction validates the complete typed post-state and refuses cycles, bad endpoints, and newly stranded work); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].',
     chaining: 'work_items:get both sides → work_items:link { rel:"blocks", target_id } (or items:[…]).',
     seeAlso: [
       'work_items:get (inspect both endpoints before linking)',
@@ -75,7 +91,10 @@ export default defineTool({
       target_ref: z.string().max(160).optional(),
       harness: z.string().max(80).optional().describe('default harness for the source id / items that omit one'),
       remove: z.boolean().optional(),
-      satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
+      satisfaction: z
+        .enum(['settled', 'success'])
+        .optional()
+        .describe('blocks-only outcome requirement; omitted defaults to settled'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many edges at once'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.rel)), {
@@ -83,30 +102,39 @@ export default defineTool({
       // failed retry (a caller without the schema loaded guessed a literal `target`
       // field, which doesn't exist — only target_id / target_kind+target_ref do).
       // Name them exactly; never elide a required field name in an error hint.
-      message: 'pass { id, rel, target_id } (or target_kind + target_ref instead of target_id) for one, or items:[…] for many',
+      message:
+        'pass { id, rel, target_id } (or target_kind + target_ref instead of target_id) for one, or items:[…] for many',
     }),
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const items = args.items?.length
       ? args.items
-      : [{
-          id: args.id as string,
-          rel: args.rel as LinkRel,
-          target_id: args.target_id,
-          target_harness: args.target_harness,
-          target_kind: args.target_kind,
-          target_ref: args.target_ref,
-          harness: args.harness,
-          remove: args.remove,
-          satisfaction: args.satisfaction,
-        }];
+      : [
+          {
+            id: args.id as string,
+            rel: args.rel as LinkRel,
+            target_id: args.target_id,
+            target_harness: args.target_harness,
+            target_kind: args.target_kind,
+            target_ref: args.target_ref,
+            harness: args.harness,
+            remove: args.remove,
+            satisfaction: args.satisfaction,
+          },
+        ];
     const env = await runBulk(
       items,
       async (it) => {
         let dst: ObjectRef | null = null;
         if (it.target_id) {
           dst = await resolveWorkItemRef(it.target_id, it.target_harness);
-          if (!dst) return { ok: false as const, id: it.id, rel: it.rel, error: `target work_item '${it.target_id}' not found` };
+          if (!dst)
+            return {
+              ok: false as const,
+              id: it.id,
+              rel: it.rel,
+              error: `target work_item '${it.target_id}' not found`,
+            };
         } else if (it.target_kind && it.target_ref) {
           dst = { kind: it.target_kind, ref: it.target_ref };
         } else {
@@ -138,7 +166,9 @@ export default defineTool({
               by: ident.ownerId,
               ...(it.satisfaction ? { satisfaction: it.satisfaction } : {}),
             });
-        return 'error' in res ? { ok: false as const, id: it.id, rel: it.rel, error: res.error } : { ok: true as const, id: it.id, rel: it.rel, dst };
+        return 'error' in res
+          ? { ok: false as const, id: it.id, rel: it.rel, error: res.error }
+          : { ok: true as const, id: it.id, rel: it.rel, dst };
       },
       { keyOf: (it) => ({ id: it.id, rel: it.rel }) },
     );
