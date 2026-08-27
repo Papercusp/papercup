@@ -452,7 +452,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
 
     const compact = compactSchemaForResult(schema);
     expect(compact).toContain(
-      'body?:array(1-20){text:string,premises?:array(≤20),youMayNotKnow?:array(≤20){ref:string,provenance:enum(computed|authored)},couldNotDetermine?:array(≤20){what:string,note?:string}}',
+      'body?:array(1-20){text:string,premises?:array(≤20)<string>,youMayNotKnow?:array(≤20){ref:string,provenance:enum(computed|authored)},couldNotDetermine?:array(≤20){what:string,note?:string}}',
     );
     expect(compact).toContain('expects?:enum(ack|answer|action|none)');
     expect(compact).not.toContain('body?:string|');
@@ -460,6 +460,15 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).not.toContain('youMayNotKnow?:array|string');
     expect(compact).not.toContain('couldNotDetermine?:array|string');
     expect(compact).not.toContain('description');
+  });
+
+  it('EI-21579794371308546: live coord:send discovery identifies premises as string refs', () => {
+    const { schemaByTool } = buildCorpus();
+    const compact = compactSchemaForResult(schemaByTool.get('coord:send'));
+
+    expect(compact).toContain('premises?:array(≤20)<string>');
+    expect(compact).toContain('forYouBecause?:object{relation');
+    expect(compact).not.toContain('premises?:array(≤20){');
   });
 
   it('keeps ordinary unions intact when they are not teaching-only array branches', () => {
