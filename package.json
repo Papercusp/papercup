@@ -38,6 +38,7 @@
     "libs/papercusp/packages/orchestrator",
     "libs/generic/model-pricing",
     "libs/papercusp/packages/blueprint-distribution",
+    "libs/papercusp/packages/cli",
     "libs/papercusp/packages/locks",
     "libs/papercusp/packages/embedded-postgres-server",
     "libs/papercusp/plugins/gitnexus-bridge",
