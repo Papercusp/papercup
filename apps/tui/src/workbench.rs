@@ -347,7 +347,11 @@ mod tests {
             agent: Some("claude".into()),
             ..Default::default()
         };
-        let roster = vec![entry(11, "live"), entry(22, "parked"), entry(33, "recorded")];
+        let roster = vec![
+            entry(11, "live"),
+            entry(22, "parked"),
+            entry(33, "recorded"),
+        ];
         let members = vec![fresh, m("11"), m("22"), m("33"), m("44")];
         let p = partition_crew(&members, &roster);
         assert_eq!(p.fresh.len(), 1, "no-resume member spawns fresh");
