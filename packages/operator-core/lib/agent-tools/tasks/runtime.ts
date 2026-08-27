@@ -16,6 +16,7 @@ import {
 import { getActiveClaimForOwner } from '../../work-item-claims';
 import { setWorkItemCheckpointWithPrior } from '../../work-item-checkpoint';
 import { isWorkItemKind } from '../../work-items';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { createOneWorkItem } from '../work_items/_create-core';
 import type { PapercuspUnifiedToolContext } from '../_tool-context';
@@ -170,7 +171,10 @@ export function resolveSessionTaskRuntime(ctx: PapercuspUnifiedToolContext) {
     workspaceId,
     sessionId,
     actorId: identity.ownerId,
-    defaultHarness: ctx.harnessSlug?.trim() || undefined,
+    // NOT `ctx.harnessSlug?.trim() || undefined`: the all-harnesses sentinel is a
+    // TRUTHY string, so that form handed '*'/'all' downstream as if it were a
+    // concrete harness slug. The canonical resolver returns null for the sentinel.
+    defaultHarness: resolveConcreteHarnessSlug(null, ctx) ?? undefined,
     tx: ctx.tx,
     idFactory: () => `task-${randomUUID()}`,
   };
