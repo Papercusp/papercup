@@ -174,7 +174,9 @@ function observedInboxRunItems(): BulkRunItem[] {
       next({
         itemId: `handled-${index}`,
         outcome: "auto_resolved",
-        actionId: "ack",
+        // Real runs can persist the same action on handled and still-live
+        // rows; this mixed group is the mount-cost regression case.
+        actionId: "drop",
       }),
     ),
     ...Array.from({ length: 6 }, (_, index) =>
@@ -293,8 +295,15 @@ describe("buildInboxBulkReviewGroups", () => {
       items,
     );
 
-    const ack = groups.find((group) => group.title === "Acknowledge · Message");
-    expect(ack?.rows).toHaveLength(2);
+    const ack = groups.find((group) => group.id === "ack:coord-message");
+    const ackOtherResults = groups.find(
+      (group) => group.id === "ack:coord-message:other-results",
+    );
+    expect(ack?.rows).toHaveLength(1);
+    expect(ackOtherResults).toMatchObject({
+      title: "Acknowledge · Message · Other results",
+    });
+    expect(ackOtherResults?.rows).toHaveLength(1);
     expect(ack?.rows.find((row) => row.id === "a")).toMatchObject({
       status: "pending",
       selectable: true,
@@ -303,7 +312,7 @@ describe("buildInboxBulkReviewGroups", () => {
       sourceLabel: "Message",
       referenceLabel: "Acknowledge",
     });
-    expect(ack?.rows.find((row) => row.id === "b")).toMatchObject({
+    expect(ackOtherResults?.rows.find((row) => row.id === "b")).toMatchObject({
       status: "applied",
       selectable: false,
       accounting: "handled",
@@ -395,6 +404,11 @@ describe("buildInboxBulkReviewGroups", () => {
       screen.getByTestId("review-report-not-applied-count").textContent,
     ).toBe("136");
     expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(9);
+    const handledToggle = screen.getByTestId(
+      "review-group-toggle-drop:coord-message:other-results",
+    );
+    expect(handledToggle.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("review-row-handled-0")).toBeNull();
     const unresolvedToggle = screen.getByTestId(
       "review-group-toggle-skipped:coord-message",
     );
@@ -405,6 +419,11 @@ describe("buildInboxBulkReviewGroups", () => {
     expect(unresolvedToggle.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByTestId("review-row-unresolved-0")).toBeTruthy();
     expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(145);
+
+    fireEvent.click(handledToggle);
+    expect(handledToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("review-row-handled-0")).toBeTruthy();
+    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(158);
   });
 });
 
