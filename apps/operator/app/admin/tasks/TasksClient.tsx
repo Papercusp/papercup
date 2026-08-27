@@ -197,15 +197,6 @@ function processProvenance(p: LiveProcess): {
   }
 }
 
-/** `node …/foo/bar.ts --flag` → `bar.ts` — the part a human scans for. Pure. */
-export function shortCmd(cmdline: string | null): string {
-  if (!cmdline) return '—';
-  const parts = cmdline.trim().split(/\s+/);
-  const meaningful = parts.find((p) => !/^(node|npx|npm|bash|sh|python3?|tsx)$/.test(p.replace(/.*\//, ''))) ?? parts[0];
-  const base = meaningful.replace(/.*\//, '');
-  return base.length > 0 ? base : cmdline.slice(0, 40);
-}
-
 // ── pure formatters (exported for tests) ────────────────────────────────────
 
 /** Bytes → a human size. `null` renders as an em-dash, NEVER as 0 — a fabricated
@@ -389,11 +380,31 @@ const PROC_COLUMNS: TableColumn<LiveProcess>[] = [
   },
   { key: 'pid', header: 'pid', headerStyle: head, render: (p) => p.pid, cellStyle: cell },
   {
-    key: 'cmd',
-    header: 'process',
+    key: 'executable',
+    header: 'executable',
     headerStyle: head,
-    // Full cmdline on hover — the short name is for scanning, the title for identifying.
-    render: (p) => <span title={p.cmdline ?? ''}>{shortCmd(p.cmdline)}</span>,
+    render: (p) => p.executable ?? '—',
+    cellStyle: cell,
+  },
+  {
+    key: 'role',
+    header: 'role',
+    headerStyle: head,
+    render: (p) => p.role ?? '—',
+    cellStyle: cell,
+  },
+  {
+    key: 'build',
+    header: 'build',
+    headerStyle: head,
+    render: (p) => p.build ?? '—',
+    cellStyle: cell,
+  },
+  {
+    key: 'started',
+    header: 'started',
+    headerStyle: head,
+    render: (p) => (p.startedAt ? <span title={p.startedAt}>{fmtAge(p.startedAt)}</span> : '—'),
     cellStyle: cell,
   },
   {
@@ -631,7 +642,7 @@ export default function TasksClient(): ReactElement {
             <div key={g.cgroupPath} style={{ ...cell, opacity: 0.85 }}>
               <div>{g.cgroupPath}</div>
               <div style={{ opacity: 0.7 }}>
-                {g.pids.length} pid(s) · {g.sample}
+                {g.pids.length} pid(s) · executable {g.sample}
               </div>
             </div>
           ))}

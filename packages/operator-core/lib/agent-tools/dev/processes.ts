@@ -2,8 +2,9 @@
  * dev:processes — inventory of the six TRACKED agent process kinds on this
  * host. Deliberately NOT a general process list.
  *
- * Walks /proc, classifies cmdlines (run.sh, omp, claude, paperclip, pty,
- * next), maps each cwd to a harness slug + workspace if possible.
+ * Walks /proc, classifies internal cmdlines (run.sh, omp, claude, paperclip,
+ * pty, next), then returns only stable executable/role/build metadata plus
+ * cwd and start time. Arbitrary argv is never a client field.
  * Read-only; kill is design-blocked behind Tier 1 capability work.
  *
  * SCOPE IS INTENTIONAL — do not widen it (D-009, plan
@@ -36,7 +37,7 @@ export default defineTool({
   name: 'dev:processes',
   profile: 'engineer',
   description:
-    'Inventory of the SIX tracked AGENT process kinds only (run.sh, omp, claude, paperclip, pty, next) with cmdline, cwd, and inferred harness/workspace. NOT a general process list and NOT a `ps` substitute: every other process — vitest, tsc, npm, gate/deploy scripts, containers — is dropped before you see it, so a short/empty result means "no agent processes of those kinds", never "nothing is running".',
+    'Inventory of the SIX tracked AGENT process kinds only (run.sh, omp, claude, paperclip, pty, next) with stable executable/role/build metadata, start time, cwd, and inferred harness/workspace. Arbitrary argv is never returned. NOT a general process list and NOT a `ps` substitute: every other process — vitest, tsc, npm, gate/deploy scripts, containers — is dropped before you see it, so a short/empty result means "no agent processes of those kinds", never "nothing is running".',
   capability: 'intel:read',
   guidance: {
     when: `You specifically want the AGENT inventory: which delegates / orchestrator children / pty hosts / paperclip / next-servers are up, and under which harness + cwd. The /dev panel view.`,

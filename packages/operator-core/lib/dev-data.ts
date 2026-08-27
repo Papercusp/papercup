@@ -14,6 +14,7 @@ import {
   agentToolInvocationPredicate,
   dispatchWrapperExclusionPredicate,
 } from './agent-tools/sessions/automatic-tool-names';
+import { readProcessMetadata } from './process-metadata';
 
 /**
  * Build a transport WHERE-fragment for tool_invocations queries.
@@ -1494,7 +1495,10 @@ export async function getSessionDetail(spawnId: string): Promise<SessionDetail |
 export interface ProcessEntry {
   pid: number;
   kind: 'run.sh' | 'omp' | 'claude' | 'paperclip' | 'pty' | 'next' | 'other';
-  cmdline: string;
+  executable: string | null;
+  role: string | null;
+  build: string | null;
+  started_at: string | null;
   cwd: string | null;
   started_seconds_ago: number;
   harness_slug: string | null;
@@ -1617,6 +1621,7 @@ export async function listProcesses(
       /* no stat */
     }
     const started_seconds_ago = startedMs > 0 ? Math.floor((now - startedMs) / 1000) : 0;
+    const metadata = readProcessMetadata(Number(pid), cmdline, kind);
 
     let harness_slug: string | null = null;
     let workspace_id: string | null = null;
@@ -1633,7 +1638,8 @@ export async function listProcesses(
     out.push({
       pid: Number(pid),
       kind,
-      cmdline: cmdline.slice(0, 240),
+      ...metadata,
+      started_at: startedMs > 0 ? new Date(startedMs).toISOString() : null,
       cwd,
       started_seconds_ago,
       harness_slug,

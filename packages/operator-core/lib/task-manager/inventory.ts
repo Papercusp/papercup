@@ -22,6 +22,7 @@ import { defaultForeignSignature } from './scan';
 import type { ExemptReason, ProcessScope } from './scope-class';
 import type { ScannedProcess } from './reconcile';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
+import { formatProcessStartTime, projectProcessMetadata, readProcessMetadata } from '../process-metadata';
 import { redactSensitiveText } from '../sensitive-text';
 import { readSuperuserToken } from '../superuser-token';
 
@@ -73,7 +74,10 @@ export type { ScheduleTaskRow, ScheduleTaskSummary, TaskInventoryRow, TaskResour
  */
 export type LiveProcessRow = {
   pid: number;
-  cmdline: string | null;
+  startedAt: string | null;
+  executable: string | null;
+  role: string | null;
+  build: string | null;
   cgroupPath: string;
   /** true = inside our slice (enrolled lineage); false = signature-matched, unenrolled. */
   owned: boolean;
@@ -219,11 +223,13 @@ function localDiagnosticSecrets(): readonly string[] {
 /** Pure projection for a `/proc` row crossing into a task-manager client. */
 export function projectLiveProcess(
   p: ScannedProcess,
-  knownSecrets: readonly string[] = localDiagnosticSecrets(),
+  _knownSecrets: readonly string[] = [],
 ): LiveProcessRow {
+  const metadata = readProcessMetadata(p.pid, p.cmdline);
   return {
     pid: p.pid,
-    cmdline: p.cmdline ? safeDisplayText(p.cmdline, 300, knownSecrets) : null,
+    startedAt: formatProcessStartTime(p.startedAtMs),
+    ...metadata,
     cgroupPath: p.cgroupPath,
     owned: p.owned,
     scope: p.scope,
@@ -425,7 +431,7 @@ async function runLiveScan(): Promise<LiveScanResult> {
         unaccounted: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
           pids: g.pids,
-          sample: safeDisplayText(g.sampleCmdline, 200, diagnosticSecrets),
+          sample: projectProcessMetadata({ cmdline: g.sampleCmdline }).executable ?? 'unknown',
         })),
       },
       // Owned first (enrolled lineage), then the genuine escapes, then the
@@ -475,7 +481,7 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
     const scanned = await scanLive(Date.now());
     live = scanned.live;
     // `countsOnly` is the HEADER PILL's arm: it needs the live TOTALS to state a
-    // true process count, but shipping 4000 cmdlines to a control that renders one
+    // true process count, but shipping 4000 process rows to a control that renders one
     // short string would put the whole process table behind every tab of the app.
     // Same memoised scan either way — this drops only the payload.
     liveProcesses = opts.countsOnly ? [] : scanned.liveProcesses;
