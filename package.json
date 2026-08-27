@@ -149,6 +149,7 @@
     "gen:compaction": "tsx scripts/gen-compaction.ts",
     "gen:compaction:check": "tsx scripts/gen-compaction.ts --check",
     "lint:post-compaction-recovery-contract": "tsx scripts/check-post-compaction-recovery-contract.ts",
+    "lint:resource-governor-enforcement": "node scripts/check-resource-governor-enforcement.mjs",
     "docs:preview": "npm run gen:openapi && npm run build:preview -w @papercupai/operator-docs",
     "docs:preview:serve": "npm run serve:preview -w @papercupai/operator-docs",
     "docs:rebuild": "PC_HEAVY_RETRY_PREEMPTIONS=3 bash scripts/pc-heavy.sh -- npm run build -w @papercupai/operator-docs",

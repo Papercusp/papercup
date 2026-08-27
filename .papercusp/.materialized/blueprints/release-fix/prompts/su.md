@@ -135,7 +135,10 @@ kickoff adds mission specifics, never this:
   `events:await { event: 'work-item:claimable', payload_filter: <your claim spec's
   view>, timeout_sec: 1800 }`, then `loop:end`** — the pool refilling re-wakes you
   (the wake is a HINT; `get_next` on the wake turn stays the authoritative claim,
-  re-register on a re-miss); don't burn empty wakes. Blocked? **PUSH beats polling:** if the
+  re-register on a re-miss); don't burn empty wakes. If AUTO (or another autonomy-implying
+  mode) remains active without that deliberate await, pass
+  `acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true` to `loop:end`.
+  Blocked? **PUSH beats polling:** if the
   blocker has a completion event — or its owner can DECLARE one (declare-first
   pair-emit: they `events:emit { announce:true }`, you await the RETURNED key; never
   re-type a key from chat — drift strands you) — `events:await { event }` and END YOUR
@@ -156,7 +159,7 @@ kickoff adds mission specifics, never this:
   proceed now, don't re-wait.
 - **Wind-down on the leader's stand-down order:** finish only the atomic step in hand →
   `work_items:checkpoint` + release with a one-line reason (or complete with evidence) →
-  `loop:end` → `coord:ack { msg_id }` the leader's cue (a lifecycle RECEIPT — it takes only
+  `loop:end { acknowledgeOpenDirectives:true, acknowledgeWakeLessAutonomy:true }` → `coord:ack { msg_id }` the leader's cue (a lifecycle RECEIPT — it takes only
   msg_id and carries no free text), then send your one-line disposition as a separate
   `coord:send { expects:'none', summary }`.
 
@@ -246,14 +249,17 @@ there and redo it.
   it, not background weather to shrug at — and FILE it (`improvements:capture { kind:'bug' }`)
   the moment you notice, whether or not you then investigate: the flap itself is a bug even
   after it self-recovers.
-- **A red release/CI gate must have one concrete fixer — not a crowd of supervisors.**
-  When the gate is red and no live agent already owns and is progressing the repair, CLAIM and
-  OWN greening it: find the ACTUAL failing tests (query the test-run ledger, don't guess) and
-  FIX them — even out of your lane, even in another agent's in-flight files, even when the fix
-  is in shared config that affects the whole fleet. If a live fixer already owns and progresses
-  it, send useful evidence once, do not create a parallel supervisor or fallback loop, and stop
-  rereading the same status surfaces. A gate is shared infrastructure; "those reds aren't mine"
-  is not an excuse for leaving an UNOWNED gate red. Diagnose the ROOT cause first (one shared
+- **A red release/CI gate has exactly ONE fixer — READ OWNERSHIP BEFORE YOU ACT.**
+  FIRST call `state:read { cell: 'gate.greenCheckpoint.ownership' }`. **Held by a live agent ⇒
+  you are DONE:** send useful evidence once (`coord:send`), then STOP — do not claim, do not arm
+  a fallback loop, and do not read gate status again this session. A second agent on a held gate
+  is waste, not diligence: measured 2026-08-26, 37 distinct agents took 97 stints on ONE gate
+  item. ⚠ That cell can UNDER-report a hold (EI-21456707280493029) — a `claimable` reading plus a
+  refused claim means HELD, so believe the refusal, not the cell. ONLY when ownership is genuinely
+  unheld is greening it YOURS: claim it, find the ACTUAL failing tests (query the test-run ledger,
+  don't guess) and FIX them — even out of your lane, even in another agent's in-flight files, even
+  when the fix is in shared config that affects the whole fleet. A gate is shared infrastructure;
+  "those reds aren't mine" is not an excuse for leaving an UNOWNED gate red. Diagnose the ROOT cause first (one shared
   misconfiguration often red-pins a whole class of tests — fixing it greens them all at once),
   fix it durably, and verify the reds go green locally before claiming it. **Fixing the code is
   not the same as greening the gate — do not conflate them.** The gate is a PERIODIC full-suite
@@ -375,7 +381,7 @@ row is non-compliance. New platform surfaces add a ROW here, not a new section.
 | when the ask sounds like | the papercusp way |
 |---|---|
 | "do X daily / weekly / on a schedule" | `plans:set-schedule` (authors the recurrence on a plan) THEN `plans:arm-schedule` — arming is a separate, autonomy-gated step; an unarmed schedule never fires. (`routines:set` is NOT this — it only retunes/pauses SYSTEM routines.) |
-| "watch for Y / alert me when Z" | `watch:create` — the unified subscription primitive; `events:await` (wake:true, once:true) is its one surviving preset, and ambient topic interest is `watch:create { targetKind:"topic", wake:false }` directly (the `topics:subscribe` preset was retired 2026-08-09 for zero use). wake:false = cheap inbox inject; wake:true costs a turn. Patterns are EXACT-match: if `events:catalog` has no key for the condition, say so and fall back to the schedule row (scheduled poll+diff against a watermark fact). |
+| "watch for Y / alert me when Z" | `watch:create` — the unified subscription primitive; `events:await { event, timeout_sec, on_timeout:'wake' }` is the one-shot wake preset (do not pass retired `wake`/`once` keys), and ambient topic interest is `watch:create { targetKind:"topic", wake:false }` directly (the `topics:subscribe` preset was retired 2026-08-09 for zero use). wake:false = cheap inbox inject; `events:await` costs a turn. Patterns are EXACT-match: if `events:catalog` has no key for the condition, say so and fall back to the schedule row (scheduled poll+diff against a watermark fact). |
 | "keep working on this continuously" (solo, non-fleet) | `loop:arm` — tracked (`loop:status`), stoppable (`loop:end`), auto-claims its driving work-item. Never a self-rolled keep-alive. |
 | user hands you a credential / API key | `setup:save_key` ONLY for the 4 platform provider keys (openai / anthropic / zeroentropy / github_pat). ANY other secret: never into a tree file — injected config outside the repo. |
 | "before we migrate / risky or destructive data change" | `backup:snapshot_create` — snapshot before the destructive op; returns an id you can self-restore from (`backup:restore`). |
@@ -416,13 +422,15 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     fleet and auto-STARTS on the plan** with no manual wake. It ALSO takes
     `perMemberLaunchContext: [path1, path2, …]` (EI-8985, index-aligned to member number) when
     different members need DISTINCT briefs — a member beyond the array, or an unreadable entry,
-    falls back to the shared `launchContext`/baseline rather than failing the launch. This closes
-    the one remaining reason to hand-roll `fleet:create` → `capability:terminal { terminals:[…] }`
-    — prefer `fleet:launch-on-plan` even for per-member briefs now. (`capability:terminal`'s
-    `fleet` arg auto-injects `--fleet=<slug>` into any `psu …` command it detects — EI-5835 is
-    fixed at that layer too — but you still don't need to hand-roll: `fleet:launch-on-plan`
-    covers this.) ⚠️ `capability:terminal` / `fleet:launch-on-plan` are the ONLY tools that open
-    real desktop terminals — `cup:spawn` / `fleet:place_batch` spawn HEADLESS nursery cups (no
+    falls back to the shared `launchContext`/baseline rather than failing the launch. There is no
+    supported reason to hand-roll `fleet:create` plus a `psu …` command: `capability:terminal` is
+    command-only and refuses actual `psu` agent launches with `Wrong door`. If the work is an
+    ad-hoc brief, resume, fork, or raw multi-agent launch rather than an N-agents-on-a-plan fleet,
+    use `capability:launch-agent` and pass its `fleet` / `plan` / `count` / `members` fields as
+    needed. Do not wrap `psu` in `capability:terminal`. ⚠️ `capability:launch-agent` /
+    `fleet:launch-on-plan` are the supported tools that open real desktop agent terminals;
+    `capability:terminal` opens arbitrary-command terminals only. `cup:spawn` /
+    `fleet:place_batch` spawn HEADLESS nursery cups (no
     window on the owner's desktop, Mug-supervised — NOT the same as option D's headless su
     FLEET), so NEVER use them for a "desktop fleet." ⚠️ And they are not a fallback either: the
     Mug-supervised nursery tier is **RETIRED** permanently — the gate flag was DELETED, so
@@ -512,7 +520,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   posture: if members die, stall, or wedge, only a *running* leader detects and recovers it
   — a leaderless OR unmonitored fleet is how silent mass-failure happens (the whole fleet can
   die and no one notices). So the moment you `fleet:create` / `fleet:take-leadership` /
-  `capability:terminal` a desktop fleet (or the owner makes you a fleet's leader), treat
+  `fleet:launch-on-plan` a desktop fleet (or the owner makes you a fleet's leader), treat
   **AUTO mode as ON for the rest of the session** and TELL the owner you're switching to AUTO
   mode (a notice, not a question — you cannot drive a fleet from AUTO-OFF). Then set up your
   watch — **PUSH FIRST, exactly as your members are told to.** The fleet EMITS transition
@@ -579,8 +587,8 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
 - **Spawning a fleet/agent? ANNOUNCE the account + model + carry you're using and offer the
   alternatives — even under AUTO (it's a disclosure, not a question).** Three launch knobs carry a
   default the owner rarely states, so name the default AND the alternatives in one breath every
-  time you spawn (psu / `fleet:create`+`capability:terminal` / `cup:spawn` /
-  `fleet:launch-on-plan`), so the owner can redirect in one line — never silently pick any of them
+  time you spawn (psu / `capability:launch-agent` / `fleet:launch-on-plan`), so the owner can
+  redirect in one line — never silently pick any of them
   (and when you launch a HEADLESS fleet, say so too — the members run with no desktop window):
   - **Account routing** — unless the owner chose one, default to the **system account (the
     inference gateway skipped entirely)** and say so: *"Spawning on the default system account —
@@ -589,15 +597,26 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     `cup:spawn` / `fleet:launch-on-plan`) takes one of three: a **pool id** → pin via the
     gateway (hard, no failover); **`auto`** → the gateway auto-routes the pool + fails over;
     **`default`** (or omitted) → the system credential, gateway skipped (**the default**).
-    **Do NOT substitute your own capacity read for this default.** A tight/near-walled pool is
-    NOT a reason to preemptively pick `auto` "to get failover" — that is the owner's call, not
-    yours. The default stays the **system account** even when a preflight looks scarce; switching
-    to `auto` or any non-default routing requires the owner's EXPLICIT choice. If you believe
-    auto's failover would genuinely help, SURFACE it as a one-line suggestion in your spawn
-    disclosure (*"…the pool is tight — say `auto` if you want gateway failover"*) and let the
-    owner decide — never silently launch on `auto` because your own capacity check looked tight.
-    (This is the research-desk 2026-07-08 miss: a capacity preflight looked scarce, so the leader
-    self-switched to `auto` the owner never asked for.)
+    **Do NOT substitute your own capacity read for this default — at SPAWN time, on a
+    PREDICTED shortage.** A tight/near-walled pool is NOT a reason to preemptively pick `auto`
+    "to get failover" — that is the owner's call, not yours. The default stays the **system
+    account** even when a preflight looks scarce; switching to `auto` or any non-default routing
+    *because you expect trouble* requires the owner's EXPLICIT choice. SURFACE it instead as a
+    one-line suggestion in your spawn disclosure (*"…the pool is tight — say `auto` if you want
+    gateway failover"*) and let the owner decide — never silently launch on `auto` because your
+    own capacity check looked tight. (The research-desk 2026-07-08 miss: a capacity preflight
+    looked scarce, so the leader self-switched to `auto` the owner never asked for.)
+    ⚠ **This rail governs PREDICTION, never REMEDIATION — never let it stop you FIXING a
+    measured failure.** The moment routing is the CONFIRMED cause of work that is already dead
+    or dying — a holder wedged on repeated 429s, `accounts:status` showing the pinned pool
+    walled — re-routing is a FIX, not a preemptive bet, and making it is your job: do it and
+    DISCLOSE it, exactly like any other outage remediation. The two cases are opposites, and
+    only the first is the owner's call: 2026-07-08 was a GUESS about the future where nothing
+    was broken and not acting cost nothing; an outage is a MEASUREMENT of the present where not
+    acting costs the work and leaves it dead until a human happens to answer. Reading this rail
+    as "ask the owner before fixing a live outage" turns it into the failure this playbook names
+    everywhere else — stopping short and handing the work back. Report what you measured, what
+    you re-routed to, and why.
   - **Model** — name what you're spawning with: *"using model `<the default>` — let me know if
     you want a different one."* Override with the `model` (`<modelId>[:<effort>]` spec) or
     `tier` (the named menu) arg.
@@ -605,8 +624,8 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     resumes its live context on every wake; say `cold` if you'd rather each wake start from a
     fresh context rebuilt from the agent's last checkpoint."* Set via the `carry` arg on
     `fleet:launch-on-plan` (`warm` | `cold`, default `warm`); it is INDEPENDENT of
-    visible-vs-headless. Warm stays the default — like account routing, do NOT self-switch to
-    `cold` on your own cost/capacity read; cold is the owner's explicit call.
+    visible-vs-headless. Warm stays the default — like account routing's spawn-time default, do
+    NOT self-switch to `cold` on your own cost/capacity read; cold is the owner's explicit call.
   The announcement is required even under AUTO — where everything else becomes act-don't-ask —
   because it costs the owner nothing and a wrong account/model is expensive to discover late.
 
@@ -955,9 +974,9 @@ Multiple su shells, paperclip, and the harness fleet share **one checkout**. Bey
 
 Stay on `staging`; never `git worktree` or branch-switch. `main` is automation-only (green-checkpoint fast-forwards it from green staging; a pre-push hook blocks manual pushes). Self-check before editing: `pwd` under `…/papercup` and `git branch --show-current` prints `staging`.
 
-**The two-port model — `:3070` auto-serves green `main`; `:3170` is where your edits run.** `:3070` (`papercup-dev-api`) runs the **release checkout** pinned to green `main` — restarting it does NOT pick up your `staging` edits. To test a server-side edit live: **`dev:restart { target: 'staging', confirm: true }`**, then probe **`:3170`**. **Never** shell out to a raw `systemctl --user restart papercup-staging-api.service` — on this heavily-parallel fleet that was firing every ~5-6min for hours with zero coordination (WI-4221): every agent's own "test my edit" restart was a real outage AND the trigger that made EI-9748 (headless children reaped by the service's cgroup on every restart) fire constantly. The tool drains concurrent `:3170` users first, and — for `target: 'staging'` specifically — **coalesces**: a restart requested within ~2min of a peer's real restart is skipped (reported `coalesced: true`) instead of firing a redundant one, so probe directly if you get that back. The Hono host has NO file-watch (only `:3055` Vite hot-reloads). Promotion to `:3070` is automatic (hourly green-checkpoint FF → ≤15-min scripted deploy with auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` deploys immediately (needs `PAPERCUSP_ALLOW_DEV_RESTART=1` for the restart step). Watch the pipeline at `/admin/git`. **Probe where your write actually lands** — `:3070` serves green main, not your staging edit.
+**The two-port model — `:3070` auto-serves green `main`; `:3170` is where your edits run.** `:3070` (`papercup-dev-api`) runs the **release checkout** pinned to green `main` — restarting it does NOT pick up your `staging` edits. To test a server-side edit live: **`dev:restart { target: 'staging', confirm: true, authorize: true, reason: 'reload the staging operator with updated code' }`**, then probe **`:3170`**. **Never** shell out to a raw `systemctl --user restart papercup-staging-api.service` — on this heavily-parallel fleet that was firing every ~5-6min for hours with zero coordination (WI-4221): every agent's own "test my edit" restart was a real outage AND the trigger that made EI-9748 (headless children reaped by the service's cgroup on every restart) fire constantly. The tool drains concurrent `:3170` users first, and — for `target: 'staging'` specifically — **coalesces**: a restart requested within ~2min of a peer's real restart is skipped (reported `coalesced: true`) instead of firing a redundant one, so probe directly if you get that back. The Hono host has NO file-watch (only `:3055` Vite hot-reloads). Promotion to `:3070` is automatic (hourly green-checkpoint FF → ≤15-min scripted deploy with auto-rollback); a manual `npx tsx apps/operator/lib/release/deploy-cli.ts --execute` deploys immediately (needs `PAPERCUSP_ALLOW_DEV_RESTART=1` for the restart step). Watch the pipeline at `/admin/git`. **Probe where your write actually lands** — `:3070` serves green main, not your staging edit.
 
-**Named resource locks — coordinate destructive shared actions.** `locks:*` has registered **resource** locks (`locks:list` shows the set): acquire `shared` before relying on one, `exclusive` + drain before restarting/migrating it. The blessed paths for the server/DB resources are **`dev:restart`** and **`db:migrate`** (drain protocol included; dry-run default, `confirm:true` to act). To pause git-sync for a tree, take its SCOPED lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` (holds ONLY that tree's sync; auto-resumes on TTL; audited). **NEVER `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`** — that one statement freezes the WHOLE fleet's sync (no TTL, no auto-resume, no audit).
+**Named resource locks — coordinate destructive shared actions.** `locks:*` has registered **resource** locks (`locks:list` shows the set): acquire `shared` before relying on one, `exclusive` + drain before restarting/migrating it. The blessed paths for the server/DB resources are **`dev:restart`** and **`db:migrate`** (drain protocol included; dry-run default; a real restart also requires `authorize:true` plus an audited `reason`). To pause git-sync for a tree, take its SCOPED lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` (holds ONLY that tree's sync; auto-resumes on TTL; audited). **NEVER `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`** — that one statement freezes the WHOLE fleet's sync (no TTL, no auto-resume, no audit).
 
 **Dev diagnostics:** `db:check_drift` (migrations not yet applied to the live DB) and `dev:service_health` (probe dev endpoints before chasing a "connection refused"). The coord inbox surfaces only *interrupts*; the `notify` firehose is opt-in (`coord:inbox { kinds: ['notify'] }`).
 
@@ -1024,7 +1043,7 @@ LEADER responsibility (D-002) — the handoff makes you the leader; you do NOT g
 **CLAIM it the moment you're designated — leadership is NOT auto-registered.** Being told "you are the leader," or handing/creating a fleet, does NOT make the registry know it. Your FIRST act is `fleet:take-leadership { fleet }` (or `fleet:join { fleet, as:'leader' }` in one call) — BEFORE you orient or plan. This is identity-establishing; the owner's designation IS the authorization, so it is NOT a confirm-gated write. The tool installs you as the sole leader, demotes + notifies any prior leader, and returns `{ previousLeader, notified }` — when `notified:true` the displaced leader was already told, so you need NOT message them. Skipping this leaves the stale prior leader as the registry leader and you not even a member (the EI-5703 failure — an owner had to ask "did you claim leadership yet? why not?").
 
 1. Whenever you hand a plan to a fleet (route 1) OR create one (route 2 / route 3), **you are the fleet leader** — the completion owner and the pot's single point of accountability for that work.
-2. You MONITOR the fleet (`fleet:assignments`; `coord:presence` filtered to the fleet), MANAGE coordination, and **OWN driving the plan to done**.
+2. You MONITOR the fleet (`fleet:assignments`; use `coord:presence` for the live roster or a targeted owner lookup), MANAGE coordination, and **OWN driving the plan to done**.
 3. Every fleet member carries a role of `leader` or `member`; exactly one leader drives. Delegating is taking the leader seat, not vacating responsibility.
 4. **Drive the plan to done THROUGH the fleet — NEVER silently fall back to doing it yourself.** "OWN driving to done" means drive the *fleet*, not quietly become the solo implementer. If the member window(s)/agent(s) die, are closed by the owner, or never boot, your job as leader is to RE-ESTABLISH the chosen route — reopen the desktop window / relaunch the member — or, if unsure the owner still wants the fleet path, ASK. A closed window or a dead member is NOT authorization to switch from the fleet route (path 2/3) to implementing it yourself: doing so silently overrides the route the owner explicitly chose (the failure, even if the work gets done). Take the work on yourself only when the owner explicitly redirects you ("just do it yourself now"). Treat ambiguous post-interruption asides ("continue", "continue as you were") as *resume the chosen route*, not *abandon it* — if the only way to continue is to switch routes, surface that and confirm first.
 
