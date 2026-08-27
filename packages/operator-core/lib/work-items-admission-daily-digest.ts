@@ -145,7 +145,11 @@ const UmbrellaSchema = z
 const UmbrellasSchema = z.object({ umbrellas: z.array(UmbrellaSchema).max(MAX_DAILY_DIGEST_UMBRELLAS) }).strict();
 
 function normalizeTitle(value: string): string {
-  return value.toLowerCase().normalize('NFKC').replace(/[^a-z0-9]+/g, ' ').trim();
+  return value
+    .toLowerCase()
+    .normalize('NFKC')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
 }
 
 export function dailyDigestWatchdogKey(harnessSlug: string, title: string): string {
@@ -172,13 +176,15 @@ export function parseDailyDigestProposals(
       );
     }
     const unknown = memberIds.filter((id) => !allowedIds.has(id));
-    if (unknown.length > 0) throw new Error(`daily digest model returned non-corpus member id(s): ${unknown.join(', ')}`);
+    if (unknown.length > 0)
+      throw new Error(`daily digest model returned non-corpus member id(s): ${unknown.join(', ')}`);
     const overlap = memberIds.filter((id) => assignedMembers.has(id));
     if (overlap.length > 0) {
       throw new Error(`daily digest model assigned member id(s) to multiple umbrellas: ${overlap.join(', ')}`);
     }
     const titleKey = normalizeTitle(raw.title);
-    if (seenTitles.has(titleKey)) throw new Error(`daily digest model returned duplicate umbrella title '${raw.title}'`);
+    if (seenTitles.has(titleKey))
+      throw new Error(`daily digest model returned duplicate umbrella title '${raw.title}'`);
     seenTitles.add(titleKey);
     memberIds.forEach((id) => assignedMembers.add(id));
     return { ...raw, memberIds: memberIds.sort() };
@@ -205,7 +211,11 @@ export function buildDailyDigestPrompt(context: DailyDigestContext): { system: s
   return { system, user };
 }
 
-async function readCompletedBulkStage(sql: OrgSql, workspaceId: string, harnessSlug: string): Promise<BulkStageRow | null> {
+async function readCompletedBulkStage(
+  sql: OrgSql,
+  workspaceId: string,
+  harnessSlug: string,
+): Promise<BulkStageRow | null> {
   const rows = await sql<BulkStageRow[]>`
     SELECT id, detail
       FROM harness_shared.admission_runs
@@ -293,7 +303,16 @@ async function readDigestContext(
     admission: row.admission ?? null,
     shardId: memberById.get(row.id)!,
   }));
-  if (items.length === 0) return { context: { sourceBulkStageRunId: input.stage.id, sourceCensusRunId: censusId, items, shards: [], censusAfter: Number(census.census_after ?? 0) } };
+  if (items.length === 0)
+    return {
+      context: {
+        sourceBulkStageRunId: input.stage.id,
+        sourceCensusRunId: censusId,
+        items,
+        shards: [],
+        censusAfter: Number(census.census_after ?? 0),
+      },
+    };
   return {
     context: {
       sourceBulkStageRunId: input.stage.id,
@@ -306,7 +325,13 @@ async function readDigestContext(
 }
 
 async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestRunResult | null> {
-  const rows = await sql<Array<{ detail: Record<string, unknown> | null; tokens_in: number | string | null; tokens_out: number | string | null }>>`
+  const rows = await sql<
+    Array<{
+      detail: Record<string, unknown> | null;
+      tokens_in: number | string | null;
+      tokens_out: number | string | null;
+    }>
+  >`
     SELECT detail, tokens_in, tokens_out
       FROM harness_shared.admission_runs
      WHERE id = ${runId}
@@ -338,7 +363,10 @@ async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestR
   };
 }
 
-async function beginRun(sql: OrgSql, input: { runId: string; workspaceId: string; harnessSlug: string; startedAt: string }): Promise<void> {
+async function beginRun(
+  sql: OrgSql,
+  input: { runId: string; workspaceId: string; harnessSlug: string; startedAt: string },
+): Promise<void> {
   await sql`
     INSERT INTO harness_shared.admission_runs
       (id, workspace_id, harness_slug, run_kind, started_at, detail)
@@ -370,7 +398,12 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
   const runId = opts.runId ?? `${WORK_ITEM_ADMISSION_DAILY_DIGEST}:${startedMs}:${randomUUID().slice(0, 8)}`;
   const replay = await readFinishedRun(sql, runId);
   if (replay) return replay;
-  await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, startedAt: new Date(startedMs).toISOString() });
+  await beginRun(sql, {
+    runId,
+    workspaceId: opts.workspaceId,
+    harnessSlug: opts.harnessSlug,
+    startedAt: new Date(startedMs).toISOString(),
+  });
   try {
     const stage = await readCompletedBulkStage(sql, opts.workspaceId, opts.harnessSlug);
     if (!stage) {
@@ -396,7 +429,11 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
          WHERE id = ${runId}`;
       return result;
     }
-    const contextResult = await readDigestContext(sql, { workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, stage });
+    const contextResult = await readDigestContext(sql, {
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+      stage,
+    });
     if (!contextResult.context) {
       const result: DailyDigestRunResult = {
         runId,
@@ -453,7 +490,10 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       maxTokens: Math.max(1, Math.floor(opts.maxTokens ?? DEFAULT_DAILY_DIGEST_MAX_TOKENS)),
       ownerId: `${DAILY_DIGEST_ACTOR}:${runId}`,
     });
-    const proposals = parseDailyDigestProposals(responsePayload(response), new Set(context.items.map((item) => item.id)));
+    const proposals = parseDailyDigestProposals(
+      responsePayload(response),
+      new Set(context.items.map((item) => item.id)),
+    );
     const umbrellas: DailyDigestUmbrellaEffect[] = [];
     for (const proposal of proposals) {
       const filed = await opts.fileUmbrella({
@@ -472,7 +512,9 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         sourceIds: proposal.memberIds,
       });
       if (linksWritten !== proposal.memberIds.length) {
-        throw new Error(`daily digest umbrella ${filed.id} link coverage mismatch: ${linksWritten}/${proposal.memberIds.length}`);
+        throw new Error(
+          `daily digest umbrella ${filed.id} link coverage mismatch: ${linksWritten}/${proposal.memberIds.length}`,
+        );
       }
       umbrellas.push({ ...filed, title: proposal.title, memberIds: proposal.memberIds, linksWritten });
     }

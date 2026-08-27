@@ -11,7 +11,10 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../operator-home-harness';
-import { DEFAULT_DAILY_DIGEST_MAX_TOKENS, WORK_ITEM_ADMISSION_DAILY_DIGEST } from '../../work-items-admission-daily-digest';
+import {
+  DEFAULT_DAILY_DIGEST_MAX_TOKENS,
+  WORK_ITEM_ADMISSION_DAILY_DIGEST,
+} from '../../work-items-admission-daily-digest';
 
 const SLUG = process.env.WORK_ITEM_ADMISSION_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 

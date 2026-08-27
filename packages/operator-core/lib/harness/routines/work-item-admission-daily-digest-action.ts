@@ -119,7 +119,9 @@ export function makeWorkItemAdmissionDailyDigestAction(overrides: Partial<Admiss
     const result = await deps.run(ctx);
     await deps.invalidate();
     if (result.status === 'blocked') {
-      deps.log(`${ctx.installSlug}: run=${result.runId} blocked=${result.blockedReason ?? 'unknown'} modelCalled=false`);
+      deps.log(
+        `${ctx.installSlug}: run=${result.runId} blocked=${result.blockedReason ?? 'unknown'} modelCalled=false`,
+      );
       return;
     }
     deps.log(
