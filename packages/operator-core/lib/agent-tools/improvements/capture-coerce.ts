@@ -33,8 +33,10 @@
  * capture is lane:'observation' (never enters the work queue regardless of kind).
  */
 
+import { OBSERVATION_KINDS } from '../../harness/improvements/observation-types';
+
 const VALID_KIND = new Set(['bug', 'change', 'feature']);
-const OBSERVATION_SUBKINDS = new Set(['friction', 'workaround', 'gap', 'surprise', 'reinforce']);
+const OBSERVATION_SUBKINDS = new Set<string>(OBSERVATION_KINDS);
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);

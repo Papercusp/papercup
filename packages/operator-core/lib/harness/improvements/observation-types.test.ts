@@ -13,9 +13,16 @@ import {
   normalizeScorecardRatings,
   asStructuredObservation,
   ObservationEvidenceError,
+  OBSERVATION_KINDS,
   OBSERVATION_RATING_SCALE,
   type StructuredObservation,
 } from './observation-types';
+
+describe('OBSERVATION_KINDS', () => {
+  it('includes test-failure as a supported machine-readable observation kind', () => {
+    expect(OBSERVATION_KINDS).toContain('test-failure');
+  });
+});
 
 describe('OBSERVATION_RATING_SCALE', () => {
   it('is the reconciled 4-value scale (D-003)', () => {

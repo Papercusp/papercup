@@ -43,6 +43,7 @@ import {
   stripProbeScopeMarker,
 } from './carry-note-probe-scope';
 import { notifyAgentOrdersChanged } from './agent-orders-notify';
+import { decodeContinuityProbe, encodeContinuityProbe, type ContinuityProbe } from './continuity-probes';
 
 /**
  * First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
@@ -106,6 +107,9 @@ export interface CheckEntry {
   claim: string;
   /** A concrete probe a successor runs to falsify/confirm the claim before relying on it. */
   recheck?: string;
+  /** Optional typed, schema-versioned replay probe. `recheck` remains the human
+   * explanation; this envelope is data-only and is validated by checkpoint writers. */
+  probe?: ContinuityProbe;
   /** Evidence pointer for a VERIFIED claim — what was observed, where ("tick 1944 @02:38Z, pg read").
    *  Absent ⇒ the claim renders as PREDICTED. */
   verified?: string;
@@ -408,7 +412,10 @@ function claimAffirmsUnresolvedStatus(claim: string | null | undefined): boolean
   const prefix = claim.slice(0, statusOffset);
   if (CLAIM_NEGATION_PREFIX.test(prefix)) return false;
   const clauseEnd = claim.slice(statusOffset + status[0].length).search(/[.!?;]/);
-  const suffix = claim.slice(statusOffset + status[0].length, clauseEnd < 0 ? claim.length : statusOffset + status[0].length + clauseEnd);
+  const suffix = claim.slice(
+    statusOffset + status[0].length,
+    clauseEnd < 0 ? claim.length : statusOffset + status[0].length + clauseEnd,
+  );
   return !/\b(?:not|never|no|without|none|neither|zero|completed?|finished?|done|green|healthy|inactive|clear(?:ed)?|resolved?)\b/i.test(
     suffix,
   );
@@ -426,7 +433,10 @@ function isHealthyPendingRegistration(text: string, match: RegExpExecArray): boo
  */
 function isNegativeAdmissionMeasurement(text: string, match: RegExpExecArray): boolean {
   const before = text.slice(Math.max(0, match.index - 240), match.index);
-  const clauses = before.split(/[.!?;\n]/).map((clause) => clause.trim()).filter(Boolean);
+  const clauses = before
+    .split(/[.!?;\n]/)
+    .map((clause) => clause.trim())
+    .filter(Boolean);
   const currentClause = clauses.at(-1) ?? '';
   const previousClause = clauses.at(-2) ?? '';
   return (
@@ -560,7 +570,10 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
-  const hasProbe = 'probe' in r;
+  // `probe` historically meant the human recheck command. WI-42290 adds a
+  // canonical OBJECT at the same key, so only the legacy string remains an
+  // alias; a typed object must pass through untouched to the row schema.
+  const hasProbe = typeof r.probe === 'string';
   // A row with an identity but no claim text is repairable too (see the
   // claim-from-id fallback below), so it must not short-circuit out here.
   const claimlessWithIdentity = !('claim' in r) && ('id' in r || idAliases.length > 0);
@@ -602,7 +615,8 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
       repairs.push({
         field: `${path}.${field}`,
         kind: 'renamed',
-        detail: `the structured \`${field}\` key is accepted as an alias for \`${canonical}\`; ` +
+        detail:
+          `the structured \`${field}\` key is accepted as an alias for \`${canonical}\`; ` +
           (kept ? `the canonical \`${canonical}\` value was kept` : `the value was mapped to \`${canonical}\``),
       });
     }
@@ -656,7 +670,8 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
     // `recheck` is the canonical field, but `probe` is the natural/documented
     // synonym callers use for the command that tests a carried claim. Preserve
     // an explicitly supplied canonical value when both are present, while always
-    // removing the undeclared alias before strict schema validation.
+    // removing the legacy string alias before strict schema validation. A
+    // typed probe object is canonical and never reaches this branch.
     const probe = r.probe;
     const hadRecheck = 'recheck' in r;
     delete r.probe;
@@ -757,7 +772,10 @@ const CARRY_ROW_ID_ALLOWED = /[^A-Za-z0-9._:-]+/g;
  *  id with a space becomes `my-id`, never a rejected write that discards the note. */
 export function sanitizeCarryRowId(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
-  const cleaned = raw.trim().replace(CARRY_ROW_ID_ALLOWED, '-').replace(/^-+|-+$/g, '');
+  const cleaned = raw
+    .trim()
+    .replace(CARRY_ROW_ID_ALLOWED, '-')
+    .replace(/^-+|-+$/g, '');
   if (!cleaned) return null;
   return cleaned.slice(0, CARRY_ROW_ID_MAX).toLowerCase();
 }
@@ -808,8 +826,7 @@ function priorRowForIncoming<T extends { id?: string; claim: string }>(
 export function renderWallLine(w: WallEntry): string {
   const recheck = (w.recheck ?? '').trim();
   const id = sanitizeCarryRowId(w.id);
-  const since =
-    w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
+  const since = w.sinceMs != null && Number.isFinite(w.sinceMs) ? ` (since ${new Date(w.sinceMs).toISOString()})` : '';
   return `- ${id ? `[#${id}] ` : ''}${w.claim.trim()}${recheck ? ` — re-check: ${recheck}` : ''}${since}`;
 }
 
@@ -857,13 +874,13 @@ export function renderCheckLine(c: CheckEntry): string {
   const marker = contested || conflict ? '⚠' : verified ? '✓' : '?';
   const id = sanitizeCarryRowId(c.id);
   const scope = describeProbeScope(recheck);
-  const since =
-    c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
+  const probe = c.probe ? encodeContinuityProbe(c.probe) : '';
+  const since = c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
   return `- ${marker} ${scope ? `${renderProbeScopeMarker(scope)} ` : ''}${
     id ? `[#${id}] ` : ''
   }${stripProbeScopeMarker(c.claim.trim())}${recheck ? ` — re-check: ${recheck}` : ''}${
-    evidence ? ` — evidence: ${evidence}` : ''
-  }${since}`;
+    probe ? ` — probe: ${probe}` : ''
+  }${evidence ? ` — evidence: ${evidence}` : ''}${since}`;
 }
 
 /**
@@ -878,7 +895,8 @@ export function renderCheckLine(c: CheckEntry): string {
  */
 const CHECK_LINE_RE = new RegExp(
   `^-\\s+(?:([✓?⚠])\\s+)?(?:${PROBE_SCOPE_MARKER_RE.source}\\s+)?(?:\\[#([A-Za-z0-9._:-]{1,40})\\]\\s+)?(.+?)` +
-    `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
+    `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+probe:\\s+([A-Za-z0-9_-]+))?` +
+    `(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
 );
 
 /** WI-41774: a work-item flight record renders its telemetry as
@@ -918,13 +936,15 @@ export function parseCheckLine(line: string): CheckEntry | null {
   if (id) out.id = id;
   const recheck = (m[4] ?? '').trim();
   if (recheck) out.recheck = recheck;
-  const verified = (m[5] ?? '').trim();
+  const probe = decodeContinuityProbe((m[5] ?? '').trim());
+  if (probe) out.probe = probe;
+  const verified = (m[6] ?? '').trim();
   if (verified) {
     if (m[1] === '⚠' || findVerificationConflict(verified, claim)) out.contested = verified;
     else out.verified = verified;
   }
-  if (m[6]) {
-    const t = Date.parse(m[6]);
+  if (m[7]) {
+    const t = Date.parse(m[7]);
     if (Number.isFinite(t)) out.sinceMs = t;
   }
   return out;
@@ -1029,7 +1049,9 @@ function taggedRows<T>(raw: string | undefined, parseLine: (line: string) => T |
     if (Array.isArray(parsed)) {
       const rows = parsed.filter(
         (r): r is T =>
-          !!r && typeof r === 'object' && typeof (r as { claim?: unknown }).claim === 'string' &&
+          !!r &&
+          typeof r === 'object' &&
+          typeof (r as { claim?: unknown }).claim === 'string' &&
           (r as { claim: string }).claim.trim().length > 0,
       );
       if (rows.length > 0) return rows;
@@ -1037,7 +1059,10 @@ function taggedRows<T>(raw: string | undefined, parseLine: (line: string) => T |
   } catch {
     /* not JSON — fall through to the rendered-row form */
   }
-  return raw.split('\n').map(parseLine).filter((r): r is T => r !== null);
+  return raw
+    .split('\n')
+    .map(parseLine)
+    .filter((r): r is T => r !== null);
 }
 
 /**
@@ -1056,7 +1081,10 @@ export function rescueTaggedCarryNoteBlob(blob: string | null | undefined): Carr
   if (close < 0 || !CARRY_NOTE_RESCUE_SIGNATURE.test(text)) return null;
 
   const fields: CarryNoteFields = {};
-  const did = text.slice(0, close).replace(/^\s*<did>/, '').trim();
+  const did = text
+    .slice(0, close)
+    .replace(/^\s*<did>/, '')
+    .trim();
   if (did) fields.did = did;
   // NB: tag name ≠ heading name — CARRY_NOTE_SECTIONS maps insight → 'Key insight'
   // and next → 'Next action'. Drive off the KEYS here, never the headings.
@@ -1199,6 +1227,7 @@ export function normalizeCheckEntries(
     recheck?: string;
     verified?: string;
     contested?: string;
+    probe?: ContinuityProbe;
     sinceMs?: number;
   }>,
   prior: ReadonlyArray<CheckEntry>,
@@ -1218,12 +1247,13 @@ export function normalizeCheckEntries(
     const existing = priorRowForIncoming(e, prior, priorByKey);
     const id = sanitizeCarryRowId(e.id) ?? existing?.id;
     const recheck = (e.recheck ?? existing?.recheck ?? '').trim();
+    const probe = e.probe ?? existing?.probe;
     // An explicit evidence field is an update, including an empty string that
     // deliberately clears inherited evidence. `contested` is the lossless
     // downgrade target for evidence that contradicts the affirmative ✓ meaning.
-    let verified = (e.verified !== undefined ? e.verified : existing?.verified ?? '').trim();
+    let verified = (e.verified !== undefined ? e.verified : (existing?.verified ?? '')).trim();
     let contested = (
-      e.contested !== undefined ? e.contested : e.verified !== undefined ? '' : existing?.contested ?? ''
+      e.contested !== undefined ? e.contested : e.verified !== undefined ? '' : (existing?.contested ?? '')
     ).trim();
     if (e.contested !== undefined) verified = '';
     const conflict = findVerificationConflict(verified, claim);
@@ -1248,6 +1278,7 @@ export function normalizeCheckEntries(
       ...(id ? { id } : {}),
       claim,
       ...(recheck ? { recheck } : {}),
+      ...(probe ? { probe } : {}),
       ...(contested ? { contested } : {}),
       ...(verified ? { verified } : {}),
       sinceMs: e.sinceMs ?? existing?.sinceMs ?? nowMs,
@@ -1277,6 +1308,7 @@ export function patchExistingCheckEntries(
     recheck?: string;
     verified?: string;
     contested?: string;
+    probe?: ContinuityProbe;
     sinceMs?: number;
   }>,
   prior: ReadonlyArray<CheckEntry>,
@@ -1338,9 +1370,9 @@ export function patchExistingCheckEntries(
  * necessary but NOT sufficient — the report lands AFTER the write, so the rows are
  * already gone by the time you read it. Two additions make the loss AVOIDABLE:
  *
-   *  1. `mode: 'merge'` (the default at both checkpoint tool boundaries) — supplied rows upsert onto the carried set; unmentioned rows
+ *  1. `mode: 'merge'` (the default at both checkpoint tool boundaries) — supplied rows upsert onto the carried set; unmentioned rows
  *     survive. The natural "add one row to my carried set" write stops being
-   *     destructive. Explicit `replace` remains the only way to retire a row.
+ *     destructive. Explicit `replace` remains the only way to retire a row.
  *  2. A row `id` — identity independent of WORDING (see {@link carryRowKey}). Without
  *     it, tightening a claim's phrasing makes it a NEW row: it loses the evidence and
  *     `sinceMs` it had inherited, and the old wording reads to the drop-report as a
@@ -1360,6 +1392,7 @@ export function mergeCarryRows(opts: {
     recheck?: string;
     verified?: string;
     contested?: string;
+    probe?: ContinuityProbe;
     sinceMs?: number;
   }>;
   /** Whether this call writes a narrative at all (structured fields or a raw note). */
@@ -1459,18 +1492,18 @@ export function mergeCarryRows(opts: {
     patchedChecks !== null
       ? patchedChecks
       : opts.checks !== undefined
-      ? normalizeCheckEntries(
-          upsertOntoPrior(opts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
-          priorCheckParts.checks,
-          opts.nowMs,
-        )
-      : rawCheckParts.checks.length > 0
         ? normalizeCheckEntries(
-            upsertOntoPrior(rawCheckParts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
+            upsertOntoPrior(opts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
             priorCheckParts.checks,
             opts.nowMs,
           )
-        : priorCheckParts.checks;
+        : rawCheckParts.checks.length > 0
+          ? normalizeCheckEntries(
+              upsertOntoPrior(rawCheckParts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
+              priorCheckParts.checks,
+              opts.nowMs,
+            )
+          : priorCheckParts.checks;
   const priorNarrative = parseCarryNote(priorCheckParts.body);
   const narrativeBody =
     opts.hasNoteWrite && merging && opts.narrativeFields
@@ -1632,9 +1665,7 @@ function droppedClaims(
   kept: ReadonlyArray<{ id?: string; claim: string }>,
 ): string[] {
   const keptKeys = new Set(kept.map((r) => carryRowKey(r)));
-  const promotedLegacyClaims = new Set(
-    kept.filter((r) => sanitizeCarryRowId(r.id)).map((r) => (r.claim ?? '').trim()),
-  );
+  const promotedLegacyClaims = new Set(kept.filter((r) => sanitizeCarryRowId(r.id)).map((r) => (r.claim ?? '').trim()));
   return prior
     .filter(
       (r) =>
@@ -1686,9 +1717,7 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
   const probes = probeText.toLowerCase();
   // EI-21494640395547961 — word set for the semantic-coverage limb below, built once
   // per call; the per-line loop reuses it.
-  const probeWordSet = new Set(
-    (probeText ?? '').toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g),
-  );
+  const probeWordSet = new Set((probeText ?? '').toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g));
   const probeIdPatterns = [...(probeText ?? '').matchAll(PROBE_ROW_ID_RE)].map((m) => {
     const id = (m[1] ?? '').toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     return new RegExp(`(?:^|[^a-z0-9._:-])${id}(?:$|[^a-z0-9._:-])`, 'i');
@@ -1716,14 +1745,10 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
     // checks/walls text, some row already carries this concern. Advisory lint, fail-
     // generous: a rare missed advisory costs less than a recurring false positive.
     // Very short lines stay on the exact paths above — overlap is too weak a signal.
-    const lineWords = (line.toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g) ?? []).filter(
-      (w) => w.length >= 3,
-    );
+    const lineWords = (line.toLowerCase().match(/[a-z0-9][a-z0-9._:/-]*/g) ?? []).filter((w) => w.length >= 3);
     const coveredByOverlap =
-      lineWords.length >= 6 &&
-      lineWords.filter((w) => probeWordSet.has(w)).length / lineWords.length >= 0.4;
-    const covered =
-      coveredByRowId || tokens.some((t) => probes.includes(t.toLowerCase())) || coveredByOverlap;
+      lineWords.length >= 6 && lineWords.filter((w) => probeWordSet.has(w)).length / lineWords.length >= 0.4;
+    const covered = coveredByRowId || tokens.some((t) => probes.includes(t.toLowerCase())) || coveredByOverlap;
     if (!covered) {
       flagged.push(line.length > 160 ? `${line.slice(0, 157)}…` : line);
       if (flagged.length >= 3) break;
@@ -1731,7 +1756,6 @@ export function lintUncheckedExternalClaims(prose: string, probeText: string): s
   }
   return flagged;
 }
-
 
 /**
  * Carry-note commands are read as instructions by the next wake, but their
@@ -1771,7 +1795,10 @@ export interface ImperativeActionLintMatch {
 }
 
 function targetNeedles(target: string): string[] {
-  const parts = target.toLowerCase().split(/[:\s_-]+/).filter((part) => part.length >= 4);
+  const parts = target
+    .toLowerCase()
+    .split(/[:\s_-]+/)
+    .filter((part) => part.length >= 4);
   return [...new Set([target.toLowerCase(), ...parts])];
 }
 
@@ -2029,12 +2056,14 @@ export async function setCarryNoteWithPrior(
   // but they expose different structural types (`TransactionSql` vs `Sql`).
   // Accept the union so this one write body can be used by either transaction path.
   const write = async (tx: Sql | TransactionSql): Promise<SetCarryNoteResult> => {
-    const rows = await tx<{
-      journal: unknown;
-      note: string | null;
-      deps: unknown;
-      updated_ts: string | number | null;
-    }[]>`
+    const rows = await tx<
+      {
+        journal: unknown;
+        note: string | null;
+        deps: unknown;
+        updated_ts: string | number | null;
+      }[]
+    >`
       SELECT journal, note, deps, updated_ts FROM harness_shared.carry_notes
        WHERE workspace_id = ${ws} AND scope = ${scope} FOR UPDATE`;
     const prevJournal = normalizeJournal(rows[0]?.journal);
@@ -2043,8 +2072,7 @@ export async function setCarryNoteWithPrior(
     const priorLength = (priorNote ?? '').length;
     if (opts?.expectedHash !== undefined) {
       const currentHash = priorNote === null ? null : shortCarryHash(priorNote);
-      const expectedHash =
-        typeof opts.expectedHash === 'string' ? opts.expectedHash.toLowerCase() : opts.expectedHash;
+      const expectedHash = typeof opts.expectedHash === 'string' ? opts.expectedHash.toLowerCase() : opts.expectedHash;
       if (currentHash !== expectedHash) {
         return {
           stored: priorNote,
@@ -2055,8 +2083,7 @@ export async function setCarryNoteWithPrior(
         };
       }
     }
-    const currentUpdatedAtMs =
-      rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
+    const currentUpdatedAtMs = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
     // Equal millisecond watermarks are possible because updated_ts is epoch-ms
     // precision. Treat equality as stale too: an older writer queued behind a
     // newer commit must not overwrite that checkpoint merely because both
@@ -2119,9 +2146,11 @@ export async function getCarryNote(ref: CarryNoteRef | string): Promise<string |
   } catch {
     return null;
   }
-  const rows = await boundedPgReadTxn<{ note: string | null }[]>((tx) => tx`
+  const rows = await boundedPgReadTxn<{ note: string | null }[]>(
+    (tx) => tx`
     SELECT note FROM harness_shared.carry_notes
-     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`);
+     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`,
+  );
   const note = (rows[0]?.note ?? '').trim();
   return note.length > 0 ? note : null;
 }
@@ -2135,9 +2164,11 @@ export async function getCarryJournal(ref: CarryNoteRef | string): Promise<Carry
   } catch {
     return [];
   }
-  const rows = await boundedPgReadTxn<{ journal: unknown }[]>((tx) => tx`
+  const rows = await boundedPgReadTxn<{ journal: unknown }[]>(
+    (tx) => tx`
     SELECT journal FROM harness_shared.carry_notes
-     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`);
+     WHERE workspace_id = ${ws} AND scope = ${scope} LIMIT 1`,
+  );
   return [...normalizeJournal(rows[0]?.journal)].reverse();
 }
 
@@ -2183,14 +2214,8 @@ function loopCarryWs(): string {
  *  substrate under {@link loopScope}, PINNED to the coord workspace (see
  *  {@link loopCarryWs}) so the producer and the wake-executor consumer address
  *  the same row no matter which host/ctx they run under. */
-export async function setLoopCarryNote(
-  ref: LoopCarryNoteRef,
-  note: string | null | undefined,
-): Promise<string | null> {
-  const stored = await setCarryNote(
-    { scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() },
-    note,
-  );
+export async function setLoopCarryNote(ref: LoopCarryNoteRef, note: string | null | undefined): Promise<string | null> {
+  const stored = await setCarryNote({ scope: loopScope(ref.harness, ref.ownerId), workspaceId: loopCarryWs() }, note);
   // The carry row is already durable. Orders-panel invalidation is a best-effort
   // derived-read push and must not extend the write's response deadline when the
   // sync bus or its PG notify path is degraded (EI-21390376601596579).
@@ -2237,10 +2262,12 @@ export async function setLoopCarryNoteWithPrior(
 export async function getLoopCarryNote(ref: LoopCarryNoteRef): Promise<string | null> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const rows = await boundedPgReadTxn<{ note: string | null }[]>((tx) => tx`
+    const rows = await boundedPgReadTxn<{ note: string | null }[]>(
+      (tx) => tx`
       SELECT note FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
     const note = (rows[0]?.note ?? '').trim();
     return note.length > 0 ? note : null;
   } catch {
@@ -2265,10 +2292,12 @@ export interface LoopCarryNoteWithMeta {
 export async function getLoopCarryNoteWithMeta(ref: LoopCarryNoteRef): Promise<LoopCarryNoteWithMeta> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const rows = await boundedPgReadTxn<{ note: string | null; updated_ts: string | number | null }[]>((tx) => tx`
+    const rows = await boundedPgReadTxn<{ note: string | null; updated_ts: string | number | null }[]>(
+      (tx) => tx`
       SELECT note, updated_ts FROM harness_shared.carry_notes
        WHERE scope = ${scope} AND note IS NOT NULL
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
     const note = (rows[0]?.note ?? '').trim();
     if (note.length === 0) return { note: null, updatedAtMs: null };
     const ts = rows[0]?.updated_ts == null ? NaN : Number(rows[0].updated_ts);
@@ -2309,12 +2338,14 @@ export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<strin
   // DIFFERENT owner's scopes. The JS filter below is the authority regardless.
   const pattern = `${prefix}%${suffix.replace(/([\\%_])/g, '\\$1')}`;
   try {
-    const rows = await boundedPgReadTxn<{ scope: string | null }[]>((tx) => tx`
+    const rows = await boundedPgReadTxn<{ scope: string | null }[]>(
+      (tx) => tx`
       SELECT scope FROM harness_shared.carry_notes
        WHERE scope LIKE ${pattern}
          AND note IS NOT NULL AND btrim(note) <> ''
        GROUP BY scope
-       ORDER BY max(updated_ts) DESC`);
+       ORDER BY max(updated_ts) DESC`,
+    );
     const seen = new Set<string>();
     const out: string[] = [];
     for (const row of rows) {
@@ -2339,10 +2370,12 @@ export async function listLoopCarryNoteHarnesses(ownerId: string): Promise<strin
 export async function getLoopCarryJournal(ref: LoopCarryNoteRef): Promise<CarryJournalEntry[]> {
   const scope = loopScope(ref.harness, ref.ownerId);
   try {
-    const rows = await boundedPgReadTxn<{ journal: unknown }[]>((tx) => tx`
+    const rows = await boundedPgReadTxn<{ journal: unknown }[]>(
+      (tx) => tx`
       SELECT journal FROM harness_shared.carry_notes
        WHERE scope = ${scope}
-       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`);
+       ORDER BY updated_ts DESC, (workspace_id = ${loopCarryWs()}) DESC LIMIT 1`,
+    );
     return [...normalizeJournal(rows[0]?.journal)].reverse();
   } catch {
     return [];

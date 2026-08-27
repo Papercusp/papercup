@@ -2849,6 +2849,17 @@ export async function markLeaderTriage(
  * clear one — merging `{ key: null }` leaves the key PRESENT as a JSON null, so
  * existence-shaped readers (`? 'key'`, and `-> 'key' IS NOT NULL`) still match.
  * See mergeWorkItemPayload's note. (EI-20578964155166663) */
+export function planItemSourceFromPayloadPatch(
+  patch: Record<string, unknown>,
+): { planSlug: string; itemId: string } | null {
+  const raw = patch.plan_item;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const stamp = raw as Record<string, unknown>;
+  const planSlug = typeof stamp.plan_slug === 'string' ? stamp.plan_slug.trim() : '';
+  const itemId = typeof stamp.item_id === 'string' ? stamp.item_id.trim() : '';
+  return planSlug && itemId ? { planSlug, itemId } : null;
+}
+
 export async function mergeIssuePayload(
   id: string,
   patch: Record<string, unknown>,
@@ -2858,6 +2869,7 @@ export async function mergeIssuePayload(
   const ws = await resolveIssueWorkspace(id);
   const unset = [...new Set(opts.unset ?? [])];
   const clearingPlanItem = unset.includes('plan_item');
+  const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patch);
   // EI-21215793636294109: write the CANONICAL base table, never the engineer_issues
   // COMPATIBILITY VIEW — a key removal is not expressible through that view. Its
   // INSTEAD OF trigger re-merges the incoming payload into the stored one
@@ -2875,13 +2887,21 @@ export async function mergeIssuePayload(
   const updatePayload = (db: OrgSql) => db<{ ok: number }[]>`
     UPDATE harness_shared.work_items
        SET payload = (COALESCE(payload, '{}'::jsonb) || ${JSON.stringify(patch)}::text::jsonb) - ${unset}::text[],
-           -- A promoted issue has TWO admission identities: payload.plan_item and
-           -- the normalized source-plan columns. Clearing only the JSON stamp lets
-           -- a fresh read/lane sync immediately rehydrate the same plan link from
-           -- source_plan_slug/source_plan_item_ids (EI-21215740738650819).
-           -- Keep all three representations in the SAME write.
-           source_plan_slug = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_slug END,
-           source_plan_item_ids = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_item_ids END,
+           -- A promoted issue has TWO row-level admission identities:
+           -- payload.plan_item and the normalized source-plan columns. Keep them
+           -- in the SAME write on both SET and CLEAR. Before EI-21551365156148780,
+           -- work_items:update set the stamp but left these columns NULL, so exact-
+           -- plan promotion coverage reported the implementing issue as missing.
+           source_plan_slug = CASE
+             WHEN ${clearingPlanItem} THEN NULL
+             WHEN ${settingPlanItem !== null} THEN ${settingPlanItem?.planSlug ?? null}
+             ELSE source_plan_slug
+           END,
+           source_plan_item_ids = CASE
+             WHEN ${clearingPlanItem} THEN NULL
+             WHEN ${settingPlanItem !== null} THEN ${settingPlanItem ? [settingPlanItem.itemId] : null}::text[]
+             ELSE source_plan_item_ids
+           END,
            origin = 'local',
            updated_ts = ${Date.now()}
      WHERE workspace_id = ${ws}

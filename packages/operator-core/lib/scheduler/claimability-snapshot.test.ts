@@ -138,6 +138,22 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     expect(where).toContain('= ?');
   });
 
+  it('materializes only the columns consumed by claimability siblings, not the 80-column work-item row', async () => {
+    const pg = makePool();
+    await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
+
+    const materialization = pg.queries[0] ?? '';
+    const projection = materialization.slice(0, materialization.indexOf('(TRUE) AS spec_match'));
+    expect(projection).not.toContain('wi.*');
+    expect(projection).toContain('wi.feature_id');
+    expect(projection).toContain('wi.payload');
+    expect(projection).toContain('wi.updated_ts');
+    expect(projection).toContain('wi.source_plan_item_ids');
+    expect(projection).not.toContain('wi.summary');
+    expect(projection).not.toContain('wi._search');
+    expect(projection).not.toContain('wi.embedding');
+  });
+
   it('WI-6673: the admitted COMPOSITION is read in the same snapshot as the count it describes — never a separate checkout', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });

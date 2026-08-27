@@ -3435,6 +3435,19 @@ const sessionRespawned = defineTool({
       // successor's real transcript), so an extra clear costs nothing.
       const gaugeOwner = owner ?? coordOwnerId;
       if (gaugeOwner) {
+        // EI-21567375926533125: scheduler:get_next reads the PG-canonical
+        // coord_presence estimate, not either in-process render cache below.
+        // A carry-respawn can preserve pid=NULL, so the store's pid-transition
+        // invalidation never fires; clear the predecessor estimate at this
+        // confirmed native-session replacement boundary. The detached
+        // session-compacted bridge may race this route, but it now writes only
+        // after proving it resolved this exact successor native id.
+        try {
+          const { clearContextEstimate } = await import('../../../agent-tools/coordination/presence');
+          await clearContextEstimate(gaugeOwner);
+        } catch {
+          /* gauge hygiene must never fail the respawn report */
+        }
         try {
           const { clearContextUsage } = await import('../../../system-health/context-usage-cache');
           clearContextUsage(gaugeOwner);

@@ -163,6 +163,7 @@ import {
   withCarryNoteChecks,
 } from '../../carry-note';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
+import { continuityProbeSchema } from '../../continuity-probes';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -204,9 +205,7 @@ function appendChecksOverflowCount(
  * by rewording the refusal.
  */
 function priorChecksOverCapCount(priorNote: string | null): number {
-  const priorChecks = splitCarryNoteChecks(priorNote).checks.filter(
-    (row) => (row.claim ?? '').trim().length > 0,
-  );
+  const priorChecks = splitCarryNoteChecks(priorNote).checks.filter((row) => (row.claim ?? '').trim().length > 0);
   return Math.max(0, priorChecks.length - CARRY_NOTE_MAX_CHECKS);
 }
 
@@ -274,9 +273,7 @@ function appendChecksOverflowRows(
 
   const merged = normalizeCheckEntries([...suppliedChecks, ...priorChecks], priorChecks);
   const keptKeys = new Set(merged.map((row) => carryRowKey(row)));
-  const evicted = priorChecks.filter(
-    (row) => row.claim.trim().length > 0 && !keptKeys.has(carryRowKey(row)),
-  );
+  const evicted = priorChecks.filter((row) => row.claim.trim().length > 0 && !keptKeys.has(carryRowKey(row)));
 
   return evicted.slice(0, CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE).map((row) => {
     const id = sanitizeCarryRowId(row.id);
@@ -339,12 +336,12 @@ function rowsModeSpec() {
     .enum(['replace', 'merge'])
     .optional()
     .describe(
-      "P-013: how supplied `checks` rows are applied. `merge` (default) unions " +
-        "supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + " +
-        "`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, " +
+      'P-013: how supplied `checks` rows are applied. `merge` (default) unions ' +
+        'supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + ' +
+        '`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows. This controls CHECK ROWS only, ' +
         "never the checkpoint body: a full authoritative body+rows replacement is `append:false, rowsMode:'replace', " +
-        "confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its " +
-        "checks become additive; without confirmRetire, omitted carried checks are refused before write.",
+        'confirmShrink:true, confirmRetire:true`. Without confirmShrink, a >50% body shrink is auto-preserved and its ' +
+        'checks become additive; without confirmRetire, omitted carried checks are refused before write.',
     );
 }
 
@@ -393,10 +390,10 @@ function dependsOnSpec() {
       'P-007 freshness: what this checkpoint is derived FROM, as `kind:ref` tags — ' +
         `supported kinds: ${SUPPORTED_DEP_KINDS.join(', ')} ` +
         '(e.g. "file:packages/operator-core/lib/x.ts", "work-item:WI-6198", "plan:my-plan-slug"). ' +
-        "Each is resolved to a version token and stamped NOW, so a later reader is told WHICH dependency " +
-        'moved instead of guessing from the checkpoint\'s age. Declaring them makes an OLD checkpoint ' +
+        'Each is resolved to a version token and stamped NOW, so a later reader is told WHICH dependency ' +
+        "moved instead of guessing from the checkpoint's age. Declaring them makes an OLD checkpoint " +
         'readable as fresh when nothing moved, and — the case no age threshold can catch — a SECONDS-OLD ' +
-        "one as stale when a PEER changed a file it depends on. Omit to keep the previous declaration; " +
+        'one as stale when a PEER changed a file it depends on. Omit to keep the previous declaration; ' +
         'pass [] to clear it.',
     );
 }
@@ -476,6 +473,11 @@ function checksSpec() {
               'Evidence that was supplied as verification but contradicts it (for example, "STILL RUNNING"). ' +
                 'Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before relying on the claim.',
             ).optional(),
+            probe: continuityProbeSchema
+              .optional()
+              .describe(
+                'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
+              ),
           }),
         )
         .max(CARRY_NOTE_MAX_CHECKS),
@@ -486,7 +488,7 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        'plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:\'merge\'` a supplied list is ' +
+        "plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:'merge'` a supplied list is " +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
         `${CARRY_NOTE_MAX_CHECKS}: an overflow would evict the carried tail, so an additive write refuses atomically ` +
         'before it can drop rows. Retire stale rows with a plain replace first, or append without `checks` to leave ' +
@@ -494,7 +496,7 @@ function checksSpec() {
         "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
         "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
         'that is how you RETIRE a stale check. A supplied ' +
-        'row whose claim text matches a stored one inherits that row\'s recheck/verified/contested/sinceMs when ' +
+        "row whose claim text matches a stored one inherits that row's recheck/verified/contested/sinceMs when " +
         'you omit them, so re-sending a claim never loses its evidence. Supplying `verified` clears an inherited ' +
         '`contested` and vice versa — they are two renderings of ONE evidence slot, not independent fields — and ' +
         'evidence that contradicts itself (for example "STILL RUNNING") is auto-downgraded to ⚠ CONTESTED rather ' +
@@ -514,7 +516,11 @@ const itemSpec = z.object({
     .describe(
       'compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
     ),
-  harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
+  harness: z
+    .string()
+    .max(80)
+    .optional()
+    .describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
     'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
       'of replacing it. Makes the WHOLE write additive: supplied `checks` are UNIONED onto the carried set ' +
@@ -562,7 +568,7 @@ export default defineTool({
       'Declare `dependsOn` for a real freshness verdict.',
     notWhen:
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
-      'channel: use work_items:update for the body, work_items:comment for a note. Not for a peer\'s item — claim it, or comment instead.',
+      "channel: use work_items:update for the body, work_items:comment for a note. Not for a peer's item — claim it, or comment instead.",
     chaining:
       'Call before work_items:complete / on yield; blank clears a stale note. ' +
       'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
@@ -597,7 +603,12 @@ export default defineTool({
         .describe(
           'single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
         ),
-      items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
+      items: z
+        .array(itemSpec)
+        .min(1)
+        .max(100)
+        .optional()
+        .describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
       append: looseBoolean().describe(
         'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
@@ -609,8 +620,8 @@ export default defineTool({
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
       ),
       rowsMode: rowsModeSpec().describe(
-        "single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. " +
-          "`merge` unions supplied checks without appending the body. A complete body+rows replacement is " +
+        'single shorthand default for `rowsMode`; also the items[] default. This controls CHECK ROWS only, not the body. ' +
+          '`merge` unions supplied checks without appending the body. A complete body+rows replacement is ' +
           "append:false, rowsMode:'replace', confirmShrink:true, confirmRetire:true.",
       ),
       confirmRetire: looseBoolean().describe(
@@ -672,7 +683,11 @@ export default defineTool({
         }
         const item = lookup.status === 'found' ? lookup.item : null;
         if (!item && !hintHarness) {
-          return { ok: false as const, id: it.id, error: `could not resolve a harness for work_item '${it.id}' — pass { harness }` };
+          return {
+            ok: false as const,
+            id: it.id,
+            error: `could not resolve a harness for work_item '${it.id}' — pass { harness }`,
+          };
         }
         // EI-18132462898750489: refuse a checkpoint write/clear on an item ASSIGNED to
         // someone else. Before this guard the write silently succeeded for anyone, which
@@ -687,14 +702,14 @@ export default defineTool({
             id: it.id,
             error:
               `not_holder — work_item '${it.id}' is assigned to ${item.assignee}, not you (${ident.ownerId}). ` +
-              'Checkpointing an item you do not hold would silently overwrite its real holder\'s in-flight state. ' +
+              "Checkpointing an item you do not hold would silently overwrite its real holder's in-flight state. " +
               'Leave a note instead with work_items:comment, or work_items:claim it first if you are taking it over.',
           };
         }
         // The item's own harness is authoritative (null for a harness-null item — the
         // store canonicalizes it). Fall back to the hint only when the item can't be
         // resolved (e.g. a not-yet-persisted id).
-        const harness: string | null = item ? item.harness ?? null : hintHarness ?? null;
+        const harness: string | null = item ? (item.harness ?? null) : (hintHarness ?? null);
         const workspaceId = resolveConcreteWorkspaceId(c.workspaceId);
         // EI-9036: append:true joins onto the EXISTING checkpoint instead of replacing
         // it — the fix for the "meant to add a short addendum, silently wiped the
@@ -715,7 +730,8 @@ export default defineTool({
           return {
             ok: false as const,
             id: it.id,
-            error: 'append:true requires a non-blank `checkpoint` — append has nothing to append, and blank normally means clear (contradiction).',
+            error:
+              'append:true requires a non-blank `checkpoint` — append has nothing to append, and blank normally means clear (contradiction).',
           };
         }
         // EI-20232161144151845: dependency stamps are metadata about the stored
@@ -729,7 +745,9 @@ export default defineTool({
         const hasMetadataPatch =
           it.checkpoint === undefined && (rawSuppliedChecks !== undefined || declaredDeps !== undefined);
         const hasChecksWithExplicitClear =
-          typeof it.checkpoint === 'string' && it.checkpoint.trim().length === 0 && (rawSuppliedChecks?.length ?? 0) > 0;
+          typeof it.checkpoint === 'string' &&
+          it.checkpoint.trim().length === 0 &&
+          (rawSuppliedChecks?.length ?? 0) > 0;
         const isActiveCheckpointWrite = hasCheckpointBody || hasMetadataPatch || hasChecksWithExplicitClear;
         // EI-21035020852712365: a terminal item with no live claim can look like an
         // ordinary unassigned item, so the ownership guard above used to let a
@@ -738,7 +756,15 @@ export default defineTool({
         // the item stayed terminal and unassigned while a live session edited it.
         // Refuse active writes rather than implicitly reopening and discarding the
         // terminal completion. Explicit clears remain valid for finish cleanup.
-        if (item && TERMINAL_WORK_ITEM_STATES.has(String(item.state ?? '').trim().toLowerCase()) && isActiveCheckpointWrite) {
+        if (
+          item &&
+          TERMINAL_WORK_ITEM_STATES.has(
+            String(item.state ?? '')
+              .trim()
+              .toLowerCase(),
+          ) &&
+          isActiveCheckpointWrite
+        ) {
           return {
             ok: false as const,
             id: it.id,
@@ -750,7 +776,8 @@ export default defineTool({
             recovery: {
               reopen: {
                 args: { state: 'open', force: true },
-                description: 'Reopen the terminal item explicitly, then claim it before writing active checkpoint state.',
+                description:
+                  'Reopen the terminal item explicitly, then claim it before writing active checkpoint state.',
               },
             },
           };
@@ -989,10 +1016,10 @@ export default defineTool({
                   patchedExistingChecks !== null
                     ? patchedExistingChecks
                     : effectiveChecks !== undefined
-                    ? preserveEmptyAdditiveChecks
-                      ? prior
-                      : normalizeCheckEntries(effectiveChecks, prior)
-                    : prior;
+                      ? preserveEmptyAdditiveChecks
+                        ? prior
+                        : normalizeCheckEntries(effectiveChecks, prior)
+                      : prior;
                 // Recomputed on every transform invocation (the store may retry it under
                 // its lock) so the last run — the one whose result is stored — wins.
                 // Drop detection must use the same stable identity as the merge and
@@ -1130,9 +1157,9 @@ export default defineTool({
                 return candidateBody.endsWith(submitted)
                   ? null
                   : `append_body_overflow — preserving the carried check rows would trim the submitted append ` +
-                    `body from the ${CHECKPOINT_CAP}-character checkpoint. Refusing the write rather than ` +
-                    'reporting success with the new progress note missing; retire stale legacy checks or shorten ' +
-                    'the carried note before retrying, or pass { confirmShrink: true } only if that loss is intentional.';
+                      `body from the ${CHECKPOINT_CAP}-character checkpoint. Refusing the write rather than ` +
+                      'reporting success with the new progress note missing; retire stale legacy checks or shorten ' +
+                      'the carried note before retrying, or pass { confirmShrink: true } only if that loss is intentional.';
               }
             : null;
         /**
@@ -1152,53 +1179,54 @@ export default defineTool({
          *  see, so a `let … | null = null` narrows to `never` at the read below and the
          *  branch fails to compile. `0` means "no legacy excess absorbed". */
         const legacyOverCapNormalization = { legacyExcess: 0 };
-        const overflowGuard: CheckpointGuard | null = !wantsConfirmShrink && suppliedChecks !== undefined
-          ? (_priorNote) => {
-              // An explicitly empty list is the documented additive no-op for both
-              // recovery shapes. It must not reject a legacy note that already carries
-              // more rows than the current cap; there are no supplied rows to evict.
-              if (suppliedChecks.length === 0) return null;
-              if (!(additiveChecks || preservePriorOnShrink)) return null;
-              const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
-              if (overflowCount === 0) return null;
-              /**
-               * EI-21534719386975911 — NORMALIZE ON WRITE, do not refuse forever.
-               *
-               * The refusal below exists to stop a caller's own rows from evicting
-               * carried ones: it hands back a real remedy ("retire stale rows first,
-               * then append"), which only works while the stored note still FITS. When
-               * the note is ALREADY over cap, that remedy is unreachable — the full set
-               * cannot be re-sent, since `checks` is capped at CARRY_NOTE_MAX_CHECKS and
-               * a larger list is rejected as invalid_input — so the guard turned a
-               * legacy data condition into a permanently unwritable checkpoint. Measured
-               * here: 57 notes in this workspace, every additive write against them
-               * refused, the same bug re-filed each time a different agent inherited one.
-               *
-               * So absorb it: trim to the cap and PROCEED. The transform already unions
-               * supplied-first and normalizes, `orderCarriedForUnion` makes the tail it
-               * cuts the PREDICTED rows, and the eviction is reported through the
-               * ordinary `checksDropped` channel rather than being silent. Each poisoned
-               * note self-heals the next time anyone touches it — no migration, and no
-               * way back to the refuse-forever state.
-               *
-               * The guard keeps its original job intact for a within-cap prior, which is
-               * the whole distinction: refuse CALLER-caused eviction, absorb LEGACY
-               * over-cap state.
-               */
-              const legacyExcess = priorChecksOverCapCount(_priorNote);
-              if (legacyExcess > 0) {
-                legacyOverCapNormalization.legacyExcess = legacyExcess;
-                return null;
+        const overflowGuard: CheckpointGuard | null =
+          !wantsConfirmShrink && suppliedChecks !== undefined
+            ? (_priorNote) => {
+                // An explicitly empty list is the documented additive no-op for both
+                // recovery shapes. It must not reject a legacy note that already carries
+                // more rows than the current cap; there are no supplied rows to evict.
+                if (suppliedChecks.length === 0) return null;
+                if (!(additiveChecks || preservePriorOnShrink)) return null;
+                const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
+                if (overflowCount === 0) return null;
+                /**
+                 * EI-21534719386975911 — NORMALIZE ON WRITE, do not refuse forever.
+                 *
+                 * The refusal below exists to stop a caller's own rows from evicting
+                 * carried ones: it hands back a real remedy ("retire stale rows first,
+                 * then append"), which only works while the stored note still FITS. When
+                 * the note is ALREADY over cap, that remedy is unreachable — the full set
+                 * cannot be re-sent, since `checks` is capped at CARRY_NOTE_MAX_CHECKS and
+                 * a larger list is rejected as invalid_input — so the guard turned a
+                 * legacy data condition into a permanently unwritable checkpoint. Measured
+                 * here: 57 notes in this workspace, every additive write against them
+                 * refused, the same bug re-filed each time a different agent inherited one.
+                 *
+                 * So absorb it: trim to the cap and PROCEED. The transform already unions
+                 * supplied-first and normalizes, `orderCarriedForUnion` makes the tail it
+                 * cuts the PREDICTED rows, and the eviction is reported through the
+                 * ordinary `checksDropped` channel rather than being silent. Each poisoned
+                 * note self-heals the next time anyone touches it — no migration, and no
+                 * way back to the refuse-forever state.
+                 *
+                 * The guard keeps its original job intact for a within-cap prior, which is
+                 * the whole distinction: refuse CALLER-caused eviction, absorb LEGACY
+                 * over-cap state.
+                 */
+                const legacyExcess = priorChecksOverCapCount(_priorNote);
+                if (legacyExcess > 0) {
+                  legacyOverCapNormalization.legacyExcess = legacyExcess;
+                  return null;
+                }
+                appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
+                return (
+                  `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
+                  `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
+                  `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
+                  '(or with `checks: []`) to preserve the carried set.'
+                );
               }
-              appendChecksOverflowDiagnostics = appendChecksOverflowRows(_priorNote, suppliedChecks);
-              return (
-                `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
-                `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
-                `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
-                '(or with `checks: []`) to preserve the carried set.'
-              );
-            }
-          : null;
+            : null;
         let res;
         try {
           res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
@@ -1224,7 +1252,7 @@ export default defineTool({
               message:
                 "rowsMode:'replace' would RETIRE the carried checks named above and confirmRetire was not true — " +
                 'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
-                "rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).",
+                'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
             };
           }
           throw error;
@@ -1245,15 +1273,11 @@ export default defineTool({
         // except where a real loss is possible.
         if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
           preservePriorOnShrink = true;
-          res = await setWorkItemCheckpointWithPrior(
-            { harness, workItemId: it.id, workspaceId },
-            checkpointToStore,
-            {
-              ...(checksTransform ? { transform: checksTransform } : {}),
-              guard: composeGuards(bodyPreservationGuard, overflowGuard),
-              ...depsOpt,
-            },
-          );
+          res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+            ...(checksTransform ? { transform: checksTransform } : {}),
+            guard: composeGuards(bodyPreservationGuard, overflowGuard),
+            ...depsOpt,
+          });
         }
         stored = res.stored;
         priorLength = res.priorLength;
@@ -1304,7 +1328,7 @@ export default defineTool({
                     ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
                     : errorCode === 'checks_body_overflow'
                       ? 'Retry without checks to preserve the narrative body, or shorten the checks before retrying the metadata patch.'
-                    : 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
+                      : 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
               },
               replace: {
                 args: { append: false, confirmShrink: true },
@@ -1441,27 +1465,28 @@ export default defineTool({
           ...(droppedCheckClaims.length
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
-                checksDroppedNote: legacyOverCapNormalization.legacyExcess > 0
-                  ? `LEGACY CAP NORMALIZATION, not a replace and not your mistake: this checkpoint was already ` +
-                    `carrying ${legacyOverCapNormalization.legacyExcess} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap before ` +
-                    `your write — a pre-existing state that used to make every additive write to this note refuse ` +
-                    `permanently (EI-21534719386975911). The write was accepted and the note normalized to the cap ` +
-                    `instead: your ${suppliedChecks?.length ?? 0} row(s) were kept first, and ${droppedCheckClaims.length} carried row(s) ` +
-                    `yielded — ? PREDICTED rows before ✓ VERIFIED ones, so the evidence-bearing rows survived. This ` +
-                    `is a ONE-TIME normalization of this note; it now fits, and subsequent writes evict nothing. ` +
-                    `The claims are listed above — re-send any that still matter.`
-                  : additiveChecks
-                  ? `CAP EVICTION, not a replace: ${wantsAppend ? '`append`' : "`rowsMode:'merge'`"} UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
-                    `the stored set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
-                    `${droppedCheckClaims.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
-                    `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
-                    `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate plain ` +
-                    `write (no \`append\`, send only the survivors), then append; or pass no \`checks\` at all to ` +
-                    `leave the stored rows untouched.`
-                  : `a supplied \`checks\` list REPLACES the stored set — ${droppedCheckClaims.length} stored ` +
-                    `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
-                    `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
-                    `the stored rows untouched.`,
+                checksDroppedNote:
+                  legacyOverCapNormalization.legacyExcess > 0
+                    ? `LEGACY CAP NORMALIZATION, not a replace and not your mistake: this checkpoint was already ` +
+                      `carrying ${legacyOverCapNormalization.legacyExcess} row(s) MORE than the ${CARRY_NOTE_MAX_CHECKS}-row cap before ` +
+                      `your write — a pre-existing state that used to make every additive write to this note refuse ` +
+                      `permanently (EI-21534719386975911). The write was accepted and the note normalized to the cap ` +
+                      `instead: your ${suppliedChecks?.length ?? 0} row(s) were kept first, and ${droppedCheckClaims.length} carried row(s) ` +
+                      `yielded — ? PREDICTED rows before ✓ VERIFIED ones, so the evidence-bearing rows survived. This ` +
+                      `is a ONE-TIME normalization of this note; it now fits, and subsequent writes evict nothing. ` +
+                      `The claims are listed above — re-send any that still matter.`
+                    : additiveChecks
+                      ? `CAP EVICTION, not a replace: ${wantsAppend ? '`append`' : "`rowsMode:'merge'`"} UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
+                        `the stored set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
+                        `${droppedCheckClaims.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
+                        `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
+                        `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate plain ` +
+                        `write (no \`append\`, send only the survivors), then append; or pass no \`checks\` at all to ` +
+                        `leave the stored rows untouched.`
+                      : `a supplied \`checks\` list REPLACES the stored set — ${droppedCheckClaims.length} stored ` +
+                        `claim(s) were not in this write and are now gone. Re-send the FULL set you want carried ` +
+                        `(a re-sent claim inherits its prior recheck/verified), or pass no \`checks\` at all to leave ` +
+                        `the stored rows untouched.`,
               }
             : {}),
           /**

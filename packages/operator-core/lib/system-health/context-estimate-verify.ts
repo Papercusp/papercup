@@ -19,12 +19,21 @@ import { currentContextTokensForOwner } from '../compaction-usage';
 export interface ContextRefreshDeps {
   estimate?: (ownerId: string) => Promise<number | null>;
   writePgEstimate?: (ownerId: string, tokens: number) => Promise<void>;
+  /** Native session id the host just spawned. When supplied, the refresh must
+   *  prove the owner resolver has reached this successor before estimating. */
+  expectedSessionId?: string | null;
+  resolveSessionId?: (ownerId: string) => Promise<string | null>;
 }
 
 /** Dynamic import keeps this off the presence/db-org graph until a write happens. */
 async function defaultWritePgEstimate(ownerId: string, tokens: number): Promise<void> {
   const { setContextEstimate } = await import('../agent-tools/coordination/presence');
   await setContextEstimate(ownerId, tokens);
+}
+
+async function defaultResolveSessionId(ownerId: string): Promise<string | null> {
+  const { resolveSelfSession } = await import('../search/self-session');
+  return (await resolveSelfSession(ownerId))?.sessionId ?? null;
 }
 
 /**
@@ -38,6 +47,17 @@ export async function refreshContextEstimateAtBoundary(
   deps: ContextRefreshDeps = {},
 ): Promise<number | null> {
   try {
+    // EI-21567375926533125: the detached compaction bridge races the
+    // session-respawned re-anchor. A forced reseed against the OLD mapping is
+    // still a perfectly successful read — of the predecessor transcript — and
+    // can overwrite the PG NULL written by the confirmed respawn boundary with
+    // the same stale critical value. Prove the mapping names the exact native
+    // successor the host spawned before deriving anything. On a race, leave the
+    // PG estimate unknown; the watchdog fills it from the successor later.
+    if (deps.expectedSessionId) {
+      const resolved = await (deps.resolveSessionId ?? defaultResolveSessionId)(ownerId);
+      if (resolved !== deps.expectedSessionId) return null;
+    }
     const fresh = await (deps.estimate ??
       ((o: string) => currentContextTokensForOwner(o, { reseed: true })))(ownerId);
     if (fresh == null) return null;

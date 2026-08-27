@@ -975,6 +975,42 @@ describe('mergeIssuePayload opts.unset REMOVES the key (EI-21215793636294109)', 
     return rows[0]?.payload ?? {};
   };
 
+  it('setting plan_item atomically sets and repoints normalized source-plan provenance', async () => {
+    const a = await issues.createIssue({ title: `plan-link-set-${Date.now()}`, createdBy: 'agA' });
+
+    const first = await issues.mergeIssuePayload(a.id, {
+      plan_item: { plan_slug: 'plan-a', item_id: 'P-001', harness_slug: 'papercup' },
+    });
+    const read = async () => {
+      const rows = await db.sql<{
+        payload: Record<string, unknown> | null;
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+      }[]>`
+        SELECT payload, source_plan_slug, source_plan_item_ids
+          FROM harness_shared.work_items
+         WHERE workspace_id = ${PINNED_WS} AND feature_id = ${a.id}`;
+      return rows[0]!;
+    };
+
+    expect(await read()).toMatchObject({
+      payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-001' } },
+      source_plan_slug: 'plan-a',
+      source_plan_item_ids: ['P-001'],
+    });
+    expect(first).toMatchObject({ sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-001'] });
+
+    const repointed = await issues.mergeIssuePayload(a.id, {
+      plan_item: { plan_slug: 'plan-b', item_id: 'P-009', harness_slug: 'papercup' },
+    });
+    expect(await read()).toMatchObject({
+      payload: { plan_item: { plan_slug: 'plan-b', item_id: 'P-009' } },
+      source_plan_slug: 'plan-b',
+      source_plan_item_ids: ['P-009'],
+    });
+    expect(repointed).toMatchObject({ sourcePlanSlug: 'plan-b', sourcePlanItemIds: ['P-009'] });
+  });
+
   it('removes the named key, leaves siblings and the internal _ei block intact', async () => {
     const a = await issues.createIssue({ title: `unset-guard-${Date.now()}`, createdBy: 'agA' });
     await issues.mergeIssuePayload(a.id, {

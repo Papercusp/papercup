@@ -298,6 +298,16 @@ export function timeoutForTool(toolName: string, callArgs?: (Record<string, unkn
  */
 export function isLoopPressureShed(error: any): boolean;
 /**
+ * Add bounded positive jitter AFTER a retry minimum, without overrunning the
+ * caller's remaining total deadline. Returns null when even the minimum cannot
+ * be honored before that deadline, so the caller surfaces the last typed error
+ * instead of retrying early. Pure + injectable for deterministic fanout tests.
+ */
+export function retryWaitMsWithJitter(baseWaitMs: any, remainingMs: any, { rand, jitterMs }?: {
+    rand?: (() => number) | undefined;
+    jitterMs?: number | undefined;
+}): number | null;
+/**
  * Format a tools/call failure without implying that the call did not run.
  * Stream transport failures can arrive after the operator has dispatched the
  * tool, so callers must verify mutation state before replaying the payload.
@@ -372,12 +382,14 @@ export function callToolWithReplayRecovery(client: any, params: any, { reconnect
  * dispatched yet; never extend this to a tools/call transport failure, whose
  * mutation status is ambiguous.
  */
-export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rediscover, onRebase, }?: {
+export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope: any, { maxAttempts, retryDelayMs, attemptTimeoutMs, totalTimeoutMs, sleep, rand, retryJitterMs, rediscover, onRebase, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     attemptTimeoutMs?: number | undefined;
     totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
+    rand?: (() => number) | undefined;
+    retryJitterMs?: number | undefined;
     rediscover?: null | undefined;
     onRebase?: null | undefined;
 }): Promise<any>;
@@ -403,12 +415,14 @@ export function appendConnectAttemptHistory(error: any, attemptKinds: any, elaps
  * is read-only and safe to replay on the same session. In both cases the total
  * discovery deadline below remains the hard bound.
  */
-export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, }?: {
+export function listToolsWithLocalRetry(client: any, params?: {}, { timeoutMs, maxAttempts, retryDelayMs, totalTimeoutMs, sleep, rand, retryJitterMs, }?: {
     timeoutMs?: number | undefined;
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
     totalTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
+    rand?: (() => number) | undefined;
+    retryJitterMs?: number | undefined;
 }): Promise<any>;
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
  * payload-tier contracts are regression-tested without opening a transport.
@@ -457,6 +471,7 @@ export const PTOOL_CONNECT_TIMEOUT_MS: number;
 export const PTOOL_CONNECT_RETRY_DELAY_MS: 1000;
 export const PTOOL_CONNECT_MAX_ATTEMPTS: number;
 export const PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS: 2;
+export const PTOOL_RETRY_JITTER_MS: 1000;
 export const PTOOL_LIST_TOOLS_RETRY_DELAY_MS: 1000;
 export const PTOOL_LIST_TOOLS_MAX_ATTEMPTS: number;
 export const PTOOL_LIST_TOOLS_TOTAL_TIMEOUT_MS: number;

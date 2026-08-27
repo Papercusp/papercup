@@ -83,6 +83,22 @@ describe('PgPresenceStore compaction columns (agent-managed-compaction)', () => 
     expect(rec?.contextEstimatedAt).toBeTruthy();
   });
 
+  it('clearContextEstimate invalidates the observation but preserves the configured limit', async () => {
+    const s = store();
+    const o = owner();
+    await s.write(identity(o), {});
+    await s.setCompactionLimit(o, 400_000, { explicit: true });
+    await s.setContextEstimate(o, 380_000);
+
+    await s.clearContextEstimate(o);
+
+    const rec = await s.get(o);
+    expect(rec?.contextTokens ?? null).toBeNull();
+    expect(rec?.contextEstimatedAt ?? null).toBeNull();
+    expect(rec?.compactionLimit).toBe(400_000);
+    expect(rec?.compactionLimitExplicit).toBe(true);
+  });
+
   it('setters no-op for an unknown owner (no row created)', async () => {
     const s = store();
     const o = `ghost_${randomBytes(4).toString('hex')}`;

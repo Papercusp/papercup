@@ -38,6 +38,7 @@ const reanchorByOwnerMock = vi.hoisted(() =>
 );
 const clearContextUsageMock = vi.hoisted(() => vi.fn());
 const clearContextAnchorMock = vi.hoisted(() => vi.fn());
+const clearContextEstimateMock = vi.hoisted(() => vi.fn(async () => {}));
 const bindTasksMock = vi.hoisted(() => vi.fn(async (): Promise<string[]> => ['task-bound']));
 
 vi.mock('../../../auth/require-principal', () => ({
@@ -56,6 +57,7 @@ vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import
 }));
 vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: vi.fn(async () => {}),
+  clearContextEstimate: clearContextEstimateMock,
 }));
 vi.mock('../../../system-health/context-usage-cache', () => ({
   clearContextUsage: clearContextUsageMock,
@@ -102,9 +104,10 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
   });
 
-  it('EI-12966: clears BOTH the watchdog-mirror cache AND the anchored incremental cache for the owner', async () => {
+  it('clears the PG estimate plus BOTH process-local caches for the respawned owner', async () => {
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
+    expect(clearContextEstimateMock).toHaveBeenCalledWith('su-resp-owner');
     expect(clearContextUsageMock).toHaveBeenCalledWith('su-resp-owner');
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-resp-owner');
   });
@@ -134,6 +137,7 @@ describe('POST bootstrap-su/session-respawned — native-id re-anchor (WI-5075)'
     reanchorMock.mockResolvedValue({ reanchored: true, owner: null });
     const res = await postRespawned({ advSessionId: 42, sessionId: FRESH_ID });
     expect(res.status).toBe(200);
+    expect(clearContextEstimateMock).not.toHaveBeenCalled();
     expect(clearContextUsageMock).not.toHaveBeenCalled();
     expect(clearContextAnchorMock).not.toHaveBeenCalled();
     expect(bindTasksMock).not.toHaveBeenCalled();
@@ -188,6 +192,7 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
     expect(await res.json()).toEqual({ ok: true, reanchored: true });
     expect(reanchorMock).not.toHaveBeenCalled();
     expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID);
+    expect(clearContextEstimateMock).toHaveBeenCalledWith('su-interactive-owner');
     expect(clearContextUsageMock).toHaveBeenCalledWith('su-interactive-owner');
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-interactive-owner');
   });
@@ -215,6 +220,7 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ ok: true, reanchored: false });
+    expect(clearContextEstimateMock).toHaveBeenCalledWith('su-resp-owner');
     expect(clearContextUsageMock).toHaveBeenCalledWith('su-resp-owner');
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-resp-owner');
   });

@@ -2054,6 +2054,82 @@ pub struct WorkItemsPayload {
     pub items: Vec<WorkItem>,
 }
 
+/// One actionable row from `work_items:burn_down`. The same row shape is used
+/// by READY NOW and IN FLIGHT; `blocks` is enriched client-side from one batched
+/// `work_items:get { detail:true }` read for READY NOW.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFrontierRow {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub state: String,
+    #[serde(default)]
+    pub assignee: Option<String>,
+    #[serde(default)]
+    pub last_progress_at: Option<String>,
+    #[serde(skip)]
+    pub blocks: usize,
+}
+
+/// A parked frontier row. `mechanism == "needs-human"` is the NEEDS YOU
+/// bucket; every other mechanism contributes to the visible blocked count.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFrontierParkedRow {
+    #[serde(flatten)]
+    pub item: WorkFrontierRow,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub mechanism: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFrontierCounts {
+    #[serde(default)]
+    pub total: usize,
+    #[serde(default)]
+    pub terminal: usize,
+    #[serde(default)]
+    pub in_flight: usize,
+    #[serde(default)]
+    pub parked: usize,
+    #[serde(default)]
+    pub unclaimed: usize,
+}
+
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+pub struct WorkFrontierTerminal {
+    #[serde(default)]
+    pub total: usize,
+}
+
+/// Canonical whole-harness frontier returned by `work_items:burn_down`.
+#[derive(Debug, Clone, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkFrontier {
+    #[serde(default)]
+    pub harness: String,
+    #[serde(default)]
+    pub generated_at: String,
+    #[serde(default)]
+    pub terminal: WorkFrontierTerminal,
+    #[serde(default)]
+    pub in_flight: Vec<WorkFrontierRow>,
+    #[serde(default)]
+    pub parked: Vec<WorkFrontierParkedRow>,
+    #[serde(default)]
+    pub unclaimed: Vec<WorkFrontierRow>,
+    #[serde(default)]
+    pub counts: WorkFrontierCounts,
+}
+
 /// One worker-activity row (papercusp-worker-integration-2026-06-04). Emitted by
 /// both `activity:recent` (`{activity:[...]}`) and the `/api/activity/stream` SSE
 /// (`event: activity`). The wire is snake_case; `summary` is already server-side
@@ -2581,6 +2657,15 @@ pub struct BeeAssignment {
     /// for the Fleet roster's "spoke" column; heartbeat timestamps never proxy.
     #[serde(default)]
     pub last_tool_call_at: Option<String>,
+    /// Shared lifecycle/activity verdict (speaking, waiting, monitoring, dead…).
+    #[serde(default)]
+    pub verdict: Option<String>,
+    /// True when at least one held work-item has stopped making item-scoped progress.
+    #[serde(default)]
+    pub stalled: bool,
+    /// True when at least one active claim's holder is gone.
+    #[serde(default)]
+    pub orphaned: bool,
     #[serde(default)]
     pub intent: String,
     /// The bee's work-items in rank order (head-of-line first; unranked last).
@@ -2946,6 +3031,32 @@ mod tests {
             a.last_tool_call_at.as_deref(),
             Some("2026-08-26T20:21:22.456Z")
         );
+    }
+
+    #[test]
+    fn parses_work_frontier_buckets_and_assignment_activity() {
+        let frontier: WorkFrontier = serde_json::from_str(
+            r#"{
+                "harness":"papercusp",
+                "terminal":{"total":41},
+                "counts":{"total":50,"terminal":41,"inFlight":2,"parked":3,"unclaimed":4},
+                "unclaimed":[{"id":"WI-ready","kind":"feature","title":"Ready","state":"open"}],
+                "inFlight":[{"id":"WI-live","kind":"feature","title":"Live","state":"open","assignee":"su-a"}],
+                "parked":[{"id":"WI-human","kind":"bug","title":"Human","state":"needs-human","reason":"credential","mechanism":"needs-human"}]
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(frontier.counts.in_flight, 2);
+        assert_eq!(frontier.terminal.total, 41);
+        assert_eq!(frontier.unclaimed[0].id, "WI-ready");
+        assert_eq!(frontier.parked[0].mechanism, "needs-human");
+
+        let assignment: BeeAssignment = serde_json::from_str(
+            r#"{"agentId":"su-a","verdict":"suspect","stalled":true,"orphaned":false}"#,
+        )
+        .unwrap();
+        assert_eq!(assignment.verdict.as_deref(), Some("suspect"));
+        assert!(assignment.stalled);
     }
 
     #[test]

@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
 // the cap re-tunes the test instead of breaking it — the guard is about the note being
 // truthful at the boundary, not about the boundary sitting at any particular number.
@@ -29,7 +30,9 @@ vi.mock('../../work-item-checkpoint', () => ({
   getWorkItemCheckpoint: (...a: unknown[]) => getWorkItemCheckpoint(...a),
 }));
 vi.mock('../../carry-surface-action-proof', async () => {
-  const actual = await vi.importActual<typeof import('../../carry-surface-action-proof')>('../../carry-surface-action-proof');
+  const actual = await vi.importActual<typeof import('../../carry-surface-action-proof')>(
+    '../../carry-surface-action-proof',
+  );
   return { ...actual, readSuccessfulActionInvocations };
 });
 vi.mock('../../work-items', () => ({
@@ -49,8 +52,7 @@ vi.mock('../../work-items', () => ({
   // to keep work-items.ts (and its DB dependencies) out of a unit test. Mirrors the real
   // predicate's text-compare, which matches both the boolean and the legacy string form.
   isClaimHoldParked: (payload: unknown) =>
-    !!payload && typeof payload === 'object' &&
-    String((payload as Record<string, unknown>)._claimHold) === 'true',
+    !!payload && typeof payload === 'object' && String((payload as Record<string, unknown>)._claimHold) === 'true',
 }));
 import checkpoint from './checkpoint';
 // EI-19400299440742193: the guard asserts against the REAL caps, not literals, so a
@@ -59,6 +61,21 @@ import { CARRY_CAP_HARD_MULTIPLE, CARRY_ROW_SOFT_CAPS } from '../../carry-note';
 import { readFileSync } from 'node:fs';
 // Resolves to the MOCK above (that is the point) — so its keys are the double's real export set.
 import * as workItemsMocked from '../../work-items';
+import { continuityProbeRevision } from '../../continuity-probes';
+
+const WORK_ITEM_CONTINUITY_TEST_TOOL = 'test:work-item-continuity-read';
+defineTool({
+  name: WORK_ITEM_CONTINUITY_TEST_TOOL,
+  description: 'read-only fixture for work-item checkpoint executable probes',
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: ['su'],
+  effect: 'read',
+  args: z.object({ value: z.string() }),
+  async handler(args) {
+    return { data: { value: args.value } };
+  },
+});
 
 // EI-8824: force activeWorkspaceId()'s deterministic env-pin precedence (workspace-registry.ts
 // precedence #2) instead of mocking the workspace-registry module — resolveConcreteWorkspaceId
@@ -74,14 +91,19 @@ afterAll(() => {
   else process.env.PAPERCUSP_WORKSPACE_ID = PRIOR_WS_ENV;
 });
 
-const baseCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup' } as never;
+const baseCtx = {
+  uiClientId: 'opspawn-bee-1',
+  sigVerifiedSpawn: true,
+  workspaceId: 'default',
+  harnessSlug: 'papercup',
+} as never;
 const noHarnessCtx = { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default' };
 const parse = (x: unknown) => (checkpoint.args as { parse: (x: unknown) => unknown }).parse(x);
 type Out = { data: any };
 /** Parse the full bulk envelope. */
 const env = async (x: unknown, ctx: unknown = baseCtx) => {
   const res = (await checkpoint.handler(parse(x) as never, ctx as never)) as Out;
-  return (res.data);
+  return res.data;
 };
 /** The single-call result is n=1 of the bulk envelope — read results[0]. */
 const one = async (x: unknown, ctx: unknown = baseCtx) => (await env(x, ctx)).results[0];
@@ -143,7 +165,33 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     }
   });
 
-  it('keys the checkpoint by the ITEM\'s harness (looked up), disambiguated by the ctx hint', async () => {
+  it('accepts a current read-only executable probe and refuses drift before persistence', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: WORK_ITEM_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(WORK_ITEM_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    expect(() => parse({ id: 'WI-7', checks: [{ claim: 'gate is green', probe }] })).not.toThrow();
+    expect(() =>
+      parse({ id: 'WI-7', checks: [{ claim: 'gate is green', probe: { ...probe, schemaRevision: 'stale' } }] }),
+    ).toThrow(/schema_revision_mismatch/);
+    expect(() =>
+      parse({
+        id: 'WI-7',
+        checks: [
+          {
+            claim: 'gate is green',
+            probe: { ...probe, args: { value: 'green', authorization: 'Bearer sk-abcdefghijklmnop' } },
+          },
+        ],
+      }),
+    ).toThrow(/secret_material/);
+    expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+  });
+
+  it("keys the checkpoint by the ITEM's harness (looked up), disambiguated by the ctx hint", async () => {
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('did step 1; next: step 2');
     const out = await env({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
@@ -196,7 +244,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     const r = await one({ id: 'WI-7', checkpoint: 'did step 1; next: step 2' });
     expect(r).toMatchObject({ ok: true, verified: true, storedHead: 'did step 1; next: step 2' });
     // The read-back uses the SAME canonicalized ref as the write (harness + concrete ws).
-    expect(getWorkItemCheckpoint).toHaveBeenCalledWith({ harness: 'papercup', workItemId: 'WI-7', workspaceId: 'default' });
+    expect(getWorkItemCheckpoint).toHaveBeenCalledWith({
+      harness: 'papercup',
+      workItemId: 'WI-7',
+      workspaceId: 'default',
+    });
   });
 
   it('P-003: a write the reader path CANNOT see fails loudly (checkpoint_verify_failed), never silently', async () => {
@@ -234,10 +286,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     setWorkItemCheckpoint.mockResolvedValue('x');
     await one({ id: 'WI-7', checkpoint: 'x', harness: 'other-harness' });
     expect(getWorkItem).toHaveBeenCalledWith('WI-7', 'other-harness');
-    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: 'other-harness' }),
-      'x',
-    );
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ harness: 'other-harness' }), 'x');
   });
 
   it('resolves the harness via a work-item lookup when neither arg nor ctx has one', async () => {
@@ -245,10 +294,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     setWorkItemCheckpoint.mockResolvedValue('y');
     const r = await one({ id: 'WI-9', checkpoint: 'y' }, noHarnessCtx);
     expect(getWorkItem).toHaveBeenCalledWith('WI-9', undefined);
-    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ harness: 'looked-up' }),
-      'y',
-    );
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ harness: 'looked-up' }), 'y');
     expect(r.ok).toBe(true);
   });
 
@@ -299,7 +345,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     // — the checkpoint silently vanished on the next (especially post-compaction) read.
     getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     setWorkItemCheckpoint.mockResolvedValue('state');
-    const superuserCtx = { uiClientId: 'su-1', sigVerifiedSpawn: true, workspaceId: '*', harnessSlug: 'papercup' } as never;
+    const superuserCtx = {
+      uiClientId: 'su-1',
+      sigVerifiedSpawn: true,
+      workspaceId: '*',
+      harnessSlug: 'papercup',
+    } as never;
     await one({ id: 'WI-7', checkpoint: 'state' }, superuserCtx);
     expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
       { harness: 'papercup', workItemId: 'WI-7', workspaceId: 'resolved-concrete-ws' },
@@ -320,7 +371,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     );
     getWorkItem.mockResolvedValue(null); // WI-C lookup misses
     const out = await env(
-      { items: [{ id: 'WI-A', checkpoint: 'a' }, { id: 'WI-B', checkpoint: 'b', harness: 'web' }, { id: 'WI-C', checkpoint: 'c' }] },
+      {
+        items: [
+          { id: 'WI-A', checkpoint: 'a' },
+          { id: 'WI-B', checkpoint: 'b', harness: 'web' },
+          { id: 'WI-C', checkpoint: 'c' },
+        ],
+      },
       noHarnessCtx, // no ctx harness → WI-A & WI-B rely on per-item/none, WI-C unresolvable
     );
     // WI-A has no per-item harness and noHarnessCtx → also unresolvable; WI-B resolves via 'web'.
@@ -330,16 +387,36 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       ['WI-B', true],
       ['WI-C', false],
     ]);
-    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.objectContaining({ harness: 'web', workItemId: 'WI-B' }), 'b');
+    expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: 'web', workItemId: 'WI-B' }),
+      'b',
+    );
     expect(out.counts).toEqual({ ok: 1, failed: 2 });
   });
 
   it('items:[…] with a batch harness default applies to items that omit one', async () => {
     setWorkItemCheckpoint.mockResolvedValue('s');
-    const out = await env({ harness: 'def', items: [{ id: 'WI-1', checkpoint: 'a' }, { id: 'WI-2', checkpoint: 'b', harness: 'web' }] }, noHarnessCtx);
+    const out = await env(
+      {
+        harness: 'def',
+        items: [
+          { id: 'WI-1', checkpoint: 'a' },
+          { id: 'WI-2', checkpoint: 'b', harness: 'web' },
+        ],
+      },
+      noHarnessCtx,
+    );
     expect(out.counts).toEqual({ ok: 2, failed: 0 });
-    expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(1, expect.objectContaining({ harness: 'def', workItemId: 'WI-1' }), 'a');
-    expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(2, expect.objectContaining({ harness: 'web', workItemId: 'WI-2' }), 'b');
+    expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ harness: 'def', workItemId: 'WI-1' }),
+      'a',
+    );
+    expect(setWorkItemCheckpoint).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ harness: 'web', workItemId: 'WI-2' }),
+      'b',
+    );
   });
 
   describe('EI-9036: append mode (join onto the existing checkpoint instead of replacing it)', () => {
@@ -405,9 +482,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       setWorkItemCheckpoint.mockImplementation(async (_key: unknown, text: string) => text);
       // Previously: "expected boolean, received string" on this exact shorthand shape,
       // even though items:[{ ..., append: true }] accepted the identical value.
-      const r = await one({ id: 'WI-7', checkpoint: 'addendum via string append', append: 'true' as unknown as boolean });
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'addendum via string append',
+        append: 'true' as unknown as boolean,
+      });
       expect(r.ok).toBe(true);
-      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(expect.anything(), 'prior note\n\n---\naddendum via string append');
+      expect(setWorkItemCheckpoint).toHaveBeenCalledWith(
+        expect.anything(),
+        'prior note\n\n---\naddendum via string append',
+      );
     });
 
     it('EI-18665443723911343: the string "false" is NOT truthy-coerced (unlike z.coerce.boolean/Boolean()) — plain replace, no append', async () => {
@@ -448,7 +532,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 
-  describe('EI-18132462898750489: ownership guard — no silent overwrite of a peer\'s held item', () => {
+  describe("EI-18132462898750489: ownership guard — no silent overwrite of a peer's held item", () => {
     // WI-6746: this ownership guard is derived ENTIRELY from the pre-write read —
     // setWorkItemCheckpoint has no assignee check of its own. While that read was
     // swallowed with `.catch(() => null)`, a PG fault made `item` null, which made the
@@ -458,10 +542,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     // of a bogus "currently holding" directive surviving into a compaction summary.
     it('FAILS CLOSED when the ownership read THROWS — a PG fault must not bypass not_holder (WI-6746)', async () => {
       getWorkItem.mockRejectedValue(new Error('connection terminated unexpectedly'));
-      const r = await one({ id: 'WI-5557', checkpoint: 'write during a PG blip' }, {
-        ...(baseCtx as Record<string, unknown>),
-        uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
-      });
+      const r = await one(
+        { id: 'WI-5557', checkpoint: 'write during a PG blip' },
+        {
+          ...(baseCtx as Record<string, unknown>),
+          uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
+        },
+      );
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
       expect(r.ok).toBe(false);
@@ -484,11 +571,18 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
 
     it('refuses a checkpoint write when the item is assigned to a DIFFERENT agent (not_holder)', async () => {
-      getWorkItem.mockResolvedValue({ id: 'WI-5557', harness: 'papercup', assignee: 'su-a7d08fd3-ba65-45d3-a07f-a335b9004454' });
-      const r = await one({ id: 'WI-5557', checkpoint: 'trying to write on a peer\'s item' }, {
-        ...(baseCtx as Record<string, unknown>),
-        uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
+      getWorkItem.mockResolvedValue({
+        id: 'WI-5557',
+        harness: 'papercup',
+        assignee: 'su-a7d08fd3-ba65-45d3-a07f-a335b9004454',
       });
+      const r = await one(
+        { id: 'WI-5557', checkpoint: "trying to write on a peer's item" },
+        {
+          ...(baseCtx as Record<string, unknown>),
+          uiClientId: 'su-2e534e59-ceb6-48b5-87b8-3b362f652725',
+        },
+      );
       expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
       expect(r.ok).toBe(false);
       expect(r.error).toContain('not_holder');
@@ -517,14 +611,19 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.ok).toBe(true);
     });
 
-    it('a mixed batch fails only the peer-held item; the caller\'s own item still writes', async () => {
+    it("a mixed batch fails only the peer-held item; the caller's own item still writes", async () => {
       getWorkItem.mockImplementation(async (id: string) =>
         id === 'WI-MINE'
           ? { id: 'WI-MINE', harness: 'papercup', assignee: 'opspawn-bee-1' }
           : { id: 'WI-THEIRS', harness: 'papercup', assignee: 'someone-else' },
       );
       setWorkItemCheckpoint.mockResolvedValue('progress');
-      const out = await env({ items: [{ id: 'WI-MINE', checkpoint: 'progress' }, { id: 'WI-THEIRS', checkpoint: 'nope' }] });
+      const out = await env({
+        items: [
+          { id: 'WI-MINE', checkpoint: 'progress' },
+          { id: 'WI-THEIRS', checkpoint: 'nope' },
+        ],
+      });
       expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
         ['WI-MINE', true],
         ['WI-THEIRS', false],
@@ -549,7 +648,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
 
     it('also refuses a non-clear checkpoint when the terminal item is assigned to the caller', async () => {
-      getWorkItem.mockResolvedValue({ id: 'WI-DONE', harness: 'papercup', state: 'dropped', assignee: 'opspawn-bee-1' });
+      getWorkItem.mockResolvedValue({
+        id: 'WI-DONE',
+        harness: 'papercup',
+        state: 'dropped',
+        assignee: 'opspawn-bee-1',
+      });
 
       const r = await one({ id: 'WI-DONE', checkpoint: 'post-close edits' });
 
@@ -595,7 +699,12 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
       const imported = m![1]
         .split(',')
-        .map((s) => s.trim().split(/\s+as\s+/)[0].trim())
+        .map((s) =>
+          s
+            .trim()
+            .split(/\s+as\s+/)[0]
+            .trim(),
+        )
         .filter(Boolean);
       expect(imported.length).toBeGreaterThan(0);
 
@@ -736,7 +845,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // only blocks when the tool's own pre-read disagreed with the authoritative
       // prior. Here the pre-read succeeded (5000 chars, matching priorLength), so
       // invoking the guard with that same authoritative prior must NOT block.
-      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: (n: string | null, l: number) => string | null }];
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [
+        unknown,
+        unknown,
+        { guard?: (n: string | null, l: number) => string | null },
+      ];
       expect(call[2].guard).toBeTypeOf('function');
       expect(call[2].guard!('P'.repeat(5000), 5000)).toBeNull();
     });
@@ -825,7 +938,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'short new note', priorLength: 20000 });
       getWorkItemCheckpoint.mockResolvedValue('short new note');
       await one({ id: 'WI-7', checkpoint: 'short new note' });
-      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, string, { guard?: (n: string | null, l: number) => string | null }];
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [
+        unknown,
+        string,
+        { guard?: (n: string | null, l: number) => string | null },
+      ];
       const guard = call[2].guard!;
       expect(guard(null, 20000)).toMatch(/plain replace would shrink/); // 14-char new text vs 20000 prior
       expect(guard(null, 100)).toBeNull(); // prior not "substantial" (<=500)
@@ -853,7 +970,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       }));
       const r = await one({ id: 'WI-7', checkpoint: 'short addendum', append: true });
       expect(r.ok).toBe(true);
-      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [unknown, unknown, { guard?: (n: string | null, l: number) => string | null }];
+      const call = setWorkItemCheckpointWithPrior.mock.calls[0] as [
+        unknown,
+        unknown,
+        { guard?: (n: string | null, l: number) => string | null },
+      ];
       expect(call[2].guard).toBeTypeOf('function');
       expect(call[2].guard!('P'.repeat(20000), 20000)).toBeNull();
     });
@@ -870,7 +991,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
             // The AUTHORITATIVE prior IS there — 10,671 chars, read inside the
             // store's own locked transaction, independent of the tool's separate
             // pre-read above.
-            const blockedReason = opts?.guard ? (opts.guard('a 10671-char prior checkpoint...', 10671) ?? undefined) : undefined;
+            const blockedReason = opts?.guard
+              ? (opts.guard('a 10671-char prior checkpoint...', 10671) ?? undefined)
+              : undefined;
             return { stored: blockedReason ? 'unchanged prior' : 'new section', priorLength: 10671, blockedReason };
           },
         );
@@ -976,13 +1099,15 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         ) => {
           const prior = text === 'clobber' ? 'P'.repeat(19348) : null;
           const priorLength = prior?.length ?? 0;
-          const blockedReason = opts?.guard ? opts.guard(prior, priorLength) ?? undefined : undefined;
+          const blockedReason = opts?.guard ? (opts.guard(prior, priorLength) ?? undefined) : undefined;
           const stored = blockedReason ? prior : opts?.transform ? opts.transform(prior, text) : text;
           storedById.set(ref.workItemId, stored ?? '');
           return { stored, priorLength, blockedReason };
         },
       );
-      getWorkItemCheckpoint.mockImplementation(async (ref: { workItemId: string }) => storedById.get(ref.workItemId) ?? null);
+      getWorkItemCheckpoint.mockImplementation(
+        async (ref: { workItemId: string }) => storedById.get(ref.workItemId) ?? null,
+      );
       const out = await env({
         items: [
           { id: 'WI-BLOCKED', checkpoint: 'clobber' },
@@ -1259,7 +1384,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // A rewrite that does not re-state the checks must not lose them: that silent
       // drop is exactly how a claim outlives the probe that would falsify it.
       withPrior(null);
-      await one({ id: 'WI-7', checkpoint: 'first body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      await one({
+        id: 'WI-7',
+        checkpoint: 'first body',
+        checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }],
+      });
       const prior = await lastStored();
       expect(prior).toContain('- ✓ X holds');
 
@@ -1286,9 +1415,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       it('CONTROL: the row schema is still STRICT — an undeclared field is rejected', () => {
         // Without this, the assertion above would also pass if `id` were merely being
         // silently stripped as an unknown key, which is a different (and worse) bug.
-        expect(() =>
-          parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'x', notAField: 'y' }] }),
-        ).toThrow();
+        expect(() => parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'x', notAField: 'y' }] })).toThrow();
       });
 
       it('uses the id as the row IDENTITY, so re-wording a claim under the same id keeps ONE row', async () => {
@@ -1354,7 +1481,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           const args = (candidate as { args: { toJSONSchema: () => unknown } }).args;
           const schema = args.toJSONSchema() as JsonNode;
           const checks = (schema.properties as JsonNode).checks as JsonNode;
-          return ((checks.items as JsonNode).properties as Record<string, JsonNode>);
+          return (checks.items as JsonNode).properties as Record<string, JsonNode>;
         };
         const loopCheckpoint = (await import('../loop/checkpoint')).default;
         const workItemRows = schemaOf(checkpoint);
@@ -1390,7 +1517,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // work_items:complete clears the checkpoint as terminal cleanup; rows surviving
       // that would leave a closed item carrying a checkpoint made only of checks.
       withPrior(null);
-      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      await one({
+        id: 'WI-7',
+        checkpoint: 'body',
+        checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }],
+      });
       const prior = await lastStored();
 
       withPrior(prior);
@@ -1508,12 +1639,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     describe("P-013 rowsMode:'merge' compatibility", () => {
       it("accepts rowsMode:'merge' in the single and bulk shapes", () => {
         expect(() => parse({ id: 'WI-7', checkpoint: 'body', rowsMode: 'merge' })).not.toThrow();
-        expect(() =>
-          parse({ items: [{ id: 'WI-7', checkpoint: 'body', rowsMode: 'merge' }] }),
-        ).not.toThrow();
+        expect(() => parse({ items: [{ id: 'WI-7', checkpoint: 'body', rowsMode: 'merge' }] })).not.toThrow();
       });
 
-      it("merges supplied checks while replacing the body, without dropping carried rows", async () => {
+      it('merges supplied checks while replacing the body, without dropping carried rows', async () => {
         withPrior(null);
         await one({
           id: 'WI-7',
@@ -1567,7 +1696,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     it('EI-19447043119380534: a checks-only patch that CLEARS the rows (checks:[]) still keeps the body', async () => {
       withPrior(null);
-      await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
+      await one({
+        id: 'WI-7',
+        checkpoint: 'the body worth keeping',
+        checks: [{ claim: 'X holds', recheck: 'probe X' }],
+      });
       const prior = await lastStored();
 
       withPrior(prior);
@@ -1766,9 +1899,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          *  `getWorkItemCheckpoint` backs the append pre-read AND the post-write
          *  verify-read, so a static mock returns the stale prior to the verify and the
          *  write fails `checkpoint_verify_failed` — advance it when the store commits. */
-        const seed = async (
-          checks: Array<{ id?: string; claim: string; recheck?: string; verified?: string }>,
-        ) => {
+        const seed = async (checks: Array<{ id?: string; claim: string; recheck?: string; verified?: string }>) => {
           withPrior(null);
           await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks });
           const prior = await lastStored();
@@ -2425,7 +2556,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       // transform has to strip it before re-attaching, or the note grows one section
       // per append and the parse becomes ambiguous.
       withPrior(null);
-      await one({ id: 'WI-7', checkpoint: 'first', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }] });
+      await one({
+        id: 'WI-7',
+        checkpoint: 'first',
+        checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'saw X' }],
+      });
       const prior = await lastStored();
 
       // Two DIFFERENT reads happen on the append path and they must not be conflated:
@@ -2459,7 +2594,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(prior).toContain('- ? X holds');
 
       withPrior(prior);
-      await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'ran probe X at 21:40Z' }] });
+      await one({
+        id: 'WI-7',
+        checkpoint: 'body',
+        checks: [{ claim: 'X holds', recheck: 'probe X', verified: 'ran probe X at 21:40Z' }],
+      });
       const stored = await lastStored();
       expect(stored).toContain('- ✓ X holds');
       expect(stored).not.toContain('- ? X holds');
@@ -2525,11 +2664,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           checks: [{ claim: 'C'.repeat(700), recheck: 'R'.repeat(400), verified: 'V'.repeat(400) }],
         })) as { ok: boolean; repairs?: { field: string }[] };
         expect(r.ok).toBe(true);
-        expect(r.repairs?.map((x) => x.field)).toEqual([
-          'checks[0].claim',
-          'checks[0].recheck',
-          'checks[0].verified',
-        ]);
+        expect(r.repairs?.map((x) => x.field)).toEqual(['checks[0].claim', 'checks[0].recheck', 'checks[0].verified']);
       });
 
       it('omits `repairs` entirely when nothing was trimmed — an unaffected result keeps its old shape', async () => {
@@ -2614,7 +2749,13 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
 
     const result = await one(
       { id: 'WI-ACTION-PROOF', checkpoint: stored },
-      { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup', spawnId: 'spawn-action-proof' },
+      {
+        uiClientId: 'opspawn-bee-1',
+        sigVerifiedSpawn: true,
+        workspaceId: 'default',
+        harnessSlug: 'papercup',
+        spawnId: 'spawn-action-proof',
+      },
     );
 
     expect(result.ok).toBe(true);
@@ -2634,7 +2775,13 @@ describe('work_items:checkpoint — same-turn action proof (EI-21375032920365268
 
     const result = await one(
       { id: 'WI-ACTION-PROOF-FAIL', checkpoint: stored },
-      { uiClientId: 'opspawn-bee-1', sigVerifiedSpawn: true, workspaceId: 'default', harnessSlug: 'papercup', spawnId: 'spawn-action-proof-fail' },
+      {
+        uiClientId: 'opspawn-bee-1',
+        sigVerifiedSpawn: true,
+        workspaceId: 'default',
+        harnessSlug: 'papercup',
+        spawnId: 'spawn-action-proof-fail',
+      },
     );
 
     expect(result.ok).toBe(true);

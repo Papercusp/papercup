@@ -78,6 +78,7 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 import { resolveCurrentTurnStamp } from '../../turn-provenance/turn-ref';
+import { continuityProbeSchema } from '../../continuity-probes';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -132,10 +133,13 @@ class MergeWouldEvictError extends Error {
  * expose), so fail closed rather than inventing headroom.
  */
 export function loopGuaranteesNextWake(
-  loop: Pick<
-    LoopStatus,
-    'active' | 'armedAt' | 'firesSinceArm' | 'intervalSec' | 'maxDurationSec' | 'maxFires' | 'nextFireAt'
-  > | null | undefined,
+  loop:
+    | Pick<
+        LoopStatus,
+        'active' | 'armedAt' | 'firesSinceArm' | 'intervalSec' | 'maxDurationSec' | 'maxFires' | 'nextFireAt'
+      >
+    | null
+    | undefined,
   nowMs: number = Date.now(),
 ): boolean {
   if (!loop?.active) return false;
@@ -410,6 +414,11 @@ export default defineTool({
                     'with "STILL RUNNING"). Rendered with ⚠ CONTESTED and never upgraded to VERIFIED; re-check before ' +
                     'relying on the claim.',
                 ).optional(),
+                probe: continuityProbeSchema
+                  .optional()
+                  .describe(
+                    'Optional schema-versioned, read-only executable probe. Validated against the live tool/cell contract before any checkpoint bytes persist; `recheck` remains the human explanation.',
+                  ),
               }),
             )
             .max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
@@ -833,10 +842,7 @@ export default defineTool({
             ) {
               throw new ReplaceWouldDropError(merged.droppedWalls, merged.droppedChecks);
             }
-            if (
-              rowsMode === 'merge' &&
-              (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)
-            ) {
+            if (rowsMode === 'merge' && (merged.droppedWalls.length > 0 || merged.droppedChecks.length > 0)) {
               throw new MergeWouldEvictError(merged.droppedWalls, merged.droppedChecks);
             }
             return merged.note;
@@ -915,7 +921,7 @@ export default defineTool({
                 message:
                   "rowsMode:'replace' would RETIRE the carried rows named above and confirmRetire was not true — " +
                   'NOTHING was written. Re-send the FULL current set under replace with confirmRetire:true, or omit ' +
-                  "rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).",
+                  'rowsMode entirely (merge is the default and preserves unmentioned rows up to the cap).',
               }),
             },
           ],
@@ -1223,6 +1229,8 @@ export default defineTool({
         // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
         let nextWakeFresh: boolean | null = null;
+        let activeLoopIntervalSec: number | null = null;
+        let activeLoopGoal: string | null = null;
         try {
           const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] = await Promise.all(
             [import('../../turn-end-tracking'), import('../../events/await/store'), import('../../modes/store')],
@@ -1232,6 +1240,8 @@ export default defineTool({
             listActiveAwaits(ownerId).catch(() => []),
             workspaceId ? getModes(workspaceId, ownerId).catch(() => []) : Promise.resolve([]),
           ]);
+          activeLoopIntervalSec = loop?.active ? loop.intervalSec : null;
+          activeLoopGoal = loop?.active ? loop.goal : null;
           const currentTurn = await resolveCurrentTurnStamp(ownerId).catch(() => null);
           const loopRewakeGuaranteed = loopGuaranteesNextWake(loop);
           rewakeGuaranteed = isRewakeGuaranteed({
@@ -1282,6 +1292,11 @@ export default defineTool({
           nextWakeFresh,
           selfCompactionAvailable,
           fleetWindDownLoopEndAuthorized,
+          // Keep the continuation remedy executable for an already-active loop.
+          // The gate can retune a warm loop to cold without making the agent
+          // rediscover its cadence and goal through a second status read.
+          activeLoopIntervalSec,
+          activeLoopGoal,
         });
       },
       {

@@ -40,6 +40,12 @@ export interface CanonicalHiveInviteConst {
   pubkeyBase64: string;
   /** Directory invite secret (hex) — seeds the canonical hive's discovery topic. */
   inviteSecret: string;
+  /**
+   * Verified owner device PUBLIC key used to bootstrap the owner's first peer
+   * log before the pot_members row inside that log can be read. Public identity,
+   * never a private signing key.
+   */
+  ownerDevicePubkey?: string;
 }
 
 // VERIFIED 2026-06-29 from the LIVE operator Postgres (harness_shared.pots +
@@ -53,6 +59,13 @@ export interface CanonicalHiveInviteConst {
 const CANONICAL_PUBKEY_BASE64 = 'dt7o6ioLVBSnppkg+H7WO+NLLKK1EUcXHQVR45BMNyA=';
 /** Directory invite secret (hex) of the canonical `papercusp` hive. Empty ⇒ dark. */
 const CANONICAL_INVITE_SECRET = 'b395df2e0980d58b9730d820d315ee8bf559abae22b34c6efdc5ffa97a32ab0e';
+/**
+ * VERIFIED 2026-08-27 from the canonical owner's binding-status=verified
+ * pot_members attestation. This is the signer bound to the durable owner log
+ * 5b00878b…; without it a pristine self-admitted peer cannot read the membership
+ * update that would otherwise teach it this same key (D-006 cold-boot deadlock).
+ */
+const CANONICAL_OWNER_DEVICE_PUBKEY = 'XPAsvso1qEKbSzisNbjSLYzfz42Oxo4HRwibCkPLQII=';
 
 /**
  * The committed canonical invite, or null when not yet minted (then the build bakes no
@@ -60,7 +73,11 @@ const CANONICAL_INVITE_SECRET = 'b395df2e0980d58b9730d820d315ee8bf559abae22b34c6
  */
 export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
   CANONICAL_PUBKEY_BASE64 && CANONICAL_INVITE_SECRET
-    ? { pubkeyBase64: CANONICAL_PUBKEY_BASE64, inviteSecret: CANONICAL_INVITE_SECRET }
+    ? {
+        pubkeyBase64: CANONICAL_PUBKEY_BASE64,
+        inviteSecret: CANONICAL_INVITE_SECRET,
+        ownerDevicePubkey: CANONICAL_OWNER_DEVICE_PUBKEY,
+      }
     : null;
 
 /*

@@ -291,6 +291,12 @@ export async function setContextEstimate(ownerId: string, tokens: number): Promi
   await store.setContextEstimate(ownerId, tokens);
 }
 
+/** Invalidate a cached context estimate after the native session is replaced.
+ *  NULL is the honest bridge state until the successor transcript is measured. */
+export async function clearContextEstimate(ownerId: string): Promise<void> {
+  await store.clearContextEstimate(ownerId);
+}
+
 /** Ensure a presence row + bump heartbeat WITHOUT clobbering a declared
  *  intent — the read-driven liveness signal (piggybacked on coord:inbox).
  *  Makes coord:presence a complete live roster of active agents. */

@@ -1,0 +1,229 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const catalog = vi.hoisted(() => [] as Array<Record<string, any>>);
+const cells = vi.hoisted(() => new Map<string, Record<string, any>>());
+
+vi.mock('@papercusp/agent-mcp', () => ({
+  listAllProjectedTools: () => catalog,
+  projectedToolRegistryRevision: (tools: Array<Record<string, any>>) =>
+    `rev:${tools.map((entry) => entry.expose.mcp.name).join(',')}:${JSON.stringify(tools.map((entry) => entry.inputSchema)).length}`,
+}));
+
+vi.mock('./cell-registry', () => ({
+  getCellUnchecked: (cell: string) => cells.get(cell),
+}));
+
+import {
+  CONTINUITY_PROBE_MAX_PER_WAKE,
+  CONTINUITY_PROBE_RESULT_MAX_BYTES,
+  collectContinuityProbeSources,
+  continuityProbeRevision,
+  continuityProbeSchema,
+  decodeContinuityProbe,
+  encodeContinuityProbe,
+  runContinuityProbeBatch,
+  validateContinuityProbe,
+  type ContinuityProbe,
+  type ContinuityProbeSource,
+} from './continuity-probes';
+import { renderCarryNote } from './carry-note';
+
+function projected(name: string, effect: 'read' | 'write' = 'read', properties: Record<string, unknown> = {}) {
+  return {
+    expose: { mcp: { name } },
+    inputSchema: {
+      type: 'object',
+      properties,
+      additionalProperties: false,
+    },
+    capabilities: [],
+    effect,
+  };
+}
+
+function readProbe(overrides: Partial<ContinuityProbe> = {}): ContinuityProbe {
+  return {
+    kind: 'tool',
+    tool: 'status:read',
+    args: { id: 'x' },
+    schemaRevision: continuityProbeRevision('status:read')!,
+    expect: { path: '$.state', op: 'eq', value: 'green' },
+    ...overrides,
+  } as ContinuityProbe;
+}
+
+function source(probe: ContinuityProbe, i = 0): ContinuityProbeSource {
+  return {
+    source: { kind: 'work-item', id: `WI-${i + 1}`, harness: 'papercusp' },
+    checkIndex: i,
+    check: { id: `check-${i}`, claim: `claim ${i}`, recheck: 'read status', probe },
+  };
+}
+
+beforeEach(() => {
+  catalog.splice(
+    0,
+    catalog.length,
+    projected('status:read', 'read', { id: { type: 'string' } }),
+    projected('state:read', 'read', { cell: { type: 'string' }, as: { type: 'string' } }),
+    projected('status:write', 'write', { id: { type: 'string' } }),
+    projected('dev:pg_query', 'read', { sql: { type: 'string' } }),
+    projected('tools:invoke', 'read', { name: { type: 'string' } }),
+  );
+  cells.clear();
+  cells.set('gate.verdict', { changeSignal: { kind: 'poll', tool: 'status:read', path: 'state' } });
+});
+
+describe('continuity probe persistence contract', () => {
+  it('round-trips a typed probe through bounded base64url encoding', () => {
+    const probe = readProbe();
+    const encoded = encodeContinuityProbe(probe);
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/);
+    expect(decodeContinuityProbe(encoded)).toEqual(probe);
+    expect(decodeContinuityProbe('not+base64')).toBeNull();
+  });
+
+  it('accepts current read-only tool/state probes and refuses mutation, SQL, meta calls, and secrets', () => {
+    expect(validateContinuityProbe(readProbe())).toEqual([]);
+    const stateProbe: ContinuityProbe = {
+      kind: 'state-cell',
+      cell: 'gate.verdict',
+      schemaRevision: continuityProbeRevision('state:read')!,
+      expect: { path: '$.value', op: 'exists' },
+    };
+    expect(validateContinuityProbe(stateProbe)).toEqual([]);
+
+    expect(
+      validateContinuityProbe(
+        readProbe({ tool: 'status:write', schemaRevision: continuityProbeRevision('status:write')! }),
+      ),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'not_read_only' })]));
+    expect(
+      validateContinuityProbe(
+        readProbe({
+          tool: 'dev:pg_query',
+          args: { sql: 'select 1' },
+          schemaRevision: continuityProbeRevision('dev:pg_query')!,
+        }),
+      ),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'indirect_tool' })]));
+    expect(
+      validateContinuityProbe(
+        readProbe({
+          tool: 'tools:invoke',
+          args: { name: 'status:read' },
+          schemaRevision: continuityProbeRevision('tools:invoke')!,
+        }),
+      ),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'indirect_tool' })]));
+    expect(
+      validateContinuityProbe(readProbe({ args: { id: 'x', authorization: 'Bearer sk-abcdefghijklmnop' } })),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'secret_material' })]));
+    expect(
+      validateContinuityProbe(readProbe({ expect: { path: '$.state', op: 'eq', value: 'sk-abcdefghijklmnop' } })),
+    ).toEqual(expect.arrayContaining([expect.objectContaining({ code: 'secret_material' })]));
+  });
+
+  it('reports live contract violations at the nested probe field', () => {
+    expect(() => continuityProbeSchema.parse({ ...readProbe(), schemaRevision: 'old' })).toThrow(/schemaRevision/);
+    expect(() => continuityProbeSchema.parse({ ...readProbe(), projection: { pipe: [{ op: 'head' }] } })).toThrow(
+      /projection/,
+    );
+  });
+});
+
+describe('continuity probe wake replay', () => {
+  it('collects loop checks before held work-item checks from the existing stores', async () => {
+    const loopProbe = readProbe({ args: { id: 'loop' } });
+    const itemProbe = readProbe({ args: { id: 'item' } });
+    const loopNote = renderCarryNote({ checks: [{ claim: 'loop claim', probe: loopProbe }] });
+    const itemNote = renderCarryNote({ checks: [{ claim: 'item claim', probe: itemProbe }] });
+    const sources = await collectContinuityProbeSources('su-me', 'workspace', {
+      getLoopStatus: async () => ({ active: true, harnessSlug: 'papercusp' }),
+      getLoopCarryNoteWithMeta: async () => ({ note: loopNote, updatedAtMs: 1 }),
+      readHeldWorkItems: async () => [{ id: 'WI-1', harness: 'papercusp', checkpoint: itemNote }],
+    });
+    expect(sources.map((entry) => entry.source)).toEqual([
+      { kind: 'loop', ownerId: 'su-me' },
+      { kind: 'work-item', id: 'WI-1', harness: 'papercusp' },
+    ]);
+    expect(sources.map((entry) => entry.check.probe)).toEqual([loopProbe, itemProbe]);
+  });
+
+  it('distinguishes fresh/stale, contains errors, and preserves source order', async () => {
+    const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) => {
+      if (args.id === 'error') return { isError: true, content: [{ type: 'text', text: 'failed' }] };
+      return { content: [{ type: 'text', text: JSON.stringify({ state: args.id === 'fresh' ? 'green' : 'red' }) }] };
+    });
+    const probes = ['fresh', 'stale', 'error'].map((id, i) => source(readProbe({ args: { id } }), i));
+    const batch = await runContinuityProbeBatch(probes, { dispatchTool });
+    expect(batch.results.map((result) => result.status)).toEqual(['fresh', 'stale', 'error']);
+    expect(batch.results.map((result) => result.source)).toEqual(probes.map((row) => row.source));
+    expect(batch.executed).toBe(3);
+  });
+
+  it('fails closed on revision/argument drift without dispatching', async () => {
+    const dispatchTool = vi.fn();
+    const drifted = readProbe({ schemaRevision: 'stale-revision', args: { renamed_id: 'x' } });
+    const batch = await runContinuityProbeBatch([source(drifted)], { dispatchTool });
+    expect(batch.results[0]).toMatchObject({
+      status: 'unknown',
+      executed: false,
+      diagnostic: { code: 'schema_revision_mismatch', storedRevision: 'stale-revision' },
+    });
+    expect(batch.results[0].diagnostic?.candidates).toContain('id');
+    expect(dispatchTool).not.toHaveBeenCalled();
+
+    const invalidArgs = readProbe({ args: { renamed_id: 'x' } });
+    const invalidBatch = await runContinuityProbeBatch([source(invalidArgs)], { dispatchTool });
+    expect(invalidBatch.results[0]).toMatchObject({
+      status: 'unknown',
+      executed: false,
+      diagnostic: { code: 'invalid_args' },
+    });
+    expect(dispatchTool).not.toHaveBeenCalled();
+  });
+
+  it('routes registered state-cell probes through state:read', async () => {
+    const probe: ContinuityProbe = {
+      kind: 'state-cell',
+      cell: 'gate.verdict',
+      schemaRevision: continuityProbeRevision('state:read')!,
+      expect: { path: '$.value', op: 'eq', value: 'green' },
+    };
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: '{"value":"green"}' }] }));
+    const batch = await runContinuityProbeBatch([source(probe)], { dispatchTool });
+    expect(batch.results[0]).toMatchObject({ status: 'fresh', executed: true });
+    expect(dispatchTool).toHaveBeenCalledWith('state:read', { cell: 'gate.verdict' });
+  });
+
+  it('caps a mixed batch while preserving the selected prefix', async () => {
+    const rows = Array.from({ length: CONTINUITY_PROBE_MAX_PER_WAKE + 3 }, (_, i) => source(readProbe(), i));
+    const dispatchTool = vi.fn(async () => ({ content: [{ type: 'text', text: '{"state":"green"}' }] }));
+    const batch = await runContinuityProbeBatch(rows, { dispatchTool });
+    expect(batch.results).toHaveLength(CONTINUITY_PROBE_MAX_PER_WAKE);
+    expect(batch.results.map((result) => result.checkIndex)).toEqual(
+      Array.from({ length: CONTINUITY_PROBE_MAX_PER_WAKE }, (_, i) => i),
+    );
+    expect(batch.truncated).toBe(3);
+  });
+
+  it('contains an oversized decoded result without blocking the remaining probe', async () => {
+    const huge = source(readProbe({ args: { id: 'huge' }, expect: { path: '$.blob', op: 'exists' } }), 0);
+    const normal = source(readProbe({ args: { id: 'fresh' } }), 1);
+    const dispatchTool = vi.fn(async (_name: string, args: Record<string, unknown>) => ({
+      content: [
+        {
+          type: 'text',
+          text:
+            args.id === 'huge'
+              ? JSON.stringify({ blob: 'x'.repeat(CONTINUITY_PROBE_RESULT_MAX_BYTES + 1) })
+              : '{"state":"green"}',
+        },
+      ],
+    }));
+    const batch = await runContinuityProbeBatch([huge, normal], { dispatchTool });
+    expect(batch.results.map((result) => result.status)).toEqual(['error', 'fresh']);
+    expect(batch.results[0].diagnostic?.code).toBe('result_too_large');
+  });
+});

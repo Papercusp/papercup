@@ -1331,6 +1331,10 @@ export function submitVerifyQuietMs(env?: EnvironmentMap): any;
  * env, so the CLI needs no DATABASE_URL handed to it. Compaction is rare, so the tsx
  * cold-start cost is acceptable.
  *
+ * `opts.nativeId` is the exact successor native session this completed cut
+ * spawned. The detached CLI uses it to refuse a context-estimate refresh while
+ * the owner mapping still points at the predecessor (EI-21567375926533125).
+ *
  * FAIL-SOFT + fire-and-forget: if the entry does not exist yet (CLI not landed), or tsx /
  * PG fail, nothing touches the live session. Only the CALLER's real-completion path invokes
  * this (never the done.deferred drop). Pure side-effect; returns the spawned child or null.

@@ -2853,8 +2853,11 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
   command -v flock >/dev/null 2>&1 || return 0
 
   local _intent_started _intent_deadline _intent_probe_fd='' _intent_announced=0
+  local _intent_now='' _intent_last_heartbeat='' _intent_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
+  case "$_intent_heartbeat_every" in ''|*[!0-9]*) _intent_heartbeat_every=15 ;; esac
   _intent_started=$(date +%s)
   _intent_deadline=$(( _intent_started + _intent_wait_sec ))
+  _intent_last_heartbeat="$_intent_started"
   while :; do
     if ! { exec {_intent_probe_fd}>>"$_intent_path"; } 2>/dev/null; then
       echo "[pc-heavy] retry intent signal unavailable; proceeding without the exclusive-materializer wait" >&2
@@ -2872,8 +2875,15 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
     if [ "$_intent_announced" = 0 ]; then
       echo "[pc-heavy] retry waiting for exclusive materializer intent to clear (up to ${_intent_wait_sec}s)" >&2
       _intent_announced=1
+    else
+      _intent_now=$(date +%s)
+      if [ $(( _intent_now - _intent_last_heartbeat )) -ge "$_intent_heartbeat_every" ]; then
+        echo "[pc-heavy] retry still waiting for exclusive materializer intent ($(( _intent_now - _intent_started ))s elapsed)" >&2
+        _intent_last_heartbeat="$_intent_now"
+      fi
     fi
-    if [ "$_intent_wait_sec" -eq 0 ] || [ "$(date +%s)" -ge "$_intent_deadline" ]; then
+    [ -n "$_intent_now" ] || _intent_now=$(date +%s)
+    if [ "$_intent_wait_sec" -eq 0 ] || [ "$_intent_now" -ge "$_intent_deadline" ]; then
       echo "[pc-heavy] retry intent wait timed out after ${_intent_wait_sec}s; proceeding fail-open" >&2
       return 0
     fi

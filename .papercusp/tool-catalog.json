@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 829,
+  "count": 830,
   "tools": [
     {
       "name": "ablation:report",
@@ -25305,6 +25305,37 @@
         "when": "See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.",
         "notWhen": "To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).",
         "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug). routines:list { rollup:true } for group metadata + review-due status."
+      }
+    },
+    {
+      "name": "routines:revert",
+      "http": {
+        "path": "/api/agent-tools/routines/revert",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Restore a routine exactly to the prior state captured by a routines:set audit id. Pass the serializable handle returned by routines:set (or its auditId). Refuses malformed/non-routines:set audit rows and refuses to overwrite a newer routine change.",
+      "capabilities": [
+        "operator:write"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "mug",
+        "documenter",
+        "curator"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Undo a routines:set mutation using its returned revertHandle or auditId, restoring trigger_config, payload_template, active, next_fire_at, group, and metadata together.",
+        "notWhen": "To make a new routine change use routines:set. Do not use a stale audit id after another routine change; this tool refuses when the current row no longer matches the audited next snapshot.",
+        "chaining": "Use the revertHandle returned by routines:set; routines:list confirms the exact routine state after the revert."
       }
     },
     {

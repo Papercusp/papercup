@@ -19,6 +19,7 @@ import {
   GIT_SYNC_CONFLICT_MAX_AGE_MS,
   isGitSyncConflictCurrent,
   currentGateInconclusive,
+  gateFailingTestsMeasurement,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
@@ -86,6 +87,43 @@ describe('currentGateInconclusive', () => {
       ...mismatch,
       status: 'migrations-pending',
     });
+  });
+});
+
+describe('gateFailingTestsMeasurement (EI-21561093776434695)', () => {
+  const inconclusive = {
+    status: 'migrations-pending',
+    candidate: 'deadbeefcafe',
+    detail: 'migration preflight aborted before the suite',
+    observedAtMs: 123,
+  };
+
+  it('marks a pre-suite abort unmeasured and suppresses any inherited failure names', () => {
+    expect(
+      gateFailingTestsMeasurement({
+        failingTests: ['historical-red.test.ts'],
+        measured: false,
+        inconclusive,
+      }),
+    ).toEqual({ failingTests: [], measured: false });
+  });
+
+  it('keeps a real measured empty verdict distinct from an abort', () => {
+    expect(
+      gateFailingTestsMeasurement({ failingTests: [], measured: true, inconclusive: null }),
+    ).toEqual({ failingTests: [], measured: true });
+  });
+
+  it('derives compatibility-safe states for legacy blobs', () => {
+    expect(
+      gateFailingTestsMeasurement({ failingTests: [], measured: undefined, inconclusive: null }),
+    ).toEqual({ failingTests: [], measured: true });
+    expect(
+      gateFailingTestsMeasurement({ failingTests: undefined, measured: undefined, inconclusive: null }),
+    ).toEqual({ failingTests: [], measured: null });
+    expect(
+      gateFailingTestsMeasurement({ failingTests: [], measured: undefined, inconclusive }),
+    ).toEqual({ failingTests: [], measured: false });
   });
 });
 

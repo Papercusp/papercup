@@ -10,6 +10,9 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/capability/terminal.test.ts
  */
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../../console-spawn';
 
@@ -71,6 +74,7 @@ vi.mock('../coordination/identity', () => ({
 
 // ── Import the tool AFTER all mocks are set up ────────────────────────────────
 const terminalTool = (await import('./terminal')).default;
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../../..');
 
 // Minimal ctx that satisfies the handler's needs.
 const baseCtx = {
@@ -107,6 +111,25 @@ describe('launch-tool routing guidance', () => {
     expect(terminalTool.guidance?.notWhen).toContain('capability:launch-agent');
     expect(terminalTool.guidance?.notWhen).toContain('fleet:launch-on-plan');
     expect(terminalTool.description).not.toContain('desktop fleet of agents');
+  });
+
+  it('keeps the live su guidance and desktop-fleet runbook aligned with the wrong-door guard', () => {
+    const basePersona = readFileSync(
+      path.join(REPO_ROOT, 'libs/papercusp/packages/harness/blueprints/base/prompts/su.md'),
+      'utf8',
+    );
+    const desktopFleetRunbook = readFileSync(
+      path.join(REPO_ROOT, 'apps/operator-docs/src/content/docs/agent-insights/launching-a-desktop-fleet.mdx'),
+      'utf8',
+    );
+
+    expect(basePersona).toMatch(/`capability:terminal` is\s+command-only and refuses actual `psu` agent launches/);
+    expect(basePersona).toContain('use `capability:launch-agent`');
+    expect(basePersona).not.toContain('the one remaining reason to hand-roll');
+
+    expect(desktopFleetRunbook).toMatch(/`capability:terminal` refuses actual `psu` agent launches/);
+    expect(desktopFleetRunbook).toContain('`capability:launch-agent`');
+    expect(desktopFleetRunbook).not.toContain('unless you truly');
   });
 
   // WI-4753: the canonical routing doc must stay linked from every door's

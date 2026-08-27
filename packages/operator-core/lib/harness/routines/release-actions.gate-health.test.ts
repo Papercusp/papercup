@@ -928,6 +928,9 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
     // has no path from "main is stuck" to "migration 727 is failing".
     expect(inc!.detail).toContain('727-widen-vectors.sql');
     expect(typeof inc!.observedAtMs).toBe('number');
+    const write = [...calls].reverse().find((call) => /gate_health,inconclusive/.test(call.query));
+    expect(write?.query).toContain('{gate_health,failingTestsMeasured}');
+    expect(write?.query).toContain("'false'::jsonb");
   });
 
   it('⭐ leaves the red counters completely untouched — the abort is recorded, never counted', async () => {
@@ -963,6 +966,7 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
     // superseded it is the same class of bug as a stale failingTests list (EI-7505).
     expect(written!.inconclusive).toBeNull();
     expect(written!.consecutiveReds).toBe(1);
+    expect(written!.failingTestsMeasured).toBe(true);
   });
 
   it('⭐ a subsequent GREEN verdict clears the recorded abort', async () => {
@@ -974,6 +978,7 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
     expect(written).not.toBeNull();
     expect(written!.inconclusive).toBeNull();
     expect(written!.consecutiveReds).toBe(0);
+    expect(written!.failingTestsMeasured).toBe(true);
   });
 });
 

@@ -21,6 +21,39 @@ describe('refreshContextEstimateAtBoundary (WI-4154 compaction fast path)', () =
     expect(writePgEstimate).not.toHaveBeenCalled();
   });
 
+  it('writes only after the owner mapping reaches the exact successor native session', async () => {
+    const estimate = vi.fn(async () => 12_000);
+    const writePgEstimate = vi.fn(async () => {});
+    const resolveSessionId = vi.fn(async () => 'new-native-id');
+
+    await expect(
+      refreshContextEstimateAtBoundary('su-new', {
+        expectedSessionId: 'new-native-id',
+        resolveSessionId,
+        estimate,
+        writePgEstimate,
+      }),
+    ).resolves.toBe(12_000);
+    expect(resolveSessionId).toHaveBeenCalledWith('su-new');
+    expect(writePgEstimate).toHaveBeenCalledWith('su-new', 12_000);
+  });
+
+  it('leaves PG unknown when the detached bridge still resolves the predecessor session', async () => {
+    const estimate = vi.fn(async () => 190_000);
+    const writePgEstimate = vi.fn(async () => {});
+
+    await expect(
+      refreshContextEstimateAtBoundary('su-race', {
+        expectedSessionId: 'successor-id',
+        resolveSessionId: async () => 'predecessor-id',
+        estimate,
+        writePgEstimate,
+      }),
+    ).resolves.toBeNull();
+    expect(estimate).not.toHaveBeenCalled();
+    expect(writePgEstimate).not.toHaveBeenCalled();
+  });
+
   it('never throws: estimator throw → null; PG-write throw → still returns fresh', async () => {
     expect(
       await refreshContextEstimateAtBoundary('su-c', {

@@ -1151,6 +1151,29 @@ describe('gitPipelinePosition (P-002)', () => {
       expect(res.notes.join(' ')).toMatch(/gate\.consecutiveReds/);
     });
 
+    it('threads the failing-test measurement state beside the list', async () => {
+      const res = await gitPipelinePosition(
+        { path: 'apps/operator/app/x.ts' },
+        {
+          git: measuring(),
+          loadDeploy: async () => deploy(),
+          loadSnapshot: async () =>
+            snap({
+              failingTests: [],
+              failingTestsMeasured: false,
+              inconclusive: {
+                status: 'migrations-pending',
+                candidate: 'deadbeefcafe',
+                detail: 'suite never ran',
+                observedAtMs: 123,
+              },
+            }),
+        },
+      );
+      expect(res.gate.failingTests).toEqual([]);
+      expect(res.gate.failingTestsMeasured).toBe(false);
+    });
+
     /**
      * A null `deployedSha` was documented in this file as "there is simply nothing
      * deployed". It is not: `devDeployState` pushes 'could not resolve HEAD of release

@@ -72,10 +72,7 @@ import {
   type FleetDelta,
 } from './fleet-monitor-delta';
 import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta';
-import {
-  collectOrientDisclosures,
-  recordOrientDisclosures,
-} from '../../../agent-orient-disclosures';
+import { collectOrientDisclosures, recordOrientDisclosures } from '../../../agent-orient-disclosures';
 import type { ClaimableHarnessScope } from '../../work_items/claimable';
 import type { ControlAnchor } from '../control-anchor';
 
@@ -988,11 +985,7 @@ export async function composeOrient(
   // empty-but-well-shaped roster instead of hanging past the deadline.
   const meResult = await withBoundedTimeout(
     call('fleet:assignments', {
-      ...(recoveredFleetMembership
-        ? { fleet: recoveredFleetMembership.fleetSlug }
-        : ownerId
-          ? { agent: ownerId }
-          : {}),
+      ...(recoveredFleetMembership ? { fleet: recoveredFleetMembership.fleetSlug } : ownerId ? { agent: ownerId } : {}),
       ...(args.harness ? { harness: args.harness } : {}),
     }),
     {
@@ -1180,8 +1173,7 @@ export async function composeOrient(
   // "newer than read_through_ts", which could HIDE mail the agent had been shown
   // but not acted on. `unanswered` remains the actionable signal, and it is
   // computed independently of this window.
-  const inboxLimit =
-    args.inboxLimit ?? (args.includeInbox === false ? 0 : args.afterCompaction ? 25 : 10);
+  const inboxLimit = args.inboxLimit ?? (args.includeInbox === false ? 0 : args.afterCompaction ? 25 : 10);
   // EI-20287600163306401: callers that already consumed the inbox can pass zero
   // to suppress this duplicate fold. The nested coord:inbox tool requires a
   // positive limit, so do not forward an explicit zero as an invalid call.
@@ -1231,7 +1223,7 @@ export async function composeOrient(
         const obs = (await boundedCore(
           call('work_items:observe', {
             ids,
-            ...(claimableHarnessScope?.resolved ?? args.harness
+            ...((claimableHarnessScope?.resolved ?? args.harness)
               ? { harness: claimableHarnessScope?.resolved ?? args.harness }
               : {}),
           }),
@@ -1458,9 +1450,7 @@ export async function composeOrient(
       // Per-hit stays minimal (a flag + the real length); the fetch verb rides once on
       // the fold below rather than being repeated on every hit.
       const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => {
-        const full = typeof r.memory === 'string'
-          ? annotateSupersededMemory(r.memory, r.metadata)
-          : undefined;
+        const full = typeof r.memory === 'string' ? annotateSupersededMemory(r.memory, r.metadata) : undefined;
         const clipped = full !== undefined && full.length > MEMORY_TEXT_CAP;
         return {
           id: r.id,
@@ -1593,7 +1583,8 @@ export async function composeOrient(
   const factsFold: 'full' | 'never-drop' = !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
   {
     try {
-      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES, listFactEvictionDisclosures } = await import('../../../agent-facts/store');
+      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES, listFactEvictionDisclosures } =
+        await import('../../../agent-facts/store');
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -2459,6 +2450,7 @@ export function summarizeLaneClaim(
 export function assembleOrientOutput(legs: {
   self?: unknown;
   recovery?: unknown;
+  continuityProbes?: unknown;
   presenceDrift?: unknown;
   ownerDirectives?: unknown;
   modes?: unknown;
@@ -2491,6 +2483,7 @@ export function assembleOrientOutput(legs: {
   const out: Record<string, unknown> = {};
   if (legs.self) out.self = legs.self;
   if (legs.recovery) out.recovery = legs.recovery;
+  if (legs.continuityProbes) out.continuityProbes = legs.continuityProbes;
 
   // CORE mandate (EI-18689334534773965) and the safety-critical leader/lane
   // outcomes. `!== undefined` keeps explicit null ("fold attempted but unknown")
@@ -3044,6 +3037,23 @@ export default defineTool({
       const { fetchOrientPipeline } = await import('../pipeline-health');
       return fetchOrientPipeline(args.harness ?? (ctx as { harnessSlug?: string | null }).harnessSlug ?? undefined);
     })().catch(() => null);
+    // WI-42290: executable check rows are replayed on the same mandatory orient
+    // bootstrap every loop wake already performs. Start the bounded read/dispatch
+    // fold early so its latency overlaps the existing orientation legs; fail-soft
+    // means neither a bad persisted row nor an unavailable read can eat orient.
+    const continuityProbesPromise =
+      ownerId && ctx.dispatchTool
+        ? (async () => {
+            try {
+              const { runContinuityProbesForOwner } = await import('../../../continuity-probes');
+              const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+              const batch = await runContinuityProbesForOwner(ownerId, ws, ctx);
+              return batch.total > 0 ? batch : undefined;
+            } catch {
+              return undefined;
+            }
+          })()
+        : undefined;
     // compaction-context-loss-2026-07-05 P-002: start the post-compaction
     // recovery fold BEFORE the sequential composeOrient legs. The recovery is
     // best-effort and independently bounded, so starting it here overlaps its
@@ -3193,6 +3203,7 @@ export default defineTool({
     // this preserves the existing fold output while keeping the two budgets
     // overlapped rather than serial.
     const recovery = compactionRecoveryPromise ? await compactionRecoveryPromise : undefined;
+    const continuityProbes = continuityProbesPromise ? await continuityProbesPromise : undefined;
     // popup-agent-state-coverage-2026-08-18 P-005 (D-008): RECORD the six
     // disclosure markers this payload carried, so the HUD sessions popup can
     // show a human what THIS agent was actually told about what its reads left
@@ -3463,6 +3474,7 @@ export default defineTool({
     const out = assembleOrientOutput({
       self,
       recovery,
+      continuityProbes,
       presenceDrift: result.presenceDrift,
       ownerDirectives,
       modes,

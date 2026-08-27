@@ -16,6 +16,8 @@ export interface ReleaseTraceGate {
   authoritative: boolean;
   consecutiveReds: number;
   failingTests: string[];
+  /** True only when failingTests is a measurement for the requested candidate. */
+  failingTestsMeasured?: boolean | null;
   /** The writer's own verdict marker for the candidate named by observedCandidate. */
   recordedVerdict?: 'green' | 'not-green' | null;
   /**

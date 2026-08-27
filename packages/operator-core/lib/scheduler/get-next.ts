@@ -949,6 +949,11 @@ export function issueClaimCandidateSubquery(
     /** Apply this compiled filter while materializing candidates instead of projecting it
      *  as `spec_match`; only the single-spec claimability snapshot uses this pushdown. */
     filterPushdown?: SqlFragment;
+    /** Keep the shared snapshot narrow: the base table has 80+ columns (including large
+     *  summary/search/embedding fields), while the sibling claimability reads consume only
+     *  identity, rank, row projection, and sampling columns. Standalone/delta callers retain
+     *  the full projection because they may wrap this fragment with broader consumers. */
+    projection?: 'full' | 'claimability-snapshot';
   },
 ): SqlFragment {
   const {
@@ -963,10 +968,35 @@ export function issueClaimCandidateSubquery(
     claimantFleetSlug,
     claimSpecReferencesFleet,
     filterPushdown,
+    projection = 'full',
   } = args;
+  const baseColumns =
+    projection === 'claimability-snapshot'
+      ? sql`
+          wi.workspace_id,
+          wi.harness_slug,
+          wi.feature_id,
+          wi.title,
+          wi.status,
+          wi.kind,
+          wi.item_kind,
+          wi.created_ts,
+          wi.updated_ts,
+          wi.taken_by,
+          wi.source_plan_slug,
+          wi.source_plan_item_ids,
+          wi.feature_order,
+          wi.origin,
+          wi.payload,
+          wi.goal_id,
+          wi.expected_cost_cents,
+          wi.tags,
+          wi.redundancy
+        `
+      : sql`wi.*`;
   return sql`
     SELECT
-      wi.*,
+      ${baseColumns},
       (${filterPushdown ? sql`TRUE` : compiled})                       AS spec_match,
       (wi.taken_by IS NULL OR wi.taken_by = '')                         AS ok_untaken,
       (${claimHoldExclusionSql(sql)})                                   AS ok_claim_hold,
@@ -1721,6 +1751,7 @@ export async function readIssueClaimability(
     const sub = issueClaimCandidateSubquery(client, {
       compiled,
       filterPushdown: compiled,
+      projection: 'claimability-snapshot',
       assignee,
       cooldown: releaseCooldownSec(),
       harness: opts.harness,

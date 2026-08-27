@@ -95,10 +95,14 @@ export function emitSessionCompactedEvent(
  * passes the focus as `String(focus ?? '')`, so a missing focus arrives as '' and
  * collapses back to undefined here.
  */
-export function parseSessionCompactedArgv(argv: string[]): { owner: string; focus?: string } | null {
+export function parseSessionCompactedArgv(
+  argv: string[],
+): { owner: string; focus?: string; sessionId?: string } | null {
   const owner = (argv[2] ?? '').trim();
   if (!owner) return null;
   const rawFocus = argv[3];
   const focus = rawFocus != null && rawFocus.trim() !== '' ? rawFocus.trim() : undefined;
-  return { owner, focus };
+  const rawSessionId = argv[4];
+  const sessionId = rawSessionId != null && rawSessionId.trim() !== '' ? rawSessionId.trim() : undefined;
+  return { owner, focus, sessionId };
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import {
   bakedCanonicalHiveInvite,
   joinCanonicalPapercuspHive,
@@ -46,6 +46,16 @@ describe('bakedCanonicalHiveInvite', () => {
     delete process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET;
     expect(bakedCanonicalHiveInvite()).toEqual(CANONICAL_PAPERCUSP_HIVE_INVITE);
   });
+  it('carries an explicit owner-device key with a build-time invite override', () => {
+    process.env.PAPERCUP_DOGFOOD_POT_PUBKEY = 'P3';
+    process.env.PAPERCUP_DOGFOOD_POT_INVITE_SECRET = 'S3';
+    process.env.PAPERCUP_DOGFOOD_POT_OWNER_DEVICE_PUBKEY = 'OWNER3';
+    expect(bakedCanonicalHiveInvite()).toEqual({
+      pubkeyBase64: 'P3',
+      inviteSecret: 'S3',
+      ownerDevicePubkey: 'OWNER3',
+    });
+  });
 });
 
 describe('joinCanonicalPapercuspHive', () => {
@@ -82,6 +92,32 @@ describe('joinCanonicalPapercuspHive', () => {
   it('no directory wiring → skipped', async () => {
     const res = await joinCanonicalPapercuspHive(INVITE, { ...baseDeps(), ensureWired: async () => null });
     expect(res.state).toBe('skipped');
+  });
+
+  it('uses the baked owner-device binding when the matching announce omits it', async () => {
+    const joinHive = vi.fn(async () => ({ ok: true, potSlug: 'papercusp' }));
+    const res = await joinCanonicalPapercuspHive(
+      { ...INVITE, ownerDevicePubkey: 'BAKED_OWNER_DEVICE' },
+      {
+        ...baseDeps(),
+        ensureWired: async () => ({
+          joinInviteTopic: async () => undefined,
+          confirmInviteAnnounce: async () => ({
+            found: true,
+            hive: {
+              potId: 'papercusp',
+              hivePubkey: 'PUB==',
+              memberLinks: ['link1'],
+            },
+          }),
+        }),
+        joinHive,
+      },
+    );
+    expect(res.state).toBe('joined');
+    expect(joinHive).toHaveBeenCalledWith(expect.objectContaining({
+      ownerDevicePubkey: 'BAKED_OWNER_DEVICE',
+    }));
   });
 
   it('owner offline (confirm not found) → skipped', async () => {

@@ -810,7 +810,7 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
     expect(d.spawnDetached).not.toHaveBeenCalled();
   });
 
-  it('drops a delivery whose marker harness does not match the current active loop lineage', async () => {
+  it('delivers a lineage-mismatched wake to the durable inbox without resuming the wrong loop', async () => {
     const d = deps({
       getLoopStatusFn: vi.fn(async () => ({
         active: true,
@@ -826,10 +826,15 @@ describe('executeWake — queued loop-fire lifecycle gate (EI-21157954408185498)
       d,
     );
 
-    expect(out).toMatchObject({ kind: 'drop' });
-    expect((out as { reason: string }).reason).toContain('harness lineage');
-    expect((out as { reason: string }).reason).toContain('stale-loop-harness');
-    expect((out as { reason: string }).reason).toContain('current-loop-harness');
+    expect(out).toEqual({ kind: 'delivered', channel: 'inbox' });
+    expect(d.sendCoordMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        to: ['su-abc'],
+        category: 'event',
+        summary: expect.stringMatching(/stale-loop-harness.*current-loop-harness/),
+      }),
+    );
     expect(d.findPsuHost).not.toHaveBeenCalled();
     expect(d.injectPsuHost).not.toHaveBeenCalled();
     expect(d.resumePlanRun).not.toHaveBeenCalled();

@@ -2254,6 +2254,20 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
             ? 'the loop was re-armed after this delivery was created'
             : `the wake harness lineage ${loopSupersession.markerHarness} does not match the current active loop ` +
               `harness ${loopSupersession.currentHarness}`;
+      if (loopSupersession.kind === 'lineage-mismatch') {
+        // EI-21567207447038868: the lineage guard protects the CURRENT loop
+        // from stale loop state, but the delivery may be the sole result of a
+        // one-shot await (for example claim:released:<id>). A bare drop consumes
+        // that delivery attempt without telling the subscriber its event fired,
+        // silently stranding an await with no timeout. Preserve the no-resume /
+        // no-injection safety decision while routing the event and exact
+        // withholding reason through the durable inbox fallback.
+        return degradeToInboxOrDrop(
+          d,
+          `${lifecycleReason}; loop injection/resume was withheld`,
+          sendCoordMessage,
+        );
+      }
       return {
         kind: 'drop',
         reason:

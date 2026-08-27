@@ -394,6 +394,13 @@ export async function defaultSelfAdmitCanonical(
         // 0.0.3 Mac install, 2026-07-09).
         self_repo: true,
         hive_pubkey: invite.pubkeyBase64,
+        // D-006: the restored corestore's owner log cannot carry its own
+        // admission prerequisite across a cold boundary. Stamp the verified
+        // PUBLIC owner-device binding from the canonical invite so boot can
+        // admit that log and only then ingest the full membership row.
+        ...(invite.ownerDevicePubkey
+          ? { owner_device_pubkey: invite.ownerDevicePubkey }
+          : {}),
       };
       const projects = cur.projects.some((p) => p.slug === PAPERCUSP_HIVE_SLUG)
         ? cur.projects.map((p) => (p.slug === PAPERCUSP_HIVE_SLUG ? { ...p, ...nextEntry } : p))

@@ -802,6 +802,15 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(r.success).toBe(true);
   });
 
+  it('accepts a test-failure observation kind (EI-21565027021959535)', () => {
+    const r = argsSchema.safeParse({
+      title: 'test failure note',
+      lane: 'observation',
+      observation: { kind: 'test-failure', scope: 'self', confidence: 'high' },
+    });
+    expect(r.success).toBe(true);
+  });
+
   it("accepts a typed feedback revision link (rel='revises')", () => {
     const r = argsSchema.safeParse({
       title: 'revision incorporating grader feedback',
@@ -960,6 +969,14 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
         title: 't',
         lane: 'observation',
         observation: { kind: 'friction' },
+      });
+    });
+
+    it("maps kind:'test-failure' to the observation lane", () => {
+      expect(coerceCaptureKind({ title: 't', kind: 'test-failure' })).toEqual({
+        title: 't',
+        lane: 'observation',
+        observation: { kind: 'test-failure' },
       });
     });
 

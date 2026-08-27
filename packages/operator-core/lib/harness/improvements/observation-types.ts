@@ -121,7 +121,15 @@ export interface SpecTestAdequacyRerunRecipe {
 }
 
 /** v1 free-text observation fields (turn-end-reflection-observations D-005). */
-export type ObservationKind = 'friction' | 'workaround' | 'gap' | 'surprise' | 'reinforce';
+export const OBSERVATION_KINDS = [
+  'friction',
+  'workaround',
+  'gap',
+  'surprise',
+  'reinforce',
+  'test-failure',
+] as const;
+export type ObservationKind = (typeof OBSERVATION_KINDS)[number];
 export type ObservationScope = 'self' | 'role' | 'harness' | 'papercusp';
 export type ObservationConfidence = 'low' | 'med' | 'high';
 

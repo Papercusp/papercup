@@ -668,8 +668,14 @@ export default defineTool({
     const autoDetectedWorkItemForScope =
       !explicitWorkItem && carryForScope === 'cold' ? (detectDrivenWorkItemId(rawGoal) ?? undefined) : undefined;
     const scopeWorkItem = explicitWorkItem ?? monitorAuthorityWorkItem ?? autoDetectedWorkItemForScope;
-    const explicitHarnessRequested = isConcreteHarness(requestedHarness);
-    const onlyWorkspaceScope = !explicitHarnessRequested && !isConcreteHarness(ctx.harnessSlug);
+    // Only the INNER tool argument is an explicit migration request. A concrete
+    // request-origin harness is still authoritative for a FRESH arm, but tools:invoke
+    // can preserve a transient outer dispatch scope that must not migrate an already-
+    // active owner loop when the inner loop:arm call omitted `harness`
+    // (EI-21550331830461260).
+    const explicitHarnessRequested = isConcreteHarness(innerHarness);
+    const requestScopeHarnessAvailable = isConcreteHarness(requestedHarness);
+    const onlyWorkspaceScope = !requestScopeHarnessAvailable && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     // EI-20245033088778955 / EI-21481296218316052: an ACTIVE routine's install
     // scope is authoritative whenever the caller OMITS args.harness — not only
@@ -699,6 +705,23 @@ export default defineTool({
       } catch {
         // Scope inference is a convenience for an otherwise-valid arm. Preserve the
         // existing home-harness fallback when the unscoped lookup cannot complete.
+      }
+    }
+    // EI-21545786648324241: a concrete dispatch context can itself be stale. The
+    // reported session had just oriented onto a Papercusp plan, but its transport
+    // still carried `ctx.harnessSlug='sb-devboard-hive'`; because the old code read
+    // the durable brief only for wildcard contexts, that stale transport value
+    // silently moved the newly-armed loop into the wrong harness.
+    //
+    // A durable brief is authoritative here only when it names an ACTIVE plan.
+    // Requiring currentPlanSlug keeps a populate-once historical harness from
+    // overriding an otherwise-valid concrete context after the plan lane is gone.
+    // Explicit args/request-origin scope, an active loop's install scope, and a
+    // canonical work-item scope have all already won above.
+    if (!requestScopeHarnessAvailable && !harness && isConcreteHarness(ctx.harnessSlug)) {
+      const brief = await getSessionBrief({ ownerId }).catch(() => null);
+      if (brief?.currentPlanSlug && isConcreteHarness(brief.harnessSlug)) {
+        harness = resolvePotHomeSlug(brief.harnessSlug, undefined);
       }
     }
     // A wildcard operator session means "this workspace", not "whatever harness

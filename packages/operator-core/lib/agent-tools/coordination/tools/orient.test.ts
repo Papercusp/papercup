@@ -82,6 +82,25 @@ vi.mock('../watermarks', async (importOriginal) => ({
 // don't pay the fold's real timeout budget. Default: no announcements.
 const listActiveAnnouncementsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
+describe('executable continuity output assembly', () => {
+  it('folds bounded probe verdicts additively ahead of supplementary orient legs', () => {
+    const continuityProbes = {
+      total: 1,
+      executed: 1,
+      truncated: 0,
+      results: [{ source: { kind: 'work-item', id: 'WI-1' }, checkIndex: 0, claim: 'green', status: 'fresh' }],
+    };
+    const out = assembleOrientOutput({
+      self: { ownerId: 'su-me' },
+      recovery: { ok: true },
+      continuityProbes,
+      result: { ok: true, me: { summary: {} }, claimable: [], inbox: {}, memory: { hits: [] } },
+    });
+    expect(out.continuityProbes).toBe(continuityProbes);
+    expect(Object.keys(out).indexOf('continuityProbes')).toBeLessThan(Object.keys(out).indexOf('memory'));
+  });
+});
+
 vi.mock('../../../events/await/store', () => ({
   listActiveAnnouncements: listActiveAnnouncementsMock,
 }));
@@ -174,7 +193,10 @@ describe('coord:orient args', () => {
     const recoveredScopePromiseStart = source.indexOf('const recoveredFleetScopePromise =');
     const composeCallStart = source.indexOf('const result = await composeOrient(');
     const composeDefinitionStart = source.indexOf('export async function composeOrient(');
-    const recoveredScopeAwait = source.indexOf('const recovered = await recoveredFleetScopeFold();', composeDefinitionStart);
+    const recoveredScopeAwait = source.indexOf(
+      'const recovered = await recoveredFleetScopeFold();',
+      composeDefinitionStart,
+    );
     const assignmentsRead = source.indexOf("call('fleet:assignments',", composeDefinitionStart);
 
     expect(recoveredScopePromiseStart).toBeGreaterThanOrEqual(0);
@@ -781,26 +803,32 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       ...CORE,
       'memory:search': () => ({
         ok: true,
-        results: [{
-          id: 'old-memory',
-          memory: 'Gemma is the default embedder',
-          score: 0.9,
-          metadata: {
-            validity: {
-              status: 'superseded',
-              invalid_at: '2026-07-10T15:45:00.000Z',
-              superseded_by: 'new-memory',
+        results: [
+          {
+            id: 'old-memory',
+            memory: 'Gemma is the default embedder',
+            score: 0.9,
+            metadata: {
+              validity: {
+                status: 'superseded',
+                invalid_at: '2026-07-10T15:45:00.000Z',
+                superseded_by: 'new-memory',
+              },
             },
           },
-        }],
+        ],
       }),
     });
 
-    const r = await composeOrient({
-      memoryQuery: 'default embedder history',
-      memoryIncludeSuperseded: true,
-      harness: 'h',
-    }, call, 'me');
+    const r = await composeOrient(
+      {
+        memoryQuery: 'default embedder history',
+        memoryIncludeSuperseded: true,
+        harness: 'h',
+      },
+      call,
+      'me',
+    );
 
     expect(calls.find((c) => c.name === 'memory:search')!.args).toMatchObject({
       include_superseded: true,
@@ -932,11 +960,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       ...CORE,
       'coord:declare-intent': () => ({ ok: true }),
     });
-    const disabled = await composeWithPeersKnow(
-      { ...leanArgs, includePeersKnow: false },
-      disabledCall,
-      disabledFold,
-    );
+    const disabled = await composeWithPeersKnow({ ...leanArgs, includePeersKnow: false }, disabledCall, disabledFold);
 
     expect(disabledFold).not.toHaveBeenCalled();
     expect(disabled.peersKnow).toBeUndefined();
@@ -1623,7 +1647,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
           fleetSummariesFold,
         );
 
-        expect(fleetSummariesFold).toHaveBeenCalledWith('p2p-git', expect.objectContaining({ summary: LEADER_BRIEF_RESULT.summary }));
+        expect(fleetSummariesFold).toHaveBeenCalledWith(
+          'p2p-git',
+          expect.objectContaining({ summary: LEADER_BRIEF_RESULT.summary }),
+        );
         expect(r.fleetSummaries).toEqual([
           { fleet: 'p2p-git', summary: LEADER_BRIEF_RESULT.summary },
           { fleet: 'android', summary: { members: 4, stalled: 1, cumulative: { admission_blocked: 2 } } },

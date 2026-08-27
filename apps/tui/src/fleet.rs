@@ -194,6 +194,13 @@ pub struct FleetState {
     /// Refreshed on Fleet entry + periodically. A selection narrows to one bee's
     /// dossier (`app.bee`).
     pub all_assignments: Vec<crate::models::BeeAssignment>,
+    /// Canonical whole-harness actionable frontier. This replaces the old
+    /// corpus-shaped assignment list only when no individual agent is selected.
+    pub frontier: Option<crate::models::WorkFrontier>,
+    pub frontier_error: Option<String>,
+    /// `/` toggles the bounded terminal archive sample already held in
+    /// `work_items`; the exact archive count remains visible from `frontier`.
+    pub frontier_archive_open: bool,
     /// The deterministic cockpit target: the active roster row whose
     /// `fleetRole` is `leader`.
     pub leader_fleet: Option<String>,
@@ -218,6 +225,9 @@ impl Default for FleetState {
             dossier_sel: 0,
             plan_progress_sel: 0,
             all_assignments: Vec::new(),
+            frontier: None,
+            frontier_error: None,
+            frontier_archive_open: false,
             leader_fleet: None,
             leader_brief: None,
             leader_brief_error: None,
@@ -786,16 +796,6 @@ fn draw_dossier(f: &mut Frame, app: &App, area: Rect, focused: bool) {
     }
 }
 
-/// The whole-fleet assignments in render order — busiest bee first — so the
-/// renderer and the dossier cursor flatten the tasks the SAME way (the highlight
-/// and `selected_dossier_item` can never disagree).
-fn dossier_assignments_ordered(app: &App) -> Vec<&crate::models::BeeAssignment> {
-    let mut ordered: Vec<&crate::models::BeeAssignment> =
-        app.fleet.all_assignments.iter().collect();
-    ordered.sort_by_key(|assignment| std::cmp::Reverse(assignment.load));
-    ordered
-}
-
 /// Selectable-task count in the current dossier scope (per-bee selection or
 /// whole-fleet) — the clamp bound for `fleet.dossier_sel`.
 pub(crate) fn dossier_task_count(app: &App) -> usize {
@@ -805,25 +805,122 @@ pub(crate) fn dossier_task_count(app: &App) -> usize {
             .as_ref()
             .map(|a| a.queued.len())
             .unwrap_or(0)
+    } else if app.fleet.frontier_archive_open {
+        frontier_archive_rows(app).len()
     } else {
-        dossier_assignments_ordered(app)
-            .iter()
-            .map(|a| a.queued.len())
-            .sum()
+        frontier_rows(app).len()
     }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum DossierItem<'a> {
+    Bee(&'a crate::models::BeeWorkItem),
+    Frontier(FrontierRow<'a>),
+    Archive(&'a WorkItem),
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum FrontierRow<'a> {
+    Ready(&'a crate::models::WorkFrontierRow),
+    InFlight(
+        &'a crate::models::WorkFrontierRow,
+        Option<&'a crate::models::BeeAssignment>,
+    ),
+    NeedsYou(&'a crate::models::WorkFrontierParkedRow),
+    Stuck(
+        &'a crate::models::WorkFrontierRow,
+        Option<&'a crate::models::BeeAssignment>,
+    ),
+}
+
+fn frontier_assignment<'a>(
+    app: &'a App,
+    row: &crate::models::WorkFrontierRow,
+) -> Option<&'a crate::models::BeeAssignment> {
+    let owner = row.assignee.as_deref()?;
+    app.fleet
+        .all_assignments
+        .iter()
+        .find(|assignment| assignment.agent_id == owner)
+}
+
+fn assignment_item_is_stuck(assignment: &crate::models::BeeAssignment, item_id: &str) -> bool {
+    let holds_item = assignment.queued.iter().any(|item| item.id == item_id);
+    (holds_item && assignment.stalled)
+        || assignment.orphaned
+        || matches!(
+            assignment.session_state.as_deref(),
+            Some("draining" | "suspect" | "ended")
+        )
+        || matches!(
+            assignment.verdict.as_deref(),
+            Some("dead" | "suspect" | "orphan" | "residue")
+        )
+}
+
+fn frontier_rows(app: &App) -> Vec<FrontierRow<'_>> {
+    let Some(frontier) = app.fleet.frontier.as_ref() else {
+        return Vec::new();
+    };
+    let mut rows = Vec::new();
+    rows.extend(frontier.unclaimed.iter().map(FrontierRow::Ready));
+    rows.extend(frontier.in_flight.iter().filter_map(|row| {
+        let assignment = frontier_assignment(app, row);
+        (!assignment.is_some_and(|a| assignment_item_is_stuck(a, &row.id)))
+            .then_some(FrontierRow::InFlight(row, assignment))
+    }));
+    rows.extend(
+        frontier
+            .parked
+            .iter()
+            .filter(|row| row.mechanism == "needs-human")
+            .map(FrontierRow::NeedsYou),
+    );
+    rows.extend(frontier.in_flight.iter().filter_map(|row| {
+        let assignment = frontier_assignment(app, row);
+        assignment
+            .is_some_and(|a| assignment_item_is_stuck(a, &row.id))
+            .then_some(FrontierRow::Stuck(row, assignment))
+    }));
+    rows
+}
+
+fn terminal_work_item(item: &WorkItem) -> bool {
+    matches!(
+        item.state.as_str(),
+        "done" | "passed" | "resolved" | "closed" | "deprecated" | "dropped"
+    )
+}
+
+fn frontier_archive_rows(app: &App) -> Vec<&WorkItem> {
+    app.fleet
+        .work_items
+        .iter()
+        .filter(|item| terminal_work_item(item))
+        .collect()
 }
 
 /// The work item under the dossier cursor (`fleet.dossier_sel`), flattened across
 /// the current scope in render order. `None` when the dossier is empty.
-pub(crate) fn selected_dossier_item(app: &App) -> Option<&crate::models::BeeWorkItem> {
+pub(crate) fn selected_dossier_item(app: &App) -> Option<DossierItem<'_>> {
     let sel = app.fleet.dossier_sel;
     if app.bee.owner_id.is_some() {
-        app.bee.assignment.as_ref()?.queued.get(sel)
+        app.bee
+            .assignment
+            .as_ref()?
+            .queued
+            .get(sel)
+            .map(DossierItem::Bee)
+    } else if app.fleet.frontier_archive_open {
+        frontier_archive_rows(app)
+            .get(sel)
+            .copied()
+            .map(DossierItem::Archive)
     } else {
-        dossier_assignments_ordered(app)
-            .into_iter()
-            .flat_map(|a| a.queued.iter())
-            .nth(sel)
+        frontier_rows(app)
+            .get(sel)
+            .copied()
+            .map(DossierItem::Frontier)
     }
 }
 
@@ -831,12 +928,90 @@ pub(crate) fn selected_dossier_item(app: &App) -> Option<&crate::models::BeeWork
 /// 2026-06-16 — the dossier's Enter, matching plan-progress/mail/chat).
 pub(crate) fn dossier_detail_lines(app: &App) -> Vec<Line<'static>> {
     match selected_dossier_item(app) {
-        Some(w) => work_item_detail_lines(w),
+        Some(DossierItem::Bee(w)) => work_item_detail_lines(w),
+        Some(DossierItem::Frontier(row)) => frontier_detail_lines(row),
+        Some(DossierItem::Archive(row)) => vec![
+            Line::from(Span::styled(row.title.clone(), Theme::title_active())),
+            Line::from(vec![
+                Span::styled("id       ", Theme::dim()),
+                Span::raw(row.id.clone()),
+            ]),
+            Line::from(vec![
+                Span::styled("archive  ", Theme::dim()),
+                Span::raw(format!("{} · {}", row.kind, row.state)),
+            ]),
+        ],
         None => vec![Line::from(Span::styled(
             "(no work item selected)",
             Theme::dim(),
         ))],
     }
+}
+
+fn frontier_detail_lines(row: FrontierRow<'_>) -> Vec<Line<'static>> {
+    let (bucket, item, assignment, reason) = match row {
+        FrontierRow::Ready(item) => ("READY NOW", item, None, None),
+        FrontierRow::InFlight(item, assignment) => ("IN FLIGHT", item, assignment, None),
+        FrontierRow::NeedsYou(parked) => (
+            "NEEDS YOU",
+            &parked.item,
+            None,
+            Some(parked.reason.as_str()),
+        ),
+        FrontierRow::Stuck(item, assignment) => ("STUCK", item, assignment, None),
+    };
+    let mut lines = vec![
+        Line::from(Span::styled(item.title.clone(), Theme::title_active())),
+        Line::from(vec![
+            Span::styled("bucket   ", Theme::dim()),
+            Span::raw(bucket.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("id       ", Theme::dim()),
+            Span::raw(item.id.clone()),
+        ]),
+        Line::from(vec![
+            Span::styled("state    ", Theme::dim()),
+            Span::raw(item.state.clone()),
+        ]),
+    ];
+    if item.blocks > 0 {
+        lines.push(Line::from(vec![
+            Span::styled("blocks   ", Theme::dim()),
+            Span::raw(item.blocks.to_string()),
+        ]));
+    }
+    if let Some(owner) = item.assignee.as_deref() {
+        lines.push(Line::from(vec![
+            Span::styled("holder   ", Theme::dim()),
+            Span::raw(owner.to_string()),
+        ]));
+    }
+    if let Some(assignment) = assignment {
+        lines.push(Line::from(vec![
+            Span::styled("session  ", Theme::dim()),
+            Span::raw(
+                assignment
+                    .session_state
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into()),
+            ),
+            Span::styled(" · context ", Theme::dim()),
+            Span::raw(
+                assignment
+                    .context_pressure
+                    .clone()
+                    .unwrap_or_else(|| "unknown".into()),
+            ),
+        ]));
+    }
+    if let Some(reason) = reason {
+        lines.push(Line::from(vec![
+            Span::styled("reason   ", Theme::dim()),
+            Span::raw(reason.to_string()),
+        ]));
+    }
+    lines
 }
 
 /// The detail-popup body for one work item (id · kind · status · rank · who
@@ -880,57 +1055,175 @@ fn work_item_detail_lines(w: &crate::models::BeeWorkItem) -> Vec<Line<'static>> 
     out
 }
 
-/// Whole-fleet task list: every bee's claimed work-items, grouped by bee in load
-/// order. The default dossier when no agent is selected (#2 "show all tasks from
-/// the fleet"). Reuses `bee::task_row` per item under a per-bee header line.
-fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: Option<usize>) {
-    let asn = &app.fleet.all_assignments;
-    let total: i64 = asn.iter().map(|a| a.load).sum();
-    let mut items: Vec<ListItem> = Vec::new();
-    // Map the Nth selectable TASK to its flat row index (header rows interleave),
-    // so the cursor skips per-bee headers and the highlight lands on a task.
-    let mut task_flat_idx: Vec<usize> = Vec::new();
-    if asn.is_empty() {
-        items.push(ListItem::new(Line::from(Span::styled(
-            "(loading fleet task list…)",
-            Theme::dim(),
-        ))));
-    } else {
-        // Busiest bees first; a bee with no claimed work still shows its header.
-        for a in dossier_assignments_ordered(app) {
-            let label = a
-                .name
-                .clone()
-                .or_else(|| a.label.clone())
-                .unwrap_or_else(|| a.agent_id.clone());
-            let label = crate::agent_pane_kind::normalize_agent_label(&label, &app.lexicon);
-            let dot = if a.alive {
-                glyph::status::DONE
+fn frontier_row_line(row: FrontierRow<'_>) -> Line<'static> {
+    let (item, suffix, style) = match row {
+        FrontierRow::Ready(item) => {
+            let gates = if item.blocks > 0 {
+                format!(" · blocks {}", item.blocks)
             } else {
-                glyph::status::DROPPED
+                String::new()
             };
+            (item, gates, Theme::success())
+        }
+        FrontierRow::NeedsYou(parked) => (
+            &parked.item,
+            format!(" · {}", trunc(&parked.reason, 34)),
+            Theme::warn(),
+        ),
+        FrontierRow::InFlight(item, assignment) | FrontierRow::Stuck(item, assignment) => {
+            let owner = assignment
+                .and_then(|a| a.name.as_deref().or(a.label.as_deref()))
+                .or(item.assignee.as_deref())
+                .unwrap_or("unknown");
+            let context = assignment
+                .and_then(|a| a.context_pressure.as_deref())
+                .unwrap_or("unknown");
+            let spoke = assignment
+                .and_then(|a| a.last_tool_call_at.as_deref())
+                .map(hms)
+                .unwrap_or_else(|| "—".into());
+            let style = if matches!(row, FrontierRow::Stuck(_, _)) {
+                Theme::danger()
+            } else {
+                Theme::info()
+            };
+            (
+                item,
+                format!(
+                    " · {} · ctx {} · spoke {}",
+                    trunc(owner, 16),
+                    context,
+                    spoke
+                ),
+                style,
+            )
+        }
+    };
+    Line::from(Span::styled(
+        format!(
+            " {}  {}{}",
+            trunc(&item.id, 18),
+            trunc(&item.title, 46),
+            suffix
+        ),
+        style,
+    ))
+}
+
+fn frontier_bucket(row: FrontierRow<'_>) -> &'static str {
+    match row {
+        FrontierRow::Ready(_) => "READY NOW",
+        FrontierRow::InFlight(_, _) => "IN FLIGHT",
+        FrontierRow::NeedsYou(_) => "NEEDS YOU",
+        FrontierRow::Stuck(_, _) => "STUCK",
+    }
+}
+
+/// Whole-fleet WORK FRONTIER. Unlike the former assignment corpus, this opens
+/// on what can be acted on now; selecting a roster agent still preserves that
+/// agent's ranked dossier unchanged.
+fn draw_all_tasklist(f: &mut Frame, app: &App, area: Rect, focused: bool, sel: Option<usize>) {
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut task_flat_idx: Vec<usize> = Vec::new();
+    let (title, hint) = if app.fleet.frontier_archive_open {
+        let rows = frontier_archive_rows(app);
+        if rows.is_empty() {
             items.push(ListItem::new(Line::from(Span::styled(
-                format!(" {} {} ({})", dot, trunc(&label, 22), a.load),
-                Theme::info(),
+                "(archive sample empty — press / for the live frontier)",
+                Theme::dim(),
             ))));
-            for (i, w) in a.queued.iter().enumerate() {
+        } else {
+            for row in rows {
                 task_flat_idx.push(items.len());
-                items.push(crate::bee::task_row(i, w));
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!(
+                        " {}  {} · {}",
+                        trunc(&row.id, 18),
+                        trunc(&row.title, 52),
+                        row.state
+                    ),
+                    Theme::dim(),
+                ))));
             }
         }
-    }
-    let body = crate::ui::block_with_header(
-        f,
-        area,
-        Theme::block(
-            Line::from(format!(
-                " {} fleet task list ({total} claimed) ",
-                glyph::nav::FLEET
-            )),
-            focused,
-        ),
-        " select an agent to filter · rank · st · task",
-    );
+        let total = app
+            .fleet
+            .frontier
+            .as_ref()
+            .map(|frontier| frontier.terminal.total)
+            .unwrap_or_else(|| frontier_archive_rows(app).len());
+        (
+            format!(" {} ARCHIVE ({total}) ", glyph::nav::FLEET),
+            "/ frontier · cached terminal sample".to_string(),
+        )
+    } else {
+        let rows = frontier_rows(app);
+        if app.fleet.frontier.is_none() {
+            let message = app
+                .fleet
+                .frontier_error
+                .as_deref()
+                .map(|error| format!("frontier unavailable: {}", trunc(error, 64)))
+                .unwrap_or_else(|| "(loading work frontier…)".into());
+            items.push(ListItem::new(Line::from(Span::styled(
+                message,
+                Theme::dim(),
+            ))));
+        } else {
+            let mut bucket = "";
+            for row in rows {
+                let next = frontier_bucket(row);
+                if next != bucket {
+                    bucket = next;
+                    items.push(ListItem::new(Line::from(Span::styled(
+                        format!("── {bucket} ──"),
+                        match bucket {
+                            "READY NOW" => Theme::success(),
+                            "NEEDS YOU" => Theme::warn(),
+                            "STUCK" => Theme::danger(),
+                            _ => Theme::info(),
+                        },
+                    ))));
+                }
+                task_flat_idx.push(items.len());
+                items.push(ListItem::new(frontier_row_line(row)));
+            }
+        }
+        let (ready, in_flight, parked, archive) = app
+            .fleet
+            .frontier
+            .as_ref()
+            .map(|frontier| {
+                (
+                    frontier.counts.unclaimed,
+                    frontier.counts.in_flight,
+                    frontier.counts.parked,
+                    frontier.terminal.total,
+                )
+            })
+            .unwrap_or_default();
+        let needs_you = app
+            .fleet
+            .frontier
+            .as_ref()
+            .map(|frontier| {
+                frontier
+                    .parked
+                    .iter()
+                    .filter(|row| row.mechanism == "needs-human")
+                    .count()
+            })
+            .unwrap_or(0);
+        let blocked = parked.saturating_sub(needs_you);
+        (
+            format!(" {} WORK FRONTIER ", glyph::nav::FLEET),
+            format!(
+                "select agent for fleet task list · / archive {archive} · ready {ready} · in flight {in_flight} · needs you {needs_you} shown · blocked {blocked}"
+            ),
+        )
+    };
+    let body =
+        crate::ui::block_with_header(f, area, Theme::block(Line::from(title), focused), &hint);
     // Highlight + auto-scroll to the cursor's task row (owner ask 2026-06-16);
     // `sel=None` (or an empty list) just renders the rows.
     let mut state = ListState::default();
@@ -2068,8 +2361,104 @@ mod tests {
         app.show_presence = false;
         let text = render_fleet(&app, 120, 24);
         assert!(text.contains("Agents"));
-        assert!(text.contains("fleet task list"));
+        assert!(text.contains("WORK FRONTIER"));
         assert!(text.contains("Plan progress"));
+    }
+
+    #[test]
+    fn whole_fleet_dossier_is_bucketed_frontier_and_slash_reveals_archive() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.fleet.frontier = Some(crate::models::WorkFrontier {
+            terminal: crate::models::WorkFrontierTerminal { total: 91 },
+            counts: crate::models::WorkFrontierCounts {
+                terminal: 91,
+                in_flight: 2,
+                parked: 2,
+                unclaimed: 1,
+                total: 96,
+            },
+            unclaimed: vec![crate::models::WorkFrontierRow {
+                id: "WI-ready".into(),
+                title: "opens three lanes".into(),
+                blocks: 3,
+                ..Default::default()
+            }],
+            in_flight: vec![
+                crate::models::WorkFrontierRow {
+                    id: "WI-live".into(),
+                    title: "moving".into(),
+                    assignee: Some("su-live".into()),
+                    ..Default::default()
+                },
+                crate::models::WorkFrontierRow {
+                    id: "WI-stuck".into(),
+                    title: "not progressing".into(),
+                    assignee: Some("su-stuck".into()),
+                    ..Default::default()
+                },
+            ],
+            parked: vec![crate::models::WorkFrontierParkedRow {
+                item: crate::models::WorkFrontierRow {
+                    id: "WI-human".into(),
+                    title: "credential required".into(),
+                    ..Default::default()
+                },
+                reason: "needs operator credential".into(),
+                mechanism: "needs-human".into(),
+            }],
+            ..Default::default()
+        });
+        app.fleet.all_assignments = vec![
+            BeeAssignment {
+                agent_id: "su-live".into(),
+                session_state: Some("live".into()),
+                verdict: Some("speaking".into()),
+                queued: vec![crate::models::BeeWorkItem {
+                    id: "WI-live".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+            BeeAssignment {
+                agent_id: "su-stuck".into(),
+                session_state: Some("live".into()),
+                verdict: Some("waiting".into()),
+                stalled: true,
+                queued: vec![crate::models::BeeWorkItem {
+                    id: "WI-stuck".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        ];
+        let buckets: Vec<&str> = frontier_rows(&app)
+            .into_iter()
+            .map(frontier_bucket)
+            .collect();
+        assert_eq!(buckets, ["READY NOW", "IN FLIGHT", "NEEDS YOU", "STUCK"]);
+        let text = render_fleet(&app, 160, 32);
+        assert!(text.contains("READY NOW"));
+        assert!(text.contains("blocks 3"));
+        assert!(text.contains("STUCK"));
+        assert!(text.contains("/ archive 91"));
+
+        app.fleet.work_items = vec![WorkItem {
+            id: "WI-done".into(),
+            kind: "feature".into(),
+            family: "feature".into(),
+            harness: Some("papercusp".into()),
+            title: "finished item".into(),
+            state: "done".into(),
+            assignee: None,
+            severity: None,
+        }];
+        app.fleet.frontier_archive_open = true;
+        assert_eq!(dossier_task_count(&app), 1);
+        let text = render_fleet(&app, 160, 32);
+        assert!(text.contains("ARCHIVE (91)"));
+        assert!(text.contains("finished item"));
     }
 
     #[test]

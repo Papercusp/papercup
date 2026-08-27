@@ -60,6 +60,26 @@ describe('scope constructors — the convergence axis', () => {
     ];
     expect(new Set(keys).size).toBe(keys.length);
   });
+
+  it('round-trips an optional executable probe without changing prose-only rows', () => {
+    const proseOnly = { claim: 'legacy claim', recheck: 'read legacy status' };
+    expect(parseCheckLine(renderCheckLine(proseOnly))).toMatchObject(proseOnly);
+
+    const row: CheckEntry = {
+      id: 'gate',
+      claim: 'gate is green',
+      recheck: 'read the gate cell',
+      probe: {
+        kind: 'state-cell',
+        cell: 'gate.greenCheckpoint.verdict',
+        schemaRevision: 'rev-test',
+        expect: { path: '$.value', op: 'eq', value: 'green' },
+      },
+    };
+    const rendered = renderCheckLine(row);
+    expect(rendered).toContain(' — probe: ');
+    expect(parseCheckLine(rendered)).toEqual(row);
+  });
 });
 
 describe('renderCarryNote — the structured shape (did / left / insight / next)', () => {
@@ -142,7 +162,17 @@ describe('walls — commitments as rows (compaction-continuity-hardening P-006)'
   });
 
   it('splitCarryNoteWalls separates rows from the body; a section mid-note does not eat later sections', () => {
-    const note = ['## Did', 'x', '', '## Walls', renderWallLine(WALL), 'stray prose in the section', '', '## Next action', 'go'].join('\n');
+    const note = [
+      '## Did',
+      'x',
+      '',
+      '## Walls',
+      renderWallLine(WALL),
+      'stray prose in the section',
+      '',
+      '## Next action',
+      'go',
+    ].join('\n');
     const { body, walls } = splitCarryNoteWalls(note);
     expect(walls).toEqual([WALL]);
     expect(body).toContain('## Did');
@@ -450,9 +480,7 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(coerceCarryRowShape({ label: 'labelled claim' }, 'checks[0]', labelRepairs)).toEqual({
       claim: 'labelled claim',
     });
-    expect(labelRepairs).toEqual([
-      expect.objectContaining({ field: 'checks[0].label', kind: 'renamed' }),
-    ]);
+    expect(labelRepairs).toEqual([expect.objectContaining({ field: 'checks[0].label', kind: 'renamed' })]);
 
     const nameRepairs: CarryArgRepair[] = [];
     expect(coerceCarryRowShape({ name: 'named claim' }, 'checks[1]', nameRepairs)).toEqual({
@@ -502,7 +530,13 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     // `key` is an IDENTITY alias, not a claim alias: it must land on `id` and
     // leave the claim text alone.
     const keyRepairs: CarryArgRepair[] = [];
-    expect(coerceCarryRowShape({ key: 'gate-green', recheck: 'git rev-parse main', status: 'pending', text: 'main is green' }, 'checks[1]', keyRepairs)).toEqual({
+    expect(
+      coerceCarryRowShape(
+        { key: 'gate-green', recheck: 'git rev-parse main', status: 'pending', text: 'main is green' },
+        'checks[1]',
+        keyRepairs,
+      ),
+    ).toEqual({
       claim: 'main is green',
       id: 'gate-green',
       recheck: 'git rev-parse main',
@@ -535,11 +569,7 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
       recheck: 'npm run test:file -- checkpoint.test.ts',
       verified: '8/8 tests passed',
     });
-    expect(repairs.map((repair) => repair.field)).toEqual([
-      'checks[0].kind',
-      'checks[0].command',
-      'checks[0].result',
-    ]);
+    expect(repairs.map((repair) => repair.field)).toEqual(['checks[0].kind', 'checks[0].command', 'checks[0].result']);
 
     const canonicalRepairs: CarryArgRepair[] = [];
     expect(
@@ -596,10 +626,11 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
    */
   it('does not invent a claim for a row carrying neither claim text nor an identity', () => {
     const repairs: CarryArgRepair[] = [];
-    const coerced = coerceCarryRowShape({ status: 'verified', evidence: 'some evidence' }, 'checks[0]', repairs) as Record<
-      string,
-      unknown
-    >;
+    const coerced = coerceCarryRowShape(
+      { status: 'verified', evidence: 'some evidence' },
+      'checks[0]',
+      repairs,
+    ) as Record<string, unknown>;
     expect(coerced.claim).toBeUndefined();
     expect(coerced).toEqual({ verified: 'some evidence' });
 
@@ -612,18 +643,10 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
 
   it('newly-supplied verified evidence gets an instant stamped; inherited evidence keeps its own (fold #5)', () => {
     const now = Date.parse('2026-07-19T05:00:00.000Z');
-    const fresh = normalizeCheckEntries(
-      [{ claim: 'c', verified: 'observed live in pg' }],
-      [],
-      now,
-    );
+    const fresh = normalizeCheckEntries([{ claim: 'c', verified: 'observed live in pg' }], [], now);
     expect(fresh[0].verified).toBe('observed live in pg @2026-07-19T05:00:00.000Z');
     // Evidence that already embeds an ISO instant is not double-stamped.
-    const stamped = normalizeCheckEntries(
-      [{ claim: 'c', verified: 'tick 1944 @ 2026-07-19T02:38:36Z' }],
-      [],
-      now,
-    );
+    const stamped = normalizeCheckEntries([{ claim: 'c', verified: 'tick 1944 @ 2026-07-19T02:38:36Z' }], [], now);
     expect(stamped[0].verified).toBe('tick 1944 @ 2026-07-19T02:38:36Z');
     // Inheritance carries the original stamp unchanged.
     const inherited = normalizeCheckEntries([{ claim: 'c' }], fresh, now + 3_600_000);
@@ -631,7 +654,12 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
   });
 
   it('renderCarryNote places ## Checks after the narrative and BEFORE ## Walls; parseCarryNote structures both back', () => {
-    const fields = { did: 'a', next: 'b', checks: [VERIFIED, PREDICTED], walls: [{ claim: 'owner gate' } as WallEntry] };
+    const fields = {
+      did: 'a',
+      next: 'b',
+      checks: [VERIFIED, PREDICTED],
+      walls: [{ claim: 'owner gate' } as WallEntry],
+    };
     const out = renderCarryNote(fields);
     expect(out.indexOf('## Checks')).toBeGreaterThan(out.indexOf('## Next action'));
     expect(out.indexOf('## Walls')).toBeGreaterThan(out.indexOf('## Checks'));
@@ -660,7 +688,9 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     const swapped = withCarryNoteChecks(prior, [VERIFIED]);
     expect(swapped).not.toContain('old check');
     expect(splitCarryNoteChecks(swapped).checks).toEqual([VERIFIED]);
-    expect(splitCarryNoteWalls(swapped).walls).toEqual([{ claim: 'standing wall', sinceMs: undefined }].map((w) => ({ claim: w.claim })));
+    expect(splitCarryNoteWalls(swapped).walls).toEqual(
+      [{ claim: 'standing wall', sinceMs: undefined }].map((w) => ({ claim: w.claim })),
+    );
     expect(swapped.indexOf('## Walls')).toBeGreaterThan(swapped.indexOf('## Checks'));
     // Empty checks set yields body+walls only.
     expect(withCarryNoteChecks(prior, [])).not.toContain('## Checks');
@@ -687,7 +717,10 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
     const prose = 'expect the hash to ROLL, start counting only under the new hash';
     expect(lintUncheckedExternalClaims(prose, '')).toHaveLength(1);
     // Covered once a check row names the same noun.
-    const probe = renderCheckLine({ claim: 'the hash rolls at the first post-restart tick', recheck: 'tick_at vs ExecMainStartTimestamp' });
+    const probe = renderCheckLine({
+      claim: 'the hash rolls at the first post-restart tick',
+      recheck: 'tick_at vs ExecMainStartTimestamp',
+    });
     expect(lintUncheckedExternalClaims(prose, probe)).toHaveLength(0);
   });
 
@@ -771,8 +804,7 @@ describe('lintUncheckedExternalClaims — carried claims must carry their probe 
 // matching row even when the distinctive noun-substring test would miss.
 describe('lintUncheckedExternalClaims — semantic coverage for reworded checks (EI-21494640395547961)', () => {
   // The reporter's exact second-insight string (no hash/id/instant; noun-fallback fired).
-  const GENERIC_RULE =
-    'The next qualifying attempt must preserve generation identity through its terminal boundary.';
+  const GENERIC_RULE = 'The next qualifying attempt must preserve generation identity through its terminal boundary.';
   const MATCHING_ROW = renderCheckLine({
     id: 'p009-r11-invalid',
     claim:
@@ -1488,7 +1520,10 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
 
     it('keeps a supplied WALL and evicts the carried tail', () => {
       const merged = mergeCarryRows({
-        priorNote: priorNoteWith([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1))),
+        priorNote: priorNoteWith(
+          [],
+          Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1)),
+        ),
         baseNote: 'body',
         walls: [{ claim: 'one wall past the cap' }],
         hasNoteWrite: true,

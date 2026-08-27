@@ -11,7 +11,7 @@
  * operator HTTP client), so it CANNOT emit in-process; it spawns THIS short-lived,
  * detached `tsx` CLI, which DOES reach org-PG:
  *
- *   npx tsx emit-session-compacted.ts <ownerId> <focus?>
+ *   npx tsx emit-session-compacted.ts <ownerId> <focus?> <successorSessionId?>
  *
  * CONNECTION: getOrgPg() (inside the emit chain) self-resolves org-PG from
  * ~/.papercusp/embedded-pg.json (or the native :5432 fallback) — no DATABASE_URL is
@@ -54,7 +54,9 @@ async function main(): Promise<void> {
   // the PRE-compaction number — re-derive + write through HERE so the gauge reads
   // post-boundary within seconds instead of waiting out the next watchdog sweep.
   // Best-effort like the emit (refreshContextEstimateAtBoundary never throws).
-  await refreshContextEstimateAtBoundary(parsed.owner);
+  await refreshContextEstimateAtBoundary(parsed.owner, {
+    expectedSessionId: parsed.sessionId,
+  });
   // postgres.js keeps the process alive; exit explicitly once the rows are committed.
   process.exit(0);
 }

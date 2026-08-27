@@ -96,10 +96,11 @@ describe('emitSessionCompactedEventAsync (the CLI-awaited core)', () => {
 describe('parseSessionCompactedArgv (CLI arg mapping)', () => {
   const argv = (...rest: string[]) => ['node', '/scripts/emit-session-compacted.ts', ...rest];
 
-  it('maps <ownerId> <focus> to { owner, focus }', () => {
-    expect(parseSessionCompactedArgv(argv('su-94b69', 'keep identity + plan Now'))).toEqual({
+  it('maps <ownerId> <focus> <sessionId> to the bridge payload', () => {
+    expect(parseSessionCompactedArgv(argv('su-94b69', 'keep identity + plan Now', 'native-2'))).toEqual({
       owner: 'su-94b69',
       focus: 'keep identity + plan Now',
+      sessionId: 'native-2',
     });
   });
 
@@ -109,7 +110,11 @@ describe('parseSessionCompactedArgv (CLI arg mapping)', () => {
   });
 
   it('trims surrounding whitespace on owner and focus', () => {
-    expect(parseSessionCompactedArgv(argv('  su-2  ', '  hi  '))).toEqual({ owner: 'su-2', focus: 'hi' });
+    expect(parseSessionCompactedArgv(argv('  su-2  ', '  hi  ', '  native-3  '))).toEqual({
+      owner: 'su-2',
+      focus: 'hi',
+      sessionId: 'native-3',
+    });
   });
 
   it('returns null when no ownerId is present (the CLI then no-ops and exits 0)', () => {

@@ -70,7 +70,10 @@ beforeEach(() => {
   upsertIdentityMock.mockClear();
 });
 
-const invite = { pubkeyBase64: 'pk-canonical' } as Parameters<typeof defaultSelfAdmitCanonical>[0];
+const invite = {
+  pubkeyBase64: 'pk-canonical',
+  ownerDevicePubkey: 'owner-device-canonical',
+} as Parameters<typeof defaultSelfAdmitCanonical>[0];
 
 describe('defaultSelfAdmitCanonical — the registry entry is git-syncable (EI-8793)', () => {
   it('registers the canonical clone remote_hive + self_repo with the seeded checkout as path', async () => {
@@ -90,6 +93,7 @@ describe('defaultSelfAdmitCanonical — the registry entry is git-syncable (EI-8
       // remote_hive_view and the reconcile never visits it — the loop is dead.
       self_repo: true,
       hive_pubkey: 'pk-canonical',
+      owner_device_pubkey: 'owner-device-canonical',
       path: seedTargetDirs().targetRepoDir,
     });
   });

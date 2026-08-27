@@ -37,6 +37,7 @@ import {
   makeAgentBusyGate,
   makeCarryRearmController,
   makeSubmitVerifier,
+  submitVerificationFailureReason,
   signalNameFromCode,
   reapDetachedPtyScopeResidue,
   shouldReapDetachedPtyScopeResidue,
@@ -928,18 +929,25 @@ describe('submitVerifyQuietMs (WI-2975 — decoupled from OUTPUT_QUIET_MS)', () 
 describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bridge)', () => {
   const okChild = () => ({ on: () => {}, unref: () => {} });
 
-  it('spawns the detached tsx emit CLI with owner + focus as argv when the entry exists', () => {
+  it('spawns the detached tsx emit CLI with owner + focus + successor native id', () => {
     const spawnFn = vi.fn(() => okChild());
     const child = fireSessionCompactedEvent('su-94b69', 'keep the plan', {
       spawnFn,
       existsFn: () => true,
       entry: '/x/emit-session-compacted.ts',
+      nativeId: 'successor-native-id',
     });
     expect(child).not.toBeNull();
     expect(spawnFn).toHaveBeenCalledTimes(1);
     const [cmd, args, opts] = spawnFn.mock.calls[0];
     expect(cmd).toBe('npx');
-    expect(args).toEqual(['tsx', '/x/emit-session-compacted.ts', 'su-94b69', 'keep the plan']);
+    expect(args).toEqual([
+      'tsx',
+      '/x/emit-session-compacted.ts',
+      'su-94b69',
+      'keep the plan',
+      'successor-native-id',
+    ]);
     // detached + fully silenced so a spawn failure can never touch the live session
     expect(opts).toMatchObject({ detached: true, stdio: 'ignore' });
   });
@@ -960,7 +968,7 @@ describe('fireSessionCompactedEvent (event-await P-103 — the detached emit bri
   it('coerces a null/undefined focus to an empty-string argv (never passes "undefined")', () => {
     const spawnFn = vi.fn(() => okChild());
     fireSessionCompactedEvent('su-x', undefined, { spawnFn, existsFn: () => true, entry: '/e.ts' });
-    expect(spawnFn.mock.calls[0][1]).toEqual(['tsx', '/e.ts', 'su-x', '']);
+    expect(spawnFn.mock.calls[0][1]).toEqual(['tsx', '/e.ts', 'su-x', '', '']);
   });
 
   it('FAIL-SOFT: a spawn that throws is swallowed (returns null, never propagates into the session)', () => {
@@ -1777,7 +1785,7 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
     // The turn is running: last output always "just now".
     const { v, crs } = rig({ output: (t) => t });
     const r = await v.verify();
-    expect(r).toEqual({ polls: 4, resubmits: 0, aborted: null });
+    expect(r).toEqual({ polls: 4, resubmits: 0, aborted: null, exhausted: false });
     expect(crs).toEqual([]);
   });
 
@@ -1793,7 +1801,8 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
 
   it('reports exhaustion once when the bounded CR window ends without output', async () => {
     const { v, crs, exhaustedCalls } = rig({ output: () => 0, polls: 4, maxResubmits: 2 });
-    await v.verify();
+    const r = await v.verify();
+    expect(r.exhausted).toBe(true);
     expect(crs).toEqual([100, 200]);
     expect(exhaustedCalls).toEqual([
       {
@@ -1863,6 +1872,16 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       },
     });
     await expect(v.verify()).resolves.toMatchObject({ aborted: null });
+  });
+
+  it('maps every non-success verifier verdict to a stable delivery reason (WI-42318)', () => {
+    expect(submitVerificationFailureReason({ exhausted: true, aborted: null })).toBe(
+      'submit-verification-exhausted',
+    );
+    expect(submitVerificationFailureReason({ exhausted: false, aborted: 'human-input' })).toBe(
+      'submit-verification-aborted-human-input',
+    );
+    expect(submitVerificationFailureReason({ exhausted: false, aborted: null })).toBeNull();
   });
 });
 

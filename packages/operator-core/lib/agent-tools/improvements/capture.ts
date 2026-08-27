@@ -26,7 +26,7 @@ import {
   type AgentReviewFailure,
 } from '../../harness/improvements/capture-core';
 import { enterAgentReview } from '../../harness/improvements/agent-review';
-import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { OBSERVATION_KINDS, ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import {
   CONDITION_KEY_RULE,
   OBSERVATION_EVIDENCE_RULE,
@@ -509,7 +509,7 @@ export default defineTool({
           .describe('compatibility alias for observation.ratings; prefer observation:{ rubricRef, ratings }'),
         observation: z
           .object({
-            kind: z.enum(['friction', 'workaround', 'gap', 'surprise', 'reinforce']).optional(),
+            kind: z.enum(OBSERVATION_KINDS).optional(),
             scope: z.enum(['self', 'role', 'harness', 'papercusp']).optional(),
             confidence: z.enum(['low', 'med', 'high']).optional(),
             refs: z

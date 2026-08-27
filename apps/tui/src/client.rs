@@ -23,7 +23,7 @@ use crate::models::{
     LayoutSummary, LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates,
     PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
     SessionTranscriptTurn, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
-    TurnsPage, ViewState, ViewStateResponse, WorkItem, WorkItemsPayload,
+    TurnsPage, ViewState, ViewStateResponse, WorkFrontier, WorkItem, WorkItemsPayload,
 };
 use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
@@ -1762,6 +1762,37 @@ impl OperatorClient {
         Ok(payload.agents)
     }
 
+    /// Whole-harness actionable frontier. The stock/bucket truth comes from the
+    /// canonical `work_items:burn_down` writer; READY NOW's downstream-gate count
+    /// is enriched by one batched detail read rather than N per-row calls.
+    pub async fn work_frontier(&self, harness: &str) -> Result<WorkFrontier> {
+        let envelope = self
+            .run_tool(
+                "work_items:burn_down",
+                serde_json::json!({ "harness": harness, "limit": 2000 }),
+            )
+            .await?;
+        let mut frontier: WorkFrontier = serde_json::from_value(run_tool_inner_json(&envelope)?)
+            .context("decode work_items:burn_down frontier")?;
+
+        let ids: Vec<String> = frontier
+            .unclaimed
+            .iter()
+            .map(|row| row.id.clone())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if !ids.is_empty() {
+            let detail = self
+                .run_tool(
+                    "work_items:get",
+                    serde_json::json!({ "ids": ids, "harness": harness, "detail": true }),
+                )
+                .await?;
+            apply_frontier_block_counts(&mut frontier, &run_tool_inner_json(&detail)?);
+        }
+        Ok(frontier)
+    }
+
     /// The prompt an agent runs on (`GET /api/fleet/agent-prompt`, dock
     /// prompt-pane): a spawn's recorded prompt_body + brief/model/tier, or a
     /// live role-persona render when only a `role` hint is available (the
@@ -2372,6 +2403,38 @@ impl OperatorClient {
     }
 }
 
+/// Fold outgoing typed `blocks` edges onto READY NOW rows. Missing/clipped detail
+/// degrades to zero without losing the canonical burn-down result.
+fn apply_frontier_block_counts(frontier: &mut WorkFrontier, detail: &serde_json::Value) {
+    let mut counts = std::collections::HashMap::<&str, usize>::new();
+    for result in detail
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let Some(id) = result.get("id").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let count = result
+            .pointer("/workItem/links")
+            .and_then(serde_json::Value::as_array)
+            .map(|links| {
+                links
+                    .iter()
+                    .filter(|link| {
+                        link.get("rel").and_then(serde_json::Value::as_str) == Some("blocks")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        counts.insert(id, count);
+    }
+    for row in &mut frontier.unclaimed {
+        row.blocks = counts.get(row.id.as_str()).copied().unwrap_or(0);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OperatorSelection {
     base: String,
@@ -2602,6 +2665,38 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frontier_block_counts_fold_one_batched_detail_response() {
+        let mut frontier = WorkFrontier {
+            unclaimed: vec![
+                crate::models::WorkFrontierRow {
+                    id: "WI-1".into(),
+                    ..Default::default()
+                },
+                crate::models::WorkFrontierRow {
+                    id: "WI-2".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        apply_frontier_block_counts(
+            &mut frontier,
+            &serde_json::json!({
+                "results": [
+                    {"id":"WI-1","workItem":{"links":[
+                        {"rel":"blocks","dst":{"kind":"feature","ref":"WI-A"}},
+                        {"rel":"relates","dst":{"kind":"feature","ref":"WI-B"}},
+                        {"rel":"blocks","dst":{"kind":"issue","ref":"EI-C"}}
+                    ]}},
+                    {"id":"WI-2","workItem":{}}
+                ]
+            }),
+        );
+        assert_eq!(frontier.unclaimed[0].blocks, 2);
+        assert_eq!(frontier.unclaimed[1].blocks, 0);
+    }
 
     #[test]
     fn session_switcher_merge_keeps_roster_and_dedupes_recorded_hits() {

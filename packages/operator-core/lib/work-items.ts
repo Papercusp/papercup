@@ -147,6 +147,7 @@ import {
   resolveIssuesScopeWorkspace,
   resolveIssueWorkspace,
   mergeIssuePayload,
+  planItemSourceFromPayloadPatch,
   markIssueProgress,
   type EngineerIssue,
   type ListIssuesFilter,
@@ -4306,6 +4307,7 @@ export async function mergeWorkItemPayload(
   if (!wi) return null;
   const unset = [...new Set(opts.unset ?? [])];
   const clearingPlanItem = unset.includes('plan_item');
+  const settingPlanItem = clearingPlanItem ? null : planItemSourceFromPayloadPatch(patchValue);
   if (wi.family === 'issue') {
     await mergeIssuePayload(id, patchValue, { unset });
   } else {
@@ -4321,10 +4323,18 @@ export async function mergeWorkItemPayload(
          SET payload = (COALESCE(payload, '{}'::jsonb) || ${patch}::text::jsonb) - ${unset}::text[],
              -- A promoted feature has the same three admission identities as an
              -- issue: payload.plan_item, normalized source-plan columns, and a
-             -- coord coverage edge. Keep the row representations atomic with
-             -- the explicit plan_item unset (EI-21215740738650819).
-             source_plan_slug = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_slug END,
-             source_plan_item_ids = CASE WHEN ${clearingPlanItem} THEN NULL ELSE source_plan_item_ids END,
+             -- coord coverage edge. Keep the row representations atomic on both
+             -- SET and CLEAR (EI-21551365156148780 / EI-21215740738650819).
+             source_plan_slug = CASE
+               WHEN ${clearingPlanItem} THEN NULL
+               WHEN ${settingPlanItem !== null} THEN ${settingPlanItem?.planSlug ?? null}
+               ELSE source_plan_slug
+             END,
+             source_plan_item_ids = CASE
+               WHEN ${clearingPlanItem} THEN NULL
+               WHEN ${settingPlanItem !== null} THEN ${settingPlanItem ? [settingPlanItem.itemId] : null}::text[]
+               ELSE source_plan_item_ids
+             END,
              updated_ts = ${Date.now()}
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${featureHarness}

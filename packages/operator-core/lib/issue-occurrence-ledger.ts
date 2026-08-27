@@ -330,7 +330,7 @@ export async function recordIssueOccurrence(
       VALUES
         (${canonical.workspace_id}, ${canonical.harness_slug}, ${canonical.feature_id},
          ${input.reporter ?? null}, ${input.sourceTool}, ${input.reportKind}, ${input.reportedTitle},
-         ${evidence}::jsonb, ${identity}::jsonb)
+         ${evidence}::text::jsonb, ${identity}::text::jsonb)
       RETURNING occurrence_id, occurred_at
     `;
     const row = rows[0];

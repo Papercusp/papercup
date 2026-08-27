@@ -1764,6 +1764,32 @@ fi
 # into an EXISTING ~/.codex/config.toml (never creates one). Sibling of the papercusp-files.ts TS merge.
 merge_codex_statusline "${HOME}/.codex/config.toml"
 
+# Install an executable wrapper through a same-directory temporary file and one
+# atomic rename. Writing an already-running shebang script in place leaves a
+# window where a concurrent exec sees ETXTBSY (or a truncated script), which is
+# especially damaging here because `ptool` is also the recovery transport used
+# to repair installs. The temporary file is created beside the destination so
+# the rename stays on the same filesystem.
+install_executable_atomic() {
+  local destination="$1"
+  local mode="$2"
+  local temporary
+
+  temporary="$(mktemp "${destination}.tmp.XXXXXX")"
+  if ! cat > "$temporary"; then
+    rm -f -- "$temporary" || true
+    return 1
+  fi
+  if ! chmod "$mode" "$temporary"; then
+    rm -f -- "$temporary" || true
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$destination"; then
+    rm -f -- "$temporary" || true
+    return 1
+  fi
+}
+
 # 4g. Install the `psu` command — THE launcher (the *-su wrappers are gone).
 # `psu` prompts for agent + harness + plan, records a tracked /adv session
 # via the operator's bootstrap-su endpoint, then execs the RAW CLI with the
@@ -1776,7 +1802,7 @@ PSU_BIN_DIR="${HOME}/.local/bin"
 PSU_PATH="${PSU_BIN_DIR}/psu"
 if [ -f "$PSU_LAUNCHER" ]; then
   mkdir -p "$PSU_BIN_DIR"
-  cat > "$PSU_PATH" <<WRAPEOF
+  install_executable_atomic "$PSU_PATH" 755 <<WRAPEOF
 #!/usr/bin/env bash
 # papercusp tracked SU launcher (managed by install-standalone-mcp.sh).
 # Picks agent + harness + plan, records a tracked /adv session, then execs
@@ -1809,7 +1835,7 @@ PTOOL_BIN_DIR="${HOME}/.local/bin"
 PTOOL_PATH="${PTOOL_BIN_DIR}/ptool"
 if [ -f "$PTOOL_LAUNCHER" ]; then
   mkdir -p "$PTOOL_BIN_DIR"
-  cat > "$PTOOL_PATH" <<WRAPEOF
+  install_executable_atomic "$PTOOL_PATH" 755 <<WRAPEOF
 #!/usr/bin/env bash
 # papercusp defineTool CLI (managed by install-standalone-mcp.sh).
 # Pick a service + endpoint, prompts for args, calls it over the superuser

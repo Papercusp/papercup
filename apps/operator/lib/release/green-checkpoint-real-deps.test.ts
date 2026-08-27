@@ -2536,9 +2536,14 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         reason: "advanced",
         candidateSource: "tip",
       });
+      // D-033 / WI-42329: the whole-box exclusive barrier is demanded ONLY when the
+      // transported selection had to publish fresh (reused=false). The --ensure-ref flow
+      // re-opens the selector by exact candidate key after publishing, so it reports
+      // reused=true even for a first publish — the publish happened pre-lock (D-081),
+      // and setupTree's materialization is then a parallel-safe private-root copy.
       expect(
         existsSync(join(pcHeavyDir, "exclusive-materialization.lock")),
-      ).toBe(true);
+      ).toBe(!prewarmed.reused);
       expect(
         readFileSync(
           join(checkpoint, "node_modules", ".papercusp-dependency-generation"),
@@ -2730,8 +2735,10 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[1].args).toEqual(
       // `force` (not `auto`): the checkpoint tree must always re-copy node_modules — the
       // `auto` heuristic is blind to nested-dep drift and spuriously red the gate (EI-2699).
+      // D-033: no `--exclusive-all-slots` pinned here — the default selector fixture reports
+      // reused=true, so the shared-slot path applies; the conditional contract itself is
+      // pinned by the dedicated D-033 test above.
       expect.arrayContaining([
-        "--exclusive-all-slots",
         "--",
         "bash",
         expect.stringMatching(/apps\/operator\/bin\/release\/setup-release-checkout\.sh$/),

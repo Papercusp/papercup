@@ -953,6 +953,8 @@ export interface PipelinePosition {
      * snapshots; an explicit empty array is distinct from an absent/unknown field.
      */
     failingTests?: string[];
+    /** Same-surface proof for whether the failingTests array was actually measured. */
+    failingTestsMeasured?: boolean | null;
     lastGreenAtMs: number | null;
     /** WI-282: the green-checkpoint is WEDGED / not firing (visible even at 0 reds). */
     fireStale: boolean;
@@ -4699,6 +4701,7 @@ export async function gitPipelinePosition(
     stalled: snap.gate.stalled,
     consecutiveReds: snap.gate.consecutiveReds,
     failingTests: snap.gate.failingTests,
+    failingTestsMeasured: snap.gate.failingTestsMeasured,
     lastGreenAtMs: snap.gate.lastGreenAtMs,
     ...(() => {
       const pauseProjection = projectGreenCheckpointPause(snap.routines?.greenCheckpoint ?? null);

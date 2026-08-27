@@ -680,6 +680,67 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'oriented-harness' }));
   });
 
+  it('EI-21545786648324241: an active oriented plan scope beats a stale concrete dispatch context', async () => {
+    briefM.mockResolvedValueOnce({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'active-plan',
+      intent: 'continue papercusp P-007 / WI-42196',
+      currentPlanSlug: 'papercusp-plan',
+      currentFiles: [],
+      ambientExcludedRefs: null,
+      harnessSlug: 'papercusp',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      lifecycle: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? null);
+
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 'continue the papercusp plan' } as never,
+      { harnessSlug: 'sb-devboard-hive', workspaceId: 'ws-1' } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
+    expect(homePotM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(b.loop.harness).not.toBe('sb-devboard-hive');
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+  });
+
+  it('EI-21545786648324241: a historical brief with no active plan does not override a concrete context', async () => {
+    briefM.mockResolvedValueOnce({
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'historical',
+      intent: 'old papercusp work',
+      currentPlanSlug: null,
+      currentFiles: [],
+      ambientExcludedRefs: null,
+      harnessSlug: 'papercusp',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      lifecycle: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? null);
+
+    const out = (await tool.handler(
+      { intervalSec: 120, goal: 'start unrelated work' } as never,
+      { harnessSlug: 'sb-devboard-hive', workspaceId: 'ws-1' } as never,
+    )) as Out;
+
+    expect(body(out)).toMatchObject({ ok: true, loop: { harness: 'sb-devboard-hive' } });
+  });
+
   it('EI-21280482685800432: workspace home beats a stale session brief for a wildcard Codex member', async () => {
     briefM.mockResolvedValue({
       ownerId: 'su-caller-own-id',
@@ -751,6 +812,33 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(b).toMatchObject({ ok: true, loop: { harness: 'sb-devboard-hive', carry: 'cold' } });
     expect(materializeM).toHaveBeenCalledWith(
       expect.objectContaining({ harnessSlug: 'sb-devboard-hive', carry: 'cold' }),
+    );
+  });
+
+  it('EI-21550331830461260: omitted harness preserves an active routine scope despite a different dispatch-origin harness', async () => {
+    // tools:invoke preserves the outer MCP request origin. That dispatch scope is
+    // authoritative for a fresh arm, but it is not an explicit request to migrate
+    // an already-active owner loop when the INNER loop:arm args omit `harness`.
+    priorLoopM.mockResolvedValueOnce({
+      ...priorLoop(),
+      harnessSlug: 'papercusp',
+      goal: 'continue the papercusp loop',
+    } as never);
+    potHomeM.mockImplementation((explicit, ctxSlug) => explicit ?? ctxSlug ?? 'home-hive');
+
+    const out = (await tool.handler(
+      { carry: 'cold' } as never,
+      {
+        harnessSlug: 'sb-devboard-hive',
+        workspaceId: 'ws-1',
+        requestOrigin: { transport: 'mcp', query: { harness: 'sb-devboard-hive' } },
+      } as never,
+    )) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp', carry: 'cold' } });
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ harnessSlug: 'papercusp', carry: 'cold' }),
     );
   });
 

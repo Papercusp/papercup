@@ -46,6 +46,7 @@ import {
   type StartGoalFromPackageDeps,
 } from './start-from-package';
 import { startGoalById } from './start-goal-by-id';
+import { buildGoalKickoffBrief } from '../agent-tools/goals/start';
 import { resolveLocalGoalPackage } from '../cupboard/goal-package-store';
 import { STANDING_GOAL_KILL_POLARITY } from './kill-criterion';
 import { GOAL_MODE } from '../modes/goal-session';
@@ -96,6 +97,11 @@ function e2eDeps(capture: { kickoffPrompt: string | null; launched: string[] }):
           live: [],
           liveness: 'unheld',
         }),
+        // REAL builder (EI-21566842357792802): this e2e asserts the PACKAGE
+        // brief survives to the launch door, so the default must be the genuine
+        // one — a stub here could mask the package brief being dropped in favour
+        // of a built default.
+        buildBrief: buildGoalKickoffBrief,
         readReadiness: async () => ({
           actionable: true,
           premiseInvalidated: false,

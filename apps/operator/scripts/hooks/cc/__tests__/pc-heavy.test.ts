@@ -243,7 +243,9 @@ async function admittedCohortSize(jobs: number, env: Record<string, string>): Pr
     return admitted;
   } finally {
     writeFileSync(release, 'go\n');
-    for (const { child } of children) killGroup(child);
+    for (const { child } of children) {
+      if (child.exitCode === null && child.signalCode === null) killGroup(child);
+    }
   }
 }
 
@@ -635,6 +637,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       PC_HEAVY_PREEMPT_GRACE_SEC: '0',
       PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '2',
       PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_HEARTBEAT_SEC: '1',
     };
     const writerBlocker = spawn('flock', [writerPath, 'sleep', '30'], {
       env: baseEnv(env), cwd: dir, detached: true,
@@ -680,8 +683,16 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
         (t) => t.includes('retry waiting for exclusive materializer intent to clear'),
         'the retry waiting for the materializer intent',
       );
+      await untilStderr(
+        retrying,
+        retryingErr,
+        (t) => t.includes('retry still waiting for exclusive materializer intent'),
+        'the retry emitting a progress heartbeat while the materializer remains pending',
+      );
       // The regression is about re-admission ordering: while the materializer is
-      // still intent-pending, no second workload attempt may have started.
+      // still intent-pending, no second workload attempt may have started. The
+      // heartbeat proves that a minutes-long production wait remains visibly
+      // alive without weakening that ordering barrier.
       expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
 
       killGroup(writerBlocker);
@@ -1206,9 +1217,11 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
   it('emits an undetermined marker when the monitor receives a signal', async () => {
     const pidDir = join(dir, 'signal-pids');
     mkdirSync(pidDir);
+    const ready = join(dir, 'signal-workload-ready');
     const terminated = join(dir, 'signal-workload-terminated');
     const workload = [
       `trap 'echo terminated > ${JSON.stringify(terminated)}; exit 143' TERM`,
+      `echo ready > ${JSON.stringify(ready)}`,
       'while :; do sleep 1; done',
     ].join('; ');
     const monitor = spawn(
@@ -1235,8 +1248,8 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     let monitorExit: Promise<number> | undefined;
     try {
       await waitFor(
-        'the signal-test monitor publishing a child pid',
-        () => readdirSync(pidDir).some((name) => name.startsWith('preemptible.') && name.endsWith('.pid')),
+        'the signal-test workload installing its TERM trap',
+        () => existsSync(ready),
       );
       monitorExit = new Promise<number>((resolve) => monitor.on('exit', (code) => resolve(code ?? -1)));
       monitor.kill('SIGTERM');
@@ -1941,69 +1954,6 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
 });
 
 describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
-  /**
-   * Run `jobs` concurrent wrapped commands and return the size of the first
-   * admitted cohort. Every admitted child waits behind one shared release
-   * barrier; every non-admitted wrapper therefore reaches pc-heavy's observable
-   * queue marker while all available slots remain held. Once every wrapper is
-   * either ready or queued, the ready-file count is the actual concurrency cap
-   * without relying on process-start timing.
-   *
-   * The old probe inferred concurrency from overlapping fixed 400ms sleeps. A
-   * loaded host could delay the last wrapper by >400ms, let the first finish,
-   * and report 3 instead of 4 even though all four slots were available. Making
-   * the sleep longer only moved that race; this barrier removes it.
-   *
-   * Each job writes its OWN ready file, so the commands differ and pc-heavy's
-   * coalescing cannot collapse them into a single leader — the failure that
-   * makes this whole measurement read 1 regardless of the slot count. Belt and
-   * braces: PC_HEAVY_COALESCE=0.
-   */
-  async function maxOverlap(jobs: number, env: Record<string, string>): Promise<number> {
-    const cohortDir = mkdtempSync(join(dir, 'mem-cohort-'));
-    const release = join(cohortDir, 'release');
-    const children = Array.from({ length: jobs }, (_, i) => {
-      const ready = join(cohortDir, `ready.${i}`);
-      const child = spawn(
-        'bash',
-        [PC_HEAVY, 'bash', '-c', `touch "${ready}"; while [ ! -f "${release}" ]; do sleep 0.02; done`],
-        {
-          env: baseEnv({ PC_HEAVY_COALESCE: '0', PC_HEAVY_GATE_RESERVE: '0', ...env }),
-          cwd: dir,
-          detached: true,
-        },
-      );
-      return {
-        child,
-        ready,
-        stderr: createTextCollector(child.stderr),
-        exited: new Promise<number>((resolve) => child.on('exit', (code) => resolve(code ?? -1))),
-      };
-    });
-
-    try {
-      await waitFor('every memory-clamp probe being admitted or observably queued', () =>
-        children.every(({ child, ready, stderr }) => {
-          if (existsSync(ready)) return true;
-          if (stderr.peek().includes('[pc-heavy] queued for a heavy slot')) return true;
-          if (child.exitCode !== null || child.signalCode !== null) {
-            throw new Error(
-              `memory-clamp probe exited ${child.exitCode ?? child.signalCode} before admission or queueing`,
-            );
-          }
-          return false;
-        }));
-      const admitted = children.filter(({ ready }) => existsSync(ready)).length;
-      writeFileSync(release, 'go\n');
-      const exitCodes = await Promise.all(children.map(({ exited }) => exited));
-      expect(exitCodes).toEqual(Array(jobs).fill(0));
-      return admitted;
-    } finally {
-      writeFileSync(release, 'go\n');
-      for (const { child } of children) killGroup(child);
-    }
-  }
-
   // The bug this guards: _calc_slots admits on load1 alone, and memory pressure
   // LOWERS load1 (processes stall in reclaim) — so admission WIDENS exactly when
   // memory is scarce. Measured 2026-08-13: two concurrent
@@ -2015,14 +1965,14 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   // clamped result cannot be explained by the semaphore, the gate reserve, or a
   // slow box — only by the memory budget.
   it('clamps a FIXED PC_HEAVY_SLOTS down to what MemAvailable can hold', async () => {
-    const headroom = await maxOverlap(6, {
+    const headroom = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '600', // budget 100 — nowhere near binding
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
     expect(headroom).toBe(6);
 
-    const scarce = await maxOverlap(6, {
+    const scarce = await admittedCohortSize(6, {
       PC_HEAVY_SLOTS: '6',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '12', // 12 / 6 GiB-per-slot => 2
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
@@ -2037,14 +1987,14 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     // invisible: 24 GiB / 6 GiB-per-slot => 4, the same as PC_HEAVY_SLOTS. The
     // calm arm then pins that baseline, so the drop to 2 in the second arm is
     // attributable to PSI alone.
-    const calm = await maxOverlap(4, {
+    const calm = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '24', // budget 4 — exactly the ask
       PC_HEAVY_MEM_PSI_OVERRIDE: '0',
     });
     expect(calm).toBe(4);
 
-    const reclaiming = await maxOverlap(4, {
+    const reclaiming = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '24',
       PC_HEAVY_MEM_PSI_OVERRIDE: '9', // >= PC_HEAVY_MEM_PSI_BACKOFF (5)
@@ -2056,13 +2006,13 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
     // Every unexpected input must degrade to the pre-clamp behavior. A clamp
     // that throttles the fleet to 1 because it could not parse /proc/meminfo
     // would be far worse than the pressure it exists to prevent.
-    const garbage = await maxOverlap(4, {
+    const garbage = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: 'not-a-number',
     });
     expect(garbage).toBe(4);
 
-    const disabled = await maxOverlap(4, {
+    const disabled = await admittedCohortSize(4, {
       PC_HEAVY_SLOTS: '4',
       PC_HEAVY_MEM_CLAMP: '0',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '1', // would clamp to 1 if honoured
@@ -2071,7 +2021,7 @@ describe('pc-heavy.sh — memory clamp (EI-20336929607862174)', () => {
   });
 
   it('never clamps below 1 — a starved box still makes forward progress', async () => {
-    const starved = await maxOverlap(2, {
+    const starved = await admittedCohortSize(2, {
       PC_HEAVY_SLOTS: '2',
       PC_HEAVY_MEMAVAIL_GIB_OVERRIDE: '0',
       PC_HEAVY_MEM_PSI_OVERRIDE: '99',
@@ -2578,7 +2528,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     }
   }, 20_000);
 
-  it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', () => {
+  it('reclaims a lock whose leader DIED even though the stamped pid was recycled by a live process (EI-19343301596011451)', async () => {
     // Leader liveness is observed via pid, and PID wrap is ~daily on this box
     // under fleet load — so pid alone would let an unrelated live process
     // impersonate a dead leader and stall every follower for the full
@@ -2588,8 +2538,31 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     // Seed a lock for the key this exact command will hash to, by letting one
     // real (fast) run create and release it, then re-planting it corrupted.
     const cmd = ['bash', '-c', `printf y >> "${marker}"; echo reuse-probe`];
-    const first = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' });
-    expect(first.status).toBe(0);
+    const runProbe = () =>
+      new Promise<{
+        status: number | null;
+        signal: NodeJS.Signals | null;
+        stdout: string;
+        stderr: string;
+      }>((resolve, reject) => {
+        const child = spawn('bash', [PC_HEAVY, ...cmd], {
+          env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' }),
+          cwd: dir,
+        });
+        const stdout = createTextCollector(child.stdout);
+        const stderr = createTextCollector(child.stderr);
+        child.once('error', reject);
+        child.once('close', (status, signal) => {
+          resolve({ status, signal, stdout: stdout.text(), stderr: stderr.text() });
+        });
+      });
+
+    const first = await runProbe();
+    expect(
+      first.status,
+      `seed coalescing probe exited via ${first.signal ?? 'no signal'}; stderr: ${first.stderr}`,
+    ).toBe(0);
+    expect(first.stdout).toContain('reuse-probe');
 
     const coalesceDir = join(dir, 'coalesce');
     const key = readdirSync(coalesceDir).find((f) => f.endsWith('.exit'))?.replace(/\.exit$/, '');
@@ -2604,10 +2577,14 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     writeFileSync(join(lockDir, 'pid'), `${process.pid} 999999999\n`);
 
     // Must reclaim and run rather than wait out PC_HEAVY_COALESCE_MAX_WAIT_SEC.
-    const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '1' });
-    expect(second.status).toBe(0);
+    const second = await runProbe();
+    expect(
+      second.status,
+      `recycled-pid coalescing probe exited via ${second.signal ?? 'no signal'}; stderr: ${second.stderr}`,
+    ).toBe(0);
+    expect(second.stdout).toContain('reuse-probe');
     expect(readFileSync(marker, 'utf8').length).toBe(2);
-  });
+  }, 60_000);
 
   it('a later (non-concurrent) identical call within the window reuses the cached result, including stderr + exit code', () => {
     const first = runSync(['bash', '-c', 'echo out-x; echo err-x >&2; exit 4'], {
@@ -3229,34 +3206,15 @@ describe('pc-heavy.sh — load-adaptive slot count (EI-19313096203661357)', () =
   });
 
   it('the computed (not env) slot count actually gates admission [adaptive]', async () => {
-    // 64 fake cores at load 64 → computed floor of 2. Three 0.4s sleepers must
-    // never overlap more than 2 at a time — same interval-sweep as the cap test.
+    // 64 fake cores at load 64 → computed floor of 2. The observable first
+    // cohort must contain exactly two of the three wrappers.
     const jobs = 3;
     const path = fakeNprocPath(64);
-    await Promise.all(
-      Array.from({ length: jobs }, (_, i) =>
-        new Promise<void>((res) => {
-          const f = join(dir, `adaptive.${i}.out`);
-          const p = spawn(
-            'bash',
-            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
-            { env: baseEnv({ PC_HEAVY_LOAD1_OVERRIDE: '64', PC_HEAVY_COALESCE: '0', PATH: path }), cwd: dir },
-          );
-          p.on('exit', () => res());
-        }),
-      ),
-    );
-    const intervals = Array.from({ length: jobs }, (_, i) => {
-      const [s, e] = readFileSync(join(dir, `adaptive.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
-      return { s, e };
+    const admitted = await admittedCohortSize(jobs, {
+      PC_HEAVY_LOAD1_OVERRIDE: '64',
+      PATH: path,
     });
-    const evts: Array<[number, number]> = [];
-    for (const { s, e } of intervals) { evts.push([s, 1]); evts.push([e, -1]); }
-    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let cur = 0;
-    let max = 0;
-    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
-    expect(max).toBe(2);
+    expect(admitted).toBe(2);
   });
 });
 
@@ -3590,33 +3548,16 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
 
   it('the clamp actually GATES ADMISSION, not just the reported number', async () => {
     // 128 fake cores at load1 128 → base 4, clamped to 1 by the live lock.
-    // Three 0.4s sleepers must therefore never overlap.
+    // The observable first cohort must therefore contain exactly one wrapper.
     plantLock(liveOwner());
     const jobs = 3;
     const path = fakeNprocPath(128);
-    await Promise.all(
-      Array.from({ length: jobs }, (_, i) =>
-        new Promise<void>((res) => {
-          const f = join(dir, `gate.${i}.out`);
-          const p = spawn(
-            'bash',
-            [PC_HEAVY, 'bash', '-c', `s=$(date +%s%3N); sleep 0.4; e=$(date +%s%3N); echo "$s $e" > "${f}"`],
-            { env: baseEnv({ PC_HEAVY_LOAD1_OVERRIDE: '128', PC_HEAVY_COALESCE: '0', PATH: path }), cwd: dir },
-          );
-          p.on('exit', () => res());
-        }),
-      ),
-    );
-    const evts: Array<[number, number]> = [];
-    for (let i = 0; i < jobs; i++) {
-      const [s, e] = readFileSync(join(dir, `gate.${i}.out`), 'utf8').trim().split(/\s+/).map(Number);
-      evts.push([s, 1], [e, -1]);
-    }
-    evts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-    let cur = 0;
-    let max = 0;
-    for (const [, d] of evts) { cur += d; max = Math.max(max, cur); }
-    expect(max).toBe(1);
+    const admitted = await admittedCohortSize(jobs, {
+      PC_HEAVY_GATE_RESERVE: '1',
+      PC_HEAVY_LOAD1_OVERRIDE: '128',
+      PATH: path,
+    });
+    expect(admitted).toBe(1);
   });
 
   // ── Phase-aware clamp DEPTH (EI-19328677512071640) ─────────────────────────

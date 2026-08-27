@@ -347,6 +347,8 @@ export default defineTool({
         authoritative: !snapshot.gate.verdictStale && !candidateInconclusive,
         consecutiveReds: snapshot.gate.consecutiveReds,
         failingTests: snapshot.gate.verdictStale || candidateInconclusive ? [] : snapshot.gate.failingTests,
+        failingTestsMeasured:
+          snapshot.gate.verdictStale || candidateInconclusive ? false : snapshot.gate.failingTestsMeasured,
         recordedVerdict: snapshot.gate.recordedVerdict,
         inheritedRepairQueueFailingTests,
         inheritedRepairQueueFailingTestsSource: repairQueueInconclusive ? 'prior-gate-verdict' : null,

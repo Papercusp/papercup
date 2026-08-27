@@ -1614,6 +1614,7 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
       const { captured, io } = fakeIo();
       const childCode =
         "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+        "if(process.stdin.isTTY)process.stdin.setRawMode(true);" +
         "process.stdin.setEncoding('utf8');" +
         "process.stdin.on('data',d=>{if(String(d).includes('QUIT'))process.exit(0);});" +
         'setTimeout(()=>process.exit(0),15000);';

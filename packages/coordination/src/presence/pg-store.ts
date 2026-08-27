@@ -308,6 +308,20 @@ export class PgPresenceStore implements PresenceStore {
     `;
   }
 
+  async clearContextEstimate(ownerId: string): Promise<void> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    // A carry-respawn keeps the coord ownerId while replacing the native
+    // session. Until the successor transcript is positively re-anchored, NULL
+    // is the only honest cached reading; the watchdog repopulates it on its next
+    // pass. No-op when the owner has no presence row, like the setters above.
+    await sql`
+      UPDATE harness_shared.coord_presence
+         SET context_tokens = NULL, context_estimated_at = NULL
+       WHERE owner_id = ${ownerId}
+    `;
+  }
+
   async heartbeat(identity: PresenceIdentity): Promise<void> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();

@@ -8,7 +8,24 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/loop/checkpoint.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+import { continuityProbeRevision } from '../../continuity-probes';
+
+const LOOP_CONTINUITY_TEST_TOOL = 'test:loop-continuity-read';
+defineTool({
+  name: LOOP_CONTINUITY_TEST_TOOL,
+  description: 'read-only fixture for loop checkpoint executable probes',
+  capability: 'coord:read',
+  requirePrincipal: false,
+  agentRoles: ['su'],
+  effect: 'read',
+  args: z.object({ value: z.string() }),
+  async handler(args) {
+    return { data: { value: args.value } };
+  },
+});
 
 const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
@@ -26,17 +43,19 @@ const defaultCompactionLimitForSpec = vi.fn(
 const listActiveAwaits = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const getModes = vi.fn(async (..._a: unknown[]) => [] as unknown[]);
 const selfCompactionAvailability = vi.fn(
-  (..._a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>) =>
-    ({ available: false }),
+  (..._a: Parameters<typeof import('../../events/await/psu-pty-discovery').selfCompactionAvailability>) => ({
+    available: false,
+  }),
 );
 const readFleetWindDownLoopEndAuthorization = vi.fn(async (..._a: unknown[]) => null as boolean | null);
 const withBoundedTimeout = vi.fn(
-  async (..._a: unknown[]): Promise<{ value: unknown; degraded: boolean; elapsedMs: number }> =>
-    ({ value: undefined, degraded: false, elapsedMs: 0 }),
+  async (..._a: unknown[]): Promise<{ value: unknown; degraded: boolean; elapsedMs: number }> => ({
+    value: undefined,
+    degraded: false,
+    elapsedMs: 0,
+  }),
 );
-const listVerifiedWaitTakeoversForSubscribers = vi.fn(
-  async (..._a: unknown[]): Promise<unknown[]> => [],
-);
+const listVerifiedWaitTakeoversForSubscribers = vi.fn(async (..._a: unknown[]): Promise<unknown[]> => []);
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -170,8 +189,7 @@ vi.mock('../../bounded-timeout', () => ({
 }));
 vi.mock('../../events/await/store', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) =>
-    listVerifiedWaitTakeoversForSubscribers(...a),
+  listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) => listVerifiedWaitTakeoversForSubscribers(...a),
   listActiveAwaits: (...a: unknown[]) => listActiveAwaits(...a),
 }));
 
@@ -249,12 +267,9 @@ describe('loopGuaranteesNextWake — dead-man-aware continuation evidence', () =
 
   it('uses a concrete scheduled fire when present and fails closed without arm-time evidence', () => {
     const now = Date.parse('2026-08-25T09:00:00.000Z');
-    expect(
-      loopGuaranteesNextWake(
-        loop({ maxDurationSec: 21_600, nextFireAt: '2026-08-25T10:01:00.000Z' }),
-        now,
-      ),
-    ).toBe(false);
+    expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, nextFireAt: '2026-08-25T10:01:00.000Z' }), now)).toBe(
+      false,
+    );
     expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, armedAt: null }), now)).toBe(false);
     expect(loopGuaranteesNextWake(loop({ maxDurationSec: 21_600, intervalSec: null }), now)).toBe(false);
   });
@@ -305,12 +320,15 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
   });
 
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
-    const b = body(await call({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }));
+    const b = body(
+      await call({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
+    );
     expect(b).toMatchObject({ ok: true, harness: 'papercusp', ownerId: 'su-caller', cleared: false });
     expect(b.length).toBeGreaterThan(0);
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       { harness: 'papercusp', ownerId: 'su-caller', workspaceId: 'ws-1' },
-      'RENDERED:' + JSON.stringify({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
+      'RENDERED:' +
+        JSON.stringify({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
     );
   });
 
@@ -397,6 +415,32 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
 
   it('rejects the removed generic checkpoint field instead of treating it as a raw note', () => {
     expect(() => parse({ checkpoint: 'legacy generic carry note' })).toThrow(/unrecognized_keys[\s\S]*checkpoint/i);
+    expect(setLoopCarryNote).not.toHaveBeenCalled();
+  });
+
+  it('accepts a current read-only executable probe and refuses schema drift before the store runs', () => {
+    const probe = {
+      kind: 'tool' as const,
+      tool: LOOP_CONTINUITY_TEST_TOOL,
+      args: { value: 'green' },
+      schemaRevision: continuityProbeRevision(LOOP_CONTINUITY_TEST_TOOL)!,
+      expect: { path: '$.value', op: 'eq' as const, value: 'green' },
+    };
+    expect(() => parse({ did: 'progress', checks: [{ claim: 'gate is green', probe }] })).not.toThrow();
+    expect(() =>
+      parse({ did: 'progress', checks: [{ claim: 'gate is green', probe: { ...probe, schemaRevision: 'stale' } }] }),
+    ).toThrow(/schema_revision_mismatch/);
+    expect(() =>
+      parse({
+        did: 'progress',
+        checks: [
+          {
+            claim: 'gate is green',
+            probe: { ...probe, args: { value: 'green', authorization: 'Bearer sk-abcdefghijklmnop' } },
+          },
+        ],
+      }),
+    ).toThrow(/secret_material/);
     expect(setLoopCarryNote).not.toHaveBeenCalled();
   });
 
@@ -553,7 +597,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
-  it("structured fields WIN over a raw note when both are passed", async () => {
+  it('structured fields WIN over a raw note when both are passed', async () => {
     await call({ note: 'ignore me', did: 'the real state' });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('RENDERED:');
@@ -567,7 +611,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(b).toMatchObject({ ok: true, cleared: true, length: 0 });
   });
 
-  it('honors an explicit ownerId override (mirrors loop:arm/end/status — checkpoint another session\'s loop)', async () => {
+  it("honors an explicit ownerId override (mirrors loop:arm/end/status — checkpoint another session's loop)", async () => {
     await call({ next: 'x', ownerId: 'su-other-session' });
     expect(setLoopCarryNote).toHaveBeenCalledWith(
       expect.objectContaining({ ownerId: 'su-other-session', harness: 'papercusp' }),
@@ -867,14 +911,17 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     // dynamic import, stale presence-only token source, or an unread cursor that never
     // reaches the continuation verdict.
     withBoundedTimeout.mockImplementation(async (work: unknown) => ({
-      value:
-        typeof work === 'function'
-          ? await (work as () => Promise<unknown>)()
-          : await (work as Promise<unknown>),
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
       degraded: false,
       elapsedMs: 0,
     }));
-    getLoopStatus.mockResolvedValue({ harnessSlug: 'papercusp', active: true, carry: 'warm' });
+    getLoopStatus.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      active: true,
+      carry: 'warm',
+      intervalSec: 300,
+      goal: 'wire the gate',
+    });
     getPresence.mockResolvedValue({ contextTokens: 1, compactionLimit: 100 });
     currentContextTokensForOwner.mockResolvedValue(95);
     readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-21T05:00:00.000Z' });
@@ -898,10 +945,7 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect(currentContextTokensForOwner).toHaveBeenCalledWith('su-caller');
     expect(readWatermark).toHaveBeenCalledWith('su-caller');
     expect(orgSql).toHaveBeenCalled();
-    expect(readInbox).toHaveBeenCalledWith(
-      'su-caller',
-      { since_ts: '2026-08-21T05:00:00.000Z', excludeOwn: true },
-    );
+    expect(readInbox).toHaveBeenCalledWith('su-caller', { since_ts: '2026-08-21T05:00:00.000Z', excludeOwn: true });
     expect(selfCompactionAvailability).toHaveBeenCalledWith('su-caller');
     expect(readFleetWindDownLoopEndAuthorization).toHaveBeenCalledWith({
       ownerId: 'su-caller',
@@ -909,12 +953,46 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     });
   });
 
+  it('runtime wiring: passes active loop interval and goal to the warm-to-cold continuation remedy', async () => {
+    withBoundedTimeout.mockImplementation(async (work: unknown) => ({
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
+      degraded: false,
+      elapsedMs: 0,
+    }));
+    getLoopStatus.mockResolvedValue({
+      harnessSlug: 'papercusp',
+      active: true,
+      carry: 'warm',
+      armedAt: '2026-08-25T04:00:00.000Z',
+      firesSinceArm: 0,
+      intervalSec: 300,
+      goal: 'preserve the active goal',
+      maxDurationSec: null,
+      maxFires: null,
+      nextFireAt: null,
+    });
+    getModes.mockResolvedValue([{ mode: 'auto' }]);
+    getPresence.mockResolvedValue({ contextTokens: 95, compactionLimit: 100 });
+    currentContextTokensForOwner.mockResolvedValue(95);
+    readWatermark.mockResolvedValue({ messages_since_ts: '2026-08-25T04:00:00.000Z' });
+    readInbox.mockResolvedValue([]);
+    selfCompactionAvailability.mockReturnValue({ available: false });
+    readFleetWindDownLoopEndAuthorization.mockResolvedValue(false);
+
+    const b = body(await call({ next: 'checkpoint before retuning' }));
+
+    expect(b.continuation).toMatchObject({
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+    });
+    expect(b.continuation.guidance).toContain(
+      `loop:arm { intervalSec: 300, goal: "preserve the active goal", carry: 'cold' }`,
+    );
+  });
+
   it('runtime wiring: an active loop at its dead-man boundary does not promise another wake', async () => {
     withBoundedTimeout.mockImplementation(async (work: unknown) => ({
-      value:
-        typeof work === 'function'
-          ? await (work as () => Promise<unknown>)()
-          : await (work as Promise<unknown>),
+      value: typeof work === 'function' ? await (work as () => Promise<unknown>)() : await (work as Promise<unknown>),
       degraded: false,
       elapsedMs: 0,
     }));
@@ -1055,7 +1133,7 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(b).toMatchObject({ ok: true, walls: 1 });
   });
 
-  it("a note CLEAR with standing walls preserves them as a walls-only note (never an incidental clear)", async () => {
+  it('a note CLEAR with standing walls preserves them as a walls-only note (never an incidental clear)', async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     await call({ note: '' });
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
@@ -1166,7 +1244,9 @@ describe('loop:checkpoint — current-vs-retained provenance (EI-211652356424970
 
     expect(result.ok).toBe(true);
     expect(result.provenanceLint?.matches.some((match: { line: string }) => match.line === current)).toBe(true);
-    expect(result.retainedProvenance?.matches.some((match: { line: string }) => match.line.includes(retained))).toBe(true);
+    expect(result.retainedProvenance?.matches.some((match: { line: string }) => match.line.includes(retained))).toBe(
+      true,
+    );
   });
 });
 
@@ -1179,16 +1259,12 @@ describe('pickUnreadCursor — P-007 fleet-member-dx (EI-9035)', () => {
 
   it('a mid-turn read AFTER the last settle narrows the window to post-read arrivals', async () => {
     const { pickUnreadCursor } = await import('./checkpoint');
-    expect(
-      pickUnreadCursor('2026-07-10T01:00:00.000Z', '2026-07-10T03:00:00.000Z'),
-    ).toBe('2026-07-10T03:00:00.000Z');
+    expect(pickUnreadCursor('2026-07-10T01:00:00.000Z', '2026-07-10T03:00:00.000Z')).toBe('2026-07-10T03:00:00.000Z');
   });
 
   it('a stale read BEFORE the last settle defers to the watermark', async () => {
     const { pickUnreadCursor } = await import('./checkpoint');
-    expect(
-      pickUnreadCursor('2026-07-10T03:00:00.000Z', '2026-07-10T01:00:00.000Z'),
-    ).toBe('2026-07-10T03:00:00.000Z');
+    expect(pickUnreadCursor('2026-07-10T03:00:00.000Z', '2026-07-10T01:00:00.000Z')).toBe('2026-07-10T03:00:00.000Z');
   });
 
   it('neither cursor ⇒ null (the gate blocks — fail-safe toward settling, unchanged)', async () => {
@@ -1369,7 +1445,9 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
         const b = body(
           await call({
             did: 'checkpointed the observed loop state',
-            checks: [{ claim: 'the observed loop state is verified', recheck: 'repeat the state probe', verified: evidence }],
+            checks: [
+              { claim: 'the observed loop state is verified', recheck: 'repeat the state probe', verified: evidence },
+            ],
           }),
         );
         expect(b.ok, evidence).toBe(true);
@@ -1440,7 +1518,9 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       // caller's `evidence` (there is nowhere lossless to put it), which is precisely
       // the silent-loss failure EI-18723223344390510 was fixed to stop. Failing loudly
       // is the correct outcome, and walls see ~2 such calls per 6 days vs 97 for checks.
-      expect(() => parse({ walls: [{ claim: 'needs owner key', status: 'verified', evidence: 'asked 02:00Z' }] })).toThrow();
+      expect(() =>
+        parse({ walls: [{ claim: 'needs owner key', status: 'verified', evidence: 'asked 02:00Z' }] }),
+      ).toThrow();
     });
 
     it('maps compact wall claim strings to lossless `{ claim }` rows', () => {
@@ -1474,8 +1554,12 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
 
   describe('soft caps are enforced by TRUNCATION, and every trim is reported', () => {
     it('accepts a bounded overlong row id but still rejects an absurdly long one at the input boundary', () => {
-      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX) }] })).not.toThrow();
-      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] })).not.toThrow();
+      expect(() =>
+        parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX) }] }),
+      ).not.toThrow();
+      expect(() =>
+        parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] }),
+      ).not.toThrow();
       expect(() =>
         parse({
           did: 'progress',
@@ -1882,7 +1966,10 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
 
   it('refuses a merge that would evict a carried wall at the cap', async () => {
     getLoopCarryNote.mockResolvedValue(
-      buildPrior([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` }))),
+      buildPrior(
+        [],
+        Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` })),
+      ),
     );
     const b = body(await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge' }));
 

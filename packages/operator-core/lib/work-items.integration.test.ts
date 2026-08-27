@@ -1860,6 +1860,48 @@ describe('unified work_items surface (real PG)', () => {
     });
   });
 
+  it('feature-family plan_item set atomically sets and repoints normalized provenance', async () => {
+    const feature = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'feature plan-link set',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+    const read = async () => {
+      const rows = await db.sql<{
+        payload: Record<string, unknown> | null;
+        source_plan_slug: string | null;
+        source_plan_item_ids: string[] | null;
+      }[]>`
+        SELECT payload, source_plan_slug, source_plan_item_ids
+          FROM harness_shared.harness_features_consolidated
+         WHERE workspace_id = 'default'
+           AND harness_slug = 'papercup'
+           AND feature_id = ${feature.id}`;
+      return rows[0]!;
+    };
+
+    const first = await wi.mergeWorkItemPayload(feature.id, {
+      plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercup' },
+    }, { harness: 'papercup' });
+    expect(await read()).toMatchObject({
+      payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-004' } },
+      source_plan_slug: 'plan-a',
+      source_plan_item_ids: ['P-004'],
+    });
+    expect(first).toMatchObject({ sourcePlanSlug: 'plan-a', sourcePlanItemIds: ['P-004'] });
+
+    const repointed = await wi.mergeWorkItemPayload(feature.id, {
+      plan_item: { plan_slug: 'plan-b', item_id: 'P-010', harness_slug: 'papercup' },
+    }, { harness: 'papercup' });
+    expect(await read()).toMatchObject({
+      payload: { plan_item: { plan_slug: 'plan-b', item_id: 'P-010' } },
+      source_plan_slug: 'plan-b',
+      source_plan_item_ids: ['P-010'],
+    });
+    expect(repointed).toMatchObject({ sourcePlanSlug: 'plan-b', sourcePlanItemIds: ['P-010'] });
+  });
+
   it('feature-family requires a harness', async () => {
     await expect(wi.createWorkItem({ kind: 'feature', title: 'x' })).rejects.toThrow(/requires a non-empty harness/);
   });

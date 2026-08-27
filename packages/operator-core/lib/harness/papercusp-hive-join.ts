@@ -34,6 +34,8 @@ export interface CanonicalHiveInvite {
   pubkeyBase64: string;
   /** Directory invite secret (hex) — the discovery topic for the owner's announce. */
   inviteSecret: string;
+  /** Verified owner device PUBLIC key for cold first-log admission (D-006). */
+  ownerDevicePubkey?: string;
 }
 
 /**
@@ -51,7 +53,17 @@ export function bakedCanonicalHiveInvite(explicit?: CanonicalHiveInvite | null):
   const inviteSecret = (
     process.env.PAPERCUP_DOGFOOD_POT_INVITE_SECRET ?? process.env.PAPERCUP_DOGFOOD_HIVE_INVITE_SECRET
   )?.trim();
-  if (pubkeyBase64 && inviteSecret) return { pubkeyBase64, inviteSecret };
+  const ownerDevicePubkey = (
+    process.env.PAPERCUP_DOGFOOD_POT_OWNER_DEVICE_PUBKEY ??
+    process.env.PAPERCUP_DOGFOOD_HIVE_OWNER_DEVICE_PUBKEY
+  )?.trim();
+  if (pubkeyBase64 && inviteSecret) {
+    return {
+      pubkeyBase64,
+      inviteSecret,
+      ...(ownerDevicePubkey ? { ownerDevicePubkey } : {}),
+    };
+  }
   return CANONICAL_PAPERCUSP_HIVE_INVITE;
 }
 
@@ -259,12 +271,12 @@ export async function joinCanonicalPapercuspHive(
     //    2026-07-01). Never match on potId; never trust the announced pubkey over
     //    the baked one.
     let memberLinks: string[] = [];
-    let ownerDevicePubkey: string | undefined;
+    let ownerDevicePubkey: string | undefined = invite.ownerDevicePubkey;
     let potId: string = PAPERCUSP_HIVE_SLUG;
     if (confirm?.found && confirm.hive?.hivePubkey === invite.pubkeyBase64) {
       memberLinks = confirm.hive.memberLinks ?? [];
       potId = confirm.hive.potId ?? PAPERCUSP_HIVE_SLUG;
-      ownerDevicePubkey = confirm.hive.ownerDevicePubkey;
+      ownerDevicePubkey = confirm.hive.ownerDevicePubkey ?? ownerDevicePubkey;
     }
     if (memberLinks.length === 0) {
       const hives = await listDiscovered().catch(() => []);

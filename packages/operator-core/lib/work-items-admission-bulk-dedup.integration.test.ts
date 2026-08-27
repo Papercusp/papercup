@@ -291,16 +291,24 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
     });
 
     const occurrences = await db.sql<
-      Array<{ canonical: string; kind: string; merged_from: string; run_id: string }>
+      Array<{ canonical: string; kind: string; evidence: Record<string, unknown> }>
     >`
       SELECT canonical_work_item_id AS canonical,
              report_kind AS kind,
-             evidence->>'mergedFrom' AS merged_from,
-             evidence->>'runId' AS run_id
+             evidence
         FROM harness_shared.work_item_occurrences
        ORDER BY occurrence_id`;
     expect(occurrences).toEqual([
-      { canonical: 'a', kind: 'duplicate', merged_from: 'b', run_id: 'bulk-parks-stage-1' },
+      {
+        canonical: 'a',
+        kind: 'duplicate',
+        evidence: {
+          mergedFrom: 'b',
+          summary: 'Clone failure again summary',
+          runId: 'bulk-parks-stage-1',
+          disposition: 'r-finding-merge',
+        },
+      },
     ]);
 
     const adjudications = await db.sql<Array<{ a: string; b: string; verdict: string; canonical: string | null }>>`
