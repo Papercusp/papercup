@@ -17,6 +17,7 @@ import {
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowAccounting,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
 import {
@@ -91,6 +92,16 @@ function reviewStatus(
   return "pending";
 }
 
+function reviewAccounting(
+  finding: PlanCleanupFinding,
+  status: ReviewRowStatus,
+): ReviewRowAccounting {
+  if (status === "applied") return "handled";
+  if (status === "dismissed") return "not-applied";
+  if (finding.outcome !== "recommended") return "not-applied";
+  return ACTIONABLE_KINDS.has(finding.kind) ? "ready" : "manual";
+}
+
 function manualReason(finding: PlanCleanupFinding): string | null {
   if (finding.outcome === "pending")
     return "The resolver did not reach this finding; no action is available.";
@@ -137,6 +148,7 @@ function reportRow(
     error: localError,
     evidence: evidenceLines(finding),
     confidence: finding.confidence,
+    accounting: reviewAccounting(finding, status),
     status,
     selectable:
       status === "pending" &&

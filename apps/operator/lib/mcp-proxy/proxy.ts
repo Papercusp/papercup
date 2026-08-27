@@ -1778,6 +1778,28 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         !waiter.granted &&
         waiter.tools.some((tool) => checkpointContinuationTools.has(tool)),
     );
+  // EI-21567905826837255 — a terminal work-item completion is itself the mutation result
+  // that tells the fleet whether the item was drained. Keep one completion waiter in a bounded
+  // priority slot so a saturated continuation FIFO cannot turn a durable close into an unknown
+  // outcome. This is separate from checkpoint/compaction recovery: all three may be needed at
+  // the same boundary, and each priority class remains bounded to one queued waiter.
+  const completionContinuationTools = new Set(["work_items:complete"]);
+  const hasQueuedCompletion = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.some((tool) => completionContinuationTools.has(tool)),
+    );
+  // EI-21567903270684307 — loop:end is the cleanup action that stops a worker's wake source
+  // after a blocked or drained turn. Expiring it at a finite queue dwell boundary leaves the
+  // loop running while its caller has already lost the outcome. The FIFO remains hard-bounded,
+  // and a client disconnect still cancels the waiter, so this terminal cleanup must wait for the
+  // single continuation slot rather than becoming an ambiguous 429. Other continuation writes
+  // retain the configured finite dwell when an operator explicitly enables it.
+  const nonExpiringCriticalContinuationTools = new Set(["loop:end"]);
+  const hasNonExpiringCriticalContinuation = (tools: string[]): boolean =>
+    tools.some((tool) => nonExpiringCriticalContinuationTools.has(tool));
 
   const canGrantHandshake = (): boolean => {
     if (
@@ -2255,10 +2277,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             criticalContinuationTools.some((tool) =>
               checkpointContinuationTools.has(tool),
             ) && !hasQueuedCheckpoint();
+          // EI-21567905826837255 — preserve one bounded priority slot for terminal completion.
+          const completionPriority =
+            criticalContinuationTools.some((tool) =>
+              completionContinuationTools.has(tool),
+            ) && !hasQueuedCompletion();
           if (
             maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
             !compactionPriority &&
-            !checkpointPriority
+            !checkpointPriority &&
+            !completionPriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
@@ -2300,6 +2328,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
           let queuedCriticalContinuation!: QueuedCriticalContinuation;
           const enqueuedAtMs = Date.now();
+          const nonExpiring = hasNonExpiringCriticalContinuation(
+            criticalContinuationTools,
+          );
           const granted = await new Promise<boolean>((resolve) => {
             queuedCriticalContinuation = {
               resolve,
@@ -2310,7 +2341,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               traceId: requestTraceId,
               tools: criticalContinuationTools,
             };
-            if (compactionPriority || checkpointPriority) {
+            if (compactionPriority || checkpointPriority || completionPriority) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
             } else {
               criticalContinuationQueue.push(queuedCriticalContinuation);
@@ -2330,7 +2361,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               const waitedMs =
                 Date.now() - queuedCriticalContinuation.enqueuedAtMs;
               const remainingMs =
-                maxCriticalContinuationQueueWaitMs > 0
+                maxCriticalContinuationQueueWaitMs > 0 && !nonExpiring
                   ? Math.max(1, maxCriticalContinuationQueueWaitMs - waitedMs)
                   : Number.POSITIVE_INFINITY;
               const nextLogMs =
@@ -2349,6 +2380,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   Date.now() - queuedCriticalContinuation.enqueuedAtMs;
                 if (
                   maxCriticalContinuationQueueWaitMs > 0 &&
+                  !nonExpiring &&
                   waitedSoFarMs >= maxCriticalContinuationQueueWaitMs
                 ) {
                   queuedCriticalContinuation.expired = true;

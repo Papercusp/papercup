@@ -38,6 +38,7 @@ const plans: ReviewReportGroup[] = [
           "Plan item linked by coverage · completion evidence verified",
         ],
         confidence: "provable",
+        accounting: "ready",
         detail: (
           <span>Open the plan to inspect the canonical completion record.</span>
         ),
@@ -50,6 +51,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "wip", to: "done" },
         evidence: ["WI-40233 shipped in release 2026-08-19"],
         confidence: "provable",
+        accounting: "ready",
       },
     ],
   },
@@ -66,6 +68,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "blocked", to: "todo" },
         evidence: ["Blocked on migration 913 · applied Aug 19"],
         confidence: "provable",
+        accounting: "ready",
       },
       {
         id: "p4",
@@ -75,6 +78,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "blocked", to: "todo" },
         evidence: ["WI-37810 resolved 12d ago"],
         confidence: "recommended",
+        accounting: "ready",
       },
     ],
   },
@@ -91,6 +95,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "running", to: "shipped" },
         evidence: ["No open claims · last work 8d ago"],
         confidence: "provable",
+        accounting: "ready",
       },
       {
         id: "p6",
@@ -100,6 +105,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "running", to: "archived" },
         evidence: ["No edits or work in 34d · 2 open items"],
         confidence: "recommended",
+        accounting: "ready",
       },
     ],
   },
@@ -116,6 +122,7 @@ const plans: ReviewReportGroup[] = [
         transition: { from: "stale", to: "rewrite" },
         evidence: ["Current Now names P-001, which is already done"],
         confidence: "recommended",
+        accounting: "manual",
         selectable: false,
         detail: "Open the plan and author replacement State / Next text.",
       },
@@ -139,6 +146,7 @@ const inbox: ReviewReportGroup[] = [
           "Current Inbox item hydrated · reply target is still live",
         ],
         confidence: "recommended",
+        accounting: "manual",
         detail: (
           <span>
             Review the live draft, edit it if needed, then acknowledge or
@@ -153,6 +161,7 @@ const inbox: ReviewReportGroup[] = [
         referenceLabel: "Acknowledge",
         evidence: ["No action needed · resolver checked current build"],
         confidence: "provable",
+        accounting: "handled",
         status: "applied",
       },
     ],
@@ -169,6 +178,7 @@ const inbox: ReviewReportGroup[] = [
         referenceLabel: "Drop",
         evidence: ["Same condition already resolved in the last 7 days"],
         confidence: "provable",
+        accounting: "ready",
       },
       {
         id: "i4",
@@ -177,6 +187,7 @@ const inbox: ReviewReportGroup[] = [
         referenceLabel: "Drop",
         evidence: ["Informational only · no owner decision"],
         confidence: "recommended",
+        accounting: "ready",
       },
     ],
   },
@@ -192,6 +203,7 @@ const inbox: ReviewReportGroup[] = [
         referenceLabel: "Review",
         evidence: ["Signature required · waiting on owner"],
         confidence: "recommended",
+        accounting: "manual",
         selectable: false,
         detail: "Open the discussion to author a response.",
       },
@@ -219,6 +231,7 @@ const performanceGroups: ReviewReportGroup[] = Array.from(
           `No live claim or unresolved dependency blocks recommendation ${ordinal}`,
         ],
         confidence: ordinal % 5 === 0 ? "recommended" : "provable",
+        accounting: "ready",
         detail: `Open recommendation ${ordinal} to inspect its canonical completion record.`,
       } satisfies ReviewReportGroup["rows"][number];
     }),

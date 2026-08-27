@@ -44,6 +44,11 @@ import "./review-report.css";
 
 export type ReviewRowConfidence = "provable" | "recommended";
 export type ReviewRowStatus = "pending" | "applied" | "dismissed";
+export type ReviewRowAccounting =
+  | "ready"
+  | "handled"
+  | "manual"
+  | "not-applied";
 
 export interface ReviewReportTransition {
   from: string;
@@ -63,6 +68,11 @@ export interface ReviewReportRow {
   /** Evidence lines rendered in the evidence column (already human-readable). */
   evidence: string[];
   confidence: ReviewRowConfidence;
+  /** Exhaustive owner-facing result category. Required instead of inferred:
+   *  selection/status cannot distinguish a drafted answer (Manual) from a
+   *  ready bulk action, or an unresolved skipped row (Not applied) from other
+   *  pending work. */
+  accounting: ReviewRowAccounting;
   /** 'applied' rows render as already-done (auto-applied with evidence
    *  recorded) and are never selectable; default 'pending'. */
   status?: ReviewRowStatus;
@@ -134,22 +144,23 @@ export function partitionReviewRows(
   for (const group of groups) {
     for (const row of group.rows) {
       results += 1;
-      const status = rowStatus(row);
-      switch (status) {
-        case "pending":
-          if (rowSelectable(row)) ready += 1;
-          else manual += 1;
+      switch (row.accounting) {
+        case "ready":
+          ready += 1;
           break;
-        case "applied":
+        case "handled":
           handled += 1;
           break;
-        case "dismissed":
+        case "manual":
+          manual += 1;
+          break;
+        case "not-applied":
           notApplied += 1;
           break;
         default: {
-          const unsupportedStatus: never = status;
+          const unsupportedAccounting: never = row.accounting;
           throw new Error(
-            `Unsupported ReviewReport row status: ${String(unsupportedStatus)}`,
+            `Unsupported ReviewReport accounting category: ${String(unsupportedAccounting)}`,
           );
         }
       }

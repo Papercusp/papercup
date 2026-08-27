@@ -691,6 +691,37 @@ workspace_root = os.path.realpath(
     or os.path.expanduser('~/papercupai-workspace')
 )
 
+
+def _path_is_within(path, parent):
+    """Whether a canonical path is equal to or below another path."""
+    return path == parent or path.startswith(parent + os.sep)
+
+
+def _workspace_repo_root(repo_root):
+    """Find the direct workspace repo containing a nested repo root.
+
+    A submodule has its own `.git` entry, so find_repo_root returns the
+    submodule rather than the enclosing staging checkout. The enclosing
+    direct-child repo still owns worktree policy; unrelated repos outside the
+    workspace (and arbitrary nested repos below them) remain out of scope.
+    """
+    candidate = os.path.realpath(repo_root)
+    if (candidate == workspace_root
+            or not _path_is_within(candidate, workspace_root)):
+        return None
+    while os.path.dirname(candidate) != workspace_root:
+        parent = os.path.dirname(candidate)
+        if parent == candidate or not _path_is_within(parent, workspace_root):
+            return None
+        candidate = parent
+    return candidate if _valid_git_entry(candidate) else None
+
+
+def _is_isolation_worktree(repo_root, canonical_tree):
+    """Migration/synthesis isolation worktrees stay outside automatic locks."""
+    marker = os.path.join(canonical_tree, '.papercusp', 'worktrees')
+    return _path_is_within(os.path.realpath(repo_root), marker)
+
 # ── Resolve to repo-relative POSIX, refuse symlinked paths ─────────────
 repo_relative = []
 repo_domains = set()
@@ -729,12 +760,6 @@ for p in raw_paths:
         if _external_key:
             repo_relative.append(_external_key)
         continue  # Outside a repo and outside HOME remains uncoordinated.
-
-    # The hook may call an operator serving a DIFFERENT checkout than the one
-    # being edited (normally :3070's release tree vs the canonical staging
-    # tree). Preserve the physical repo root so locks:acquire keys the same
-    # domain as this edit instead of the operator process's own checkout.
-    repo_domains.add(os.path.realpath(root))
 
     # ── Worktree discipline: only the canonical staging tree is editable ──
     # The shared staging tree (papercusp) is the ONE tree agents edit — its
@@ -791,24 +816,47 @@ for p in raw_paths:
         except Exception:
             return None  # fail-open — never wedge an edit on a parse error
 
+    _canonical_tree = os.path.realpath(
+        os.environ.get('PAPERCUSP_CANONICAL_TREE')
+        or os.path.join(workspace_root, 'papercusp'))
+    _real_root = os.path.realpath(root)
+    _scope_root = None
+    _scope_real = None
     try:
-        _canonical_tree = os.path.realpath(
-            os.environ.get('PAPERCUSP_CANONICAL_TREE')
-            or os.path.join(workspace_root, 'papercusp'))
-        _real_root = os.path.realpath(root)
-        _wt_main = _resolve_worktree_main_root(root)
+        _scope_root = _workspace_repo_root(root)
+        if _scope_root is None:
+            _external_key = _external_home_key(abs_p)
+            if _external_key:
+                repo_relative.append(_external_key)
+            continue  # Outside a workspace worktree remains uncoordinated.
+        _scope_real = os.path.realpath(_scope_root)
+        if _is_isolation_worktree(root, _canonical_tree):
+            continue  # Preserve migration/synthesis isolation semantics.
+
+        # The hook may call an operator serving a DIFFERENT checkout than the
+        # one being edited (normally :3070's release tree vs the canonical
+        # staging tree). Preserve the physical repo root so locks:acquire keys
+        # the same domain as this edit instead of the operator process's own
+        # checkout.
+        repo_domains.add(_real_root)
+
+        # Worktree policy belongs to the enclosing direct-child repo, not a
+        # nested submodule's own `.git` entry. A linked submodule is not a
+        # linked worktree, while a submodule inside a stray linked worktree
+        # must still be refused as part of that enclosing tree.
+        _wt_main = _resolve_worktree_main_root(_scope_root)
         if _wt_main is not None and os.path.realpath(_wt_main) == _canonical_tree:
-            if _real_root != _canonical_tree:
+            if _scope_real != _canonical_tree:
                 deny(
-                    f"worktree guard: refused — '{root}' is a LINKED WORKTREE of "
+                    f"worktree guard: refused — '{_scope_root}' is a LINKED WORKTREE of "
                     f"the canonical staging tree ({_canonical_tree}), registered "
                     f"outside it. Agents edit ONLY the canonical tree itself; work "
                     f"left in any of its linked worktrees is never committed by "
                     f"git-sync (it silently strands). cd into the canonical tree "
                     f"and make this edit there."
                 )
-        elif (os.path.realpath(os.path.dirname(root)) == workspace_root
-                and _real_root != _canonical_tree):
+        elif (_scope_real != _canonical_tree
+                and os.path.realpath(os.path.dirname(_scope_root)) == workspace_root):
             # WI-5031: a sibling is only a stranding hazard when it is a
             # checkout of the SAME project as the canonical tree (papercup-
             # release, papercup-checkpoint, old feature clones) — git-sync
@@ -820,7 +868,7 @@ for p in raw_paths:
             # sibling's origin remote matches the canonical tree's, or when
             # either origin is unreadable (conservative: an unprovable
             # sibling keeps the old refusal).
-            _sib_origin_raw = _repo_origin_url(root)
+            _sib_origin_raw = _repo_origin_url(_scope_root)
             _sib_origin = _norm_origin(_sib_origin_raw)
             _canon_origin = _norm_origin(_repo_origin_url(_canonical_tree))
             # Independent by EITHER proof:
@@ -840,7 +888,7 @@ for p in raw_paths:
                                and _canon_origin is not None
                                and _sib_origin != _canon_origin
                                and not _origin_is_local_path_into_canonical(
-                                   _sib_origin_raw, root, _canonical_tree,
+                                   _sib_origin_raw, _scope_root, _canonical_tree,
                                    _canon_origin))
             if not (_origins_differ or _repo_has_zero_remotes(root) is True):
                 deny(
@@ -859,11 +907,21 @@ for p in raw_paths:
     except Exception:
         pass  # The guard must never wedge an edit on its own error (fail-open).
 
-    if os.path.realpath(os.path.dirname(root)) != workspace_root:
+    if _scope_root is None or _scope_real is None:
         _external_key = _external_home_key(abs_p)
         if _external_key:
             repo_relative.append(_external_key)
-        continue  # A git repo, but not a papercup-workspace worktree.
+        continue  # Outside a workspace worktree remains uncoordinated.
+
+    # A nested repo inside an independent direct-child project remains that
+    # project's concern; only nested repos in the canonical staging tree are
+    # part of this automatic lock domain. Direct-child independent repos keep
+    # their existing normal lock behavior.
+    if _scope_real != _real_root and _scope_real != _canonical_tree:
+        _external_key = _external_home_key(abs_p)
+        if _external_key:
+            repo_relative.append(_external_key)
+        continue
 
     rel = os.path.relpath(abs_p, root)
     if rel.startswith('..'):

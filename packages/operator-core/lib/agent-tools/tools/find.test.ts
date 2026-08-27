@@ -19,6 +19,7 @@ import plansSearch from '../plans/search';
 import crossHarnessPlansSearch from '../cross_harness/plans_search';
 import eventsAwait from '../events/await';
 import complete from '../work_items/complete';
+import coordSend from '../coordination/tools/send';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -463,6 +464,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
   });
 
   it('EI-21579794371308546: live coord:send discovery identifies premises as string refs', () => {
+    expect(coordSend.name).toBe('coord:send');
     const { schemaByTool } = buildCorpus();
     const compact = compactSchemaForResult(schemaByTool.get('coord:send'));
 

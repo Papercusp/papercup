@@ -130,6 +130,7 @@ import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-bri
 import { getLongCallsInFlight } from '../../in-flight-calls';
 import { readDependencyBottlenecks, type DependencyBottleneckResult } from '../../dependency-traversal';
 import { renderDependencyBottleneckMermaid } from '../../dependency-mermaid';
+import { mapWithConcurrency } from '../../gym/concurrency';
 import {
   computeLeaderBlockerStallView,
   DEFAULT_LEADER_BLOCKER_STALL_THRESHOLD_HOURS,
@@ -143,6 +144,28 @@ import {
 // trimming.
 const LEADER_BRIEF_MEMBER_DETAIL_BUDGET = 8_000;
 const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
+
+/**
+ * EI-21577690778811728: the leader brief has several independent, read-only
+ * decorations and diagnostics after the roster/liveness barriers. Running all
+ * of them serially adds their database latency and routinely crosses the MCP
+ * 30-second transport deadline; running them unbounded would replace latency
+ * with a connection/query burst during exactly the recovery window this tool
+ * serves. Keep the fan-out deterministic and bounded.
+ */
+export const LEADER_BRIEF_READ_CONCURRENCY = 4;
+
+type LeaderBriefReadResult<T> = T extends () => Promise<infer R> ? R : never;
+
+/** Run independent leader-brief reads with stable result order and bounded width. */
+export async function runLeaderBriefReads<T extends readonly (() => Promise<unknown>)[]>(
+  reads: T,
+  concurrency = LEADER_BRIEF_READ_CONCURRENCY,
+): Promise<{ [K in keyof T]: LeaderBriefReadResult<T[K]> }> {
+  return (await mapWithConcurrency(reads, concurrency, (read) => read())) as {
+    [K in keyof T]: LeaderBriefReadResult<T[K]>;
+  };
+}
 
 /**
  * EI-21548894457555139: how long a call must have been in flight before it is worth

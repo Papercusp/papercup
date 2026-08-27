@@ -19,6 +19,7 @@ import { KIND_LABEL } from "@/app/admin/plans/PlanOtherList";
 import ReviewReportShell, {
   type ReviewReportGroup,
   type ReviewReportRow,
+  type ReviewRowAccounting,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
 import { PERF_INTERACTIONS } from "../perf/perf-marks";
@@ -140,6 +141,18 @@ function reviewStatus(
   return "pending";
 }
 
+function reviewAccounting(
+  runItem: BulkRunItem,
+  status: ReviewRowStatus,
+  hasAction: boolean,
+): ReviewRowAccounting {
+  if (status === "applied") return "handled";
+  if (status === "dismissed") return "not-applied";
+  if (runItem.outcome !== "recommended") return "not-applied";
+  if (runItem.actionId === "answer" || !hasAction) return "manual";
+  return "ready";
+}
+
 function evidenceLines(runItem: BulkRunItem): string[] {
   const lines: string[] = [];
   if (runItem.rationale) lines.push(runItem.rationale);
@@ -217,6 +230,7 @@ export function buildInboxBulkReviewGroups(
       evidence: evidenceLines(runItem),
       confidence:
         runItem.outcome === "auto_resolved" ? "provable" : "recommended",
+      accounting: reviewAccounting(runItem, status, hasAction && Boolean(item)),
       status,
       selectable:
         status === "pending" &&

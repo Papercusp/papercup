@@ -47,6 +47,7 @@ function groupsFixture(): ReviewReportGroup[] {
             "plan item linked by coverage",
           ],
           confidence: "provable",
+          accounting: "ready",
           detail: (
             <button type="button" data-testid="consumer-detail-f1">
               Open plan
@@ -58,6 +59,7 @@ function groupsFixture(): ReviewReportGroup[] {
           title: "my-plan#P-002 → done",
           evidence: ["WI-101 done; NO completion record"],
           confidence: "recommended",
+          accounting: "ready",
         },
       ],
     },
@@ -70,6 +72,7 @@ function groupsFixture(): ReviewReportGroup[] {
           title: "my-plan#P-003 claim released",
           evidence: ["lease lapsed 42min ago; holder dead"],
           confidence: "provable",
+          accounting: "handled",
           status: "applied",
         },
         {
@@ -77,6 +80,7 @@ function groupsFixture(): ReviewReportGroup[] {
           title: "other-plan#P-004 claim released",
           evidence: ["lease lapsed 12min ago; holder dead"],
           confidence: "provable",
+          accounting: "ready",
         },
       ],
     },
@@ -216,12 +220,14 @@ describe("rendering", () => {
             title: "Ready by default",
             evidence: [],
             confidence: "recommended",
+            accounting: "ready",
           },
           {
             id: "ready-explicit",
             title: "Ready explicitly",
             evidence: [],
             confidence: "recommended",
+            accounting: "ready",
             status: "pending",
             selectable: true,
           },
@@ -230,6 +236,7 @@ describe("rendering", () => {
             title: "Handled",
             evidence: [],
             confidence: "provable",
+            accounting: "handled",
             status: "applied",
           },
           {
@@ -237,6 +244,7 @@ describe("rendering", () => {
             title: "Manual",
             evidence: [],
             confidence: "recommended",
+            accounting: "manual",
             status: "pending",
             selectable: false,
           },
@@ -245,6 +253,7 @@ describe("rendering", () => {
             title: "Not applied",
             evidence: [],
             confidence: "recommended",
+            accounting: "not-applied",
             status: "dismissed",
           },
         ],
@@ -359,6 +368,7 @@ describe("rendering", () => {
       title: `Stress row ${index}`,
       evidence: [`Evidence ${index}`],
       confidence: "provable",
+      accounting: "ready",
       detail: <span>Detail {index}</span>,
     }));
     Object.defineProperty(rows[239], "title", {
@@ -436,6 +446,7 @@ describe("rendering", () => {
               title: "rewrite Now",
               evidence: ["current Now is stale"],
               confidence: "recommended",
+              accounting: "manual",
               selectable: false,
             },
           ],
@@ -464,6 +475,7 @@ describe("rendering", () => {
               title: "Retry this change",
               evidence: ["write attempted"],
               confidence: "recommended",
+              accounting: "ready",
               detail: "Keep these decision controls available.",
               error: "The write was rejected; review the row and retry.",
             },
@@ -577,7 +589,11 @@ describe("selection + apply", () => {
     const pending = groupsFixture();
     const applied = pending.map((group) => ({
       ...group,
-      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+      rows: group.rows.map((row) => ({
+        ...row,
+        status: "applied" as const,
+        accounting: "handled" as const,
+      })),
     }));
     const onApply = vi.fn();
     const onDismiss = vi.fn();
@@ -612,7 +628,11 @@ describe("selection + apply", () => {
     const pending = groupsFixture();
     const applied = pending.map((group) => ({
       ...group,
-      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+      rows: group.rows.map((row) => ({
+        ...row,
+        status: "applied" as const,
+        accounting: "handled" as const,
+      })),
     }));
     const props = {
       title: "Passively refreshed report",
@@ -712,6 +732,7 @@ describe("tri-state group checkbox", () => {
               title: "done already",
               evidence: [],
               confidence: "provable",
+              accounting: "handled",
               status: "applied",
             },
           ],
@@ -725,7 +746,11 @@ describe("tri-state group checkbox", () => {
     const pending = groupsFixture();
     const applied = pending.map((group) => ({
       ...group,
-      rows: group.rows.map((row) => ({ ...row, status: "applied" as const })),
+      rows: group.rows.map((row) => ({
+        ...row,
+        status: "applied" as const,
+        accounting: "handled" as const,
+      })),
     }));
     const props = {
       title: "Live plan cleanup report",
