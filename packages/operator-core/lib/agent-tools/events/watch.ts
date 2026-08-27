@@ -43,7 +43,12 @@ import { resolvePotHomeSlug } from '../../pot/wake';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
 import { softText, clampText, LIMITS } from '../limits';
-import { producerHealthInputSchema, resolveProducerHealthCertificate } from './producer-health';
+import {
+  producerHealthInputSchema,
+  progressLeaseInputSchema,
+  resolveProducerHealthCertificate,
+  resolveProgressLeaseCertificate,
+} from './producer-health';
 import {
   registerInterestWatch,
   startInterestWatchSweeper,
@@ -152,6 +157,7 @@ export default defineTool({
         "EI-8998: a predicate tested against the emitted event's PAYLOAD (not just its key/pattern), e.g. { queue_depth: { lt: 5 } } — kills the polling-vigil pattern (\"wake me when X crosses a threshold\") without a bespoke exact key per condition. Same MatchMap/all/any/not vocabulary as an ECA rule's `when`. A filter that never matches the emitter's actual payload shape silently never fires — check the emitting source's payload shape first.",
       ),
     producer_health: producerHealthInputSchema.optional(),
+    progress_lease: progressLeaseInputSchema.optional(),
     plan_run_id: z
       .number()
       .int()
@@ -195,8 +201,17 @@ export default defineTool({
     if (args.producer_health && (!wake || !once || args.predicate)) {
       throw new Error('watch:create — producer_health requires a one-shot wake:true event watch (not inject, standing, or predicate)');
     }
+    if (args.progress_lease && (!wake || !once || args.predicate)) {
+      throw new Error('watch:create — progress_lease requires a one-shot wake:true event watch (not inject, standing, or predicate)');
+    }
+    if (args.producer_health && args.progress_lease) {
+      throw new Error('watch:create — pass producer_health or progress_lease, not both');
+    }
     if (args.producer_health && args.on_timeout === 'expire') {
       throw new Error('watch:create — producer_health requires on_timeout:"wake" so a stalled/absent diagnosis is actionable');
+    }
+    if (args.progress_lease && args.on_timeout === 'expire') {
+      throw new Error('watch:create — progress_lease requires on_timeout:"wake" so stale evidence and remedies remain actionable');
     }
 
     const isInterest = args.targetKind === 'interest';
@@ -556,16 +571,33 @@ export default defineTool({
       };
     }
 
+    const workspaceId = ctx.workspaceId ?? activeWorkspaceId();
+    const harnessSlug = resolvePotHomeSlug(undefined, ctx.harnessSlug);
     const producerHealthCertificate = args.producer_health
       ? await resolveProducerHealthCertificate({
           producerHealth: args.producer_health,
           subscriberId: identity.ownerId,
           timeoutSec: args.timeout_sec,
         })
-      : null;
+      : args.progress_lease
+        ? await resolveProgressLeaseCertificate({
+            progressLease: args.progress_lease,
+            subscriberId: identity.ownerId,
+            workspaceId,
+            harnessSlug,
+            role: ctx.role ?? 'su',
+            timeoutSec: args.timeout_sec,
+          })
+        : null;
     const effectiveTimeoutSec =
       args.timeout_sec ??
-      (args.producer_health ? args.producer_health.expected_cadence_sec : once ? DEFAULT_TIMEOUT_SEC : null);
+      (args.producer_health
+        ? args.producer_health.expected_cadence_sec
+        : args.progress_lease
+          ? args.progress_lease.expected_cadence_sec
+          : once
+            ? DEFAULT_TIMEOUT_SEC
+            : null);
     const row = await registerAwait({
       subscriberId: identity.ownerId,
       eventKey: args.pattern,

@@ -38,6 +38,14 @@ vi.mock('./producer-health', async (importOriginal) => ({
     verificationDeadlineMs: 120_001,
     details: { pipeline: 'papercusp' },
   })),
+  resolveProgressLeaseCertificate: vi.fn(async () => ({
+    version: 1,
+    producer: { kind: 'delegated-progress', id: 'lease-1' },
+    owner: { ownerId: 'su-worker', workItemId: 'WI-1' },
+    issuedAtMs: 1, lastProgressAtMs: 1, lastFireAtMs: null,
+    expectedCadenceMs: 60_000, verificationDeadlineMs: 60_001,
+    progressLease: { leaseId: 'lease-1' },
+  })),
 }));
 // P-008: the predicate engine is its own tested module (predicate-watch.test.ts /
 // .integration.test.ts) — here only the tool's ROUTING into it is under test.
@@ -61,7 +69,7 @@ import { deliverToSpecificAwaits } from '../../events/await/engine';
 import { registerPredicateWatch, evalPredicateWatch, findMatchingActivePredicateWatch } from '../../events/await/predicate-watch';
 import { subscribeTopic } from '../coordination/topics';
 import { subscribeEventKey } from '../coordination/event-subscriptions';
-import { resolveProducerHealthCertificate } from './producer-health';
+import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof watch.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -134,6 +142,17 @@ describe('watch routing', () => {
     await expect(call({ pattern: 'k', wake: true, predicate: { tool: 'x', path: 'y', op: 'eq' }, producer_health })).rejects.toThrow(/one-shot wake:true/);
     await expect(call({ pattern: 'k', wake: true, on_timeout: 'expire', producer_health })).rejects.toThrow(/requires on_timeout/);
     expect(resolveProducerHealthCertificate).not.toHaveBeenCalled();
+  });
+
+  it('routes a delegated progress lease through the existing one-shot watch row', async () => {
+    const progressLease = {
+      source_kind: 'claim-transition', tool: 'work_items:get', args: { id: 'WI-1' }, path: 'results.0.workItem.state',
+      units: 'state', expected_cadence_sec: 60, owner_id: 'su-worker',
+      remedy: { kind: 'create-unblock-item', title: 'Unblock WI-1', harness: 'papercusp' },
+    };
+    await call({ pattern: 'work-item:done:WI-1', wake: true, progress_lease: progressLease });
+    expect(resolveProgressLeaseCertificate).toHaveBeenCalledWith(expect.objectContaining({ progressLease, subscriberId: 'su-watcher' }));
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({ timeoutSec: 60 });
   });
 });
 

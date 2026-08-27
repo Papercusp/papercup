@@ -68,6 +68,14 @@ vi.mock('./producer-health', async (importOriginal) => ({
     verificationDeadlineMs: 90_001,
     details: { pipeline: 'papercusp' },
   })),
+  resolveProgressLeaseCertificate: vi.fn(async () => ({
+    version: 1,
+    producer: { kind: 'delegated-progress', id: 'lease-1' },
+    owner: { ownerId: 'su-worker', workItemId: 'WI-1' },
+    issuedAtMs: 1, lastProgressAtMs: 1, lastFireAtMs: null,
+    expectedCadenceMs: 60_000, verificationDeadlineMs: 60_001,
+    progressLease: { leaseId: 'lease-1' },
+  })),
 }));
 vi.mock('./status', () => ({
   // Keep the await wrapper hermetic; ownership behavior is supplied by the
@@ -126,7 +134,7 @@ import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
 import { mockResolvedTyped } from '../../testing/typed-mock';
-import { resolveProducerHealthCertificate } from './producer-health';
+import { resolveProducerHealthCertificate, resolveProgressLeaseCertificate } from './producer-health';
 import { resolveAnnouncementOwnership } from './status';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
@@ -222,6 +230,22 @@ describe('events:await wrapper defaults', () => {
     await expect(call({ event: 'k', producer_health, on_timeout: 'expire' })).rejects.toThrow(/requires on_timeout/);
     await expect(call({ spec: { any: [{ event: 'a' }] }, producer_health })).rejects.toThrow(/not a composed spec/);
     expect(resolveProducerHealthCertificate).not.toHaveBeenCalled();
+  });
+
+  it('registers a delegated progress lease with its cadence and authoritative certificate', async () => {
+    const progressLease = {
+      source_kind: 'checkpoint-revision', tool: 'work_items:get', args: { id: 'WI-1' },
+      path: 'results.0.checkpoint.revision', units: 'revision', expected_cadence_sec: 60,
+      owner_id: 'su-worker', remedy: { kind: 'leader-claim', workItemId: 'WI-1' },
+    };
+    await call({ event: 'work-item:done:WI-1', progress_lease: progressLease });
+    expect(resolveProgressLeaseCertificate).toHaveBeenCalledWith(expect.objectContaining({
+      progressLease, subscriberId: 'su-awaiter', workspaceId: 'ws-x', role: 'su',
+    }));
+    expect(vi.mocked(registerAwait).mock.calls[0][0]).toMatchObject({
+      timeoutSec: 60,
+      producerHealthCertificate: expect.objectContaining({ producer: { kind: 'delegated-progress', id: 'lease-1' } }),
+    });
   });
 
   it('response carries await_id / event / expires_ts / on_timeout / wake_handle', async () => {

@@ -1060,6 +1060,7 @@ export interface VerifiedWaitTakeoverAlert {
   lastFireAtMs: number | null;
   evidence?: Record<string, unknown>;
   remedy: string;
+  progressLease?: ProducerHealthCertificate['progressLease'];
 }
 
 export interface VerifiedWaitTakeoverReadDeps {
@@ -1945,11 +1946,11 @@ export async function settleVerifiedAwaitTimeout(input: {
   id: number;
   result: VerifiedWaitTimeoutResult;
   nextCertificate?: ProducerHealthCertificate;
+  finalCertificate?: ProducerHealthCertificate;
 }): Promise<AwaitRow | null> {
   const { sql } = getOrgPg();
   const ws = eventsWs();
-  if (input.result.classification === 'progressing') {
-    if (!input.nextCertificate) throw new Error('progressing verified wait requires nextCertificate');
+  if (input.nextCertificate) {
     await sql`
       UPDATE harness_shared.event_awaits
          SET producer_health = ${JSON.stringify(input.nextCertificate)}::text::jsonb,
@@ -1965,6 +1966,7 @@ export async function settleVerifiedAwaitTimeout(input: {
     UPDATE harness_shared.event_awaits
        SET fired_at = now(), fired_reason = 'verified-timeout',
            timeout_verification = ${JSON.stringify(input.result)}::text::jsonb,
+           producer_health = COALESCE(${input.finalCertificate ? JSON.stringify(input.finalCertificate) : null}::text::jsonb, producer_health),
            verification_claimed_at = NULL
      WHERE workspace_id = ${ws} AND id = ${input.id}
        AND fired_at IS NULL AND cancelled_at IS NULL

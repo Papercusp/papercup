@@ -80,6 +80,12 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { classifyVerifiedWaitTimeout } from './verified-wait';
 import { observeCheckpointProducer } from './checkpoint-verified-wait';
+import {
+  advanceProgressLeaseCertificate,
+  executeProgressLeaseRemedy,
+  observeProgressLease,
+  wakeProgressLeaseOwner,
+} from './progress-lease';
 import { appendFleetEventActivity } from '../../fleet-event-activity';
 
 function log(msg: string): void {
@@ -1270,6 +1276,27 @@ export async function sweepOnce(workspaceId?: string): Promise<void> {
     const certificate = awaited.producerHealthCertificate;
     if (!certificate) continue;
     try {
+      if (certificate.progressLease) {
+        const result = await observeProgressLease(certificate);
+        const nextMissCount =
+          result.classification === 'progressing' ? 0 : certificate.progressLease.missCount + 1;
+        if (result.classification === 'progressing') {
+          const nextCertificate = advanceProgressLeaseCertificate(certificate, result);
+          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+          continue;
+        }
+        if (nextMissCount < certificate.progressLease.remedyAfterMisses) {
+          const wake = nextMissCount === 1 ? await wakeProgressLeaseOwner(certificate, result) : undefined;
+          const nextCertificate = advanceProgressLeaseCertificate(certificate, result, { wake });
+          await settleVerifiedAwaitTimeout({ id: awaited.id, result, nextCertificate });
+          continue;
+        }
+        const remedy = await executeProgressLeaseRemedy(certificate);
+        const finalCertificate = advanceProgressLeaseCertificate(certificate, result, { remedy });
+        const fired = await settleVerifiedAwaitTimeout({ id: awaited.id, result, finalCertificate });
+        if (fired) verifiedWakes.push(fired);
+        continue;
+      }
       const observation =
         certificate.producer.kind === 'green-checkpoint'
           ? await observeCheckpointProducer(certificate)

@@ -2,6 +2,52 @@ import { z } from 'zod';
 import { gitPipelineSnapshot } from '../../git-pipeline-stats';
 import { checkpointProducerCertificate } from '../../events/await/checkpoint-verified-wait';
 import type { ProducerHealthCertificate } from '../../events/await/verified-wait';
+import { createProgressLeaseCertificate, type ProgressLeaseRegistration } from '../../events/await/progress-lease';
+
+const progressLeaseRemedySchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('spec-widen'), instructions: z.string().min(1).max(2000) }),
+  z.object({ kind: z.literal('outside-lane-placement'), instructions: z.string().min(1).max(2000) }),
+  z.object({
+    kind: z.literal('leader-claim'),
+    workItemId: z.string().min(1).max(200).nullable().optional(),
+    harness: z.string().min(1).max(120).nullable().optional(),
+  }),
+  z.object({
+    kind: z.literal('create-unblock-item'),
+    title: z.string().min(1).max(1000),
+    summary: z.string().min(1).max(8000).nullable().optional(),
+    harness: z.string().min(1).max(120),
+  }),
+]);
+
+export const progressLeaseInputSchema = z.object({
+  source_kind: z.enum(['state-cell', 'tool-call-delta', 'checkpoint-revision', 'managed-task-advance', 'claim-transition']),
+  tool: z.string().min(1).max(200),
+  args: z.record(z.string(), z.unknown()).optional(),
+  path: z.string().min(1).max(300),
+  op: z.enum(['changed', 'increased']).optional(),
+  units: z.string().min(1).max(120),
+  writer: z.string().min(1).max(200).optional(),
+  expected_cadence_sec: z.number().int().positive().max(7 * 24 * 60 * 60),
+  owner_id: z.string().min(1).max(200),
+  work_item_id: z.string().min(1).max(200).optional(),
+  remedy_after_misses: z.number().int().min(2).max(10).optional(),
+  remedy: progressLeaseRemedySchema,
+});
+
+export type ProgressLeaseInput = z.infer<typeof progressLeaseInputSchema>;
+
+export async function resolveProgressLeaseCertificate(input: {
+  progressLease: ProgressLeaseInput;
+  subscriberId: string;
+  workspaceId: string;
+  harnessSlug: string | null;
+  role: string;
+  timeoutSec?: number;
+  nowMs?: number;
+}): Promise<ProducerHealthCertificate> {
+  return createProgressLeaseCertificate(input.progressLease as ProgressLeaseRegistration, input);
+}
 
 export const producerHealthInputSchema = z
   .object({

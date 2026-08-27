@@ -21,6 +21,76 @@ export interface ProducerOwnerReference {
   workItemId: string | null;
 }
 
+export type ProgressLeaseSourceKind =
+  | 'state-cell'
+  | 'tool-call-delta'
+  | 'checkpoint-revision'
+  | 'managed-task-advance'
+  | 'claim-transition';
+
+export type ProgressLeaseRemedy =
+  | { kind: 'spec-widen'; instructions: string }
+  | { kind: 'outside-lane-placement'; instructions: string }
+  | { kind: 'leader-claim'; workItemId?: string | null; harness?: string | null }
+  | {
+      kind: 'create-unblock-item';
+      title: string;
+      summary?: string | null;
+      harness: string;
+    };
+
+export interface ProgressLeaseEvidence {
+  writer: string;
+  units: string;
+  observedAtMs: number;
+  valuePreview: unknown;
+  valueFingerprint: string;
+  reference: { tool: string; args: Record<string, unknown>; path: string };
+  uncertainty: string | null;
+}
+
+export interface ProgressLeaseRemedyOutcome {
+  kind: ProgressLeaseRemedy['kind'];
+  disposition: 'executed' | 'surfaced' | 'failed';
+  summary: string;
+  workItemId?: string | null;
+}
+
+export interface ProgressLeaseTransition {
+  state: 'armed' | 'progress' | 'miss' | 'owner-wake' | 'remedy';
+  atMs: number;
+  writer: string;
+  units: string;
+  missCount: number;
+  evidence: ProgressLeaseEvidence;
+  wake?: { attempted: boolean; queued: number; staged: number };
+  remedy?: ProgressLeaseRemedyOutcome;
+}
+
+export interface ProgressLeaseState {
+  leaseId: string;
+  sourceKind: ProgressLeaseSourceKind;
+  resolver: {
+    tool: string;
+    args: Record<string, unknown>;
+    path: string;
+    op: 'changed' | 'increased';
+    workspaceId: string;
+    harnessSlug: string | null;
+    role: string;
+    onBehalfOf: string;
+  };
+  subscriberId: string;
+  writer: string;
+  units: string;
+  baselineFingerprint: string;
+  latestEvidence: ProgressLeaseEvidence;
+  missCount: number;
+  remedyAfterMisses: number;
+  remedy: ProgressLeaseRemedy;
+  history: ProgressLeaseTransition[];
+}
+
 export interface ProducerHealthCertificate {
   version: typeof PRODUCER_HEALTH_CERTIFICATE_VERSION;
   producer: ProducerIdentity;
@@ -37,6 +107,8 @@ export interface ProducerHealthCertificate {
   verificationDeadlineMs: number;
   /** Producer-family inputs needed by its authoritative verifier. */
   details?: Record<string, unknown>;
+  /** Delegated-wait progress contract. Absent on legacy producer-health waits. */
+  progressLease?: ProgressLeaseState;
 }
 
 /**
