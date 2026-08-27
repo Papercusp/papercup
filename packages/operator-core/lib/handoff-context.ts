@@ -164,7 +164,7 @@ export async function getSpawnHandoffContext(opts: {
   try {
     const blockers = (await defaultBlockingStore.blockersFor(harness)).get(featureId) ?? [];
     const raw: RawHandoffEntry[] = [];
-    for (const predId of blockers.slice(0, MAX_PREDECESSORS)) {
+    for (const { id: predId } of blockers.slice(0, MAX_PREDECESSORS)) {
       const wi = await getWorkItem(predId, harness).catch(() => null);
       if (!wi) continue;
       const summary = (wi.summary ?? '').trim();

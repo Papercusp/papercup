@@ -32,7 +32,7 @@ export interface ReadinessNode {
   id: string;
   status: string;
   /** Resolved canonical blocker ids (coord_links rel='blocks'). Empty when unblocked. */
-  blockedBy: readonly string[];
+  blockedBy: readonly (string | { id: string; satisfaction: 'settled' | 'success' })[];
   /** Active external blockers (events, gates, runtime, human dependencies). Empty when none. */
   externalBlockers?: readonly string[];
 }
@@ -47,8 +47,10 @@ export function blockerSatisfied(
   blockerId: string,
   present: ReadonlySet<string>,
   terminal: ReadonlySet<string>,
+  successful: ReadonlySet<string> = terminal,
+  satisfaction: 'settled' | 'success' = 'settled',
 ): boolean {
-  return !present.has(blockerId) || terminal.has(blockerId);
+  return !present.has(blockerId) || (satisfaction === 'success' ? successful.has(blockerId) : terminal.has(blockerId));
 }
 
 /**
@@ -70,16 +72,21 @@ export function selectReady<T extends ReadinessNode>(
   owned: ReadonlySet<string>,
   readiness: ReadonlySet<string>,
   terminalStatuses: ReadonlySet<string> = TERMINAL_STATUSES,
+  successfulStatuses: ReadonlySet<string> = terminalStatuses,
 ): { ready: T[]; blocked: T[] } {
   const present = new Set(nodes.map((n) => n.id));
   const terminal = new Set(nodes.filter((n) => terminalStatuses.has(n.status)).map((n) => n.id));
+  const successful = new Set(nodes.filter((n) => successfulStatuses.has(n.status)).map((n) => n.id));
   const ready: T[] = [];
   const blocked: T[] = [];
   for (const n of nodes) {
     if (!readiness.has(n.status) || owned.has(n.id)) continue;
     // Item is blocked if it has active external blockers OR any unsatisfied work-item blockers
     const hasExternalBlockers = (n.externalBlockers?.length ?? 0) > 0;
-    const allWorkItemBlockersSatisfied = n.blockedBy.every((b) => blockerSatisfied(b, present, terminal));
+    const allWorkItemBlockersSatisfied = n.blockedBy.every((b) => {
+      const requirement = typeof b === 'string' ? { id: b, satisfaction: 'settled' as const } : b;
+      return blockerSatisfied(requirement.id, present, terminal, successful, requirement.satisfaction);
+    });
     if (hasExternalBlockers || !allWorkItemBlockersSatisfied) blocked.push(n);
     else ready.push(n);
   }

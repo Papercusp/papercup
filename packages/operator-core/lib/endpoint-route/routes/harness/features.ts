@@ -540,7 +540,11 @@ const importFeatures = defineTool({
         // EI-1 (D-027): existing blocker sets come from the coord_links rel='blocks'
         // edges (the legacy blocked_by column is dropped), keyed blocked → blockers.
         const blockers = await defaultBlockingStore.blockersFor(project.slug);
-        existing = rows.map((r) => ({ id: r.feature_id, title: r.title, blocked_by: blockers.get(r.feature_id) ?? [] }));
+        existing = rows.map((r) => ({
+          id: r.feature_id,
+          title: r.title,
+          blocked_by: (blockers.get(r.feature_id) ?? []).map((blocker) => blocker.id),
+        }));
       } catch (e) {
         // Deps are correctness-critical — don't silently skip validation.
         return Response.json(
