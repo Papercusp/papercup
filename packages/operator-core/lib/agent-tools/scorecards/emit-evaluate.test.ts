@@ -243,7 +243,7 @@ describe('emitScorecard', () => {
   it.each([
     ['a non-plan subject kind', { kind: 'work-item', ref: 'WI-101' }],
     ['a subject ref that differs from the evaluator selection', { kind: 'plan', ref: 'reconnect-plan#SPEC-003-02@1' }],
-  ])('refuses spec-test-adequacy with %s', async (_label, subject) => {
+  ] as const)('refuses spec-test-adequacy with %s', async (_label, subject) => {
     getRubricM.mockResolvedValue({ ...RUBRIC, rubricId: 'spec-test-adequacy' } as Rubric);
 
     const r = await emitScorecard(
