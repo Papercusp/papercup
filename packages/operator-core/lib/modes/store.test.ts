@@ -57,8 +57,14 @@ function mockSql() {
       const doNothing = text.includes('DO NOTHING');
       if (doNothing && modes.has(k)) return Promise.resolve([]); // PK conflict: no write, no row
       modes.set(k, {
-        workspace_id: ws, owner_id: owner, axis_key: axis, mode,
-        reason, set_by: setBy, owner_directed: Boolean(ownerDirected), set_at: '2026-07-05T00:00:00Z',
+        workspace_id: ws,
+        owner_id: owner,
+        axis_key: axis,
+        mode,
+        reason,
+        set_by: setBy,
+        owner_directed: Boolean(ownerDirected),
+        set_at: '2026-07-05T00:00:00Z',
         subject: subject ?? null,
       });
       return Promise.resolve(doNothing ? [{ mode }] : []); // RETURNING mode
@@ -99,15 +105,7 @@ const PEER = 'su-peer';
 
 describe('mode registry', () => {
   it('covers the seven official modes with correct axes (owner correction: ideate/drain are stackable overlays)', () => {
-    expect(MODES.map((m) => m.id).sort()).toEqual([
-      'auto',
-      'cold-auto',
-      'drain',
-      'goal',
-      'grade',
-      'ideate',
-      'test',
-    ]);
+    expect(MODES.map((m) => m.id).sort()).toEqual(['auto', 'cold-auto', 'drain', 'goal', 'grade', 'ideate', 'test']);
     expect(modeById('auto')?.axis).toBe('autonomy');
     expect(modeById('cold-auto')?.axis).toBe('autonomy');
     expect(modeById('ideate')?.axis).toBe('overlay');
@@ -156,10 +154,21 @@ describe('mode registry', () => {
 
 describe('setMode semantics', () => {
   let m: ReturnType<typeof mockSql>;
-  beforeEach(() => { m = mockSql(); });
+  beforeEach(() => {
+    m = mockSql();
+  });
 
   it('self-set enables a mode and audits it', async () => {
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true, reason: 'owner said auto', setBy: ME, ownerDirected: true, sql: m.sql });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner said auto',
+      setBy: ME,
+      ownerDirected: true,
+      sql: m.sql,
+    });
     expect(res.ok).toBe(true);
     expect(res.switchedFrom).toBeNull();
     const rows = await getModes(WS, ME, m.sql);
@@ -172,7 +181,15 @@ describe('setMode semantics', () => {
 
   it('AUTO-SWITCH: setting cold-auto replaces auto (same autonomy axis) and reports switchedFrom', async () => {
     await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true, reason: 'r1', setBy: ME, sql: m.sql });
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true, reason: 'r2', setBy: ME, sql: m.sql });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'cold-auto',
+      enabled: true,
+      reason: 'r2',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect(res.ok).toBe(true);
     expect(res.switchedFrom).toBe('auto');
     const rows = await getModes(WS, ME, m.sql);
@@ -182,18 +199,51 @@ describe('setMode semantics', () => {
 
   it('overlays stack — including ideate + drain together (owner correction 2026-07-05)', async () => {
     for (const mode of ['auto', 'ideate', 'drain', 'grade']) {
-      await setMode({ workspaceId: WS, ownerId: ME, modeId: mode, enabled: true, reason: 'stack', setBy: ME, sql: m.sql });
+      await setMode({
+        workspaceId: WS,
+        ownerId: ME,
+        modeId: mode,
+        enabled: true,
+        reason: 'stack',
+        setBy: ME,
+        sql: m.sql,
+      });
     }
     const rows = await getModes(WS, ME, m.sql);
     expect(rows.map((r) => r.mode).sort()).toEqual(['auto', 'drain', 'grade', 'ideate']);
   });
 
   it('OWNER-STICKY: a peer cannot override or clear an owner-directed mode', async () => {
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true, reason: 'owner freeze posture', setBy: ME, ownerDirected: true, sql: m.sql });
-    const override = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true, reason: 'peer thinks cold is better', setBy: PEER, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner freeze posture',
+      setBy: ME,
+      ownerDirected: true,
+      sql: m.sql,
+    });
+    const override = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'cold-auto',
+      enabled: true,
+      reason: 'peer thinks cold is better',
+      setBy: PEER,
+      sql: m.sql,
+    });
     expect(override.ok).toBe(false);
     expect(override.stickyConflict).toBe(true);
-    const clear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'peer clears', setBy: PEER, sql: m.sql });
+    const clear = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: false,
+      reason: 'peer clears',
+      setBy: PEER,
+      sql: m.sql,
+    });
     expect(clear.ok).toBe(false);
     expect(clear.stickyConflict).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
@@ -202,8 +252,24 @@ describe('setMode semantics', () => {
   });
 
   it('a peer CAN set a non-sticky mode, and the write is attributed to the peer', async () => {
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'ideate', enabled: true, reason: 'self', setBy: ME, sql: m.sql });
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'drain', enabled: true, reason: 'backlog is critical', setBy: PEER, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'ideate',
+      enabled: true,
+      reason: 'self',
+      setBy: ME,
+      sql: m.sql,
+    });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'drain',
+      enabled: true,
+      reason: 'backlog is critical',
+      setBy: PEER,
+      sql: m.sql,
+    });
     expect(res.ok).toBe(true);
     expect(res.switchedFrom).toBeNull(); // overlays stack — ideate survives
     const rows = await getModes(WS, ME, m.sql);
@@ -222,34 +288,90 @@ describe('setMode semantics', () => {
   });
 
   it('peers cannot arm ownerDirected for someone else even if they pass it', async () => {
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true, reason: 'x', setBy: PEER, ownerDirected: true, sql: m.sql });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'x',
+      setBy: PEER,
+      ownerDirected: true,
+      sql: m.sql,
+    });
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
     expect(rows[0].ownerDirected).toBe(false);
   });
 
   it('clearing an unset mode is a no-op; re-setting the same mode+reason is a no-op', async () => {
-    const clear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'drain', enabled: false, reason: 'not on', setBy: ME, sql: m.sql });
+    const clear = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'drain',
+      enabled: false,
+      reason: 'not on',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect(clear.ok).toBe(true);
     expect(clear.noop).toBe(true);
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'grade', enabled: true, reason: 'same', setBy: ME, sql: m.sql });
-    const again = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'grade', enabled: true, reason: 'same', setBy: ME, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'grade',
+      enabled: true,
+      reason: 'same',
+      setBy: ME,
+      sql: m.sql,
+    });
+    const again = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'grade',
+      enabled: true,
+      reason: 'same',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect(again.noop).toBe(true);
-    expect(m.changes).toHaveLength(1);
+    // First entry writes GRADE plus its implied AUTO row. Re-entry writes
+    // neither, so the audit population stays at two.
+    expect(m.changes).toHaveLength(2);
   });
 
   it('unknown mode is rejected', async () => {
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'turbo', enabled: true, reason: 'x', setBy: ME, sql: m.sql });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'turbo',
+      enabled: true,
+      reason: 'x',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect(res.ok).toBe(false);
     expect(res.error).toContain('unknown mode');
   });
 
   it('getModesForOwners fans in per owner', async () => {
     await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true, reason: 'a', setBy: ME, sql: m.sql });
-    await setMode({ workspaceId: WS, ownerId: PEER, modeId: 'grade', enabled: true, reason: 'b', setBy: PEER, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: PEER,
+      modeId: 'grade',
+      enabled: true,
+      reason: 'b',
+      setBy: PEER,
+      sql: m.sql,
+    });
     const map = await getModesForOwners(WS, [ME, PEER, 'su-nobody'], m.sql);
     expect(map.get(ME)?.map((r) => r.mode)).toEqual(['auto']);
-    expect(map.get(PEER)?.map((r) => r.mode)).toEqual(['grade']);
+    expect(
+      map
+        .get(PEER)
+        ?.map((r) => r.mode)
+        .sort(),
+    ).toEqual(['auto', 'grade']);
     expect(map.has('su-nobody')).toBe(false);
   });
 });
@@ -257,12 +379,20 @@ describe('setMode semantics', () => {
 describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified owner-authority channel)', () => {
   let m: ReturnType<typeof mockSql>;
   const ADMIN = 'pc-admin-coord-ui';
-  beforeEach(() => { m = mockSql(); });
+  beforeEach(() => {
+    m = mockSql();
+  });
 
   it('self-set: ownerAuthorized is implied — arms sticky without callerIsOwnerAuthority', async () => {
     const res = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
-      reason: 'owner said auto', setBy: ME, ownerDirected: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner said auto',
+      setBy: ME,
+      ownerDirected: true,
+      sql: m.sql,
     });
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
@@ -271,9 +401,15 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
 
   it('admin-UI peer-set with callerIsOwnerAuthority:true CAN arm the sticky flag (the P-003 fix)', async () => {
     const res = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
-      reason: 'owner clicked Autonomy: auto in the chat UI', setBy: ADMIN,
-      ownerDirected: true, callerIsOwnerAuthority: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner clicked Autonomy: auto in the chat UI',
+      setBy: ADMIN,
+      ownerDirected: true,
+      callerIsOwnerAuthority: true,
+      sql: m.sql,
     });
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
@@ -285,8 +421,14 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
 
   it('ordinary peer-set (no callerIsOwnerAuthority) claiming ownerDirected:true is DOWNGRADED — sticky never arms', async () => {
     const res = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
-      reason: 'peer claims owner authority', setBy: PEER, ownerDirected: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'peer claims owner authority',
+      setBy: PEER,
+      ownerDirected: true,
+      sql: m.sql,
     });
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
@@ -296,13 +438,24 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
 
   it('admin-UI peer-set (callerIsOwnerAuthority:true) BYPASSES an existing owner-directed incumbent — an ordinary peer still cannot', async () => {
     await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: true,
-      reason: 'owner froze this posture', setBy: ME, ownerDirected: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: true,
+      reason: 'owner froze this posture',
+      setBy: ME,
+      ownerDirected: true,
+      sql: m.sql,
     });
     // An ordinary peer is still refused (unchanged D-003 behavior).
     const peerAttempt = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true,
-      reason: 'peer thinks cold is better', setBy: PEER, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'cold-auto',
+      enabled: true,
+      reason: 'peer thinks cold is better',
+      setBy: PEER,
+      sql: m.sql,
     });
     expect(peerAttempt.ok).toBe(false);
     expect(peerAttempt.stickyConflict).toBe(true);
@@ -310,9 +463,14 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
     // The admin-UI, acting for the owner, CAN override it — even without
     // re-claiming ownerDirected on this particular call.
     const adminOverride = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true,
-      reason: 'owner switched to cold-auto from the chat UI', setBy: ADMIN,
-      callerIsOwnerAuthority: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'cold-auto',
+      enabled: true,
+      reason: 'owner switched to cold-auto from the chat UI',
+      setBy: ADMIN,
+      callerIsOwnerAuthority: true,
+      sql: m.sql,
     });
     expect(adminOverride.ok).toBe(true);
     expect(adminOverride.stickyConflict).toBeFalsy();
@@ -323,9 +481,14 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
 
   it('admin-UI peer-set without ownerDirected:true does NOT itself arm sticky — callerIsOwnerAuthority only widens WHO can bypass/arm it', async () => {
     const res = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'ideate', enabled: true,
-      reason: 'owner toggled the Overlays checkbox', setBy: ADMIN,
-      callerIsOwnerAuthority: true, sql: m.sql,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'ideate',
+      enabled: true,
+      reason: 'owner toggled the Overlays checkbox',
+      setBy: ADMIN,
+      callerIsOwnerAuthority: true,
+      sql: m.sql,
     });
     expect(res.ok).toBe(true);
     const rows = await getModes(WS, ME, m.sql);
@@ -350,12 +513,21 @@ describe('setMode callerIsOwnerAuthority (P-003: admin-UI peer-set is a verified
  */
 describe('implication cascade (D-003)', () => {
   let m: ReturnType<typeof mockSql>;
-  beforeEach(() => { m = mockSql(); });
+  beforeEach(() => {
+    m = mockSql();
+  });
 
   const enterGoal = (over: Partial<Parameters<typeof setMode>[0]> = {}) =>
     setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: true,
-      reason: 'owns goal g-1', setBy: ME, subject: 'g-1', sql: m.sql, ...over,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'goal',
+      enabled: true,
+      reason: 'owns goal g-1',
+      setBy: ME,
+      subject: 'g-1',
+      sql: m.sql,
+      ...over,
     });
 
   it('GOAL writes the auto AND ideate rows itself, and reports both', async () => {
@@ -366,6 +538,21 @@ describe('implication cascade (D-003)', () => {
       { mode: 'ideate', status: 'set' },
     ]);
     expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'goal', 'ideate']);
+  });
+
+  it('GRADE writes the AUTO row itself, so remediation never starts ask-first', async () => {
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'grade',
+      enabled: true,
+      reason: 'grade and repair target',
+      setBy: ME,
+      sql: m.sql,
+    });
+    expect(res.ok).toBe(true);
+    expect(res.implied).toEqual([{ mode: 'auto', status: 'set' }]);
+    expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'grade']);
   });
 
   it('audits every implied entry — "who put this agent in AUTO" answers "the goal cascade"', async () => {
@@ -383,7 +570,15 @@ describe('implication cascade (D-003)', () => {
    * is precisely why the cascade is a DO NOTHING insert and not a setMode call.
    */
   it('NEVER displaces an occupied axis — cold-auto survives and is reported as holding it', async () => {
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'cold-auto', enabled: true, reason: 'unattended wakes', setBy: ME, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'cold-auto',
+      enabled: true,
+      reason: 'unattended wakes',
+      setBy: ME,
+      sql: m.sql,
+    });
     const res = await enterGoal();
     expect(res.implied).toEqual([
       { mode: 'auto', status: 'axis-held', by: 'cold-auto' },
@@ -397,7 +592,15 @@ describe('implication cascade (D-003)', () => {
   });
 
   it('reports an implied mode the agent was already in as already-on, without a second write', async () => {
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'ideate', enabled: true, reason: 'was already ideating', setBy: ME, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'ideate',
+      enabled: true,
+      reason: 'was already ideating',
+      setBy: ME,
+      sql: m.sql,
+    });
     const before = m.changes.length;
     const res = await enterGoal();
     expect(res.implied).toContainEqual({ mode: 'ideate', status: 'already-on' });
@@ -414,7 +617,15 @@ describe('implication cascade (D-003)', () => {
    */
   it('is IDEMPOTENT and REPAIRS: a no-op re-entry restores a missing implied row', async () => {
     await enterGoal();
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'a peer cleared it', setBy: ME, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: false,
+      reason: 'a peer cleared it',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['goal', 'ideate']);
 
     const again = await enterGoal(); // identical args ⇒ the mode write itself is a noop
@@ -433,7 +644,15 @@ describe('implication cascade (D-003)', () => {
    */
   it('does NOT clear implied modes when the implying mode is turned off', async () => {
     await enterGoal();
-    await setMode({ workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: false, reason: 'goal shipped', setBy: ME, sql: m.sql });
+    await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'goal',
+      enabled: false,
+      reason: 'goal shipped',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect((await getModes(WS, ME, m.sql)).map((r) => r.mode).sort()).toEqual(['auto', 'ideate']);
   });
 
@@ -450,13 +669,29 @@ describe('implication cascade (D-003)', () => {
     expect(rows.find((r) => r.mode === 'goal')!.ownerDirected).toBe(true);
     expect(rows.find((r) => r.mode === 'auto')!.ownerDirected).toBe(false);
     expect(rows.find((r) => r.mode === 'ideate')!.ownerDirected).toBe(false);
-    const peerClear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'peer clears', setBy: PEER, sql: m.sql });
+    const peerClear = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'auto',
+      enabled: false,
+      reason: 'peer clears',
+      setBy: PEER,
+      sql: m.sql,
+    });
     expect(peerClear.ok).toBe(true);
     expect(peerClear.stickyConflict).toBeUndefined();
   });
 
   it('a mode with no implications reports none (no empty `implied` noise)', async () => {
-    const res = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'grade', enabled: true, reason: 'watch the gate', setBy: ME, sql: m.sql });
+    const res = await setMode({
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'test',
+      enabled: true,
+      reason: 'verify a contract',
+      setBy: ME,
+      sql: m.sql,
+    });
     expect(res.implied).toBeUndefined();
   });
 
@@ -473,8 +708,14 @@ describe('implication cascade (D-003)', () => {
       return (m.sql as unknown as (f: unknown, ...v: unknown[]) => unknown)(first, ...vals);
     }) as unknown as Sql;
     const res = await setMode({
-      workspaceId: WS, ownerId: ME, modeId: 'goal', enabled: true,
-      reason: 'owns goal g-1', setBy: ME, subject: 'g-1', sql: failing,
+      workspaceId: WS,
+      ownerId: ME,
+      modeId: 'goal',
+      enabled: true,
+      reason: 'owns goal g-1',
+      setBy: ME,
+      subject: 'g-1',
+      sql: failing,
     });
     expect(res.ok).toBe(true); // the primary landed and is NOT rolled back
     expect(res.implied).toEqual([
@@ -497,7 +738,9 @@ describe('implication cascade (D-003)', () => {
  */
 describe('reconcileImpliedModes (WI-37856) — repairs the stored population, not the write path', () => {
   let m: ReturnType<typeof mockSql>;
-  beforeEach(() => { m = mockSql(); });
+  beforeEach(() => {
+    m = mockSql();
+  });
 
   const axisOf = (id: string) => axisKeyFor(modeById(id)!);
 
@@ -509,10 +752,15 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
    */
   const seedPreCascade = (mode: string, o?: { ownerDirected?: boolean; subject?: string | null }) => {
     m.modes.set(`${WS}|${ME}|${axisOf(mode)}`, {
-      workspace_id: WS, owner_id: ME, axis_key: axisOf(mode), mode,
-      reason: 'written before the implication existed', set_by: ME,
+      workspace_id: WS,
+      owner_id: ME,
+      axis_key: axisOf(mode),
+      mode,
+      reason: 'written before the implication existed',
+      set_by: ME,
       owner_directed: o?.ownerDirected ?? false,
-      set_at: '2026-08-10T07:05:19Z', subject: o?.subject ?? null,
+      set_at: '2026-08-10T07:05:19Z',
+      subject: o?.subject ?? null,
     });
   };
 
@@ -525,7 +773,10 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
     expect(before).toEqual(['goal']);
 
     const out = await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
-    expect(out).toEqual([{ mode: 'auto', status: 'set' }, { mode: 'ideate', status: 'set' }]);
+    expect(out).toEqual([
+      { mode: 'auto', status: 'set' },
+      { mode: 'ideate', status: 'set' },
+    ]);
 
     const after = (await getModes(WS, ME, m.sql)).map((r) => r.mode).sort();
     expect(after).toEqual(['auto', 'goal', 'ideate']);
@@ -558,7 +809,10 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
     const auditsAfterFirst = m.changes.length;
 
     const second = await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
-    expect(second).toEqual([{ mode: 'auto', status: 'already-on' }, { mode: 'ideate', status: 'already-on' }]);
+    expect(second).toEqual([
+      { mode: 'auto', status: 'already-on' },
+      { mode: 'ideate', status: 'already-on' },
+    ]);
     expect(m.changes.length).toBe(auditsAfterFirst); // no second audit row
     expect((await getModes(WS, ME, m.sql)).length).toBe(3);
   });
