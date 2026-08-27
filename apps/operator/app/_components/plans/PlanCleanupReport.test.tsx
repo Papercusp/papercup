@@ -64,6 +64,7 @@ import PlanCleanupReport, {
   applyPlanCleanupFinding,
   buildPlanCleanupReviewGroups,
 } from "./PlanCleanupReport";
+import { partitionReviewRows } from "../review-report/ReviewReportShell";
 import type {
   PlanCleanupFinding,
   PlanCleanupRun,
@@ -108,6 +109,33 @@ function finding(over: Partial<PlanCleanupFinding> = {}): PlanCleanupFinding {
     decidedAt: null,
     ...over,
   };
+}
+
+/** Canonical observed Plan run shape from the P-007 acceptance evidence:
+ * 12 concrete hand edits plus 12 stale-Now findings requiring authored prose. */
+function observedPlanFindings(): PlanCleanupFinding[] {
+  return [
+    ...Array.from({ length: 12 }, (_, index) =>
+      finding({
+        findingId: `ready-${index}`,
+        kind: "flip-to-done",
+        planSlug: `plan-${index}`,
+        itemId: `P-${String(index + 1).padStart(3, "0")}`,
+        target: `plan-${index}#P-${String(index + 1).padStart(3, "0")}`,
+        position: index,
+      }),
+    ),
+    ...Array.from({ length: 12 }, (_, index) =>
+      finding({
+        findingId: `manual-${index}`,
+        kind: "stale-now",
+        planSlug: `plan-${index + 12}`,
+        itemId: null,
+        target: `plan-${index + 12} ## Now`,
+        position: index + 12,
+      }),
+    ),
+  ];
 }
 
 beforeEach(() => {
@@ -172,6 +200,45 @@ describe("buildPlanCleanupReviewGroups", () => {
       selectable: false,
       accounting: "not-applied",
     });
+  });
+
+  it("matches the observed 24-row Plan partition and exposes every manual row", () => {
+    const findings = observedPlanFindings();
+    const groups = buildPlanCleanupReviewGroups(findings);
+
+    expect(groups.flatMap((group) => group.rows)).toHaveLength(24);
+    expect(partitionReviewRows(groups)).toEqual({
+      results: 24,
+      ready: 12,
+      handled: 0,
+      manual: 12,
+      notApplied: 0,
+    });
+
+    render(
+      <PlanCleanupReport
+        run={{ ...run(), totalItems: 24, recommended: 24 }}
+        findings={findings}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("review-report-results-count").textContent).toBe(
+      "24",
+    );
+    expect(screen.getByTestId("review-report-ready-count").textContent).toBe(
+      "12",
+    );
+    expect(screen.getByTestId("review-report-handled-count").textContent).toBe(
+      "0",
+    );
+    expect(screen.getByTestId("review-report-manual-count").textContent).toBe(
+      "12",
+    );
+    expect(
+      screen.getByTestId("review-report-not-applied-count").textContent,
+    ).toBe("0");
+    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(24);
+    expect(screen.getAllByText("Refresh Now")).toHaveLength(1);
   });
 });
 

@@ -135,6 +135,33 @@ describe('probeServiceStart LoadState guard (EI-210532)', () => {
       unitFileState: 'disabled',
     });
   });
+
+  it('preserves Result=start-limit-hit so callers can clear systemd\'s restart latch', async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const info = await probeServiceStart('papercup-staging-api.service', async (command, args) => {
+      calls.push({ command, args });
+      return {
+        stdout:
+          'Id=papercup-staging-api.service\n' +
+          'LoadState=loaded\n' +
+          'ActiveState=failed\n' +
+          'Result=start-limit-hit\n' +
+          'MainPID=0\n' +
+          'NRestarts=6\n',
+      };
+    });
+
+    expect(calls[0]?.args).toEqual(expect.arrayContaining(['-p', 'Result']));
+    expect(info).toMatchObject({
+      ok: true,
+      activeState: 'failed',
+      loadState: 'loaded',
+      known: true,
+      mainPid: 0,
+      nRestarts: 6,
+      result: 'start-limit-hit',
+    });
+  });
 });
 
 /**

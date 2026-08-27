@@ -15,6 +15,7 @@ import {
   beginInteraction,
   getLatestMeasure,
 } from "../perf/perf-marks";
+import { partitionReviewRows } from "../review-report/ReviewReportShell";
 
 const H = vi.hoisted(() => ({
   accept: vi.fn(),
@@ -153,6 +154,60 @@ function highCardinalityRunItems(count = 200): BulkRunItem[] {
   );
 }
 
+/** Canonical observed run shape from the P-007 acceptance evidence:
+ * 13 handled, 6 drafted answers, 3 ready non-answer actions, 136 unresolved. */
+function observedInboxRunItems(): BulkRunItem[] {
+  let position = 0;
+  const next = (over: Partial<BulkRunItem>): BulkRunItem => {
+    const current = position++;
+    const itemId = over.itemId ?? `observed-${current}`;
+    return runItem({
+      itemId,
+      position: current,
+      ref: { kind: "coord-message", msgId: `m-${itemId}` },
+      ...over,
+    });
+  };
+
+  return [
+    ...Array.from({ length: 13 }, (_, index) =>
+      next({
+        itemId: `handled-${index}`,
+        outcome: "auto_resolved",
+        actionId: "ack",
+      }),
+    ),
+    ...Array.from({ length: 6 }, (_, index) =>
+      next({
+        itemId: `draft-answer-${index}`,
+        outcome: "recommended",
+        actionId: "answer",
+        draftAnswer: `Draft reply ${index + 1}`,
+      }),
+    ),
+    ...["drop", "drop", "mark-done"].map((actionId, index) =>
+      next({
+        itemId: `ready-${index}`,
+        outcome: "recommended",
+        actionId,
+      }),
+    ),
+    ...Array.from({ length: 136 }, (_, index) =>
+      next({
+        itemId: `unresolved-${index}`,
+        outcome: "skipped",
+        actionId: null,
+        rationale:
+          index < 72
+            ? "Needs human action from the source surface."
+            : index < 93
+              ? "Owner ratification is available only from the source surface."
+              : "No safe resolver action was available.",
+      }),
+    ),
+  ];
+}
+
 const run: BulkRun = {
   runId: "run-8",
   harnessSlug: "papercusp",
@@ -281,6 +336,65 @@ describe("buildInboxBulkReviewGroups", () => {
       selectable: false,
       accounting: "manual",
     });
+  });
+
+  it("matches the observed 158-row Inbox partition without hiding unresolved rows", () => {
+    const runItems = observedInboxRunItems();
+    const attentionById = new Map(
+      runItems.map((item) => [item.itemId, attention(item.itemId)]),
+    );
+    const groups = buildInboxBulkReviewGroups(runItems, attentionById);
+    const rows = groups.flatMap((group) => group.rows);
+
+    expect(rows).toHaveLength(158);
+    expect(partitionReviewRows(groups)).toEqual({
+      results: 158,
+      ready: 3,
+      handled: 13,
+      manual: 6,
+      notApplied: 136,
+    });
+    expect(
+      rows.filter((row) => row.accounting === "manual" && row.selectable),
+    ).toHaveLength(6);
+    expect(
+      rows.filter(
+        (row) =>
+          row.accounting === "not-applied" &&
+          row.status === "pending" &&
+          row.selectable === false,
+      ),
+    ).toHaveLength(136);
+
+    render(
+      <InboxBulkReport
+        run={{
+          ...run,
+          totalItems: 158,
+          autoResolved: 13,
+          recommended: 9,
+          skipped: 136,
+        }}
+        runItems={runItems}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("review-report-results-count").textContent).toBe(
+      "158",
+    );
+    expect(screen.getByTestId("review-report-ready-count").textContent).toBe(
+      "3",
+    );
+    expect(screen.getByTestId("review-report-handled-count").textContent).toBe(
+      "13",
+    );
+    expect(screen.getByTestId("review-report-manual-count").textContent).toBe(
+      "6",
+    );
+    expect(
+      screen.getByTestId("review-report-not-applied-count").textContent,
+    ).toBe("136");
+    expect(document.querySelectorAll("[data-review-row-id]")).toHaveLength(158);
   });
 });
 

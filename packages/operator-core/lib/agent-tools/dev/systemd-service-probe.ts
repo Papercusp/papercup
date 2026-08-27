@@ -108,6 +108,12 @@ export interface ServiceStartInfo {
    * field distinguishes that choice from an enabled unit that stopped running.
    */
   unitFileState?: string;
+  /**
+   * systemd's last unit result (`success`, `exit-code`, `start-limit-hit`, …).
+   * `start-limit-hit` is a latched manager failure: a later `restart` is still
+   * refused until `reset-failed` clears it.
+   */
+  result?: string;
 }
 
 /** systemd unit-type suffixes this probe recognizes as already-complete — anything
@@ -152,14 +158,16 @@ export function parseSystemctlShowOutput(stdout: string): Map<string, string> {
  */
 export function serviceStartStateFromProps(
   props: Map<string, string>,
-): Pick<ServiceStartInfo, 'activeState' | 'loadState' | 'known' | 'unitFileState'> {
+): Pick<ServiceStartInfo, 'activeState' | 'loadState' | 'known' | 'unitFileState' | 'result'> {
   const activeState = props.get('ActiveState');
   const loadState = props.get('LoadState');
   const unitFileState = props.get('UnitFileState');
+  const result = props.get('Result');
   return {
     ...(activeState === undefined ? {} : { activeState }),
     ...(loadState === undefined ? {} : { loadState, known: loadState === 'loaded' }),
     ...(unitFileState === undefined ? {} : { unitFileState }),
+    ...(result === undefined ? {} : { result }),
   };
 }
 
@@ -466,6 +474,8 @@ export async function probeServiceStart(
         'LoadState',
         '-p',
         'UnitFileState',
+        '-p',
+        'Result',
         '-p',
         'NRestarts',
         svc,
