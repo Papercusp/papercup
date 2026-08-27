@@ -16,7 +16,7 @@ import { spawn, spawnSync, execSync } from 'node:child_process';
 import { chmodSync, mkdtempSync, mkdirSync, rmSync, readFileSync, readdirSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // NEVER hand-roll an "unwritable path" here: a made-up '/proc/…' hangs Node's
 // recursive mkdir forever (EI-19369372064589484). This fixture fails ENOTDIR in 0ms.
@@ -2250,6 +2250,160 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       killGroup(holder);
     }
   }, 15_000);
+
+  it('protects a completed focused run while test-files finalizes its terminal evidence', async () => {
+    const psiFile = join(dir, 'psi-full-avg10-finalization');
+    const readyDir = join(dir, 'finalization-ready');
+    const driver = join(dir, 'finalization-driver.mjs');
+    writeFileSync(psiFile, '0\n');
+    writeFileSync(driver, [
+      `import { publishPreemptFinalizationMarker, runCapturedTestProcess } from ${JSON.stringify(pathToFileURL(resolve(ROOT, 'scripts/test-files.mjs')).href)};`,
+      'const result = await runCapturedTestProcess(',
+      '  process.execPath,',
+      '  [\'-e\', \'process.stdout.write("✓ a.test.ts (1 test) 1ms\\\\n"); setTimeout(() => {}, 1500)\'],',
+      '  {',
+      '    cwd: process.cwd(),',
+      '    env: process.env,',
+      "    files: ['a.test.ts'],",
+      "    cwdLabel: 'finalization-fixture',",
+      '    setsidPath: null,',
+      '    progressIntervalMs: 10,',
+      '    onAllFilesComplete: () => publishPreemptFinalizationMarker(),',
+      '  },',
+      ');',
+      'process.stdout.write(JSON.stringify({ status: result.status, signal: result.signal, timedOut: result.timedOut }) + \'\\n\');',
+      'if (result.error || result.status !== 0) process.exitCode = 1;',
+    ].join('\n'));
+    const env = baseEnv({
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_ADMISSION_ID: 'finalization-protection',
+      PC_HEAVY_PREEMPTIBLE: '1',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+      PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+      PC_HEAVY_PSI_FINALIZATION_MAX_SEC: '3',
+      PC_HEAVY_PSI_MAX_FREEZE_SEC: '1',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '1',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '128',
+    });
+    const holder = spawn('bash', [PC_HEAVY, 'node', driver], {
+      env, cwd: dir, detached: true,
+    });
+    const holderOut = createTextCollector(holder.stdout);
+    const holderErr = createTextCollector(holder.stderr);
+    const holderExit = new Promise<number>((res) => holder.on('exit', (c) => res(c ?? -1)));
+    const finalizationMarkerPublished = (): boolean => {
+      if (!existsSync(readyDir)) {
+        if (holder.exitCode !== null || holder.signalCode !== null) {
+          throw new Error(
+            `test-files exited before publishing its finalization marker; ` +
+              `stdout=${holderOut.text()} stderr=${holderErr.text()}`,
+          );
+        }
+        return false;
+      }
+      return readdirSync(readyDir).some((name) => name.startsWith('finalization.'));
+    };
+    try {
+      await waitFor('test-files publishing the finalization marker', finalizationMarkerPublished);
+      writeFileSync(psiFile, '9\n');
+      await untilStderr(
+        holder,
+        holderErr,
+        (t) => t.includes('PSI finalization protection active'),
+        'the PSI monitor observing the finalization handoff',
+      );
+
+      expect(await holderExit).toBe(0);
+      expect(holderOut.text()).toContain('"status":0');
+      expect(holderErr.text()).not.toContain('status=frozen reason=memory-psi-high');
+      expect(holderErr.text()).not.toContain('PSI finalization protection expired');
+      expect(readdirSync(readyDir)).toEqual([]);
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(holder);
+    }
+  }, 20_000);
+
+  it('bounds a stalled finalization handoff and cleans its marker before freezing', async () => {
+    const psiFile = join(dir, 'psi-full-avg10-finalization-expiry');
+    const readyDir = join(dir, 'finalization-expiry-ready');
+    const driver = join(dir, 'finalization-expiry-driver.mjs');
+    writeFileSync(psiFile, '0\n');
+    writeFileSync(driver, [
+      `import { publishPreemptFinalizationMarker, runCapturedTestProcess } from ${JSON.stringify(pathToFileURL(resolve(ROOT, 'scripts/test-files.mjs')).href)};`,
+      'const result = await runCapturedTestProcess(',
+      '  process.execPath,',
+      '  [\'-e\', \'process.stdout.write("✓ a.test.ts (1 test) 1ms\\\\n"); setTimeout(() => {}, 10000)\'],',
+      '  {',
+      '    cwd: process.cwd(),',
+      '    env: process.env,',
+      "    files: ['a.test.ts'],",
+      "    cwdLabel: 'finalization-expiry-fixture',",
+      '    setsidPath: null,',
+      '    progressIntervalMs: 10,',
+      '    onAllFilesComplete: () => publishPreemptFinalizationMarker(),',
+      '  },',
+      ');',
+      'process.stdout.write(JSON.stringify({ status: result.status, signal: result.signal, timedOut: result.timedOut }) + \'\\n\');',
+      'if (result.error || result.status !== 0) process.exitCode = 1;',
+    ].join('\n'));
+    const env = baseEnv({
+      PC_HEAVY_SLOTS: '1',
+      PC_HEAVY_COALESCE: '0',
+      PC_HEAVY_ADMISSION_ID: 'finalization-expiry',
+      PC_HEAVY_PREEMPTIBLE: '1',
+      PC_HEAVY_PREEMPT_AFTER_READY: '1',
+      PC_HEAVY_PREEMPT_READY_DIR: readyDir,
+      PC_HEAVY_MEM_PSI_OVERRIDE_FILE: psiFile,
+      PC_HEAVY_MEM_PSI_SAMPLE_SEC: '0',
+      PC_HEAVY_PSI_FINALIZATION_MAX_SEC: '1',
+      PC_HEAVY_PSI_MAX_FREEZE_SEC: '10',
+      PC_HEAVY_PREEMPT_POLL_SEC: '0.05',
+      PC_HEAVY_PREEMPT_TERM_GRACE_SEC: '1',
+      PC_HEAVY_CGROUP_MEMORY_CURRENT_MIB_OVERRIDE: '128',
+    });
+    const holder = spawn('bash', [PC_HEAVY, 'node', driver], {
+      env, cwd: dir, detached: true,
+    });
+    const holderOut = createTextCollector(holder.stdout);
+    const holderErr = createTextCollector(holder.stderr);
+    const holderExit = new Promise<number>((res) => holder.on('exit', (c) => res(c ?? -1)));
+    const finalizationMarkerPublished = (): boolean => {
+      if (!existsSync(readyDir)) {
+        if (holder.exitCode !== null || holder.signalCode !== null) {
+          throw new Error(
+            `stalled test-files exited before publishing its finalization marker; ` +
+              `stdout=${holderOut.text()} stderr=${holderErr.text()}`,
+          );
+        }
+        return false;
+      }
+      return readdirSync(readyDir).some((name) => name.startsWith('finalization.'));
+    };
+    try {
+      await waitFor('stalled test-files publishing the finalization marker', finalizationMarkerPublished);
+      writeFileSync(psiFile, '9\n');
+      await untilStderr(
+        holder,
+        holderErr,
+        (t) => t.includes('PSI finalization protection active'),
+        'the PSI monitor starting the bounded finalization handoff',
+      );
+
+      expect(await holderExit).toBe(75);
+      expect(holderOut.text()).not.toContain('"status":0');
+      expect(holderErr.text()).toContain('PSI finalization protection expired after 1s');
+      expect(holderErr.text()).toContain('status=frozen reason=memory-psi-high');
+      expect(readdirSync(readyDir)).toEqual([]);
+    } finally {
+      writeFileSync(psiFile, '0\n');
+      killGroup(holder);
+    }
+  }, 35_000);
 });
 
 describe('pc-heavy.sh — finite-cgroup typecheck admission (EI-21206772578500745)', () => {
