@@ -33,7 +33,12 @@ import { detectDependencyCycle } from '../feature-deps';
  * Pure read.
  */
 export async function getFeatureBlockers(harnessSlug: string): Promise<Map<string, string[]>> {
-  return getWorkItemDepBlockers(harnessSlug);
+  return new Map(
+    [...(await getWorkItemDepBlockers(harnessSlug))].map(([blocked, blockers]) => [
+      blocked,
+      blockers.map((blocker) => blocker.id),
+    ]),
+  );
 }
 
 /**

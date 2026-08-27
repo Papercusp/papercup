@@ -45,6 +45,7 @@ const itemSpec = z.object({
   target_ref: z.string().max(160).optional().describe('explicit coord ObjectRef ref — use with target_kind'),
   harness: z.string().max(80).optional().describe('harness for the source id (feature disambiguation)'),
   remove: z.boolean().optional(),
+  satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
 });
 
 export default defineTool({
@@ -74,6 +75,7 @@ export default defineTool({
       target_ref: z.string().max(160).optional(),
       harness: z.string().max(80).optional().describe('default harness for the source id / items that omit one'),
       remove: z.boolean().optional(),
+      satisfaction: z.enum(['settled', 'success']).optional().describe('blocks-only outcome requirement; omitted defaults to settled'),
       items: z.array(itemSpec).min(1).max(100).optional().describe('create many edges at once'),
     })
     .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.rel)), {
@@ -96,6 +98,7 @@ export default defineTool({
           target_ref: args.target_ref,
           harness: args.harness,
           remove: args.remove,
+          satisfaction: args.satisfaction,
         }];
     const env = await runBulk(
       items,
@@ -110,6 +113,12 @@ export default defineTool({
           return { ok: false as const, id: it.id, rel: it.rel, error: 'pass target_id, or target_kind + target_ref' };
         }
         const harness = it.harness ?? args.harness;
+        if (it.satisfaction && it.rel !== 'blocks') {
+          return { ok: false as const, id: it.id, rel: it.rel, error: 'satisfaction is valid only for rel=blocks' };
+        }
+        if (it.satisfaction && !['issue', 'feature'].includes(dst.kind)) {
+          return { ok: false as const, id: it.id, rel: it.rel, error: 'satisfaction requires a work-item target' };
+        }
         // Acyclicity (P-003, F4): a feature→feature `blocks` edge that closes a cycle silently
         // deadlocks the scheduler frontier. The link tools write through the canonical dependency seam
         // syncFeatureBlockEdges' replace-semantics guard), so reject the cycle-closing edge here.
@@ -124,7 +133,11 @@ export default defineTool({
         }
         const res = it.remove
           ? await unlinkWorkItem(it.id, dst, it.rel, { harness })
-          : await linkWorkItem(it.id, dst, it.rel, { harness, by: ident.ownerId });
+          : await linkWorkItem(it.id, dst, it.rel, {
+              harness,
+              by: ident.ownerId,
+              ...(it.satisfaction ? { satisfaction: it.satisfaction } : {}),
+            });
         return 'error' in res ? { ok: false as const, id: it.id, rel: it.rel, error: res.error } : { ok: true as const, id: it.id, rel: it.rel, dst };
       },
       { keyOf: (it) => ({ id: it.id, rel: it.rel }) },

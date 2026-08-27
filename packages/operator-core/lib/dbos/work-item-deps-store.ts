@@ -41,7 +41,12 @@ export interface WorkItemBlockingEdge {
   blocker_kind: string;
   blocker_ref: string;
   dep_type: 'blocks';
+  satisfaction: DependencySatisfaction;
 }
+
+export const DEPENDENCY_SATISFACTIONS = ['settled', 'success'] as const;
+export type DependencySatisfaction = (typeof DEPENDENCY_SATISFACTIONS)[number];
+export interface WorkItemBlockerRequirement { id: string; satisfaction: DependencySatisfaction }
 
 export type WorkItemDependencyMutation =
   | {
@@ -49,12 +54,14 @@ export type WorkItemDependencyMutation =
       readonly blocked: WorkItemDepEndpoint;
       readonly blocker: WorkItemDepEndpoint;
       readonly createdBy?: string;
+      readonly satisfaction?: DependencySatisfaction;
     }
   | {
       readonly op: 'replace';
       readonly blocked: WorkItemDepEndpoint;
       readonly blockers: readonly WorkItemDepEndpoint[];
       readonly createdBy?: string;
+      readonly satisfaction?: DependencySatisfaction;
     };
 
 export interface WorkItemDependencyBatchInput {
@@ -97,6 +104,7 @@ export interface WorkItemDependencyBatchResult {
 /** Shared options for the compatibility facades routed through the canonical mutation seam. */
 export interface WorkItemDependencyWriterOptions {
   readonly createdBy?: string;
+  readonly satisfaction?: DependencySatisfaction;
   /** Injectable root database handle for real-Postgres tests and explicitly scoped internal callers. */
   readonly sql?: Sql;
   /** Endpoint-row workspace. Edge rows remain in DEFAULT_COORD_WORKSPACE. */
@@ -134,6 +142,7 @@ export class WorkItemDependencyAdmissionError extends Error {
 
 interface StoredDependencyEdge extends DependencyGraphEdgeInput {
   readonly createdBy: string | null;
+  readonly satisfaction: DependencySatisfaction;
 }
 
 interface WorkItemNodeRow {
@@ -177,6 +186,7 @@ function applyDependencyMutations(
           blocked: mutation.blocked,
           blocker,
           createdBy: mutation.createdBy ?? null,
+          satisfaction: mutation.satisfaction ?? 'settled',
         };
         candidate.set(storedEdgeKey(edge), edge);
       }
@@ -186,6 +196,7 @@ function applyDependencyMutations(
       blocked: mutation.blocked,
       blocker: mutation.blocker,
       createdBy: mutation.createdBy ?? null,
+      satisfaction: mutation.satisfaction ?? 'settled',
     };
     const key = storedEdgeKey(edge);
     if (mutation.op === 'add') candidate.set(key, edge);
@@ -206,6 +217,17 @@ function normalizedStatus(row: WorkItemNodeRow): string {
 function workItemRowIsTerminal(row: WorkItemNodeRow): boolean {
   const status = normalizedStatus(row);
   return ISSUE_ITEM_KINDS.has(row.item_kind) ? ISSUE_TERMINAL_STATUSES.has(status) : TERMINAL_STATUSES.has(status);
+}
+
+function workItemRowIsSuccessful(row: WorkItemNodeRow): boolean {
+  const status = normalizedStatus(row);
+  return ISSUE_ITEM_KINDS.has(row.item_kind)
+    ? status === 'resolved' || status === 'done'
+    : status === 'passed' || status === 'done';
+}
+
+function edgeIsSatisfiedByRow(edge: StoredDependencyEdge, row: WorkItemNodeRow): boolean {
+  return edge.satisfaction === 'success' ? workItemRowIsSuccessful(row) : workItemRowIsTerminal(row);
 }
 
 function workItemRowIsActivelyOwned(row: WorkItemNodeRow): boolean {
@@ -282,7 +304,7 @@ function newlyActiveDependantConflicts(
   after: readonly StoredDependencyEdge[],
   rows: readonly WorkItemNodeRow[],
 ): WorkItemDependencyLifecycleConflict[] {
-  const existing = new Set(before.map(storedEdgeKey));
+  const existing = new Map(before.map((edge) => [storedEdgeKey(edge), edge.satisfaction]));
   const rowsByIdentity = new Map(
     rows.map((row) => {
       const node = rowNode(row);
@@ -292,7 +314,7 @@ function newlyActiveDependantConflicts(
   const conflicts: WorkItemDependencyLifecycleConflict[] = [];
 
   for (const edge of after) {
-    if (existing.has(storedEdgeKey(edge))) continue;
+    if (existing.get(storedEdgeKey(edge)) === edge.satisfaction) continue;
     const dependant = rowsByIdentity.get(dependencyIdentityKey(edge.blocked));
     const blocker = rowsByIdentity.get(dependencyIdentityKey(edge.blocker));
     // Missing, ambiguous, and out-of-workspace endpoints are reported by the canonical
@@ -300,7 +322,7 @@ function newlyActiveDependantConflicts(
     if (!dependant || !blocker) continue;
     // A terminal dependant remains advisory history. A terminal blocker is already
     // satisfied, so inserting that retained edge does not change reachability.
-    if (workItemRowIsTerminal(dependant.row) || workItemRowIsTerminal(blocker.row)) continue;
+    if (workItemRowIsTerminal(dependant.row) || edgeIsSatisfiedByRow(edge, blocker.row)) continue;
     if (!workItemRowIsActivelyOwned(dependant.row)) continue;
 
     conflicts.push({
@@ -327,9 +349,10 @@ async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<
       blocker_kind: string;
       blocker_ref: string;
       created_by: string | null;
+      satisfaction: DependencySatisfaction;
     }>
   >`
-    SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, created_by
+    SELECT blocked_kind, blocked_ref, blocker_kind, blocker_ref, created_by, satisfaction
       FROM harness_shared.work_item_deps
      WHERE workspace_id = ${workspaceId} AND dep_type = 'blocks'
      ORDER BY blocked_kind, blocked_ref, blocker_kind, blocker_ref`;
@@ -337,6 +360,7 @@ async function loadStoredDependencyEdges(tx: Sql, workspaceId: string): Promise<
     blocked: { kind: row.blocked_kind, ref: row.blocked_ref },
     blocker: { kind: row.blocker_kind, ref: row.blocker_ref },
     createdBy: row.created_by,
+    satisfaction: row.satisfaction,
   }));
 }
 
@@ -482,6 +506,9 @@ async function applyStoredEdgeDiff(
   const afterByKey = new Map(after.map((edge) => [storedEdgeKey(edge), edge]));
   const removed = [...beforeByKey.entries()].filter(([key]) => !afterByKey.has(key)).map(([, edge]) => edge);
   const inserted = [...afterByKey.entries()].filter(([key]) => !beforeByKey.has(key)).map(([, edge]) => edge);
+  const updated = [...afterByKey.entries()]
+    .filter(([key, edge]) => beforeByKey.has(key) && beforeByKey.get(key)!.satisfaction !== edge.satisfaction)
+    .map(([, edge]) => edge);
 
   let removedCount = 0;
   for (const edge of removed) {
@@ -497,14 +524,22 @@ async function applyStoredEdgeDiff(
   for (const edge of inserted) {
     const rows = await tx<Array<{ id: string | number }>>`
       INSERT INTO harness_shared.work_item_deps
-        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by)
+        (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type, created_by, satisfaction)
       VALUES
         (${workspaceId}, ${edge.blocked.kind}, ${edge.blocked.ref},
-         ${edge.blocker.kind}, ${edge.blocker.ref}, 'blocks', ${edge.createdBy})
+         ${edge.blocker.kind}, ${edge.blocker.ref}, 'blocks', ${edge.createdBy}, ${edge.satisfaction})
       ON CONFLICT (workspace_id, blocked_kind, blocked_ref, blocker_kind, blocker_ref, dep_type)
       DO NOTHING
       RETURNING id`;
     insertedCount += rows.length;
+  }
+  for (const edge of updated) {
+    await tx`
+      UPDATE harness_shared.work_item_deps
+         SET satisfaction = ${edge.satisfaction}
+       WHERE workspace_id = ${workspaceId} AND dep_type = 'blocks'
+         AND blocked_kind = ${edge.blocked.kind} AND blocked_ref = ${edge.blocked.ref}
+         AND blocker_kind = ${edge.blocker.kind} AND blocker_ref = ${edge.blocker.ref}`;
   }
   return { inserted: insertedCount, removed: removedCount };
 }
@@ -721,6 +756,7 @@ export function workItemBlockingEdge(
     blocker_kind: blocker.kind,
     blocker_ref: blocker.ref,
     dep_type: 'blocks',
+    satisfaction: 'settled',
   };
 }
 
@@ -756,6 +792,7 @@ export async function mirrorWorkItemBlockingEdge(
           blocked: resolvedBlocked,
           blocker: resolvedBlocker,
           createdBy: opts.createdBy,
+          satisfaction: opts.satisfaction,
         },
       ],
     },
@@ -791,24 +828,24 @@ export async function removeMirroredWorkItemBlockingEdge(
 }
 
 /** blocked feature_id → blocker feature_ids (within `harnessSlug`, prefix-stripped). Pure read. */
-export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<string, string[]>> {
+export async function getWorkItemDepBlockers(harnessSlug: string): Promise<Map<string, WorkItemBlockerRequirement[]>> {
   const { sql } = getOrgPg();
   const prefix = `${harnessSlug}#`;
-  const rows = await sql<{ blocked_ref: string; blocker_ref: string }[]>`
-    SELECT blocked_ref, blocker_ref
+  const rows = await sql<{ blocked_ref: string; blocker_ref: string; satisfaction: DependencySatisfaction }[]>`
+    SELECT blocked_ref, blocker_ref, satisfaction
       FROM harness_shared.work_item_deps
      WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
        AND dep_type = 'blocks'
        AND blocked_kind = ${FEATURE_KIND}
        AND blocker_kind = ${FEATURE_KIND}
        AND blocked_ref LIKE ${prefix + '%'}`;
-  const out = new Map<string, string[]>();
+  const out = new Map<string, WorkItemBlockerRequirement[]>();
   for (const r of rows) {
     if (!r.blocked_ref.startsWith(prefix) || !r.blocker_ref.startsWith(prefix)) continue;
     const blocked = r.blocked_ref.slice(prefix.length);
     const blocker = r.blocker_ref.slice(prefix.length);
     const arr = out.get(blocked) ?? [];
-    if (!arr.includes(blocker)) arr.push(blocker);
+    if (!arr.some((entry) => entry.id === blocker)) arr.push({ id: blocker, satisfaction: r.satisfaction });
     out.set(blocked, arr);
   }
   return out;
@@ -823,9 +860,11 @@ interface WorkItemDepLinkRowDb {
   dep_type: string;
   created_by: string | null;
   created_at: unknown;
+  satisfaction: DependencySatisfaction;
 }
 
-function toLinkRow(row: WorkItemDepLinkRowDb): LinkRow {
+export type WorkItemDependencyLinkRow = LinkRow & { satisfaction: DependencySatisfaction };
+function toLinkRow(row: WorkItemDepLinkRowDb): WorkItemDependencyLinkRow {
   return {
     id: Number(row.id),
     src: { kind: row.blocker_kind, ref: row.blocker_ref },
@@ -834,6 +873,7 @@ function toLinkRow(row: WorkItemDepLinkRowDb): LinkRow {
     created_by: row.created_by,
     created_ts:
       row.created_at instanceof Date ? row.created_at.toISOString() : new Date(row.created_at as string).toISOString(),
+    satisfaction: row.satisfaction,
   };
 }
 
@@ -856,7 +896,7 @@ async function listWorkItemDepEdges(
       side === 'out'
         ? await sql<WorkItemDepLinkRowDb[]>`
             SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref,
-                   dep_type, created_by, created_at
+                   dep_type, created_by, created_at, satisfaction
               FROM harness_shared.work_item_deps
              WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
                AND blocker_kind = ${kind} AND blocker_ref = ANY(${values})
@@ -864,7 +904,7 @@ async function listWorkItemDepEdges(
              ORDER BY created_at ASC, id ASC`
         : await sql<WorkItemDepLinkRowDb[]>`
             SELECT id, blocked_kind, blocked_ref, blocker_kind, blocker_ref,
-                   dep_type, created_by, created_at
+                   dep_type, created_by, created_at, satisfaction
               FROM harness_shared.work_item_deps
              WHERE workspace_id = ${DEFAULT_COORD_WORKSPACE}
                AND blocked_kind = ${kind} AND blocked_ref = ANY(${values})
@@ -949,6 +989,7 @@ export async function syncWorkItemDepEdges(
     blocked: blockedResolution.endpoint,
     blockers,
     createdBy: opts.createdBy,
+    satisfaction: opts.satisfaction,
   });
   await mutateWorkItemDependencies(
     {

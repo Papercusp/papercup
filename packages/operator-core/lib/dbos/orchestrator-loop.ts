@@ -94,6 +94,7 @@ import {
   type WorkItemClaimLeaseHandle,
 } from '../work-item-claim-lease-wiring';
 import { defaultBlockingStore } from '../work-item-blocking';
+import type { WorkItemBlockerRequirement } from './work-item-deps-store';
 import { selectReady } from './frontier-readiness';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
 import { getResourceProfile } from '../resource-profile';
@@ -245,7 +246,7 @@ export interface FrontierFeature {
   id: string;
   status: string;
   /** Resolved canonical blocker ids (P-046). Empty when unblocked. */
-  blockedBy: readonly string[];
+  blockedBy: readonly (string | WorkItemBlockerRequirement)[];
   /** metadata.source_plan — null for manual/legacy features. */
   sourcePlan: string | null;
   /** feature_order — null when unset (ordered last within its plan group). */
