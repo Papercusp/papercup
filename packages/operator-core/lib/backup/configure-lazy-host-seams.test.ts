@@ -29,6 +29,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   configureBackup: vi.fn(),
+  managedSetInterval: vi.fn(() => ({ stop: vi.fn() })),
   readQualificationAdmission: vi.fn(),
   readCheckpointSerializerAuthority: vi.fn(),
 }));
@@ -42,6 +43,7 @@ const pg = vi.hoisted(() => {
 });
 
 vi.mock('@papercusp/backup', () => ({ configureBackup: h.configureBackup }));
+vi.mock('@papercusp/scheduled-registry', () => ({ managedSetInterval: h.managedSetInterval }));
 vi.mock('postgres', () => ({ default: pg.postgres }));
 vi.mock('../release-checkpoint-config', () => ({
   readQualificationAdmission: h.readQualificationAdmission,
@@ -67,11 +69,13 @@ beforeEach(() => {
 async function configuredHost(): Promise<{
   readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
   acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
+  scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
 }> {
   await import('./configure');
   return h.configureBackup.mock.calls[0]![0] as {
     readIntervalSnapshotAdmission: (workspaceId: string) => Promise<unknown>;
     acquireMigrationLock: () => Promise<{ release: () => Promise<void> }>;
+    scheduleInterval: (name: string, intervalMs: number, callback: () => void | Promise<void>) => { stop: () => void };
   };
 }
 
@@ -177,5 +181,19 @@ describe('backup host binding — lazy host seams (WI-40369)', () => {
     await lock.release();
     expect(pg.client).toHaveBeenCalledTimes(2);
     expect(pg.client.end).toHaveBeenCalledTimes(1);
+  });
+
+  it('routes package lifecycle heartbeats through the named managed scheduler', async () => {
+    const host = await configuredHost();
+    const callback = vi.fn();
+
+    host.scheduleInterval('backup-snapshot-heartbeat:workspace-a', 30_000, callback);
+
+    expect(h.managedSetInterval).toHaveBeenCalledWith(
+      'backup-snapshot-heartbeat:workspace-a',
+      30_000,
+      callback,
+      { category: 'lifecycle', classification: 'must-sample' },
+    );
   });
 });
