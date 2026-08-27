@@ -59,6 +59,12 @@ vi.mock('../../agent-facts/store', async (orig) => ({
   listFacts: (...args: unknown[]) => listFactsMock(...args),
 }));
 
+const getLoopStatusMock = vi.hoisted(() => vi.fn());
+vi.mock('../../harness/routines/loop', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  getLoopStatus: (ownerId: string) => getLoopStatusMock(ownerId),
+}));
+
 vi.mock('../../console-launcher', () => ({
   buildConsoleEnvelope: vi.fn(async () => ({
     cwd: '/repo',
@@ -261,6 +267,7 @@ beforeEach(() => {
   waitForPtyHostGoneMock.mockResolvedValue(true);
   getModesMock.mockResolvedValue([]);
   listFactsMock.mockResolvedValue([]);
+  getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
 });
 
@@ -754,6 +761,38 @@ describe('resume + fork (D-004/D-007)', () => {
         reusePath: 'capability:launch-agent resume/successor -> agent-launch-core.buildAgentLaunchCommand',
       },
     });
+  });
+
+  it("preserves a same-owner resume's target loop carry over a stale saved fleet carry", async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    latestFleetMembershipMock.mockResolvedValue({ fleetSlug: 'target-fleet', fleetRole: 'member' });
+    getLoopStatusMock.mockResolvedValue({ ownerId: 'su-a1a71', carry: 'cold' });
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-test',
+      fleetSlug: 'target-fleet',
+      target: 12,
+      config: {
+        plan: 'recovery-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        headless: true,
+        carry: 'warm',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, brief: 'continue the recovery' }, ctx);
+
+    expect(isError(res)).toBe(false);
+    expect(getLoopStatusMock).toHaveBeenCalledWith('su-a1a71');
+    expect(spawnedCommand(spawnHeadlessMock)).toContain('--carry=cold');
+    expect(spawnedCommand(spawnHeadlessMock)).not.toContain('--carry=warm');
+    expect(textOf(res)).toContain("Applied target loop carry 'cold'");
   });
 
   it('fails closed before resume when a caller conflicts with the canonical saved placement', async () => {

@@ -51,6 +51,7 @@ import { capPreservingOperative } from '../../operative-clause';
 import { listFacts } from '../../agent-facts/store';
 import { getModes } from '../../modes/store';
 import { modeInstructionsFactKey } from '../mode/set';
+import { getLoopStatus } from '../../harness/routines/loop';
 import {
   buildAgentLaunchCommand,
   claimAgentLaunch,
@@ -718,6 +719,28 @@ export default defineTool({
               `its host shut down before exact UUID ${target.sessionId} was relaunched in place.`,
           );
         }
+      }
+    }
+
+    // A same-owner resume must preserve the target session's loop lifecycle. The
+    // fleet profile is the right source for a fresh replacement, but it can be
+    // stale for an in-place resume when the target loop was retuned independently
+    // (for example, a cold loop in a fleet whose saved launch profile is warm).
+    // Forks mint a new identity and successors/respawns are fresh processes, so
+    // they intentionally keep the fleet/profile carry resolved below.
+    if (isResume && !fork && resumeOwnerId) {
+      try {
+        const targetLoop = await getLoopStatus(resumeOwnerId);
+        if (targetLoop) {
+          savedLaunchCarry = targetLoop.carry;
+          notes.push(
+            `✓ Applied target loop carry '${targetLoop.carry}' to the same-owner resume; it overrides the saved fleet launch carry.`,
+          );
+        }
+      } catch (e) {
+        notes.push(
+          `⚠ Could not read the resumed target's loop carry (${(e as Error)?.message ?? e}); preserving the saved fleet launch carry.`,
+        );
       }
     }
 
