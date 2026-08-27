@@ -305,6 +305,7 @@ describe('hostThroughPty real round-trip', () => {
       const { captured, io } = fakeIo();
       const childCode = [
         "process.stdin.setEncoding('utf8');",
+        "process.stdin.setRawMode?.(true);",
         "let selected=0,input='',kickoffReceived=false;",
         "setTimeout(()=>{process.stdout.write('\\x1b[31mAutocompact is th');setTimeout(()=>process.stdout.write(\"rashing\\x1b[0m\\n1. Resume from summary (recommended)\\n2. Resume full session as-is\\n3. Don't ask again\\n\"),30);},20);",
         "process.stdin.on('data',d=>{input+=d;if(!selected&&input.includes('KICKOFF')){process.stdout.write('EARLY_KICKOFF\\n');process.exit(3);return;}if(!selected&&input.includes('\\r')){selected++;input='';process.stdout.write('RESUME_SELECTED\\n\\n\\x1b[32m❯\\x1b[0m \\n');return;}if(selected&&!kickoffReceived&&input.includes('KICKOFF')){kickoffReceived=true;process.stdout.write('KICKOFF_RECEIVED\\n');setTimeout(()=>process.exit(0),100);}});",
