@@ -71,12 +71,13 @@ async function runSetBlockedByArgs(args: Record<string, unknown>) {
 }
 
 async function livePlan(slug = SLUG): Promise<{ content: string; version: number }> {
-  const rows = await admin<Array<{ content: string; version: number }>>`
+  const rows = await admin<Array<{ content: string; version: string | number }>>`
     SELECT content, version
       FROM harness_shared.harness_plans
      WHERE workspace_id = ${wsId} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}
   `;
-  return rows[0]!;
+  const row = rows[0]!;
+  return { content: row.content, version: Number(row.version) };
 }
 
 beforeAll(async () => {
