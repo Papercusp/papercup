@@ -397,6 +397,7 @@ async function judgeBulkPairs(
   const results = new Array<{
     judgements: PromoterJudgement[];
     modelCalls: number;
+    modelRetries: number;
     tokensIn: number;
     tokensOut: number;
   }>(shardEntries.length);
