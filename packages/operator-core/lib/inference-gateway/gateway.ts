@@ -51,6 +51,8 @@ import { probeEgress } from './egress-probe';
 import { recordGatewayStall } from './gateway-stall-store';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { gatewayProviderStatuses, makeGatewayProviderAdapters, providerForGatewayRequest } from './provider-adapters';
+import type { AccountPool, ActiveAccount } from './provider-contracts';
+export type { AccountPool, ActiveAccount } from './provider-contracts';
 import {
   codexCliResponsesBody,
   extractResponsesInputText,
@@ -615,67 +617,6 @@ const codexCacheShards = () => {
 /** Hop-by-hop + body-framing headers never copied verbatim across the proxy. */
 const STRIP_REQUEST = new Set(['host', 'authorization', 'x-api-key', 'x-papercusp-account', 'x-papercusp-account-pin', 'x-papercusp-owner', 'content-length', 'accept-encoding', 'connection', 'transfer-encoding', 'keep-alive']);
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
-
-/** The account the gateway currently egresses through — its id + a fresh-token getter. */
-export interface ActiveAccount {
-  accountId: string;
-  token(): Promise<string>;
-  invalidateToken?(): void;
-  /** Per-account upstream egress (per-account IP routing — D-003). When set, the gateway forwards
-   *  THIS account's upstream requests through a dedicated undici Dispatcher (an HTTP/SOCKS proxy or
-   *  a bound source IP) so each Max subscription egresses from its own IP. Absent ⇒ default egress.
-   *  Singular/legacy — superseded by a non-empty `egressPool`. */
-  egress?: AccountEgress;
-  /** Per-account egress IP POOL (gateway-per-account-egress-ip-pool-2026-06-30): the rotating list of
-   *  egress bindings. When non-empty the gateway ROUND-ROBINS this account's upstream across these IPs
-   *  (skipping ones on per-IP cooldown), so a per-IP Cloudflare edge throttle (bare-burst 429) takes one
-   *  IP out of rotation rather than pausing the whole account, and a HARD pin rides its account's pool.
-   *  Resolve the effective list with `egressEntries(account)`. Absent/empty ⇒ the singular `egress`. */
-  egressPool?: AccountEgress[];
-}
-
-/**
- * A pool of accounts the gateway can fail over between (EI-535). `active()` is the account requests
- * egress through right now; `onExhausted` fires when the active account hits its 5h unified budget
- * (an upstream 429 with the unified window rejected) so the pool rotates to another account that
- * still has budget — returning the new active, or null when none is left (the gateway then degrades
- * to pausing until the reset, the pre-failover behavior).
- */
-export interface AccountPool {
-  active(): ActiveAccount;
-  onExhausted(exhaustedId: string, resetAt: number): ActiveAccount | null;
-  /** Per-request cache-affinity routing (inference-gateway-multi-credential-routing P-002): return
-   *  the pool entry named by the `x-papercusp-account` header, or null when the id is unknown (the
-   *  caller falls back to `active()`). A bee is pinned to one account for its whole life so its
-   *  conversation cache — which is per-credential — survives. Optional: a single-account pool omits it. */
-  select?(accountId: string): ActiveAccount | null;
-  /** Clear an account's out-of-rotation pause ahead of its reset (the dual of onExhausted) — called when a
-   *  half-open egress probe confirms the proxy recovered, so a token-healthy account rejoins rotation the
-   *  instant transport is healthy rather than sitting out the full circuit window. Optional. */
-  readmit?(accountId: string): void;
-  /** HOT-RELOAD the pool (B-HOT-1): atomically swap the live entries WITHOUT a gateway restart, keeping
-   *  this pool object's identity (the gateway holds it for life). Optional: a pool that can't hot-reload
-   *  omits it. The launch-layer reload primitive re-resolves the DB account pool then calls this. */
-  reload?(next: readonly ActiveAccount[]): void;
-  /** Count of accounts currently IN rotation (not exhausted/paused) — the live capacity denominator the
-   *  priority-tier `/stats` reports alongside the per-tier demand so an operator sees headroom vs queueing.
-   *  Optional: a single-account pool omits it (the gateway then reports 1). */
-  healthyCount?(extra?: (accountId: string) => boolean): number;
-  /** Total accounts in the live pool — the DENOMINATOR for healthyCount() that the fleet-wide-bare-burst
-   *  detector (G1, WI-649) needs to decide whether ≥half the pool is out of rotation (rotating would find
-   *  no capacity). Optional: a single-account pool omits it (the gateway then treats the pool size as 1). */
-  size?(): number;
-  /** H3: non-advancing "current best" for read-only callers (stats/startup/health pollers) — see active(). */
-  peek?(): ActiveAccount;
-  /** Read-only snapshot of the live pool entries (no cursor advance) — the proactive egress prober's
-   *  enumerator (gateway-rayobyte-hardening P-002). Optional: probing is skipped when absent. */
-  entries?(): readonly ActiveAccount[];
-  /** Cold-rest causation probe (WI-3151): ms since `accountId` last rejoined rotation from a cold rest,
-   *  or undefined when it is currently paused/exhausted or was never exhausted. Read-only observability —
-   *  the 429 site pairs it with the 429 shape to tell a rested-account-still-429s (shared-edge/IP-caused)
-   *  event apart from a genuine per-account wall. Optional: a single-account pool omits it. */
-  msSinceReadmit?(accountId: string, nowMs?: number): number | undefined;
-}
 
 export interface GatewayDeps {
   /** Single-account fallback: a fresh bearer for the bound account (the resolver's `current`).
