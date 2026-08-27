@@ -652,7 +652,10 @@ async function buildSuLaunchSpec(input: BuildSuLaunchSpecInput): Promise<LaunchS
       }
     }
   }
-  // domain-generic-agent-personas-2026-06-17 P-006 (SU_BLUEPRINT_PERSONA, default-off):
+  // domain-generic-agent-personas-2026-06-17 P-006 (SU_BLUEPRINT_PERSONA, DEFAULT-ON —
+  // FLAG_DEFAULTS is derived as `!DARK_FLAGS.has(key)` and this flag is not dark; the
+  // comment here read "default-off" long after that inverted, which is exactly how an
+  // author concludes a blueprint-persona edit was a no-op and goes hunting elsewhere):
   // resolve the su persona via the blueprint prompt-resolve chain (blueprints/base/prompts/
   // su.md) instead of the hardcoded papercusp-su playbook; the per-agent overlay + generated
   // sections still splice (overlayDir = the operator prompts dir where papercusp-su.<agent>.md
