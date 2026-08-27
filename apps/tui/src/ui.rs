@@ -3157,10 +3157,12 @@ fn draw_overview_topbar(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 format!("${spend:.2}")
             }));
-            spans.push(Span::styled("  ·  agents ", Theme::dim()));
-            // in-flight / AIMD-effective / editable max (eff shown only when
-            // the adaptive layer sits under the cap) — mirrors the desktop.
             let fleet = &s.fleet;
+            spans.push(Span::styled("  ·  agents ", Theme::dim()));
+            spans.push(Span::raw(fleet.live_agents.to_string()));
+            spans.push(Span::styled("  ·  dispatches ", Theme::dim()));
+            // Rate-governed in-flight dispatches / AIMD-effective / editable
+            // max (eff shown only when the adaptive layer sits under the cap).
             if fleet.effective < fleet.cap {
                 spans.push(Span::raw(format!(
                     "{} / eff {} / {}",
@@ -5055,12 +5057,14 @@ mod tests {
         // Before the read-model lands: dashes + the connecting hint.
         let connecting = render(&app, 120, 30);
         assert!(connecting.contains("connecting"));
-        // Live: usage% (worst known bucket) + spend + in/eff/max + edit hint.
+        // Live: usage% (worst known bucket) + spend + live agent count +
+        // rate-governed dispatch in/eff/max + edit hint.
         let mut s = FleetRateStatus::default();
         s.config.max_simultaneous_agents = 6;
         s.fleet = FleetRateFleet {
             cap: 6,
             in_flight: 3,
+            live_agents: 165,
             effective: 4,
             floor: 1,
         };
@@ -5073,7 +5077,11 @@ mod tests {
         let text = render(&app, 120, 30);
         assert!(text.contains("42%"), "headline usage missing");
         assert!(text.contains("$1.23"), "spend missing");
-        assert!(text.contains("3 / eff 4 / 6"), "in/eff/max missing");
+        assert!(text.contains("agents 165"), "live agent count missing");
+        assert!(
+            text.contains("dispatches 3 / eff 4 / 6"),
+            "dispatch in/eff/max missing"
+        );
         assert!(text.contains("+/- max"), "edit hint missing");
         assert!(!text.contains("connecting"));
     }
@@ -5367,7 +5375,11 @@ mod tests {
             title: "Needs a human decision".into(),
             body: Some("Details of the escalation.".into()),
             status: "needs-human".into(),
-            importance: Some(9.0),
+            // Importance is a canonical string level on the live attention
+            // wire (urgent/high/normal/low); this renderer fixture does not
+            // display it, so keep the value absent while model.rs owns the
+            // live-shape decode coverage.
+            importance: None,
             needs_human: true,
             tier: Some("decision".into()),
             owner_agent_id: None,
