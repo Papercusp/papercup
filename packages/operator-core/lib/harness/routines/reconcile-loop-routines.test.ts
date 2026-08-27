@@ -2070,3 +2070,232 @@ describe('reconcileLoopRoutines — gate-backoff re-arm for a parked loop (WI-36
     expect(res.loops[0].nextFireAt).toBeLessThan(disarm);
   });
 });
+
+/**
+ * P-004 (anti-babysitting-monitor-enforcement-2026-08-25) — the MONITOR settlement branch.
+ *
+ * The pure decisions live in monitor-standdown.test.ts; these cover the WIRING, which is
+ * where the expensive mistakes are: does a standdown actually REPLACE the re-arm (rather
+ * than running beside it), does a surviving monitor persist its decremented budget, and —
+ * the regression that would make the whole feature silently inert — does a WORK loop still
+ * take the untouched path?
+ */
+describe('reconcileLoopRoutines — monitor standdown (P-004)', () => {
+  const T0 = 1_782_000_000_000;
+  const pgString = (ms: number) => new Date(ms).toISOString().replace('T', ' ').replace('Z', '+00');
+
+  /** Records each statement's HEAD-classified kind + text, so a test can assert WHICH write ran. */
+  function statementRecordingSql(rows: Record<string, unknown>[], seen: string[]): Sql {
+    return ((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+      const q = strings.join(' ? ');
+      if (/^\s*UPDATE/i.test(q)) {
+        seen.push(q);
+        // Enough columns for standDownMonitorLoop's RETURNING destructure; the transition
+        // write it triggers is fail-soft evidence and never affects the verdict.
+        return Promise.resolve([
+          {
+            id: 'rt-1',
+            workspace_id: 'ws-papercusp',
+            install_slug: 'papercusp',
+            name: 'loop-su-test',
+            target_role: null,
+            target_owner_id: 'su-test',
+            reschedule_interval_sec: 60,
+            prev_next_fire_at: 'infinity',
+          },
+        ]);
+      }
+      if (/^\s*INSERT/i.test(q)) return Promise.resolve([]);
+      return Promise.resolve(rows);
+    }) as unknown as Sql;
+  }
+
+  const monitorPayload = (overrides: Record<string, unknown> = {}) => ({
+    mode: 'monitor',
+    monitor: {
+      predicateKey: 'release:green:papercusp',
+      stopCondition: 'the green verdict is recorded',
+      noDeltaBudget: 1,
+      remainingNoDeltaBudget: 1,
+      authority: { kind: 'work-item', workItem: 'WI-42' },
+      ...overrides,
+    },
+  });
+
+  const row = (overrides: Record<string, unknown> = {}) => ({
+    id: 'rt-1',
+    target_owner_id: 'su-test',
+    interval_sec: 60,
+    parked: true,
+    install_slug: 'papercusp',
+    name: 'loop-su-test',
+    routine_workspace_id: 'ws-papercusp',
+    last_fired_at: pgString(T0),
+    lifecycle_completed_at: pgString(T0 + 5_000), // the settle signal
+    presence_last_active_at: null,
+    payload_template: monitorPayload(),
+    monitor_delta_at: null,
+    ...overrides,
+  });
+
+  const AUTHORITY_HELD = vi.fn(async () => ({ ok: true }) as const);
+
+  const standdownWrites = (seen: string[]) => seen.filter((q) => q.includes('monitor_standdown'));
+  const budgetWrites = (seen: string[]) => seen.filter((q) => q.includes('remainingNoDeltaBudget'));
+  const rearmWrites = (seen: string[]) => seen.filter((q) => q.includes('next_fire_at = LEAST'));
+
+  it('a QUIET settled fire on the default budget stands the monitor down INSTEAD of re-arming', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row()], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    // The whole point: no re-arm happened, and the loop is reported terminated with a reason.
+    expect(res.rearmed).toBe(0);
+    expect(rearmWrites(seen)).toHaveLength(0);
+    expect(standdownWrites(seen)).toHaveLength(1);
+    expect(res.terminated).toHaveLength(1);
+    expect(res.terminated[0]).toMatchObject({ id: 'rt-1', targetOwnerId: 'su-test' });
+    expect(res.terminated[0].reason).toContain('no_delta_budget_exhausted');
+    // The standdown write must be the ATOMIC one — deactivation and reason in one statement.
+    expect(standdownWrites(seen)[0]).toContain('active = FALSE');
+  });
+
+  it('a monitor with budget left persists the DECREMENT and then re-arms normally', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(budgetWrites(seen)).toHaveLength(1);
+    expect(standdownWrites(seen)).toHaveLength(0);
+    expect(rearmWrites(seen)).toHaveLength(1);
+  });
+
+  it('a delta stamped AFTER the fire keeps the monitor alive at full budget', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql(
+        [
+          row({
+            payload_template: monitorPayload({ noDeltaBudget: 4, remainingNoDeltaBudget: 1 }),
+            monitor_delta_at: pgString(T0 + 1_000), // after last_fired_at = T0
+          }),
+        ],
+        seen,
+      ),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    // remainingNoDeltaBudget was 1 — one quiet wake from death. The delta rescues it.
+    expect(res.rearmed).toBe(1);
+    expect(standdownWrites(seen)).toHaveLength(0);
+  });
+
+  it('a delta stamped BEFORE the fire does NOT rescue it — a stale marker is not a delta', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ monitor_delta_at: pgString(T0 - 1_000) })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    expect(res.rearmed).toBe(0);
+    expect(standdownWrites(seen)).toHaveLength(1);
+  });
+
+  it('a LOST authority stands the monitor down even with budget to spare', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 10, remainingNoDeltaBudget: 10 }) })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: vi.fn(async () => ({
+        ok: false as const,
+        code: 'monitor_peer_owned_progress',
+        message: 'WI-42 is already owned and progressing under live peer su-peer.',
+      })),
+    });
+    expect(res.rearmed).toBe(0);
+    expect(res.terminated[0].reason).toContain('monitor_peer_owned_progress');
+    expect(standdownWrites(seen)).toHaveLength(1);
+  });
+
+  it('a THROWN authority recheck fails OPEN — the monitor survives on remaining budget', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: vi.fn(async () => {
+        throw new Error('connection terminated');
+      }),
+    });
+    // A transient read failure must never manufacture a standdown.
+    expect(res.rearmed).toBe(1);
+    expect(standdownWrites(seen)).toHaveLength(0);
+  });
+
+  it('a WORK loop is untouched — no authority read, no budget write, ordinary re-arm', async () => {
+    const seen: string[] = [];
+    const recheck = vi.fn(async () => ({ ok: true }) as const);
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ payload_template: { mode: 'work' } })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: recheck,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(recheck).not.toHaveBeenCalled();
+    expect(budgetWrites(seen)).toHaveLength(0);
+    expect(standdownWrites(seen)).toHaveLength(0);
+  });
+
+  it('the budget write carries a FIRE TOKEN so two overlapping passes cannot double-decrement', async () => {
+    const seen: string[] = [];
+    await reconcile({
+      sql: statementRecordingSql([row({ payload_template: monitorPayload({ noDeltaBudget: 3, remainingNoDeltaBudget: 3 }) })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    // The reconcile SELECT is deliberately unlocked, so exactly-once cannot come from the
+    // read — it has to be in the WRITE's own predicate.
+    const budget = budgetWrites(seen)[0];
+    expect(budget).toContain('monitor_budget_fire_at');
+    expect(budget).toContain('IS DISTINCT FROM');
+  });
+
+  it('a NON-SETTLE re-arm (fire withheld by the gate) never touches the budget or the authority', async () => {
+    const seen: string[] = [];
+    const recheck = vi.fn(async () => ({ ok: true }) as const);
+    // The gate-backoff leg logs its own re-arm; that is pre-existing, expected behaviour here.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // No completion signal at all + an open fire-gate backoff ⇒ via 'gate-backoff': the agent
+    // received NO WAKE, so charging it a quiet-wake unit would stand a healthy monitor down
+    // for the scheduler's failure.
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ lifecycle_completed_at: null, presence_last_active_at: null })], seen),
+      nowMs: T0 + 70_000,
+      recheckMonitorAuthority: recheck,
+      readFireState: vi.fn(async () => ({ lastFiredAt: new Date(T0), consecutiveErrors: 4 })),
+      recordFire: async () => {},
+      checkUnreachableTerminalGuard: NEVER_BREACH_GUARD,
+    });
+    expect(res.loops[0]?.via).toBe('gate-backoff');
+    expect(recheck).not.toHaveBeenCalled();
+    expect(budgetWrites(seen)).toHaveLength(0);
+    expect(standdownWrites(seen)).toHaveLength(0);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('fire-gate withholding'));
+    warn.mockRestore();
+  });
+
+  it('a loop with NO payload_template at all (a legacy row) still re-arms', async () => {
+    const seen: string[] = [];
+    const res = await reconcile({
+      sql: statementRecordingSql([row({ payload_template: null })], seen),
+      nowMs: T0 + 10_000,
+      recheckMonitorAuthority: AUTHORITY_HELD,
+    });
+    expect(res.rearmed).toBe(1);
+    expect(standdownWrites(seen)).toHaveLength(0);
+  });
+});

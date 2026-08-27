@@ -192,6 +192,14 @@ import {
   recordZeroToolFireObservation as defaultRecordZeroToolFireObservation,
   zeroToolEscalationThreshold,
 } from './loop-zero-tool-escalation';
+import {
+  decideMonitorSettlement,
+  monitorDeltaObservedForFire,
+  persistMonitorNoDeltaBudget,
+  readPersistedMonitorConfig,
+  recheckMonitorAuthority as defaultRecheckMonitorAuthority,
+  standDownMonitorLoop,
+} from './monitor-standdown';
 
 /**
  * Coerce a `timestamptz` column to epoch ms, tolerating BOTH shapes it can arrive in:
@@ -818,6 +826,14 @@ interface LoopRow {
    *  instant is an ingest lag, not evidence the turn ended cleanly. null when the owner has no
    *  indexed turns at all. */
   turns_ingest_watermark: Date | string | null;
+  /** P-004: the whole `payload_template`, so a monitor loop's persisted policy
+   *  (`mode:'monitor'` + the typed `monitor` object) can be settled before re-arm.
+   *  A work loop carries no `monitor` key and takes the unchanged re-arm path. */
+  payload_template: unknown;
+  /** P-004: `metadata->>'monitor_delta_at'` — the marker stamped by
+   *  `loop:checkpoint { monitorDelta: true }`. Newer than `last_fired_at` ⇒ this fire
+   *  reported a delta and the consecutive-quiet budget resets. */
+  monitor_delta_at: Date | string | null;
 }
 
 /**
@@ -967,6 +983,10 @@ export async function reconcileLoopRoutines(
     autoPauseLoopRoutine?: typeof defaultAutoPauseLoopRoutine;
     /** Test/config seam; production defaults to PAPERCUSP_LOOP_ZERO_TOOL_ESCALATION_THRESHOLD (3). */
     zeroToolThreshold?: number;
+    /** P-004: the stored-authority re-validation run before a MONITOR loop is re-armed.
+     *  Injectable because the real one reads work-items / presence / fleets through the LIVE
+     *  connection, which a hermetic fakeSql test cannot intercept (the EI-7006 leak class). */
+    recheckMonitorAuthority?: typeof defaultRecheckMonitorAuthority;
   } = {},
 ): Promise<LoopRebaseResult> {
   const db = opts.sql ?? getOrgPg().sql;
@@ -983,6 +1003,7 @@ export async function reconcileLoopRoutines(
   const recordZeroToolFireObservation = opts.recordZeroToolFireObservation ?? defaultRecordZeroToolFireObservation;
   const autoPauseLoopRoutine = opts.autoPauseLoopRoutine ?? defaultAutoPauseLoopRoutine;
   const zeroToolThreshold = opts.zeroToolThreshold ?? zeroToolEscalationThreshold();
+  const recheckMonitorAuthority = opts.recheckMonitorAuthority ?? defaultRecheckMonitorAuthority;
 
   // Loop routines in scope: a PARKED pure loop (rebase off completion), an armed cron+loop
   // (fold the sooner — unchanged), OR (EI-11407) an ARMED pure loop that has fired at least
@@ -1064,7 +1085,11 @@ export async function reconcileLoopRoutines(
            -- speaker-filtered: this is "how far has the ingest got", not "what did it say".
            (SELECT max(st2.ts)
               FROM harness_shared.session_turns st2
-             WHERE st2.owner = r.target_owner_id) AS turns_ingest_watermark
+             WHERE st2.owner = r.target_owner_id) AS turns_ingest_watermark,
+           -- P-004 (anti-babysitting): the monitor settlement inputs. Both come off the
+           -- routine row already being scanned, so this adds no join and no extra pass.
+           r.payload_template,
+           r.metadata->>'monitor_delta_at'                                AS monitor_delta_at
       FROM harness_shared.routines r
       LEFT JOIN LATERAL (
         -- Owner-loop fire state is role-scoped inside one workspace (WI-41224): split legacy
@@ -1505,6 +1530,92 @@ export async function reconcileLoopRoutines(
             continue;
           }
         }
+      }
+
+      // ── P-004 MONITOR STANDDOWN — decided BEFORE the re-arm, never after ────────────
+      // A monitor loop is the one kind whose settlement can END it rather than re-arm it
+      // (anti-babysitting-monitor-enforcement-2026-08-25, D-002 §3/§4). This is where the
+      // persona rule "a non-owner's first no-delta wake is terminal" becomes mechanical:
+      // the engine decrements the persisted budget on every quiet settled fire and
+      // deactivates at zero, so an agent that forgets `loop:end` still stands down.
+      //
+      // Placed here — after every completion/termination guard, immediately before the
+      // re-arm UPDATE — so a monitor cannot be re-armed and then retroactively ended.
+      // A work loop parses to null and takes the unchanged path below.
+      //
+      // GATED ON A GENUINE SETTLE. `via` also carries the re-arms that happen when the
+      // agent got NO TURN at all — `gate-backoff` (the fire was withheld), `stuck-backstop`
+      // (the turn never settled), `claim-dispatch-gap` (the fire never reached dispatch) —
+      // and `turnDeath` marks a turn the PROVIDER killed. Charging a quiet-wake unit for a
+      // wake that was never delivered would stand a healthy monitor down for the scheduler's
+      // failure, which is the opposite of what the budget measures. Written as an ALLOWLIST
+      // so a via added later defaults to "not a settle" and fails toward keeping the loop.
+      const settledTurnVia =
+        turnDeath == null &&
+        (via === 'lifecycle' || via === 'turn-journal' || via === 'presence-quiescence' || via === 'note-refresh');
+      const monitorConfig = settledTurnVia ? readPersistedMonitorConfig(row.payload_template) : null;
+      if (monitorConfig) {
+        // The authority reads resolve work-items / presence / fleets, which are
+        // workspace-scoped stores — run them under THIS routine's workspace, the same way
+        // every other cross-store call in this loop does, so a multi-workspace tick cannot
+        // judge one workspace's monitor against another's rows.
+        const authority = await runWithWorkspace(row.routine_workspace_id, () =>
+          recheckMonitorAuthority({
+            ownerId: row.target_owner_id,
+            workspaceId: row.routine_workspace_id,
+            harness: row.install_slug,
+            config: monitorConfig,
+          }),
+        ).catch((e) => ({
+          // FAIL-OPEN, matching engine-loop-standdown.ts: an unreadable authority must
+          // never manufacture a standdown. A missed standdown costs one throttled wake;
+          // a wrong one silently kills a legitimate owner's watch.
+          ok: 'unknown' as const,
+          message: `monitor authority recheck threw: ${e instanceof Error ? e.message : String(e)}`,
+        }));
+        const settlement = decideMonitorSettlement({
+          config: monitorConfig,
+          deltaObserved: monitorDeltaObservedForFire({
+            monitorDeltaAt: row.monitor_delta_at,
+            lastFiredAt: row.last_fired_at,
+          }),
+          authority,
+        });
+        if (settlement.action === 'standdown') {
+          const stoodDown = await standDownMonitorLoop(db, row.id, settlement).catch((e) => {
+            console.warn(
+              `[loop-reconcile] monitor standdown write failed for '${row.id}' — leaving the loop armed: ${e instanceof Error ? e.message : e}`,
+            );
+            return false;
+          });
+          if (stoodDown) {
+            result.terminated.push({
+              id: row.id,
+              targetOwnerId: row.target_owner_id,
+              reason: settlement.reason,
+            });
+            continue;
+          }
+          // The write found no active row (a concurrent loop:end / pause already won).
+          // Nothing left to re-arm either — this settled fire is done.
+          continue;
+        }
+        // Survived: persist the decremented (or delta-reset) budget, then fall through to
+        // the ordinary re-arm. A failed budget write must NOT re-arm with a stale budget —
+        // that would make the bound unenforceable — so treat it as "settle again next pass".
+        // The fire token makes the decrement exactly-once even if two passes overlap.
+        const budgetWritten = await persistMonitorNoDeltaBudget(
+          db,
+          row.id,
+          settlement.remainingNoDeltaBudget,
+          String(lastFiredMs),
+        ).catch((e) => {
+          console.warn(
+            `[loop-reconcile] monitor budget write failed for '${row.id}' — skipping this re-arm: ${e instanceof Error ? e.message : e}`,
+          );
+          return false;
+        });
+        if (!budgetWritten) continue;
       }
 
       // Pass an ISO STRING + explicit ::timestamptz cast, NOT a Date object: the operator's

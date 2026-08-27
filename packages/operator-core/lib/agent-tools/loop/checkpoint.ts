@@ -521,6 +521,15 @@ export default defineTool({
           'Optional optimistic-CAS baseline: the 12-character contentHash returned by the last loop:checkpoint/read. ' +
             'Use null to assert that no note existed; on mismatch the write is refused and the current hash is returned.',
         ),
+      monitorDelta: z
+        .boolean()
+        .optional()
+        .describe(
+          'MONITOR loops only (loop:arm { mode:"monitor" }): did this wake observe a real DELTA in the watched ' +
+            'predicate? true RESETS the consecutive no-delta budget; omitted or false counts as a QUIET wake and ' +
+            'decrements it, so a monitor whose budget runs out is stood down by the engine even if you never call ' +
+            'loop:end. Ignored on a work loop.',
+        ),
       ownerId: z
         .string()
         .max(120)
@@ -547,8 +556,13 @@ export default defineTool({
         a.walls !== undefined ||
         a.checks !== undefined,
       {
+        // P-004: `monitorDelta` is deliberately NOT a write on its own. It RIDES a
+        // checkpoint (D-002 §3 — "a delta checkpoint … resets the budget"), and the
+        // monitor wake contract already requires one, so admitting it alone would only
+        // create a call whose note-composition inputs are all absent — i.e. a carry-note
+        // CLEAR wearing a budget-reset costume.
         message:
-          'pass { did, left, insight, next } (any; goal aliases next), { note } (or compatibility alias { checkpoint }), { walls }, or { checks } — nothing to write',
+          'pass { did, left, insight, next } (any; goal aliases next), { note } (or compatibility alias { checkpoint }), { walls }, or { checks } — nothing to write (monitorDelta rides a checkpoint; it is not a write by itself)',
       },
     ),
   async handler(args, ctx) {
@@ -1235,6 +1249,32 @@ export default defineTool({
     // failure omits the leg (which the gate treats as blocking ⇒ it recommends settling, never a
     // false "continue"). An unresolvable inbox cursor also stays null (blocking) rather than
     // counting all history as unread.
+    // ── P-004 MONITOR DELTA (anti-babysitting-monitor-enforcement-2026-08-25, D-002 §3) ──
+    // Stamp the delta marker for the fire that is currently settling. An explicit `false`
+    // deliberately writes NOTHING: omission and false are the same "no delta" verdict, and
+    // the reconciler already treats an absent/stale marker as quiet — so there is no state
+    // for a false to record, and writing one would only invite a reader to think it means
+    // something different from omission.
+    //
+    // Best-effort by design: a failed stamp must never fail the carry-note write the agent
+    // actually came here for. The worst case is one quiet wake counted against a monitor
+    // that did move, and the next reported delta resets the budget in full.
+    let monitorDeltaRoutinesStamped: number | null = null;
+    if (args.monitorDelta === true && workspaceId) {
+      try {
+        const [{ recordMonitorDelta }, { getOrgPg }] = await Promise.all([
+          import('../../harness/routines/monitor-standdown'),
+          import('@papercusp/db-org'),
+        ]);
+        monitorDeltaRoutinesStamped = await recordMonitorDelta(getOrgPg().sql, { ownerId, workspaceId });
+      } catch (e) {
+        monitorDeltaRoutinesStamped = null;
+        console.warn(
+          `[loop:checkpoint] monitorDelta stamp failed for '${ownerId}': ${e instanceof Error ? e.message : e}`,
+        );
+      }
+    }
+
     const continuationRead = await withBoundedTimeout(
       async () => {
         const pres = await getPresence(ownerId).catch(() => null);
@@ -1420,6 +1460,12 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
+            /** P-004: report whether a `monitorDelta:true` actually reached a monitor loop.
+             *  0 means the caller has no active monitor routine (so nothing was reset) —
+             *  a silent `ok:true` there would read as "budget reset" when it was not. */
+            ...(args.monitorDelta === true
+              ? { monitorDelta: { recorded: monitorDeltaRoutinesStamped, requested: true } }
+              : {}),
             ...(verifiedWaitTakeoverRows.length > 0 ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows } : {}),
             /** P-013: which row semantics this write actually ran under, so a caller
              *  never has to infer it from the counts. Present only when it was NOT the

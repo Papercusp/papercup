@@ -57,6 +57,11 @@ import {
   agentToolInvocationPredicate,
 } from '../../agent-tools/sessions/automatic-tool-names';
 import type { PersistedMonitorConfig } from './monitor-policy';
+import {
+  readMonitorStanddownRecord,
+  readPersistedMonitorConfig,
+  type MonitorStanddownRecord,
+} from './monitor-standdown';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -890,6 +895,14 @@ export interface LoopStatus {
    *  — a leader had no way to tell "wedged in a pure-monitor loop" from "healthy work loop,
    *  between items" without this. */
   mode: 'work' | 'monitor';
+  /** P-004: the admitted monitor policy (predicate, stop condition, configured + REMAINING
+   *  no-delta budget, authority) for a `mode:'monitor'` loop; null on a work loop or on a
+   *  monitor armed before the policy existed. Exposed so an operator can see how many quiet
+   *  wakes a monitor has left BEFORE the engine stands it down, rather than only afterwards. */
+  monitor: PersistedMonitorConfig | null;
+  /** P-004: why the engine stood this monitor down (budget exhausted / authority lost), or
+   *  null when it never did. Survives the deactivation, so `active:false` is explicable. */
+  monitorStanddown: MonitorStanddownRecord | null;
   /**
    * The loop's GOAL text, or null for a loop armed without one (or armed before this
    * field existed — those keep only the kickoff prose and cannot be back-filled).
@@ -1766,6 +1779,10 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     carry: pt?.carry === 'cold' ? 'cold' : 'warm',
     continuation: pt?.continuation === 'gated' ? 'gated' : 'settle',
     mode: pt?.mode === 'monitor' ? 'monitor' : 'work',
+    // P-004: read through the SAME parser the settlement path uses, so status can never
+    // report a policy the reconciler would reject (or miss one it would enforce).
+    monitor: readPersistedMonitorConfig(pt),
+    monitorStanddown: readMonitorStanddownRecord(r.metadata),
     // Absent (a loop armed before this field, or with no goal) reads as null — an
     // honest "not recorded", never an empty string that would render as a blank goal.
     goal: typeof pt?.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,
@@ -1825,6 +1842,10 @@ export async function getLoopStatuses(
            r.reschedule_interval_sec,
            r.target_owner_id,
            r.payload_template,
+           -- P-004: the whole metadata object, so the monitor standdown record survives
+           -- into loop:status. Selected rather than key-extracted because the record is a
+           -- typed OBJECT (code/authorityCode/reason/atMs), not a scalar.
+           r.metadata,
            COALESCE((r.metadata->>'fire_count')::int, 0)                  AS fire_count,
            -- WI-36070: the dead-man's baseline, stamped by stampLoopArmedAt on every arm/re-arm.
            -- Selected so loop:status can report firesSinceArm — the number maxFires is actually
