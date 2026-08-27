@@ -26,6 +26,7 @@ import { Modal } from '@/app/harness/Modal';
 import PlanDetail from '@/app/admin/plans/PlanDetail';
 import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import PlanSessionsTab from './PlanSessionsTab';
+import PlanProvenanceBadge from './PlanProvenanceBadge';
 // PlanDetail's chrome (pc-plans__*) is global CSS; importing it here makes the
 // popup self-sufficient wherever the sidebar mounts (InboxPane precedent).
 import '@/app/admin/plans/plans.css';
@@ -38,6 +39,7 @@ export default function PlanPopupModal({
   planSlug,
   harnessSlug,
   planTitle,
+  origin,
   onClose,
 }: {
   /** The open plan — null renders nothing (closed). */
@@ -46,6 +48,8 @@ export default function PlanPopupModal({
    *  the wrong harness is the Create tab's old "Server: not_found" trap. */
   harnessSlug: string | null;
   planTitle?: string | null;
+  /** Canonical plan-content provenance projected by plans:list. */
+  origin?: 'scout' | null;
   onClose: () => void;
 }) {
   const [view, setView] = useQueryState(
@@ -99,8 +103,11 @@ export default function PlanPopupModal({
           }}
         >
           <div className="plan-popup__header">
-            <div className="plan-popup__title" title={planSlug ?? undefined}>
-              {planTitle ?? planSlug}
+            <div className="plan-popup__identity">
+              <div className="plan-popup__title" title={planSlug ?? undefined}>
+                {planTitle ?? planSlug}
+              </div>
+              <PlanProvenanceBadge origin={origin} testId="plan-popup-provenance-badge" />
             </div>
             <div className="plan-popup__tabs" role="tablist" aria-label="Plan popup view">
               <button

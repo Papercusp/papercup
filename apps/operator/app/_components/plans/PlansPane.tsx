@@ -81,6 +81,7 @@ import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useFlag } from "@/lib/flag-hooks";
 import { FLAGS } from "@papercusp/flags";
 import PlanPopupModal from './PlanPopupModal';
+import PlanProvenanceBadge from './PlanProvenanceBadge';
 import { PLAN_DASHBOARD_PARAM } from './PlanDashboardHost';
 import PlanCleanupEntryButton from './PlanCleanupEntryButton';
 import PlansCleanupStrip from "./PlansCleanupStrip";
@@ -98,49 +99,6 @@ const ACTIVE_BUCKETS: ReadonlySet<PlanBucket> = new Set(['draft', 'ready', 'runn
 /** An active plan with no real activity for this long reads as "stale" — a
  *  visibility nudge against plan sprawl (owner-plans-single-pane P-008). */
 export const STALE_MS = 14 * 24 * 60 * 60 * 1000;
-
-/**
- * A literal kitchen-blender glyph (owner: "should be an icon of a blender").
- * Hand-drawn because lucide-react has NO blender — checked, not assumed: 5,849
- * exports, and its `Blend` is the blend-MODE overlapping-circles glyph, an
- * unrelated meaning that would have read as wrong rather than merely plain.
- *
- * Drawn to lucide's own contract (24×24, fill:none, stroke:currentColor,
- * width 2, round cap/join) so it inherits sizing + colour exactly like the
- * `Archive`/`ClipboardList` icons beside it and needs no special-casing.
- *
- * The four strokes are lid / tapered jar / HANDLE / flared motor base, and each
- * earned its place by being rendered and looked at rather than reasoned about:
- *   - an earlier draft tapered straight into a narrow base and read as a FUNNEL,
- *     because the silhouette ran wide→narrow→narrower. A blender's profile is
- *     wide jar → waist → WIDER squat base, so the flare is what says "appliance";
- *   - without the handle the flared version still read as a cocktail shaker or a
- *     trophy. The handle is the single cue that makes it a jug, and a jug on a
- *     motor base is unambiguously a blender.
- * Size defaults to 16, not the 13 of the first cut: rasterised at 13 the handle
- * collapsed into a two-pixel blob. 16 is the smallest size at which all three
- * cues survive, and it serves the "hard to miss" ask at the same time.
- */
-function BlenderIcon({ size = 16 }: { size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth={2}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4.5 3h12" />
-      <path d="M6 3 7.5 13h6L15 3" />
-      <path d="M15.5 4.5a3 3 0 0 1 0 6" />
-      <path d="M6.5 13h8v3.5a2.5 2.5 0 0 1-2.5 2.5H9a2.5 2.5 0 0 1-2.5-2.5z" />
-    </svg>
-  );
-}
 
 /**
  * True when an active plan moved on NEITHER clock in ≥ STALE_MS — plan doc
@@ -807,29 +765,12 @@ export default function PlansPane() {
                           {planTriggerSourceLabel(plan.triggerSources)}
                         </span>
                       ) : null}
-                      {/* Provenance (WI-39439): marks ONLY plans the Blender/Scout
-                        ideation loop routed. Absence means human- or
-                        standard-agent-authored — including an su agent's own
-                        IDEATE pass (`su-ideate`), which is deliberately NOT
-                        marked: the owner's split is Blender vs everything else.
-                        `origin` is only ever 'scout' because the server-side
-                        derivation filters on it (scout/routed-ledger.ts); do not
-                        re-widen this test to "any ledger row" — that was the bug
-                        this shipped with, wrong on 75% of the rows it lit. */}
-                      {plan.origin === "scout" ? (
-                        <span
-                          className="plans-pane__badge plans-pane__badge--blender"
-                          title="Blender-made — routed by the Blender/Scout ideation loop"
-                          data-testid="plans-pane-blender-badge"
-                        >
-                          <BlenderIcon />
-                          {/* The word ships too (owner: "hard to miss"). It is a REAL
-                            label, not sr-only: a lone glyph in a badge strip is
-                            exactly what the eye skips, and a blender drawn at 13px
-                            is not self-evident on first encounter. */}
-                          Blender
-                        </span>
-                      ) : null}
+                      <PlanProvenanceBadge
+                        origin={plan.origin}
+                        testId={plan.origin === 'scout'
+                          ? 'plans-pane-blender-badge'
+                          : 'plans-pane-outside-blender-badge'}
+                      />
                       {needsYou > 0 ? (
                         <span
                           className="plans-pane__badge plans-pane__badge--needs"
@@ -939,6 +880,7 @@ export default function PlansPane() {
         planSlug={popupPlan}
         harnessSlug={popupRow?.harness ?? null}
         planTitle={popupRow?.title ?? popupPlan}
+        origin={popupRow?.origin ?? null}
         onClose={() => void setPopupPlan(null)}
       />
     </div>

@@ -140,8 +140,8 @@ vi.mock('../inbox/use-inbox-pending', () => ({
   useInboxAttention: () => ({ items: attentionItems.value, loading: false, error: null, refresh: vi.fn() }),
 }));
 vi.mock('./PlanPopupModal', () => ({
-  default: ({ planSlug }: { planSlug: string | null }) =>
-    planSlug ? <div data-testid="popup-open">{planSlug}</div> : null,
+  default: ({ planSlug, origin }: { planSlug: string | null; origin?: 'scout' | null }) =>
+    planSlug ? <div data-testid="popup-open" data-origin={origin ?? 'outside-blender'}>{planSlug}</div> : null,
 }));
 // WI-5547: PlansPane warms the Vditor/Lute stack on idle after mount so the
 // first plan popup opens WARM (~430ms) instead of paying the ~600ms cold WASM
@@ -322,13 +322,7 @@ describe('PlansPane', () => {
     expect(setters.plq).toHaveBeenCalledWith(null);
   });
 
-  // WI-39439. The owner's split is Blender vs everything-else, so ABSENCE of this
-  // badge is load-bearing: it is what says "human or standard agent". The row that
-  // must stay bare is the su-ideate one — a plan an su AGENT ideated. It reaches the
-  // client as `origin: undefined` (the server derivation filters to origin='scout'),
-  // so a regression that re-widens that derivation to "any ledger row" shows up here
-  // as a badge on p-agent, not as a type error.
-  it('marks ONLY Blender-routed plans with the provenance icon (WI-39439)', () => {
+  it('labels every row Blender or Outside Blender without inferring creator identity', () => {
     planListData.value = {
       plans: [
         plan({ slug: 'p-blender', title: 'Blender plan', origin: 'scout' }),
@@ -339,7 +333,9 @@ describe('PlansPane', () => {
 
     render(<PlansPane />);
     const badges = screen.getAllByTestId('plans-pane-blender-badge');
+    const outside = screen.getAllByTestId('plans-pane-outside-blender-badge');
     expect(badges).toHaveLength(1);
+    expect(outside).toHaveLength(2);
     // The owner asked for a BLENDER glyph specifically and for it to be hard to
     // miss, so both halves are pinned: an inline svg (lucide ships no blender, so
     // this is hand-drawn and a refactor could silently drop it) and the visible
@@ -349,8 +345,19 @@ describe('PlansPane', () => {
     // Assert WHICH row carries it — a single badge on the wrong row would also
     // satisfy a bare length check.
     expect(screen.getByTestId('plans-pane-row-p-blender').contains(badges[0])).toBe(true);
-    expect(screen.getByTestId('plans-pane-row-p-agent').querySelector('[data-testid="plans-pane-blender-badge"]')).toBeNull();
-    expect(screen.getByTestId('plans-pane-row-p-human').querySelector('[data-testid="plans-pane-blender-badge"]')).toBeNull();
+    expect(screen.getByTestId('plans-pane-row-p-agent').textContent).toContain('Outside Blender');
+    expect(screen.getByTestId('plans-pane-row-p-human').textContent).toContain('Outside Blender');
+    expect(outside.map((badge) => badge.textContent)).toEqual(['Outside Blender', 'Outside Blender']);
+    expect(outside.map((badge) => badge.textContent).join(' ')).not.toMatch(/user|agent/i);
+  });
+
+  it('passes the same canonical provenance into a deep-linked popup', () => {
+    planListData.value = {
+      plans: [plan({ slug: 'p-blender', title: 'Blender plan', origin: 'scout' })],
+    };
+    nuqs.pplan = 'p-blender';
+    render(<PlansPane />);
+    expect(screen.getByTestId('popup-open').getAttribute('data-origin')).toBe('scout');
   });
 
   it('renders active plans with needs-you, live, and progress badges', () => {

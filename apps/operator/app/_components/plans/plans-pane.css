@@ -159,7 +159,7 @@
    borrowing a status colour would make these rows look like they need
    attention. Violet is unused by the other badges, so it cannot be confused
    with one. */
-.plans-pane__badge--blender {
+.plan-provenance-badge {
   gap: 4px; padding: 2px 7px 2px 5px;
   /* Case + size + weight carry the distinction — NOT letter-spacing, which is a
      banned design primitive here and reds the shared green-checkpoint gate for
@@ -170,9 +170,21 @@
   border-color: #c084fc;
   box-shadow: 0 1px 6px color-mix(in srgb, #7c3aed 55%, transparent);
 }
+.plan-provenance-badge--blender {
+  color: #fff;
+  background: linear-gradient(180deg, #a855f7, #7c3aed);
+  border-color: #c084fc;
+  box-shadow: 0 1px 6px color-mix(in srgb, #7c3aed 55%, transparent);
+}
 /* The glyph must never be squeezed by the flex row when a title is long — it is
    the half of this badge that carries the meaning. */
-.plans-pane__badge--blender svg { flex: 0 0 auto; }
+.plan-provenance-badge svg { flex: 0 0 auto; }
+.plan-provenance-badge--outside {
+  color: #fff;
+  background: linear-gradient(180deg, #3b82f6, #1d4ed8);
+  border-color: #60a5fa;
+  box-shadow: 0 1px 5px color-mix(in srgb, #1d4ed8 42%, transparent);
+}
 
 /* Second, quieter half of "hard to miss": mark the ROW, not just the badge, so a
    Blender plan is identifiable from the left edge while scanning — the badges sit
@@ -180,13 +192,16 @@
    elsewhere in this codebase (plans.css read-mode rules) and supported by the
    desktop's WebKitGTK webview. Purely additive: a browser without :has() simply
    shows the badge alone, which is still correct. */
-.plans-pane__row:has(.plans-pane__badge--blender) {
+.plans-pane__row:has(.plan-provenance-badge--blender) {
   border-left: 2px solid #a855f7;
   background: linear-gradient(
     90deg,
     color-mix(in srgb, #7c3aed 13%, transparent),
     transparent 42%
   );
+}
+.plans-pane__row:has(.plan-provenance-badge--outside) {
+  border-left: 2px solid #3b82f6;
 }
 /* Row actions sit over the card's right edge as SIBLINGS of the row button
    (never nested — invalid HTML). Hidden until row hover or keyboard focus. */
@@ -535,6 +550,10 @@
 .plan-popup__header {
   display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
   padding: 9px 12px; border-bottom: 1px solid var(--border, rgba(255, 255, 255, 0.1));
+}
+.plan-popup__identity {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: center; gap: 8px;
 }
 .plan-popup__title {
   flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 650; color: var(--fg, #e7e7ea);
