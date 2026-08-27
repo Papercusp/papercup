@@ -91,33 +91,37 @@ describe("InboxBulkReportHost", () => {
     expect(screen.queryByTestId("inbox-bulk-report-takeover")).toBeNull();
   });
 
-  it("mounts the app-pane takeover exactly when the persisted run reaches review", () => {
-    const items = [
-      {
-        runId: "run-8",
-        itemId: "coord-message:m-8",
-        kind: "coord-message",
-        ref: { kind: "coord-message", msgId: "m-8" },
-        ownerAgentId: "su-8",
-      },
-    ];
+  it("mounts one foreground takeover without a full attention read for 200 persisted rows", () => {
+    const items = Array.from({ length: 200 }, (_, position) => ({
+      runId: "run-8",
+      itemId: `coord-message:m-${position}`,
+      position,
+      kind: "coord-message",
+      ref: { kind: "coord-message", msgId: `m-${position}` },
+      ownerAgentId: `su-${position}`,
+    }));
     H.state.value = { run: { runId: "run-8", phase: "review" }, items };
     render(<InboxBulkReportHost />);
-    expect(screen.getByTestId("inbox-bulk-report-takeover")).toBeTruthy();
+    expect(screen.getAllByTestId("inbox-bulk-report-takeover")).toHaveLength(1);
     expect(screen.getByTestId("inbox-report-mock")).toBeTruthy();
     expect(H.attentionReads.value).toBe(0);
     expect(H.reportProps.value?.runItems).toBe(items);
+    expect((H.reportProps.value?.runItems as unknown[]).length).toBe(200);
     expect("attentionItems" in (H.reportProps.value ?? {})).toBe(false);
     expect(H.queryOptions.value).toEqual({ enabled: true });
   });
 
   it("does not hydrate or mount while another report owns foreground", () => {
     H.param.foreground = false;
-    H.state.value = { run: { runId: "run-8", phase: "review" }, items: [] };
+    H.state.value = {
+      run: { runId: "run-8", phase: "review" },
+      items: Array.from({ length: 200 }, (_, position) => ({ position })),
+    };
     render(<InboxBulkReportHost />);
 
     expect(H.queryOptions.value).toEqual({ enabled: false });
     expect(screen.queryByTestId("inbox-bulk-report-takeover")).toBeNull();
+    expect(H.attentionReads.value).toBe(0);
   });
 
   it("stays absent when the kill switch is off even for a review run", () => {
