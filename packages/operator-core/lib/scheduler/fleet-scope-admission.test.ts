@@ -1200,6 +1200,7 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.error).toMatch(/genuinely empty right now/);
       expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBe(0);
       expect(miss.advice).not.toMatch(/ESCALATE to your fleet leader NOW/);
+      expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
     });
 
     it('reports `ordinary_drain` (never spec_matches_nothing) when featureFamilyMatched is unavailable (null/undefined)', () => {
@@ -1213,6 +1214,7 @@ describe('fleet scope assignment admission (P-016)', () => {
         expect(miss.error).toMatch(/ORDINARY DRAIN/);
         expect(miss.error).toMatch(/could not be confirmed/);
         expect((miss as { featureFamilyMatched?: number | null }).featureFamilyMatched).toBeNull();
+        expect(miss.advice).toMatch(/loop:end \{ acknowledgeWakeLessAutonomy: true \}/);
       }
     });
 

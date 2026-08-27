@@ -1922,8 +1922,10 @@ export function fleetScopedMiss(
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
-            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources, and loop:end — ' +
-            'quoting `reason: "ordinary_drain"` if you report it. If you have reason to believe real work should exist, verify ' +
+            'not a sign the spec is broken. Checkpoint any atomic progress, release remaining lane resources, and call ' +
+            'loop:end { acknowledgeWakeLessAutonomy: true } if AUTO (or another autonomy-implying mode) remains active without ' +
+            'a deliberate independent event await — otherwise loop:end will refuse the wake-less stop. Quote `reason: "ordinary_drain"` ' +
+            'if you report it. If you have reason to believe real work should exist, verify ' +
             'directly with plans:items / work_items:claimable before escalating.'
           : specEmpty
           ? opts?.leaderLiveness === false
