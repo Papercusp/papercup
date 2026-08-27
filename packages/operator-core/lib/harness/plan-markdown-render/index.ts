@@ -17,12 +17,8 @@
 import * as fs from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { withWorkspace } from '@papercusp/db-org';
-import { hashPlanContent } from '@papercusp/plan-parser';
-import {
-  resolvePlanScope,
-  getPlansDir,
-  getArchiveDir,
-} from '../../agent-tools/plans/source';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
+import { resolvePlanScope, getPlansDir, getArchiveDir } from '../../agent-tools/plans/source';
 import { runPlanRenderTick, type RenderFs, type RenderTarget, type RenderTickResult } from './tick';
 
 export type { RenderTickResult } from './tick';
@@ -72,11 +68,14 @@ export const nodeRenderFs: RenderFs = {
 
 /** Cheap per-plan listing (slug, hash, archived, updatedAt) — NO content blob. */
 async function listRenderTargets(workspaceId: string, harnessSlug: string): Promise<RenderTarget[]> {
-  const rows = await withWorkspace(workspaceId, async (tx) =>
-    tx<{ plan_slug: string; content_hash: string; archived: boolean; updated_at: Date | string }[]>`
+  const rows = await withWorkspace(
+    workspaceId,
+    async (tx) =>
+      tx<{ plan_slug: string; content_hash: string; archived: boolean; updated_at: Date | string }[]>`
       SELECT plan_slug, content_hash, archived, updated_at
         FROM harness_shared.harness_plans
-       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}`);
+       WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}`,
+  );
   return rows.map((r) => ({
     slug: r.plan_slug,
     contentHash: r.content_hash,
@@ -86,17 +85,16 @@ async function listRenderTargets(workspaceId: string, harnessSlug: string): Prom
 }
 
 /** Fetch one plan's canonical markdown (only for plans that actually changed). */
-async function getPlanContent(
-  workspaceId: string,
-  harnessSlug: string,
-  slug: string,
-): Promise<string | null> {
-  const rows = await withWorkspace(workspaceId, async (tx) =>
-    tx<{ content: string }[]>`
+async function getPlanContent(workspaceId: string, harnessSlug: string, slug: string): Promise<string | null> {
+  const rows = await withWorkspace(
+    workspaceId,
+    async (tx) =>
+      tx<{ content: string }[]>`
       SELECT content
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND plan_slug = ${slug}
-       LIMIT 1`);
+       LIMIT 1`,
+  );
   return rows[0]?.content ?? null;
 }
 

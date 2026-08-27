@@ -1,6 +1,6 @@
 /** Flagship Gmail inbound message → plan run → anchored draft reply binding (P-011). */
 import type postgres from 'postgres';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
 import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
 import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from './admin';

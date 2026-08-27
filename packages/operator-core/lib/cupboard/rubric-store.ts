@@ -28,7 +28,7 @@
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { papercuspPath } from '../papercusp-root';
 import {
   bundledDirFromEnv,
@@ -211,10 +211,7 @@ export function listLocalRubrics(roots: RubricRoot[] = rubricRoots()): LocalRubr
 }
 
 /** Resolve one rubric by ref (or rubricId) from the local store, or null. */
-export function resolveLocalRubric(
-  idOrRef: string,
-  roots: RubricRoot[] = rubricRoots(),
-): LocalRubric | null {
+export function resolveLocalRubric(idOrRef: string, roots: RubricRoot[] = rubricRoots()): LocalRubric | null {
   const key = (idOrRef ?? '').trim();
   if (!key) return null;
   const all = listLocalRubrics(roots);
@@ -329,10 +326,7 @@ export function seedContentHash(f: SeedComparableSource): string {
  * Idempotent: a re-run against a fully up-to-date store (or one with no bundle changes)
  * returns [].
  */
-export function rubricsNeedingSeed(
-  bundled: LocalRubric[],
-  existing: readonly ExistingRubricRow[],
-): LocalRubric[] {
+export function rubricsNeedingSeed(bundled: LocalRubric[], existing: readonly ExistingRubricRow[]): LocalRubric[] {
   const byId = new Map(existing.map((e) => [e.rubricId, e] as const));
   const out: LocalRubric[] = [];
   for (const r of bundled) {

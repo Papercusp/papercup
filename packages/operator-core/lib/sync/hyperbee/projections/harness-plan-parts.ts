@@ -15,7 +15,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import type postgres from 'postgres';
-import { joinFederatedParts, hashPlanContent, parsePlan, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
+import { joinFederatedParts, parsePlan, type FederatedPart, type PlanPartKind } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { FLAGS } from '@papercusp/flags';
 import type { TableProjection, ProvenanceContext } from '../projection';
 import { decideMemberContentOp } from '../member-content-guard';
@@ -41,9 +42,12 @@ export function isPlanPartWireRow(input: unknown): input is PlanPartWireRow {
   if (!input || typeof input !== 'object') return false;
   const r = input as Record<string, unknown>;
   return (
-    typeof r.harness_slug === 'string' && r.harness_slug.length > 0 &&
-    typeof r.plan_slug === 'string' && r.plan_slug.length > 0 &&
-    typeof r.part_key === 'string' && r.part_key.length > 0 &&
+    typeof r.harness_slug === 'string' &&
+    r.harness_slug.length > 0 &&
+    typeof r.plan_slug === 'string' &&
+    r.plan_slug.length > 0 &&
+    typeof r.part_key === 'string' &&
+    r.part_key.length > 0 &&
     typeof r.kind === 'string' &&
     typeof r.body === 'string' &&
     typeof r.ordinal === 'number' &&
@@ -59,7 +63,12 @@ export interface HarnessPlanPartsProjectionOpts {
   /** Test seam — the part store (default: PgPlanPartsStore over `sql`). */
   store?: PlanPartsStore;
   /** Test seam — the harness_plans recompose sink (default: the sql UPDATE below). */
-  recomposeSink?: (planSlug: string, content: string, contentHash: string, provenance?: ProvenanceContext) => Promise<void>;
+  recomposeSink?: (
+    planSlug: string,
+    content: string,
+    contentHash: string,
+    provenance?: ProvenanceContext,
+  ) => Promise<void>;
   /** Test seam — the local flag gate (default: getFlag(PLAN_PART_FEDERATION,'system')). */
   isFlagOn?: () => Promise<boolean>;
   /** Test seam — read the local harness_plans.content for a plan (default: the SQL
@@ -122,7 +131,12 @@ async function flagOn(opts: HarnessPlanPartsProjectionOpts): Promise<boolean> {
  *  table is the content LWW authority, so the recompose always reflects the
  *  current merged state. */
 function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
-  return async (planSlug: string, content: string, contentHash: string, provenance?: ProvenanceContext): Promise<void> => {
+  return async (
+    planSlug: string,
+    content: string,
+    contentHash: string,
+    provenance?: ProvenanceContext,
+  ): Promise<void> => {
     const sql = opts.sql ?? getOrgPg().sql;
     const fedTs = provenance?.ts ?? null;
     const { frontmatter: fm, isLegacy } = parsePlan(content);
@@ -169,7 +183,12 @@ function defaultRecomposeSink(opts: HarnessPlanPartsProjectionOpts) {
   };
 }
 
-async function recompose(opts: HarnessPlanPartsProjectionOpts, store: PlanPartsStore, planSlug: string, provenance?: ProvenanceContext): Promise<void> {
+async function recompose(
+  opts: HarnessPlanPartsProjectionOpts,
+  store: PlanPartsStore,
+  planSlug: string,
+  provenance?: ProvenanceContext,
+): Promise<void> {
   if (!(await flagOn(opts))) return; // DARK / asymmetric-peer guard — never drive harness_plans when off
   const content = joinFederatedParts(await store.getParts(planSlug));
   const sink = opts.recomposeSink ?? defaultRecomposeSink(opts);
@@ -190,7 +209,11 @@ async function readLocalPlanContent(opts: HarnessPlanPartsProjectionOpts, planSl
   return r?.content ?? null;
 }
 
-async function applyPart(opts: HarnessPlanPartsProjectionOpts, row: PlanPartWireRow, provenance: ProvenanceContext): Promise<void> {
+async function applyPart(
+  opts: HarnessPlanPartsProjectionOpts,
+  row: PlanPartWireRow,
+  provenance: ProvenanceContext,
+): Promise<void> {
   // WI-259 parity (D-027): own-slug applies; a CROSS-member part op applies iff its VERIFIED
   // source-log device ∈ the hive's CURRENT members — the SAME membership guard the 6 content
   // projections use (member-content-guard.ts decideMemberContentOp). Previously a bare
@@ -273,11 +296,17 @@ async function deletePart(opts: HarnessPlanPartsProjectionOpts, key: string, del
   const planSlug = key.slice(0, slash);
   const partKey = key.slice(slash + 1);
   const store = storeFor(opts);
-  await store.upsertPart(planSlug, { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true }, 'remote');
+  await store.upsertPart(
+    planSlug,
+    { key: partKey, kind: 'item', text: '', order: 0, fedTs: delTs ?? 0, tombstone: true },
+    'remote',
+  );
   await recompose(opts, store, planSlug);
 }
 
-export function buildHarnessPlanPartsProjection(opts: HarnessPlanPartsProjectionOpts): TableProjection<PlanPartWireRow> {
+export function buildHarnessPlanPartsProjection(
+  opts: HarnessPlanPartsProjectionOpts,
+): TableProjection<PlanPartWireRow> {
   return {
     tableTag: 'plan-parts',
     // CDC-captured table — own-log ops are replays; see TableProjection.skipOwnOps.

@@ -1,6 +1,6 @@
 /** Flagship Slack mention → plan run → thread response binding (P-008). */
 import type postgres from 'postgres';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import type { TokenStorage } from '../oauth/token';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
 import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';

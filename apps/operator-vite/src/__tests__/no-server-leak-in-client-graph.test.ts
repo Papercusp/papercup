@@ -29,21 +29,27 @@
 // node/server imports; `import type` from server modules is fine, it's erased),
 // re-export them from the server module for existing callers, and point the
 // client import at the shared file. See knowledge-packs/candidates-shared.ts.
-import { describe, expect, it } from 'vitest';
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { aliasMatches, parseShimAliases } from './browser-shims.test';
+import { describe, expect, it } from "vitest";
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { aliasMatches, parseShimAliases } from "./browser-shims.test";
 
-const OPERATOR_VITE = resolve(__dirname, '../..'); // apps/operator-vite
-const REPO_ROOT = resolve(OPERATOR_VITE, '../..');
-const OPERATOR_ROOT = resolve(OPERATOR_VITE, '../operator'); // apps/operator ('@' alias)
-const OPERATOR_CORE_LIB = resolve(REPO_ROOT, 'packages/operator-core/lib');
-const ENTRY = resolve(OPERATOR_VITE, 'src/main.tsx');
-const VITE_CONFIG = resolve(OPERATOR_VITE, 'vite.config.ts');
+const OPERATOR_VITE = resolve(__dirname, "../.."); // apps/operator-vite
+const REPO_ROOT = resolve(OPERATOR_VITE, "../..");
+const OPERATOR_ROOT = resolve(OPERATOR_VITE, "../operator"); // apps/operator ('@' alias)
+const OPERATOR_CORE_LIB = resolve(REPO_ROOT, "packages/operator-core/lib");
+const ENTRY = resolve(OPERATOR_VITE, "src/main.tsx");
+const VITE_CONFIG = resolve(OPERATOR_VITE, "vite.config.ts");
 
 /** node: builtins that vite.config aliases to a browser SHIM are safe in the SPA. */
 function shimmedNodeBuiltins(): Set<string> {
-  const cfg = readFileSync(VITE_CONFIG, 'utf8');
+  const cfg = readFileSync(VITE_CONFIG, "utf8");
   const out = new Set<string>();
   const re = /find:\s*\/\^(node:[a-z_/]+)\$\//g;
   let m: RegExpExecArray | null;
@@ -53,14 +59,29 @@ function shimmedNodeBuiltins(): Set<string> {
 
 /** A module in the client source trees can eagerly load its dynamic import()s. */
 const isClient = (f: string): boolean =>
-  f.includes('/apps/operator-vite/src/') || f.includes('/apps/operator/app/');
+  f.includes("/apps/operator-vite/src/") || f.includes("/apps/operator/app/");
 
-/** Only operator-core/operator modules are server-leak candidates worth flagging. */
+/**
+ * Every client-reachable workspace source module is ours and must be safe.
+ *
+ * This used to classify only operator-core/operator files even after the graph
+ * walker learned to follow workspace packages. That left the final inspection
+ * blind to exactly the modules the resolver had just recovered: a
+ * `@papercusp/plan-parser` barrel reached `node:crypto`, blanked :3055, and this
+ * guard stayed green because the offending file lived under `libs/generic`.
+ */
 const isOwnCode = (f: string): boolean =>
-  f.startsWith(OPERATOR_CORE_LIB) || f.startsWith(join(OPERATOR_ROOT, 'lib')) || f.startsWith(join(OPERATOR_ROOT, 'app'));
+  f.startsWith(REPO_ROOT + "/") && !f.includes("/node_modules/");
 
 function fileFor(base: string): string | null {
-  for (const c of [base, base + '.ts', base + '.tsx', base + '.js', join(base, 'index.ts'), join(base, 'index.tsx')]) {
+  for (const c of [
+    base,
+    base + ".ts",
+    base + ".tsx",
+    base + ".js",
+    join(base, "index.ts"),
+    join(base, "index.tsx"),
+  ]) {
     try {
       if (existsSync(c) && statSync(c).isFile()) return c;
     } catch {
@@ -71,7 +92,7 @@ function fileFor(base: string): string | null {
 }
 
 /** Shim aliases from vite.config — a specifier vite redirects at a browser shim. */
-const SHIM_ALIASES = parseShimAliases(readFileSync(VITE_CONFIG, 'utf8'));
+const SHIM_ALIASES = parseShimAliases(readFileSync(VITE_CONFIG, "utf8"));
 
 /**
  * The shim file a specifier is aliased to, or null. Resolving to the SHIM (rather
@@ -82,7 +103,8 @@ const SHIM_ALIASES = parseShimAliases(readFileSync(VITE_CONFIG, 'utf8'));
  */
 function shimFor(spec: string): string | null {
   for (const a of SHIM_ALIASES) {
-    if (aliasMatches(a.find, spec)) return fileFor(join(OPERATOR_VITE, 'src/shims', a.shim));
+    if (aliasMatches(a.find, spec))
+      return fileFor(join(OPERATOR_VITE, "src/shims", a.shim));
   }
   return null;
 }
@@ -110,7 +132,7 @@ function resolveWorkspacePkg(spec: string): string | null {
   const [, name, subpath] = m;
   let pkgDir: string;
   try {
-    pkgDir = realpathSync(join(REPO_ROOT, 'node_modules', name));
+    pkgDir = realpathSync(join(REPO_ROOT, "node_modules", name));
   } catch {
     return null;
   }
@@ -118,33 +140,37 @@ function resolveWorkspacePkg(spec: string): string | null {
   // tree. A third-party dep realpaths to somewhere under a node_modules/ directory
   // (usually the hoisted repo-root one, which is itself inside REPO_ROOT — so the
   // containment check alone is not enough to tell them apart).
-  if (!pkgDir.startsWith(REPO_ROOT + '/') || pkgDir.includes('/node_modules/')) return null;
+  if (!pkgDir.startsWith(REPO_ROOT + "/") || pkgDir.includes("/node_modules/"))
+    return null;
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(readFileSync(join(pkgDir, 'package.json'), 'utf8'));
+    json = JSON.parse(readFileSync(join(pkgDir, "package.json"), "utf8"));
   } catch {
     return null;
   }
   const exports = json.exports as Record<string, unknown> | string | undefined;
-  const key = subpath ? `./${subpath}` : '.';
-  if (exports && typeof exports === 'object') {
+  const key = subpath ? `./${subpath}` : ".";
+  if (exports && typeof exports === "object") {
     const hit = exports[key];
-    if (typeof hit === 'string') return fileFor(join(pkgDir, hit));
-    if (hit && typeof hit === 'object') {
+    if (typeof hit === "string") return fileFor(join(pkgDir, hit));
+    if (hit && typeof hit === "object") {
       for (const v of Object.values(hit as Record<string, unknown>)) {
-        if (typeof v === 'string') {
+        if (typeof v === "string") {
           const f = fileFor(join(pkgDir, v));
           if (f) return f;
         }
       }
     }
-  } else if (typeof exports === 'string' && !subpath) {
+  } else if (typeof exports === "string" && !subpath) {
     const f = fileFor(join(pkgDir, exports));
     if (f) return f;
   }
-  if (subpath) return fileFor(join(pkgDir, subpath)) ?? fileFor(join(pkgDir, 'src', subpath));
-  for (const c of [json.module, json.main, 'src/index.ts', 'index.ts']) {
-    if (typeof c !== 'string') continue;
+  if (subpath)
+    return (
+      fileFor(join(pkgDir, subpath)) ?? fileFor(join(pkgDir, "src", subpath))
+    );
+  for (const c of [json.module, json.main, "src/index.ts", "index.ts"]) {
+    if (typeof c !== "string") continue;
     const f = fileFor(join(pkgDir, c));
     if (f) return f;
   }
@@ -152,14 +178,18 @@ function resolveWorkspacePkg(spec: string): string | null {
 }
 
 function resolveSpec(spec: string, fromFile: string): string | null {
-  const s = spec.replace(/\?.*$/, '');
+  const s = spec.replace(/\?.*$/, "");
   // Shims first: vite's alias table wins over the real module (first match wins there too).
   const shim = shimFor(s);
   if (shim) return shim;
-  if (s.startsWith('@papercusp/operator-core/lib/')) return fileFor(join(OPERATOR_CORE_LIB, s.slice('@papercusp/operator-core/lib/'.length)));
-  if (s === '@papercusp/operator-core') return fileFor(join(REPO_ROOT, 'packages/operator-core/index'));
-  if (s.startsWith('@/')) return fileFor(join(OPERATOR_ROOT, s.slice(2)));
-  if (s.startsWith('.')) return fileFor(resolve(dirname(fromFile), s));
+  if (s.startsWith("@papercusp/operator-core/lib/"))
+    return fileFor(
+      join(OPERATOR_CORE_LIB, s.slice("@papercusp/operator-core/lib/".length)),
+    );
+  if (s === "@papercusp/operator-core")
+    return fileFor(join(REPO_ROOT, "packages/operator-core/index"));
+  if (s.startsWith("@/")) return fileFor(join(OPERATOR_ROOT, s.slice(2)));
+  if (s.startsWith(".")) return fileFor(resolve(dirname(fromFile), s));
   return resolveWorkspacePkg(s); // our own packages; third-party deps still return null
 }
 
@@ -204,7 +234,7 @@ function specsIn(src: string, allowDynamic: boolean): string[] {
 function edges(file: string): string[] {
   let src: string;
   try {
-    src = readFileSync(file, 'utf8');
+    src = readFileSync(file, "utf8");
   } catch {
     return [];
   }
@@ -215,7 +245,7 @@ function edges(file: string): string[] {
 function unsafeNodeBuiltins(file: string, shimmed: Set<string>): string[] {
   let src: string;
   try {
-    src = readFileSync(file, 'utf8');
+    src = readFileSync(file, "utf8");
   } catch {
     return [];
   }
@@ -231,17 +261,17 @@ function unsafeNodeBuiltins(file: string, shimmed: Set<string>): string[] {
   return [...found];
 }
 
-describe('no server-only module leaks into the SPA browser-eager graph', () => {
-  it('every client-reachable operator-core/operator module is browser-safe (no unshimmed node: builtins)', () => {
+describe("no server-only module leaks into the SPA browser-eager graph", () => {
+  it("every client-reachable operator-core/operator module is browser-safe (no unshimmed node: builtins)", () => {
     const shimmed = shimmedNodeBuiltins();
-    const seen = new Map<string, string[]>([[ENTRY, ['src/main.tsx']]]);
-    const queue: Array<[string, string[]]> = [[ENTRY, ['src/main.tsx']]];
+    const seen = new Map<string, string[]>([[ENTRY, ["src/main.tsx"]]]);
+    const queue: Array<[string, string[]]> = [[ENTRY, ["src/main.tsx"]]];
     while (queue.length) {
       const [file, path] = queue.shift()!;
       for (const spec of edges(file)) {
         const r = resolveSpec(spec, file);
         if (r && !seen.has(r)) {
-          const np = [...path, `${spec} -> ${r.replace(REPO_ROOT + '/', '')}`];
+          const np = [...path, `${spec} -> ${r.replace(REPO_ROOT + "/", "")}`];
           seen.set(r, np);
           queue.push([r, np]);
         }
@@ -254,8 +284,8 @@ describe('no server-only module leaks into the SPA browser-eager graph', () => {
       const bi = unsafeNodeBuiltins(file, shimmed);
       if (bi.length) {
         leaks.push(
-          `\n  ${file.replace(REPO_ROOT + '/', '')}  [${bi.join(', ')}]\n` +
-            chain.map((p, i) => `      ${i}. ${p}`).join('\n'),
+          `\n  ${file.replace(REPO_ROOT + "/", "")}  [${bi.join(", ")}]\n` +
+            chain.map((p, i) => `      ${i}. ${p}`).join("\n"),
         );
       }
     }
@@ -264,7 +294,7 @@ describe('no server-only module leaks into the SPA browser-eager graph', () => {
       leaks.length,
       `A server-only module reached the SPA's browser-eager import graph and imports an unshimmed node: builtin — it will throw at module-init on :3055 and white-screen the route.\n` +
         `Fix: extract the client-needed type/constant into a client-safe *-shared.ts (see knowledge-packs/candidates-shared.ts) and import from there.\n` +
-        `Leaks:${leaks.join('\n')}\n`,
+        `Leaks:${leaks.join("\n")}\n`,
     ).toBe(0);
   });
 });
@@ -300,15 +330,22 @@ describe('no server-only module leaks into the SPA browser-eager graph', () => {
 // explicit `configure*()` seam call from a client-graph gate file
 // (`lazy-reload-gate.ts`, `query-health-gate.ts`) — banning the pattern
 // inside the library itself would break that (intentional, tested) design.
-describe('no process.env.NODE_ENV gates in the client-graph source trees', () => {
-  const CLIENT_GRAPH_ROOTS = [resolve(OPERATOR_VITE, 'src'), resolve(OPERATOR_ROOT, 'app')];
+describe("no process.env.NODE_ENV gates in the client-graph source trees", () => {
+  const CLIENT_GRAPH_ROOTS = [
+    resolve(OPERATOR_VITE, "src"),
+    resolve(OPERATOR_ROOT, "app"),
+  ];
 
   function listFiles(dir: string, out: string[]): string[] {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+      if (entry.name === "node_modules" || entry.name.startsWith(".")) continue;
       const p = join(dir, entry.name);
       if (entry.isDirectory()) listFiles(p, out);
-      else if (/\.(ts|tsx)$/.test(entry.name) && !/\.test\.(ts|tsx)$/.test(entry.name)) out.push(p);
+      else if (
+        /\.(ts|tsx)$/.test(entry.name) &&
+        !/\.test\.(ts|tsx)$/.test(entry.name)
+      )
+        out.push(p);
     }
     return out;
   }
@@ -318,16 +355,18 @@ describe('no process.env.NODE_ENV gates in the client-graph source trees', () =>
    *  gate. Block comments first, then line comments — mirrors the approach
    *  already used by the scanner above. */
   function stripComments(src: string): string {
-    return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    return src
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:])\/\/.*$/gm, "$1");
   }
 
-  it('no client-graph file references process.env.NODE_ENV outside a comment', () => {
+  it("no client-graph file references process.env.NODE_ENV outside a comment", () => {
     const offenders: string[] = [];
     for (const root of CLIENT_GRAPH_ROOTS) {
       for (const file of listFiles(root, [])) {
-        const src = readFileSync(file, 'utf8');
+        const src = readFileSync(file, "utf8");
         if (/process\.env\.NODE_ENV/.test(stripComments(src))) {
-          offenders.push(file.replace(REPO_ROOT + '/', ''));
+          offenders.push(file.replace(REPO_ROOT + "/", ""));
         }
       }
     }
@@ -336,7 +375,7 @@ describe('no process.env.NODE_ENV gates in the client-graph source trees', () =>
       `process.env.NODE_ENV is constant-folded to 'production' by \`vite build\` regardless of ` +
         `--mode, so a dev/prod gate written against it is silently dead code under this repo's ` +
         `dev shell (WI-7002). Use \`import.meta.env.MODE !== 'production'\` instead.\n` +
-        `Offenders:\n${offenders.map((f) => `  ${f}`).join('\n')}\n`,
+        `Offenders:\n${offenders.map((f) => `  ${f}`).join("\n")}\n`,
     ).toBe(0);
   });
 });
@@ -346,75 +385,92 @@ describe('no process.env.NODE_ENV gates in the client-graph source trees', () =>
 // never finished walking. That is exactly how WI-39514 stayed invisible: the walk
 // stopped at `@papercusp/db-org` and the six hops to `node:path` behind it were
 // never seen. These controls pin both directions so neither can regress quietly.
-describe('workspace-package resolution (the WI-39514 blind spot)', () => {
-  const from = join(OPERATOR_CORE_LIB, 'goal-launch-settings.ts');
+describe("workspace-package resolution (the WI-39514 blind spot)", () => {
+  const from = join(OPERATOR_CORE_LIB, "goal-launch-settings.ts");
 
-  it('follows a workspace package into its SOURCE entry', () => {
+  it("follows a workspace package into its SOURCE entry", () => {
     // The exact edge that used to resolve to null.
-    const r = resolveSpec('@papercusp/db-org', from);
-    expect(r, '@papercusp/db-org must resolve — a null here restores the blind spot').toBe(
-      join(REPO_ROOT, 'libs/papercusp/libs/db/src/index.ts'),
+    const r = resolveSpec("@papercusp/db-org", from);
+    expect(
+      r,
+      "@papercusp/db-org must resolve — a null here restores the blind spot",
+    ).toBe(join(REPO_ROOT, "libs/papercusp/libs/db/src/index.ts"));
+  });
+
+  it("resolves a subpath export through the package exports map", () => {
+    expect(resolveSpec("@papercusp/coordination/presence", from)).toBe(
+      join(REPO_ROOT, "packages/coordination/src/presence/index.ts"),
     );
   });
 
-  it('resolves a subpath export through the package exports map', () => {
-    expect(resolveSpec('@papercusp/coordination/presence', from)).toBe(
-      join(REPO_ROOT, 'packages/coordination/src/presence/index.ts'),
-    );
-  });
-
-  it('prefers the browser SHIM over the real module when vite aliases one', () => {
+  it("prefers the browser SHIM over the real module when vite aliases one", () => {
     // The false-positive direction: walking the real event-log barrel would report
     // its node:fs backend as a leak the bundler never emits.
-    expect(resolveSpec('@papercusp/coordination/event-log', from)).toBe(
-      join(OPERATOR_VITE, 'src/shims/coordination-event-log-browser.ts'),
+    expect(resolveSpec("@papercusp/coordination/event-log", from)).toBe(
+      join(OPERATOR_VITE, "src/shims/coordination-event-log-browser.ts"),
     );
   });
 
-  it('does NOT walk into third-party node_modules dependencies', () => {
-    expect(resolveSpec('react', from)).toBeNull();
-    expect(resolveSpec('zod', from)).toBeNull();
+  it("does NOT walk into third-party node_modules dependencies", () => {
+    expect(resolveSpec("react", from)).toBeNull();
+    expect(resolveSpec("zod", from)).toBeNull();
   });
 
-  it('detects an unshimmed node: builtin in a real server module (known-positive)', () => {
+  it("detects an unshimmed node: builtin in a real server module (known-positive)", () => {
     // Calibration: the scanner must actually flag the module at the end of the
     // WI-39514 chain, or the leak test's zero means nothing.
     const shimmed = shimmedNodeBuiltins();
-    const target = join(REPO_ROOT, 'libs/generic/embedded-pg-discovery/src/index.ts');
-    expect(unsafeNodeBuiltins(target, shimmed)).toContain('node:path');
+    const target = join(
+      REPO_ROOT,
+      "libs/generic/embedded-pg-discovery/src/index.ts",
+    );
+    expect(unsafeNodeBuiltins(target, shimmed)).toContain("node:path");
   });
 
-  it('reports a browser-safe module as clean (known-negative)', () => {
+  it("reports a browser-safe module as clean (known-negative)", () => {
     const shimmed = shimmedNodeBuiltins();
-    expect(unsafeNodeBuiltins(join(OPERATOR_CORE_LIB, 'goal-launch-settings-shared.ts'), shimmed)).toEqual([]);
+    expect(
+      unsafeNodeBuiltins(
+        join(OPERATOR_CORE_LIB, "goal-launch-settings-shared.ts"),
+        shimmed,
+      ),
+    ).toEqual([]);
   });
 });
 
-describe('import-graph scanner', () => {
+describe("import-graph scanner", () => {
   const specs = (src: string) => [...specsIn(src, true)].sort();
 
-  it('a side-effect import does not swallow the statements after it', () => {
+  it("a side-effect import does not swallow the statements after it", () => {
     // The 2026-08-02 regression: `[\s\S]*?` let `import './x.css';` run past its own
     // statement to the next `from`, mis-reporting a type-only re-export as a runtime
     // edge — a false leak that red-pinned the fleet gate.
-    expect(specs("import './x.css';\n\n/** doc */\nexport type {\n  A,\n} from '@srv/mod';\n")).toEqual(['./x.css']);
+    expect(
+      specs(
+        "import './x.css';\n\n/** doc */\nexport type {\n  A,\n} from '@srv/mod';\n",
+      ),
+    ).toEqual(["./x.css"]);
     // ...and every statement it jumped over kept its edge (the under-walk half).
-    expect(specs("import './x.css';\nimport { a } from 'p';\nimport { b } from 'q';\n")).toEqual([
-      './x.css',
-      'p',
-      'q',
-    ]);
+    expect(
+      specs(
+        "import './x.css';\nimport { a } from 'p';\nimport { b } from 'q';\n",
+      ),
+    ).toEqual(["./x.css", "p", "q"]);
   });
 
-  it('still records real value edges — including behind a side-effect import', () => {
-    expect(specs("import './x.css';\nimport { realThing } from '@srv/mod';\n")).toEqual(['./x.css', '@srv/mod']);
-    expect(specs("import { a } from '@srv/mod';\n")).toEqual(['@srv/mod']);
-    expect(specs("export * from './b';\n")).toEqual(['./b']);
-    expect(specs("import('./lazy')\n")).toEqual(['./lazy']);
+  it("still records real value edges — including behind a side-effect import", () => {
+    expect(
+      specs("import './x.css';\nimport { realThing } from '@srv/mod';\n"),
+    ).toEqual(["./x.css", "@srv/mod"]);
+    expect(specs("import { a } from '@srv/mod';\n")).toEqual(["@srv/mod"]);
+    expect(specs("export * from './b';\n")).toEqual(["./b"]);
+    expect(specs("import('./lazy')\n")).toEqual(["./lazy"]);
   });
 
-  it('erases type-only statements, which the bundler drops', () => {
+  it("erases type-only statements, which the bundler drops", () => {
     expect(specs("import type { a } from '@srv/mod';\n")).toEqual([]);
-    expect(specs("export type {\n  A,\n  B,\n} from '@srv/mod';\n")).toEqual([]);
+    expect(specs("export type {\n  A,\n  B,\n} from '@srv/mod';\n")).toEqual(
+      [],
+    );
   });
 });

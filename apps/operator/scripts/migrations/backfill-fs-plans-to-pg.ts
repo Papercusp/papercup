@@ -21,13 +21,14 @@
  *   npx tsx scripts/migrations/backfill-fs-plans-to-pg.ts
  */
 
-import * as fs from 'node:fs/promises';
-import * as path from 'node:path';
-import { getOrgPg } from '@papercusp/db-org';
-import { hashPlanContent, parsePlan } from '@papercusp/plan-parser';
-import { resolveHarnessPlansDir } from '@papercusp/operator-core/lib/agent-tools/plans/source';
-import { loadHarnessRegistry } from '@papercusp/operator-core/lib/harness-registry';
-import { DEFAULT_WORKSPACE_ID } from '@papercusp/operator-core/lib/workspace-registry';
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { getOrgPg } from "@papercusp/db-org";
+import { parsePlan } from "@papercusp/plan-parser";
+import { hashPlanContent } from "@papercusp/plan-parser/content-hash";
+import { resolveHarnessPlansDir } from "@papercusp/operator-core/lib/agent-tools/plans/source";
+import { loadHarnessRegistry } from "@papercusp/operator-core/lib/harness-registry";
+import { DEFAULT_WORKSPACE_ID } from "@papercusp/operator-core/lib/workspace-registry";
 
 /**
  * Read plan `.md` files straight off disk (live + archive). The backfill is
@@ -37,8 +38,15 @@ import { DEFAULT_WORKSPACE_ID } from '@papercusp/operator-core/lib/workspace-reg
 async function collectFsPlans(
   plansDir: string,
   archiveDir: string,
-): Promise<Array<{ slug: string; filePath: string; archived: boolean; content: string }>> {
-  const out: Array<{ slug: string; filePath: string; archived: boolean; content: string }> = [];
+): Promise<
+  Array<{ slug: string; filePath: string; archived: boolean; content: string }>
+> {
+  const out: Array<{
+    slug: string;
+    filePath: string;
+    archived: boolean;
+    content: string;
+  }> = [];
   for (const [dir, archived] of [
     [plansDir, false],
     [archiveDir, true],
@@ -47,26 +55,30 @@ async function collectFsPlans(
     try {
       names = await fs.readdir(dir);
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw e;
     }
     for (const name of names) {
-      if ((!name.endsWith('.md') && !name.endsWith('.mdx')) || name.startsWith('.')) continue;
+      if (
+        (!name.endsWith(".md") && !name.endsWith(".mdx")) ||
+        name.startsWith(".")
+      )
+        continue;
       const filePath = path.join(dir, name);
       const stat = await fs.stat(filePath);
       if (!stat.isFile()) continue;
       out.push({
-        slug: name.replace(/\.mdx?$/, ''),
+        slug: name.replace(/\.mdx?$/, ""),
         filePath,
         archived,
-        content: await fs.readFile(filePath, 'utf8'),
+        content: await fs.readFile(filePath, "utf8"),
       });
     }
   }
   return out;
 }
 
-const DRY_RUN = process.argv.includes('--dry-run');
+const DRY_RUN = process.argv.includes("--dry-run");
 
 interface PlanStatusRow {
   plan_slug: string;
@@ -105,7 +117,7 @@ interface BackfillRow {
 }
 
 async function main(): Promise<void> {
-  console.log(`[backfill-plans] mode: ${DRY_RUN ? 'DRY RUN' : 'LIVE'}`);
+  console.log(`[backfill-plans] mode: ${DRY_RUN ? "DRY RUN" : "LIVE"}`);
   const { sql } = getOrgPg();
   try {
     await run(sql);
@@ -114,12 +126,14 @@ async function main(): Promise<void> {
   }
 }
 
-async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
+async function run(sql: ReturnType<typeof getOrgPg>["sql"]): Promise<void> {
   // Enumerate every registered harness in the active workspace; each may have
   // its own docs/plans dir (papercup's is apps/operator/docs/plans/).
   const reg = await loadHarnessRegistry();
   const slugs = Array.from(new Set(reg.projects.map((p) => p.slug)));
-  console.log(`[backfill-plans] registered harnesses: ${slugs.join(', ') || '(none)'}`);
+  console.log(
+    `[backfill-plans] registered harnesses: ${slugs.join(", ") || "(none)"}`,
+  );
 
   const rows: BackfillRow[] = [];
 
@@ -128,7 +142,9 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
     try {
       dirs = await resolveHarnessPlansDir(slug);
     } catch (err) {
-      console.warn(`[backfill-plans]  SKIP harness '${slug}' — ${(err as Error).message}`);
+      console.warn(
+        `[backfill-plans]  SKIP harness '${slug}' — ${(err as Error).message}`,
+      );
       continue;
     }
 
@@ -192,8 +208,15 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
 
   console.log(`[backfill-plans] parsed ${rows.length} plan(s) from disk`);
   if (DRY_RUN) {
-    const sample = rows.slice(0, 5).map((r) => `${r.harnessSlug}/${r.planSlug} (${r.content.length}b${r.isLegacy ? ', legacy' : ''}${r.archived ? ', archived' : ''})`);
-    console.log(`[backfill-plans] DRY — would upsert ${rows.length} rows. sample:\n  ${sample.join('\n  ')}`);
+    const sample = rows
+      .slice(0, 5)
+      .map(
+        (r) =>
+          `${r.harnessSlug}/${r.planSlug} (${r.content.length}b${r.isLegacy ? ", legacy" : ""}${r.archived ? ", archived" : ""})`,
+      );
+    console.log(
+      `[backfill-plans] DRY — would upsert ${rows.length} rows. sample:\n  ${sample.join("\n  ")}`,
+    );
     return;
   }
 
@@ -247,7 +270,9 @@ async function run(sql: ReturnType<typeof getOrgPg>['sql']): Promise<void> {
     if (res.length > 0) upserted++;
   }
 
-  console.log(`[backfill-plans] done — ${upserted} row(s) inserted/updated, ${rows.length - upserted} unchanged`);
+  console.log(
+    `[backfill-plans] done — ${upserted} row(s) inserted/updated, ${rows.length - upserted} unchanged`,
+  );
   await sql.end({ timeout: 5 });
 }
 

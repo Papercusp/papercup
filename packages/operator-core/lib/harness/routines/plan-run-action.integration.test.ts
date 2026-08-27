@@ -11,7 +11,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
-import { hashPlanContent } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { createOrgTestDb, type OrgTestDb } from '../../../test/_org-test-db';
 import { materializePlanSchedule, planScheduleRoutineName } from './materialize-plan-schedule';
 import { runScheduledPlanFire } from './plan-run-action';
@@ -200,11 +200,7 @@ describe('runScheduledPlanFire (system:plan-run)', () => {
       UPDATE harness_shared.harness_plans
          SET content = ${invalidContent},
              content_hash = ${hashPlanContent(invalidContent)},
-             items = ${JSON.stringify([
-               ITEMS[0],
-               ITEMS[1],
-               { ...ITEMS[2], blockedBy: ['P-404'] },
-             ])}::text::jsonb
+             items = ${JSON.stringify([ITEMS[0], ITEMS[1], { ...ITEMS[2], blockedBy: ['P-404'] }])}::text::jsonb
        WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${TEMPLATE}
     `;
     await stampClaim(new Date('2026-06-16T08:30:00.000Z'));

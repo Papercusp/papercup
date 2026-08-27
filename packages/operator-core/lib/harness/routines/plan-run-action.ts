@@ -33,7 +33,8 @@ import { setFrontmatterScalar } from '../../agent-tools/plans/transfer-owner';
 import { planRunInstanceSlug } from '../../agent-tools/plans/run-instance-slug';
 import { deriveIndexFromContent, type PlanIndexDecision, type PlanIndexItem } from '../../agent-tools/plans/source';
 import { writePlanIndexRows } from '../../agent-tools/plans/plan-index-rows';
-import { hashPlanContent, parsePlan } from '@papercusp/plan-parser';
+import { parsePlan } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import {
   invalidPlanDependenciesValue,
   validatePlanCandidateDependencies,

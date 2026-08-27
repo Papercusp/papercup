@@ -37,7 +37,8 @@ import { buildHarnessPlansProjection, type HarnessPlanRow } from '../projections
 import { buildHarnessPlanPartsProjection, type PlanPartWireRow } from '../projections/harness-plan-parts';
 import { PgPlanPartsStore } from '../../../plan-parts/store';
 import { capturePlanParts } from '../../../plan-parts/federation';
-import { hashPlanContent, splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
+import { splitPlanIntoParts, type FederatedPart } from '@papercusp/plan-parser';
+import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(HERE, '../../../../../../libs/papercusp/libs/db/sql');
@@ -207,7 +208,15 @@ function peer(sql: postgres.Sql, flagOn: boolean) {
     const all = await store.getParts(planSlug);
     for (const [key, p] of all) {
       if (p.kind === 'item' && (key.includes(idToken) || p.text.includes(idToken))) {
-        return { harness_slug: H, plan_slug: planSlug, part_key: key, kind: p.kind, body: p.text, ordinal: p.order, tombstone: false };
+        return {
+          harness_slug: H,
+          plan_slug: planSlug,
+          part_key: key,
+          kind: p.kind,
+          body: p.text,
+          ordinal: p.order,
+          tombstone: false,
+        };
       }
     }
     throw new Error(`no item part for ${idToken}`);
@@ -285,7 +294,15 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
     expect(fmKey).not.toBe('');
     const fmPart = all.get(fmKey)!;
     await p.recvPart(
-      { harness_slug: H, plan_slug: SLUG, part_key: fmKey, kind: 'frontmatter', body: fmPart.text.replace('status: draft', 'status: active'), ordinal: fmPart.order, tombstone: false },
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: fmKey,
+        kind: 'frontmatter',
+        body: fmPart.text.replace('status: draft', 'status: active'),
+        ordinal: fmPart.order,
+        tombstone: false,
+      },
       300,
     );
     expect((await p.getPlan())!.status).toBe('active'); // scalar re-derived from frontmatter part
@@ -321,7 +338,18 @@ describe('plan-part federation cutover (real PG: flag-ON mutual exclusion, no cl
     // the local harness_plans.content FIRST, then merge — else recompose would
     // produce join({1 part}) and erase P-002.
     const edited = splitPlanIntoParts(planMarkdown('one-REMOTE', 'two')).find((pt) => pt.key === 'item:P-001')!;
-    await p.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: edited.key, kind: edited.kind, body: edited.text, ordinal: edited.order, tombstone: false }, 700);
+    await p.recvPart(
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: edited.key,
+        kind: edited.kind,
+        body: edited.text,
+        ordinal: edited.order,
+        tombstone: false,
+      },
+      700,
+    );
 
     const content = (await p.getPlan())!.content;
     expect(content).toContain('one-REMOTE'); // the incoming edit applied
@@ -339,7 +367,9 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
     await setupSchema(db.sql);
     p = peer(db.sql, false); // flag OFF
   }, 60_000);
-  afterAll(async () => { await db?.cleanup(); });
+  afterAll(async () => {
+    await db?.cleanup();
+  });
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plans`;
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
@@ -355,11 +385,7 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
   it('P-009: whole-blob import rejects a newly cyclic candidate without changing the live row', async () => {
     const valid = planMarkdown('one', 'two', 'ready');
     await p.recvWholeBlob(valid, 100, 'ready');
-    const cyclic = planMarkdown(
-      'one blocked-by: P-002',
-      'two blocked-by: P-001',
-      'ready',
-    );
+    const cyclic = planMarkdown('one blocked-by: P-002', 'two blocked-by: P-001', 'ready');
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await p.recvWholeBlob(cyclic, 200, 'ready');
@@ -369,11 +395,7 @@ describe('plan-part federation cutover — flag-OFF control (whole-blob path byt
   });
 
   it('P-009: whole-blob import permits a strict-subset repair of a legacy-invalid row', async () => {
-    const legacy = planMarkdown(
-      'one blocked-by: P-099',
-      'two blocked-by: P-098',
-      'ready',
-    );
+    const legacy = planMarkdown('one blocked-by: P-099', 'two blocked-by: P-098', 'ready');
     await p.sql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, content, content_hash, title, status, origin, fed_ts)
@@ -401,7 +423,10 @@ describe('plan-part federation cutover — TWO-INSTANCE convergence (separate PG
     A = peer(dbA.sql, true);
     B = peer(dbB.sql, true);
   }, 90_000);
-  afterAll(async () => { await dbA?.cleanup(); await dbB?.cleanup(); });
+  afterAll(async () => {
+    await dbA?.cleanup();
+    await dbB?.cleanup();
+  });
 
   it('6. a local part edit on A captures via the real trigger; cross-applied, A and B converge byte-identically with BOTH edits', async () => {
     const c0 = planMarkdown('one', 'two');
@@ -414,20 +439,86 @@ describe('plan-part federation cutover — TWO-INSTANCE convergence (separate PG
 
     // A LOCALLY edits P-001 (origin local) → the REAL mig-271 capture trigger fires.
     const aP1 = await A.partRowFor(SLUG, 'P-001');
-    await A.store.upsertPart(SLUG, { key: aP1.part_key, kind: 'item', text: '- **P-001** `todo` one-A', order: aP1.ordinal, fedTs: 201, author: 'A' }, 'local');
+    await A.store.upsertPart(
+      SLUG,
+      {
+        key: aP1.part_key,
+        kind: 'item',
+        text: '- **P-001** `todo` one-A',
+        order: aP1.ordinal,
+        fedTs: 201,
+        author: 'A',
+      },
+      'local',
+    );
     expect(await A.outboxCount()).toBeGreaterThan(0); // capture fired on the local part write
 
     // B LOCALLY edits P-002.
     const bP2 = await B.partRowFor(SLUG, 'P-002');
-    await B.store.upsertPart(SLUG, { key: bP2.part_key, kind: 'item', text: '- **P-002** `todo` two-B', order: bP2.ordinal, fedTs: 202, author: 'B' }, 'local');
+    await B.store.upsertPart(
+      SLUG,
+      {
+        key: bP2.part_key,
+        kind: 'item',
+        text: '- **P-002** `todo` two-B',
+        order: bP2.ordinal,
+        fedTs: 202,
+        author: 'B',
+      },
+      'local',
+    );
 
     // Cross-apply each peer's edited part to the other (what the swarm carries).
-    await B.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: aP1.part_key, kind: 'item', body: '- **P-001** `todo` one-A', ordinal: aP1.ordinal, tombstone: false }, 201);
-    await A.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: bP2.part_key, kind: 'item', body: '- **P-002** `todo` two-B', ordinal: bP2.ordinal, tombstone: false }, 202);
+    await B.recvPart(
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: aP1.part_key,
+        kind: 'item',
+        body: '- **P-001** `todo` one-A',
+        ordinal: aP1.ordinal,
+        tombstone: false,
+      },
+      201,
+    );
+    await A.recvPart(
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: bP2.part_key,
+        kind: 'item',
+        body: '- **P-002** `todo` two-B',
+        ordinal: bP2.ordinal,
+        tombstone: false,
+      },
+      202,
+    );
     // Each peer also recomposes its own local edit into harness_plans (the local
     // write path does this; here drive it via a self-apply of the local part).
-    await A.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: aP1.part_key, kind: 'item', body: '- **P-001** `todo` one-A', ordinal: aP1.ordinal, tombstone: false }, 201);
-    await B.recvPart({ harness_slug: H, plan_slug: SLUG, part_key: bP2.part_key, kind: 'item', body: '- **P-002** `todo` two-B', ordinal: bP2.ordinal, tombstone: false }, 202);
+    await A.recvPart(
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: aP1.part_key,
+        kind: 'item',
+        body: '- **P-001** `todo` one-A',
+        ordinal: aP1.ordinal,
+        tombstone: false,
+      },
+      201,
+    );
+    await B.recvPart(
+      {
+        harness_slug: H,
+        plan_slug: SLUG,
+        part_key: bP2.part_key,
+        kind: 'item',
+        body: '- **P-002** `todo` two-B',
+        ordinal: bP2.ordinal,
+        tombstone: false,
+      },
+      202,
+    );
 
     const ca = (await A.getPlan())!.content;
     const cb = (await B.getPlan())!.content;
@@ -454,7 +545,9 @@ describe('plan-part federation — G11 part-deletion (tombstone) lifecycle (real
     await setupSchema(db.sql);
     p = peer(db.sql, true); // flag ON — recompose drives harness_plans
   }, 60_000);
-  afterAll(async () => { await db?.cleanup(); });
+  afterAll(async () => {
+    await db?.cleanup();
+  });
 
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
@@ -477,10 +570,18 @@ describe('plan-part federation — G11 part-deletion (tombstone) lifecycle (real
     await p.recvDelete(delKey, 300);
     let content = (await p.getPlan())!.content;
     expect(content).not.toContain('P-001'); // (c) tombstone absent from recompose
-    expect(content).toContain('P-002');     // sibling untouched
+    expect(content).toContain('P-002'); // sibling untouched
 
     // A STALE edit (ts=250 < 300) for the SAME key arrives → must LOSE to the tombstone.
-    const p1 = { harness_slug: H, plan_slug: SLUG, part_key: 'item:P-001', kind: 'item' as const, body: '- **P-001** `todo` STALE-EDIT', ordinal: 1, tombstone: false };
+    const p1 = {
+      harness_slug: H,
+      plan_slug: SLUG,
+      part_key: 'item:P-001',
+      kind: 'item' as const,
+      body: '- **P-001** `todo` STALE-EDIT',
+      ordinal: 1,
+      tombstone: false,
+    };
     await p.recvPart(p1, 250);
 
     // Store: the tombstone still wins (soft tombstone, LWW by fed_ts).
@@ -497,7 +598,15 @@ describe('plan-part federation — G11 part-deletion (tombstone) lifecycle (real
     expect((await p.getPlan())!.content).not.toContain('P-001');
 
     // A NEWER edit (ts=350 > 300) for the SAME key arrives → must WIN, resurrecting it.
-    const p1 = { harness_slug: H, plan_slug: SLUG, part_key: 'item:P-001', kind: 'item' as const, body: '- **P-001** `done` RESURRECTED', ordinal: 1, tombstone: false };
+    const p1 = {
+      harness_slug: H,
+      plan_slug: SLUG,
+      part_key: 'item:P-001',
+      kind: 'item' as const,
+      body: '- **P-001** `done` RESURRECTED',
+      ordinal: 1,
+      tombstone: false,
+    };
     await p.recvPart(p1, 350);
 
     const live = (await p.store.getParts(SLUG)).get('item:P-001');
@@ -523,11 +632,19 @@ describe('plan-part federation — G12 equal-fedTs author tie-break (real PG sto
     await setupSchema(db.sql);
     store = new PgPlanPartsStore(db.sql, WS, H);
   }, 60_000);
-  afterAll(async () => { await db?.cleanup(); });
-  beforeEach(async () => { await db.sql`DELETE FROM harness_shared.harness_plan_parts`; });
+  afterAll(async () => {
+    await db?.cleanup();
+  });
+  beforeEach(async () => {
+    await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
+  });
 
   const mk = (author: string | undefined, body: string): FederatedPart => ({
-    key: 'item:P-001', kind: 'item', text: body, order: 0, fedTs: 500,
+    key: 'item:P-001',
+    kind: 'item',
+    text: body,
+    order: 0,
+    fedTs: 500,
     ...(author !== undefined ? { author } : {}),
   });
   const bodyOf = async () => (await store.getParts('g12')).get('item:P-001')?.text;
@@ -582,7 +699,9 @@ describe('plan-part federation — G13 whole-blob / part-edit / stale-whole-blob
     await setupSchema(db.sql);
     p = peer(db.sql, true); // flag ON
   }, 60_000);
-  afterAll(async () => { await db?.cleanup(); });
+  afterAll(async () => {
+    await db?.cleanup();
+  });
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
     await db.sql`DELETE FROM harness_shared.harness_plans`;
@@ -606,7 +725,7 @@ describe('plan-part federation — G13 whole-blob / part-edit / stale-whole-blob
     const content = (await p.getPlan())!.content;
     expect(content).toContain('part-edit-200'); // the part edit is reflected
     expect(content).not.toContain('BLOB-150'); // the ts=150 blob never appears
-    expect(content).toContain('two');          // P-002 untouched (merge, not clobber)
+    expect(content).toContain('two'); // P-002 untouched (merge, not clobber)
   });
 });
 
@@ -625,7 +744,9 @@ describe('plan-part federation — G14 recompose no-op skip (real PG, flag ON)',
     await setupSchema(db.sql);
     p = peer(db.sql, true); // flag ON
   }, 60_000);
-  afterAll(async () => { await db?.cleanup(); });
+  afterAll(async () => {
+    await db?.cleanup();
+  });
   beforeEach(async () => {
     await db.sql`DELETE FROM harness_shared.harness_plan_parts`;
     await db.sql`DELETE FROM harness_shared.harness_plans`;
