@@ -3503,10 +3503,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res.setTimeout(downstreamIdleMs, () => res.destroy());
 
     // Opt-in per-request routing trace (PAPERCUSP_GATEWAY_ROUTE_LOG=1): logs the pinned account
-    // requested via the x-papercusp-account header vs the account this request ACTUALLY egressed on
-    // — the ground-truth diagnostic for "is my pin landing / failing over". Off by default (noisy).
+    // requested via the x-papercusp-account header and the account PICKED at this route-decision point.
+    // This is deliberately not labelled "routed": the upstream retry loop below can rotate to a
+    // different serving account. The response's x-papercusp-routed-account header is the ground truth
+    // for the account that served the final response. Off by default (noisy).
     if (process.env.PAPERCUSP_GATEWAY_ROUTE_LOG === '1') {
-      log('info', `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} routed=${active.accountId} model=${model}`);
+      log('info', `gw-route: client=${req.socket?.remotePort ?? '?'} want=${wantAccount ?? '-'} picked=${active.accountId} model=${model}`);
     }
 
     // Upstream stall guard (2026-06-19 deadlock fix). An activity-reset deadline that aborts the
