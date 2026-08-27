@@ -41,6 +41,7 @@ import { formatRunElapsed } from "../review-report/bulk-run-time";
 export { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
 import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
+import { PERF_INTERACTIONS, beginInteraction } from "../perf/perf-marks";
 import "./inbox-bulk.css";
 
 export interface InboxBulkStripProps {
@@ -146,6 +147,14 @@ export default function InboxBulkStrip({
       setRestarting(false);
     }
   }, [run, restart, restarting]);
+
+  const openReview = useCallback(() => {
+    if (!run) return;
+    // The real gesture is the start boundary. InboxBulkReport ends this after
+    // its first committed render; a deep link with no click simply no-ops.
+    beginInteraction(PERF_INTERACTIONS.inboxBulkReportOpen);
+    onReview(run.runId);
+  }, [onReview, run]);
 
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
@@ -255,7 +264,7 @@ export default function InboxBulkStrip({
             className="op-inbox__bulk-accept-all"
             data-testid="inbox-bulk-review-decisions"
             disabled={pending === 0}
-            onClick={() => onReview(run.runId)}
+            onClick={openReview}
           >
             Review {pending} decision{pending === 1 ? "" : "s"}
             <ChevronRight size={14} aria-hidden="true" />

@@ -10,6 +10,11 @@ import {
 } from "@testing-library/react";
 import type { AttentionItem } from "@/app/admin/plans/plans-api";
 import type { BulkRun, BulkRunItem } from "./use-inbox-bulk-run";
+import {
+  PERF_INTERACTIONS,
+  beginInteraction,
+  getLatestMeasure,
+} from "../perf/perf-marks";
 
 const H = vi.hoisted(() => ({
   accept: vi.fn(),
@@ -138,6 +143,16 @@ function runItem(over: Partial<BulkRunItem> = {}): BulkRunItem {
   };
 }
 
+function highCardinalityRunItems(count = 200): BulkRunItem[] {
+  return Array.from({ length: count }, (_, position) =>
+    runItem({
+      itemId: `item-${position.toString().padStart(3, "0")}`,
+      position,
+      ref: { kind: "coord-message", msgId: `m-${position}` },
+    }),
+  );
+}
+
 const run: BulkRun = {
   runId: "run-8",
   harnessSlug: "papercusp",
@@ -171,6 +186,8 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  performance.clearMarks?.();
+  performance.clearMeasures?.();
 });
 
 describe("bulkRunItemToAttentionSnapshot", () => {
@@ -256,6 +273,19 @@ describe("buildInboxBulkReviewGroups", () => {
 });
 
 describe("<InboxBulkReport>", () => {
+  it("ends the named page-relative report-open measure after the first committed render", async () => {
+    beginInteraction(PERF_INTERACTIONS.inboxBulkReportOpen);
+    render(
+      <InboxBulkReport run={run} runItems={[runItem()]} onClose={vi.fn()} />,
+    );
+
+    await waitFor(() =>
+      expect(
+        getLatestMeasure(PERF_INTERACTIONS.inboxBulkReportOpen),
+      ).not.toBeNull(),
+    );
+  });
+
   it("applies selected persisted snapshots in run order and closes on completion", async () => {
     H.accept
       .mockResolvedValueOnce({ ok: true, phase: "review" })
@@ -286,6 +316,29 @@ describe("<InboxBulkReport>", () => {
     });
     expect(H.detail).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps 200 selected actions in persisted position order without detail hydration", async () => {
+    const ordered = highCardinalityRunItems();
+    H.accept.mockResolvedValue({ ok: true, phase: "review" });
+    render(
+      <InboxBulkReport
+        run={{
+          ...run,
+          totalItems: ordered.length,
+          recommended: ordered.length,
+        }}
+        runItems={[...ordered].reverse()}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("review-report-apply"));
+    await waitFor(() => expect(H.accept).toHaveBeenCalledTimes(ordered.length));
+    expect(H.accept.mock.calls.map((call) => call[1].id)).toEqual(
+      ordered.map((item) => item.itemId),
+    );
+    expect(H.detail).not.toHaveBeenCalled();
   });
 
   it("keeps a stale-target failure visible and unrecorded for retry", async () => {
@@ -321,35 +374,43 @@ describe("<InboxBulkReport>", () => {
     );
   });
 
-  it("hydrates only the one active hover/focus detail", () => {
+  it("hydrates only one active hover/focus detail across 200 report rows", () => {
+    const items = highCardinalityRunItems();
+    for (const item of items) {
+      H.details.set(item.itemId, attention(item.itemId));
+    }
     render(
       <InboxBulkReport
-        run={{ ...run, totalItems: 2, recommended: 2, autoResolved: 0 }}
-        runItems={[
-          runItem(),
-          runItem({
-            itemId: "b",
-            position: 1,
-            ref: { kind: "coord-message", msgId: "m-b" },
-          }),
-        ]}
+        run={{
+          ...run,
+          totalItems: items.length,
+          recommended: items.length,
+          autoResolved: 0,
+        }}
+        runItems={items}
         onClose={vi.fn()}
       />,
     );
 
     expect(H.detail).not.toHaveBeenCalled();
-    const rowA = screen.getByTestId("review-row-a");
+    const firstId = items[0]!.itemId;
+    const secondId = items[1]!.itemId;
+    const rowA = screen.getByTestId(`review-row-${firstId}`);
     fireEvent.pointerEnter(rowA);
-    expect(screen.getByTestId("review-row-detail-a")).toBeTruthy();
-    expect(screen.getByTestId("recommendation-a")).toBeTruthy();
-    expect(H.detail).toHaveBeenLastCalledWith("a");
+    expect(screen.getByTestId(`review-row-detail-${firstId}`)).toBeTruthy();
+    expect(screen.getByTestId(`recommendation-${firstId}`)).toBeTruthy();
+    expect(H.detail).toHaveBeenLastCalledWith(firstId);
+    expect(H.detail).toHaveBeenCalledTimes(1);
+    expect(screen.queryAllByTestId(/review-row-detail-/)).toHaveLength(1);
 
     fireEvent.pointerLeave(rowA);
-    fireEvent.focus(screen.getByTestId("review-row-check-b"));
-    expect(screen.queryByTestId("review-row-detail-a")).toBeNull();
-    expect(screen.getByTestId("review-row-detail-b")).toBeTruthy();
-    expect(screen.getByTestId("recommendation-b")).toBeTruthy();
-    expect(H.detail).toHaveBeenLastCalledWith("b");
+    fireEvent.focus(screen.getByTestId(`review-row-check-${secondId}`));
+    expect(screen.queryByTestId(`review-row-detail-${firstId}`)).toBeNull();
+    expect(screen.getByTestId(`review-row-detail-${secondId}`)).toBeTruthy();
+    expect(screen.getByTestId(`recommendation-${secondId}`)).toBeTruthy();
+    expect(H.detail).toHaveBeenLastCalledWith(secondId);
+    expect(H.detail).toHaveBeenCalledTimes(2);
+    expect(screen.queryAllByTestId(/review-row-detail-/)).toHaveLength(1);
   });
 
   it("shows a terminal stale-item message instead of an endless loading state", () => {

@@ -99,6 +99,7 @@ import {
   NAVIGATE_ACTION_IDS,
   attentionItemToCardSpec,
 } from "@/app/admin/plans/attention-card";
+import { PERF_INTERACTIONS } from "../perf/perf-marks";
 
 function mkItem(id: string, over: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -156,6 +157,8 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
   H.calls.length = 0;
+  performance.clearMarks?.();
+  performance.clearMeasures?.();
 });
 
 describe("deriveRunCounts", () => {
@@ -289,6 +292,12 @@ describe("InboxBulkStrip review handoff", () => {
     expect(screen.queryByTestId("inbox-bulk-accept-all")).toBeNull();
     fireEvent.click(review);
     expect(onReview).toHaveBeenCalledWith("run-latest-without-param");
+    expect(
+      performance.getEntriesByName(
+        `${PERF_INTERACTIONS.inboxBulkReportOpen}:start`,
+        "mark",
+      ),
+    ).toHaveLength(1);
   });
 });
 

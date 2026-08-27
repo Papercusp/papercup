@@ -21,6 +21,8 @@ import ReviewReportShell, {
   type ReviewReportRow,
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
+import { PERF_INTERACTIONS } from "../perf/perf-marks";
+import { useInteractionSettle } from "../perf/use-interaction-settle";
 import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
   deriveRunCounts,
@@ -413,6 +415,10 @@ export default function InboxBulkReport({
   onOpenThread,
   onClose,
 }: InboxBulkReportProps) {
+  // P-013: the lazy chunk and persisted run have both resolved by the time this
+  // component commits. Passive settlement preserves the perf-marks ordering
+  // contract; direct/deep-linked mounts have no start and therefore no-op.
+  useInteractionSettle(PERF_INTERACTIONS.inboxBulkReportOpen, true);
   const { acceptRecommendation, dismissItem, reconcileItem, resume } =
     useBulkRunOps();
   const [busy, setBusy] = useState(false);
