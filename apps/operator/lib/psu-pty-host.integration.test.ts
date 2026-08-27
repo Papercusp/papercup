@@ -328,7 +328,10 @@ describe('hostThroughPty real round-trip', () => {
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '20',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '2',
           PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_MAX_CR: '1',
-          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '20',
+          // The synthetic child exits shortly after acknowledging the kickoff;
+          // keep the submit verifier from mistaking that intentional teardown
+          // for a swallowed Enter while this test checks recovery ordering.
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '500',
           TERM: 'xterm-256color',
         },
         ownerId,
