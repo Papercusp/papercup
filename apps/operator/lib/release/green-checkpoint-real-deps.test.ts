@@ -2769,6 +2769,7 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
     expect(calls[1].opts?.onOutput).toBeTypeOf("function");
     expect(calls[1].opts?.timeoutMs).toBeTypeOf("number");
     expect(calls[1].opts?.killProcessGroupOnTimeout).toBe(true);
+    expect(calls[1].opts?.env?.PC_HEAVY_RELEASE_GATE).toBe("1");
     expect(setup).toEqual({
       identity: `setup-release-checkout:cand123:deps=${generationId}`,
       output:

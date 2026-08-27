@@ -13383,7 +13383,11 @@ export function realCheckpointDeps(
             // changed then replayed the prior success instead of re-checking the
             // generation token. Disable coalescing for BOTH shared and exclusive paths;
             // admission still controls concurrency, but every setup invocation executes.
-            env: { ...process.env, PC_HEAVY_COALESCE: "0" },
+            env: {
+              ...process.env,
+              PC_HEAVY_COALESCE: "0",
+              PC_HEAVY_RELEASE_GATE: "1",
+            },
             timeoutMs: SETUP_TREE_TIMEOUT_MS,
             timeoutResetsOnProgress: true,
             hardTimeoutMs: SETUP_TREE_HARD_TIMEOUT_MS,
