@@ -30,7 +30,7 @@ export type PlanCandidateDependencyCode =
   | 'dependency_endpoint_mismatched'
   | 'dependency_endpoint_ambiguous';
 
-export type PlanCandidateDependencyDisposition = 'reject' | 'invalid-draft';
+export type PlanCandidateDependencyDisposition = 'reject' | 'invalid-draft' | 'legacy-residual';
 
 /** Exact, serializable evidence for one candidate-graph defect. */
 export interface PlanCandidateDependencyDiagnostic {
@@ -53,12 +53,14 @@ export interface PlanCandidateDependencyDiagnostic {
 }
 
 export interface PlanCandidateDependencyVerdict {
-  state: 'valid' | 'invalid-draft' | 'rejected';
+  state: 'valid' | 'invalid-draft' | 'legacy-residual' | 'rejected';
   executable: boolean;
   lifecycleStatus: string | null;
   opStatus: string | null;
   diagnostics: PlanCandidateDependencyDiagnostic[];
 }
+
+type PlanDependencyCandidate = Pick<ParsedPlan, 'frontmatter' | 'items'>;
 
 export interface InvalidPlanDependenciesValue {
   ok: false;
@@ -124,7 +126,7 @@ function endpointDiagnostic(args: {
  * mutation of the parsed candidate. Arrays are emitted in analyzer-stable order.
  */
 export function validatePlanCandidateDependencies(
-  candidate: Pick<ParsedPlan, 'frontmatter' | 'items'>,
+  candidate: PlanDependencyCandidate,
   opStatus: string | null | undefined,
 ): PlanCandidateDependencyVerdict {
   const lifecycleStatus = candidate.frontmatter.status ?? null;
@@ -182,6 +184,79 @@ export function validatePlanCandidateDependencies(
     lifecycleStatus,
     opStatus: normalizedOpStatus,
     diagnostics,
+  };
+}
+
+/**
+ * Stable identity for one dependency defect. Presentation text and disposition
+ * are deliberately excluded: the same missing endpoint changes from
+ * `invalid-draft` to `reject` when a draft becomes executable, but it remains
+ * the same underlying graph defect. Cycle identity is the canonical member set
+ * rather than the displayed traversal start, so harmless item reordering cannot
+ * disguise an unchanged SCC as a new defect.
+ */
+export function planCandidateDependencyDiagnosticFingerprint(
+  diagnostic: PlanCandidateDependencyDiagnostic,
+): string {
+  if (diagnostic.code === 'dependency_cycle') {
+    return JSON.stringify([
+      diagnostic.code,
+      [...(diagnostic.members ?? diagnostic.path.slice(0, -1))].sort(),
+    ]);
+  }
+  return JSON.stringify([
+    diagnostic.code,
+    diagnostic.itemId,
+    diagnostic.ref,
+    diagnostic.endpointRole,
+    diagnostic.resolvedAs ?? null,
+    [...(diagnostic.candidates ?? [])].sort(),
+  ]);
+}
+
+/**
+ * Admission verdict for a read-modify-write transition.
+ *
+ * A statically valid candidate (including an explicitly invalid, non-executable
+ * draft forward ref) keeps the ordinary verdict. A candidate that still has
+ * hard defects may land only as a monotonic repair of legacy-invalid content:
+ * every residual hard fingerprint existed before and at least one prior hard
+ * fingerprint was removed. Unchanged defects, swaps, additions, and a hard
+ * defect on a new plan are rejected. Allowed residuals are relabelled so callers
+ * never mistake a committed legacy repair for a clean graph.
+ */
+export function validatePlanCandidateDependencyTransition(
+  before: PlanDependencyCandidate | null,
+  after: PlanDependencyCandidate,
+  beforeOpStatus: string | null | undefined,
+  afterOpStatus: string | null | undefined = beforeOpStatus,
+): PlanCandidateDependencyVerdict {
+  const afterVerdict = validatePlanCandidateDependencies(after, afterOpStatus);
+  if (afterVerdict.state !== 'rejected' || before === null) return afterVerdict;
+
+  const beforeVerdict = validatePlanCandidateDependencies(before, beforeOpStatus);
+  const beforeHard = new Set(
+    beforeVerdict.diagnostics
+      .filter((diagnostic) => diagnostic.disposition === 'reject')
+      .map(planCandidateDependencyDiagnosticFingerprint),
+  );
+  const afterHard = new Set(
+    afterVerdict.diagnostics
+      .filter((diagnostic) => diagnostic.disposition === 'reject')
+      .map(planCandidateDependencyDiagnosticFingerprint),
+  );
+  const strictSubset =
+    afterHard.size < beforeHard.size && [...afterHard].every((fingerprint) => beforeHard.has(fingerprint));
+  if (!strictSubset) return afterVerdict;
+
+  return {
+    ...afterVerdict,
+    state: 'legacy-residual',
+    diagnostics: afterVerdict.diagnostics.map((diagnostic) =>
+      diagnostic.disposition === 'reject'
+        ? { ...diagnostic, disposition: 'legacy-residual' as const }
+        : diagnostic,
+    ),
   };
 }
 

@@ -161,4 +161,52 @@ describe('withPlanLock candidate dependency admission — structured writer', ()
     expect(result).toMatchObject({ ok: false, error: 'invalid_plan_dependencies' });
     expect(await livePlan()).toEqual(before);
   }, 60_000);
+
+  it('commits a strict-subset repair of legacy-invalid content and surfaces the residual defect', async () => {
+    await seedPlan(
+      admin,
+      wsId,
+      HARNESS,
+      SLUG,
+      planBody('ready', { p1BlockedBy: ['P-099'], p2BlockedBy: ['P-098'] }),
+    );
+    const before = await livePlan();
+
+    const { result, counts } = await runSetBlockedBy('P-001', []);
+
+    expect(counts).toEqual({ ok: 1, failed: 0 });
+    expect(result).toMatchObject({
+      ok: true,
+      itemId: 'P-001',
+      to: [],
+      dependencyDiagnostics: [
+        {
+          disposition: 'legacy-residual',
+          itemId: 'P-002',
+          ref: 'P-098',
+        },
+      ],
+    });
+    const after = await livePlan();
+    expect(after.version).toBe(before.version + 1);
+    expect(after.content).not.toContain('first blocked-by:');
+    expect(after.content).toContain('second blocked-by: P-098');
+  }, 60_000);
+
+  it('rejects a same-count legacy defect swap and leaves the row byte-identical', async () => {
+    await seedPlan(
+      admin,
+      wsId,
+      HARNESS,
+      SLUG,
+      planBody('ready', { p1BlockedBy: ['P-099'], p2BlockedBy: ['P-098'] }),
+    );
+    const before = await livePlan();
+
+    const { result, counts } = await runSetBlockedBy('P-001', ['P-097']);
+
+    expect(counts).toEqual({ ok: 0, failed: 1 });
+    expect(result).toMatchObject({ ok: false, error: 'invalid_plan_dependencies' });
+    expect(await livePlan()).toEqual(before);
+  }, 60_000);
 });

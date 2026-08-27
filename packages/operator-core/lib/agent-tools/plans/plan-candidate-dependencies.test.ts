@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
-import { invalidPlanDependenciesValue, validatePlanCandidateDependencies } from './plan-candidate-dependencies';
+import {
+  invalidPlanDependenciesValue,
+  validatePlanCandidateDependencies,
+  validatePlanCandidateDependencyTransition,
+} from './plan-candidate-dependencies';
 
 function body(status: 'draft' | 'ready' | 'active' | 'shipped' | 'superseded', items: string[]): string {
   return `---
@@ -120,5 +124,66 @@ describe('validatePlanCandidateDependencies', () => {
         },
       ],
     });
+  });
+});
+
+describe('validatePlanCandidateDependencyTransition', () => {
+  const ready = (items: string[]) => parsePlan(body('ready', items));
+  const transition = (beforeItems: string[], afterItems: string[]) =>
+    validatePlanCandidateDependencyTransition(ready(beforeItems), ready(afterItems), null);
+
+  it('admits a strict-subset repair and labels every remaining hard defect legacy-residual', () => {
+    const result = transition(
+      [
+        '- **P-001** `todo` first blocked-by: P-099',
+        '- **P-002** `todo` second blocked-by: P-098',
+      ],
+      ['- **P-001** `todo` first blocked-by: P-099', '- **P-002** `todo` second'],
+    );
+
+    expect(result).toMatchObject({
+      state: 'legacy-residual',
+      diagnostics: [
+        {
+          code: 'dependency_endpoint_missing',
+          disposition: 'legacy-residual',
+          itemId: 'P-001',
+          ref: 'P-099',
+        },
+      ],
+    });
+  });
+
+  it('rejects an edit that leaves the hard fingerprint set unchanged', () => {
+    const items = ['- **P-001** `todo` first blocked-by: P-099', '- **P-002** `todo` second'];
+    expect(transition(items, items).state).toBe('rejected');
+  });
+
+  it('rejects a defect swap even when the hard-defect count does not increase', () => {
+    const result = transition(
+      [
+        '- **P-001** `todo` first blocked-by: P-099',
+        '- **P-002** `todo` second blocked-by: P-098',
+      ],
+      [
+        '- **P-001** `todo` first blocked-by: P-099',
+        '- **P-002** `todo` second blocked-by: P-097',
+      ],
+    );
+    expect(result.state).toBe('rejected');
+    expect(result.diagnostics.map((diagnostic) => diagnostic.ref)).toEqual(['P-099', 'P-097']);
+  });
+
+  it('returns the ordinary valid verdict when the repair removes every hard defect', () => {
+    const result = transition(
+      ['- **P-001** `todo` first blocked-by: P-099', '- **P-002** `todo` second'],
+      ['- **P-001** `todo` first', '- **P-002** `todo` second'],
+    );
+    expect(result).toMatchObject({ state: 'valid', diagnostics: [] });
+  });
+
+  it('never grandfathers a hard defect on a newly created plan', () => {
+    const after = ready(['- **P-001** `todo` first blocked-by: P-099']);
+    expect(validatePlanCandidateDependencyTransition(null, after, null).state).toBe('rejected');
   });
 });

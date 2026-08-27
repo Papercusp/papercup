@@ -30,7 +30,7 @@ import { hashPlanContent } from './content-hash';
 import { summarizeForcedPast } from './forced-past-stamp';
 import {
   invalidPlanDependenciesValue,
-  validatePlanCandidateDependencies,
+  validatePlanCandidateDependencyTransition,
   type PlanCandidateDependencyDiagnostic,
 } from './plan-candidate-dependencies';
 import { writePlanIndexRows } from './plan-index-rows';
@@ -230,8 +230,10 @@ export interface AppliedResult<T> {
   activationAudit?: ActivationAuditEditNotice;
   /**
    * Candidate-graph evidence from the central write seam. An allowed missing
-   * ref on a non-started draft is surfaced as `invalid-draft`; hard findings
-   * accompany a non-writing `invalid_plan_dependencies` domain refusal.
+   * ref on a non-started draft is surfaced as `invalid-draft`; a monotonic
+   * repair of legacy-invalid content surfaces remaining hard findings as
+   * `legacy-residual`; rejected findings accompany a non-writing
+   * `invalid_plan_dependencies` domain refusal.
    * Also copied onto object-shaped `value` payloads.
    */
   dependencyDiagnostics?: PlanCandidateDependencyDiagnostic[];
@@ -353,14 +355,21 @@ export async function withPlanLock<T>(
       meta,
     );
 
-    // P-008: dependency validity belongs at the one locked body-write seam, not
-    // in selected verbs. The mutator has produced the complete post-write body
-    // and op_status was read under this same lock, so no structured writer can
-    // bypass the verdict and no concurrent lifecycle flip can stale it.
+    // P-008/P-009: dependency validity belongs at the one locked body-write
+    // seam, not in selected verbs. Compare the complete before/after snapshots
+    // under the SAME lock: clean candidates retain the static verdict, while a
+    // legacy-invalid plan may commit only a strict-subset repair with zero new
+    // hard fingerprints. op_status was read under this lock too, so no
+    // concurrent lifecycle flip can stale either side of the transition.
     let dependencyDiagnostics: PlanCandidateDependencyDiagnostic[] | undefined;
     if (newBody !== null) {
       const candidate = parsePlan(newBody, { filePath });
-      const verdict = validatePlanCandidateDependencies(candidate, cur?.op_status ?? null);
+      const priorCandidate = cur ? parsePlan(cur.content, { filePath }) : null;
+      const verdict = validatePlanCandidateDependencyTransition(
+        priorCandidate,
+        candidate,
+        cur?.op_status ?? null,
+      );
       if (verdict.state === 'rejected') {
         return {
           kind: 'applied',
@@ -378,7 +387,7 @@ export async function withPlanLock<T>(
           priorBody: string | null;
         };
       }
-      if (verdict.state === 'invalid-draft') {
+      if (verdict.state === 'invalid-draft' || verdict.state === 'legacy-residual') {
         dependencyDiagnostics = verdict.diagnostics;
       }
     }
