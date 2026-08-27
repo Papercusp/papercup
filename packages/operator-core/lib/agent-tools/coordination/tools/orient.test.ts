@@ -8,6 +8,8 @@ import {
   assembleOrientOutput,
   ORIENT_AGGREGATE_TIMEOUT_MS,
   withOrientAggregateTimeout,
+  createOrientAggregateFallback,
+  snapshotOrientAggregate,
   summarizeLaneClaim,
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
@@ -169,6 +171,97 @@ describe('coord:orient args', () => {
       warnSpy.mockRestore();
       vi.useRealTimers();
     }
+  });
+
+  it('marks the aggregate fallback partial and preserves the latest snapshot', () => {
+    const fallback = createOrientAggregateFallback();
+    const snapshot = {
+      ok: true,
+      me: { summary: { agents: 1 } },
+      claimable: [{ id: 'EI-1' }],
+      inbox: { summary: { total: 2 }, recent: [{ msg_id: 'm1' }] },
+    };
+
+    snapshotOrientAggregate(fallback, snapshot);
+
+    expect(fallback.data).toMatchObject({
+      ...snapshot,
+      status: 'unknown',
+      degraded: true,
+      degradedReason: 'aggregate_timeout',
+      partial: true,
+    });
+  });
+
+  it('returns the stable partial snapshot when the aggregate deadline fires', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fallback = createOrientAggregateFallback();
+    const snapshot = {
+      ok: true,
+      me: { agents: [{ ownerId: 'me' }] },
+      claimable: [{ id: 'EI-1' }],
+      inbox: { summary: { total: 1 }, recent: [] },
+    };
+
+    try {
+      const resultPromise = withOrientAggregateTimeout(() => new Promise<typeof fallback>(() => {}), fallback);
+      snapshotOrientAggregate(fallback, snapshot);
+
+      await vi.advanceTimersByTimeAsync(ORIENT_AGGREGATE_TIMEOUT_MS);
+
+      await expect(resultPromise).resolves.toBe(fallback);
+      expect(fallback.data).toMatchObject({
+        me: snapshot.me,
+        claimable: snapshot.claimable,
+        inbox: snapshot.inbox,
+        partial: true,
+      });
+    } finally {
+      warnSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports both the early core and final composition snapshots', async () => {
+    const progress = vi.fn();
+    const { call } = fakeCall({ ...CORE });
+    const result = await composeOrient(
+      {
+        harness: 'h',
+        includePlanEvents: false,
+        includeFleetCatchUp: false,
+        includeFleetHealth: false,
+        includeRecipes: false,
+        includePeersKnow: false,
+      },
+      call,
+      'me',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      progress,
+    );
+
+    expect(progress).toHaveBeenCalledTimes(2);
+    expect(progress.mock.calls[0]?.[0]).toMatchObject({
+      ok: true,
+      me: result.me,
+      claimable: result.claimable,
+      inbox: result.inbox,
+    });
+    expect(progress.mock.calls[1]?.[0]).toBe(result);
   });
 
   it('keeps the aggregate fallback before the MCP transport cap with serialization headroom', () => {

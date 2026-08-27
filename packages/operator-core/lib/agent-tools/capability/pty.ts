@@ -14,7 +14,7 @@ import {
   getPtyByTaskId,
   getScreenSerialization,
   killPty,
-  spawnPty,
+  spawnGovernedPty,
   writePty,
   type PtyHandle,
 } from '../../pty-bridge';
@@ -202,7 +202,7 @@ export const ptyOpenTool = defineTool({
 
     let handle: PtyHandle;
     try {
-      handle = spawnPty({
+      handle = await spawnGovernedPty({
         accessScope: caller.accessScope,
         command: wrapped.binary,
         args: wrapped.argv,
@@ -212,6 +212,11 @@ export const ptyOpenTool = defineTool({
         taskId: enrolment.taskId,
         cols: args.cols ?? DEFAULT_COLS,
         rows: args.rows ?? DEFAULT_ROWS,
+      }, {
+        workspaceId: caller.workspaceId,
+        idempotencyKey: `capability-pty:${enrolment.taskId}`,
+        owner: caller.ownerId,
+        payloadRef: `task:${enrolment.taskId}`,
       });
     } catch (error) {
       return errorResult('pty_spawn_failed', {

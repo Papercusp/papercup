@@ -91,7 +91,7 @@ export async function reseedLeaderCompactionLimit(
   ownerId: string,
   opts?: {
     compactionLimit?: number;
-    contextSize?: 'full' | 'trimmed';
+    contextSize?: 'trimmed';
     harnessSlug?: string | null;
     planSlug?: string | null;
     carry?: 'warm' | 'cold';
@@ -141,7 +141,7 @@ export async function takeFleetLeadership(
   ownerId: string,
   opts?: {
     compactionLimit?: number;
-    contextSize?: 'full' | 'trimmed';
+    contextSize?: 'trimmed';
     harnessSlug?: string | null;
     planSlug?: string | null;
     carry?: 'warm' | 'cold';

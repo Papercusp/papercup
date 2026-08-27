@@ -409,6 +409,7 @@ const CONTROLS: Record<string, readonly Control[]> = {
   ],
   'gate.greenCheckpoint.qualification': [
     { label: 'ready logical attempt', expect: 'launch-physical-run' },
+    { label: 'request-time clear with fail-closed candidate preflights pending', expect: 'launch-preflight-runner' },
     { label: 'typed infrastructure blocker', expect: 'await-blocker-events' },
     { label: 'live physical-run lease', expect: 'await-current-run' },
     { label: 'expired physical-run lease', expect: 'recover-expired-runner' },
@@ -629,6 +630,7 @@ const EXPECTED: Record<string, readonly (string | null)[]> = {
   ],
   'gate.greenCheckpoint.qualification': [
     'launch-physical-run',
+    'launch-preflight-runner',
     'await-blocker-events',
     'await-current-run',
     'recover-expired-runner',

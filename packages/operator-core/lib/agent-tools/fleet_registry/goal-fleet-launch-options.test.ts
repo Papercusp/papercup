@@ -139,7 +139,7 @@ describe('goalFleetLaunchOverlay — knobs this shape cannot bind are NAMED, not
   it('reports a per-role contextSize on a PAIRED fleet as unbindable', () => {
     const o = overlayFor({
       fleetType: 'paired',
-      roles: { 'plan-fleet-director': { model: 'opus', contextSize: 'full' } },
+      roles: { 'plan-fleet-director': { model: 'opus', contextSize: 'trimmed' } },
     } as GoalLaunchSettings);
     expect(o.unbindable).toEqual([
       expect.objectContaining({ slot: 'plan-fleet-director', knob: 'contextSize' }),
@@ -150,7 +150,7 @@ describe('goalFleetLaunchOverlay — knobs this shape cannot bind are NAMED, not
 
   it('does NOT report contextSize on a SINGLE fleet — the fleet-wide fold still delivers it', () => {
     const o = overlayFor({
-      roles: { 'plan-fleet-member': { contextSize: 'full' } },
+      roles: { 'plan-fleet-member': { contextSize: 'trimmed' } },
     } as GoalLaunchSettings);
     expect(o.unbindable).toEqual([]);
   });

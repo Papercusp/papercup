@@ -41,10 +41,10 @@ export default defineTool({
         "P-009: explicit soft compaction limit (tokens) for you as the new leader, clamped to the leader ceiling. OMIT to auto-lift a stuck 300k member-cap seed to the leader default (400k on [1m]) — the fix for a member-promoted-to-leader staying at the member cap. A deliberately-tuned limit is left untouched.",
       ),
     contextSize: z
-      .enum(['full', 'trimmed'])
+      .literal('trimmed')
       .optional()
       .describe(
-        'P-009: pass to signal you are shaping this leader session yourself — it SUPPRESSES the auto-lift of the compaction cap (leaves your current limit as-is).',
+        "P-009: pass 'trimmed' to signal you are shaping this leader session yourself — it SUPPRESSES the auto-lift of the compaction cap (leaves your current limit as-is).",
       ),
     clearAutoArmSuppressions: z
       .boolean()

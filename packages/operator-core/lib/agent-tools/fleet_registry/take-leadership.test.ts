@@ -96,6 +96,11 @@ beforeEach(() => {
 });
 
 describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not just presence', () => {
+  it('advertises only the growable trimmed launch context', () => {
+    expect(takeLeadershipTool.args.safeParse({ fleet: 'rocket', contextSize: 'trimmed' }).success).toBe(true);
+    expect(takeLeadershipTool.args.safeParse({ fleet: 'rocket', contextSize: 'full' }).success).toBe(false);
+  });
+
   it("emits the fleet scheme's OSC recolor bytes to the caller's pty", async () => {
     const out = parse(await invoke({ fleet: 'rocket' }));
     expect(out.ok).toBe(true);

@@ -577,6 +577,10 @@ export const GATE_QUALIFICATION_CELL: CellSpec = {
         meaning: 'The logical attempt is ready and no physical runner holds its lease.',
         safeAction: 'Let the qualification routine launch the next physical runner under current release-control authority.',
       },
+      'launch-preflight-runner': {
+        meaning: 'Request-time predicates are clear, but fail-closed candidate preflights remain before the suite.',
+        safeAction: 'Let the qualification routine launch its preflight runner; do not treat the checkpoint suite as ready yet.',
+      },
       'await-blocker-events': {
         meaning: 'A typed pre-suite infrastructure blocker paused this logical attempt.',
         safeAction: 'Await the listed blocker-clear events; the same attempt resumes when they clear.',

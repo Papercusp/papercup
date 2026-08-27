@@ -169,6 +169,7 @@ describe('P-007: the four verdict cells', () => {
     expect(GATE_QUALIFICATION_CELL.assessment?.path).toBe('gate.qualification.safeNextAction.code');
     expect(Object.keys(GATE_QUALIFICATION_CELL.assessment?.codes ?? {})).toEqual([
       'launch-physical-run',
+      'launch-preflight-runner',
       'await-blocker-events',
       'await-current-run',
       'recover-expired-runner',

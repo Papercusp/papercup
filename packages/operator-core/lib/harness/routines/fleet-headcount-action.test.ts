@@ -79,7 +79,7 @@ describe('fleet headcount governor guards (WI-2479)', () => {
       effort: 'max',
       account: 'default',
       carry: 'warm',
-      contextSize: 'full',
+      contextSize: 'trimmed',
       compactionLimit: 825_000,
       headless: false,
       brief: 'drain bugs',
@@ -87,6 +87,7 @@ describe('fleet headcount governor guards (WI-2479)', () => {
       headless: false,
       effort: 'max',
       carry: 'warm',
+      contextSize: 'trimmed',
       compactionLimit: 825_000,
       brief: 'drain bugs',
     });

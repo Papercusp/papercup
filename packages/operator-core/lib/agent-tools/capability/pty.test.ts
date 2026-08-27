@@ -82,6 +82,7 @@ vi.mock('../../task-manager/enroll-sync', () => ({
 vi.mock('../../task-manager/store', () => ({ getTask: mocks.getTask }));
 vi.mock('../../pty-bridge', () => ({
   spawnPty: mocks.spawnPty,
+  spawnGovernedPty: (opts: unknown) => mocks.spawnPty(opts),
   getPtyByTaskId: mocks.getPtyByTaskId,
   writePty: mocks.writePty,
   getScreenSerialization: mocks.getScreenSerialization,

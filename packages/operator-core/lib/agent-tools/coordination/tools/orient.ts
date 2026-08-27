@@ -191,6 +191,41 @@ export function withOrientAggregateTimeout<T>(work: Promise<T> | (() => Promise<
   }).then(({ value }) => value);
 }
 
+/**
+ * EI-21589715378243224: the aggregate timeout fallback must be a stable object
+ * because composeOrient can finish useful core reads before a later fold stalls.
+ * Keep the response explicitly partial/degraded so a caller cannot mistake the
+ * snapshot for a complete orientation.
+ */
+export interface OrientAggregateFallback {
+  data: Record<string, unknown>;
+}
+
+export function createOrientAggregateFallback(): OrientAggregateFallback {
+  return {
+    data: {
+      ok: true,
+      status: 'unknown',
+      degraded: true,
+      degradedReason: 'aggregate_timeout',
+      partial: true,
+    },
+  };
+}
+
+/** Replace the stable fallback's data with the latest composed orientation while
+ * retaining the aggregate-timeout markers. This is synchronous and intentionally
+ * side-effect free beyond the supplied fallback, so it cannot add latency to the
+ * sequential composition path. */
+export function snapshotOrientAggregate(fallback: OrientAggregateFallback, snapshot: OrientResult): void {
+  Object.assign(fallback.data, snapshot, {
+    status: 'unknown',
+    degraded: true,
+    degradedReason: 'aggregate_timeout',
+    partial: true,
+  });
+}
+
 export interface OrientArgs {
   harness?: string;
   /**
@@ -869,8 +904,18 @@ export async function composeOrient(
    *  starts recovery before composeOrient and injects this promise so the first
    *  assignments read cannot use a stale self-only scope. */
   recoveredFleetScopeFold?: () => Promise<RecoveredFleetScope | null>,
+  /** EI-21589715378243224: report useful snapshots to the handler-owned aggregate
+   *  timeout fallback. The callback is best-effort and never load-bearing. */
+  progress?: (snapshot: OrientResult) => void,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
+  const reportProgress = (snapshot: OrientResult): void => {
+    try {
+      progress?.(snapshot);
+    } catch {
+      /* best-effort: a fallback observer must never break orientation */
+    }
+  };
   // EI-18748795522559631: memory recall is independent of the roster, backlog,
   // inbox, and leader folds below, but it used to START only after all of them.
   // Launch it now and consume it at the existing admission point so its
@@ -1303,6 +1348,9 @@ export async function composeOrient(
     ...(presenceDrift !== undefined ? { presenceDrift } : {}),
     ...(recoveredFleetScope !== undefined ? { recoveredFleetScope } : {}),
   };
+  // EI-21589715378243224: preserve the core assignment/backlog/inbox snapshot
+  // before the optional folds below can consume the aggregate budget.
+  reportProgress(result);
 
   // ── leaderBrief fold (fleet-reliability-verification-2026-07-10 P-007): a MONITOR
   // tick belonging to a resolvable FLEET LEADER also gets the whole fleet's per-member
@@ -2281,6 +2329,10 @@ export async function composeOrient(
     }
   }
 
+  // EI-21589715378243224: publish the latest completed composition as well as the
+  // early core snapshot. The handler's stable fallback then retains whichever
+  // snapshot was available when the aggregate deadline fired.
+  reportProgress(result);
   return result;
 }
 
@@ -2830,6 +2882,7 @@ export default defineTool({
   // Keep the existing handler body byte-stable; the aggregate fence is the only wrapper change.
   // prettier-ignore
   async handler(args, ctx) {
+    const aggregateFallback = createOrientAggregateFallback();
     const aggregate = await withOrientAggregateTimeout(
       async () => {
     // Soft identity resolve — orient is a READ; a bare loopback caller without an
@@ -3200,6 +3253,7 @@ export default defineTool({
       },
       fleetSummariesFold,
       recoveredFleetScopePromise ? () => recoveredFleetScopePromise : undefined,
+      (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
     );
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets
@@ -3513,12 +3567,7 @@ export default defineTool({
     return { data: out };
       },
       {
-        data: {
-          ok: true,
-          status: 'unknown',
-          degraded: true,
-          degradedReason: 'aggregate_timeout',
-        },
+        ...aggregateFallback,
       },
     );
     return aggregate;

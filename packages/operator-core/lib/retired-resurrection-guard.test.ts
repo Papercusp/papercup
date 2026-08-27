@@ -27,12 +27,12 @@ import { describe, it, expect, beforeAll } from 'vitest';
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — plain .mjs guard, no type declarations by design (same treatment as the sibling live-tree guards)
-import {
-  assessBuiltinCellDeclarations,
-  findRemovedCellIdentifiers,
-  findResurrections,
-  parseLsFiles,
-} from '../../../scripts/check-retired-resurrection.mjs';
+// Kept on ONE line deliberately: @ts-ignore suppresses only the FOLLOWING line, and TS7016 for an
+// undeclared module is reported at the module SPECIFIER. Split this across lines and the specifier
+// drops out from under the directive, which is exactly how this file went red (baseline 0 -> 3).
+// The passing sibling guards (no-retired-imports, unreachable-tier-mock) are all single-line for this reason.
+// prettier-ignore
+import { assessBuiltinCellDeclarations, findRemovedCellIdentifiers, findResurrections, parseLsFiles } from '../../../scripts/check-retired-resurrection.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 const GUARD = path.join(REPO_ROOT, 'scripts/check-retired-resurrection.mjs');
@@ -112,7 +112,9 @@ describe('retired-resurrection guard — capability (both directions)', () => {
 
 describe('cell retirement ratchet — scoped identifiers + assessment census', () => {
   it('rejects every retired cell identifier shape without banning unrelated vocabulary', () => {
-    const hits = findRemovedCellIdentifiers([
+    // Annotated because the guard is imported from an undeclared .mjs (see the import above),
+    // so its return is `any` and the `hit` callback params below would be implicit-any.
+    const hits: { identifier: string; path: string }[] = findRemovedCellIdentifiers([
       {
         path: 'packages/operator-core/lib/cell-read.ts',
         source:

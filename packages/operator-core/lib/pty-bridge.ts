@@ -28,6 +28,8 @@ import {
   samePtyAccessScope,
   type PtyAccessScope,
 } from './pty-ticket';
+import type { AdmissionContext, ResourceDemand } from './resource-governor/admission';
+import { beginGovernedExecution, governedExecutionRuntime } from './resource-governor/execution';
 
 // @xterm/headless + @xterm/addon-serialize are CJS; their named exports aren't
 // statically visible to ESM named-import LINKING (cjs-module-lexer) under tsx now
@@ -86,6 +88,15 @@ export interface SpawnPtyOpts {
   /** Initial terminal size. xterm.js sends a resize on its first frame too. */
   cols: number;
   rows: number;
+}
+
+export interface GovernedPtySpawnInput {
+  readonly workspaceId: string;
+  readonly idempotencyKey: string;
+  readonly owner: string;
+  readonly payloadRef?: string;
+  readonly parent?: AdmissionContext;
+  readonly demand?: ResourceDemand;
 }
 
 export interface PtyHandle {
@@ -198,6 +209,47 @@ export class PtyError extends Error {
     super(message);
     this.name = 'PtyError';
   }
+}
+
+/** Admit at the PTY fork boundary and exact-release when node-pty reports exit. */
+export async function spawnGovernedPty(
+  opts: SpawnPtyOpts,
+  admission: GovernedPtySpawnInput,
+): Promise<PtyHandle> {
+  const execution = await beginGovernedExecution(
+    {
+      idempotencyKey: admission.idempotencyKey,
+      admissionClass: 'process',
+      demand: admission.demand ?? { cpuWeight: 1 },
+      payloadRef: admission.payloadRef,
+      parent: admission.parent,
+      metadata: {
+        processKind: 'pty',
+        taskId: opts.taskId ?? null,
+        harnessSlug: opts.accessScope.harnessSlug,
+      },
+    },
+    { owner: admission.owner },
+    governedExecutionRuntime(admission.workspaceId, 'pty-process'),
+  );
+
+  let handle: PtyHandle;
+  try {
+    handle = spawnPty({
+      ...opts,
+      env: {
+        ...opts.env,
+        PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(execution.context),
+      },
+    });
+  } catch (error) {
+    await execution.cancel(`pty spawn threw: ${error instanceof Error ? error.message : String(error)}`);
+    throw error;
+  }
+  handle.onExit.add(() => {
+    void execution.finish();
+  });
+  return handle;
 }
 
 /** Create a new pty-backed subprocess. Throws on cap or spawn failure. */
