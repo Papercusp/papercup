@@ -16091,7 +16091,7 @@
           "POST"
         ]
       },
-      "description": "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with { read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, and nextAction are compatibility aliases), { note }, or compatibility alias { checkpoint }; canonical note wins and blank/null clears. Keyed by ownerId. walls/checks default to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL contention returns retryable timeout data, not a transport hang.",
+      "description": "Read, write, or clear the carry-note used by a COLD su AUTO-loop wake. Read with { read:true, ownerId?, harness? }; write { did, left, insight, next } (goal, keyInsight, nextAction are aliases), { note }, or compatibility alias { checkpoint }; canonical note wins and blank/null clears. An optional workItem key is accepted as non-scoping metadata. Keyed by ownerId. walls/checks default to rowsMode:'merge': supplied rows win and ? PREDICTED yields before ✓ VERIFIED at the cap. rowsMode:'replace' retires omitted rows; empty list with replace clears. Returns verified metadata plus walls/checks. PostgreSQL contention returns retryable timeout data, not a transport hang.",
       "capabilities": [
         "routines:write"
       ],
@@ -29955,7 +29955,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You discovered one or more dependencies/relationships. Picking the rel: `blocks` = src gates dst (the only rel with scheduler semantics; the canonical transaction validates the complete typed post-state and refuses cycles, bad endpoints, and newly stranded work); `fixes` = src is the change that resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst (a bug, EI, or event); `about` = src concerns a target it neither fixes nor investigates (a topic, event key, or object); `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference but none of the above. Create several edges at once via items:[…].",
+        "when": "For typed dependencies/relationships. Pick: `blocks` = src gates dst (only scheduler rel; refuses cycles, bad endpoints, and newly stranded work); `fixes` = src resolves dst; `duplicates` = src duplicates dst; `investigates` = src is the digging/diagnosis task for dst; `about` = src concerns a target without fixing/investigating; `caused-by` = src exists because of dst; `revises` = src is a newly-filed revision of dst; `relates` = worth a cross-reference. Use items:[…] for several edges.",
         "chaining": "work_items:get both sides → work_items:link { rel:\"blocks\", target_id } (or items:[…])."
       }
     },

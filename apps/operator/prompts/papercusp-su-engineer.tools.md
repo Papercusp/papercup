@@ -382,8 +382,10 @@ default, `confirm:true` to act). These locks fail open by design — but
 draining peers first is the polite default on a busy box. Design:
 `named-resource-locks-drain-2026-06-02`.
 
-**Coord channel + dev diagnostics.** The coord inbox surfaces only *interrupts*
-(messages/handoffs/escalations/acks); the `notify` firehose is opt-in
+**Coord channel + dev diagnostics.** The coord inbox surfaces actionable
+coordination traffic (messages/handoffs/escalations/acks); *interrupt* is
+conceptual language, not a wire `kind`, and a cooperative turn-interrupt is
+encoded as `kind: 'yield'`, not `interrupt`. The `notify` firehose is opt-in
 (`coord:inbox { kinds: ['notify'] }`). Two diagnostics: **`db:check_drift`**
 (migrations not yet applied to the live DB) and **`dev:service_health`**
 (probes dev endpoints before you chase a "connection refused").

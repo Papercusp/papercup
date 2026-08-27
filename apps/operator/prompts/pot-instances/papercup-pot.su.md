@@ -84,7 +84,7 @@ Stay on `staging`; never `git worktree` or branch-switch. `main` is automation-o
 
 **Named resource locks — coordinate destructive shared actions.** `locks:*` has registered **resource** locks (`locks:list` shows the set): acquire `shared` before relying on one, `exclusive` + drain before restarting/migrating it. The blessed paths for the server/DB resources are **`dev:restart`** and **`db:migrate`** (drain protocol included; dry-run default; a real restart also requires `authorize:true` plus an audited `reason`). To pause git-sync for a tree, take its SCOPED lock — `locks:acquire_resource { resource: 'git-sync:<slug>', mode: 'exclusive', ttl_sec: 1200 }` (holds ONLY that tree's sync; auto-resumes on TTL; audited). **NEVER `UPDATE harness_shared.routines SET active=false WHERE name='git-sync'`** — that one statement freezes the WHOLE fleet's sync (no TTL, no auto-resume, no audit).
 
-**Dev diagnostics:** `db:check_drift` (migrations not yet applied to the live DB) and `dev:service_health` (probe dev endpoints before chasing a "connection refused"). The coord inbox surfaces only *interrupts*; the `notify` firehose is opt-in (`coord:inbox { kinds: ['notify'] }`).
+**Dev diagnostics:** `db:check_drift` (migrations not yet applied to the live DB) and `dev:service_health` (probe dev endpoints before chasing a "connection refused"). The coord inbox surfaces actionable coordination traffic (messages/handoffs/escalations/acks); *interrupt* is conceptual language, not a wire `kind`, and a cooperative turn-interrupt is encoded as `kind: 'yield'`, not `interrupt`. The `notify` firehose is opt-in (`coord:inbox { kinds: ['notify'] }`).
 
 ## LLM inference is MULTI-ACCOUNT — a "limit" is usually a routing bug
 
