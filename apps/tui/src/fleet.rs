@@ -159,6 +159,10 @@ pub struct FleetState {
     pub activity: Vec<ActivityRow>,
     /// Fleet-wide work items (features + issues + chunks).
     pub work_items: Vec<WorkItem>,
+    /// Last `work_items:list` transport/decode error. This stays attached to
+    /// the Fleet panel so a later successful poll of another panel cannot
+    /// erase the diagnosis from the global status bar.
+    pub work_items_error: Option<String>,
     /// Latest todo snapshot per worker (owner_id → snapshot), from `kind:"todos"`
     /// activity rows (D-004 worker-todo mirroring).
     pub agent_todos: HashMap<String, TodoSnapshot>,
@@ -215,6 +219,7 @@ impl Default for FleetState {
             tape_filter: TapeFilter::All,
             activity: Vec::new(),
             work_items: Vec::new(),
+            work_items_error: None,
             agent_todos: HashMap::new(),
             agent_sel: 0,
             show_comms: false,
@@ -432,7 +437,13 @@ pub fn draw_fleet(f: &mut Frame, app: &App, area: Rect) {
             vec![Constraint::Length(1), Constraint::Min(1)]
         })
         .split(area);
-    draw_headline(f, &agg, app.fleet.mode, rows[0]);
+    draw_headline(
+        f,
+        &agg,
+        app.fleet.mode,
+        app.fleet.work_items_error.as_deref(),
+        rows[0],
+    );
 
     let comms = app.fleet.show_comms && curated;
     if comms {
@@ -602,8 +613,14 @@ fn draw_conversations_compact(f: &mut Frame, app: &App, area: Rect, sel: Option<
     f.render_widget(List::new(items).style(Theme::panel()), body);
 }
 
-fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rect) {
-    let line = Line::from(vec![
+fn draw_headline(
+    f: &mut Frame,
+    agg: &FleetAggregate,
+    mode: FleetMode,
+    work_items_error: Option<&str>,
+    area: Rect,
+) {
+    let mut spans = vec![
         // Label is "Fleet" — the cup-theme rename was reverted by the owner (2026-06-05).
         Span::styled(
             format!(" {} Fleet ", glyph::nav::FLEET),
@@ -620,12 +637,18 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
             agg.wi_total,
             agg.wi_remaining,
         )),
-        // Key hints: Tab cycles all three shared-stream renderers.
-        Span::styled(
-            format!("[{}]  Tab: curated→mirror→tape", mode.label()),
-            Theme::info(),
-        ),
-    ]);
+    ];
+    if let Some(error) = work_items_error {
+        spans.push(Span::styled(
+            format!(" work-items error: {} · ", trunc(error, 48)),
+            Theme::warn(),
+        ));
+    }
+    spans.push(Span::styled(
+        format!("[{}]  Tab: curated→mirror→tape", mode.label()),
+        Theme::info(),
+    ));
+    let line = Line::from(spans);
     f.render_widget(Paragraph::new(line).style(Theme::status_bar()), area);
 }
 
@@ -633,8 +656,9 @@ fn draw_headline(f: &mut Frame, agg: &FleetAggregate, mode: FleetMode, area: Rec
 /// The default Swarm view (pui-dock-consolidation-2026-06-07): roster (left) |
 /// dossier (right-top) + plan progress (right-bottom). The dossier + plan
 /// progress default to the WHOLE FLEET; selecting an agent in the roster filters
-/// both to that agent (#2). `c` swaps in the comms sub-view (handled in
-/// `draw_fleet`).
+/// both to that agent (#2). A leader cockpit is an explicit selected-leader view,
+/// so an unrelated or stale brief never replaces the selected agent's dossier.
+/// `c` swaps in the comms sub-view (handled in `draw_fleet`).
 fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
     // Whichever panel holds focus wears the active border (owner ask 2026-06-14);
     // `h`/`l` cycle Roster → Dossier → PlanProgress here.
@@ -650,12 +674,37 @@ fn draw_curated(f: &mut Frame, app: &App, agg: &FleetAggregate, area: Rect) {
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(56), Constraint::Percentage(44)])
         .split(cols[1]);
-    if let Some(brief) = app.fleet.leader_brief.as_ref() {
+    if let Some(brief) = selected_leader_brief(app) {
         draw_leader_cockpit(f, brief, cols[1]);
     } else {
         draw_dossier(f, app, right[0], focus == FleetPanel::Dossier);
         draw_plan_progress(f, app, agg, right[1], focus == FleetPanel::PlanProgress);
     }
+}
+
+/// Return the loaded leader brief only for the explicitly selected, live leader
+/// it belongs to. Leader briefs are fetched from a fleet-level read, while the
+/// roster cursor and bee selection identify the agent the dossier is showing;
+/// comparing both scopes keeps a brief for another fleet from taking over that
+/// dossier. Requiring the explicit bee selection also preserves the whole-fleet
+/// dossier on first entry, before the owner selects a roster row.
+fn selected_leader_brief(app: &App) -> Option<&crate::models::FleetLeaderBrief> {
+    let selected = app.selected_session()?;
+    if !selected.is_live()
+        || selected.fleet_role.as_deref() != Some("leader")
+        || app.bee.owner_id.as_deref() != Some(selected.owner_id.as_str())
+    {
+        return None;
+    }
+    let fleet = selected
+        .fleet_slug
+        .as_deref()
+        .filter(|slug| !slug.is_empty())?;
+    if app.fleet.leader_fleet.as_deref() != Some(fleet) {
+        return None;
+    }
+    let brief = app.fleet.leader_brief.as_ref()?;
+    (brief.summary.fleet == fleet).then_some(brief)
 }
 
 fn draw_leader_cockpit(f: &mut Frame, brief: &crate::models::FleetLeaderBrief, area: Rect) {
@@ -2412,6 +2461,18 @@ mod tests {
     }
 
     #[test]
+    fn work_items_error_is_visible_in_the_fleet_headline() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.fleet.work_items_error = Some("array-root decode failed".into());
+
+        let view = render_fleet(&app, 160, 24);
+        assert!(view.contains("work-items error: array-root decode failed"));
+        assert!(app.last_error.is_none());
+    }
+
+    #[test]
     fn hms_extracts_clock() {
         assert_eq!(hms("2026-06-04 18:53:58.46-04"), "18:53:58");
         assert_eq!(hms("2026-06-04T09:01:02Z"), "09:01:02");
@@ -2435,6 +2496,61 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    fn leader_brief(fleet: &str) -> crate::models::FleetLeaderBrief {
+        crate::models::FleetLeaderBrief {
+            ok: true,
+            summary: crate::models::FleetLeaderSummary {
+                fleet: fleet.into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn leader_cockpit_requires_explicit_matching_live_leader_selection() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.fleet.leader_fleet = Some("standalone-drain".into());
+        app.fleet.leader_brief = Some(leader_brief("standalone-drain"));
+
+        // A loaded brief must not replace an explicitly selected worker's
+        // dossier merely because the brief belongs to some live leader.
+        let mut worker = roster_entry("su-worker", false);
+        worker.fleet_slug = Some("bulk-work-queue-sol-xhigh".into());
+        worker.fleet_role = Some("member".into());
+        worker.session_state = Some("live".into());
+        app.set_roster(vec![worker]);
+        app.bee.set_selection(Some("su-worker".into()), None);
+        let worker_view = render_fleet(&app, 120, 24);
+        assert!(
+            !worker_view.contains("leader members"),
+            "unrelated leader brief replaced the selected worker dossier"
+        );
+
+        // Even when the cursor is on a leader, the cockpit is opt-in: entering
+        // Fleet starts with the whole-fleet dossier until the row is selected.
+        let mut leader = roster_entry("su-leader", false);
+        leader.fleet_slug = Some("standalone-drain".into());
+        leader.fleet_role = Some("leader".into());
+        leader.session_state = Some("live".into());
+        app.set_roster(vec![leader]);
+        // The roster reducer clears a brief whenever the leader fleet changes;
+        // a real fetch lands after that refresh, so load the matching snapshot
+        // at the same point in this fixture.
+        app.fleet.leader_brief = Some(leader_brief("standalone-drain"));
+        app.bee.set_selection(None, None);
+        let unselected_leader_view = render_fleet(&app, 120, 24);
+        assert!(!unselected_leader_view.contains("leader members"));
+
+        // The loaded cockpit still appears for the explicitly selected live
+        // leader whose fleet matches both the fetch target and brief.
+        app.bee.set_selection(Some("su-leader".into()), None);
+        let leader_view = render_fleet(&app, 120, 24);
+        assert!(leader_view.contains("leader members"));
     }
 
     #[test]

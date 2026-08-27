@@ -114,11 +114,15 @@ function locateRefDir(cloneDir: string, ref: string, label: string): string {
   return dir;
 }
 
-/** Recursively copy a content dir into `target`, excluding any .git. */
+/** Recursively copy a content dir into a new `target`, excluding any .git. */
 async function copyContentDir(src: string, target: string): Promise<void> {
-  await fs.rm(target, { recursive: true, force: true });
   await fs.cp(src, target, {
     recursive: true,
+    // The caller rejects an existing target before reaching this helper. Keep the
+    // copy itself create-only too, so a target that appears between that check and
+    // fs.cp cannot be overwritten by a concurrent install.
+    force: false,
+    errorOnExist: true,
     filter: (s) => !s.split(/[/\\]/).includes('.git'),
   });
 }
@@ -128,9 +132,11 @@ async function copyContentDir(src: string, target: string): Promise<void> {
  * of the given kind, and place it in that kind's writable user layer.
  *
  * Ordering is deliberate and load-bearing: BOTH validations (manifest present, and
- * the dir parses with the kind's own reader) run BEFORE the destructive
+ * the dir parses with the kind's own reader) run BEFORE the create-only
  * `copyContentDir`, so a bad publish can never clobber an already-installed good
- * ref of the same name. The tmp clone is removed in `finally` on every path.
+ * ref of the same name. Existing refs are a conflict; an explicit update path must
+ * be separate from this install path. The tmp clone is removed in `finally` on every
+ * path.
  */
 export async function installSelfDescribingFromCupboard<TMeta>(
   input: InstallSelfDescribingInput,
@@ -177,6 +183,12 @@ export async function installSelfDescribingFromCupboard<TMeta>(
     const userDir = spec.userDir();
     const target = join(userDir, ref);
     assertInside(userDir, target, `${spec.label} ref "${ref}"`);
+    if (existsSync(target)) {
+      throw new InstallSelfDescribingError(
+        `${spec.label} "${ref}" is already installed at ${target}; refusing to overwrite`,
+        409,
+      );
+    }
     await fs.mkdir(userDir, { recursive: true });
     await copyContentDir(srcDir, target);
 

@@ -10,27 +10,24 @@
  * hand-track ~4300→4500c. This module writes the snapshot PLATFORM-SIDE, on a
  * recurring tick, for every ACTIVE goal — no agent in the loop.
  *
- * ── The two attribution legs (and why summing them does not double-count) ──────
+ * ── The two attribution legs (and their authority boundary) ───────────────────
  *  1. POT leg — `goalSpend()` (@papercusp/db-org): agent_usage_samples summed by
  *     harness_slug over the goal's live goal_pots, bounded to the goal's lifetime.
  *     Covers every fleet/agent working in the goal's pots. NOT additive across
- *     goals (a shared pot bills in full to each — D-021).
- *  2. SESSION leg — the gap the pot leg cannot see: the goal SUBJECT's own
- *     interactive session and inherited descendants whose samples carry a
- *     harness OUTSIDE the goal's pots (or none at all). New samples carry
- *     `agent_usage_samples.goal_id`, resolved at INSERT time from the native
- *     session's mode/brief context (migration 881), so their attribution is
- *     historical even after live membership disappears. Pre-881 NULL rows use
- *     the current membership fallback below. Samples whose harness_slug IS one
- *     of the goal's pot harnesses are EXCLUDED here because the pot leg already
- *     counted them; the union is therefore exact.
+ *     goals (a shared pot bills in full to each — D-021). This is the ONLY
+ *     authoritative source for metadata.spentCents, spend tripwires, and budget
+ *     enforcement: it is exactly the value exposed by goals:pots and accepted by
+ *     goals:update's exact-match verification.
+ *  2. SESSION leg — diagnostic-only context about the goal SUBJECT's interactive
+ *     session and inherited descendants whose samples carry a harness OUTSIDE
+ *     the goal's pots (or none at all). Session-to-goal attribution is not a
+ *     reliable billing boundary: it can be incomplete, inherited, or unpriced.
+ *     It MUST NOT change spentCents, advance a spend tripwire, or kill a goal.
  *
- * The snapshot is stamped `spentCentsSource: GOAL_SPEND_TICK_SOURCE` — a marker
- * DISTINCT from GOAL_SPEND_SNAPSHOT_SOURCE ('goal-pots-rollup') because the value
- * is deliberately a SUPERSET of the pots rollup; writing it under the pots marker
- * would break goals:update's exact-match verification invariant. The sync read
- * (sync-resolver/goals.ts) accepts either marker. A spentCentsBreakdown rides
- * along so a reader can tell a measured figure from a floor (unpriced samples).
+ * The diagnostic total still partitions the ledger without double-counting:
+ * samples whose harness_slug IS one of the goal's pot harnesses are excluded
+ * from the session leg. It rides in spentCentsBreakdown so operators can inspect
+ * it without promoting an estimate into authoritative spend.
  *
  * Mechanism precedent: the goal watchdog family (goal-liveness-watchdog.ts,
  * goal-drain-fleet-watchdog.ts) — a process-level managedSetInterval sweep
@@ -41,7 +38,7 @@
  */
 import type { Sql } from 'postgres';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
-import { goalSpend, GOAL_SPEND_TICK_SOURCE, type GoalSpend } from '@papercusp/db-org';
+import { goalSpend, GOAL_SPEND_SNAPSHOT_SOURCE, type GoalSpend } from '@papercusp/db-org';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { GOAL_MODE } from '../modes/goal-session';
@@ -62,14 +59,17 @@ export interface GoalSessionSpend {
 
 export interface GoalSpendRollup {
   goalId: string;
-  /** POT leg + SESSION leg, in integer cents (what the snapshot writes). */
+  /** POT leg + diagnostic SESSION leg, in integer cents. Never authoritative. */
   totalCents: number;
+  /** Authoritative goals:pots value written to metadata.spentCents. */
   potCents: number;
+  /** Diagnostic-only interactive-session estimate. */
   sessionCents: number;
+  /** Diagnostic union count (pot + session). */
   samples: number;
+  /** Diagnostic union count (pot + session). */
   unpricedSamples: number;
-  /** True only when ≥1 sample contributed and EVERY sample carried a cost —
-   *  same contract as GoalSpend.measured. False means the figure is a FLOOR. */
+  /** Whether the diagnostic union is fully priced. Not an authority signal. */
   measured: boolean;
   pot: GoalSpend;
   session: GoalSessionSpend;
@@ -153,7 +153,8 @@ export async function sessionSpendForGoal(
 }
 
 /**
- * Both legs, combined into the number the snapshot writes.
+ * Both legs, combined for diagnostics. The persisted/controlling number is
+ * always `potCents`; `totalCents` is intentionally non-authoritative.
  *
  * `sinceMs` threads to BOTH legs unchanged (each already clamps it up to the
  * goal's creation, so it can narrow the window but never reach back before the
@@ -194,16 +195,26 @@ export async function writeGoalSpendSnapshot(
   nowIso: string = new Date().toISOString(),
 ): Promise<number> {
   const patch = {
-    spentCents: rollup.totalCents,
-    spentCentsSource: GOAL_SPEND_TICK_SOURCE,
+    // Hard authority boundary: this must remain byte-for-byte equivalent to
+    // goals:pots, even when the diagnostic session leg is larger or unpriced.
+    spentCents: rollup.potCents,
+    spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE,
     spentCentsAt: nowIso,
     spentCentsBreakdown: {
       potCents: rollup.potCents,
+      potSamples: rollup.pot.samples,
+      potUnpricedSamples: rollup.pot.unpricedSamples,
+      measured: rollup.pot.measured,
+      // Everything below is diagnostic-only and must never be read as the
+      // authoritative spend snapshot or a terminal-control input.
       sessionCents: rollup.sessionCents,
-      samples: rollup.samples,
-      unpricedSamples: rollup.unpricedSamples,
-      sessions: rollup.session.sessions,
-      measured: rollup.measured,
+      sessionSamples: rollup.session.samples,
+      sessionUnpricedSamples: rollup.session.unpricedSamples,
+      sessionMeasured: rollup.session.samples > 0 && rollup.session.unpricedSamples === 0,
+      sessionCount: rollup.session.sessions,
+      diagnosticTotalCents: rollup.totalCents,
+      diagnosticSamples: rollup.samples,
+      diagnosticUnpricedSamples: rollup.unpricedSamples,
     },
   };
   // sql.json, NOT a pre-stringified text param: postgres-js JSON-serializes a
@@ -224,11 +235,10 @@ export async function writeGoalSpendSnapshot(
  * Advance this goal's generically-measurable tripwires from the rollup just
  * computed (plan blender-goal-amendment-rail-2026-08-19 P-004, D-014).
  *
- * ⚠ THE `measured` GATE IS THE POINT, not a detail. `rollup.totalCents` is a
- * FLOOR whenever any sample is unpriced, and a spend tripwire governs a ceiling
- * — so publishing a floor as `current` would read as "safely under" when the
- * true figure is unknown. Only a fully-priced rollup advances a spend tripwire;
- * everything else is passed as null and leaves the value exactly as it was.
+ * ⚠ THE POT-LEG `measured` GATE IS THE POINT, not a detail. The session leg is
+ * diagnostic-only and may neither inflate the current nor make an otherwise
+ * measured goals:pots value look unmeasured. Only a fully-priced POT rollup
+ * advances a spend tripwire; everything else leaves the value unchanged.
  *
  * Like {@link writeGoalSpendSnapshot} this deliberately does NOT bump
  * `updated_at`: scoring a tripwire reports a measurement, it does not edit the
@@ -242,7 +252,7 @@ export async function refreshGoalTripwires(
   nowMs: number = Date.now(),
 ): Promise<{ advanced: number; written: boolean; breached: ReturnType<typeof breachedTripwires> }> {
   const res = refreshTripwireCurrents(goal.tripwires, {
-    measuredSpentCents: rollup.measured ? rollup.totalCents : null,
+    measuredSpentCents: rollup.pot.measured ? rollup.potCents : null,
     goalAgeMs: nowMs - goal.createdAtMs,
   });
   if (!res.changed) {
@@ -311,29 +321,29 @@ async function enforceGoalBreaches(
       ? await computeGoalSpendRollup(sql, { ...scope, sinceMs: Date.now() - windowSec * 1000 })
       : rollup;
 
-  // `totalCents` is a lower bound when any sample is unpriced. If that known
-  // floor already reaches the ceiling, the true spend necessarily does too;
-  // the incomplete measurement marker must not prevent the terminal stop.
-  const budgetBreached = budgetCents !== null && judged.totalCents >= budgetCents;
+  // Only goals:pots can govern the goal. A POT floor still necessarily reaches
+  // the ceiling when its known priced portion does; the diagnostic session leg
+  // is never part of this comparison.
+  const budgetBreached = budgetCents !== null && judged.potCents >= budgetCents;
   if (!budgetBreached && breached.length === 0) return;
 
   const per = windowSec === null ? '' : ` per ${windowSec}s window`;
   const reasons = [
     ...(budgetBreached
       ? [
-          judged.measured
-            ? `measured spend ${judged.totalCents}c reached budget ${budgetCents}c${per}`
-            : `spend floor ${judged.totalCents}c reached budget ${budgetCents}c${per} with ${judged.unpricedSamples} unpriced sample(s)`,
+          judged.pot.measured
+            ? `measured goals:pots spend ${judged.potCents}c reached budget ${budgetCents}c${per}`
+            : `goals:pots spend floor ${judged.potCents}c reached budget ${budgetCents}c${per} with ${judged.pot.unpricedSamples} unpriced sample(s)`,
         ]
       : []),
     ...breached.map((b) => `${b.metric} ${b.current} reached threshold ${b.threshold}`),
   ];
   const evidence = {
-    reason: budgetBreached && !rollup.measured ? 'spend-floor-goal-breach' : 'measured-goal-breach',
+    reason: budgetBreached && !judged.pot.measured ? 'spend-floor-goal-breach' : 'measured-goal-breach',
     at: new Date().toISOString(),
     reasons,
-    spentCents: rollup.totalCents,
-    measured: rollup.measured,
+    spentCents: judged.potCents,
+    measured: judged.pot.measured,
   };
   const changed = await sql`
     UPDATE harness_shared.goals

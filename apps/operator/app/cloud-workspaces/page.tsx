@@ -2,6 +2,7 @@
 
 import { useCallback, useMemo, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   Camera,
   CheckCircle2,
@@ -16,7 +17,7 @@ import {
   Square,
   Trash2,
   Wrench,
-} from 'lucide-react';
+} from "lucide-react";
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
 import { toast } from 'sonner';
 import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
@@ -212,6 +213,19 @@ function formatMoney(value?: number): string {
   }).format(value);
 }
 
+function formatCapacity(
+  size?: Partial<Pick<SizeOption, "vcpu" | "memoryGiB">> | null,
+): string {
+  if (
+    !size ||
+    !Number.isFinite(size.vcpu) ||
+    !Number.isFinite(size.memoryGiB)
+  ) {
+    return "Capacity details unavailable";
+  }
+  return `${size.vcpu} vCPU · ${size.memoryGiB} GiB RAM`;
+}
+
 function formatSignal(value: unknown): string {
   if (value == null) return 'none';
   if (typeof value === 'string') return value;
@@ -282,6 +296,35 @@ function Field({ label, children, hint }: { label: string; children: React.React
   );
 }
 
+function SectionHeading({
+  id,
+  step,
+  eyebrow,
+  title,
+  description,
+}: {
+  id: string;
+  step: string;
+  eyebrow: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className={styles.sectionHeading}>
+      <div className={styles.sectionTitle}>
+        <span className={styles.sectionNumber} aria-hidden="true">
+          {step}
+        </span>
+        <div>
+          <p className={styles.step}>{eyebrow}</p>
+          <h2 id={id}>{title}</h2>
+        </div>
+      </div>
+      <p>{description}</p>
+    </div>
+  );
+}
+
 export default function CloudWorkspacesPage() {
   const control = useSyncQuery<CloudWorkspacesControlRow>({ queryName: 'workspaceHosts.control' });
   const mutate = useSyncMutate<WorkspaceHostActionArgs, WorkspaceHostActionResponse>(
@@ -343,6 +386,23 @@ export default function CloudWorkspacesPage() {
     ? undefined
     : selectedSize.hourlyUsd * 730 + validDiskGiB * (selectedConnection?.diskPricePerGiBMonth ?? 0);
   const destroyWorkspace = workspaces.find((row) => row.id === destroyId) ?? null;
+  const connectedProviderCount = connections.filter(
+    (row) => row.status === "connected",
+  ).length;
+  const healthyWorkspaceCount = workspaces.filter(
+    (row) => row.health?.status === "healthy",
+  ).length;
+  const alignedWorkspaceCount = workspaces.filter(
+    (row) => row.desiredState === row.observedState,
+  ).length;
+  const managedMonthlyUsd = workspaces.reduce(
+    (total, row) =>
+      total +
+      (Number.isFinite(row.estimatedMonthlyUsd)
+        ? (row.estimatedMonthlyUsd ?? 0)
+        : 0),
+    0,
+  );
 
   const perform = useCallback(
     async (key: string, args: WorkspaceHostActionArgs, successMessage: string) => {
@@ -387,66 +447,166 @@ export default function CloudWorkspacesPage() {
   return (
     <main className={styles.page}>
       <header className={styles.hero}>
-        <div>
+        <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>
             <Cloud size={14} aria-hidden="true" /> Local BYOC control plane
           </p>
           <h1>Cloud Workspaces</h1>
           <p className={styles.intro}>
-            Provision and operate durable Papercusp hosts in infrastructure you control. Provider state, desired state,
-            and observed state stay separate so drift is visible instead of guessed away.
+            Provision and operate durable Papercusp hosts in infrastructure you
+            control. Provider state, desired state, and observed state stay
+            separate so drift is visible instead of guessed away.
           </p>
+          <div
+            className={styles.heroSignals}
+            aria-label="Control-plane posture"
+          >
+            <span>
+              <i className={styles.liveDot} aria-hidden="true" />{" "}
+              Provider-neutral orchestration
+            </span>
+            <span>Credentials stay injected</span>
+            <span>Recovery is explicit</span>
+          </div>
         </div>
-        <Button
-          variant="accent"
-          onClick={() => void control.invalidate?.()}
-          disabled={control.loading || control.fetching}
-          aria-label="Refresh cloud workspace state"
-        >
-          <RefreshCw size={14} aria-hidden="true" /> Refresh
-        </Button>
+        <div className={styles.heroActions}>
+          <Button
+            variant="accent"
+            onClick={() => void control.invalidate?.()}
+            disabled={control.loading || control.fetching}
+            aria-label="Refresh cloud workspace state"
+          >
+            <RefreshCw
+              className={control.fetching ? styles.spin : undefined}
+              size={14}
+              aria-hidden="true"
+            />
+            {control.fetching ? "Refreshing" : "Refresh"}
+          </Button>
+          <small>
+            {control.error ? "Control read unavailable" : "Live control state"}
+          </small>
+        </div>
       </header>
 
       {control.loading ? (
         <section className={styles.notice} aria-live="polite">
-          <RefreshCw className={styles.spin} size={18} aria-hidden="true" /> Loading provider connections and workspace
-          state…
+          <RefreshCw className={styles.spin} size={18} aria-hidden="true" />{" "}
+          Loading provider connections and workspace state…
         </section>
       ) : control.error ? (
-        <section className={`${styles.notice} ${styles.noticeError}`} role="alert">
+        <section
+          className={`${styles.notice} ${styles.noticeError}`}
+          role="alert"
+        >
           <AlertTriangle size={18} aria-hidden="true" />
           <div>
             <strong>Local cloud control plane unavailable</strong>
-            <p>{control.error.message}. No provider action is available while this read is unresolved.</p>
+            <p>
+              {control.error.message}. No provider action is available while
+              this read is unresolved.
+            </p>
           </div>
         </section>
       ) : null}
 
-      <section className={styles.section} aria-labelledby="provider-connections-heading">
-        <div className={styles.sectionHeading}>
-          <div>
-            <p className={styles.step}>01 · CONNECT</p>
-            <h2 id="provider-connections-heading">Provider connections</h2>
+      <section
+        className={styles.overviewGrid}
+        aria-label="Cloud workspace overview"
+      >
+        <article className={styles.summaryCard}>
+          <div className={styles.summaryIcon}>
+            <Cloud size={17} aria-hidden="true" />
           </div>
-          <p>Credential references stay outside the repository; this surface stores only their injected reference.</p>
-        </div>
+          <div>
+            <span>Connected providers</span>
+            <strong>
+              {connectedProviderCount} <small>/ {PROVIDERS.length}</small>
+            </strong>
+            <p>
+              {connectedProviderCount === PROVIDERS.length
+                ? "All providers ready"
+                : "Validated catalog connections"}
+            </p>
+          </div>
+        </article>
+        <article className={styles.summaryCard}>
+          <div className={styles.summaryIcon}>
+            <Server size={17} aria-hidden="true" />
+          </div>
+          <div>
+            <span>Managed workspaces</span>
+            <strong>{workspaces.length}</strong>
+            <p>
+              {alignedWorkspaceCount} of {workspaces.length} desired states
+              aligned
+            </p>
+          </div>
+        </article>
+        <article className={styles.summaryCard}>
+          <div className={styles.summaryIcon}>
+            <Activity size={17} aria-hidden="true" />
+          </div>
+          <div>
+            <span>Healthy hosts</span>
+            <strong>{healthyWorkspaceCount}</strong>
+            <p>Latest host attestations</p>
+          </div>
+        </article>
+        <article className={styles.summaryCard}>
+          <div className={styles.summaryIcon}>
+            <DollarSign size={17} aria-hidden="true" />
+          </div>
+          <div>
+            <span>Monthly footprint</span>
+            <strong>{formatMoney(managedMonthlyUsd)}</strong>
+            <p>Estimated managed compute</p>
+          </div>
+        </article>
+      </section>
+
+      <section
+        className={styles.section}
+        aria-labelledby="provider-connections-heading"
+      >
+        <SectionHeading
+          id="provider-connections-heading"
+          step="01"
+          eyebrow="Connect"
+          title="Provider readiness"
+          description="Credential references stay outside the repository; this surface stores only their injected reference."
+        />
         <div className={styles.providerGrid}>
           {PROVIDERS.map((provider) => {
-            const connection = connections.find((row) => row.target === provider.target);
+            const connection = connections.find(
+              (row) => row.target === provider.target,
+            );
             return (
-              <article className={styles.providerCard} key={provider.target}>
+              <article
+                className={`${styles.providerCard} ${connection?.status === "connected" ? styles.providerCardReady : ""}`}
+                key={provider.target}
+              >
                 <div className={styles.cardTopline}>
-                  <span className={styles.providerMark}>{provider.accent}</span>
+                  <span className={styles.providerIdentity}>
+                    <span className={styles.providerIcon}>
+                      <Cloud size={15} aria-hidden="true" />
+                    </span>
+                    <span className={styles.providerMark}>
+                      {provider.accent}
+                    </span>
+                  </span>
                   {connection ? (
                     <StatusBadge state={connection.status} />
                   ) : (
-                    <span className={`${styles.badge} ${styles.neutral}`}>not connected</span>
+                    <span className={`${styles.badge} ${styles.neutral}`}>
+                      not connected
+                    </span>
                   )}
                 </div>
                 <h3>{provider.label}</h3>
-                <p>
-                  {provider.scope} discovery, regions, machine sizes, images, networks, lifecycle controls, and price
-                  estimates.
+                <p className={styles.providerDescription}>
+                  {provider.scope} discovery, regions, machine sizes, images,
+                  networks, lifecycle controls, and price estimates.
                 </p>
                 {connection ? (
                   <dl className={styles.compactList}>
@@ -465,7 +625,12 @@ export default function CloudWorkspacesPage() {
                       <dd>{formatTimestamp(connection.lastValidatedAt)}</dd>
                     </div>
                   </dl>
-                ) : null}
+                ) : (
+                  <p className={styles.providerPrompt}>
+                    Add an injected credential reference to load this provider's
+                    live catalog.
+                  </p>
+                )}
                 <div className={styles.cardActions}>
                   {connection ? (
                     <Button
@@ -474,7 +639,10 @@ export default function CloudWorkspacesPage() {
                       onClick={() =>
                         void perform(
                           `validate:${connection.id}`,
-                          { action: 'validate-connection', connectionId: connection.id },
+                          {
+                            action: "validate-connection",
+                            connectionId: connection.id,
+                          },
                           `${provider.label} connection validated`,
                         )
                       }
@@ -482,7 +650,10 @@ export default function CloudWorkspacesPage() {
                       <ShieldCheck size={14} aria-hidden="true" /> Validate
                     </Button>
                   ) : (
-                    <Button variant="accent" onClick={() => void setConnectTarget(provider.target)}>
+                    <Button
+                      variant="primary"
+                      onClick={() => void setConnectTarget(provider.target)}
+                    >
                       <Plus size={14} aria-hidden="true" /> Connect
                     </Button>
                   )}
@@ -493,19 +664,33 @@ export default function CloudWorkspacesPage() {
         </div>
       </section>
 
-      <section className={styles.section} aria-labelledby="new-workspace-heading">
-        <div className={styles.sectionHeading}>
-          <div>
-            <p className={styles.step}>02 · CONFIGURE</p>
-            <h2 id="new-workspace-heading">New workspace</h2>
-          </div>
-          <p>Selections are URL-backed so this exact provisioning view can be reviewed and revisited.</p>
-        </div>
+      <section
+        className={styles.section}
+        aria-labelledby="new-workspace-heading"
+      >
+        <SectionHeading
+          id="new-workspace-heading"
+          step="02"
+          eyebrow="Configure"
+          title="New workspace"
+          description="Selections are URL-backed so this exact provisioning view can be reviewed, shared, and revisited."
+        />
         {connections.length === 0 ? (
           <div className={styles.emptyState}>
-            <Server size={24} aria-hidden="true" />
+            <span className={styles.emptyIcon}>
+              <Server size={22} aria-hidden="true" />
+            </span>
             <h3>Connect a provider to begin</h3>
-            <p>The form stays inert until a validated provider catalog supplies real scope and capacity options.</p>
+            <p>
+              The form stays inert until a validated provider catalog supplies
+              real scope and capacity options.
+            </p>
+            <Button
+              variant="primary"
+              onClick={() => void setConnectTarget("gcp")}
+            >
+              <Plus size={14} aria-hidden="true" /> Connect a provider
+            </Button>
           </div>
         ) : (
           <form
@@ -523,9 +708,9 @@ export default function CloudWorkspacesPage() {
               )
                 return;
               void perform(
-                'provision',
+                "provision",
                 {
-                  action: 'provision',
+                  action: "provision",
                   connectionId: selectedConnection.id,
                   name: nameParam.trim(),
                   scopeId: selectedScope.id,
@@ -540,6 +725,18 @@ export default function CloudWorkspacesPage() {
             }}
           >
             <div className={styles.formGrid}>
+              <div className={styles.formIntro}>
+                <span className={styles.formIcon}>
+                  <Server size={17} aria-hidden="true" />
+                </span>
+                <div>
+                  <strong>Workspace configuration</strong>
+                  <p>
+                    Choose the provider catalog, capacity, image, disk, and
+                    network for this durable host.
+                  </p>
+                </div>
+              </div>
               <Field label="Workspace name">
                 <TextInput
                   value={nameParam}
@@ -550,7 +747,7 @@ export default function CloudWorkspacesPage() {
               </Field>
               <Field label="Provider connection">
                 <Select
-                  value={selectedConnection?.id ?? ''}
+                  value={selectedConnection?.id ?? ""}
                   onChange={(value) => void setConnectionParam(value)}
                   ariaLabel="Provider connection"
                   options={connections.map((row) => ({
@@ -561,42 +758,56 @@ export default function CloudWorkspacesPage() {
               </Field>
               <Field label="Project, account, or subscription">
                 <Select
-                  value={selectedScope?.id ?? ''}
+                  value={selectedScope?.id ?? ""}
                   onChange={(value) => void setScopeParam(value)}
                   ariaLabel="Project, account, or subscription"
                   options={
-                    selectedConnection?.scopes.map((option) => ({ value: option.id, label: option.label })) ?? []
+                    selectedConnection?.scopes.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                    })) ?? []
                   }
                 />
               </Field>
               <Field label="Region">
                 <Select
-                  value={selectedRegion?.id ?? ''}
+                  value={selectedRegion?.id ?? ""}
                   onChange={(value) => void setRegionParam(value)}
                   ariaLabel="Region"
                   options={
-                    selectedConnection?.regions.map((option) => ({ value: option.id, label: option.label })) ?? []
+                    selectedConnection?.regions.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                    })) ?? []
                   }
                 />
               </Field>
               <Field
                 label="Size"
-                hint={selectedSize ? `${selectedSize.vcpu} vCPU · ${selectedSize.memoryGiB} GiB RAM` : undefined}
+                hint={selectedSize ? formatCapacity(selectedSize) : undefined}
               >
                 <Select
-                  value={selectedSize?.id ?? ''}
+                  value={selectedSize?.id ?? ""}
                   onChange={(value) => void setSizeParam(value)}
                   ariaLabel="Machine size"
-                  options={selectedConnection?.sizes.map((option) => ({ value: option.id, label: option.label })) ?? []}
+                  options={
+                    selectedConnection?.sizes.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                    })) ?? []
+                  }
                 />
               </Field>
               <Field label="Image">
                 <Select
-                  value={selectedImage?.id ?? ''}
+                  value={selectedImage?.id ?? ""}
                   onChange={(value) => void setImageParam(value)}
                   ariaLabel="Machine image"
                   options={
-                    selectedConnection?.images.map((option) => ({ value: option.id, label: option.label })) ?? []
+                    selectedConnection?.images.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                    })) ?? []
                   }
                 />
               </Field>
@@ -612,25 +823,55 @@ export default function CloudWorkspacesPage() {
               </Field>
               <Field label="Network">
                 <Select
-                  value={selectedNetwork?.id ?? ''}
+                  value={selectedNetwork?.id ?? ""}
                   onChange={(value) => void setNetworkParam(value)}
                   ariaLabel="Network"
                   options={
-                    selectedConnection?.networks.map((option) => ({ value: option.id, label: option.label })) ?? []
+                    selectedConnection?.networks.map((option) => ({
+                      value: option.id,
+                      label: option.label,
+                    })) ?? []
                   }
                 />
               </Field>
             </div>
-            <aside className={styles.estimate} aria-label="Estimated workspace cost">
-              <DollarSign size={22} aria-hidden="true" />
-              <div>
-                <span>Estimated cost</span>
+            <aside
+              className={styles.estimate}
+              aria-label="Estimated workspace cost"
+            >
+              <span className={styles.estimateIcon}>
+                <DollarSign size={19} aria-hidden="true" />
+              </span>
+              <div className={styles.estimateTotal}>
+                <span>Estimated monthly cost</span>
                 <strong>
                   {formatMoney(estimatedMonthlyUsd)} <small>/ month</small>
                 </strong>
-                <p>Estimate only · 730 compute hours + selected disk · provider taxes and egress excluded.</p>
+                <p>
+                  Estimate only · 730 compute hours + selected disk · provider
+                  taxes and egress excluded.
+                </p>
               </div>
-              <Button type="submit" variant="primary" size="lg" disabled={!canProvision || busyKey === 'provision'}>
+              <dl className={styles.estimateFacts}>
+                <div>
+                  <dt>Provider</dt>
+                  <dd>{selectedConnection?.target.toUpperCase() ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>Region</dt>
+                  <dd>{selectedRegion?.label ?? "—"}</dd>
+                </div>
+                <div>
+                  <dt>Compute</dt>
+                  <dd>{selectedSize ? formatCapacity(selectedSize) : "—"}</dd>
+                </div>
+              </dl>
+              <Button
+                type="submit"
+                variant="primary"
+                size="lg"
+                disabled={!canProvision || busyKey === "provision"}
+              >
                 <Cloud size={16} aria-hidden="true" /> Provision workspace
               </Button>
             </aside>
@@ -638,55 +879,92 @@ export default function CloudWorkspacesPage() {
         )}
       </section>
 
-      <section className={styles.section} aria-labelledby="managed-workspaces-heading">
-        <div className={styles.sectionHeading}>
-          <div>
-            <p className={styles.step}>03 · OPERATE</p>
-            <h2 id="managed-workspaces-heading">Managed workspaces</h2>
-          </div>
-          <p>Actions set desired state; reconciliation updates observed state and the durable progress stream.</p>
-        </div>
+      <section
+        className={styles.section}
+        aria-labelledby="managed-workspaces-heading"
+      >
+        <SectionHeading
+          id="managed-workspaces-heading"
+          step="03"
+          eyebrow="Operate"
+          title="Managed workspaces"
+          description="Actions set desired state; reconciliation updates observed state and the durable progress stream."
+        />
         {workspaces.length === 0 ? (
           <div className={styles.emptyState}>
-            <Server size={24} aria-hidden="true" />
+            <span className={styles.emptyIcon}>
+              <Server size={22} aria-hidden="true" />
+            </span>
             <h3>No cloud workspaces yet</h3>
-            <p>Provisioning runs will appear here with their operation receipt and recoverability posture.</p>
+            <p>
+              Provisioning runs will appear here with their operation receipt
+              and recoverability posture.
+            </p>
+            {connections.length > 0 ? (
+              <Button asChild variant="ghost">
+                <a href="#new-workspace-heading">
+                  Configure the first workspace
+                </a>
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className={styles.workspaceList}>
             {workspaces.map((workspace) => (
               <article className={styles.workspaceCard} key={workspace.id}>
                 <div className={styles.workspaceHeader}>
-                  <div>
-                    <p className={styles.workspaceProvider}>
-                      {workspace.target.toUpperCase()} · {workspace.scopeLabel}
-                    </p>
-                    <h3>{workspace.name}</h3>
-                    <p>
-                      {workspace.region} · {workspace.size} · {workspace.diskGiB} GiB · {workspace.network}
-                    </p>
+                  <div className={styles.workspaceIdentity}>
+                    <span className={styles.workspaceIcon}>
+                      <Server size={18} aria-hidden="true" />
+                    </span>
+                    <div>
+                      <p className={styles.workspaceProvider}>
+                        {workspace.target.toUpperCase()} ·{" "}
+                        {workspace.scopeLabel}
+                      </p>
+                      <h3>{workspace.name}</h3>
+                      <p>
+                        {workspace.region} · {workspace.size} ·{" "}
+                        {workspace.diskGiB} GiB · {workspace.network}
+                      </p>
+                    </div>
                   </div>
                   <div
                     className={styles.statePair}
                     aria-label={`Desired ${workspace.desiredState}; observed ${workspace.observedState}`}
                   >
-                    <StatusBadge state={workspace.desiredState} prefix="desired" />
-                    <StatusBadge state={workspace.observedState} prefix="observed" />
+                    <span
+                      className={`${styles.badge} ${signalTone(workspace.health?.status ?? "unknown")}`}
+                    >
+                      health: {workspace.health?.status ?? "unknown"}
+                    </span>
+                    <StatusBadge
+                      state={workspace.desiredState}
+                      prefix="desired"
+                    />
+                    <StatusBadge
+                      state={workspace.observedState}
+                      prefix="observed"
+                    />
                   </div>
                 </div>
 
                 <div className={styles.workspaceMeta}>
                   <div>
                     <span>Resource</span>
-                    <strong>{workspace.providerResourceId ?? 'pending allocation'}</strong>
+                    <strong>
+                      {workspace.providerResourceId ?? "pending allocation"}
+                    </strong>
                   </div>
                   <div>
                     <span>Endpoint</span>
-                    <strong>{workspace.endpoint ?? 'not exposed'}</strong>
+                    <strong>{workspace.endpoint ?? "not exposed"}</strong>
                   </div>
                   <div>
                     <span>Estimate</span>
-                    <strong>{formatMoney(workspace.estimatedMonthlyUsd)} / month</strong>
+                    <strong>
+                      {formatMoney(workspace.estimatedMonthlyUsd)} / month
+                    </strong>
                   </div>
                   <div>
                     <span>Observed</span>
@@ -695,18 +973,20 @@ export default function CloudWorkspacesPage() {
                 </div>
 
                 <div className={styles.recoverability}>
-                  {workspace.recoverability.kind === 'none' ? (
+                  {workspace.recoverability.kind === "none" ? (
                     <AlertTriangle size={16} aria-hidden="true" />
                   ) : (
                     <CheckCircle2 size={16} aria-hidden="true" />
                   )}
                   <div>
-                    <strong>Recoverability · {workspace.recoverability.kind}</strong>
+                    <strong>
+                      Recoverability · {workspace.recoverability.kind}
+                    </strong>
                     <span>
                       {workspace.recoverability.label}
                       {workspace.recoverability.updatedAt
                         ? ` · ${formatTimestamp(workspace.recoverability.updatedAt)}`
-                        : ''}
+                        : ""}
                     </span>
                   </div>
                 </div>
@@ -715,7 +995,8 @@ export default function CloudWorkspacesPage() {
                   <div className={styles.operation} aria-live="polite">
                     <div className={styles.operationHeader}>
                       <span>
-                        {workspace.operation.action} · {workspace.operation.message} ·{' '}
+                        {workspace.operation.action} ·{" "}
+                        {workspace.operation.message} ·{" "}
                         <code>{workspace.operation.id}</code>
                       </span>
                       <strong>{workspace.operation.percent}%</strong>
@@ -723,35 +1004,46 @@ export default function CloudWorkspacesPage() {
                     <progress max={100} value={workspace.operation.percent}>
                       {workspace.operation.percent}%
                     </progress>
-                    {workspace.operation.request != null || workspace.operation.error != null ? (
+                    {workspace.operation.request != null ||
+                    workspace.operation.error != null ? (
                       <div className={styles.operationPayloads}>
                         {workspace.operation.request != null ? (
                           <div>
                             <strong>Redacted request</strong>
-                            <code>{formatSignal(workspace.operation.request)}</code>
+                            <code>
+                              {formatSignal(workspace.operation.request)}
+                            </code>
                           </div>
                         ) : null}
                         {workspace.operation.error != null ? (
                           <div>
                             <strong>Operation error</strong>
-                            <code>{formatSignal(workspace.operation.error)}</code>
+                            <code>
+                              {formatSignal(workspace.operation.error)}
+                            </code>
                           </div>
                         ) : null}
                       </div>
                     ) : null}
-                    <ol className={styles.eventStream} aria-label={`Progress for ${workspace.name}`}>
+                    <ol
+                      className={styles.eventStream}
+                      aria-label={`Progress for ${workspace.name}`}
+                    >
                       {workspace.operation.events.map((event) => (
                         <li key={event.id}>
                           <span
                             className={`${styles.eventDot} ${signalTone(event.level ?? event.status)}`}
                             aria-hidden="true"
                           />
-                          <time dateTime={event.ts}>{formatTimestamp(event.ts)}</time>
+                          <time dateTime={event.ts}>
+                            {formatTimestamp(event.ts)}
+                          </time>
                           <strong>{event.phase}</strong>
                           <span>
                             {event.message}
                             <small>
-                              {event.source ?? 'controller'} · {event.level ?? 'info'}
+                              {event.source ?? "controller"} ·{" "}
+                              {event.level ?? "info"}
                             </small>
                           </span>
                         </li>
@@ -761,7 +1053,13 @@ export default function CloudWorkspacesPage() {
                 ) : null}
 
                 <details className={styles.telemetryDetails}>
-                  <summary>Observability &amp; diagnostics</summary>
+                  <summary>
+                    <span>Observability &amp; diagnostics</span>
+                    <small>
+                      {workspace.resources?.length ?? 0} resources ·{" "}
+                      {workspace.logs?.length ?? 0} recent logs
+                    </small>
+                  </summary>
                   <div className={styles.telemetryGrid}>
                     <section
                       className={styles.telemetryPanel}
@@ -769,24 +1067,36 @@ export default function CloudWorkspacesPage() {
                     >
                       <div className={styles.telemetryHeading}>
                         <h4>Health &amp; attestation</h4>
-                        <span className={`${styles.badge} ${signalTone(workspace.health?.status ?? 'unknown')}`}>
-                          {workspace.health?.status ?? 'not attested'}
+                        <span
+                          className={`${styles.badge} ${signalTone(workspace.health?.status ?? "unknown")}`}
+                        >
+                          {workspace.health?.status ?? "not attested"}
                         </span>
                       </div>
                       <dl className={styles.telemetryFacts}>
                         <div>
                           <dt>Attested</dt>
-                          <dd>{formatTimestamp(workspace.health?.attestedAt)}</dd>
+                          <dd>
+                            {formatTimestamp(workspace.health?.attestedAt)}
+                          </dd>
                         </div>
                         <div>
                           <dt>Bootstrap</dt>
-                          <dd>{workspace.health?.bootstrapVersion ?? 'unknown'}</dd>
+                          <dd>
+                            {workspace.health?.bootstrapVersion ?? "unknown"}
+                          </dd>
                         </div>
                       </dl>
-                      <SignalList items={workspace.health?.checks} empty="No health checks recorded." />
+                      <SignalList
+                        items={workspace.health?.checks}
+                        empty="No health checks recorded."
+                      />
                     </section>
 
-                    <section className={styles.telemetryPanel} aria-label={`Provider resources for ${workspace.name}`}>
+                    <section
+                      className={styles.telemetryPanel}
+                      aria-label={`Provider resources for ${workspace.name}`}
+                    >
                       <div className={styles.telemetryHeading}>
                         <h4>Provider resources</h4>
                         <span>{workspace.resources?.length ?? 0}</span>
@@ -797,21 +1107,32 @@ export default function CloudWorkspacesPage() {
                             <li key={resource.logicalKey}>
                               <div>
                                 <strong>{resource.logicalKey}</strong>
-                                <span className={`${styles.badge} ${signalTone(resource.state)}`}>
+                                <span
+                                  className={`${styles.badge} ${signalTone(resource.state)}`}
+                                >
                                   {resource.state}
                                 </span>
                               </div>
-                              <code>{resource.providerId ?? 'provider id pending'}</code>
+                              <code>
+                                {resource.providerId ?? "provider id pending"}
+                              </code>
                               <small>
-                                {resource.kind ?? 'resource'} · attempts {resource.attempts}
-                                {resource.providerRequestId ? ` · request ${resource.providerRequestId}` : ''}
+                                {resource.kind ?? "resource"} · attempts{" "}
+                                {resource.attempts}
+                                {resource.providerRequestId
+                                  ? ` · request ${resource.providerRequestId}`
+                                  : ""}
                               </small>
-                              {resource.error != null ? <em>{formatSignal(resource.error)}</em> : null}
+                              {resource.error != null ? (
+                                <em>{formatSignal(resource.error)}</em>
+                              ) : null}
                             </li>
                           ))}
                         </ul>
                       ) : (
-                        <p className={styles.telemetryEmpty}>No provider resource checkpoints recorded.</p>
+                        <p className={styles.telemetryEmpty}>
+                          No provider resource checkpoints recorded.
+                        </p>
                       )}
                     </section>
 
@@ -823,9 +1144,14 @@ export default function CloudWorkspacesPage() {
                         <h4>Drift &amp; connectivity</h4>
                       </div>
                       <h5>Tunnel status</h5>
-                      <code className={styles.signalCode}>{formatSignal(workspace.tunnel ?? {})}</code>
+                      <code className={styles.signalCode}>
+                        {formatSignal(workspace.tunnel ?? {})}
+                      </code>
                       <h5>Version drift</h5>
-                      <SignalList items={workspace.versionDrift} empty="No version drift recorded." />
+                      <SignalList
+                        items={workspace.versionDrift}
+                        empty="No version drift recorded."
+                      />
                     </section>
 
                     <section
@@ -836,9 +1162,15 @@ export default function CloudWorkspacesPage() {
                         <h4>Cost &amp; quota</h4>
                       </div>
                       <h5>Cost signals</h5>
-                      <SignalList items={workspace.costSignals} empty="No cost signals recorded." />
+                      <SignalList
+                        items={workspace.costSignals}
+                        empty="No cost signals recorded."
+                      />
                       <h5>Quota signals</h5>
-                      <SignalList items={workspace.quotaSignals} empty="No quota signals recorded." />
+                      <SignalList
+                        items={workspace.quotaSignals}
+                        empty="No quota signals recorded."
+                      />
                     </section>
 
                     <section
@@ -853,88 +1185,116 @@ export default function CloudWorkspacesPage() {
                         <ol className={styles.logList}>
                           {workspace.logs.map((log) => (
                             <li key={log.id}>
-                              <time dateTime={log.observedAt}>{formatTimestamp(log.observedAt)}</time>
-                              <span className={`${styles.badge} ${signalTone(log.level)}`}>{log.level}</span>
+                              <time dateTime={log.observedAt}>
+                                {formatTimestamp(log.observedAt)}
+                              </time>
+                              <span
+                                className={`${styles.badge} ${signalTone(log.level)}`}
+                              >
+                                {log.level}
+                              </span>
                               <strong>
                                 {log.stream}
-                                {log.unit ? ` · ${log.unit}` : ''}
+                                {log.unit ? ` · ${log.unit}` : ""}
                               </strong>
                               <code>{log.message}</code>
                             </li>
                           ))}
                         </ol>
                       ) : (
-                        <p className={styles.telemetryEmpty}>No cloud-init, systemd, or controller logs recorded.</p>
+                        <p className={styles.telemetryEmpty}>
+                          No cloud-init, systemd, or controller logs recorded.
+                        </p>
                       )}
                     </section>
                   </div>
                 </details>
 
-                <div className={styles.workspaceActions}>
+                <div className={styles.workspaceActionBar}>
                   <Button asChild variant="ghost">
-                    <a href={`/api/workspace-hosts/${encodeURIComponent(workspace.id)}/audit`} download>
+                    <a
+                      href={`/api/workspace-hosts/${encodeURIComponent(workspace.id)}/audit`}
+                      download
+                    >
                       <Download size={14} aria-hidden="true" /> Audit export
                     </a>
                   </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={!workspace.capabilities.start || busyKey === `start:${workspace.id}`}
-                    onClick={() =>
-                      void perform(
-                        `start:${workspace.id}`,
-                        { action: 'start', workspaceId: workspace.id },
-                        `Starting ${workspace.name}`,
-                      )
-                    }
+                  <div
+                    className={styles.lifecycleActions}
+                    aria-label={`Lifecycle actions for ${workspace.name}`}
                   >
-                    <Play size={14} aria-hidden="true" /> Start
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={!workspace.capabilities.stop || busyKey === `stop:${workspace.id}`}
-                    onClick={() =>
-                      void perform(
-                        `stop:${workspace.id}`,
-                        { action: 'stop', workspaceId: workspace.id },
-                        `Stopping ${workspace.name}`,
-                      )
-                    }
-                  >
-                    <Square size={13} aria-hidden="true" /> Stop
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={!workspace.capabilities.repair || busyKey === `repair:${workspace.id}`}
-                    onClick={() =>
-                      void perform(
-                        `repair:${workspace.id}`,
-                        { action: 'repair', workspaceId: workspace.id },
-                        `Repairing ${workspace.name}`,
-                      )
-                    }
-                  >
-                    <Wrench size={14} aria-hidden="true" /> Repair
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={!workspace.capabilities.snapshot || busyKey === `snapshot:${workspace.id}`}
-                    onClick={() =>
-                      void perform(
-                        `snapshot:${workspace.id}`,
-                        { action: 'snapshot', workspaceId: workspace.id },
-                        `Snapshotting ${workspace.name}`,
-                      )
-                    }
-                  >
-                    <Camera size={14} aria-hidden="true" /> Snapshot
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    disabled={!workspace.capabilities.destroy}
-                    onClick={() => void setDestroyId(workspace.id)}
-                  >
-                    <Trash2 size={14} aria-hidden="true" /> Destroy
-                  </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={
+                        !workspace.capabilities.start ||
+                        busyKey === `start:${workspace.id}`
+                      }
+                      onClick={() =>
+                        void perform(
+                          `start:${workspace.id}`,
+                          { action: "start", workspaceId: workspace.id },
+                          `Starting ${workspace.name}`,
+                        )
+                      }
+                    >
+                      <Play size={14} aria-hidden="true" /> Start
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={
+                        !workspace.capabilities.stop ||
+                        busyKey === `stop:${workspace.id}`
+                      }
+                      onClick={() =>
+                        void perform(
+                          `stop:${workspace.id}`,
+                          { action: "stop", workspaceId: workspace.id },
+                          `Stopping ${workspace.name}`,
+                        )
+                      }
+                    >
+                      <Square size={13} aria-hidden="true" /> Stop
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={
+                        !workspace.capabilities.repair ||
+                        busyKey === `repair:${workspace.id}`
+                      }
+                      onClick={() =>
+                        void perform(
+                          `repair:${workspace.id}`,
+                          { action: "repair", workspaceId: workspace.id },
+                          `Repairing ${workspace.name}`,
+                        )
+                      }
+                    >
+                      <Wrench size={14} aria-hidden="true" /> Repair
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={
+                        !workspace.capabilities.snapshot ||
+                        busyKey === `snapshot:${workspace.id}`
+                      }
+                      onClick={() =>
+                        void perform(
+                          `snapshot:${workspace.id}`,
+                          { action: "snapshot", workspaceId: workspace.id },
+                          `Snapshotting ${workspace.name}`,
+                        )
+                      }
+                    >
+                      <Camera size={14} aria-hidden="true" /> Snapshot
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      disabled={!workspace.capabilities.destroy}
+                      onClick={() => void setDestroyId(workspace.id)}
+                    >
+                      <Trash2 size={14} aria-hidden="true" /> Destroy
+                    </Button>
+                  </div>
                 </div>
               </article>
             ))}
@@ -947,7 +1307,7 @@ export default function CloudWorkspacesPage() {
         onOpenChange={(open) => {
           if (!open) closeConnectionModal();
         }}
-        title={`Connect ${PROVIDERS.find((provider) => provider.target === connectTarget)?.label ?? 'provider'}`}
+        title={`Connect ${PROVIDERS.find((provider) => provider.target === connectTarget)?.label ?? "provider"}`}
         description="Store a reference to an injected credential, then validate provider discovery. Raw secrets never enter this form."
         contentClassName={styles.modal}
       >
@@ -977,13 +1337,18 @@ export default function CloudWorkspacesPage() {
             </Button>
             <Button
               variant="primary"
-              disabled={!connectTarget || !connectionLabel.trim() || !credentialRef.trim() || busyKey === 'connect'}
+              disabled={
+                !connectTarget ||
+                !connectionLabel.trim() ||
+                !credentialRef.trim() ||
+                busyKey === "connect"
+              }
               onClick={() => {
                 if (!connectTarget) return;
                 void perform(
-                  'connect',
+                  "connect",
                   {
-                    action: 'connect',
+                    action: "connect",
                     target: connectTarget,
                     label: connectionLabel.trim(),
                     credentialRef: credentialRef.trim(),
@@ -1005,7 +1370,7 @@ export default function CloudWorkspacesPage() {
         onOpenChange={(open) => {
           if (!open) closeDestroyModal();
         }}
-        title={`Destroy ${destroyWorkspace?.name ?? 'workspace'}`}
+        title={`Destroy ${destroyWorkspace?.name ?? "workspace"}`}
         description="Choose and record the recoverability disposition before any provider resource is deleted."
         contentClassName={styles.modal}
         closeOnOutsideClick={false}
@@ -1013,14 +1378,31 @@ export default function CloudWorkspacesPage() {
         <div className={styles.modalBody}>
           <div className={styles.dangerNotice}>
             <AlertTriangle size={18} aria-hidden="true" />
-            Destroy is asynchronous. Completion requires a provider read confirming every resource is absent.
+            Destroy is asynchronous. Completion requires a provider read
+            confirming every resource is absent.
           </div>
-          <div className={styles.dispositionGroup} role="radiogroup" aria-label="Recoverability disposition">
+          <div
+            className={styles.dispositionGroup}
+            role="radiogroup"
+            aria-label="Recoverability disposition"
+          >
             {(
               [
-                ['snapshot', 'Create a snapshot first', 'Block deletion until a fresh provider snapshot is durable.'],
-                ['backup', 'Use an existing backup', 'Record the current durable backup as the recovery point.'],
-                ['discard', 'Discard recoverability', 'Permanently accept that no snapshot or backup will be created.'],
+                [
+                  "snapshot",
+                  "Create a snapshot first",
+                  "Block deletion until a fresh provider snapshot is durable.",
+                ],
+                [
+                  "backup",
+                  "Use an existing backup",
+                  "Record the current durable backup as the recovery point.",
+                ],
+                [
+                  "discard",
+                  "Discard recoverability",
+                  "Permanently accept that no snapshot or backup will be created.",
+                ],
               ] as const
             ).map(([value, label, detail]) => (
               <button
@@ -1028,7 +1410,7 @@ export default function CloudWorkspacesPage() {
                 role="radio"
                 aria-checked={disposition === value}
                 className={styles.disposition}
-                data-selected={disposition === value ? 'true' : 'false'}
+                data-selected={disposition === value ? "true" : "false"}
                 key={value}
                 onClick={() => void setDisposition(value)}
               >
@@ -1037,7 +1419,7 @@ export default function CloudWorkspacesPage() {
               </button>
             ))}
           </div>
-          {disposition === 'discard' && destroyWorkspace ? (
+          {disposition === "discard" && destroyWorkspace ? (
             <Field label={`Type “${destroyWorkspace.name}” to confirm discard`}>
               <TextInput
                 value={destroyConfirm}
@@ -1055,13 +1437,18 @@ export default function CloudWorkspacesPage() {
               disabled={
                 !destroyWorkspace ||
                 busyKey === `destroy:${destroyWorkspace?.id}` ||
-                (disposition === 'discard' && destroyConfirm !== destroyWorkspace?.name)
+                (disposition === "discard" &&
+                  destroyConfirm !== destroyWorkspace?.name)
               }
               onClick={() => {
                 if (!destroyWorkspace) return;
                 void perform(
                   `destroy:${destroyWorkspace.id}`,
-                  { action: 'destroy', workspaceId: destroyWorkspace.id, disposition },
+                  {
+                    action: "destroy",
+                    workspaceId: destroyWorkspace.id,
+                    disposition,
+                  },
                   `Destroy scheduled for ${destroyWorkspace.name}`,
                 ).then((ok) => {
                   if (ok) closeDestroyModal();

@@ -54,6 +54,7 @@ import {
   boundTestRunPayload,
   distillVitestRun,
   mergeDistilledRuns,
+  parseFailureDetailsSidecar,
   TESTING_RUN_MAX_PAYLOAD_BYTES,
   startRun,
   type SpawnRequest,
@@ -71,6 +72,7 @@ import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
 const ADMIN_TEST_RUNS_REPORTER_RELATIVE_PATH = 'libs/test-config/src/admin-test-runs-reporter.ts';
+const TEST_FAILURE_DETAILS_FILENAME = 'failure-details.json';
 
 const DETACHED_INSPECT_TEST_HINT =
   "For one test file, re-run it detached with capability:inspect { check: 'test', package: '<owning workspace>', path: '<test file>', run_in_background: true }, then poll capability:bash_output. " +
@@ -641,6 +643,7 @@ export async function runTestFilesCore(opts: {
   ensurePapercuspTmpdir();
   const dir = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-'));
   const reportPath = join(dir, 'report.json');
+  const failureDetailsPath = join(dir, TEST_FAILURE_DETAILS_FILENAME);
   try {
     const vitestArgs = ['--reporter=json', `--outputFile=${reportPath}`];
     // Vitest treats an explicit --reporter as a replacement for the reporters declared by
@@ -660,7 +663,17 @@ export async function runTestFilesCore(opts: {
       ...process.env,
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',
+      PAPERCUSP_TEST_FAILURE_DETAILS_PATH: failureDetailsPath,
     };
+    // `testing:run` can itself be invoked from the repository's pc-heavy
+    // wrapper. That wrapper exports a one-shot readiness/finalization marker
+    // for its direct child; forwarding those exact paths into this nested
+    // router makes it try to publish into the already-owned marker and fail
+    // with EEXIST. The nested run owns no outer barrier, so scrub the paths
+    // before spawning its router (the sidecar and test-run group remain local
+    // to this invocation).
+    delete childEnv.PC_HEAVY_PREEMPT_READY_FILE;
+    delete childEnv.PC_HEAVY_PSI_FINALIZATION_FILE;
     let directReportPaths: string[] | null = null;
     let outcome: RouterOutcome;
     if (hasRouter) {
@@ -783,7 +796,9 @@ export async function runTestFilesCore(opts: {
 
     let reportTexts: string[];
     try {
-      const names = (await readdir(dir)).filter((n) => n.endsWith('.json')).sort();
+      const names = (await readdir(dir))
+        .filter((n) => n.endsWith('.json') && n !== TEST_FAILURE_DETAILS_FILENAME)
+        .sort();
       reportTexts = (await Promise.all(names.map((n) => readFile(join(dir, n), 'utf8').catch(() => null)))).filter(
         (t): t is string => t !== null,
       );
@@ -797,8 +812,15 @@ export async function runTestFilesCore(opts: {
       return { ok: false, runId, root, error: 'no_report', routerOutput: outcome.output.slice(-2000) };
     }
 
+    let failureDetails = [] as ReturnType<typeof parseFailureDetailsSidecar>;
+    try {
+      failureDetails = parseFailureDetailsSidecar(await readFile(failureDetailsPath, 'utf8'), root);
+    } catch {
+      // The sidecar is optional and fail-soft; JSON reports remain authoritative.
+    }
+
     const run = mergeDistilledRuns(
-      reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures })),
+      reportTexts.map((text) => distillVitestRun(text, root, { maxFailures: opts.maxFailures, failureDetails })),
       { maxFailures: opts.maxFailures },
     );
 

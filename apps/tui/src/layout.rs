@@ -401,19 +401,19 @@ pub fn chat_dock_kdl(_brain_argv: &[String], lex: &crate::lexicon::Lexicon) -> S
             pane stacked=true size="38%" {{
                 pane name="{q}✉ prompt" expanded=true {{
                     command "pui"
-                    args "prompt-pane" "--queen"
+                    args "prompt-pane" "--mug"
                 }}
                 pane name="{q}⏸ wakes" {{
                     command "pui"
-                    args "wake-pane" "--queen"
+                    args "wake-pane" "--mug"
                 }}
                 pane name="{q}✉ mail" {{
                     command "pui"
-                    args "mail-pane" "--queen"
+                    args "mail-pane" "--mug"
                 }}
                 pane name="{q}☑ work" {{
                     command "pui"
-                    args "work-pane" "--queen"
+                    args "work-pane" "--mug"
                 }}
             }}
         }}
@@ -1126,10 +1126,10 @@ mod tests {
         );
         // The queen's side column is the FOUR stacked data boards (dock 4-pane
         // split, owner ask 2026-06-11): prompt → wakes → mail → work, top-down.
-        assert!(on.contains("args \"prompt-pane\" \"--queen\""));
-        assert!(on.contains("args \"wake-pane\" \"--queen\""));
-        assert!(on.contains("args \"mail-pane\" \"--queen\""));
-        assert!(on.contains("args \"work-pane\" \"--queen\""));
+        assert!(on.contains("args \"prompt-pane\" \"--mug\""));
+        assert!(on.contains("args \"wake-pane\" \"--mug\""));
+        assert!(on.contains("args \"mail-pane\" \"--mug\""));
+        assert!(on.contains("args \"work-pane\" \"--mug\""));
         assert!(on.contains("name=\"☕✉ prompt\""));
         assert!(on.contains("name=\"☕⏸ wakes\""));
         assert!(on.contains("name=\"☕✉ mail\""));

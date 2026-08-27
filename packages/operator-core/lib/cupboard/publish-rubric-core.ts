@@ -28,6 +28,7 @@
 import { publishListingToCupboard } from './publish-listing';
 import { resolveLocalRubric } from './rubric-store';
 import { parseGithubRemote, fetchGithubRepoMeta } from './resolve-repo-coords';
+import { getRubric } from '../rubrics';
 
 // A rubric ref is a within-repo subdir + the human handle — a safe single segment.
 // Mirrors install-self-describing-core's SAFE_REF_RE. UNTRUSTED (from the caller).
@@ -74,6 +75,23 @@ export async function publishRubricToCupboard(input: PublishRubricInput): Promis
   if (!parsed) {
     return { ok: false, status: 400, error: `invalid github_url "${githubUrl}"` };
   }
+
+  // Publishing is a distribution step for a rubric that is already a live,
+  // reviewed instrument in this workspace. The local filesystem layer only
+  // supplies storefront metadata; the rubric store is authoritative for
+  // lifecycle and ratification, so fail closed before touching GitHub or the
+  // Cupboard when that source cannot be proven publishable.
+  const source = await getRubric(ref);
+  if (!source) {
+    return { ok: false, status: 404, error: `rubric "${ref}" not found` };
+  }
+  if (source.status !== 'active') {
+    return { ok: false, status: 409, error: `rubric "${ref}" is not active` };
+  }
+  if (typeof source.ratifiedBy !== 'string' || !source.ratifiedBy.trim()) {
+    return { ok: false, status: 409, error: `rubric "${ref}" is not ratified` };
+  }
+
   const meta = await fetchGithubRepoMeta(parsed.owner, parsed.repo);
   if (!meta) {
     return { ok: false, status: 422, error: `could not resolve GitHub repo ${parsed.owner}/${parsed.repo}` };

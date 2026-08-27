@@ -122,14 +122,12 @@ pub fn draw_wake_board(f: &mut Frame, app: &App, body: Rect) {
     // The board: per-agent headers + one row per staged wake.
     if b.groups.is_empty() && !b.loading {
         let empty = match &app.wake_filter {
-            crate::app::WakeFilter::All => {
-                " no staged wakes — every agent is in auto mode or drained".to_string()
-            }
+            crate::app::WakeFilter::All => " no staged wakes".to_string(),
             crate::app::WakeFilter::Hive(_) => format!(
-                " no staged wakes for this {} — its agents are in auto mode or drained",
+                " no staged wakes for this {}",
                 app.lexicon.lex("pot").to_lowercase()
             ),
-            _ => " no staged wakes for this agent — auto mode or drained".to_string(),
+            _ => " no staged wakes for this agent".to_string(),
         };
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(empty, Theme::dim()))),
@@ -310,7 +308,28 @@ mod tests {
         app.wake_board.global_mode = Some("manual".into());
         let s = render(&app);
         assert!(s.contains("no staged wakes"), "{s}");
+        assert!(!s.contains("auto mode"), "{s}");
+        assert!(!s.contains("drained"), "{s}");
         assert!(s.contains("GLOBAL MANUAL"), "{s}");
+    }
+
+    #[test]
+    fn empty_state_does_not_infer_agent_modes_from_missing_wakes() {
+        for filter in [
+            crate::app::WakeFilter::All,
+            crate::app::WakeFilter::Queen,
+            crate::app::WakeFilter::Owner("su-agent".into()),
+            crate::app::WakeFilter::Hive("papercusp".into()),
+        ] {
+            let mut app = App::new();
+            app.tab = crate::app::Tab::Wake;
+            app.wake_board.loading = false;
+            app.wake_filter = filter;
+            let s = render(&app);
+            assert!(s.contains("no staged wakes"), "{s}");
+            assert!(!s.contains("auto mode"), "{s}");
+            assert!(!s.contains("drained"), "{s}");
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
+import { harnessRequiredResult } from '../_harness-scope';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { fireLaunchBlueprint } from '../../blueprint/launch-blueprint';
 import {
@@ -81,18 +82,7 @@ export default defineTool({
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
-      return {
-        content: [
-          {
-            type: 'text' as const,
-            text: JSON.stringify({
-              ok: false,
-              error: 'no_home_harness',
-              message: 'Pass `harness` (or set PAPERCUSP_POT_HOME_SLUG) — the pot launch is harness-scoped.',
-            }),
-          },
-        ],
-      };
+      return harnessRequiredResult('pot:wake', ctx);
     }
 
     // RETIREMENT GATE (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).

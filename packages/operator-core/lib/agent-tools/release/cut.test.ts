@@ -29,6 +29,9 @@ vi.mock('../../workspace-registry', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../workspace-registry')>()),
   activeWorkspaceId: () => 'test-ws',
 }));
+vi.mock('../../resource-governor/execution', () => ({
+  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+}));
 vi.mock('../locks/identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../locks/identity')>()),
   readIdentity: () => ({ ownerId: 'o', ownerLabel: 'tester', coordinationDomain: 'd' }) as never,

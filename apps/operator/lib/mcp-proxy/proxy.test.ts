@@ -4388,6 +4388,129 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toHaveLength(18);
   });
 
+  it("EI-21648286127930654: admits the first coord:send beyond a full continuation FIFO", async () => {
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"queued":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 16,
+        maxCriticalContinuationQueueWaitMs: 5_000,
+        criticalContinuationQueueWaitLogMs: 20,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const ordinary = Array.from({ length: 16 }, (_, index) =>
+      request(
+        port(proxy),
+        body(index + 2, "improvements:capture"),
+        `/api/mcp?client=ordinary-${index + 1}`,
+      ),
+    );
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 16,
+    );
+
+    let sendSettled = false;
+    const send = request(
+      port(proxy),
+      body(18, "coord:send"),
+      "/api/mcp?client=priority-send",
+    ).then((result) => {
+      sendSettled = true;
+      return result;
+    });
+    await waitFor(
+      () =>
+        logs.filter((line) =>
+          line.includes("queued critical-continuation request"),
+        ).length >= 17,
+    );
+
+    expect(sendSettled).toBe(false);
+    expect(hits).toEqual(["held-completion"]);
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 17,
+      max: 16,
+      requests: expect.arrayContaining([
+        expect.objectContaining({ tools: ["coord:send"] }),
+      ]),
+    });
+
+    const secondSend = await request(
+      port(proxy),
+      body(19, "coord:send"),
+      "/api/mcp?client=second-send",
+    );
+    expect(secondSend.status).toBe(429);
+    expect(JSON.parse(secondSend.body).error).toBe(
+      "mcp_proxy_critical_continuation_queue_full",
+    );
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+    expect((await send).status).toBe(200);
+    expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
+      true,
+    );
+    expect(hits.slice(0, 2)).toEqual([
+      "held-completion",
+      "priority-send",
+    ]);
+    expect(hits).toHaveLength(18);
+  });
+
   it("EI-21598376721192513: does not expire queued work_items:complete at a finite continuation dwell boundary", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {

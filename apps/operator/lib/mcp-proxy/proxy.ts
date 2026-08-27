@@ -1823,6 +1823,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         !waiter.granted &&
         waiter.tools.some((tool) => completionContinuationTools.has(tool)),
     );
+  // EI-21648286127930654 — coord:send is the control-plane handoff that tells a live
+  // owner or peer how to recover a blocked lane. Preserve one bounded priority waiter
+  // when the ordinary continuation FIFO is full, so the first handoff is not shed at
+  // exactly the saturation point where coordination is most needed. Keep the slot
+  // separate from terminal completion: both may be needed during one recovery turn.
+  const coordSendContinuationTools = new Set(["coord:send"]);
+  const hasQueuedCoordSend = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.some((tool) => coordSendContinuationTools.has(tool)),
+    );
   // EI-21567903270684307 — loop:end is the cleanup action that stops a worker's wake source
   // after a blocked or drained turn. Expiring it at a finite queue dwell boundary leaves the
   // loop running while its caller has already lost the outcome. EI-21582773337412658 extends
@@ -2332,12 +2345,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             criticalContinuationTools.some((tool) =>
               completionContinuationTools.has(tool),
             ) && !hasQueuedCompletion();
+          const coordSendPriority =
+            criticalContinuationTools.some((tool) =>
+              coordSendContinuationTools.has(tool),
+            ) && !hasQueuedCoordSend();
           if (
             maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
             !compactionPriority &&
             !loopCheckpointPriority &&
             !workItemCheckpointPriority &&
-            !completionPriority
+            !completionPriority &&
+            !coordSendPriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
@@ -2398,7 +2416,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               compactionPriority ||
               loopCheckpointPriority ||
               workItemCheckpointPriority ||
-              completionPriority
+              completionPriority ||
+              coordSendPriority
             ) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
             } else {

@@ -23,6 +23,7 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { afterAll, beforeAll, describe, it, expect } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -69,7 +70,7 @@ interface RunResult {
   failed?: number;
   skipped?: number;
   files?: number;
-  failures?: Array<{ file: string; test: string; message: string }>;
+  failures?: Array<{ file: string; test: string; message: string; actual?: string; expected?: string }>;
   failuresTruncated?: boolean;
   durationMs?: number | null;
 }
@@ -302,6 +303,39 @@ describe('testing:run (integration)', () => {
       () => null,
     );
     expect(routerScript).not.toBeNull();
+  }, 180_000);
+
+  it('returns structured actual/expected values for a real failing assertion', async () => {
+    const relativeFixture = `packages/operator-core/lib/__testing-run-sidecar-${randomUUID()}.test.ts`;
+    // Vitest runs this package's integration config with cwd at
+    // packages/operator-core, while testing:run receives repo-root-relative paths.
+    const absoluteFixture = join(dirname(dirname(process.cwd())), relativeFixture);
+    await writeFile(
+      absoluteFixture,
+      [
+        "import { expect, it } from 'vitest';",
+        "it('preserves the assertion values', () => {",
+        "  expect({ service_select: false, other: 'actual' }).toEqual({ service_select: true, other: 'expected' });",
+        '});',
+        '',
+      ].join('\n'),
+    );
+    try {
+      const out = await body(call({ files: [relativeFixture] }));
+
+      expect(out.ok).toBe(false);
+      expect(out.failed).toBe(1);
+      expect(out.failures).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          file: relativeFixture,
+          test: 'preserves the assertion values',
+          actual: expect.stringContaining('service_select'),
+          expected: expect.stringContaining('service_select'),
+        }),
+      ]));
+    } finally {
+      await rm(absoluteFixture, { force: true });
+    }
   }, 180_000);
 
   it('runs a repo-resolving file from a phantom handler root through the canonical repo and surfaces the source', async () => {

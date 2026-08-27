@@ -22,7 +22,7 @@
 
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { relative as pathRelative, posix } from 'node:path';
+import { isAbsolute, relative as pathRelative, posix } from 'node:path';
 import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
@@ -550,6 +550,19 @@ export interface DistilledTestFailure {
   test: string;
   /** First failure message, trimmed to `maxMessageChars`. */
   message: string;
+  /** Structured assertion value captured by the optional test-run sidecar. */
+  actual?: string;
+  /** Structured assertion value captured by the optional test-run sidecar. */
+  expected?: string;
+}
+
+/** One structured assertion detail emitted by admin-test-runs-reporter. */
+export interface TestFailureDetail {
+  file: string;
+  test: string;
+  message?: string;
+  actual?: string;
+  expected?: string;
 }
 
 /**
@@ -593,6 +606,90 @@ export interface DistilledTestRun {
  *  already willing to spend, while carrying strictly more signal. */
 const DEFAULT_MAX_FAILURES = 20;
 const DEFAULT_MAX_MESSAGE_CHARS = 1200;
+const FAILURE_DETAIL_MAX_CHARS = 4_000;
+const FAILURE_DETAILS_MAX_RECORDS = 2_000;
+
+function stringifyFailureDetail(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string') return value.slice(0, FAILURE_DETAIL_MAX_CHARS);
+  try {
+    const seen = new WeakSet<object>();
+    const encoded = JSON.stringify(value, (_key, child: unknown) => {
+      if (typeof child === 'bigint') return `${child}n`;
+      if (typeof child === 'object' && child !== null) {
+        if (seen.has(child)) return '[Circular]';
+        seen.add(child);
+      }
+      return child;
+    });
+    if (encoded !== undefined) return encoded.slice(0, FAILURE_DETAIL_MAX_CHARS);
+  } catch {
+    /* fail-soft */
+  }
+  try {
+    return String(value).slice(0, FAILURE_DETAIL_MAX_CHARS);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Parse the optional reporter sidecar. It is intentionally independent of the
+ * JSON reporter schema: Vitest's JSON projection can elide object diffs while
+ * TestCase.result().errors still carries the useful actual/expected values.
+ */
+export function parseFailureDetailsSidecar(jsonText: string, rootAbs: string): TestFailureDetail[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return [];
+  }
+  const raw = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object' && Array.isArray((parsed as { failures?: unknown }).failures)
+      ? (parsed as { failures: unknown[] }).failures
+      : parsed && typeof parsed === 'object' && Array.isArray((parsed as { details?: unknown }).details)
+        ? (parsed as { details: unknown[] }).details
+        : [];
+  const details = new Map<string, TestFailureDetail>();
+  for (const entry of raw.slice(0, FAILURE_DETAILS_MAX_RECORDS)) {
+    if (!entry || typeof entry !== 'object') continue;
+    const value = entry as Record<string, unknown>;
+    if (typeof value.file !== 'string' || !value.file || typeof value.test !== 'string' || !value.test) continue;
+    const file = isAbsolute(value.file)
+      ? relToRootPosix(value.file, rootAbs)
+      : value.file.replaceAll('\\', '/');
+    const detail: TestFailureDetail = { file, test: value.test };
+    for (const field of ['message', 'actual', 'expected'] as const) {
+      const text = stringifyFailureDetail(value[field]);
+      if (text !== undefined) detail[field] = text;
+    }
+    const key = `${detail.file}\u0000${detail.test}`;
+    const previous = details.get(key);
+    details.set(key, {
+      ...(previous ?? {}),
+      ...detail,
+      ...(previous?.message && detail.message === undefined ? { message: previous.message } : {}),
+      ...(previous?.actual !== undefined && detail.actual === undefined ? { actual: previous.actual } : {}),
+      ...(previous?.expected !== undefined && detail.expected === undefined ? { expected: previous.expected } : {}),
+    });
+  }
+  return [...details.values()];
+}
+
+/** Alias kept descriptive for callers that use the Vitest terminology. */
+export const parseVitestFailureDetails = parseFailureDetailsSidecar;
+
+function enrichFailure(failure: DistilledTestFailure, detail: TestFailureDetail | undefined): DistilledTestFailure {
+  if (!detail) return failure;
+  return {
+    ...failure,
+    ...(detail.actual !== undefined ? { actual: detail.actual } : {}),
+    ...(detail.expected !== undefined ? { expected: detail.expected } : {}),
+    ...(detail.message && failure.message === '(no failure message reported)' ? { message: detail.message } : {}),
+  };
+}
 
 /**
  * Distil a vitest `--reporter=json` report into the agent-facing envelope.
@@ -607,7 +704,7 @@ const DEFAULT_MAX_MESSAGE_CHARS = 1200;
 export function distillVitestRun(
   jsonText: string,
   rootAbs: string,
-  opts?: { maxFailures?: number; maxMessageChars?: number },
+  opts?: { maxFailures?: number; maxMessageChars?: number; failureDetails?: readonly TestFailureDetail[] },
 ): DistilledTestRun {
   const maxFailures = opts?.maxFailures ?? DEFAULT_MAX_FAILURES;
   const maxMessageChars = opts?.maxMessageChars ?? DEFAULT_MAX_MESSAGE_CHARS;
@@ -626,6 +723,9 @@ export function distillVitestRun(
   if (files.length === 0) return empty;
 
   const out: DistilledTestRun = { ...empty, failures: [], byFile: {} };
+  const detailByKey = new Map(
+    (opts?.failureDetails ?? []).map((detail) => [`${detail.file}\u0000${detail.test}`, detail] as const),
+  );
   let minStart: number | null = null;
   let maxEnd: number | null = null;
 
@@ -646,14 +746,14 @@ export function distillVitestRun(
       if (a.status === 'failed') {
         out.failed += 1;
         bucket.failed += 1;
-        const message = (Array.isArray(a.failureMessages) ? a.failureMessages : [])
+      const message = (Array.isArray(a.failureMessages) ? a.failureMessages : [])
           .find((m): m is string => typeof m === 'string' && m.trim().length > 0);
         if (out.failures.length < maxFailures) {
-          out.failures.push({
+          out.failures.push(enrichFailure({
             file,
             test: (a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)',
             message: (message ?? '(no failure message reported)').trim().slice(0, maxMessageChars),
-          });
+          }, detailByKey.get(`${file}\u0000${(a.fullName ?? a.title ?? '(unnamed test)').trim() || '(unnamed test)'}`)));
         } else {
           out.failuresTruncated = true;
         }
@@ -675,14 +775,14 @@ export function distillVitestRun(
       bucket.failed += 1;
       bucket.collectionFailed = true;
       if (out.failures.length < maxFailures) {
-        out.failures.push({
+        out.failures.push(enrichFailure({
           file,
           test: COLLECTION_FAILURE_TEST,
           message: (typeof f.message === 'string' && f.message.trim()
             ? f.message.trim()
             : '(no failure message reported)'
           ).slice(0, maxMessageChars),
-        });
+        }, detailByKey.get(`${file}\u0000${COLLECTION_FAILURE_TEST}`)));
       } else {
         out.failuresTruncated = true;
       }
@@ -788,9 +888,19 @@ function payloadBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
 }
 
+function clampFailureText(text: string, chars: number): string {
+  if (chars <= 0) return '';
+  if (text.length <= chars) return text;
+  return `${text.slice(0, Math.max(0, chars - 1))}…`;
+}
+
 function clampFailureMessage(f: DistilledTestFailure, chars: number): DistilledTestFailure {
-  if (f.message.length <= chars) return f;
-  return { ...f, message: `${f.message.slice(0, Math.max(0, chars))}…` };
+  return {
+    ...f,
+    message: clampFailureText(f.message, chars),
+    ...(f.actual !== undefined ? { actual: clampFailureText(f.actual, chars) } : {}),
+    ...(f.expected !== undefined ? { expected: clampFailureText(f.expected, chars) } : {}),
+  };
 }
 
 /**
@@ -868,13 +978,13 @@ export function boundTestRunPayload<E extends Record<string, unknown>>(
   // there is nothing further to trim, and an honest over-budget result beats a
   // silent claim that nothing failed.
   if (kept.length === 1) {
-    const headroom = budget - payloadBytes(build([{ ...kept[0], message: '' }], true));
+    const headroom = budget - payloadBytes(build([{ ...kept[0], message: '', actual: '', expected: '' }], true));
     if (headroom > 0) {
       const fitted = clampFailureMessage(kept[0], Math.max(0, Math.min(kept[0].message.length, headroom - 8)));
       const candidate = build([fitted], true);
       if (payloadBytes(candidate) <= budget) return candidate;
     }
-    return build([{ ...kept[0], message: '' }], true);
+    return build([{ ...kept[0], message: '', actual: '', expected: '' }], true);
   }
   return build(kept, true);
 }

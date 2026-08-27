@@ -2665,6 +2665,41 @@ pub struct ConvDetail {
     pub subscriber_count: i64,
 }
 
+/// Per-item result in the keyed-array `conversations:get` response. The
+/// endpoint is bulk even for a single id, so `ok:false`/`error` must remain
+/// attached to the requested id instead of being discarded while unwrapping.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ConvGetResult {
+    #[serde(default)]
+    pub ok: bool,
+    pub id: String,
+    #[serde(default)]
+    pub error: Option<String>,
+    #[serde(flatten)]
+    pub detail: ConvDetail,
+}
+
+/// Counts accompanying the standardized keyed-array bulk response.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ConvGetCounts {
+    #[serde(default)]
+    pub ok: usize,
+    #[serde(default)]
+    pub failed: usize,
+}
+
+/// The complete `conversations:get` tool payload. `results` is keyed by each
+/// result's `id`; callers must not rely on array position.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ConvGetResponse {
+    #[serde(default)]
+    pub ok: bool,
+    #[serde(default)]
+    pub results: Vec<ConvGetResult>,
+    #[serde(default)]
+    pub counts: ConvGetCounts,
+}
+
 /// Fleet rate/usage read-model (rate-limit-layer-v2 P-013/D-004): the `status`
 /// half of GET `/api/operator/rate-limit-config` (`buildFleetRateStatus`).
 /// Rendered in the Overview top-bar (overview-dashboard Brief 23 P-005);
@@ -4127,5 +4162,52 @@ mod tests {
         // not_found shape decodes to an empty detail (no conversation).
         let nf: ConvDetail = serde_json::from_str(r#"{"ok":false,"reason":"not_found"}"#).unwrap();
         assert!(nf.conversation.is_none());
+    }
+
+    #[test]
+    fn parses_conversation_get_success_envelope() {
+        let j = r#"{"ok":true,"results":[{"ok":true,"id":"conv-1",
+            "conversation":{"id":"conv-1","kind":"question","state":"open",
+            "scope":"operator","harness_slug":null,"title":"q","body":"seed",
+            "asker_id":"agA","accepted_answer":null,"promoted_issue_id":null,"created_ts":"x"},
+            "topics":["coord"],"posts":[],"subscriber_count":2}],
+            "counts":{"ok":1,"failed":0}}"#;
+        let p: ConvGetResponse = serde_json::from_str(j).unwrap();
+        assert!(p.ok);
+        assert_eq!(p.counts.ok, 1);
+        assert_eq!(p.counts.failed, 0);
+        let result = &p.results[0];
+        assert!(result.ok);
+        assert_eq!(result.id, "conv-1");
+        assert_eq!(result.detail.conversation.as_ref().unwrap().body, "seed");
+        assert_eq!(result.detail.topics, vec!["coord"]);
+    }
+
+    #[test]
+    fn preserves_conversation_get_per_item_not_found_error() {
+        let j = r#"{"ok":true,"results":[
+            {"ok":false,"id":"missing","error":"not_found"}],
+            "counts":{"ok":0,"failed":1}}"#;
+        let p: ConvGetResponse = serde_json::from_str(j).unwrap();
+        let result = &p.results[0];
+        assert!(!result.ok);
+        assert_eq!(result.id, "missing");
+        assert_eq!(result.error.as_deref(), Some("not_found"));
+        assert!(result.detail.conversation.is_none());
+    }
+
+    #[test]
+    fn conversation_get_results_are_correlated_by_id_not_position() {
+        let j = r#"{"ok":true,"results":[
+            {"ok":true,"id":"conv-2","conversation":{"id":"conv-2"}},
+            {"ok":true,"id":"conv-1","conversation":{"id":"conv-1"}}],
+            "counts":{"ok":2,"failed":0}}"#;
+        let p: ConvGetResponse = serde_json::from_str(j).unwrap();
+        let result = p
+            .results
+            .iter()
+            .find(|result| result.id == "conv-1")
+            .expect("matching result");
+        assert_eq!(result.detail.conversation.as_ref().unwrap().id, "conv-1");
     }
 }

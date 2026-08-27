@@ -15,6 +15,7 @@ import {
   cancelRun,
   listRuns,
   distillVitestRun,
+  parseFailureDetailsSidecar,
   COLLECTION_FAILURE_TEST,
   _resetTestingRunStore,
 } from '../testing-run-store';
@@ -224,6 +225,37 @@ describe('distillVitestRun', () => {
     expect(out.failures).toEqual([
       { file: 'pkg/b.test.ts', test: 'suite > does the thing', message: 'expected 1 to be 2' },
     ]);
+  });
+
+  it('enriches a JSON failure with actual/expected values from the optional sidecar', () => {
+    const json = report([{
+      name: `${ROOT}/pkg/b.test.ts`, status: 'failed',
+      assertionResults: [{
+        status: 'failed', fullName: 'suite > does the thing',
+        failureMessages: ['expected { service_select: true, …(6) }'],
+      }],
+    }]);
+    const details = parseFailureDetailsSidecar(JSON.stringify({ failures: [{
+      file: `${ROOT}/pkg/b.test.ts`,
+      test: 'suite > does the thing',
+      actual: '{ service_select: false }',
+      expected: '{ service_select: true }',
+    }] }), ROOT);
+
+    const out = distillVitestRun(json, ROOT, { failureDetails: details });
+
+    expect(out.failures).toEqual([{
+      file: 'pkg/b.test.ts',
+      test: 'suite > does the thing',
+      message: 'expected { service_select: true, …(6) }',
+      actual: '{ service_select: false }',
+      expected: '{ service_select: true }',
+    }]);
+  });
+
+  it('parses malformed or unsupported sidecars fail-soft', () => {
+    expect(parseFailureDetailsSidecar('not json', ROOT)).toEqual([]);
+    expect(parseFailureDetailsSidecar(JSON.stringify({ failures: [{ file: '', test: 't' }, null] }), ROOT)).toEqual([]);
   });
 
   it('falls back to title when fullName is absent', () => {

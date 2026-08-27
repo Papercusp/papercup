@@ -1673,6 +1673,14 @@ export default defineTool({
           'tool-arg-fuzzy-validation). A non-local (claude/codex) alias is the open set — full ids pass, ' +
           'but a malformed alias (a versioned shorthand like `sonnet-5`, or a typo) is caught + corrected.',
       ),
+    effort: z
+      .string()
+      .min(1)
+      .max(40)
+      .optional()
+      .describe(
+        'Reasoning effort for EVERY member (low|medium|high|xhigh|max) — composed onto the model spec (`<model>:<effort>`); use `members[].effort` for a per-member override.',
+      ),
     feature: z.string().optional().describe('psu --feature: a feature id each member should pick up.'),
     brief: z
       .string()
@@ -1849,10 +1857,8 @@ export default defineTool({
           type: args.type,
           count: args.count,
           agent: args.agent,
-          // No flat `effort` knob exists on this tool — effort rides inside the
-          // model spec (`<modelId>[:<effort>]`). The per-role groups DO take it
-          // separately, which is why PER_ROLE_KNOBS still lists it.
           model: args.model,
+          effort: args.effort,
           headless: args.headless,
           account: args.account,
           carry: args.carry,
@@ -1942,6 +1948,7 @@ export default defineTool({
         harness: args.harness,
         agent: args.agent,
         model: args.model,
+        effort: args.effort,
         account: args.account,
         headless: args.headless,
         carry: args.carry,
@@ -3734,6 +3741,7 @@ export default defineTool({
         ...(effAgent ? { agent: effAgent as 'claude' | 'codex' | 'omp' } : {}),
         ...(effAccount ? { account: effAccount } : {}),
         ...(effModel ? { model: effModel } : {}),
+        ...(args.effort ? { effort: args.effort } : {}),
         ...(args.carry ? { carry: args.carry } : {}),
         ...(args.contextSize ? { contextSize: args.contextSize } : {}),
       },
@@ -3746,6 +3754,7 @@ export default defineTool({
       agent: (goalLaunch.effective.agent as typeof effAgent) ?? effAgent,
       headless: args.headless || undefined,
       account: goalLaunch.effective.account ?? effAccount,
+      effort: goalLaunch.effective.effort ?? args.effort,
       launchMode,
       // The caller's request scope is already resolved above. Always stamp that
       // authoritative workspace onto the psu command: omitting the flag makes a

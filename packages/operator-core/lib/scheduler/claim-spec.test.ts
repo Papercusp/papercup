@@ -23,6 +23,7 @@ import {
   fixedCohortIds,
   positiveIdCohortIds,
   formatSpecRef,
+  CLAIM_SPEC_FENCE_MACROS,
   type ClaimSpec,
 } from './claim-spec';
 
@@ -440,6 +441,25 @@ describe('claim-spec vocabulary — `title` keyword exclusion (WI-3268)', () => 
 });
 
 describe('claim-spec `view.fence` macro — server-side expansion (WI-6050)', () => {
+  it('publishes the shared fence macro keys instead of accepting arbitrary strings', () => {
+    const specForFence = (fence: string) => ({
+      specVersion: '1.0',
+      specId: 'fence-schema',
+      revision: 1,
+      view: { fence },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+
+    for (const fence of Object.keys(CLAIM_SPEC_FENCE_MACROS)) {
+      expect(claimSpecSchema.safeParse(specForFence(fence)).success).toBe(true);
+    }
+
+    const unknown = claimSpecSchema.safeParse(specForFence('not-a-real-fence'));
+    expect(unknown.success).toBe(false);
+    if (unknown.success) return;
+    expect(unknown.error.issues.some((issue) => issue.path.join('.') === 'view.fence')).toBe(true);
+  });
+
   it('expands `fence:"p2p-lane"` into a `not:{any:[...]}` title-word filter, stripping `fence`', () => {
     const r = validateClaimSpec({
       specVersion: '1.0',
@@ -485,7 +505,7 @@ describe('claim-spec `view.fence` macro — server-side expansion (WI-6050)', ()
       rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
     });
     expect(r.ok).toBe(false);
-    expect(r.errors.some((e) => e.includes('view.fence') && e.includes('not-a-real-fence'))).toBe(true);
+    expect(r.errors.some((e) => e.includes('view.fence'))).toBe(true);
   });
 
   it('re-validating an already-expanded (fence-stripped) spec is idempotent, not double-applied', () => {

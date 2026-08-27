@@ -4,14 +4,17 @@
  * one durable DBOS step per due git-sync routine.
  *
  * Wraps the pure pipeline (`run-git-sync.ts`) with the live concerns:
- *   - P-009 LOCKS (git-sync-any-hive P-006: per-slug): hold `git-sync:<slug>`
- *     (exclusive, auto-registered on first acquire) + every name in the routine's
+ *   - P-009 LOCKS (git-sync-any-hive P-006: per-slug): hold the workspace-wide
+ *     `git-sync` restart barrier shared, then `git-sync:<slug>` (exclusive,
+ *     auto-registered on first acquire) + every name in the routine's
  *     `trigger_config.extra_lock_resources` (exclusive, must be human-registered)
  *     for the whole commit→submodule-push→pointer-bump→push sequence, so a peer
- *     agent's in-flight git work doesn't race. Held by a peer → skip this tick
- *     (back-pressure). An UNREGISTERED extra resource → skip with a loud log (a
- *     deliberate coordination surface — never auto-registered). Every fire uses
- *     a unique lock owner so scheduled and manual paths contend even though
+ *     agent's in-flight git work doesn't race a restart or another fire. The
+ *     legacy papercup `git-sync` extra is filtered because it is now the shared
+ *     barrier, not a second exclusive acquisition. Held by a peer → skip this
+ *     tick (back-pressure). An UNREGISTERED extra resource → skip with a loud log
+ *     (a deliberate coordination surface — never auto-registered). Every fire
+ *     uses a unique lock owner so scheduled and manual paths contend even though
  *     both are represented by the `system:git-sync` action. SU-lock infra
  *     unavailable → proceed unlocked (the existing fail-open behavior remains
  *     an explicit degraded mode, with the next tick retrying the lock).
@@ -423,10 +426,12 @@ interface ActionTrigger {
   /**
    * Additional REGISTERED resource names to hold exclusively for the tick
    * (`trigger_config.extra_lock_resources`, git-sync-any-hive P-006). papercup's
-   * row lists `['git-sync', 'libs-papercusp-submodule']` so the documented
-   * back-off protocol ("acquire exclusive(git-sync) to make git-sync back off")
-   * keeps working. Names here are a deliberate, human-registered coordination
-   * surface — an UNKNOWN name skips the tick with a log, never auto-registers.
+   * row lists `['git-sync', 'libs-papercusp-submodule']`; the legacy `git-sync`
+   * entry is the workspace-wide shared restart barrier and is filtered from this
+   * exclusive list, while `libs-papercusp-submodule` remains an exclusive
+   * back-off resource. Names here are a deliberate, human-registered
+   * coordination surface — an UNKNOWN name skips the tick with a log, never
+   * auto-registers.
    */
   extraLockResources: string[];
 }
@@ -453,10 +458,21 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
   };
 }
 
-/** The per-harness lock resource this slug's tick holds (P-006). One global name
- *  used to serialize ALL harnesses' ticks against each other; now each harness
- *  serializes only against itself + whatever it lists in extra_lock_resources. */
+/** The workspace-wide resource exclusively acquired by dev:restart and shared by
+ *  every git-sync fire. A shared acquire lets different harnesses commit in
+ *  parallel while making the restart's exclusive acquire atomic with the
+ *  post-preflight window (WI-229179). */
+const GIT_SYNC_RESTART_BARRIER_RESOURCE = 'git-sync';
+
+/** The per-harness lock resource this slug's tick holds (P-006). */
 const gitSyncResourceName = (slug: string): string => `git-sync:${slug}`;
+
+type GitSyncLockMode = 'shared' | 'exclusive';
+
+interface GitSyncLockRequest {
+  resource: string;
+  mode: GitSyncLockMode;
+}
 
 /** Minimal tagged-template seam over the txn handle (postgres-js `Sql`), so this
  *  module needs no direct `postgres` type dependency. */
@@ -533,13 +549,13 @@ async function clearQueuedGitSyncOwners(
   return owners;
 }
 
-async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
+async function releaseAll(cd: string, owner: string, acquired: GitSyncLockRequest[]): Promise<void> {
   // This fire is done with the lock either way — drop it from the in-flight set
   // FIRST, so that a release which fails below (TTL becomes the backstop, see the
   // warn) still leaves a row a later tick here can recognise as our orphan and
   // reclaim, instead of one that blocks this host for the full ten minutes.
   gitSyncLockState.inFlight.delete(owner);
-  for (const resource of acquired.reverse()) {
+  for (const { resource } of acquired.reverse()) {
     try {
       // Releasing a lock takes the same workspace transaction/advisory lock as
       // acquiring it. A transient 57014/55P03 here used to be swallowed, so the
@@ -577,20 +593,20 @@ async function releaseAll(cd: string, owner: string, acquired: string[]): Promis
 function startLockHeartbeat(
   cd: string,
   slug: string,
-  resources: string[],
+  resources: GitSyncLockRequest[],
   owner: string,
 ): () => Promise<void> {
   let inFlight: Promise<void> | null = null;
 
   const refresh = async (): Promise<void> => {
-    for (const resource of resources) {
+    for (const { resource, mode } of resources) {
       try {
         const result = await acquireWithContentionRetry(() =>
           inWorkspaceTxn(cd, owner, (tx) =>
             tryAcquireResource(tx, {
               coordinationDomain: cd,
               resource,
-              mode: 'exclusive',
+              mode,
               owner,
               ownerLabel: `git-sync:${slug}`,
               reason: `auto-commit ${slug}`,
@@ -639,12 +655,12 @@ export { acquireWithContentionRetry } from '../../agent-tools/locks/contention-r
 async function acquireLocks(
   cd: string,
   slug: string,
-  resources: string[],
-  acquired: string[],
+  resources: GitSyncLockRequest[],
+  acquired: GitSyncLockRequest[],
   owner: string,
 ): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
-  for (const resource of resources) {
+  for (const { resource, mode } of resources) {
     const acquireOne = () => acquireWithContentionRetry(() =>
       inWorkspaceTxn(cd, owner, async (tx) => {
         // Auto-register ONLY the per-slug name, in the same txn as its acquire.
@@ -659,7 +675,7 @@ async function acquireLocks(
         return tryAcquireResource(tx, {
           coordinationDomain: cd,
           resource,
-          mode: 'exclusive',
+          mode,
           owner,
           ownerLabel: `git-sync:${slug}`,
           reason: `auto-commit ${slug}`,
@@ -760,7 +776,7 @@ async function acquireLocks(
     // here on, a row naming it is legitimately held and must never be read as
     // an orphan (by a concurrent fire in this process, or by our own retry).
     gitSyncLockState.inFlight.add(owner);
-    acquired.push(resource);
+    acquired.push({ resource, mode });
   }
   return { state: 'acquired' };
 }
@@ -2006,15 +2022,31 @@ async function handleGitSync(
       ? `commit-only:${gate.hiveGitMode}`
       : 'commit-only:config';
 
-  // P-006: per-slug resource first (auto-registered), then the routine's extras
-  // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off protocol).
+  // P-006/WI-229179: acquire the workspace-wide restart barrier shared first,
+  // then the per-slug resource (auto-registered) and the routine's extras
+  // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off
+  // protocol). The legacy global name is filtered from the exclusive extras;
+  // it is represented by the shared request below so dev:restart can acquire
+  // it exclusively without serializing unrelated harness commits.
   // Locks stay at the WORKFLOW layer — deliberately NOT a checkpointed step, so a
   // resumed/replayed fire re-acquires them instead of trusting a checkpoint whose
   // lease may have expired mid-stall. Every fire gets a fresh owner token: if a
   // prior process still owns the lease, the replay must wait/skip rather than
   // coalescing with that potentially concurrent process.
-  const resources = [...new Set([gitSyncResourceName(slug), ...extraLockResources])];
-  const acquired: string[] = [];
+  const seenResources = new Set<string>();
+  const resourceCandidates: GitSyncLockRequest[] = [
+    { resource: GIT_SYNC_RESTART_BARRIER_RESOURCE, mode: 'shared' },
+    { resource: gitSyncResourceName(slug), mode: 'exclusive' },
+    ...extraLockResources
+      .filter((resource) => resource !== GIT_SYNC_RESTART_BARRIER_RESOURCE)
+      .map((resource) => ({ resource, mode: 'exclusive' as const })),
+  ];
+  const resources = resourceCandidates.filter(({ resource }) => {
+    if (seenResources.has(resource)) return false;
+    seenResources.add(resource);
+    return true;
+  });
+  const acquired: GitSyncLockRequest[] = [];
   const lockOwner = newGitSyncLockOwner();
   const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held' || lock.state === 'contended') {

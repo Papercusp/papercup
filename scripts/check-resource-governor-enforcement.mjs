@@ -192,6 +192,10 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/agent-tools/dev/restart.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'delayed systemd restart — control/recovery path that releases the current operator and must remain runnable under saturation' },
   ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/harness/features.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git worktree remove + branch delete — feature teardown releases filesystem/process coordination state and must remain runnable under saturation' },
+  ],
 ]);
 
 function registryKey(path, code) {

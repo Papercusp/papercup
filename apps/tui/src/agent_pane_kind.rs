@@ -49,6 +49,14 @@ impl AgentPaneKind {
         s.as_deref().and_then(Self::from_wire)
     }
 
+    /// Whether a roster/group wire value identifies the canonical Mug pane.
+    /// `queen` is retained as a read-only alias for rows written before the
+    /// pot-lexicon rename; callers should use this matcher instead of checking
+    /// one wire spelling directly.
+    pub fn is_mug_wire(s: &str) -> bool {
+        matches!(Self::from_wire(s), Some(Self::Queen))
+    }
+
     /// The wire string (matches the backend AGENT_PANE_KINDS literal — the new
     /// pot-lexicon ids since the S2 rename; the old words parse as aliases only).
     pub fn as_wire(self) -> &'static str {
@@ -369,6 +377,10 @@ mod tests {
             Some(AgentPaneKind::Queen)
         );
         assert_eq!(AgentPaneKind::from_opt(&None), None);
+        assert!(AgentPaneKind::is_mug_wire("mug"));
+        assert!(AgentPaneKind::is_mug_wire("queen"));
+        assert!(!AgentPaneKind::is_mug_wire("kettle"));
+        assert!(!AgentPaneKind::is_mug_wire(""));
     }
 
     #[test]

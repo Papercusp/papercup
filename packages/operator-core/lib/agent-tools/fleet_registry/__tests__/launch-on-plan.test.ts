@@ -459,6 +459,17 @@ describe('launch-on-plan model argument validation', () => {
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.issues.some((issue) => issue.message.includes('ornith-valid'))).toBe(true);
   });
+
+  it('accepts a flat effort and composes it onto the model spec', async () => {
+    const parsed = await standardValidate(tool.args, {
+      name: 'Flat Effort Fleet',
+      plan: 'my-plan',
+      model: 'sonnet',
+      effort: 'high',
+    });
+
+    expect(parsed.ok).toBe(true);
+  });
 });
 
 describe('gatewayCapacityProviderForFleetAgent', () => {
@@ -565,6 +576,33 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
         effort: 'high',
       },
     });
+  });
+
+  it('composes flat effort onto the model and persists it in a fresh homogeneous profile', async () => {
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Flat Effort Profile Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        agent: 'claude',
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        headless: true,
+      } as never,
+      {} as never,
+      null,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+
+    expect(payload.ok).toBe(true);
+    expect(spawnHeadlessMock.mock.calls[0][0].envelope.greetingCmd).toContain('--model=sonnet:high');
+    expect(setFleetHeadcountTargetMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        config: expect.objectContaining({ model: 'sonnet', effort: 'high' }),
+      }),
+    );
   });
 
   it('reuses the persisted headcount launch profile for an existing-fleet top-up/takeover with an omitted recipe (D-008)', async () => {

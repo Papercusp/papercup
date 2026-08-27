@@ -155,6 +155,17 @@ describe('CloudWorkspacesPage', () => {
     render(<CloudWorkspacesPage />);
 
     expect(screen.getByRole('heading', { name: 'Cloud Workspaces' })).toBeTruthy();
+    const overview = screen.getByRole("region", {
+      name: "Cloud workspace overview",
+    });
+    expect(overview.textContent).toContain("Connected providers1 / 3");
+    expect(overview.textContent).toContain("Managed workspaces1");
+    expect(overview.textContent).toContain("1 of 1 desired states aligned");
+    expect(overview.textContent).toContain("Healthy hosts1");
+    expect(overview.textContent).toContain("Monthly footprint$72.90");
+    expect(
+      screen.getByRole("heading", { name: "Provider readiness" }),
+    ).toBeTruthy();
     expect(screen.getByText('Production GCP')).toBeTruthy();
     expect(screen.getByRole('combobox', { name: 'Project, account, or subscription' }).textContent).toContain('papercusp-prod');
     expect(screen.getByLabelText('Estimated workspace cost').textContent).toContain('$72.90');
@@ -167,6 +178,9 @@ describe('CloudWorkspacesPage', () => {
     expect(screen.getByLabelText('Cost and quota signals for research-control').textContent).toContain('CPUS');
     expect(screen.getByLabelText('Recent host logs for research-control').textContent).toContain('Agent ready');
     expect(screen.getByText('Redacted request').parentElement?.textContent).toContain('ubuntu-2404');
+    expect(
+      screen.getByLabelText("Lifecycle actions for research-control"),
+    ).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Audit export' }).getAttribute('href')).toBe(
       '/api/workspace-hosts/host-1/audit',
     );
@@ -210,5 +224,28 @@ describe('CloudWorkspacesPage', () => {
 
     expect(screen.getByRole('alert').textContent).toContain('Local cloud control plane unavailable');
     expect(screen.getByText('Connect a provider to begin')).toBeTruthy();
+  });
+
+  it("offers an actionable provider connection from the empty configuration state", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect a provider" }));
+    expect(
+      screen.getByRole("dialog", { name: "Connect Google Cloud" }),
+    ).toBeTruthy();
+  });
+
+  it("does not leak undefined capacity values from an incomplete runtime catalog row", () => {
+    H.rows = [
+      {
+        ...rows[0],
+        sizes: [{ id: "e2-small", label: "e2-small" } as never],
+      },
+    ];
+    render(<CloudWorkspacesPage />);
+
+    expect(screen.getAllByText("Capacity details unavailable")).toHaveLength(2);
+    expect(screen.queryByText(/undefined vCPU/)).toBeNull();
   });
 });

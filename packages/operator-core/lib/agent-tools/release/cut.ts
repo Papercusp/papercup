@@ -51,6 +51,7 @@ import { defineTool, SU_ROLES, isOperatorConfigWriteRole } from '@papercusp/agen
 import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { runGovernedOperation } from '../../resource-governor/execution';
 import { loadHarnessRegistry, type HarnessRegistry } from '../../harness-registry';
 import {
   launchDetachedCut,
@@ -607,19 +608,30 @@ export default defineTool({
 
       let commandOutput = '';
       try {
-        commandOutput = String(
-          execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
-            cwd: selected.desktopRoot,
-            encoding: 'utf8',
-            timeout: 120_000,
-            maxBuffer: 4 * 1024 * 1024,
-            env: {
-              ...process.env,
-              PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
-              PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
-            },
-          }),
-        ).trim();
+        commandOutput = await runGovernedOperation(
+          {
+            workspaceId: activeWorkspaceId(),
+            namespace: 'release-prepare-tag',
+            owner: 'release:cut:prepare-tag',
+            admissionClass: 'process',
+            demand: { cpuWeight: 1, memoryBytes: 512 * 1024 * 1024, fileDescriptors: 3 },
+            payloadRef: `release:cut:prepare-tag:${args.version}:${channel}`,
+            metadata: { version: args.version, channel },
+          },
+          async () => String(
+            execFileSync(path.join(selected.desktopRoot, 'bin', 'release-local.sh'), [args.version, channel], {
+              cwd: selected.desktopRoot,
+              encoding: 'utf8',
+              timeout: 120_000,
+              maxBuffer: 4 * 1024 * 1024,
+              env: {
+                ...process.env,
+                PAPERCUSP_RELEASE_PREPARE_TAG_SHA: args.sourceSha,
+                PAPERCUSP_RELEASE_PREPARE_TAG_CONFIRM: '1',
+              },
+            }),
+          ).trim(),
+        );
       } catch (err) {
         const reason = `prepare_tag_failed — ${err instanceof Error ? err.message : String(err)}`;
         const { ownerLabel } = readIdentity(ctx);

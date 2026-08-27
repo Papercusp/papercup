@@ -110,7 +110,7 @@ import mugEfficiencyTool from './mug_efficiency';
 
 type Tool = {
   args: { safeParse: (x: unknown) => { success: boolean } };
-  handler: (a: unknown, c: unknown) => Promise<{ content: Array<{ text: string }> }>;
+  handler: (a: unknown, c: unknown) => Promise<{ isError?: boolean; content: Array<{ text: string }> }>;
 };
 const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown> =>
   JSON.parse(r.content[0].text);
@@ -396,10 +396,11 @@ describe('pot:declare-wake', () => {
 describe('pot:wake', () => {
   const tool = wakeTool as unknown as Tool;
 
-  it('no resolvable home harness → ok:false, no launch', async () => {
-    const res = parse(await tool.handler({ reason: 'kick' }, ctx()));
-    expect(res.ok).toBe(false);
-    expect(res.error).toBe('no_home_harness');
+  it('no resolvable home harness → fail-loud harness_required envelope, no launch', async () => {
+    const raw = await tool.handler({ reason: 'kick' }, ctx());
+    expect(raw.isError).toBe(true);
+    const res = parse(raw);
+    expect(res).toMatchObject({ error: 'harness_required', tool: 'pot:wake' });
     expect(fireLaunchBlueprint).not.toHaveBeenCalled();
   });
 

@@ -10,8 +10,8 @@
  *    a goal-pot harness AND a goal-member session id is counted ONCE (by the pot
  *    leg), which only real SQL executing the NOT IN exclusion can demonstrate;
  *  - the goal-lifetime lower bound (GREATEST vs goals.created_at) on BOTH legs;
- *  - the metadata merge write: spentCents + source + breakdown land WITHOUT
- *    clobbering unrelated metadata keys, and updated_at is not touched;
+ *  - the metadata merge write: authoritative spentCents remains exactly the
+ *    goals:pots leg while session attribution stays diagnostic-only;
  *  - the sweep's scope: ACTIVE goals only, flag-gated per tick.
  *
  * The falsifiability control for the dedup claim is the exact-cents assertion:
@@ -28,7 +28,7 @@ const flagMock = vi.hoisted(() => ({ getFlag: vi.fn(async () => true) }));
 vi.mock('@papercusp/flags/server', () => ({ getFlag: flagMock.getFlag }));
 
 import { computeGoalSpendRollup, runGoalSpendRollupOnce, sessionSpendForGoal } from './spend-rollup';
-import { GOAL_SPEND_TICK_SOURCE } from '@papercusp/db-org';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 import { GOAL_MODE } from '../modes/goal-session';
 
 const WS = 'default';
@@ -254,16 +254,22 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(res).toMatchObject({ ok: true, ran: true, checked: 1, written: 1, errors: [] });
 
     const md = await goalMetadata();
-    expect(md?.spentCents).toBe(205);
-    expect(md?.spentCentsSource).toBe(GOAL_SPEND_TICK_SOURCE);
+    expect(md?.spentCents).toBe(150);
+    expect(md?.spentCentsSource).toBe(GOAL_SPEND_SNAPSHOT_SOURCE);
     expect(typeof md?.spentCentsAt).toBe('string');
     expect(md?.spentCentsBreakdown).toMatchObject({
       potCents: 150,
-      sessionCents: 55,
-      samples: 4,
-      unpricedSamples: 0,
-      sessions: 2,
+      potSamples: 2,
+      potUnpricedSamples: 0,
       measured: true,
+      sessionCents: 55,
+      sessionSamples: 2,
+      sessionUnpricedSamples: 0,
+      sessionMeasured: true,
+      sessionCount: 2,
+      diagnosticTotalCents: 205,
+      diagnosticSamples: 4,
+      diagnosticUnpricedSamples: 0,
     });
     expect(md?.killCriterion).toBe('$5 spent'); // merge, not clobber
 
@@ -291,7 +297,52 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(res.written).toBe(1);
     const md = await goalMetadata();
     expect(md?.spentCents).toBe(0);
-    expect(md?.spentCentsBreakdown).toMatchObject({ samples: 0, measured: false });
+    expect(md?.spentCentsBreakdown).toMatchObject({
+      potSamples: 0,
+      measured: false,
+      diagnosticSamples: 0,
+    });
+  });
+
+  it('keeps session estimates diagnostic: they cannot overwrite a verified pots snapshot or auto-kill', async () => {
+    await seedGoal({
+      budgetCents: 200,
+      metadata: {
+        spentCents: 150,
+        spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE,
+        spentCentsAt: '2026-08-27T22:30:00.000Z',
+      },
+    });
+    await pot('hive-a');
+    await sample({ harness: 'hive-a', usd: 1.5 }); // authoritative goals:pots = 150c
+    await subjectOwner('su-subject');
+    await ownedSession('su-subject', 'S-estimate');
+    await sample({ session: 'S-estimate', usd: 10 }); // diagnostic estimate
+    await sample({ session: 'S-estimate', usd: null }); // makes only that estimate unmeasured
+    await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 2, unit: 'usd' }]);
+
+    const res = await runGoalSpendRollupOnce(rootSql);
+    expect(res).toMatchObject({ ok: true, written: 1, tripwiresAdvanced: 1, errors: [] });
+
+    const md = await goalMetadata();
+    expect(md).toMatchObject({
+      spentCents: 150,
+      spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE,
+      spentCentsBreakdown: {
+        potCents: 150,
+        measured: true,
+        sessionCents: 1000,
+        sessionUnpricedSamples: 1,
+        sessionMeasured: false,
+        diagnosticTotalCents: 1150,
+        diagnosticUnpricedSamples: 1,
+      },
+    });
+    const rows = await rootSql<Array<{ status: string }>>`
+      SELECT status FROM harness_shared.goals WHERE id = ${GOAL} AND workspace_id = ${WS}`;
+    expect(rows[0]?.status).toBe('active');
+    expect((await goalTripwires())?.[0]?.current).toBe(1.5);
+    expect(md?.autoKilled).toBeUndefined();
   });
 
   /* ── P-004: the measured number reaches the tripwire ─────────────────────── */
@@ -319,8 +370,9 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
     expect(res).toMatchObject({ ok: true, tripwiresAdvanced: 1, errors: [] });
 
     const tw = await goalTripwires();
-    // 205 cents measured => $2.05, carried onto the tripwire that governs it.
-    expect(tw?.find((t) => t.metric === 'spend_usd')?.current).toBe(2.05);
+    // Only authoritative goals:pots spend (150c) reaches the tripwire; the
+    // diagnostic 55c session estimate cannot govern the goal.
+    expect(tw?.find((t) => t.metric === 'spend_usd')?.current).toBe(1.5);
     // The domain metric only its executor can score is untouched — no invented value.
     expect(tw?.find((t) => t.metric === 'hours_since_verdict_advance')).toEqual({
       metric: 'hours_since_verdict_advance',
@@ -457,7 +509,7 @@ describe('goal spend rollup (P-005 / D-003) — real PG', () => {
 
   it('kills an active goal when a measured structured tripwire breaches', async () => {
     await seedPartitionFixture();
-    await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 2, unit: 'usd' }]);
+    await setTripwires([{ metric: 'spend_usd', label: 'spend', threshold: 1.5, unit: 'usd' }]);
 
     const res = await runGoalSpendRollupOnce(rootSql);
     expect(res).toMatchObject({ ok: true, written: 1, tripwiresAdvanced: 1, errors: [] });

@@ -5,16 +5,17 @@
  * THIS suite pins the live wiring around them:
  *
  *   - P-009/P-006 lock discipline (git-sync-any-hive: PER-SLUG resources): the
- *     tick acquires `git-sync:<slug>` (auto-registered in the same txn) plus the
- *     routine's `trigger_config.extra_lock_resources` (papercup: the legacy
- *     `git-sync` + `libs-papercusp-submodule` back-off names). Peer-held lock →
- *     skip the tick (back-pressure, partial acquisitions released); exhausted
- *     workspace contention → skip after bounded retry; an UNKNOWN extra name →
- *     skip with a loud log (never auto-registered); lock INFRA error → proceed
- *     UNLOCKED (fail-open); every fire uses a distinct lock
- *     owner so cron/manual fires cannot coalesce; long runs refresh every held
- *     lease before its TTL; locks released after the run — success, error, and
- *     throw.
+ *     tick acquires shared `git-sync` (the workspace-wide restart barrier), then
+ *     `git-sync:<slug>` (auto-registered in the same txn) plus the routine's
+ *     `trigger_config.extra_lock_resources` (papercup: the legacy `git-sync` +
+ *     `libs-papercusp-submodule` back-off names; the legacy global name is
+ *     filtered from the exclusive extras). Peer-held lock → skip the tick
+ *     (back-pressure, partial acquisitions released); exhausted workspace
+ *     contention → skip after bounded retry; an UNKNOWN extra name → skip with
+ *     a loud log (never auto-registered); lock INFRA error → proceed UNLOCKED
+ *     (fail-open); every fire uses a distinct lock owner so cron/manual fires
+ *     cannot coalesce; long runs refresh every held lease in its mode before its
+ *     TTL; locks released after the run — success, error, and throw.
  *   - P-008 runtime gate (action half): unregistered slug / hive home /
  *     remote-hive view / non-local deployment / vanished or non-git checkout →
  *     no-op with `last_status: 'skipped'` metadata, no locks, no escalation.
@@ -384,6 +385,9 @@ const releasedResources = (): string[] =>
 const acquiredResources = (): string[] =>
   tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { resource: string }).resource);
 
+const acquiredLockModes = (): string[] =>
+  tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { mode: string }).mode);
+
 /** Resource names auto-registered via the in-txn agent_resource_registry INSERT (P-006). */
 const registeredResources = (): string[] =>
   txQueries.filter((q) => q.text.includes('agent_resource_registry')).map((q) => q.values[0] as string);
@@ -662,7 +666,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     await action(ctx);
 
-    expect(acquiredResources()).toEqual(['git-sync:papercup', 'git-sync', 'libs-papercusp-submodule']);
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
     // the routine did NOTHING this tick: no sync, no outcome writes, no pipeline event
     // (the only PG write is the WI-1416 fire_started_at breadcrumb, stamped before locks)
     expect(runGitSyncMock).not.toHaveBeenCalled();
@@ -675,8 +679,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // cannot delete the peer row because tryReleaseResource checks `owner`.
     expect(releasedResources()).toEqual([
       'libs-papercusp-submodule',
-      'git-sync',
       'git-sync:papercup',
+      'git-sync',
     ]);
     expect(log).toHaveBeenCalledWith(expect.stringContaining('a peer holds libs-papercusp-submodule'));
     log.mockRestore();
@@ -729,8 +733,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
       expect(releasedResources()).toEqual([
         'libs-papercusp-submodule',
-        'git-sync',
         'git-sync:papercup',
+        'git-sync',
       ]);
       expect(allRoutinePatches()).toContainEqual(expect.objectContaining({
         last_status: 'skipped',
@@ -793,8 +797,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(sequence).toEqual([
       'peer-held-refusal',
       'released:libs-papercusp-submodule',
-      'released:git-sync',
       'released:git-sync:papercup',
+      'released:git-sync',
     ]);
     expect(peerRowLive).toBe(true);
     expect(emitGitSyncLockRetryEventMock).not.toHaveBeenCalled();
@@ -862,6 +866,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     };
     let terminalOwner = '';
     tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const resource = (opts as { resource: string }).resource;
+      if (resource !== 'git-sync:papercup') return { ok: true };
       terminalOwner = (opts as { owner: string }).owner;
       return { ok: false, reason: 'held_exclusive', holders: [peerHolder] };
     });
@@ -909,7 +915,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect(outcome).toEqual({
         status: 'skipped',
         reason: 'lock_contended',
-        blockedOn: 'git-sync:papercup',
+        blockedOn: 'git-sync',
       });
       expect(tryAcquireResourceMock).toHaveBeenCalledTimes(4); // initial + 3 bounded retries
       expect(runGitSyncMock).not.toHaveBeenCalled();
@@ -925,7 +931,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
   it('proceeds UNLOCKED when the lock infra errors (fail-open) — partials released, no release after the run', async () => {
     tryAcquireResourceMock
-      .mockResolvedValueOnce({ ok: true }) // git-sync:papercup acquires…
+      .mockResolvedValueOnce({ ok: true }) // shared git-sync barrier acquires…
       .mockRejectedValueOnce(new Error('su-lock DB unreachable')); // …then the infra dies
     runGitSyncMock.mockResolvedValue(syncedOutcome);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -939,22 +945,23 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       expect.objectContaining({ kind: 'git_sync', status: 'synced' }));
     // the partial acquisition was released inside acquireLocks; the unlocked run
     // releases nothing afterwards (exactly one release total)
-    expect(releasedResources()).toEqual(['git-sync:papercup']);
+    expect(releasedResources()).toEqual(['git-sync']);
     warn.mockRestore();
   });
 
-  it('acquires the per-slug resource FIRST (auto-registered in-txn), then the configured extras, releasing in reverse order', async () => {
+  it('acquires shared(git-sync) FIRST, then exclusive per-slug/configured resources, releasing in reverse order', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 
     await action(ctx);
 
-    // papercup regression: per-slug name + BOTH legacy back-off names from
-    // extra_lock_resources, all exclusive, same owner/ttl as before
-    expect(acquiredResources()).toEqual(['git-sync:papercup', 'git-sync', 'libs-papercusp-submodule']);
+    // papercup regression: shared restart barrier + per-slug name + the
+    // non-legacy extra. The legacy `git-sync` extra is not acquired twice.
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
+    expect(acquiredLockModes()).toEqual(['shared', 'exclusive', 'exclusive']);
     expect(tryAcquireResourceMock.mock.calls[0][1]).toMatchObject({
       coordinationDomain: 'ws-42',
-      resource: 'git-sync:papercup',
-      mode: 'exclusive',
+      resource: 'git-sync',
+      mode: 'shared',
       ttlSec: 600,
     });
     expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(/^system:git-sync:\d+:[0-9a-f-]+$/);
@@ -963,7 +970,28 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(txQueries.find((q) => q.text.includes('agent_resource_registry'))?.text)
       .toContain('ON CONFLICT (resource) DO NOTHING');
-    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+  });
+
+  it('skips before the per-slug acquire when dev:restart holds the exclusive shared barrier', async () => {
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) =>
+      (opts as { resource: string }).resource === 'git-sync'
+        ? { ok: false, reason: 'exclusive_pending', holders: [] }
+        : { ok: true });
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    try {
+      await action(ctx);
+
+      expect(acquiredResources()).toEqual(['git-sync']);
+      expect(acquiredLockModes()).toEqual(['shared']);
+      expect(tryAcquireResourceMock.mock.calls.some(([, opts]) =>
+        (opts as { resource: string }).resource === 'git-sync:papercup')).toBe(false);
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(releasedResources()).toEqual(['git-sync']);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('retries transient contention while releasing and completes all releases before the committed event', async () => {
@@ -990,16 +1018,16 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(sequence).toEqual([
       'release:libs-papercusp-submodule',
       'release:libs-papercusp-submodule',
-      'release:git-sync',
       'release:git-sync:papercup',
+      'release:git-sync',
       'committed-event',
     ]);
     expect(tryReleaseResourceMock).toHaveBeenCalledTimes(4);
     expect(releasedResources()).toEqual([
       'libs-papercusp-submodule',
       'libs-papercusp-submodule',
-      'git-sync',
       'git-sync:papercup',
+      'git-sync',
     ]);
   });
 
@@ -1113,7 +1141,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       lockId: 'stale-lock-1',
     });
     expect(runGitSyncMock).toHaveBeenCalledOnce();
-    expect(acquiredResources()).toEqual(['git-sync:papercup', 'git-sync:papercup', 'git-sync', 'libs-papercusp-submodule']);
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'git-sync:papercup', 'libs-papercusp-submodule']);
   });
 
   it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {
@@ -1155,7 +1183,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       const running = action(ctx);
       await runStartedPromise;
 
-      const initialResources = ['git-sync:papercup', 'git-sync', 'libs-papercusp-submodule'];
+      const initialResources = ['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule'];
       expect(acquiredResources()).toEqual(initialResources);
       const initialOwner = (tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner;
 
@@ -1166,12 +1194,9 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
       expect(acquiredResources()).toEqual([...initialResources, ...initialResources]);
       for (const [, opts] of tryAcquireResourceMock.mock.calls.slice(3)) {
-        expect(opts).toMatchObject({
-          owner: initialOwner,
-          mode: 'exclusive',
-          ttlSec: 600,
-        });
+        expect(opts).toMatchObject({ owner: initialOwner, ttlSec: 600 });
       }
+      expect(acquiredLockModes().slice(3)).toEqual(['shared', 'exclusive', 'exclusive']);
 
       finishRun();
       await running;
@@ -1206,13 +1231,15 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       runGitSyncMock.mockResolvedValue(syncedOutcome);
       await action(ctx);
 
-      const acquiredDomain = (tryAcquireResourceMock.mock.calls[0][1] as { coordinationDomain: string })
-        .coordinationDomain;
+      const acquiredDomain = (tryAcquireResourceMock.mock.calls.find(
+        ([, opts]) => (opts as { resource: string }).resource === 'git-sync:papercup',
+      )?.[1] as { coordinationDomain: string }).coordinationDomain;
       expect(acquiredDomain).toBe('ws-42');
       // The exact invariant an su's locks:acquire_resource relies on: resolving
       // the SAME resource name through coordination-domain.ts's own logic must
       // land in the domain the routine actually acquired under.
       expect(resourceLockDomain('git-sync:papercup')).toBe(acquiredDomain);
+      expect(resourceLockDomain('git-sync')).toBe(acquiredDomain);
       expect(workspaceScopedLockDomain()).toBe(acquiredDomain);
     } finally {
       if (savedEnv === undefined) delete process.env.PAPERCUSP_WORKSPACE_ID;
@@ -1220,16 +1247,17 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
-  it('a harness with NO extra_lock_resources acquires only its own per-slug resource', async () => {
+  it('a harness with NO extra_lock_resources acquires the shared barrier and its own per-slug resource', async () => {
     registryProjects = [{ slug: 'otherapp', path: repoDir }];
     runGitSyncMock.mockResolvedValue({ status: 'nothing', dirtyPathCount: 0, committedCount: 0, oversized: [], contentErrors: [], strandedSubmodules: [] });
 
     await action({ ...ctx, installSlug: 'otherapp', triggerConfig: {} });
 
-    expect(acquiredResources()).toEqual(['git-sync:otherapp']);
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:otherapp']);
+    expect(acquiredLockModes()).toEqual(['shared', 'exclusive']);
     expect(registeredResources()).toEqual(['git-sync:otherapp']);
     expect(runGitSyncMock).toHaveBeenCalledTimes(1);
-    expect(releasedResources()).toEqual(['git-sync:otherapp']);
+    expect(releasedResources()).toEqual(['git-sync:otherapp', 'git-sync']);
   });
 
   it('an UNKNOWN extra lock resource SKIPS the tick with a loud warning — and is never auto-registered', async () => {
@@ -1249,8 +1277,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('"my-deploy-lock" is not registered'));
     // The unknown name cannot have produced a lease, but the terminal-skip
     // cleanup still issues the same owner-scoped no-op release before unwinding
-    // the already-held per-slug resource.
-    expect(releasedResources()).toEqual(['my-deploy-lock', 'git-sync:papercup']);
+    // the already-held per-slug and shared-barrier resources.
+    expect(releasedResources()).toEqual(['my-deploy-lock', 'git-sync:papercup', 'git-sync']);
     warn.mockRestore();
   });
 
@@ -1259,7 +1287,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     await expect(action(ctx)).rejects.toThrow('git exploded');
 
-    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
+    expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
     // nothing past the run executed
     expect(routinePatches()).toEqual([]);
     expect(appendPipelineEventMock).not.toHaveBeenCalled();
@@ -1275,8 +1303,8 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     expect(runGitSyncMock).not.toHaveBeenCalled();
     expect(releasedResources()).toEqual([
       'libs-papercusp-submodule',
-      'git-sync',
       'git-sync:papercup',
+      'git-sync',
     ]);
     expect(gitSyncActivityPatches().slice(-1)[0]).toMatchObject({
       active: false,

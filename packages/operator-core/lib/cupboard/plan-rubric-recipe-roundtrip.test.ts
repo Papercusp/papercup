@@ -20,6 +20,7 @@ const external = vi.hoisted(() => ({
   publishListingToCupboard: vi.fn(),
   parseGithubRemote: vi.fn(),
   fetchGithubRepoMeta: vi.fn(),
+  getRubric: vi.fn(),
 }));
 
 vi.mock('./publish-listing', () => ({
@@ -29,6 +30,11 @@ vi.mock('./publish-listing', () => ({
 vi.mock('./resolve-repo-coords', () => ({
   parseGithubRemote: external.parseGithubRemote,
   fetchGithubRepoMeta: external.fetchGithubRepoMeta,
+}));
+
+vi.mock('../rubrics', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getRubric: external.getRubric,
 }));
 
 import { publishRubricToCupboard } from './publish-rubric-core';
@@ -198,6 +204,8 @@ beforeEach(async () => {
     id: 4242,
     html_url: GITHUB_URL,
   });
+  external.getRubric.mockReset();
+  external.getRubric.mockResolvedValue({ status: 'active', ratifiedBy: 'reviewer@example.com' });
 });
 
 afterEach(async () => {
@@ -224,6 +232,36 @@ describe('rubric Cupboard round trip', () => {
         title: 'Rubric publish-rubric',
       }),
     );
+  });
+
+  it('refuses to publish when the authoritative rubric source is missing', async () => {
+    external.getRubric.mockResolvedValue(null);
+
+    const result = await publishRubricToCupboard({ ref: 'missing-rubric', github_url: GITHUB_URL });
+
+    expect(result).toMatchObject({ ok: false, status: 404, error: 'rubric "missing-rubric" not found' });
+    expect(external.fetchGithubRepoMeta).not.toHaveBeenCalled();
+    expect(external.publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('refuses to publish an inactive authoritative rubric', async () => {
+    external.getRubric.mockResolvedValue({ status: 'proposed', ratifiedBy: 'reviewer@example.com' });
+
+    const result = await publishRubricToCupboard({ ref: 'proposed-rubric', github_url: GITHUB_URL });
+
+    expect(result).toMatchObject({ ok: false, status: 409, error: 'rubric "proposed-rubric" is not active' });
+    expect(external.fetchGithubRepoMeta).not.toHaveBeenCalled();
+    expect(external.publishListingToCupboard).not.toHaveBeenCalled();
+  });
+
+  it('refuses to publish an active rubric without ratification', async () => {
+    external.getRubric.mockResolvedValue({ status: 'active', ratifiedBy: '  ' });
+
+    const result = await publishRubricToCupboard({ ref: 'unratified-rubric', github_url: GITHUB_URL });
+
+    expect(result).toMatchObject({ ok: false, status: 409, error: 'rubric "unratified-rubric" is not ratified' });
+    expect(external.fetchGithubRepoMeta).not.toHaveBeenCalled();
+    expect(external.publishListingToCupboard).not.toHaveBeenCalled();
   });
 
   it('installs and resolves a rubric self-describing directory', async () => {

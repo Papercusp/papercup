@@ -79,6 +79,30 @@ describe('mergeDistilledRuns', () => {
     expect(merged.failures[0]!.file).toContain('launch-su.test.ts');
   });
 
+  it('preserves structured actual/expected details while merging groups', () => {
+    const merged = mergeDistilledRuns([
+      run({
+        failed: 1,
+        files: 1,
+        failures: [{
+          file: 'a.test.ts',
+          test: 'object diff',
+          message: 'elided diff',
+          actual: '{ service_select: false }',
+          expected: '{ service_select: true }',
+        }],
+      }),
+    ]);
+
+    expect(merged.failures[0]).toEqual({
+      file: 'a.test.ts',
+      test: 'object diff',
+      message: 'elided diff',
+      actual: '{ service_select: false }',
+      expected: '{ service_select: true }',
+    });
+  });
+
   it('order does not matter — a red group LAST is reported the same as a red group FIRST', () => {
     // The old bug was last-writer-wins, so group order silently decided the verdict.
     const red = run({ failed: 1, files: 1, failures: [{ file: 'a.test.ts', test: 't', message: 'm' }] });
