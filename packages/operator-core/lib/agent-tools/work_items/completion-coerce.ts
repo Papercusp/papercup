@@ -75,8 +75,16 @@ export const COMPLETION_FIELDS: readonly string[] = [
  * EI-21582975345203826: `checkpointChecksCarried` is folded into persisted
  * `_completionEvidence` immediately before terminal checkpoint cleanup, so it can
  * appear in `terminalCompletionEvidence` even though it is not a completion input.
+ * EI-21599866958764530: `treeStamp` and `settlementManifest` are also server-generated
+ * fields that can come back in terminal evidence. Strip them at the root so a
+ * work_items:get → work_items:complete retry does not reject its own read-side shape;
+ * complete.ts observes and writes a fresh stamp for the retry.
  */
-const SERVER_GENERATED_COMPLETION_FIELDS = ['checkpointChecksCarried'] as const;
+const SERVER_GENERATED_COMPLETION_FIELDS = [
+  'checkpointChecksCarried',
+  'treeStamp',
+  'settlementManifest',
+] as const;
 
 /** Exact object-form example shared by the schema error and the tool guidance. */
 export const COMPLETION_OBJECT_EXAMPLE =
