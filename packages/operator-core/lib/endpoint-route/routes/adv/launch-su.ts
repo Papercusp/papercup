@@ -352,7 +352,6 @@ const launchSu = defineTool({
       const label = plan ? `${agent} · ${plan}` : agent;
       const advSessionId = await recordAdvSession({
         planSlug: plan,
-        ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
         agent,
         // P-006: record the planner role so BOTH classifiers (pending-launch
         // argv hint + the live presence join on adv.role) type the pane.
@@ -382,6 +381,7 @@ const launchSu = defineTool({
         agent,
         harnessSlug: harness,
         planSlug: plan,
+        ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
       });
     }
 

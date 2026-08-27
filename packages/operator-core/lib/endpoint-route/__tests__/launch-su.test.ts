@@ -443,6 +443,23 @@ describe('launch-su', () => {
     });
   });
 
+  it('signals the same normalization on a deferred launch and persists only trimmed argv', async () => {
+    const res = await callPost({
+      agent: 'claude',
+      harness_slug: 'papercup',
+      context_size: 'full',
+      defer_spawn: true,
+    });
+    expect(await res.json()).toMatchObject({
+      status: 'ok',
+      deferred: true,
+      contextSizeNormalization: { requested: 'full', effective: 'trimmed', deprecated: true },
+    });
+    const recorded = recordAdvSessionMock.mock.calls.at(-1)?.[0] as { launchArgv?: string[] };
+    expect(recorded.launchArgv).toContain('--context-size=trimmed');
+    expect(recorded.launchArgv).not.toContain('--context-size=full');
+  });
+
   it('uses the canonical trimmed context when context_size is absent or empty', async () => {
     await callPost({ agent: 'claude', harness_slug: 'papercup' });
     expect(lastOneliner()).toContain('--context-size=trimmed');

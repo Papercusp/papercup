@@ -34,7 +34,9 @@ const cleanups: Array<() => void | Promise<void>> = [];
 
 afterEach(async () => {
   while (cleanups.length) {
-    try { await cleanups.pop()!(); } catch {}
+    try {
+      await cleanups.pop()!();
+    } catch {}
   }
   _resetCacheForTests();
   _clearRegistryForTests();
@@ -43,7 +45,11 @@ afterEach(async () => {
 
 function tmpDir(prefix: string): string {
   const dir = mkdtempSync(join(tmpdir(), prefix));
-  cleanups.push(() => { try { rmSync(dir, { recursive: true, force: true }); } catch {} });
+  cleanups.push(() => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {}
+  });
   return dir;
 }
 
@@ -53,9 +59,7 @@ async function validAnnounce(
   options: { login?: string; userId?: number; gistId?: string } = {},
 ): Promise<SignedAnnounce> {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-  const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
-    .subarray(-32)
-    .toString('base64');
+  const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
   const body = {
     device_pubkey: rawPub,
     github_user_id: options.userId ?? 4242,
@@ -101,6 +105,7 @@ describe('boot pending-retry loop (D-006)', () => {
     };
 
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('mb-pend-retry-'),
       workspaceId: 'ws-pend-1',
       harnessSlug: 'pend-1',
@@ -133,9 +138,7 @@ describe('boot pending-retry loop (D-006)', () => {
     // Drive exactly one retry pass: the binding now answers 'verified'.
     await retryTimer.run();
     expect(callCount).toBeGreaterThan(1);
-    expect(handle.admitted.has(logCoreKey), 'peer should be admitted after pending-retry').toBe(
-      true,
-    );
+    expect(handle.admitted.has(logCoreKey), 'peer should be admitted after pending-retry').toBe(true);
 
     // Verify the announce_admitted boot-history event was recorded.
     const admittedEvents = listBootHistory({
@@ -161,6 +164,7 @@ describe('boot pending-retry loop (D-006)', () => {
     };
 
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('mb-pend-batch-'),
       workspaceId: 'ws-pend-batch',
       harnessSlug: 'pend-batch',
@@ -216,6 +220,7 @@ describe('boot pending-retry loop (D-006)', () => {
       };
 
       const handle = await bootHarnessSubstrate({
+        rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
         workspaceRoot: tmpDir('mb-pend-batch-throw-'),
         workspaceId: 'ws-pend-batch-throw',
         harnessSlug: 'pend-batch-throw',
@@ -266,6 +271,7 @@ describe('boot pending-retry loop (D-006)', () => {
     };
 
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('mb-pend-fail-'),
       workspaceId: 'ws-pend-2',
       harnessSlug: 'pend-2',
@@ -305,59 +311,58 @@ describe('boot pending-retry loop (D-006)', () => {
     expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
   });
 
-  it(
-    'verifyAnnounce: a stale frame (ts 6 min old) passes when nowMs is anchored to arrival time',
-    async () => {
-      // Unit-level regression test for the fix in the pending-retry loop.
-      //
-      // The fix changes the retry call from:
-      //   verifyAnnounce(entry.frame)               ← uses Date.now() as nowMs
-      // to:
-      //   verifyAnnounce(entry.frame, { nowMs: entry.since })  ← anchored to arrival
-      //
-      // This test verifies the semantics that the fix relies on:
-      //   (a) verifyAnnounce(frame) returns false when 6 min have elapsed (stale clock)
-      //   (b) verifyAnnounce(frame, { nowMs: frame.ts }) returns true (arrival-anchored)
-      //
-      // Together these prove that passing { nowMs: entry.since } (where entry.since ≈
-      // frame.ts at arrival time) is what makes the pending-retry robust across the
-      // full 30-min BOOT_PENDING_GRACE_MS window. The bug caused (b) to use (a)'s
-      // semantics, so any peer pending >5 min was conclusively rejected as bad_sig.
-      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-      const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
-        .subarray(-32)
-        .toString('base64');
+  it('verifyAnnounce: a stale frame (ts 6 min old) passes when nowMs is anchored to arrival time', async () => {
+    // Unit-level regression test for the fix in the pending-retry loop.
+    //
+    // The fix changes the retry call from:
+    //   verifyAnnounce(entry.frame)               ← uses Date.now() as nowMs
+    // to:
+    //   verifyAnnounce(entry.frame, { nowMs: entry.since })  ← anchored to arrival
+    //
+    // This test verifies the semantics that the fix relies on:
+    //   (a) verifyAnnounce(frame) returns false when 6 min have elapsed (stale clock)
+    //   (b) verifyAnnounce(frame, { nowMs: frame.ts }) returns true (arrival-anchored)
+    //
+    // Together these prove that passing { nowMs: entry.since } (where entry.since ≈
+    // frame.ts at arrival time) is what makes the pending-retry robust across the
+    // full 30-min BOOT_PENDING_GRACE_MS window. The bug caused (b) to use (a)'s
+    // semantics, so any peer pending >5 min was conclusively rejected as bad_sig.
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
 
-      // Build announce with ts anchored to exactly 6 minutes ago (past the 5-min window).
-      const arrivalMs = Date.now();
-      const staleTs = arrivalMs - DEFAULT_ANNOUNCE_WINDOW_MS - 60_000; // 6 min before now
-      const frame = await buildAnnounce(
-        { device_pubkey: rawPub, github_user_id: 1, github_login: 'alice', attestation_gist_id: 'gist-test', log_core_key: 'dd'.repeat(32) },
-        async (bytes) => nodeSign(null, bytes, privateKey),
-        { nowMs: staleTs },
-      );
+    // Build announce with ts anchored to exactly 6 minutes ago (past the 5-min window).
+    const arrivalMs = Date.now();
+    const staleTs = arrivalMs - DEFAULT_ANNOUNCE_WINDOW_MS - 60_000; // 6 min before now
+    const frame = await buildAnnounce(
+      {
+        device_pubkey: rawPub,
+        github_user_id: 1,
+        github_login: 'alice',
+        attestation_gist_id: 'gist-test',
+        log_core_key: 'dd'.repeat(32),
+      },
+      async (bytes) => nodeSign(null, bytes, privateKey),
+      { nowMs: staleTs },
+    );
 
-      // (a) Without nowMs override → stale relative to Date.now() → false.
-      // This is what the bugged code did at retry time.
-      expect(verifyAnnounce(frame), 'should be false against live clock (6 min stale)').toBe(false);
+    // (a) Without nowMs override → stale relative to Date.now() → false.
+    // This is what the bugged code did at retry time.
+    expect(verifyAnnounce(frame), 'should be false against live clock (6 min stale)').toBe(false);
 
-      // (b) With nowMs = frame.ts (simulating entry.since ≈ ts at arrival) → fresh → true.
-      // This is what the fix does: { nowMs: entry.since }, where entry.since ≈ frame.ts.
-      expect(
-        verifyAnnounce(frame, { nowMs: frame.ts }),
-        'should be true when nowMs is anchored to arrival time',
-      ).toBe(true);
+    // (b) With nowMs = frame.ts (simulating entry.since ≈ ts at arrival) → fresh → true.
+    // This is what the fix does: { nowMs: entry.since }, where entry.since ≈ frame.ts.
+    expect(verifyAnnounce(frame, { nowMs: frame.ts }), 'should be true when nowMs is anchored to arrival time').toBe(
+      true,
+    );
 
-      // Also verify that nowMs = arrivalMs (the actual Date.now() at arrival moment) passes,
-      // since entry.since = Date.now() at the moment pendingPeers.set() is called, and
-      // frame.ts is set from opts.nowMs during buildAnnounce. Both are ≈ the arrival epoch.
-      // Here staleTs === frame.ts, so we test both the same value and a value within window.
-      expect(
-        verifyAnnounce(frame, { nowMs: staleTs + 1 }),
-        'should be true when nowMs is within window of ts',
-      ).toBe(true);
-    },
-  );
+    // Also verify that nowMs = arrivalMs (the actual Date.now() at arrival moment) passes,
+    // since entry.since = Date.now() at the moment pendingPeers.set() is called, and
+    // frame.ts is set from opts.nowMs during buildAnnounce. Both are ≈ the arrival epoch.
+    // Here staleTs === frame.ts, so we test both the same value and a value within window.
+    expect(verifyAnnounce(frame, { nowMs: staleTs + 1 }), 'should be true when nowMs is within window of ts').toBe(
+      true,
+    );
+  });
 
   // WI-759 root cause (traced 2026-07-02): this case boots a REAL Hypercore
   // substrate (corestore disk I/O + mergeNow/raceWithTimeout) under fake
@@ -379,108 +384,30 @@ describe('boot pending-retry loop (D-006)', () => {
   // transient real-I/O hiccup on one attempt doesn't redden a test whose
   // actual subject (freshness-anchoring across the 30-min grace window) is
   // unaffected by it.
-  it(
-    'pending-retry admits a peer whose announce was built >5 min before retry fires (behavioral)',
-    async () => {
-      // Behavioral regression test: a peer that stays in 'pending' while the live
-      // clock advances past DEFAULT_ANNOUNCE_WINDOW_MS must still be admitted when
-      // the binding flips. This uses fake timers to control Date.now() so the retry
-      // tick observes a 6-minute-old announce.
-      //
-      // The fix under test: verifyAnnounce(entry.frame, { nowMs: entry.since })
-      // anchors freshness to the arrival time stored in pendingPeers, not the
-      // current wall-clock. Without the fix, sigValid=false at retry time → bad_sig
-      // → conclusive reject; with the fix, sigValid=true → binding checked →
-      // admitted.
-      //
-      // Timer note: vi.advanceTimersByTimeAsync fires setInterval callbacks and
-      // also lets the async I/O inside admitPeer (Hypercore core.ready / mergeNow)
-      // run via the microtask queue. We advance past the raceWithTimeout(5000)
-      // inside mergeNow to let the merge complete even without a network peer.
+  it('pending-retry admits a peer whose announce was built >5 min before retry fires (behavioral)', async () => {
+    // Behavioral regression test: a peer that stays in 'pending' while the live
+    // clock advances past DEFAULT_ANNOUNCE_WINDOW_MS must still be admitted when
+    // the binding flips. This uses fake timers to control Date.now() so the retry
+    // tick observes a 6-minute-old announce.
+    //
+    // The fix under test: verifyAnnounce(entry.frame, { nowMs: entry.since })
+    // anchors freshness to the arrival time stored in pendingPeers, not the
+    // current wall-clock. Without the fix, sigValid=false at retry time → bad_sig
+    // → conclusive reject; with the fix, sigValid=true → binding checked →
+    // admitted.
+    //
+    // Timer note: vi.advanceTimersByTimeAsync fires setInterval callbacks and
+    // also lets the async I/O inside admitPeer (Hypercore core.ready / mergeNow)
+    // run via the microtask queue. We advance past the raceWithTimeout(5000)
+    // inside mergeNow to let the merge complete even without a network peer.
 
-      vi.useFakeTimers({ toFake: ['Date'] });
-      // Suppress console.error for this test only: a real-I/O hiccup in
-      // openRemoteLog under shared-box load logs a WARNING (boot.ts:1451) that
-      // the production retry loop already recovers from on the next tick — it
-      // is not a genuine test failure and must not trip vitest-fail-on-console.
-      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-      try {
-        const retryTimer = capturePendingRetryTimer();
-        let callCount = 0;
-        const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
-          callCount++;
-          return callCount === 1 ? 'pending' : 'verified';
-        };
-
-        const handle = await bootHarnessSubstrate({
-          workspaceRoot: tmpDir('mb-pend-stale2-'),
-          workspaceId: 'ws-pend-stale2',
-          harnessSlug: 'pend-stale2',
-          mergePollMs: 0,
-          pendingRetryMs: 50,
-          pendingRetrySetTimeout: retryTimer.setTimeout,
-          pendingRetryClearTimeout: retryTimer.clearTimeout,
-          loadRevokedOverride: async () => new Set(), // fake-timer safety: avoids real PG loader
-          verifyBindingOverride,
-        });
-        cleanups.push(() => handle.close());
-
-        const logCoreKey = 'ee'.repeat(32);
-        // Build announce at fake T=0. Both frame.ts and entry.since will be T.
-        const frame = await validAnnounce(logCoreKey);
-
-        // First announce: pending.
-        const decision = await handle.onAnnounce(frame);
-        expect(decision).toEqual({ admit: false, reason: 'pending' });
-
-        // Advance fake clock by 6 minutes (> DEFAULT_ANNOUNCE_WINDOW_MS 5 min).
-        // Then advance past pendingRetryMs (50ms) to fire the retry tick.
-        // Also advance past DEFAULT_GET_TIMEOUT_MS (5000ms) to let raceWithTimeout
-        // inside mergeNow complete so admitPeer can finish.
-        vi.setSystemTime(Date.now() + 6 * 60 * 1000 + 50);
-
-        // Drive up to a few retry ticks: on a loaded box a single attempt can
-        // hit a transient real-corestore I/O failure (openRemoteLog throws,
-        // re-buffers into pendingPeers — the production self-heal); the next
-        // tick retries the SAME frame (freshness is still anchored to
-        // entry.since, so it never goes stale across attempts). This mirrors
-        // how the real pendingRetryMs loop behaves in production — it does
-        // not require every single tick to succeed, only eventual admission
-        // inside BOOT_PENDING_GRACE_MS.
-        for (let attempt = 0; attempt < 5 && !handle.admitted.has(logCoreKey); attempt++) {
-          await retryTimer.run();
-        }
-
-        // With the fix: verifyAnnounce(entry.frame, { nowMs: entry.since=T }) → pass
-        // → binding 'verified' → admitPeer → admitted.set(logCoreKey, ...).
-        // With the bug: verifyAnnounce(entry.frame) nowMs=T+6min → stale → sigValid=false
-        // → bad_sig → deleted from pendingPeers → never admitted.
-        expect(
-          handle.admitted.has(logCoreKey),
-          'peer should be admitted even after 6 min elapsed since announce',
-        ).toBe(true);
-
-        // No rejection event should be recorded.
-        const rejected = listBootHistory({
-          workspaceId: 'ws-pend-stale2',
-          harnessSlug: 'pend-stale2',
-          kinds: ['announce_rejected'],
-          limit: 5,
-        });
-        expect(rejected).toHaveLength(0);
-      } finally {
-        errSpy.mockRestore();
-        vi.useRealTimers();
-      }
-    },
-    15000,
-  );
-
-  it(
-    'revocation removes a pending peer — it is never retried',
-    async () => {
-      // Always returns 'pending' — the peer would never flip, but revocation
-      // should remove it from the pending set before any retry admits it.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    // Suppress console.error for this test only: a real-I/O hiccup in
+    // openRemoteLog under shared-box load logs a WARNING (boot.ts:1451) that
+    // the production retry loop already recovers from on the next tick — it
+    // is not a genuine test failure and must not trip vitest-fail-on-console.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
       const retryTimer = capturePendingRetryTimer();
       let callCount = 0;
       const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
@@ -489,50 +416,125 @@ describe('boot pending-retry loop (D-006)', () => {
       };
 
       const handle = await bootHarnessSubstrate({
-        workspaceRoot: tmpDir('mb-pend-revoke-'),
-        workspaceId: 'ws-pend-3',
-        harnessSlug: 'pend-3',
+        rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+        workspaceRoot: tmpDir('mb-pend-stale2-'),
+        workspaceId: 'ws-pend-stale2',
+        harnessSlug: 'pend-stale2',
         mergePollMs: 0,
         pendingRetryMs: 50,
         pendingRetrySetTimeout: retryTimer.setTimeout,
         pendingRetryClearTimeout: retryTimer.clearTimeout,
-        loadRevokedOverride: async () => new Set(), // avoid real PG in tests
+        loadRevokedOverride: async () => new Set(), // fake-timer safety: avoids real PG loader
         verifyBindingOverride,
       });
       cleanups.push(() => handle.close());
 
-      const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-      const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer)
-        .subarray(-32)
-        .toString('base64');
-      const logCoreKey = 'cc'.repeat(32);
-      const frame = await buildAnnounce(
-        { device_pubkey: rawPub, github_user_id: 99, github_login: 'carol', attestation_gist_id: 'gist-test', log_core_key: logCoreKey },
-        async (bytes) => nodeSign(null, bytes, privateKey),
+      const logCoreKey = 'ee'.repeat(32);
+      // Build announce at fake T=0. Both frame.ts and entry.since will be T.
+      const frame = await validAnnounce(logCoreKey);
+
+      // First announce: pending.
+      const decision = await handle.onAnnounce(frame);
+      expect(decision).toEqual({ admit: false, reason: 'pending' });
+
+      // Advance fake clock by 6 minutes (> DEFAULT_ANNOUNCE_WINDOW_MS 5 min).
+      // Then advance past pendingRetryMs (50ms) to fire the retry tick.
+      // Also advance past DEFAULT_GET_TIMEOUT_MS (5000ms) to let raceWithTimeout
+      // inside mergeNow complete so admitPeer can finish.
+      vi.setSystemTime(Date.now() + 6 * 60 * 1000 + 50);
+
+      // Drive up to a few retry ticks: on a loaded box a single attempt can
+      // hit a transient real-corestore I/O failure (openRemoteLog throws,
+      // re-buffers into pendingPeers — the production self-heal); the next
+      // tick retries the SAME frame (freshness is still anchored to
+      // entry.since, so it never goes stale across attempts). This mirrors
+      // how the real pendingRetryMs loop behaves in production — it does
+      // not require every single tick to succeed, only eventual admission
+      // inside BOOT_PENDING_GRACE_MS.
+      for (let attempt = 0; attempt < 5 && !handle.admitted.has(logCoreKey); attempt++) {
+        await retryTimer.run();
+      }
+
+      // With the fix: verifyAnnounce(entry.frame, { nowMs: entry.since=T }) → pass
+      // → binding 'verified' → admitPeer → admitted.set(logCoreKey, ...).
+      // With the bug: verifyAnnounce(entry.frame) nowMs=T+6min → stale → sigValid=false
+      // → bad_sig → deleted from pendingPeers → never admitted.
+      expect(handle.admitted.has(logCoreKey), 'peer should be admitted even after 6 min elapsed since announce').toBe(
+        true,
       );
 
-      // Announce lands as pending.
-      await handle.onAnnounce(frame);
-      expect(handle.admitted.has(logCoreKey)).toBe(false);
+      // No rejection event should be recorded.
+      const rejected = listBootHistory({
+        workspaceId: 'ws-pend-stale2',
+        harnessSlug: 'pend-stale2',
+        kinds: ['announce_rejected'],
+        limit: 5,
+      });
+      expect(rejected).toHaveLength(0);
+    } finally {
+      errSpy.mockRestore();
+      vi.useRealTimers();
+    }
+  }, 15000);
 
-      // Revoke the peer. This should drop it from the pending set.
-      await handle.revoke(rawPub);
+  it('revocation removes a pending peer — it is never retried', async () => {
+    // Always returns 'pending' — the peer would never flip, but revocation
+    // should remove it from the pending set before any retry admits it.
+    const retryTimer = capturePendingRetryTimer();
+    let callCount = 0;
+    const verifyBindingOverride = async (): Promise<'verified' | 'pending' | 'fail'> => {
+      callCount++;
+      return callCount === 1 ? 'pending' : 'verified';
+    };
 
-      // Drive the retry tick directly. If revoke() failed to drop the pending
-      // peer, the second binding check would return verified and admit it.
-      await retryTimer.run();
+    const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: tmpDir('mb-pend-revoke-'),
+      workspaceId: 'ws-pend-3',
+      harnessSlug: 'pend-3',
+      mergePollMs: 0,
+      pendingRetryMs: 50,
+      pendingRetrySetTimeout: retryTimer.setTimeout,
+      pendingRetryClearTimeout: retryTimer.clearTimeout,
+      loadRevokedOverride: async () => new Set(), // avoid real PG in tests
+      verifyBindingOverride,
+    });
+    cleanups.push(() => handle.close());
 
-      // Not admitted after revocation + retry window.
-      expect(handle.admitted.has(logCoreKey)).toBe(false);
-      // Only own log remains.
-      expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
-    },
-    // WI-759: this test's only real work is bootHarnessSubstrate's corestore
-    // init (own-log creation) — cheap in isolation but genuinely load-sensitive
-    // (real fs I/O) on a shared box under concurrent test/agent load, where it
-    // was observed timing out at the old 3000ms. Raised to 10000ms for headroom
-    // (matches the neighboring behavioral test's budget); it still completes in
-    // well under 1s locally.
-    10000,
-  );
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    const rawPub = (publicKey.export({ type: 'spki', format: 'der' }) as Buffer).subarray(-32).toString('base64');
+    const logCoreKey = 'cc'.repeat(32);
+    const frame = await buildAnnounce(
+      {
+        device_pubkey: rawPub,
+        github_user_id: 99,
+        github_login: 'carol',
+        attestation_gist_id: 'gist-test',
+        log_core_key: logCoreKey,
+      },
+      async (bytes) => nodeSign(null, bytes, privateKey),
+    );
+
+    // Announce lands as pending.
+    await handle.onAnnounce(frame);
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
+
+    // Revoke the peer. This should drop it from the pending set.
+    await handle.revoke(rawPub);
+
+    // Drive the retry tick directly. If revoke() failed to drop the pending
+    // peer, the second binding check would return verified and admit it.
+    await retryTimer.run();
+
+    // Not admitted after revocation + retry window.
+    expect(handle.admitted.has(logCoreKey)).toBe(false);
+    // Only own log remains.
+    expect([...handle.admitted.keys()]).toEqual([handle.ownLog.keyHex]);
+  }, // WI-759: this test's only real work is bootHarnessSubstrate's corestore
+  // init (own-log creation) — cheap in isolation but genuinely load-sensitive
+  // (real fs I/O) on a shared box under concurrent test/agent load, where it
+  // was observed timing out at the old 3000ms. Raised to 10000ms for headroom
+  // (matches the neighboring behavioral test's budget); it still completes in
+  // well under 1s locally.
+  10000);
 });

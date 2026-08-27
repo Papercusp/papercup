@@ -122,138 +122,136 @@ async function pollUntil<T>(
 }
 
 describe('Shared Hive federation — two Swarms of one Hive over REAL Hyperswarm (Track A content, P-011)', () => {
-  it(
-    "federates a Hive's content across two Swarms over the HIVE pubkey topic (P-004 re-key)",
-    async () => {
-      const testnet = await createTestnet(3);
-      cleanups.push(async () => {
-        try {
-          await testnet.destroy();
-        } catch {
-          /* ignore */
-        }
-      });
+  it("federates a Hive's content across two Swarms over the HIVE pubkey topic (P-004 re-key)", async () => {
+    const testnet = await createTestnet(3);
+    cleanups.push(async () => {
+      try {
+        await testnet.destroy();
+      } catch {
+        /* ignore */
+      }
+    });
 
-      // The Hive identity: a self-generated raw-32-byte Ed25519 pubkey stands in
-      // for a real Hive entity's keypair (hive-keypair.ts). The topic only hashes
-      // the pubkey string, so any valid pubkey proves the join; both Swarms use
-      // the SAME one → the SAME Hive topic.
-      const hivePubkey = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
-      const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
+    // The Hive identity: a self-generated raw-32-byte Ed25519 pubkey stands in
+    // for a real Hive entity's keypair (hive-keypair.ts). The topic only hashes
+    // the pubkey string, so any valid pubkey proves the join; both Swarms use
+    // the SAME one → the SAME Hive topic.
+    const hivePubkey = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
+    const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
 
-      const workspaceId = 'ws-hive-fed-test';
-      // Two Swarms of one Hive can host DIFFERENT member harnesses; harness_slug
-      // is the within-Hive component demux (D-003), NOT the federation key — so
-      // the peers federate over the Hive topic regardless of their local slug.
-      const harnessSlug = 'acme-rd';
+    const workspaceId = 'ws-hive-fed-test';
+    // Two Swarms of one Hive can host DIFFERENT member harnesses; harness_slug
+    // is the within-Hive component demux (D-003), NOT the federation key — so
+    // the peers federate over the Hive topic regardless of their local slug.
+    const harnessSlug = 'acme-rd';
 
-      const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
-      const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
+    const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
+    const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
 
-      const swarmA = makeSwarm(testnet.bootstrap);
-      const swarmB = makeSwarm(testnet.bootstrap);
+    const swarmA = makeSwarm(testnet.bootstrap);
+    const swarmB = makeSwarm(testnet.bootstrap);
 
-      const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
-      const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
 
-      const rootA = makeWorkspaceRoot('hivefed-A-');
-      const rootB = makeWorkspaceRoot('hivefed-B-');
+    const rootA = makeWorkspaceRoot('hivefed-A-');
+    const rootB = makeWorkspaceRoot('hivefed-B-');
 
-      let handleA: BootedHarnessHandle | undefined;
-      let handleB: BootedHarnessHandle | undefined;
+    let handleA: BootedHarnessHandle | undefined;
+    let handleB: BootedHarnessHandle | undefined;
 
-      handleA = await bootHarnessSubstrate({
-        workspaceRoot: rootA,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmA,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyA,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: idA.override,
-      });
-      cleanups.push(async () => {
-        await handleA?.close();
-        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug });
-      });
+    handleA = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootA,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmA,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyA,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: idA.override,
+    });
+    cleanups.push(async () => {
+      await handleA?.close();
+      await closeHarnessStore({ workspaceRoot: rootA, harnessSlug });
+    });
 
-      handleB = await bootHarnessSubstrate({
-        workspaceRoot: rootB,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmB,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyB,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: idB.override,
-      });
-      cleanups.push(async () => {
-        await handleB?.close();
-        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug });
-      });
+    handleB = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootB,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmB,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyB,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: idB.override,
+    });
+    cleanups.push(async () => {
+      await handleB?.close();
+      await closeHarnessStore({ workspaceRoot: rootB, harnessSlug });
+    });
 
-      // Both joined a swarm, on the SAME topic, and that topic IS the Hive
-      // federation topic (not a per-harness/local topic) — the P-004 re-key.
-      expect(handleA.swarm).not.toBeNull();
-      expect(handleB.swarm).not.toBeNull();
-      expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
-      expect(handleA.swarm!.topicHex).toBe(deriveHiveFederationTopic(hivePubkey).toString('hex'));
+    // Both joined a swarm, on the SAME topic, and that topic IS the Hive
+    // federation topic (not a per-harness/local topic) — the P-004 re-key.
+    expect(handleA.swarm).not.toBeNull();
+    expect(handleB.swarm).not.toBeNull();
+    expect(handleA.swarm!.topicHex).toBe(handleB.swarm!.topicHex);
+    expect(handleA.swarm!.topicHex).toBe(deriveHiveFederationTopic(hivePubkey).toString('hex'));
 
-      // Peer A writes a Hive WORK record + a Hive COORD-content record to its own
-      // log (Track A = the Hive's work + coord content). harness_slug stays the
-      // within-Hive component demux on each row; the topic routes it Hive-wide.
-      await handleA.append({
-        type: 'put',
-        table: 'features_consolidated',
-        hbKey: 'F-hive-fed-1',
-        value: { status: 'todo' },
-        ts: 1000,
-        schema_version: 1,
-        writerPubkey: idA.devicePubkey,
-      });
-      await handleA.append({
-        type: 'put',
-        table: 'messages',
-        hbKey: 'msg-hive-fed-1',
-        value: { body: 'hello from Swarm A' },
-        ts: 1001,
-        schema_version: 1,
-        writerPubkey: idA.devicePubkey,
-      });
+    // Peer A writes a Hive WORK record + a Hive COORD-content record to its own
+    // log (Track A = the Hive's work + coord content). harness_slug stays the
+    // within-Hive component demux on each row; the topic routes it Hive-wide.
+    await handleA.append({
+      type: 'put',
+      table: 'features_consolidated',
+      hbKey: 'F-hive-fed-1',
+      value: { status: 'todo' },
+      ts: 1000,
+      schema_version: 1,
+      writerPubkey: idA.devicePubkey,
+    });
+    await handleA.append({
+      type: 'put',
+      table: 'messages',
+      hbKey: 'msg-hive-fed-1',
+      value: { body: 'hello from Swarm A' },
+      ts: 1001,
+      schema_version: 1,
+      writerPubkey: idA.devicePubkey,
+    });
 
-      // THE PROOF: both records cross to peer B over the real Hyperswarm transport
-      // on the Hive topic — no central coordinator, no hand-piping. Poll B's
-      // mergeNow() until both ops land in its apply sink.
-      const gotWork = await pollUntil(
-        async () => {
-          await handleB!.mergeNow();
-          return applyB.mock.calls.find((c) => c[0].hbKey === 'F-hive-fed-1')?.[0];
-        },
-        { timeoutMs: 20_000, intervalMs: 250 },
-      );
-      const gotCoord = applyB.mock.calls.find((c) => c[0].hbKey === 'msg-hive-fed-1')?.[0];
+    // THE PROOF: both records cross to peer B over the real Hyperswarm transport
+    // on the Hive topic — no central coordinator, no hand-piping. Poll B's
+    // mergeNow() until both ops land in its apply sink.
+    const gotWork = await pollUntil(
+      async () => {
+        await handleB!.mergeNow();
+        return applyB.mock.calls.find((c) => c[0].hbKey === 'F-hive-fed-1')?.[0];
+      },
+      { timeoutMs: 20_000, intervalMs: 250 },
+    );
+    const gotCoord = applyB.mock.calls.find((c) => c[0].hbKey === 'msg-hive-fed-1')?.[0];
 
-      expect(gotWork, "peer B never received peer A's WORK record over the Hive topic").toBeTruthy();
-      expect(gotWork).toMatchObject({
-        table: 'features_consolidated',
-        hbKey: 'F-hive-fed-1',
-        value: { status: 'todo' },
-        writerPubkey: idA.devicePubkey,
-      });
-      expect(gotCoord, "peer B never received peer A's COORD-content record over the Hive topic").toBeTruthy();
-      expect(gotCoord).toMatchObject({ table: 'messages', hbKey: 'msg-hive-fed-1' });
+    expect(gotWork, "peer B never received peer A's WORK record over the Hive topic").toBeTruthy();
+    expect(gotWork).toMatchObject({
+      table: 'features_consolidated',
+      hbKey: 'F-hive-fed-1',
+      value: { status: 'todo' },
+      writerPubkey: idA.devicePubkey,
+    });
+    expect(gotCoord, "peer B never received peer A's COORD-content record over the Hive topic").toBeTruthy();
+    expect(gotCoord).toMatchObject({ table: 'messages', hbKey: 'msg-hive-fed-1' });
 
-      // B admitted A's log over the real wire (announce exchanged + admission passed).
-      expect(handleB.admitted.size).toBeGreaterThanOrEqual(2); // own + A's remote
-    },
-    35_000,
-  );
+    // B admitted A's log over the real wire (announce exchanged + admission passed).
+    expect(handleB.admitted.size).toBeGreaterThanOrEqual(2); // own + A's remote
+  }, 35_000);
 });
 
 /**
@@ -271,117 +269,113 @@ describe('Shared Hive federation — two Swarms of one Hive over REAL Hyperswarm
  * Together they close the cross-Swarm Track B claim.
  */
 describe('Shared Hive federation — Track B presence federates over the Hive topic (P-011, P-008 publisher landed)', () => {
-  it(
-    "federates a Swarm's presence announce (carrying hive_slug) to the other Swarm over the Hive topic",
-    async () => {
-      const testnet = await createTestnet(3);
-      cleanups.push(async () => {
-        try {
-          await testnet.destroy();
-        } catch {
-          /* ignore */
-        }
-      });
+  it("federates a Swarm's presence announce (carrying hive_slug) to the other Swarm over the Hive topic", async () => {
+    const testnet = await createTestnet(3);
+    cleanups.push(async () => {
+      try {
+        await testnet.destroy();
+      } catch {
+        /* ignore */
+      }
+    });
 
-      const hivePubkey = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
-      const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
-      const workspaceId = 'ws-hive-presence-test';
-      const harnessSlug = 'acme-rd';
-      const potSlug = 'acme-hive';
+    const hivePubkey = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
+    const binding = { kind: 'hive' as const, hive_pubkey: hivePubkey };
+    const workspaceId = 'ws-hive-presence-test';
+    const harnessSlug = 'acme-rd';
+    const potSlug = 'acme-hive';
 
-      const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
-      const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
-      const swarmA = makeSwarm(testnet.bootstrap);
-      const swarmB = makeSwarm(testnet.bootstrap);
-      const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
-      const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
-      const rootA = makeWorkspaceRoot('hivepres-A-');
-      const rootB = makeWorkspaceRoot('hivepres-B-');
+    const idA = makeIdentityOverride('alice', 4242, 'test-keychain-alice');
+    const idB = makeIdentityOverride('bob', 7, 'test-keychain-bob');
+    const swarmA = makeSwarm(testnet.bootstrap);
+    const swarmB = makeSwarm(testnet.bootstrap);
+    const applyA = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const applyB = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const rootA = makeWorkspaceRoot('hivepres-A-');
+    const rootB = makeWorkspaceRoot('hivepres-B-');
 
-      const handleA = await bootHarnessSubstrate({
-        workspaceRoot: rootA,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmA,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyA,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: idA.override,
-      });
-      cleanups.push(async () => {
-        await handleA.close();
-        await closeHarnessStore({ workspaceRoot: rootA, harnessSlug });
-      });
+    const handleA = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootA,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmA,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyA,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: idA.override,
+    });
+    cleanups.push(async () => {
+      await handleA.close();
+      await closeHarnessStore({ workspaceRoot: rootA, harnessSlug });
+    });
 
-      const handleB = await bootHarnessSubstrate({
-        workspaceRoot: rootB,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmB,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyB,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: idB.override,
-      });
-      cleanups.push(async () => {
-        await handleB.close();
-        await closeHarnessStore({ workspaceRoot: rootB, harnessSlug });
-      });
+    const handleB = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootB,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmB,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyB,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: idB.override,
+    });
+    cleanups.push(async () => {
+      await handleB.close();
+      await closeHarnessStore({ workspaceRoot: rootB, harnessSlug });
+    });
 
-      expect(handleA.swarm!.topicHex).toBe(deriveHiveFederationTopic(hivePubkey).toString('hex'));
+    expect(handleA.swarm!.topicHex).toBe(deriveHiveFederationTopic(hivePubkey).toString('hex'));
 
-      // Drive peer A's REAL presence PUBLISHER (the P-008 wiring): it resolves the
-      // Hive slug once, stamps it onto the announce, and appends A's presence op to
-      // A's own log. Injected identity + a no-tick timer → exactly one deterministic
-      // announce (we call tickOnce ourselves).
-      const loopA = await wirePresenceAnnounceForHarness(handleA, {
-        resolveIdentity: async () => ({
-          githubUserId: 4242,
-          machineLabel: 'machine-A',
-          devicePubkey: idA.devicePubkey,
-        }),
-        resolveHiveSlug: async () => potSlug,
-        setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
-        // This leg pins the LOG-APPEND path (the PRESENCE_GOSSIP rollback path):
-        // the assertion below reads applyB's log-merge calls, which gossip frames
-        // never reach. Pin the seam OFF — the live default is gossip-ON since the
-        // 2026-07-17 cutover; the gossip path is covered by presence-gossip.test.ts.
-        presenceGossip: false,
-      });
-      expect(loopA, 'publisher should start for a swarmed harness').not.toBeNull();
-      await loopA!.tickOnce();
+    // Drive peer A's REAL presence PUBLISHER (the P-008 wiring): it resolves the
+    // Hive slug once, stamps it onto the announce, and appends A's presence op to
+    // A's own log. Injected identity + a no-tick timer → exactly one deterministic
+    // announce (we call tickOnce ourselves).
+    const loopA = await wirePresenceAnnounceForHarness(handleA, {
+      resolveIdentity: async () => ({
+        githubUserId: 4242,
+        machineLabel: 'machine-A',
+        devicePubkey: idA.devicePubkey,
+      }),
+      resolveHiveSlug: async () => potSlug,
+      setIntervalFn: () => 0 as unknown as ReturnType<typeof setInterval>,
+      // This leg pins the LOG-APPEND path (the PRESENCE_GOSSIP rollback path):
+      // the assertion below reads applyB's log-merge calls, which gossip frames
+      // never reach. Pin the seam OFF — the live default is gossip-ON since the
+      // 2026-07-17 cutover; the gossip path is covered by presence-gossip.test.ts.
+      presenceGossip: false,
+    });
+    expect(loopA, 'publisher should start for a swarmed harness').not.toBeNull();
+    await loopA!.tickOnce();
 
-      // THE PROOF: A's presence announce crosses to peer B over the Hive topic,
-      // carrying hive_slug — so a remote Swarm's liveness (the lock-authority
-      // roster the Hive authority elects over) is visible cross-Swarm.
-      const gotPresence = await pollUntil(
-        async () => {
-          await handleB.mergeNow();
-          return applyB.mock.calls.find(
-            (c) => c[0].table === 'presence' && c[0].hbKey === '4242/machine-A',
-          )?.[0];
-        },
-        { timeoutMs: 20_000, intervalMs: 250 },
-      );
+    // THE PROOF: A's presence announce crosses to peer B over the Hive topic,
+    // carrying hive_slug — so a remote Swarm's liveness (the lock-authority
+    // roster the Hive authority elects over) is visible cross-Swarm.
+    const gotPresence = await pollUntil(
+      async () => {
+        await handleB.mergeNow();
+        return applyB.mock.calls.find((c) => c[0].table === 'presence' && c[0].hbKey === '4242/machine-A')?.[0];
+      },
+      { timeoutMs: 20_000, intervalMs: 250 },
+    );
 
-      expect(gotPresence, "peer B never received peer A's presence over the Hive topic").toBeTruthy();
-      expect(gotPresence).toMatchObject({
-        table: 'presence',
-        hbKey: '4242/machine-A',
-        value: {
-          device_pubkey: idA.devicePubkey,
-          github_user_id: 4242,
-          machine_label: 'machine-A',
-          hive_slug: potSlug, // the P-008/P-009 carry — what lockAuthorityForHive scopes by
-        },
-      });
-    },
-    35_000,
-  );
+    expect(gotPresence, "peer B never received peer A's presence over the Hive topic").toBeTruthy();
+    expect(gotPresence).toMatchObject({
+      table: 'presence',
+      hbKey: '4242/machine-A',
+      value: {
+        device_pubkey: idA.devicePubkey,
+        github_user_id: 4242,
+        machine_label: 'machine-A',
+        hive_slug: potSlug, // the P-008/P-009 carry — what lockAuthorityForHive scopes by
+      },
+    });
+  }, 35_000);
 });

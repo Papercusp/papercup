@@ -82,10 +82,7 @@ function makeLifecycleStore(opts: { failUpsert?: boolean } = {}): {
   return { store, rows, attempts };
 }
 
-function makeClosableRemoteLog(
-  logKeyHex: string,
-  closes: Map<string, () => Promise<void>>,
-): RemoteLog {
+function makeClosableRemoteLog(logKeyHex: string, closes: Map<string, () => Promise<void>>): RemoteLog {
   const close = vi.fn(async () => undefined);
   closes.set(logKeyHex, close);
   return {
@@ -104,6 +101,7 @@ describe('boot peer lifecycle persistence', () => {
   it('marks a verified admission active and an explicit revoke retired', async () => {
     const lifecycle = makeLifecycleStore();
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-admit-'),
       workspaceId: 'ws-peer-lifecycle-admit',
       harnessSlug: 'peer-lifecycle-admit',
@@ -139,6 +137,7 @@ describe('boot peer lifecycle persistence', () => {
     const lifecycle = makeLifecycleStore();
     const closes = new Map<string, () => Promise<void>>();
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-multi-log-revoke-'),
       workspaceId: 'ws-peer-lifecycle-multi-log-revoke',
       harnessSlug: 'peer-lifecycle-multi-log-revoke',
@@ -147,8 +146,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyIntervalMs: 0,
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => 'verified',
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
@@ -177,6 +175,7 @@ describe('boot peer lifecycle persistence', () => {
     const lifecycle = makeLifecycleStore();
     const published = new Set<string>();
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-refresh-'),
       workspaceId: 'ws-peer-lifecycle-refresh',
       harnessSlug: 'peer-lifecycle-refresh',
@@ -210,6 +209,7 @@ describe('boot peer lifecycle persistence', () => {
     const published = new Set<string>();
     const closes = new Map<string, () => Promise<void>>();
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-multi-log-refresh-'),
       workspaceId: 'ws-peer-lifecycle-multi-log-refresh',
       harnessSlug: 'peer-lifecycle-multi-log-refresh',
@@ -218,8 +218,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyIntervalMs: 0,
       loadRevokedOverride: async () => new Set(published),
       verifyBindingOverride: async () => 'verified',
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
@@ -247,6 +246,7 @@ describe('boot peer lifecycle persistence', () => {
     const lifecycle = makeLifecycleStore();
     let binding: 'verified' | 'fail' = 'verified';
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-reverify-'),
       workspaceId: 'ws-peer-lifecycle-reverify',
       harnessSlug: 'peer-lifecycle-reverify',
@@ -278,6 +278,7 @@ describe('boot peer lifecycle persistence', () => {
     const closes = new Map<string, () => Promise<void>>();
     let binding: 'verified' | 'fail' = 'verified';
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-multi-log-reverify-'),
       workspaceId: 'ws-peer-lifecycle-multi-log-reverify',
       harnessSlug: 'peer-lifecycle-multi-log-reverify',
@@ -287,8 +288,7 @@ describe('boot peer lifecycle persistence', () => {
       reverifyBatchSize: 1,
       loadRevokedOverride: async () => new Set(),
       verifyBindingOverride: async () => binding,
-      openRemoteLogOverride: async (_store, logKeyHex) =>
-        makeClosableRemoteLog(logKeyHex, closes),
+      openRemoteLogOverride: async (_store, logKeyHex) => makeClosableRemoteLog(logKeyHex, closes),
       mergeCursorStore: lifecycle.store,
     });
     cleanups.push(() => handle.close());
@@ -345,6 +345,7 @@ describe('boot peer lifecycle persistence', () => {
     };
     let binding: 'verified' | 'fail' = 'verified';
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-order-'),
       workspaceId: 'ws-peer-lifecycle-order',
       harnessSlug: 'peer-lifecycle-order',
@@ -381,6 +382,7 @@ describe('boot peer lifecycle persistence', () => {
   it('isolates lifecycle-store failures as merge_error without breaking admission or revoke', async () => {
     const lifecycle = makeLifecycleStore({ failUpsert: true });
     const handle = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
       workspaceRoot: tmpDir('peer-lifecycle-failure-'),
       workspaceId: 'ws-peer-lifecycle-failure',
       harnessSlug: 'peer-lifecycle-failure',

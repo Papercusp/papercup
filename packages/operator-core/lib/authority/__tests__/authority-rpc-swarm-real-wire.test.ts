@@ -74,10 +74,7 @@ import type { OpEnvelope } from '../../sync/hyperbee/op-envelope-types';
 import { _resetCacheForTests, closeHarnessStore } from '../../sync/hyperbee/corestore';
 import { _resetBootHistoryForTests } from '../../sync/hyperbee/boot-history';
 
-import {
-  makeAuthorityRpcSwarmTransport,
-  type AuthorityRpcSwarmTransport,
-} from '../authority-rpc-swarm-transport';
+import { makeAuthorityRpcSwarmTransport, type AuthorityRpcSwarmTransport } from '../authority-rpc-swarm-transport';
 import {
   buildFileLockAuthorityHandlers,
   FILE_LOCK_OP_KINDS,
@@ -239,190 +236,197 @@ const queueOp = (owner: string) => ({
 });
 
 describe('option-(c) protomux authority-RPC transport serializes a contended lock over a REAL Hyperswarm wire (P-003 / D-003)', () => {
-  it(
-    'two real peers, one DHT, one connection: requester A routes a contended lock to authority B and B serializes it cross-peer (NOT fail-open)',
-    async () => {
-      // ── Local testnet DHT (offline, deterministic). 3 nodes for a stable
-      //    bootstrap; both swarms join it instead of the public DHT. ──
-      const testnet = await createTestnet(3);
-      cleanups.push(async () => {
-        try {
-          await testnet.destroy();
-        } catch {
-          /* ignore */
-        }
-      });
+  it('two real peers, one DHT, one connection: requester A routes a contended lock to authority B and B serializes it cross-peer (NOT fail-open)', async () => {
+    // ── Local testnet DHT (offline, deterministic). 3 nodes for a stable
+    //    bootstrap; both swarms join it instead of the public DHT. ──
+    const testnet = await createTestnet(3);
+    cleanups.push(async () => {
+      try {
+        await testnet.destroy();
+      } catch {
+        /* ignore */
+      }
+    });
 
-      const workspaceId = 'ws-authority-rpc-realwire';
-      const harnessSlug = 'sheets';
-      const binding = { kind: 'local' as const, workspace_id: workspaceId, harness_slug: harnessSlug };
+    const workspaceId = 'ws-authority-rpc-realwire';
+    const harnessSlug = 'sheets';
+    const binding = { kind: 'local' as const, workspace_id: workspaceId, harness_slug: harnessSlug };
 
-      // ── Two DISTINCT real identities. The AUTHORITY is the lowest device_pubkey
-      //    (D-005 argmin), so designate roles AFTER generating the keys. ──
-      const id1 = makeIdentity('peer-one', 101, 'kc-one');
-      const id2 = makeIdentity('peer-two', 202, 'kc-two');
-      const [authId, reqId] =
-        id1.devicePubkey < id2.devicePubkey ? [id1, id2] : [id2, id1];
-      // authId = B (authority, lowest pubkey); reqId = A (requester).
-      expect(authId.devicePubkey < reqId.devicePubkey).toBe(true);
+    // ── Two DISTINCT real identities. The AUTHORITY is the lowest device_pubkey
+    //    (D-005 argmin), so designate roles AFTER generating the keys. ──
+    const id1 = makeIdentity('peer-one', 101, 'kc-one');
+    const id2 = makeIdentity('peer-two', 202, 'kc-two');
+    const [authId, reqId] = id1.devicePubkey < id2.devicePubkey ? [id1, id2] : [id2, id1];
+    // authId = B (authority, lowest pubkey); reqId = A (requester).
+    expect(authId.devicePubkey < reqId.devicePubkey).toBe(true);
 
-      const swarmAuth = makeSwarm(testnet.bootstrap);
-      const swarmReq = makeSwarm(testnet.bootstrap);
+    const swarmAuth = makeSwarm(testnet.bootstrap);
+    const swarmReq = makeSwarm(testnet.bootstrap);
 
-      const applyAuth = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
-      const applyReq = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const applyAuth = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
+    const applyReq = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
 
-      const rootAuth = makeWorkspaceRoot('arpc-auth-');
-      const rootReq = makeWorkspaceRoot('arpc-req-');
+    const rootAuth = makeWorkspaceRoot('arpc-auth-');
+    const rootReq = makeWorkspaceRoot('arpc-req-');
 
-      let handleAuth: BootedHarnessHandle | undefined;
-      let handleReq: BootedHarnessHandle | undefined;
+    let handleAuth: BootedHarnessHandle | undefined;
+    let handleReq: BootedHarnessHandle | undefined;
 
-      // ── Boot both real substrate peers onto the same swarm topic. This forms the
-      //    real Hyperswarm connection + the per-socket Protomux muxer that the
-      //    authority-rpc channel will ride (exactly as production boots before
-      //    wireAuthorityRpcSwarmTransport runs). ──
-      handleAuth = await bootHarnessSubstrate({
-        workspaceRoot: rootAuth,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmAuth,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyAuth,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: authId.override,
-      });
-      cleanups.push(async () => {
-        await handleAuth?.close();
-        await closeHarnessStore({ workspaceRoot: rootAuth, harnessSlug });
-      });
+    // ── Boot both real substrate peers onto the same swarm topic. This forms the
+    //    real Hyperswarm connection + the per-socket Protomux muxer that the
+    //    authority-rpc channel will ride (exactly as production boots before
+    //    wireAuthorityRpcSwarmTransport runs). ──
+    handleAuth = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootAuth,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmAuth,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyAuth,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: authId.override,
+    });
+    cleanups.push(async () => {
+      await handleAuth?.close();
+      await closeHarnessStore({ workspaceRoot: rootAuth, harnessSlug });
+    });
 
-      handleReq = await bootHarnessSubstrate({
-        workspaceRoot: rootReq,
-        workspaceId,
-        harnessSlug,
-        swarmBinding: binding,
-        swarmOverride: swarmReq,
-        verifyBindingOverride: async () => 'verified',
-        applyOverride: applyReq,
-        mergePollMs: 0,
-        pendingRetryMs: 0,
-        loadRevokedOverride: async () => new Set(),
-        announceIdentityOverride: reqId.override,
-      });
-      cleanups.push(async () => {
-        await handleReq?.close();
-        await closeHarnessStore({ workspaceRoot: rootReq, harnessSlug });
-      });
+    handleReq = await bootHarnessSubstrate({
+      rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
+      workspaceRoot: rootReq,
+      workspaceId,
+      harnessSlug,
+      swarmBinding: binding,
+      swarmOverride: swarmReq,
+      verifyBindingOverride: async () => 'verified',
+      applyOverride: applyReq,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      announceIdentityOverride: reqId.override,
+    });
+    cleanups.push(async () => {
+      await handleReq?.close();
+      await closeHarnessStore({ workspaceRoot: rootReq, harnessSlug });
+    });
 
-      expect(handleAuth.swarm).not.toBeNull();
-      expect(handleReq.swarm).not.toBeNull();
-      expect(handleAuth.swarm!.topicHex).toBe(handleReq.swarm!.topicHex);
+    expect(handleAuth.swarm).not.toBeNull();
+    expect(handleReq.swarm).not.toBeNull();
+    expect(handleAuth.swarm!.topicHex).toBe(handleReq.swarm!.topicHex);
 
-      // ── Wire the PRODUCTION authority-RPC swarm transport onto each peer's REAL
-      //    swarm. The receiving (authority) side runs the REAL file-lock authority
-      //    handlers over ONE in-memory store; the requesting side serves nothing.
-      //    Each transport attaches to the already-forming connection (its
-      //    on('connection') + retroactive connections scan), opening the
-      //    `papercusp/authority-rpc` channel on the same real muxer as announce. ──
-      const coordinator = makeCoordinator();
-      const authHandlers = buildFileLockAuthorityHandlers(coordinator, { emit: () => {} });
+    // ── Wire the PRODUCTION authority-RPC swarm transport onto each peer's REAL
+    //    swarm. The receiving (authority) side runs the REAL file-lock authority
+    //    handlers over ONE in-memory store; the requesting side serves nothing.
+    //    Each transport attaches to the already-forming connection (its
+    //    on('connection') + retroactive connections scan), opening the
+    //    `papercusp/authority-rpc` channel on the same real muxer as announce. ──
+    const coordinator = makeCoordinator();
+    const authHandlers = buildFileLockAuthorityHandlers(coordinator, { emit: () => {} });
 
-      const transportAuth: AuthorityRpcSwarmTransport = makeAuthorityRpcSwarmTransport({
-        swarm: swarmAuth,
-        selfDevicePubkey: authId.devicePubkey,
-        dispatch: (env) => handleAuthorityRpc(env, { handlers: authHandlers }),
-      });
-      cleanups.push(() => transportAuth.close());
+    const transportAuth: AuthorityRpcSwarmTransport = makeAuthorityRpcSwarmTransport({
+      swarm: swarmAuth,
+      selfDevicePubkey: authId.devicePubkey,
+      dispatch: (env) => handleAuthorityRpc(env, { handlers: authHandlers }),
+    });
+    cleanups.push(() => transportAuth.close());
 
-      const transportReq: AuthorityRpcSwarmTransport = makeAuthorityRpcSwarmTransport({
-        swarm: swarmReq,
-        selfDevicePubkey: reqId.devicePubkey,
-        // requester serves nothing (send-only)
-      });
-      cleanups.push(() => transportReq.close());
+    const transportReq: AuthorityRpcSwarmTransport = makeAuthorityRpcSwarmTransport({
+      swarm: swarmReq,
+      selfDevicePubkey: reqId.devicePubkey,
+      // requester serves nothing (send-only)
+    });
+    cleanups.push(() => transportReq.close());
 
-      // routeToAuthority (called as the REQUESTER) reads the process-global
-      // transport. The authority RECEIVES via transportAuth.dispatch directly.
-      setPeerRpcTransport(transportReq);
+    // routeToAuthority (called as the REQUESTER) reads the process-global
+    // transport. The authority RECEIVES via transportAuth.dispatch directly.
+    setPeerRpcTransport(transportReq);
 
-      // Requester deps: fixed clock, self = A, presence has BOTH peers (so argmin =
-      // B = the authority), eviction disabled. No real PG. HRW_RENDEZVOUS_AUTHORITY
-      // defaults ON since its 2026-07-17 graduation — pin the argmin rollback path
-      // this fixture's B-is-authority premise depends on.
-      const NOW = 1_700_000_000_000;
-      const requesterDeps: LockAuthorityDeps = {
-        now: () => NOW,
-        evictionMonitor: null,
-        resolveSelf: async () => ({ githubUserId: reqId.userId, devicePubkey: reqId.devicePubkey }),
-        fetchPresenceRows: async () => [
-          { device_pubkey: authId.devicePubkey, github_user_id: authId.userId, machine_label: 'authority-B', last_seen_ms: NOW - 1000 },
-          { device_pubkey: reqId.devicePubkey, github_user_id: reqId.userId, machine_label: 'requester-A', last_seen_ms: NOW - 1000 },
-        ],
-        useHrwRendezvous: false,
-      };
-
-      // ── Wait until the authority-rpc channel has PAIRED over the real wire and
-      //    A has learned B's device_pubkey via the HELLO — confirmed decisively by
-      //    a non-mutating `lock.queue` probe routing `via: 'remote-authority'`
-      //    (not fail-open). DHT discovery + connect + channel-open is seconds. ──
-      const wired = await pollUntil(
-        async () => {
-          const probe = await routeToAuthority('h1', { local: localFalse, remote: queueOp('probe') }, requesterDeps);
-          return probe.via === 'remote-authority' ? probe : undefined;
+    // Requester deps: fixed clock, self = A, presence has BOTH peers (so argmin =
+    // B = the authority), eviction disabled. No real PG. HRW_RENDEZVOUS_AUTHORITY
+    // defaults ON since its 2026-07-17 graduation — pin the argmin rollback path
+    // this fixture's B-is-authority premise depends on.
+    const NOW = 1_700_000_000_000;
+    const requesterDeps: LockAuthorityDeps = {
+      now: () => NOW,
+      evictionMonitor: null,
+      resolveSelf: async () => ({ githubUserId: reqId.userId, devicePubkey: reqId.devicePubkey }),
+      fetchPresenceRows: async () => [
+        {
+          device_pubkey: authId.devicePubkey,
+          github_user_id: authId.userId,
+          machine_label: 'authority-B',
+          last_seen_ms: NOW - 1000,
         },
-        { timeoutMs: 30_000, intervalMs: 250 },
-      );
-      expect(
-        wired,
-        'the authority-rpc channel never carried a remote-authority op over the real wire (stuck fail-open)',
-      ).toBeTruthy();
-      expect(transportReq.openChannelCount).toBeGreaterThanOrEqual(1);
-      expect(transportAuth.openChannelCount).toBeGreaterThanOrEqual(1);
+        {
+          device_pubkey: reqId.devicePubkey,
+          github_user_id: reqId.userId,
+          machine_label: 'requester-A',
+          last_seen_ms: NOW - 1000,
+        },
+      ],
+      useHrwRendezvous: false,
+    };
 
-      // ── THE PROOF (over the real wire) ────────────────────────────────────────
-      // 1. A acquires a contended path at authority B → granted, remote-authority.
-      const acq = await routeToAuthority(
-        'h1',
-        { local: localFalse, remote: acquireOp('owner-A', ['shared.ts']) },
-        requesterDeps,
-      );
-      expect(acq.via).toBe('remote-authority');
-      expect(acq.value.ok).toBe(true);
-      expect(acq.value.lockId).toBeTruthy();
+    // ── Wait until the authority-rpc channel has PAIRED over the real wire and
+    //    A has learned B's device_pubkey via the HELLO — confirmed decisively by
+    //    a non-mutating `lock.queue` probe routing `via: 'remote-authority'`
+    //    (not fail-open). DHT discovery + connect + channel-open is seconds. ──
+    const wired = await pollUntil(
+      async () => {
+        const probe = await routeToAuthority('h1', { local: localFalse, remote: queueOp('probe') }, requesterDeps);
+        return probe.via === 'remote-authority' ? probe : undefined;
+      },
+      { timeoutMs: 30_000, intervalMs: 250 },
+    );
+    expect(
+      wired,
+      'the authority-rpc channel never carried a remote-authority op over the real wire (stuck fail-open)',
+    ).toBeTruthy();
+    expect(transportReq.openChannelCount).toBeGreaterThanOrEqual(1);
+    expect(transportAuth.openChannelCount).toBeGreaterThanOrEqual(1);
 
-      // 2. A second contender on the SAME path is REFUSED by B's single store —
-      //    mutual exclusion serialized cross-peer at one authority over the wire.
-      const contend = await routeToAuthority(
-        'h1',
-        { local: localFalse, remote: acquireOp('owner-C', ['shared.ts']) },
-        requesterDeps,
-      );
-      expect(contend.via).toBe('remote-authority');
-      expect(contend.value.ok).toBe(false);
-      expect(contend.value.busy).toEqual([{ path: 'shared.ts', owner: 'owner-A' }]);
+    // ── THE PROOF (over the real wire) ────────────────────────────────────────
+    // 1. A acquires a contended path at authority B → granted, remote-authority.
+    const acq = await routeToAuthority(
+      'h1',
+      { local: localFalse, remote: acquireOp('owner-A', ['shared.ts']) },
+      requesterDeps,
+    );
+    expect(acq.via).toBe('remote-authority');
+    expect(acq.value.ok).toBe(true);
+    expect(acq.value.lockId).toBeTruthy();
 
-      // 3. Release frees the path at the authority...
-      const rel = await routeToAuthority(
-        'h1',
-        { local: localFalse, remote: releaseOp('owner-A', acq.value.lockId) },
-        requesterDeps,
-      );
-      expect(rel.via).toBe('remote-authority');
-      expect(rel.value.released).toEqual(['shared.ts']);
+    // 2. A second contender on the SAME path is REFUSED by B's single store —
+    //    mutual exclusion serialized cross-peer at one authority over the wire.
+    const contend = await routeToAuthority(
+      'h1',
+      { local: localFalse, remote: acquireOp('owner-C', ['shared.ts']) },
+      requesterDeps,
+    );
+    expect(contend.via).toBe('remote-authority');
+    expect(contend.value.ok).toBe(false);
+    expect(contend.value.busy).toEqual([{ path: 'shared.ts', owner: 'owner-A' }]);
 
-      // 4. ...so the contender can now acquire it.
-      const reacq = await routeToAuthority(
-        'h1',
-        { local: localFalse, remote: acquireOp('owner-C', ['shared.ts']) },
-        requesterDeps,
-      );
-      expect(reacq.via).toBe('remote-authority');
-      expect(reacq.value.ok).toBe(true);
-    },
-    60_000,
-  );
+    // 3. Release frees the path at the authority...
+    const rel = await routeToAuthority(
+      'h1',
+      { local: localFalse, remote: releaseOp('owner-A', acq.value.lockId) },
+      requesterDeps,
+    );
+    expect(rel.via).toBe('remote-authority');
+    expect(rel.value.released).toEqual(['shared.ts']);
+
+    // 4. ...so the contender can now acquire it.
+    const reacq = await routeToAuthority(
+      'h1',
+      { local: localFalse, remote: acquireOp('owner-C', ['shared.ts']) },
+      requesterDeps,
+    );
+    expect(reacq.via).toBe('remote-authority');
+    expect(reacq.value.ok).toBe(true);
+  }, 60_000);
 });

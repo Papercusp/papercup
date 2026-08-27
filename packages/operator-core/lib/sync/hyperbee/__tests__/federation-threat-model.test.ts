@@ -201,6 +201,7 @@ async function bootCapturePeer(opts: {
   const apply = vi.fn<(op: OpEnvelope) => Promise<boolean>>(async () => true);
   const root = makeWorkspaceRoot(opts.rootPrefix);
   const handle = await bootHarnessSubstrate({
+    rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
     workspaceRoot: root,
     workspaceId: WORKSPACE_ID,
     harnessSlug: HARNESS_SLUG,
@@ -230,180 +231,172 @@ function featureValue(id: string, title: string) {
 //      isolating the signature gate from the (wide-open) binding gate.
 // ════════════════════════════════════════════════════════════════════════════
 describe('threat #4 — forged-signature announce never federates (over the wire)', () => {
-  it(
-    "a peer that signs its announce with the WRONG key is never admitted (bad_sig), while a correctly-signed control peer crosses",
-    async () => {
-      const testnet = await makeTestnet();
-      // The RECEIVER admits ANY github user id — the binding gate is wide open, so
-      // the ONLY gate that can reject a peer here is the announce signature check.
-      const idReceiver = makeIdentityOverride('receiver', 1, 'kc-recv');
-      const receiver = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tmF-recv-',
-        identity: idReceiver,
-        verify: () => 'verified',
-      });
+  it('a peer that signs its announce with the WRONG key is never admitted (bad_sig), while a correctly-signed control peer crosses', async () => {
+    const testnet = await makeTestnet();
+    // The RECEIVER admits ANY github user id — the binding gate is wide open, so
+    // the ONLY gate that can reject a peer here is the announce signature check.
+    const idReceiver = makeIdentityOverride('receiver', 1, 'kc-recv');
+    const receiver = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tmF-recv-',
+      identity: idReceiver,
+      verify: () => 'verified',
+    });
 
-      // The FORGER: advertises a valid device_pubkey but signs with another key.
-      const idForger = makeForgedIdentityOverride('forger', 66, 'kc-forge');
-      const forger = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tmF-forge-',
-        identity: idForger,
-        verify: () => 'verified',
-      });
+    // The FORGER: advertises a valid device_pubkey but signs with another key.
+    const idForger = makeForgedIdentityOverride('forger', 66, 'kc-forge');
+    const forger = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tmF-forge-',
+      identity: idForger,
+      verify: () => 'verified',
+    });
 
-      // An HONEST control sender: a valid signature, same wide-open admission.
-      const idHonest = makeIdentityOverride('honest', 77, 'kc-honest');
-      const honest = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tmF-honest-',
-        identity: idHonest,
-        verify: () => 'verified',
-      });
+    // An HONEST control sender: a valid signature, same wide-open admission.
+    const idHonest = makeIdentityOverride('honest', 77, 'kc-honest');
+    const honest = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tmF-honest-',
+      identity: idHonest,
+      verify: () => 'verified',
+    });
 
-      expect(receiver.handle.swarm!.topicHex).toBe(forger.handle.swarm!.topicHex);
-      expect(receiver.handle.swarm!.topicHex).toBe(honest.handle.swarm!.topicHex);
+    expect(receiver.handle.swarm!.topicHex).toBe(forger.handle.swarm!.topicHex);
+    expect(receiver.handle.swarm!.topicHex).toBe(honest.handle.swarm!.topicHex);
 
-      await forger.handle.append({
-        type: 'put',
-        table: FEATURE_TAG,
-        hbKey: 'F-forged',
-        value: featureValue('F-forged', 'should NOT cross — forged sig'),
-        ts: 5000,
-        schema_version: 1,
-        writerPubkey: idForger.devicePubkey,
-      });
-      await honest.handle.append({
-        type: 'put',
-        table: FEATURE_TAG,
-        hbKey: 'F-honest',
-        value: featureValue('F-honest', 'should cross — valid sig'),
-        ts: 5001,
-        schema_version: 1,
-        writerPubkey: idHonest.devicePubkey,
-      });
+    await forger.handle.append({
+      type: 'put',
+      table: FEATURE_TAG,
+      hbKey: 'F-forged',
+      value: featureValue('F-forged', 'should NOT cross — forged sig'),
+      ts: 5000,
+      schema_version: 1,
+      writerPubkey: idForger.devicePubkey,
+    });
+    await honest.handle.append({
+      type: 'put',
+      table: FEATURE_TAG,
+      hbKey: 'F-honest',
+      value: featureValue('F-honest', 'should cross — valid sig'),
+      ts: 5001,
+      schema_version: 1,
+      writerPubkey: idHonest.devicePubkey,
+    });
 
-      // The control proves the transport + admission works for a valid sig: the
-      // receiver MUST eventually see the honest peer's content.
-      const sawHonest = await pollUntil(
-        async () => {
-          await receiver.handle.mergeNow();
-          return receiver.apply.mock.calls.find((c) => c[0].hbKey === 'F-honest')?.[0];
-        },
-        { timeoutMs: 25_000, intervalMs: 250 },
-      );
-      expect(sawHonest, 'the correctly-signed control peer should federate (transport works)').toBeTruthy();
-
-      // A few extra passes so the forger's content has had every chance to cross.
-      for (let i = 0; i < 6; i++) {
+    // The control proves the transport + admission works for a valid sig: the
+    // receiver MUST eventually see the honest peer's content.
+    const sawHonest = await pollUntil(
+      async () => {
         await receiver.handle.mergeNow();
-        await new Promise((r) => setTimeout(r, 100));
-      }
+        return receiver.apply.mock.calls.find((c) => c[0].hbKey === 'F-honest')?.[0];
+      },
+      { timeoutMs: 25_000, intervalMs: 250 },
+    );
+    expect(sawHonest, 'the correctly-signed control peer should federate (transport works)').toBeTruthy();
 
-      // THE ADVERSARIAL ASSERTION: the forger's log was never admitted (bad_sig),
-      // so its content never reached the receiver despite the wide-open binding gate.
-      expect(
-        receiver.apply.mock.calls.find((c) => c[0].hbKey === 'F-forged'),
-        "a forged-signature peer's content federated despite verifyAnnounce → bad_sig",
-      ).toBeUndefined();
-      // Structural proof: `admitted` is keyed by log_core_key. The receiver
-      // admitted the honest sender's log but NEVER the forger's (bad_sig).
-      expect(
-        receiver.handle.admitted.has(forger.handle.ownLog.keyHex),
-        'the forger’s log must never be admitted (its announce sig is invalid)',
-      ).toBe(false);
-      expect(
-        receiver.handle.admitted.has(honest.handle.ownLog.keyHex),
-        'the honest sender’s log should be admitted (valid sig + open binding)',
-      ).toBe(true);
-    },
-    60_000,
-  );
+    // A few extra passes so the forger's content has had every chance to cross.
+    for (let i = 0; i < 6; i++) {
+      await receiver.handle.mergeNow();
+      await new Promise((r) => setTimeout(r, 100));
+    }
+
+    // THE ADVERSARIAL ASSERTION: the forger's log was never admitted (bad_sig),
+    // so its content never reached the receiver despite the wide-open binding gate.
+    expect(
+      receiver.apply.mock.calls.find((c) => c[0].hbKey === 'F-forged'),
+      "a forged-signature peer's content federated despite verifyAnnounce → bad_sig",
+    ).toBeUndefined();
+    // Structural proof: `admitted` is keyed by log_core_key. The receiver
+    // admitted the honest sender's log but NEVER the forger's (bad_sig).
+    expect(
+      receiver.handle.admitted.has(forger.handle.ownLog.keyHex),
+      'the forger’s log must never be admitted (its announce sig is invalid)',
+    ).toBe(false);
+    expect(
+      receiver.handle.admitted.has(honest.handle.ownLog.keyHex),
+      'the honest sender’s log should be admitted (valid sig + open binding)',
+    ).toBe(true);
+  }, 60_000);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // C-001 — Read-after-revocation: a removed member keeps READING the hive.
 // ════════════════════════════════════════════════════════════════════════════
 describe('C-001 — revocation is write-plane only: a revoked member keeps reading new content', () => {
-  it(
-    "after owner A revokes member B, A's NEW content STILL reaches B (B keeps reading — the privacy gap)",
-    async () => {
-      const testnet = await makeTestnet();
-      const idA = makeIdentityOverride('owner', 42, 'kc-owner'); // the hive owner
-      const idB = makeIdentityOverride('member', 7, 'kc-member'); // the member to remove
+  it("after owner A revokes member B, A's NEW content STILL reaches B (B keeps reading — the privacy gap)", async () => {
+    const testnet = await makeTestnet();
+    const idA = makeIdentityOverride('owner', 42, 'kc-owner'); // the hive owner
+    const idB = makeIdentityOverride('member', 7, 'kc-member'); // the member to remove
 
-      // Both peers mutually admit at boot (a normal hive).
-      const peerB = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tmR-B-',
-        identity: idB,
-        verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
-      });
-      const peerA = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tmR-A-',
-        identity: idA,
-        verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
-      });
-      expect(peerA.handle.swarm!.topicHex).toBe(peerB.handle.swarm!.topicHex);
+    // Both peers mutually admit at boot (a normal hive).
+    const peerB = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tmR-B-',
+      identity: idB,
+      verify: (uid) => (uid === idA.userId ? 'verified' : 'fail'),
+    });
+    const peerA = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tmR-A-',
+      identity: idA,
+      verify: (uid) => (uid === idB.userId ? 'verified' : 'fail'),
+    });
+    expect(peerA.handle.swarm!.topicHex).toBe(peerB.handle.swarm!.topicHex);
 
-      // BASELINE (also the test's teeth): B reads A's content while a member. If
-      // the transport/admission path were broken this assertion fails first, so a
-      // passing test below is genuinely "B reads after removal", not a false read.
-      await peerA.handle.append({
-        type: 'put',
-        table: FEATURE_TAG,
-        hbKey: 'F-while-member',
-        value: featureValue('F-while-member', 'A content B may read as a member'),
-        ts: 6000,
-        schema_version: 1,
-        writerPubkey: idA.devicePubkey,
-      });
-      const baseline = await pollUntil(
-        async () => {
-          await peerB.handle.mergeNow();
-          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-while-member')?.[0];
-        },
-        { timeoutMs: 25_000, intervalMs: 250 },
-      );
-      expect(baseline, 'B (a member) should read A’s content — the read path is real').toBeTruthy();
+    // BASELINE (also the test's teeth): B reads A's content while a member. If
+    // the transport/admission path were broken this assertion fails first, so a
+    // passing test below is genuinely "B reads after removal", not a false read.
+    await peerA.handle.append({
+      type: 'put',
+      table: FEATURE_TAG,
+      hbKey: 'F-while-member',
+      value: featureValue('F-while-member', 'A content B may read as a member'),
+      ts: 6000,
+      schema_version: 1,
+      writerPubkey: idA.devicePubkey,
+    });
+    const baseline = await pollUntil(
+      async () => {
+        await peerB.handle.mergeNow();
+        return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-while-member')?.[0];
+      },
+      { timeoutMs: 25_000, intervalMs: 250 },
+    );
+    expect(baseline, 'B (a member) should read A’s content — the read path is real').toBeTruthy();
 
-      // THE REVOCATION: A removes B. This drops B's log from A's admitted set (A
-      // stops ACCEPTING B's writes) and refuses B's re-announce — but it does NOT
-      // evict B's connection, stop A serving its cores to B, or change B's own
-      // admission of A. (swarm.ts:329 replicates unconditionally to any topic peer.)
-      await peerA.handle.revoke(idB.devicePubkey);
+    // THE REVOCATION: A removes B. This drops B's log from A's admitted set (A
+    // stops ACCEPTING B's writes) and refuses B's re-announce — but it does NOT
+    // evict B's connection, stop A serving its cores to B, or change B's own
+    // admission of A. (swarm.ts:329 replicates unconditionally to any topic peer.)
+    await peerA.handle.revoke(idB.devicePubkey);
 
-      // A writes NEW content AFTER removing B.
-      await peerA.handle.append({
-        type: 'put',
-        table: FEATURE_TAG,
-        hbKey: 'F-after-removal',
-        value: featureValue('F-after-removal', 'A content authored AFTER removing B'),
-        ts: 6001,
-        schema_version: 1,
-        writerPubkey: idA.devicePubkey,
-      });
+    // A writes NEW content AFTER removing B.
+    await peerA.handle.append({
+      type: 'put',
+      table: FEATURE_TAG,
+      hbKey: 'F-after-removal',
+      value: featureValue('F-after-removal', 'A content authored AFTER removing B'),
+      ts: 6001,
+      schema_version: 1,
+      writerPubkey: idA.devicePubkey,
+    });
 
-      // THE GAP: B STILL receives A's post-removal content. (A green pass here =
-      // the read-revocation gap is open; a fix — replication gated on admission,
-      // or connection-level device eviction, or re-key on removal — flips it red.
-      // See findings-C.md C-001 for the product decision + fix options.)
-      const afterRemoval = await pollUntil(
-        async () => {
-          await peerB.handle.mergeNow();
-          return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-after-removal')?.[0];
-        },
-        { timeoutMs: 25_000, intervalMs: 250 },
-      );
-      expect(
-        afterRemoval,
-        'C-001: a revoked member STILL reads the owner’s new content — revocation does not cut off reading',
-      ).toBeTruthy();
-    },
-    60_000,
-  );
+    // THE GAP: B STILL receives A's post-removal content. (A green pass here =
+    // the read-revocation gap is open; a fix — replication gated on admission,
+    // or connection-level device eviction, or re-key on removal — flips it red.
+    // See findings-C.md C-001 for the product decision + fix options.)
+    const afterRemoval = await pollUntil(
+      async () => {
+        await peerB.handle.mergeNow();
+        return peerB.apply.mock.calls.find((c) => c[0].hbKey === 'F-after-removal')?.[0];
+      },
+      { timeoutMs: 25_000, intervalMs: 250 },
+    );
+    expect(
+      afterRemoval,
+      'C-001: a revoked member STILL reads the owner’s new content — revocation does not cut off reading',
+    ).toBeTruthy();
+  }, 60_000);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -411,92 +404,88 @@ describe('C-001 — revocation is write-plane only: a revoked member keeps readi
 //      topic reads NOTHING from a private hive (which federates on hive:<pubkey>).
 // ════════════════════════════════════════════════════════════════════════════
 describe('threat #1 — a never-member on a guessed gh: topic reads nothing from a private hive', () => {
-  it(
-    "a never-member booting on gh:<repo_id> never connects to a private hive on hive:<pubkey>, while a legit member on the hive topic reads it",
-    async () => {
-      const testnet = await makeTestnet();
+  it('a never-member booting on gh:<repo_id> never connects to a private hive on hive:<pubkey>, while a legit member on the hive topic reads it', async () => {
+    const testnet = await makeTestnet();
 
-      // A private hive federates on hive:<pubkey>. The pubkey lives only in the
-      // member/invite link, NEVER on the public directory. The attacker knows the
-      // GitHub repo id (public) and GUESSES gh:<repo_id> — a DIFFERENT topic.
-      const HIVE_PUBKEY = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
-      const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: HIVE_PUBKEY };
-      const guessedBinding: SwarmBinding = { kind: 'gh', github_repository_id: 778899 };
+    // A private hive federates on hive:<pubkey>. The pubkey lives only in the
+    // member/invite link, NEVER on the public directory. The attacker knows the
+    // GitHub repo id (public) and GUESSES gh:<repo_id> — a DIFFERENT topic.
+    const HIVE_PUBKEY = rawPubkeyBase64(generateKeyPairSync('ed25519').publicKey);
+    const hiveBinding: SwarmBinding = { kind: 'hive', hive_pubkey: HIVE_PUBKEY };
+    const guessedBinding: SwarmBinding = { kind: 'gh', github_repository_id: 778899 };
 
-      const idOwner = makeIdentityOverride('owner', 42, 'kc-owner');
-      const idMember = makeIdentityOverride('member', 7, 'kc-member');
-      const idGuesser = makeIdentityOverride('guesser', 66, 'kc-guesser');
+    const idOwner = makeIdentityOverride('owner', 42, 'kc-owner');
+    const idMember = makeIdentityOverride('member', 7, 'kc-member');
+    const idGuesser = makeIdentityOverride('guesser', 66, 'kc-guesser');
 
-      // Owner + member are on the HIVE topic and admit each other.
-      const owner = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tm1-owner-',
-        identity: idOwner,
-        binding: hiveBinding,
-        verify: (uid) => (uid === idMember.userId ? 'verified' : 'fail'),
-      });
-      const member = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tm1-member-',
-        identity: idMember,
-        binding: hiveBinding,
-        verify: (uid) => (uid === idOwner.userId ? 'verified' : 'fail'),
-      });
-      // The guesser is on the WRONG (gh-derived) topic — and would admit ANYONE,
-      // so the ONLY thing keeping the hive content from it is the topic divergence.
-      const guesser = await bootCapturePeer({
-        testnetBootstrap: testnet.bootstrap,
-        rootPrefix: 'tm1-guesser-',
-        identity: idGuesser,
-        binding: guessedBinding,
-        verify: () => 'verified',
-      });
+    // Owner + member are on the HIVE topic and admit each other.
+    const owner = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tm1-owner-',
+      identity: idOwner,
+      binding: hiveBinding,
+      verify: (uid) => (uid === idMember.userId ? 'verified' : 'fail'),
+    });
+    const member = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tm1-member-',
+      identity: idMember,
+      binding: hiveBinding,
+      verify: (uid) => (uid === idOwner.userId ? 'verified' : 'fail'),
+    });
+    // The guesser is on the WRONG (gh-derived) topic — and would admit ANYONE,
+    // so the ONLY thing keeping the hive content from it is the topic divergence.
+    const guesser = await bootCapturePeer({
+      testnetBootstrap: testnet.bootstrap,
+      rootPrefix: 'tm1-guesser-',
+      identity: idGuesser,
+      binding: guessedBinding,
+      verify: () => 'verified',
+    });
 
-      // Sanity: the guessed gh: topic genuinely differs from the hive topic
-      // (if it didn't, the whole secrecy property would be moot).
-      expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
-      expect(guesser.handle.swarm!.topicHex).not.toBe(owner.handle.swarm!.topicHex);
+    // Sanity: the guessed gh: topic genuinely differs from the hive topic
+    // (if it didn't, the whole secrecy property would be moot).
+    expect(owner.handle.swarm!.topicHex).toBe(member.handle.swarm!.topicHex);
+    expect(guesser.handle.swarm!.topicHex).not.toBe(owner.handle.swarm!.topicHex);
 
-      await owner.handle.append({
-        type: 'put',
-        table: FEATURE_TAG,
-        hbKey: 'F-private',
-        value: featureValue('F-private', 'private hive content'),
-        ts: 7000,
-        schema_version: 1,
-        writerPubkey: idOwner.devicePubkey,
-      });
+    await owner.handle.append({
+      type: 'put',
+      table: FEATURE_TAG,
+      hbKey: 'F-private',
+      value: featureValue('F-private', 'private hive content'),
+      ts: 7000,
+      schema_version: 1,
+      writerPubkey: idOwner.devicePubkey,
+    });
 
-      // Control + teeth: the legit member on the hive topic DOES read it (proves
-      // the content is live + reachable on the correct topic).
-      const memberRead = await pollUntil(
-        async () => {
-          await member.handle.mergeNow();
-          return member.apply.mock.calls.find((c) => c[0].hbKey === 'F-private')?.[0];
-        },
-        { timeoutMs: 25_000, intervalMs: 250 },
-      );
-      expect(memberRead, 'a legit member on the hive topic should read the content').toBeTruthy();
+    // Control + teeth: the legit member on the hive topic DOES read it (proves
+    // the content is live + reachable on the correct topic).
+    const memberRead = await pollUntil(
+      async () => {
+        await member.handle.mergeNow();
+        return member.apply.mock.calls.find((c) => c[0].hbKey === 'F-private')?.[0];
+      },
+      { timeoutMs: 25_000, intervalMs: 250 },
+    );
+    expect(memberRead, 'a legit member on the hive topic should read the content').toBeTruthy();
 
-      // Give the guesser every chance to (wrongly) receive it.
-      for (let i = 0; i < 8; i++) {
-        await guesser.handle.mergeNow();
-        await new Promise((r) => setTimeout(r, 100));
-      }
+    // Give the guesser every chance to (wrongly) receive it.
+    for (let i = 0; i < 8; i++) {
+      await guesser.handle.mergeNow();
+      await new Promise((r) => setTimeout(r, 100));
+    }
 
-      // THE PRIVACY ASSERTION: the topic-guesser never connected to the hive topic,
-      // so it received NOTHING — and admitted no remote log (only its own).
-      expect(
-        guesser.apply.mock.calls.find((c) => c[0].hbKey === 'F-private'),
-        "a never-member guessing gh:<repo_id> read the private hive's content — topic secrecy broken",
-      ).toBeUndefined();
-      expect(
-        guesser.handle.admitted.size,
-        'the guesser must have admitted ONLY its own log (it never reached the hive topic)',
-      ).toBe(1);
-    },
-    60_000,
-  );
+    // THE PRIVACY ASSERTION: the topic-guesser never connected to the hive topic,
+    // so it received NOTHING — and admitted no remote log (only its own).
+    expect(
+      guesser.apply.mock.calls.find((c) => c[0].hbKey === 'F-private'),
+      "a never-member guessing gh:<repo_id> read the private hive's content — topic secrecy broken",
+    ).toBeUndefined();
+    expect(
+      guesser.handle.admitted.size,
+      'the guesser must have admitted ONLY its own log (it never reached the hive topic)',
+    ).toBe(1);
+  }, 60_000);
 });
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -513,9 +502,7 @@ describe('threat #6 — applyOpVia rejects poisoned ops gracefully (no throw, no
       tableTag: FEATURE_TAG,
       composeKey: (r) => r.feature_id,
       decodeValue: (raw) =>
-        raw &&
-        typeof raw === 'object' &&
-        typeof (raw as { feature_id?: unknown }).feature_id === 'string'
+        raw && typeof raw === 'object' && typeof (raw as { feature_id?: unknown }).feature_id === 'string'
           ? (raw as { feature_id: string })
           : null,
       writeToPg: async (r) => {
@@ -523,8 +510,7 @@ describe('threat #6 — applyOpVia rejects poisoned ops gracefully (no throw, no
       },
       deleteFromPg: async () => {},
     };
-    const lookup: ProjectionLookup = (tag) =>
-      tag === FEATURE_TAG ? (proj as TableProjection<unknown>) : null;
+    const lookup: ProjectionLookup = (tag) => (tag === FEATURE_TAG ? (proj as TableProjection<unknown>) : null);
     return { lookup, written };
   }
 
@@ -535,18 +521,50 @@ describe('threat #6 — applyOpVia rejects poisoned ops gracefully (no throw, no
     const hugePayload = 'x'.repeat(256 * 1024);
 
     const hostile: Array<{ name: string; op: OpEnvelope }> = [
-      { name: 'unknown op type', op: { type: 'garbage' as never, table: FEATURE_TAG, hbKey: 'F-x', value: { feature_id: 'F-x' } } },
+      {
+        name: 'unknown op type',
+        op: { type: 'garbage' as never, table: FEATURE_TAG, hbKey: 'F-x', value: { feature_id: 'F-x' } },
+      },
       { name: 'retired addWriter type', op: { type: 'addWriter', key: 'whatever' } as OpEnvelope },
       { name: 'missing table', op: { type: 'put', hbKey: 'F-x', value: { feature_id: 'F-x' } } as OpEnvelope },
-      { name: 'unknown table tag', op: { type: 'put', table: 'harness_features_consolidated', hbKey: 'F-x', value: { feature_id: 'F-x' } } },
+      {
+        name: 'unknown table tag',
+        op: { type: 'put', table: 'harness_features_consolidated', hbKey: 'F-x', value: { feature_id: 'F-x' } },
+      },
       { name: 'put with null value', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: null } },
       { name: 'put with primitive value', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: 42 as never } },
-      { name: 'put with wrong-schema value', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: { not_a_feature: true } as never } },
-      { name: 'put with non-string feature_id', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: { feature_id: 123 } as never } },
+      {
+        name: 'put with wrong-schema value',
+        op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: { not_a_feature: true } as never },
+      },
+      {
+        name: 'put with non-string feature_id',
+        op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-x', value: { feature_id: 123 } as never },
+      },
       { name: 'del without hbKey', op: { type: 'del', table: FEATURE_TAG } as OpEnvelope },
-      { name: 'NaN watermark ts', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-nan', value: { feature_id: 'F-nan' }, ts: Number.NaN } },
-      { name: 'Infinity watermark ts', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-inf', value: { feature_id: 'F-inf' }, ts: Number.POSITIVE_INFINITY } },
-      { name: 'oversized payload', op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-huge', value: { feature_id: 'F-huge', blob: hugePayload } as never } },
+      {
+        name: 'NaN watermark ts',
+        op: { type: 'put', table: FEATURE_TAG, hbKey: 'F-nan', value: { feature_id: 'F-nan' }, ts: Number.NaN },
+      },
+      {
+        name: 'Infinity watermark ts',
+        op: {
+          type: 'put',
+          table: FEATURE_TAG,
+          hbKey: 'F-inf',
+          value: { feature_id: 'F-inf' },
+          ts: Number.POSITIVE_INFINITY,
+        },
+      },
+      {
+        name: 'oversized payload',
+        op: {
+          type: 'put',
+          table: FEATURE_TAG,
+          hbKey: 'F-huge',
+          value: { feature_id: 'F-huge', blob: hugePayload } as never,
+        },
+      },
     ];
 
     for (const { name, op } of hostile) {
