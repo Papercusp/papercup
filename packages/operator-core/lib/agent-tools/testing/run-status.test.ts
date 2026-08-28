@@ -11,12 +11,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../testing-run-store', async (orig) => ({
   ...(await orig<typeof import('../../testing-run-store')>()),
   getRun: vi.fn(),
+  getRunAsync: vi.fn(),
 }));
 
-import { getRun, type RunSnapshot } from '../../testing-run-store';
+import { getRunAsync, type RunSnapshot } from '../../testing-run-store';
 import { detachedTestTimeoutHint } from './run';
 
-const getRunMock = vi.mocked(getRun);
+const getRunMock = vi.mocked(getRunAsync);
 const tool = (await import('./run-status')).default;
 
 type Output = { data: Record<string, unknown> };
@@ -41,7 +42,7 @@ describe('testing:run-status handler', () => {
       output: 'collected 1 test',
       truncated: false,
     };
-    getRunMock.mockReturnValue(snapshot);
+    getRunMock.mockResolvedValue(snapshot);
 
     const out = await call(snapshot.runId);
 
@@ -50,7 +51,7 @@ describe('testing:run-status handler', () => {
   });
 
   it('returns explicit unknown_run for an absent or evicted id', async () => {
-    getRunMock.mockReturnValue(null);
+    getRunMock.mockResolvedValue(null);
 
     const out = await call('missing-run');
 

@@ -27,6 +27,9 @@ import { resolveAgentWorkspaceRoot } from './agent-tools/capability/base-dir';
 import { resolveGitContext } from './testing-branch-resolve';
 import { currentLoopLag, classifyLoopPressure } from './event-loop-lag-monitor';
 
+/** A postgres-js-like tagged-template client; injectable so persistence seams are testable. */
+type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
+
 /**
  * EI-4940 — a host-saturation-era test timeout ("Test timed out in 60000ms")
  * is indistinguishable from a genuine red in the Tests-tab history: 16 of 24
@@ -173,13 +176,180 @@ interface RunState {
 const _runs = new Map<string, RunState>();
 const OUTPUT_CAP_BYTES = 16 * 1024;
 const EVICTION_MS = 60 * 60 * 1000;
+const SNAPSHOT_PERSIST_TIMEOUT_MS = 1_000;
+const SNAPSHOT_PRUNE_INTERVAL_MS = 60_000;
+let lastSnapshotPruneAt = 0;
+
+interface DurableRunSnapshotRow {
+  run_id: string;
+  kind: RunSnapshot['kind'];
+  label: string;
+  file_path: string | null;
+  command: unknown;
+  status: RunStatus;
+  exit_code: number | null;
+  started_at: Date | string | number;
+  finished_at: Date | string | number | null;
+  output: string;
+  truncated: boolean;
+}
+
+function snapshotPersistenceEnabled(sqlOverride?: SqlLike): boolean {
+  // Throwaway children in unit tests must not write to the developer's live
+  // database. An explicit SQL seam (or the opt-in env used by the existing
+  // fallback-row tests) still exercises the production writer in Vitest.
+  return Boolean(sqlOverride) || !process.env.VITEST || process.env.PAPERCUSP_TEST_RUNS_PERSIST === '1';
+}
+
+async function snapshotSql(sqlOverride?: SqlLike): Promise<SqlLike | null> {
+  if (sqlOverride) return sqlOverride;
+  if (!snapshotPersistenceEnabled()) return null;
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    return getOrgPg().sql as unknown as SqlLike;
+  } catch {
+    return null;
+  }
+}
+
+async function boundedSnapshotQuery<T>(query: PromiseLike<unknown>): Promise<T | null> {
+  try {
+    const result = await Promise.race([
+      Promise.resolve(query),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('testing_run_snapshot_query_timeout')), SNAPSHOT_PERSIST_TIMEOUT_MS),
+      ),
+    ]);
+    return result as T;
+  } catch {
+    // D-007: snapshot persistence/readback is observability, never a reason
+    // to fail or delay the test process/foreground response.
+    return null;
+  }
+}
+
+function epochMs(value: Date | string | number | null): number | null {
+  if (value === null) return null;
+  const millis = value instanceof Date ? value.getTime() : typeof value === 'number' ? value : Date.parse(value);
+  return Number.isFinite(millis) ? millis : null;
+}
+
+function commandFromRow(value: unknown): string[] | null {
+  if (Array.isArray(value) && value.every((entry) => typeof entry === 'string')) return [...value];
+  if (typeof value !== 'string') return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((entry) => typeof entry === 'string') ? [...parsed] : null;
+  } catch {
+    return null;
+  }
+}
+
+function snapshotFromRow(row: DurableRunSnapshotRow): RunSnapshot | null {
+  const startedAt = epochMs(row.started_at);
+  const command = commandFromRow(row.command);
+  if (startedAt === null || command === null) return null;
+  return {
+    runId: row.run_id,
+    kind: row.kind,
+    label: row.label,
+    ...(row.file_path === null ? {} : { filePath: row.file_path }),
+    command,
+    status: row.status,
+    exitCode: row.exit_code,
+    startedAt,
+    finishedAt: epochMs(row.finished_at),
+    output: row.output ?? '',
+    truncated: Boolean(row.truncated),
+  };
+}
+
+/**
+ * Persist one detached-run snapshot in the shared live-run ledger.
+ *
+ * This is deliberately fire-and-forget at lifecycle call sites. The process
+ * local map remains the fast control/read cache; this row is the cross-worker
+ * recovery source when a status request lands on a different operator worker.
+ * Every failure is swallowed and bounded so a DB outage cannot affect tests.
+ */
+export async function persistRunSnapshot(snapshot: RunSnapshot, sqlOverride?: SqlLike): Promise<boolean> {
+  if (!snapshotPersistenceEnabled(sqlOverride)) return false;
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return false;
+  const startedAt = new Date(snapshot.startedAt).toISOString();
+  const finishedAt = snapshot.finishedAt === null ? null : new Date(snapshot.finishedAt).toISOString();
+  const rows = await boundedSnapshotQuery<unknown[]>(sql`
+    INSERT INTO harness_shared.testing_run_snapshots
+      (run_id, kind, label, file_path, command, status, exit_code, started_at, finished_at, output, truncated)
+    VALUES
+      (${snapshot.runId}, ${snapshot.kind}, ${snapshot.label}, ${snapshot.filePath ?? null},
+       ${JSON.stringify(snapshot.command)}::jsonb, ${snapshot.status}, ${snapshot.exitCode},
+       ${startedAt}, ${finishedAt}, ${snapshot.output}, ${snapshot.truncated})
+    ON CONFLICT (run_id) DO UPDATE SET
+      kind = EXCLUDED.kind,
+      label = EXCLUDED.label,
+      file_path = EXCLUDED.file_path,
+      command = EXCLUDED.command,
+      status = CASE
+        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+          THEN harness_shared.testing_run_snapshots.status
+        ELSE EXCLUDED.status
+      END,
+      exit_code = CASE
+        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+          THEN harness_shared.testing_run_snapshots.exit_code
+        ELSE EXCLUDED.exit_code
+      END,
+      started_at = EXCLUDED.started_at,
+      finished_at = CASE
+        WHEN harness_shared.testing_run_snapshots.status = 'cancelled'
+          THEN harness_shared.testing_run_snapshots.finished_at
+        ELSE EXCLUDED.finished_at
+      END,
+      output = EXCLUDED.output,
+      truncated = EXCLUDED.truncated,
+      updated_at = now()
+  `);
+  return rows !== null;
+}
+
+async function prunePersistedRunSnapshots(sqlOverride?: SqlLike): Promise<void> {
+  if (!snapshotPersistenceEnabled(sqlOverride)) return;
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return;
+  await boundedSnapshotQuery(sql`
+    DELETE FROM harness_shared.testing_run_snapshots
+     WHERE finished_at IS NOT NULL
+       AND finished_at < now() - interval '1 hour'
+  `);
+}
+
+async function readPersistedRunSnapshot(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return null;
+  const rows = await boundedSnapshotQuery<DurableRunSnapshotRow[]>(sql`
+    SELECT run_id, kind, label, file_path, command, status, exit_code,
+           started_at, finished_at, output, truncated
+      FROM harness_shared.testing_run_snapshots
+     WHERE run_id = ${runId}
+       AND (finished_at IS NULL OR finished_at >= now() - interval '1 hour')
+     LIMIT 1
+  `);
+  const row = rows?.[0];
+  return row ? snapshotFromRow(row) : null;
+}
 
 function evictOldRuns(): void {
-  const cutoff = Date.now() - EVICTION_MS;
+  const now = Date.now();
+  const cutoff = now - EVICTION_MS;
   for (const [id, s] of _runs) {
     if (s.snapshot.finishedAt !== null && s.snapshot.finishedAt < cutoff) {
       _runs.delete(id);
     }
+  }
+  if (now - lastSnapshotPruneAt >= SNAPSHOT_PRUNE_INTERVAL_MS) {
+    lastSnapshotPruneAt = now;
+    void prunePersistedRunSnapshots();
   }
 }
 
@@ -278,11 +448,13 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     snapshot.finishedAt = Date.now();
     snapshot.output = e instanceof Error ? e.message : String(e);
     _runs.set(runId, { snapshot, proc: null, cwd, worktreeBefore });
+    void persistRunSnapshot(snapshot);
     return snapshot;
   }
 
   const state: RunState = { snapshot, proc, cwd, worktreeBefore };
   _runs.set(runId, state);
+  void persistRunSnapshot(snapshot);
 
   proc.stdout?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
   proc.stderr?.on('data', (b: Buffer) => appendOutput(state, b.toString('utf8')));
@@ -290,6 +462,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     appendOutput(state, `\n[spawn-error] ${e.message}\n`);
     state.snapshot.status = 'error';
     if (state.snapshot.finishedAt === null) state.snapshot.finishedAt = Date.now();
+    void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
   });
   proc.on('close', (code) => {
@@ -298,6 +471,7 @@ export function startRun(req: SpawnRequest): RunSnapshot {
     if (state.snapshot.status !== 'cancelled') {
       state.snapshot.status = code === 0 ? 'pass' : 'fail';
     }
+    void persistRunSnapshot(state.snapshot);
     void persistFallbackRow(state.snapshot, state.worktreeBefore, state.cwd);
   });
 
@@ -381,17 +555,52 @@ export function getRun(runId: string): RunSnapshot | null {
   return s ? { ...s.snapshot } : null;
 }
 
+/**
+ * Async local-first reader for status surfaces. A worker that owns the child
+ * returns immediately from `_runs`; a sibling worker falls through to the
+ * shared snapshot ledger. Missing/expired/unreadable rows remain `null`.
+ */
+export async function getRunAsync(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
+  const local = getRun(runId);
+  if (local) return local;
+  return readPersistedRunSnapshot(runId, sqlOverride);
+}
+
 export function cancelRun(runId: string): boolean {
   const s = _runs.get(runId);
   if (!s || !s.proc) return false;
   if (s.snapshot.status !== 'running') return false;
   s.snapshot.status = 'cancelled';
   s.snapshot.finishedAt = Date.now();
+  void persistRunSnapshot(s.snapshot);
   signalRunProcess(s.proc, 'SIGTERM');
   setTimeout(() => {
     if (s.proc && s.proc.exitCode == null && !s.proc.killed) signalRunProcess(s.proc, 'SIGKILL');
   }, 5000).unref();
   return true;
+}
+
+/**
+ * Cancel locally when this worker owns the process; otherwise record the
+ * cancellation in the shared ledger so a sibling status surface does not
+ * claim the run is still active. The local owner cannot be signalled across
+ * workers by this process, so the upsert's cancellation guard prevents its
+ * eventual close callback from resurrecting the durable row as pass/fail.
+ */
+export async function cancelRunAsync(runId: string, sqlOverride?: SqlLike): Promise<boolean> {
+  if (_runs.has(runId)) return cancelRun(runId);
+  const sql = await snapshotSql(sqlOverride);
+  if (!sql) return false;
+  const rows = await boundedSnapshotQuery<unknown[]>(sql`
+    UPDATE harness_shared.testing_run_snapshots
+       SET status = 'cancelled',
+           finished_at = COALESCE(finished_at, now()),
+           updated_at = now()
+     WHERE run_id = ${runId}
+       AND status = 'running'
+     RETURNING run_id
+  `);
+  return Boolean(rows && rows.length > 0);
 }
 
 export function listRuns(limit = 50): RunSnapshot[] {
@@ -989,9 +1198,6 @@ export function boundTestRunPayload<E extends Record<string, unknown>>(
   return build(kept, true);
 }
 
-/** A postgres-js-like tagged-template client; injectable so the persist path is unit-testable. */
-type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown>;
-
 export interface PersistHarnessTestRunsParams {
   harnessSlug: string;
   workspaceId: string;
@@ -1071,4 +1277,5 @@ export function _resetTestingRunStore(): void {
     }
   }
   _runs.clear();
+  lastSnapshotPruneAt = 0;
 }
