@@ -82,6 +82,9 @@ import {
   scoreCrossEncoder,
   shutdownLocalReranker,
 } from '@papercusp/rerank';
+import { runGovernedOperation, type GovernedOperationInput } from '../resource-governor/execution';
+import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
+import { activeWorkspaceId } from '../workspace-registry';
 
 export const EMBED_SIDECAR_DEFAULT_PORT = 3384; // mnemonic: the 384-dim space it serves
 export const EMBED_SIDECAR_PORT_ENV = 'PAPERCUSP_EMBED_SIDECAR_PORT';
@@ -110,13 +113,6 @@ const MAX_BODY_BYTES = 16 * 1024 * 1024;
 /** WI-4196: default cap for the text→vector LRU. A 1024-dim vector is ~8KB of
  *  JS numbers, so the default cap bounds the cache near ~8MB. */
 export const EMBED_CACHE_MAX_DEFAULT = 1024;
-
-/** P-004 (memory-public-release-hardening-2026-07-11): max embeds in flight.
- *  Default 1 = the historical strictly-serial FIFO. Raising it lets ONNX runs
- *  overlap inside ORT's own thread pool without loading extra model copies —
- *  but effective CPU ≈ concurrency × intraOpNumThreads (WI-3792 caps 4/run),
- *  so raise the unit env only with benchmarked host headroom. */
-export const EMBED_SIDECAR_CONCURRENCY_ENV = 'PAPERCUSP_EMBED_SIDECAR_CONCURRENCY';
 
 type EmbedFn = (text: string) => Promise<number[]>;
 
@@ -362,8 +358,17 @@ export interface EmbedSidecarOptions {
   log?: (line: string) => void;
   /** Max entries in the text→vector LRU (0 disables caching; tests). */
   cacheMax?: number;
-  /** Max embeds in flight (default EMBED_SIDECAR_CONCURRENCY_ENV, else 1). */
+  /**
+   * Explicit local scheduler window for tests only. Production admission is
+   * handled by the canonical durable governor and therefore has no configured
+   * concurrency ceiling. Supplying this seam keeps deterministic FIFO tests
+   * independent of Postgres.
+   */
   concurrency?: number;
+  /** Workspace used by the production durable governor (tests may inject one). */
+  workspaceId?: string;
+  /** Canonical governor runner; injectable so server tests need no database. */
+  governedOperation?: typeof runGovernedOperation;
   /**
    * Worker-breaker readers for /healthz (WI-37696). Defaults to the real module
    * getters; a test injects distinguishable ones.
