@@ -51,9 +51,13 @@ async function seedIssue(
     needsHuman?: boolean;
     updatedTs?: number;
     stateChangedAt?: string | null;
+    /** payload.lane — 'observation' marks an agent's own end-of-turn NOTE (D-005). */
+    lane?: string;
   } = {},
 ) {
-  const payload = opts.needsHuman === false ? null : { needsHuman: true };
+  const base = opts.needsHuman === false ? null : { needsHuman: true };
+  const payload =
+    opts.lane === undefined ? base : { ...(base ?? {}), lane: opts.lane };
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, taken_by, workspace_id,
@@ -76,10 +80,14 @@ beforeAll(async () => {
   db = await createFreshPgDb('needs-human-attention');
   h.sql = db.sql;
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
-  // Migration 896 is newer than the shared minimal work-items fixture. Add the
-  // lifecycle clock explicitly so this source test proves the production read
-  // contract without widening every unrelated fixture consumer.
-  await db.sql.unsafe(`ALTER TABLE harness_shared.work_items ADD COLUMN state_changed_at timestamptz`);
+  // Migration 896's lifecycle clock (state_changed_at) is now declared by the shared
+  // fixture itself (test/_work-items-schema.ts). This file used to ADD COLUMN it here,
+  // back when the fixture was older than 896; once the fixture caught up that became a
+  // duplicate and every run of this suite died in beforeAll with
+  //   column "state_changed_at" of relation "work_items" already exists
+  // i.e. a COLLECTION failure, which reports as skipped tests rather than red ones and
+  // so read as "nothing to see here". Removed rather than made IF NOT EXISTS: the
+  // fixture owns the column, and a silent local re-add is how the two drift again.
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
 }, 180_000);
 
@@ -112,6 +120,32 @@ describe('readNeedsHumanWorkItems — terminal rows never reach the owner (WI-59
     const rows = await readNeedsHumanWorkItems({ workspaceId: WS, harness: H });
 
     expect(idsOf(rows)).toEqual(['WI-BLOCKED', 'WI-OPEN']);
+  });
+
+  // EI-21675115869134466. WI-5981 closed the TERMINAL escape hatch but shipped no
+  // guard of this shape, so a second population kept reaching the owner unnoticed for
+  // 12 days: agents' own end-of-turn notes. D-005 makes payload.lane='observation'
+  // "never work-queue material", and migration 864 — which retired this very
+  // payload.needsHuman dialect — already excludes the lane in its cohort; this read
+  // did not, so it re-admitted exactly the rows 864 was right to skip. Measured live
+  // 2026-08-28: 3 of the 7 non-needs-human rows this source returned were observations.
+  it('EXCLUDES an observation-lane note even though payload.needsHuman is true (D-005)', async () => {
+    await seedIssue('WI-NOTE', { status: 'open', lane: 'observation' });
+    await seedIssue('WI-REAL', { status: 'open' });
+
+    const rows = await readNeedsHumanWorkItems({ workspaceId: WS, harness: H });
+
+    expect(idsOf(rows)).toEqual(['WI-REAL']);
+  });
+
+  // The exclusion must key on the lane VALUE, not merely on the key being present —
+  // an unrelated lane is ordinary filed work and must still reach the owner.
+  it('keeps a row whose lane is set to something other than observation', async () => {
+    await seedIssue('WI-OTHER-LANE', { status: 'open', lane: 'triage' });
+
+    const rows = await readNeedsHumanWorkItems({ workspaceId: WS, harness: H });
+
+    expect(idsOf(rows)).toEqual(['WI-OTHER-LANE']);
   });
 
   it("does not regress the feature-family dialect: status='needs-human' still surfaces", async () => {
