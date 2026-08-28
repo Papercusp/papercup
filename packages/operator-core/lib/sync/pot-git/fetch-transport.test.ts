@@ -152,6 +152,29 @@ describe('serveUploadPack — scope-repo serve gate', () => {
     const res = await serveUploadPack(join(root, 'my-hive', 'repo.git'), duplex);
     expect(res.stderr).not.toContain(REFUSAL_MARK);
   });
+
+  it('runs the upload-pack lifetime through the supplied governed execution seam', async () => {
+    const root = freshRoot();
+    const repoPath = join(root, 'my-hive', 'governed.git');
+    mkdirSync(repoPath, { recursive: true });
+    execFileSync('git', ['init', '--quiet', '--bare', repoPath]);
+    const duplex = new PassThrough();
+    duplex.end();
+    const events: string[] = [];
+    const res = await serveUploadPack(repoPath, duplex, {
+      governedExecution: async (run) => {
+        events.push('admit');
+        const result = await run();
+        events.push('release');
+        return result;
+      },
+    });
+    expect(events).toEqual(['admit', 'release']);
+    // The empty request is intentionally not a protocol success; this test is
+    // about wrapper ordering, so only assert that the transport settled with
+    // its normal typed result rather than rejecting.
+    expect(typeof res.code).toBe('number');
+  });
 });
 
 describe('fetchOverDuplex — pre-destroyed duplex (WI-3496)', () => {
