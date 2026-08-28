@@ -7,6 +7,7 @@ import {
   type HostedConnectorTransport,
   type HostedWorkspaceConnectorStore,
 } from './hosted-workspace-connector';
+import { authenticateHostedConnectorTransport } from './routes/hosted-workspace-connector';
 
 class MemoryStore implements HostedWorkspaceConnectorStore {
   binding: HostedConnectorBinding | null = null;
@@ -15,7 +16,7 @@ class MemoryStore implements HostedWorkspaceConnectorStore {
   createEnrollment(input: Omit<HostedConnectorBinding,'generation'|'state'> & {ticketHash:string;expiresAt:Date}) { this.binding={...input,generation:(this.binding?.generation??0)+1,state:'pending'};this.tickets.set(input.ticketHash,{...this.binding,kind:'enrollment',audience:'connector-register',expiresAt:input.expiresAt});return Promise.resolve(this.binding); }
   register(hash:string,credentialHash:string,now:Date){const ticket=this.take(hash,'enrollment',now);if(!ticket||!this.binding||ticket.generation!==this.binding.generation)return Promise.resolve(null);this.credentialHash=credentialHash;this.binding={...this.binding,state:'active'};return Promise.resolve(this.binding);}
   authenticate(hash:string){return Promise.resolve(this.binding?.state==='active'&&hash===this.credentialHash?this.binding:null);}
-  heartbeat(hash:string,transport:HostedConnectorTransport){if(this.binding?.state!=='active'||hash!==this.credentialHash)return Promise.resolve(null);this.binding={...this.binding,transport};return Promise.resolve(this.binding);}
+  heartbeat(hash:string,transport:HostedConnectorTransport){if(this.binding?.state!=='active'||hash!==this.credentialHash||transport!==this.binding.transport)return Promise.resolve(null);return Promise.resolve(this.binding);}
   issueSessionTicket(input:HostedConnectorTicketBinding&{ticketHash:string;issuedAt:Date}){if(this.binding?.state!=='active')return Promise.resolve(null);const ticket={...input,...this.binding,kind:'session' as const};this.tickets.set(input.ticketHash,ticket);return Promise.resolve(ticket);}
   consumeTicket(hash:string,kind:HostedConnectorTicketKind,now:Date){return Promise.resolve(this.take(hash,kind,now));}
   rotate(input:Omit<HostedConnectorBinding,'generation'|'state'>&{ticketHash:string;expiresAt:Date;now:Date}){if(this.binding?.state!=='active')return Promise.resolve(null);this.binding={...input,generation:this.binding.generation+1,state:'pending'};this.credentialHash=null;this.tickets.set(input.ticketHash,{...this.binding,kind:'enrollment',audience:'connector-register',expiresAt:input.expiresAt});return Promise.resolve(this.binding);}
@@ -34,6 +35,11 @@ describe('HostedWorkspaceConnectorGateway',()=>{
     expect(credential?.binding).toMatchObject({generation:1,state:'active'});
     expect(await gateway.register(enrollment.ticket)).toBeNull();
     expect(await gateway.authenticate(credential!.bearer)).toMatchObject({hostId:'host-1'});
+    expect(await gateway.heartbeat(credential!.bearer,'sse')).toBeNull();
+    expect(await gateway.heartbeat(credential!.bearer,'websocket')).toMatchObject({transport:'websocket'});
+    const transportRequest=new Request('https://alpha.workspaces.papercusp.com/api/hosted/connectors/socket',{headers:{authorization:`Bearer ${credential!.bearer}`}});
+    expect(await authenticateHostedConnectorTransport(gateway,transportRequest,'websocket')).toMatchObject({hostId:'host-1'});
+    expect(await authenticateHostedConnectorTransport(gateway,transportRequest,'sse')).toBeNull();
     const session=await gateway.issueSessionTicket({...binding,generation:0,state:'pending',userId:'user-1',hostedSessionId:'session-1',audience:'workspace-operator'});
     expect(session?.binding).toMatchObject({generation:1,state:'active'});
     expect(await gateway.consumeSessionTicket(session!.ticket)).toMatchObject({userId:'user-1'});
@@ -45,7 +51,7 @@ describe('HostedWorkspaceConnectorGateway',()=>{
     const credential=await gateway.register((await gateway.enroll(binding)).ticket);
     const oldSession=await gateway.issueSessionTicket({...binding,generation:0,state:'pending',userId:'user-1',hostedSessionId:'session-1',audience:'workspace-operator'});
     const reasons:string[]=[]; gateway.track(credential!.binding,(reason)=>reasons.push(reason));
-    const rotation=await gateway.rotate(binding);
+    const rotation=await gateway.rotate({...binding,routeLabel:'beta'});
     expect(reasons).toEqual(['connector_rotated']);
     expect(await gateway.consumeSessionTicket(oldSession!.ticket)).toBeNull();
     const next=await gateway.register(rotation!.ticket); gateway.track(next!.binding,(reason)=>reasons.push(reason));

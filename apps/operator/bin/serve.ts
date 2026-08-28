@@ -1633,7 +1633,7 @@ async function main(): Promise<void> {
   }
 
   let pg: PgHandle | null = null;
-  let server: { close?: () => void } | null = null;
+  let server: import("node:http").Server | null = null;
   let bootedHandlesPgPublisher: { stop(): void } | null = null;
   let shuttingDown = false;
 
@@ -1797,21 +1797,24 @@ async function main(): Promise<void> {
           await writeJsonAtomic(OPERATOR_PORT_MEMORY, {
             port: info.port,
             updatedAt: Date.now(),
-    });
-    if (hostedUpgrade) {
-      server.on("upgrade", (request, socket, head) => {
-        void hostedUpgrade?.(request, socket, head).then((handled) => {
-          if (!handled) socket.destroy();
-        }).catch(() => socket.destroy());
-      });
-    }
+          });
         } catch (e) {
           log(
             `could not persist port memory (${(e as Error).message}) — next restart re-picks`,
           );
         }
       }
-    }) as unknown as { close?: () => void };
+    }) as import("node:http").Server;
+    if (hostedUpgrade) {
+      const upgrade = hostedUpgrade;
+      server.on("upgrade", (request, socket, head) => {
+        void upgrade(request, socket, head)
+          .then((handled) => {
+            if (!handled) socket.destroy();
+          })
+          .catch(() => socket.destroy());
+      });
+    }
   } catch (e) {
     bootedHandlesPgPublisher?.stop();
     bootedHandlesPgPublisher = null;

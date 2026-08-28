@@ -79,6 +79,20 @@ export function readHostedConnectorTicket(request: Request): string | null {
   return /^ht_[A-Za-z0-9_-]{43}$/.test(header) ? header : null;
 }
 
+function connectorIdentityKey(
+  binding: Pick<
+    HostedConnectorBinding,
+    'controlPlaneWorkspaceId' | 'organizationId' | 'customerWorkspaceId' | 'hostId'
+  >,
+): string {
+  return JSON.stringify([
+    binding.controlPlaneWorkspaceId,
+    binding.organizationId,
+    binding.customerWorkspaceId,
+    binding.hostId,
+  ]);
+}
+
 export class HostedWorkspaceConnectorGateway {
   private readonly active = new Map<string, Set<{ generation: number; close: (reason: string) => void }>>();
 
@@ -94,7 +108,7 @@ export class HostedWorkspaceConnectorGateway {
     const binding = await this.store.createEnrollment({
       ...normalizeBinding(input), ticketHash: digest(ticketValue), expiresAt: new Date(now.getTime() + ttlMs),
     });
-    this.closeGeneration(binding.routeLabel, binding.generation - 1, 'connector_reenrolled');
+    this.closeGeneration(binding, binding.generation - 1, 'connector_reenrolled');
     return { ticket: ticketValue, binding: { ...binding, kind: 'enrollment', audience: 'connector-register', expiresAt: new Date(now.getTime() + ttlMs) } };
   }
 
@@ -136,27 +150,30 @@ export class HostedWorkspaceConnectorGateway {
     const ticketValue = token('ht', this.entropy);
     const binding = await this.store.rotate({ ...normalizeBinding(input), ticketHash: digest(ticketValue), expiresAt: new Date(now.getTime() + ttlMs), now });
     if (!binding) return null;
-    this.closeGeneration(binding.routeLabel, binding.generation - 1, 'connector_rotated');
+    this.closeGeneration(binding, binding.generation - 1, 'connector_rotated');
     return { ticket: ticketValue, binding: { ...binding, kind: 'enrollment', audience: 'connector-register', expiresAt: new Date(now.getTime() + ttlMs) } };
   }
 
   async revoke(input: Omit<HostedConnectorBinding, 'generation' | 'state' | 'transport'>): Promise<boolean> {
     const binding = await this.store.revoke({ ...input, now: this.clock() });
     if (!binding) return false;
-    this.closeGeneration(binding.routeLabel, binding.generation, 'connector_revoked');
+    this.closeGeneration(binding, binding.generation, 'connector_revoked');
     return true;
   }
 
   track(binding: HostedConnectorBinding, close: (reason: string) => void): () => void {
+    const key = connectorIdentityKey(binding);
     const tracked = { generation: binding.generation, close };
-    const entries = this.active.get(binding.routeLabel) ?? new Set();
+    const entries = this.active.get(key) ?? new Set();
     entries.add(tracked);
-    this.active.set(binding.routeLabel, entries);
-    return () => { entries.delete(tracked); if (entries.size === 0) this.active.delete(binding.routeLabel); };
+    this.active.set(key, entries);
+    return () => { entries.delete(tracked); if (entries.size === 0) this.active.delete(key); };
   }
 
-  private closeGeneration(routeLabel: string, generation: number, reason: string): void {
-    for (const stream of this.active.get(routeLabel) ?? []) if (stream.generation === generation) stream.close(reason);
+  private closeGeneration(binding: HostedConnectorBinding, generation: number, reason: string): void {
+    for (const stream of this.active.get(connectorIdentityKey(binding)) ?? []) {
+      if (stream.generation === generation) stream.close(reason);
+    }
   }
 }
 
@@ -221,7 +238,7 @@ export class PostgresHostedWorkspaceConnectorStore implements HostedWorkspaceCon
   }); }
 
   heartbeat(hash: string, transport: HostedConnectorTransport, now: Date): Promise<HostedConnectorBinding | null> { return this.run(async (sql) => {
-    const rows=await sql<ConnectorRow[]>`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at=${now},transport=${transport},updated_at=${now} WHERE credential_hash=${hash} AND state='active' AND revoked_at IS NULL RETURNING control_workspace_id,organization_id,customer_workspace_id,host_id,route_label,generation,transport,state`;
+    const rows=await sql<ConnectorRow[]>`UPDATE papercusp_auth.hosted_workspace_connectors SET heartbeat_at=${now},updated_at=${now} WHERE credential_hash=${hash} AND state='active' AND revoked_at IS NULL AND transport=${transport} RETURNING control_workspace_id,organization_id,customer_workspace_id,host_id,route_label,generation,transport,state`;
     return rows[0] ? rowBinding(rows[0]) : null;
   }); }
 

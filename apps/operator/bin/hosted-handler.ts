@@ -63,7 +63,7 @@ export function createHostedHandler(
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(",") : value);
       const fetchRequest = new Request(`https://${host}${request.url}`, { headers });
-      const binding = await authenticateHostedConnectorTransport(gateway, fetchRequest);
+      const binding = await authenticateHostedConnectorTransport(gateway, fetchRequest, "websocket");
       if (!binding) { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
         const untrack = gateway.track(binding, (reason) => websocket.close(4001, reason));
