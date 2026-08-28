@@ -57,6 +57,46 @@ describe('workspace-host observability store', () => {
     });
   });
 
+  it('preserves a thrown Error as a readable diagnostic instead of collapsing it to {}', () => {
+    // Regression guard. An Error's name/message/stack/cause are non-enumerable, so a generic
+    // Object.entries() walk yields {} and destroys the only reason a failed workspace-host
+    // operation records — the exact blackout behind canary r2's unexplained "failed after 0/6
+    // steps" (its persisted error column was literally '{}').
+    const cause = new Error('guest attributes fetch rejected');
+    const error = Object.assign(new TypeError('initialization step planning failed'), {
+      code: 'ERR_INIT_PLAN',
+    });
+    error.cause = cause;
+
+    const redacted = redactWorkspaceHostValue(error) as Record<string, unknown>;
+
+    expect(redacted).not.toEqual({});
+    expect(redacted.name).toBe('TypeError');
+    expect(redacted.message).toBe('initialization step planning failed');
+    expect(redacted.code).toBe('ERR_INIT_PLAN');
+    expect(typeof redacted.stack).toBe('string');
+    expect(redacted.cause).toMatchObject({ name: 'Error', message: 'guest attributes fetch rejected' });
+  });
+
+  it('still redacts secrets carried inside an Error message and cause', () => {
+    const error = new Error('refresh failed for Bearer abc.def.ghi', {
+      cause: { authorization: 'Bearer zzz.yyy.xxx' },
+    });
+
+    const redacted = redactWorkspaceHostValue(error) as Record<string, unknown>;
+
+    expect(redacted.message).toBe('refresh failed for Bearer [REDACTED]');
+    expect(redacted.cause).toEqual({ authorization: '[REDACTED]' });
+  });
+
+  it('does not infinitely recurse on an Error whose cause chain is circular', () => {
+    const error = new Error('outer');
+    error.cause = error;
+
+    expect(() => redactWorkspaceHostValue(error)).not.toThrow();
+    expect((redactWorkspaceHostValue(error) as Record<string, unknown>).cause).toBe('[CIRCULAR]');
+  });
+
   it('reads one stored connection as a typed non-secret provider reference', async () => {
     H.rows.set('FROM harness_shared.workspace_host_connections WHERE', [
       {

@@ -44,6 +44,30 @@ export function redactWorkspaceHostValue(value: unknown, seen = new WeakSet<obje
   if (typeof value === 'string') return redactWorkspaceHostText(value);
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
   if (value instanceof Date) return value.toISOString();
+  // An Error's `name`/`message`/`stack`/`cause` are NON-ENUMERABLE, so the generic Object.entries()
+  // branch below builds `{}` from one and silently destroys the only diagnostic a failed operation
+  // has. That is not hypothetical: callers such as initialization-runner deliberately pass the
+  // thrown reason ONLY through `error` so it can be redacted here rather than interpolated into a
+  // human-facing message, and every one of those failures persisted as `error: {}`. Project the
+  // non-enumerable fields explicitly — still redacted — and keep any own enumerable properties the
+  // thrower attached (`code`, `status`, ...).
+  if (value instanceof Error) {
+    if (seen.has(value)) return '[CIRCULAR]';
+    seen.add(value);
+    const error: JsonRecord = {
+      name: redactWorkspaceHostText(value.name),
+      message: redactWorkspaceHostText(value.message),
+    };
+    if (typeof value.stack === 'string') error.stack = redactWorkspaceHostText(value.stack);
+    if (value.cause !== undefined) error.cause = redactWorkspaceHostValue(value.cause, seen);
+    for (const [key, entry] of Object.entries(value as unknown as JsonRecord)) {
+      if (key in error) continue;
+      error[key] =
+        SECRET_KEY.test(key) && !SAFE_REFERENCE_KEY.test(key) ? '[REDACTED]' : redactWorkspaceHostValue(entry, seen);
+    }
+    seen.delete(value);
+    return error;
+  }
   if (Array.isArray(value)) return value.map((entry) => redactWorkspaceHostValue(entry, seen));
   if (typeof value !== 'object') return String(value);
   if (seen.has(value)) return '[CIRCULAR]';
