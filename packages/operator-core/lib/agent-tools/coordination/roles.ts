@@ -61,6 +61,12 @@ export const COORD_ROLES = [
   // `role_not_allowed` for a doc-steward-scoped URL, forcing a scripts/mcp-call.mjs
   // fallback (EI-6643). Same registered-late class as bee/sentinel/overwatch above.
   'doc-steward',
+  // The RELEASE-FIXER — a launch-blueprint role whose repair protocol is
+  // coordinated work: orient, claim/checkpoint/complete the gate item, and
+  // escalate when the regression cannot be fixed safely. It retains native
+  // file/shell tools (so it deliberately stays out of SU_ROLES); the matching
+  // synthesized principal grants live in role-principal-caps.ts.
+  'release-fixer',
   // pot-rename SLICE-2 CONTRACT: the old ids (bee/queen/sentinel/overwatch) are
   // gone — cup/mug/papercup/kettle above are the canonical coord roles. (scout was
   // never a coord role, so blender is intentionally absent.) ⚠ AUTH INVARIANT: the

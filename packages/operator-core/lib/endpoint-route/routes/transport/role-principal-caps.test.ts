@@ -89,6 +89,45 @@ describe('loadRoleCapabilities', () => {
   });
 
   test(
+    'release-fixer can use every direct platform seam its runbook requires',
+    { timeout: 60_000 },
+    async () => {
+      const caps = await loadRoleCapabilities(fakeTx([]), 'ws', 'release-fixer');
+      for (const capability of [
+        'coord:read',
+        'coord:write',
+        'work_items:read',
+        'work_items:write',
+        'locks:read',
+        'locks:write',
+        'intel:read',
+        'operator:write',
+        'testing:run',
+      ]) {
+        expect(caps.has(capability), `release-fixer missing ${capability}`).toBe(true);
+      }
+
+      const [
+        { COORD_ROLES },
+        { default: stateRead },
+        { default: acquireLock },
+        { default: checkpointRun },
+        { default: releaseTrace },
+      ] = await Promise.all([
+        import('../../../agent-tools/coordination/roles.js'),
+        import('../../../agent-tools/state/read.js'),
+        import('../../../agent-tools/locks/acquire.js'),
+        import('../../../agent-tools/release/checkpoint-run.js'),
+        import('../../../agent-tools/release/trace.js'),
+      ]);
+      expect(COORD_ROLES).toContain('release-fixer');
+      for (const tool of [stateRead, acquireLock, checkpointRun, releaseTrace]) {
+        expect(tool.agentRoles).toContain('release-fixer');
+      }
+    },
+  );
+
+  test(
     'judge can emit, verify, read evidence, and capture defects without gaining implementation powers',
     { timeout: 60_000 },
     async () => {

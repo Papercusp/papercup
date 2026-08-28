@@ -24,6 +24,25 @@ export const BLUEPRINT_ROLE_CAPS: Readonly<Record<string, readonly string[]>> = 
   voter: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   advocate: ['coord:read', 'coord:write', 'docs:read', 'search:read'],
   scanner: ['coord:read', 'coord:write', 'docs:read', 'search:read', 'harness:read', 'plans:read'],
+  // The green-checkpoint release-fixer is a launch-blueprint role with no
+  // provisioned system_principals row. Its runbook uses the platform directly
+  // to establish gate ownership, orient/claim/checkpoint its repair, hold file
+  // locks, inspect release truth, run focused tests, and fire a fresh verdict.
+  // Keep these grants paired with the tool allowlists (COORD_ROLES plus the
+  // explicit state/release/testing/locks allowlists); otherwise the helper CLI
+  // becomes an accidental privilege bridge and the documented direct path
+  // fails with missing_capability.
+  'release-fixer': [
+    'coord:read',
+    'coord:write',
+    'work_items:read',
+    'work_items:write',
+    'locks:read',
+    'locks:write',
+    'intel:read',
+    'operator:write',
+    'testing:run',
+  ],
   // Dedicated plan-acceptance judges are evidence-only: they may read the rubric,
   // prior scorecards, and test-run ledger; emit the verdict; run the rubric's named
   // checks; read the files those checks cite; and capture a defect they encounter.
