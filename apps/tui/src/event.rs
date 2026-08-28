@@ -426,7 +426,10 @@ pub enum Event {
     SuSessionError(String),
     /// A stream-scoped failure.  The chat id lets the reducer discard a late
     /// EOF/error from a session that the owner has already switched away from.
-    SuSessionStreamError { chat_id: String, message: String },
+    SuSessionStreamError {
+        chat_id: String,
+        message: String,
+    },
     /// Immediate acknowledgement from a SU-session control POST. Terminal
     /// completion/refusal still arrives on the ordered session stream.
     SuSessionCommandResult(String),

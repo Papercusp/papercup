@@ -700,7 +700,8 @@ mod tests {
             carry: "warm".into(),
             defer_spawn: true,
             agent_chat_id: "chat-1".into(),
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(create["agent"], "omp");
         assert_eq!(create["harness_slug"], "papercup");
         assert_eq!(create["defer_spawn"], true);
@@ -712,7 +713,8 @@ mod tests {
             attach_adv_session_id: 42,
             harness_slug: None,
             plan_slug: None,
-        }).unwrap();
+        })
+        .unwrap();
         assert_eq!(attach["attach_adv_session_id"], 42);
         assert!(attach.get("attachAdvSessionId").is_none());
     }
@@ -723,15 +725,19 @@ mod tests {
             "agentChatId":"chat-1", "advSessionId":7, "backend":"omp",
             "nativeSessionId":"thread-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
         })).unwrap();
-        let command = SuSessionControl::Resume { cause: "pui-restart".into() }
-            .command_json(&identity, "cmd-1", "2026-08-28T00:00:00Z");
+        let command = SuSessionControl::Resume {
+            cause: "pui-restart".into(),
+        }
+        .command_json(&identity, "cmd-1", "2026-08-28T00:00:00Z");
         assert_eq!(command["type"], "resume");
         assert_eq!(command["cause"], "pui-restart");
         assert_eq!(command["target"]["advSessionId"], 7);
         assert_eq!(command["target"]["backend"], "omp");
 
-        let fork = SuSessionControl::Fork { from_sequence: Some(12) }
-            .command_json(&identity, "cmd-2", "2026-08-28T00:00:00Z");
+        let fork = SuSessionControl::Fork {
+            from_sequence: Some(12),
+        }
+        .command_json(&identity, "cmd-2", "2026-08-28T00:00:00Z");
         assert_eq!(fork["fromSequence"], 12);
         assert_eq!(SuSessionControl::End { reason: None }.command_type(), "end");
     }

@@ -1354,7 +1354,7 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-            Action::SendSuSessionTurn(text) => {
+                Action::SendSuSessionTurn(text) => {
                     if let Some(state) = app.su_session.as_ref() {
                         if let Some(chat_id) = app.agent_chat_id.clone() {
                             tokio::spawn(send_su_session_turn_task(
@@ -1371,22 +1371,22 @@ async fn run<B: Backend>(
                             ));
                         }
                     }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SendSuSessionCommand {
-                harness,
-                chat_id,
-                command,
-            } => {
-                tokio::spawn(send_su_session_command_task(
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::SendSuSessionCommand {
                     harness,
                     chat_id,
                     command,
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::AttachSuSession {
+                } => {
+                    tokio::spawn(send_su_session_command_task(
+                        harness,
+                        chat_id,
+                        command,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::AttachSuSession {
                     harness,
                     chat_id,
                     adv_session_id,
@@ -2251,7 +2251,12 @@ async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>
 
 /// Request cancellation for a detached test run. The run's polling task keeps
 /// running independently and will paint the authoritative terminal snapshot.
-async fn cancel_test_run(harness: String, run_id: String, _file: String, tx: UnboundedSender<Event>) {
+async fn cancel_test_run(
+    harness: String,
+    run_id: String,
+    _file: String,
+    tx: UnboundedSender<Event>,
+) {
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
@@ -3206,9 +3211,7 @@ async fn fetch_agent_ctx(
             app::WakeFilter::Owner(id) => roster.iter().find(|r| &r.owner_id == id),
             // Queen (and the never-used All fallback): the roster's canonical
             // Mug-kind row (`queen` remains a legacy alias).
-            _ => roster
-                .iter()
-                .find(|r| {
+            _ => roster.iter().find(|r| {
                 r.agent_pane_kind
                     .as_deref()
                     .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
@@ -4087,7 +4090,9 @@ async fn send_su_session_command_task(
     let client = match OperatorClient::from_discovery().await {
         Ok(client) => client,
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!("SU-session control: {error}")));
+            let _ = tx.send(Event::SuSessionError(format!(
+                "SU-session control: {error}"
+            )));
             return;
         }
     };
@@ -4110,7 +4115,9 @@ async fn send_su_session_command_task(
             let _ = tx.send(Event::SuSessionCommandResult(status.to_string()));
         }
         Err(error) => {
-            let _ = tx.send(Event::SuSessionError(format!("SU-session control: {error}")));
+            let _ = tx.send(Event::SuSessionError(format!(
+                "SU-session control: {error}"
+            )));
         }
     }
 }

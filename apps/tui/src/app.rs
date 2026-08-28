@@ -2422,19 +2422,27 @@ impl App {
             .descriptor
             .as_ref()
             .map(|descriptor| descriptor.runtime_generation);
-        let binding_native = state.binding.native_session.as_ref().and_then(|native| {
-            match native {
-                crate::models::NativeSessionHandle::Claude { session_id, .. } => session_id.as_deref(),
-                crate::models::NativeSessionHandle::Codex { rollout_id, .. } => rollout_id.as_deref(),
-                crate::models::NativeSessionHandle::Omp { omp_thread_id, .. } => omp_thread_id.as_deref(),
-            }
-        });
+        let binding_native =
+            state
+                .binding
+                .native_session
+                .as_ref()
+                .and_then(|native| match native {
+                    crate::models::NativeSessionHandle::Claude { session_id, .. } => {
+                        session_id.as_deref()
+                    }
+                    crate::models::NativeSessionHandle::Codex { rollout_id, .. } => {
+                        rollout_id.as_deref()
+                    }
+                    crate::models::NativeSessionHandle::Omp { omp_thread_id, .. } => {
+                        omp_thread_id.as_deref()
+                    }
+                });
         let runtime_replaced = previous_native
             .or(binding_native)
             .is_some_and(|native| native != snapshot.descriptor.identity.native_session_id)
-            || previous_generation.is_some_and(|generation| {
-                snapshot.descriptor.runtime_generation > generation
-            });
+            || previous_generation
+                .is_some_and(|generation| snapshot.descriptor.runtime_generation > generation);
         let snapshot_adv_session_id = snapshot.descriptor.identity.adv_session_id;
         state.identity = Some(snapshot.descriptor.identity.clone());
         state.lifecycle = snapshot.descriptor.lifecycle;
@@ -2442,22 +2450,27 @@ impl App {
         state.last_sequence = snapshot.last_sequence;
         state.stale = false;
         state.error = None;
-        state.reconciliation = if state.lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
-            crate::su_session::SuSessionReconciliation::FailedOrphaned
-        } else if state.lifecycle == crate::su_session::SuSessionLifecycleState::Ended || snapshot.terminal {
-            crate::su_session::SuSessionReconciliation::EndedArchived
-        } else if runtime_replaced {
-            crate::su_session::SuSessionReconciliation::RuntimeReplaced
-        } else {
-            crate::su_session::SuSessionReconciliation::Attached
-        };
+        state.reconciliation =
+            if state.lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+                crate::su_session::SuSessionReconciliation::FailedOrphaned
+            } else if state.lifecycle == crate::su_session::SuSessionLifecycleState::Ended
+                || snapshot.terminal
+            {
+                crate::su_session::SuSessionReconciliation::EndedArchived
+            } else if runtime_replaced {
+                crate::su_session::SuSessionReconciliation::RuntimeReplaced
+            } else {
+                crate::su_session::SuSessionReconciliation::Attached
+            };
         if runtime_replaced {
             self.session_note = Some(format!(
                 "SU runtime replaced for adv {}; reattached native session",
                 snapshot_adv_session_id
             ));
-        } else if state.reconciliation == crate::su_session::SuSessionReconciliation::EndedArchived {
-            self.session_note = Some("SU session ended; transcript preserved for inspection".into());
+        } else if state.reconciliation == crate::su_session::SuSessionReconciliation::EndedArchived
+        {
+            self.session_note =
+                Some("SU session ended; transcript preserved for inspection".into());
         }
         self.agent_chat_id = state.identity.as_ref().map(|i| i.agent_chat_id.clone());
     }
@@ -2499,8 +2512,8 @@ impl App {
             crate::su_session::SuSessionEvent::Lifecycle {
                 state: lifecycle, ..
             } => {
-                let runtime_was_replaced =
-                    state.reconciliation == crate::su_session::SuSessionReconciliation::RuntimeReplaced;
+                let runtime_was_replaced = state.reconciliation
+                    == crate::su_session::SuSessionReconciliation::RuntimeReplaced;
                 state.lifecycle = lifecycle;
                 if let Some(descriptor) = state.descriptor.as_mut() {
                     descriptor.lifecycle = lifecycle;
@@ -2512,15 +2525,16 @@ impl App {
                 ) {
                     self.chat_streaming = false;
                 }
-                state.reconciliation = if lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
-                    crate::su_session::SuSessionReconciliation::FailedOrphaned
-                } else if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
-                    crate::su_session::SuSessionReconciliation::EndedArchived
-                } else if runtime_was_replaced {
-                    crate::su_session::SuSessionReconciliation::RuntimeReplaced
-                } else {
-                    crate::su_session::SuSessionReconciliation::Attached
-                };
+                state.reconciliation =
+                    if lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+                        crate::su_session::SuSessionReconciliation::FailedOrphaned
+                    } else if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
+                        crate::su_session::SuSessionReconciliation::EndedArchived
+                    } else if runtime_was_replaced {
+                        crate::su_session::SuSessionReconciliation::RuntimeReplaced
+                    } else {
+                        crate::su_session::SuSessionReconciliation::Attached
+                    };
                 if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
                     self.session_note =
                         Some("SU session ended; transcript preserved for inspection".into());
@@ -2641,7 +2655,9 @@ impl App {
                     "workspaceId": envelope.session.workspace_id,
                     "snapshot": {"openCards": open_cards}
                 });
-                if let Some(snapshot) = crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string()) {
+                if let Some(snapshot) =
+                    crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string())
+                {
                     self.card_state.apply_snapshot(snapshot);
                 }
                 if phase == "closed" {
@@ -2668,10 +2684,7 @@ impl App {
     /// Build a capability-checked command action for an owner control.  An
     /// unsupported capability is an explicit UI refusal (with the backend's
     /// reason) rather than a no-op or a provider-specific guess.
-    pub fn su_session_control(
-        &mut self,
-        control: crate::su_session::SuSessionControl,
-    ) -> Action {
+    pub fn su_session_control(&mut self, control: crate::su_session::SuSessionControl) -> Action {
         let Some(state) = self.su_session.as_ref() else {
             self.session_note = Some("no SU session is attached".into());
             return Action::Render;
@@ -2699,9 +2712,7 @@ impl App {
         self.su_command_counter = self.su_command_counter.saturating_add(1);
         let command_id = format!(
             "pui-{}-{}-{}",
-            identity.adv_session_id,
-            command_type,
-            self.su_command_counter
+            identity.adv_session_id, command_type, self.su_command_counter
         );
         let command = control.command_json(identity, &command_id, "pui");
         let Some(chat_id) = self.agent_chat_id.clone() else {
@@ -7342,7 +7353,8 @@ impl App {
                 if let Some(state) = self.su_session.as_mut() {
                     state.error = Some(error.clone());
                     state.stale = true;
-                    state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
+                    state.reconciliation =
+                        crate::su_session::SuSessionReconciliation::FailedOrphaned;
                 }
                 self.last_error = Some(format!("SU-session: {error}"));
                 Action::Render
@@ -7431,7 +7443,10 @@ impl App {
             } => {
                 // A slow fetch from the previously selected pot must never
                 // replace the newly selected pot's native chat.
-                if harness == self.harness && load_token == self.chat_load_token && !self.chat_streaming {
+                if harness == self.harness
+                    && load_token == self.chat_load_token
+                    && !self.chat_streaming
+                {
                     self.agent_chat_id = chat_id;
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
@@ -8412,11 +8427,10 @@ impl App {
             }
             // P-009 controls use uppercase keys so they remain discoverable
             // without stealing ordinary composer/navigation bindings.
-            KeyCode::Char('R') if self.tab == Tab::Operator && self.su_session.is_some() => {
-                self.su_session_control(crate::su_session::SuSessionControl::Resume {
+            KeyCode::Char('R') if self.tab == Tab::Operator && self.su_session.is_some() => self
+                .su_session_control(crate::su_session::SuSessionControl::Resume {
                     cause: "owner".into(),
-                })
-            }
+                }),
             KeyCode::Char('K') if self.tab == Tab::Operator && self.su_session.is_some() => {
                 let sequence = self.su_session.as_ref().map(|state| state.last_sequence);
                 self.su_session_control(crate::su_session::SuSessionControl::Fork {
@@ -8426,11 +8440,10 @@ impl App {
             KeyCode::Char('F') if self.tab == Tab::Operator && self.su_session.is_some() => {
                 self.su_session_control(crate::su_session::SuSessionControl::Focus)
             }
-            KeyCode::Char('E') if self.tab == Tab::Operator && self.su_session.is_some() => {
-                self.su_session_control(crate::su_session::SuSessionControl::End {
+            KeyCode::Char('E') if self.tab == Tab::Operator && self.su_session.is_some() => self
+                .su_session_control(crate::su_session::SuSessionControl::End {
                     reason: Some("owner ended session".into()),
-                })
-            }
+                }),
             // Push-to-talk (voice-mode-tui-port-2026-06-05 P2). `v` on the
             // Operator tab (outside compose): Idle → start recording; Recording
             // → stop + run the turn (the press-to-toggle path; the kitty
@@ -10649,7 +10662,9 @@ mod tests {
             "capabilities": {"commands": {"resume":{"state":"supported","implementation":"native"}, "fork":{"state":"unsupported","reason":"provider does not expose fork"}}, "features": {}},
             "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
         })).unwrap());
-        match a.su_session_control(crate::su_session::SuSessionControl::Resume { cause: "owner".into() }) {
+        match a.su_session_control(crate::su_session::SuSessionControl::Resume {
+            cause: "owner".into(),
+        }) {
             Action::SendSuSessionCommand { command, .. } => {
                 assert_eq!(command["type"], "resume");
                 assert_eq!(command["target"]["advSessionId"], 7);
@@ -10657,7 +10672,12 @@ mod tests {
             }
             other => panic!("expected typed SU command, got {other:?}"),
         }
-        assert_eq!(a.su_session_control(crate::su_session::SuSessionControl::Fork { from_sequence: None }), Action::Render);
+        assert_eq!(
+            a.su_session_control(crate::su_session::SuSessionControl::Fork {
+                from_sequence: None
+            }),
+            Action::Render
+        );
         assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
     }
 
@@ -10690,7 +10710,11 @@ mod tests {
             app.su_session.as_ref().unwrap().reconciliation,
             crate::su_session::SuSessionReconciliation::RuntimeReplaced
         );
-        assert!(app.session_note.as_deref().unwrap().contains("runtime replaced"));
+        assert!(app
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("runtime replaced"));
 
         let mut ended = su_event_base("lifecycle", 4);
         ended["previousState"] = json!("ready");
@@ -12439,7 +12463,10 @@ mod tests {
         // folded in by D-002b).
         let mut a = App::new();
         a.update(key('3', KeyModifiers::NONE)); // Plans tab
-        assert_eq!(a.update(key('n', KeyModifiers::NONE)), Action::FetchNetworkBoard);
+        assert_eq!(
+            a.update(key('n', KeyModifiers::NONE)),
+            Action::FetchNetworkBoard
+        );
         assert_eq!(a.tab, Tab::Network);
         a.update(key('4', KeyModifiers::NONE)); // Fleet
         match a.update(key('n', KeyModifiers::NONE)) {
@@ -15982,16 +16009,17 @@ mod tests {
         a.testing_focus = TestingFocus::Files;
         a.testing_files = vec!["a.test.ts".into()];
         a.pane_entered = true;
-        assert!(matches!(a.update(ev(KeyCode::Enter)), Action::RunTest { .. }));
+        assert!(matches!(
+            a.update(ev(KeyCode::Enter)),
+            Action::RunTest { .. }
+        ));
 
-        let snapshot = |run_id: &str, status: &str, output: &str| {
-            crate::models::TestRunSnapshot {
+        let snapshot = |run_id: &str, status: &str, output: &str| crate::models::TestRunSnapshot {
             run_id: run_id.into(),
             file_path: Some("a.test.ts".into()),
             status: status.into(),
             output: output.into(),
             ..Default::default()
-            }
         };
         a.update(Event::TestRunProgress {
             file: "a.test.ts".into(),
@@ -16030,7 +16058,10 @@ mod tests {
         a.testing_focus = TestingFocus::Files;
         a.testing_files = vec!["a.test.ts".into()];
         a.pane_entered = true;
-        assert!(matches!(a.update(ev(KeyCode::Enter)), Action::RunTest { .. }));
+        assert!(matches!(
+            a.update(ev(KeyCode::Enter)),
+            Action::RunTest { .. }
+        ));
         a.update(Event::TestRunProgress {
             file: "a.test.ts".into(),
             snapshot: crate::models::TestRunSnapshot {

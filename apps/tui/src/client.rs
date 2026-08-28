@@ -2399,7 +2399,9 @@ impl OperatorClient {
                 serde_json::json!({}),
             )
             .await?;
-        Ok(v.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false))
+        Ok(v.get("ok")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false))
     }
 
     /// The effective Config-tab view (D-013): Claude Code defaults overlaid by
