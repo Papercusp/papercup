@@ -523,6 +523,50 @@ describe("rail model", () => {
     expect(operate?.evidence).toBe("2 workspaces · 1 needs attention");
   });
 
+  it("agrees the drift verb with the drift count, not with the host count", () => {
+    const model = railModel(
+      [connection()],
+      [
+        workspace(),
+        workspace({
+          id: "host-2",
+          desiredState: "running",
+          observedState: "stopped",
+        }),
+        workspace({
+          id: "host-3",
+          desiredState: "running",
+          observedState: "stopped",
+        }),
+      ],
+      "configure",
+      now,
+    );
+    expect(model.steps.find((step) => step.id === "operate")?.evidence).toBe(
+      "3 workspaces · 2 need attention",
+    );
+  });
+
+  it("keeps the singular verb when exactly one host has drifted", () => {
+    const model = railModel(
+      [connection()],
+      [
+        workspace(),
+        workspace({
+          id: "host-2",
+          desiredState: "running",
+          observedState: "stopped",
+        }),
+        workspace({ id: "host-3" }),
+      ],
+      "configure",
+      now,
+    );
+    expect(model.steps.find((step) => step.id === "operate")?.evidence).toBe(
+      "3 workspaces · 1 needs attention",
+    );
+  });
+
   it("says all aligned when nothing is drifting", () => {
     const model = railModel([connection()], [workspace()], "connect", now);
     expect(model.steps.find((step) => step.id === "operate")?.evidence).toBe(

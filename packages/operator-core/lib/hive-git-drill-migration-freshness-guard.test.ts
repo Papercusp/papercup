@@ -101,6 +101,13 @@ function runGuard(repoDir: string, sideDir: string): { status: number | null; st
 }
 
 describe('WI-3969/P-401: hive-git-drill.sh migration-freshness guard', () => {
+  it('selects the default artifact by Debian Package identity and rejects a wrong explicit product', () => {
+    expect(drill).toContain('fed_select_newest_deb_by_package "$EXPECTED_DEB_PACKAGE"');
+    expect(drill).toContain('dpkg-deb -f "$DEB" Package');
+    expect(drill).toMatch(/expected Package=.{0,40}wrong Papercusp product/);
+    expect(drill).toContain('DEB_CANDIDATES+=("$candidate")');
+  });
+
   it('source pins the WI-3969 staleness comparison and its exit-2 FATAL path', () => {
     expect(drill).toMatch(/WI-3969/);
     expect(drill).toMatch(/"\$bundled_max_mig"\s+-lt\s+"\$repo_max_mig"/);

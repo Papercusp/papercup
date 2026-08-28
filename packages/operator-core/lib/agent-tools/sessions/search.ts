@@ -152,7 +152,17 @@ export default defineTool({
     const { filters, selfSession: resolvedSelfSession } = await resolveSearchFilters(
       ctx.tx, effectiveArgs, callerOwnerId, { workspaceId },
     );
-    await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
+    // EI-21699129692862363: this refresh is what makes session:'self' able to
+    // find a turn written seconds ago — it tails the live transcript into the
+    // index before the read. It is FAIL-SOFT by construction (`catch { return
+    // false }` per owner), so when it fails the search still runs, just against
+    // a stale index. Discarding its result — which this call did until now —
+    // made that failure INVISIBLE: the caller got a confident `total_hits: 0`
+    // and a hint blaming their query shape, for text that is sitting in the
+    // transcript unindexed. Keep the receipt; a zero measured over a degraded
+    // refresh is a DEGRADED MEASUREMENT, not a finding.
+    const liveRefresh = await refreshLiveSessionsBeforeRead(ctx.tx, filters?.owners ?? null);
+    const refreshDegraded = liveRefresh.attempted > liveRefresh.refreshed;
 
     interface RawHit {
       sourceKind: string; sessionId: string; turnIdx: number;
@@ -240,6 +250,24 @@ export default defineTool({
     // caller knows a 0 here is "no match for this query", never "no history at
     // all". Best-effort only: never fail the search over this extra read.
     let zeroHitCaveat: string | undefined;
+
+    // EI-21699129692862363 — LEADS every other explanation of a zero, because it
+    // is the only one that means "this answer may be wrong" rather than "your
+    // query missed". The caveats below all steer the caller toward re-phrasing;
+    // if the refresh failed, re-phrasing cannot help and that advice is actively
+    // misdirecting. This matters most for the compaction protocol, which tells
+    // agents to verify a claimed owner directive with exactly this call: a stale
+    // zero read as "the owner never said it" is the documented directive-rot
+    // failure arriving through a tool result instead of a summary.
+    const staleIndexCaveat = pageHits.length === 0 && refreshDegraded
+      ? `⚠ UNVERIFIABLE, NOT ABSENT: the pre-read ingest that tails live transcript(s) into the search index ` +
+        `FAILED for ${liveRefresh.attempted - liveRefresh.refreshed} of ${liveRefresh.attempted} session(s) in scope ` +
+        `(it is fail-soft and swallows its own error). Turns written since the last SUCCESSFUL ingest — including ` +
+        `ones from the session you are searching right now — are not in the index yet, so this 0 does not mean the ` +
+        `text was never written. Re-running may fix it; if it still returns 0, read the transcript directly ` +
+        `(sessions:read { session:'self' }) before concluding anything. Do NOT use this 0 as evidence that an owner ` +
+        `directive was never given.`
+      : undefined;
 
     // A PROVENANCE-FILTERED ZERO IS NOT A QUERY MISS, and must never be
     // rendered as one. `turn_origin:'owner-typed'` / `owner_only:true` filter
@@ -394,7 +422,16 @@ export default defineTool({
               "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
           }
         : {}),
-      ...(zeroHitCaveat ? { zeroHitCaveat } : {}),
+      // The staleness caveat LEADS: it is the only one that questions the answer
+      // itself, so it must not be buried behind advice to re-phrase the query.
+      ...(zeroHitCaveat || staleIndexCaveat
+        ? { zeroHitCaveat: [staleIndexCaveat, zeroHitCaveat].filter(Boolean).join(' ') }
+        : {}),
+      // Machine-legible receipt for the same fact, so a caller (or a later audit)
+      // can distinguish a real empty from a degraded one without parsing prose.
+      ...(refreshDegraded
+        ? { indexRefresh: { attempted: liveRefresh.attempted, refreshed: liveRefresh.refreshed, degraded: true } }
+        : {}),
     };
 
     const cursorFor = (resultCount: number, more: boolean): string | undefined => more

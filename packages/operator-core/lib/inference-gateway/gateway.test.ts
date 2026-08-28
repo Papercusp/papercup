@@ -3779,7 +3779,7 @@ function zeroHealthyPool(): AccountPool {
   return { active: () => A, onExhausted: () => null, readmit: () => {}, healthyCount: () => 0, entries: () => [A] };
 }
 
-test('serviceable clamp defaults to auto: a 0-serviceable pool pins live admission to the MIN floor', async () => {
+test('serviceable recommendation is non-binding: a 0-serviceable pool does not shrink controller admission', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
@@ -3788,11 +3788,11 @@ test('serviceable clamp defaults to auto: a 0-serviceable pool pins live admissi
     admission: { maxConcurrent: number };
     clamp: { mode: string; recommendation: number | null; applied: number; overridden: boolean };
   };
-  assert.equal(s.clamp.mode, 'auto', 'guard is ON by default');
+  assert.equal(s.clamp.mode, 'off', 'retired clamp is advisory by default');
   assert.equal(s.clamp.recommendation, 2, '0 serviceable accounts ⇒ recommendation is the MIN_SERVICEABLE_ADMISSION floor');
-  assert.equal(s.admission.maxConcurrent, 2, 'and it is APPLIED to live admission');
-  assert.equal(s.clamp.applied, 2);
-  assert.equal(s.clamp.overridden, false);
+  assert.equal(s.admission.maxConcurrent, 24, 'the recommendation is not applied to live admission');
+  assert.equal(s.clamp.applied, 24);
+  assert.equal(s.clamp.overridden, true, 'status makes the non-binding recommendation explicit');
 });
 
 test('POST /admin/clamp-mode?mode=off overrides the clamp LIVE — admission returns to the AIMD effective', async () => {
@@ -3800,9 +3800,9 @@ test('POST /admin/clamp-mode?mode=off overrides the clamp LIVE — admission ret
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
   }, { pool: zeroHealthyPool(), concurrency: 24 });
-  // Precondition: the stale clamp is binding.
+  // Precondition: the retired recommendation is visible but non-binding.
   const before = (await (await ask('/admin/stats')).json()) as { admission: { maxConcurrent: number } };
-  assert.equal(before.admission.maxConcurrent, 2, 'clamped before the override');
+  assert.equal(before.admission.maxConcurrent, 24, 'serviceability does not clamp before the compatibility flip');
 
   const flip = (await (await ask('/admin/clamp-mode?mode=off', { method: 'POST' })).json()) as {
     ok: boolean; mode: string; recommendation: number | null; applied: number;
@@ -3817,11 +3817,11 @@ test('POST /admin/clamp-mode?mode=off overrides the clamp LIVE — admission ret
     clamp: { mode: string; recommendation: number | null; overridden: boolean };
   };
   assert.equal(after.admission.maxConcurrent, 24, 'the flip took effect on the RUNNING queue, no restart');
-  assert.equal(after.clamp.overridden, true, 'and the override is visible on /stats — never mistakable for a healthy pool');
+  assert.equal(after.clamp.overridden, true, 'status records that the recommendation was not applied');
   assert.equal(after.clamp.recommendation, 2);
 });
 
-test('POST /admin/clamp-mode?mode=auto restores the guard', async () => {
+test('POST /admin/clamp-mode?mode=auto remains a compatibility readback and cannot restore a hard cap', async () => {
   await boot((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end('{"ok":true}');
@@ -3829,10 +3829,10 @@ test('POST /admin/clamp-mode?mode=auto restores the guard', async () => {
   await ask('/admin/clamp-mode?mode=off', { method: 'POST' }).then((r) => r.json());
   const back = (await (await ask('/admin/clamp-mode?mode=auto', { method: 'POST' })).json()) as { mode: string; applied: number };
   assert.equal(back.mode, 'auto');
-  assert.equal(back.applied, 2, 'the guard re-clamps immediately');
+  assert.equal(back.applied, 24, 'the retired guard cannot re-clamp admission');
   const s = (await (await ask('/admin/stats')).json()) as { admission: { maxConcurrent: number }; clamp: { overridden: boolean } };
-  assert.equal(s.admission.maxConcurrent, 2);
-  assert.equal(s.clamp.overridden, false);
+  assert.equal(s.admission.maxConcurrent, 24);
+  assert.equal(s.clamp.overridden, true);
 });
 
 test('POST /admin/clamp-mode with no mode READS current state without changing it', async () => {
@@ -3841,8 +3841,8 @@ test('POST /admin/clamp-mode with no mode READS current state without changing i
     res.end('{"ok":true}');
   }, { pool: zeroHealthyPool(), concurrency: 24 });
   const r = (await (await ask('/admin/clamp-mode', { method: 'POST' })).json()) as { mode: string; applied: number };
-  assert.equal(r.mode, 'auto', 'read-only probe');
-  assert.equal(r.applied, 2, 'unchanged');
+  assert.equal(r.mode, 'off', 'read-only probe reports the retired advisory mode');
+  assert.equal(r.applied, 24, 'unchanged');
 });
 
 test('POST /admin/clamp-mode rejects an unknown mode (400) rather than silently defaulting', async () => {
@@ -3854,7 +3854,7 @@ test('POST /admin/clamp-mode rejects an unknown mode (400) rather than silently 
   assert.equal(res.status, 400);
   await res.text();
   const s = (await (await ask('/admin/stats')).json()) as { clamp: { mode: string } };
-  assert.equal(s.clamp.mode, 'auto', 'a bad flip never mutates the mode');
+  assert.equal(s.clamp.mode, 'off', 'a bad flip never mutates the mode');
 });
 
 test('an override does NOT lift the clamp for a pool that has real capacity (recommendation ≥ effective ⇒ overridden:false)', async () => {

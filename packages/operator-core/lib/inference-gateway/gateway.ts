@@ -363,20 +363,27 @@ const EGRESS_PROBE_DELAY_MS =
  *  open window. Env-tunable. */
 const EGRESS_PROBE_HTTP_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS) || 12_000;
 const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
-/** Default Codex admission capacity per resolved account. The default is intentionally
- *  account-scaled so adding healthy Codex accounts adds usable admission capacity. */
+/**
+ * Legacy compatibility metadata only. Account-count arithmetic is no longer an
+ * admission authority; the capless controller learns the Codex class window from
+ * provider outcomes. Keep the symbol for old status/readback consumers during the
+ * migration, but do not use it to derive a live queue limit.
+ */
 export const CODEX_ADMISSION_SLOTS_PER_ACCOUNT = 4;
 
-/** Compute the default Codex cap from the resolved account pool, bounded by the Claude cap.
- *  An empty pool still gets one queue slot so the gateway can report a useful state and
- *  recover when accounts are hot-reloaded. Explicit option/env overrides are applied by
- *  the callers after this default is computed. */
-export function accountScaledCodexConcurrency(accountCount: number, claudeConcurrency: number): number {
-  const accounts = Number.isFinite(accountCount) ? Math.max(0, Math.floor(accountCount)) : 0;
+/**
+ * Return the compatibility seed for Codex admission. This used to multiply
+ * account count by `CODEX_ADMISSION_SLOTS_PER_ACCOUNT` and clamp it to Claude's
+ * configured concurrency. The formula made serviceability look like physical
+ * capacity and prevented healthy expansion past the old ceiling. The account
+ * argument remains for source compatibility and telemetry callers; it is ignored
+ * by the live decision.
+ */
+export function accountScaledCodexConcurrency(_accountCount: number, claudeConcurrency: number): number {
   const claudeCap = Number.isFinite(claudeConcurrency)
     ? Math.max(1, Math.floor(claudeConcurrency))
     : DEFAULT_CONCURRENCY;
-  return Math.max(1, Math.min(claudeCap, accounts * CODEX_ADMISSION_SLOTS_PER_ACCOUNT));
+  return claudeCap;
 }
 
 /** Read the explicit process-level Codex cap override without confusing an unset/invalid
@@ -397,10 +404,10 @@ const DEFAULT_AIMD_FLOOR = Number(process.env.PAPERCUSP_GATEWAY_AIMD_FLOOR) || 4
 const DEFAULT_AIMD_DECREASE_THRESHOLD = Number(process.env.PAPERCUSP_GATEWAY_AIMD_DECREASE_THRESHOLD) || 6;
 /** Consecutive clean 2xx that earn one additive +1 step back toward the cap (gentle recovery). */
 const DEFAULT_AIMD_INCREASE_EVERY = Number(process.env.PAPERCUSP_GATEWAY_AIMD_INCREASE_EVERY) || 8;
-// Fix 2 — serviceable-count admission clamp knobs (2026-06-23 thundering-herd fix). Live admission is clamped to
-// MIN(aimd-effective, serviceableAccounts × PER_ACCOUNT_ADMISSION), floored at MIN_SERVICEABLE_ADMISSION so the
-// pool always keeps a probe path. SERVICEABLE_CLAMP_MODEL is the (most-constrained) model whose per-(model,account)
-// governor pause the serviceability check reads. OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ no clamp.
+// Legacy serviceability recommendation knobs. P-007 keeps these values for
+// diagnostics/routing evidence, but they are no longer applied to the productive
+// admission window. `PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP` remains accepted as
+// compatibility telemetry and cannot re-enable a hard cap.
 const SERVICEABLE_CLAMP_ON = process.env.PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP !== '0';
 /** How the serviceable-count clamp is honored. `auto` = apply the recommendation (the safe default, the
  *  thundering-herd guard). `off` = compute + REPORT it, but admit at the AIMD effective — the agent
@@ -1108,6 +1115,9 @@ export interface GatewayStats {
     recommendation: number | null;
     applied: number;
     overridden: boolean;
+    /** Legacy configuration readback; neither field is an admission authority. */
+    legacyConfigured?: boolean;
+    legacyTickMs?: number;
     /** Serviceable accounts the recommendation was computed FROM — the raw input, published so a reader
      *  never has to invert `max(MIN_SERVICEABLE_ADMISSION, n * PER_ACCOUNT_ADMISSION)` to recover it. That
      *  inversion is not even well-defined at the floor: a recommendation of 2 is produced by BOTH 0
@@ -1711,8 +1721,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     ...(codexTierLayer ? { tiers: codexTierLayer.config } : {}),
   });
 
-  // AIMD adaptive admission concurrency (B-GW-1): the queue's maxConcurrent is the cap; this controller
-  // shrinks the LIVE effective concurrency under sustained upstream 429s (driving queue.setMaxConcurrent
+  // AIMD adaptive admission concurrency (B-GW-1 compatibility path): the queue's
+  // maxConcurrent remains the legacy execution bound until the durable queue
+  // migration; this controller shrinks the LIVE effective concurrency under sustained upstream 429s (driving queue.setMaxConcurrent
   // down → fewer concurrent upstream calls → lower per-IP RPM → the throttle eases, breaking the
   // retry-storm amplification) and additively recovers toward the cap as calls succeed. Fed by
   // aimd.recordThrottle() on each upstream 429 + aimd.recordSuccess() on each forwarded 2xx below.
@@ -1720,29 +1731,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // pressure, NOT to how many accounts can actually SERVE. When only 1-2 accounts are unpaused it would still
   // admit the full cap, so a resume-burst piles all of it onto the few healthy accounts and 429s them into a
   // cascade (the observed aviynw→definitelyahuman chain). `serviceableAdmissionCapFn` (assigned below, once the
-  // pool + governors exist) returns (serviceable accounts × PER_ACCOUNT_ADMISSION), floored so the pool can
-  // always probe back; `applyAdmissionCap` sets live concurrency to MIN(aimd-effective, that), and a periodic
-  // tick re-applies it as accounts pause/recover (not just on an AIMD change). Identity (∞) until assigned, and
-  // OFF (PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP=0) ⇒ byte-identical to the old `setMaxConcurrent(eff)`.
+  // pool + governors exist) still computes the old recommendation for diagnostics, but P-007 deliberately keeps
+  // it out of `setMaxConcurrent`: serviceability is routing/causal evidence, not productive capacity.
   let serviceableAdmissionCapFn: () => number = () => Number.POSITIVE_INFINITY;
   let lastAimdEff = concurrency;
-  // ADVISORY CLAMP (owner directive, 2026-07-09 — plan gateway-clamp-advisory-capacity-probe): the
-  // serviceable-count clamp is a RECOMMENDATION, and an agent must be able to override it. It stays ON by
-  // default (`auto`) because it is a real thundering-herd guard; `off` makes it compute + REPORT the
-  // recommendation while admitting against the full AIMD effective.
-  //
-  // WHY THIS LEVER EXISTS. The clamp reads the pool's IN-MEMORY exhaustedUntil, which no store-side tool can
-  // clear (accounts:reset-rate is a different process; gateway:reload only drops ids absent from the new
-  // pool). So a STALE in-memory exhaustion pinned live admission at MIN_SERVICEABLE_ADMISSION (2) for the
-  // whole fleet with a concurrencyCap of 24, and there was NO runtime way out short of a full restart — the
-  // exact "the clamp should be a recommendation" complaint. `clampMode` is that way out: live, no restart.
-  //
-  // `off` does NOT disable the AIMD controller or the bounded queue's load-shed — those still bound the
-  // fleet. It only stops the SERVICEABLE-COUNT term from shrinking live concurrency.
-  let clampMode: ServiceableClampMode = SERVICEABLE_CLAMP_ON ? 'auto' : 'off';
+  // Compatibility readback for the retired serviceable clamp. Both modes are now
+  // advisory; retaining the field lets older status consumers understand a
+  // deploy-skewed response without allowing it to reinstate a hard cap.
+  let clampMode: ServiceableClampMode = 'off';
   /** The clamp's most recent RECOMMENDATION (what it would cap to), recorded even when overridden. */
   let lastServiceableRecommendation = Number.POSITIVE_INFINITY;
-  /** Live admission after the mode is honored — surfaced on /stats so an override is never invisible. */
+  /** Live admission after the controller is applied — surfaced on /stats. */
   let lastAdmissionApplied = concurrency;
   /** The RAW serviceable-account count behind the recommendation. Recorded so `/stats` can publish the
    *  clamp's INPUT and not only its output — `recommendation: 4` alone cannot tell a reader whether that
@@ -1754,8 +1753,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const recommendation = serviceableAdmissionCapFn();
     lastServiceableRecommendation = recommendation;
     lastServiceableAccounts = serviceableAccountsFn();
-    // `auto` honors the recommendation; `off` reports it and admits at the AIMD effective.
-    const capped = clampMode === 'off' ? Math.max(1, eff) : Math.max(1, Math.min(eff, recommendation));
+    // P-007: the recommendation is diagnostic/routing evidence only. It is never
+    // multiplied into or used to cap productive admission.
+    const capped = Math.max(1, eff);
     lastAdmissionApplied = capped;
     queue.setMaxConcurrent(capped);
     // TIER-AWARE SHEDDING (step 4): as live concurrency shrinks (AIMD storm OR few serviceable accounts), shed
@@ -1868,14 +1868,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // count → a tighter clamp → safer under a storm; the MIN floor still lets the pool probe its way back.
   serviceableAdmissionCapFn = () => {
     const serviceable = serviceableHealthyCount();
-    if (!SERVICEABLE_CLAMP_ON || serviceable == null) return Number.POSITIVE_INFINITY;
+    // The serviceable count is retained as causal/routing evidence. It is not a
+    // productive-capacity formula, so even zero/unknown observations never feed
+    // a minimum or maximum into the admission queue.
+    if (serviceable == null) return Number.POSITIVE_INFINITY;
     return Math.max(MIN_SERVICEABLE_ADMISSION, serviceable * PER_ACCOUNT_ADMISSION);
   };
   serviceableAccountsFn = () => serviceableHealthyCount() ?? null;
-  // Apply the clamp ONCE, NOW that it has its real implementation. Previously the first application waited
-  // for the periodic tick (SERVICEABLE_CLAMP_TICK_MS) or an AIMD change, so a freshly-booted gateway spent up
-  // to a full tick admitting at the UNCLAMPED cap into a pool that may have zero serviceable accounts — the
-  // precise burst the clamp exists to prevent. Also seeds `clamp` on /stats so the state is legible from t=0.
+  // Apply the controller once now that the serviceability observer is wired. The
+  // recommendation is recorded for `/stats` but cannot alter the productive
+  // window; this also seeds the diagnostic readback from t=0.
   applyAdmissionCap(lastAimdEff);
 
   // G1 (WI-649): FLEET-WIDE bare-burst detector. True when ≥half the pool is currently OUT OF ROTATION
@@ -1908,13 +1910,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
     if (total < 2) return false; // single-account pool: nothing to rotate to anyway
     return pool.healthyCount() * 2 <= total; // ≤half the pool has rotation budget ⇒ ≥half is penalized
   };
-  // Re-apply the clamp on a cadence so it tracks accounts pausing/recovering even while the AIMD effective is
-  // stable (e.g. pinned at the floor under a storm) — onChange alone only fires on an AIMD change. Unref'd so it
-  // never holds the process open; cleared on close().
-  const serviceableClampTimer = SERVICEABLE_CLAMP_ON
-    ? setInterval(() => applyAdmissionCap(lastAimdEff), SERVICEABLE_CLAMP_TICK_MS)
-    : undefined;
-  serviceableClampTimer?.unref?.();
+  // No timer-driven clamp remains. Recommendation fields are refreshed by the
+  // normal admission/stat paths; a stale serviceability read cannot mutate the
+  // productive queue window in the background.
+  const serviceableClampTimer = undefined;
 
   // Per-account egress dispatchers (per-account IP routing — D-003): a Max subscription can be pinned
   // to its own outbound IP via an HTTP/SOCKS proxy or a bound source address, so N subscriptions don't
@@ -2885,9 +2884,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
         applied: lastAdmissionApplied,
         overridden:
-          clampMode === 'off' &&
           Number.isFinite(lastServiceableRecommendation) &&
-          lastServiceableRecommendation < lastAimdEff,
+          lastServiceableRecommendation < lastAdmissionApplied,
+        legacyConfigured: SERVICEABLE_CLAMP_ON,
+        legacyTickMs: SERVICEABLE_CLAMP_TICK_MS,
         serviceableAccounts: lastServiceableAccounts,
       },
       maxQueued,
@@ -6654,16 +6654,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     if (req.method === 'POST' && requestPath === '/admin/clamp-mode') {
-      // ADVISORY CLAMP OVERRIDE (owner directive 2026-07-09): "when the inference gateway clamps it should
-      // just be a recommendation, agents should be able to override". `?mode=off` admits at the AIMD
-      // effective while still COMPUTING + reporting the serviceable recommendation; `?mode=auto` restores
-      // the guard. LIVE — applied to the running queue immediately, no restart.
-      //
-      // This is the escape hatch for a STALE clamp: the serviceable count reads the in-memory
-      // exhaustedUntil map, which no store-side tool can clear, so a stale exhaustion otherwise pins live
-      // admission at MIN_SERVICEABLE_ADMISSION for the entire fleet until the process is restarted.
-      // NOT durable across a restart (boot default = PAPERCUSP_GATEWAY_SERVICEABLE_CLAMP) — deliberately, so
-      // an override can never silently outlive the incident it was opened for.
+      // Legacy advisory-clamp readback. `mode` remains accepted for clients that
+      // still send the old endpoint request, but P-007 makes both values
+      // diagnostic-only: neither can reintroduce a serviceability-derived cap.
       req.resume(); // drain the body so the socket releases cleanly
       const q = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
       const raw = new URLSearchParams(q).get('mode')?.trim();
@@ -6681,7 +6674,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (raw) {
         const prev = clampMode;
         clampMode = raw;
-        applyAdmissionCap(lastAimdEff); // re-apply NOW so the flip is visible on the very next admission
+        applyAdmissionCap(lastAimdEff); // refresh diagnostic readback; admission stays controller-driven
         if (prev !== clampMode) {
           log(
             'warn',

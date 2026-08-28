@@ -719,8 +719,11 @@ export function railModel(
   const operateEvidence = (): string => {
     if (workspaces.length === 0) return "No workspaces yet";
     const noun = workspaces.length === 1 ? "workspace" : "workspaces";
+    /* The two counts are independent: three hosts can have two drifting, so the
+       verb agrees with `drifting.length`, never with the host count. */
+    const verb = drifting.length === 1 ? "needs" : "need";
     return drifting.length > 0
-      ? `${workspaces.length} ${noun} · ${drifting.length} needs attention`
+      ? `${workspaces.length} ${noun} · ${drifting.length} ${verb} attention`
       : `${workspaces.length} ${noun} · all aligned`;
   };
 
