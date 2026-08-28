@@ -91,11 +91,12 @@ export default function InboxBulkStrip({
   onRunStarted,
   onReview,
 }: InboxBulkStripProps) {
-  const { start, stop, restart, resume } = useBulkRunOps();
+  const { start, stop, restart, resume, reclassify } = useBulkRunOps();
   const resolverSettings = useBulkResolverSettings("inbox-resolve");
   const [starting, setStarting] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [resuming, setResuming] = useState(false);
+  const [classifying, setClassifying] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = deriveRunCounts(items, run);
 
@@ -187,6 +188,22 @@ export default function InboxBulkStrip({
       setResuming(false);
     }
   }, [resume, resuming, run, unreached]);
+
+  const onReclassify = useCallback(async () => {
+    if (!run || classifying) return;
+    setClassifying(true);
+    setNotice(null);
+    try {
+      const result = await reclassify(run.runId);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not classify legacy skipped rows");
+      } else {
+        setNotice(`Classified ${result.preservedOutcomes ?? 0} legacy rows; no outcomes changed`);
+      }
+    } finally {
+      setClassifying(false);
+    }
+  }, [classifying, reclassify, run]);
 
   /* ── RUNNING ─────────────────────────────────────────────────────────── */
   if (isRunning && run) {
@@ -345,7 +362,7 @@ export default function InboxBulkStrip({
             type="button"
             className="op-inbox__bulk-accept-all"
             data-testid="inbox-bulk-review-decisions"
-            disabled={counts.unresolved === 0 || resuming}
+            disabled={counts.unresolved === 0 || resuming || classifying}
             onClick={openReview}
           >
             Review {counts.unresolved} unresolved
@@ -356,7 +373,7 @@ export default function InboxBulkStrip({
               type="button"
               className="op-inbox__bulk-continue"
               data-testid="inbox-bulk-continue"
-              disabled={resuming}
+              disabled={resuming || classifying}
               onClick={() => void onResume()}
             >
               {resuming ? (
@@ -369,6 +386,17 @@ export default function InboxBulkStrip({
               {resuming
                 ? "Continuing…"
                 : `Continue ${retryable} retryable`}
+            </button>
+          ) : null}
+          {counts.legacySkipped > 0 ? (
+            <button
+              type="button"
+              className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
+              data-testid="inbox-bulk-classify"
+              disabled={classifying || resuming}
+              onClick={() => void onReclassify()}
+            >
+              {classifying ? "Classifying…" : `Classify ${counts.legacySkipped} legacy skips`}
             </button>
           ) : null}
         </div>

@@ -1331,6 +1331,87 @@ export async function reportOutcomes(input: {
 }
 
 /**
+ * Materialize the deterministic P-001 classification onto legacy skipped rows.
+ * This is an audited metadata-only operation: the original `outcome`, run
+ * membership, and every terminal outcome remain unchanged. It exists so an old
+ * run (including the owner's 158-item run) gains the same typed recommendation
+ * fields as a new run without requiring a second resolver pass.
+ */
+export async function reclassifyLegacySkipped(input: {
+  runId: string;
+  itemIds?: readonly string[];
+  workspaceId?: string;
+}): Promise<{
+  updated: BulkRunItemRow[];
+  run: BulkRunRow | null;
+  refused: 'run_not_found' | 'not_in_review' | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const requested = [...new Set((input.itemIds ?? []).map((id) => id.trim()).filter(Boolean))];
+  return await sql.begin(async (tx) => {
+    const runRows = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!runRows[0]) return { updated: [], run: null, refused: 'run_not_found' as const };
+    const run = mapRun(runRows[0]);
+    if (run.phase !== 'review') return { updated: [], run, refused: 'not_in_review' as const };
+    const rows = await tx<RawItemRow[]>`
+      SELECT ${tx.unsafe(ITEM_COLUMNS)}
+        FROM harness_shared.attention_bulk_run_items
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND outcome = 'skipped'
+         AND (disposition IS NULL OR disposition IN ('legacy_skipped', 'skipped'))
+         AND (${requested.length === 0} OR item_id = ANY(${requested}))
+       ORDER BY position ASC
+       FOR UPDATE
+    `;
+    const updated: BulkRunItemRow[] = [];
+    for (const row of rows) {
+      const classified = canonicalDispositionForRow({
+        outcome: row.outcome,
+        disposition: 'legacy_skipped',
+        itemKind: row.item_kind,
+        title: row.item_title,
+        error: row.error,
+        rationale: row.rationale,
+        itemId: row.item_id,
+      });
+      const rec = classified.recommendation;
+      if (!rec) continue;
+      const changed = await tx<RawItemRow[]>`
+        UPDATE harness_shared.attention_bulk_run_items
+           SET disposition = ${classified.disposition},
+               recommendation_kind = ${rec.kind},
+               recommendation_label = ${rec.label},
+               recommendation_rationale = ${rec.rationale},
+               evidence_basis = ${JSON.stringify(rec.evidenceBasis)}::jsonb,
+               responsibility = ${rec.responsibility},
+               confidence_level = ${rec.confidence},
+               retry_condition = ${rec.retryCondition ?? null},
+               updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId} AND item_id = ${row.item_id}
+        RETURNING ${tx.unsafe(ITEM_COLUMNS)}
+      `;
+      if (changed[0]) updated.push(mapItem(changed[0]));
+    }
+    const refreshed = await tx<RawRunRow[]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      updated,
+      run: refreshed[0] ? mapRun(refreshed[0]) : run,
+      refused: null,
+    };
+  });
+}
+
+/**
  * Items still awaiting the OWNER. A resolver report is not an owner decision:
  * recommended, skipped, failed and never-reached rows all remain review work
  * until the owner resolves, retries, or explicitly dismisses them.

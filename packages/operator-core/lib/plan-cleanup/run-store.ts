@@ -581,6 +581,83 @@ export async function reportFindingOutcomes(input: {
   });
 }
 
+/** Materialize P-001 typed recommendations for legacy skipped cleanup findings.
+ * Metadata-only: finding outcome, run membership, and terminal outcomes are
+ * preserved exactly. */
+export async function reclassifyLegacyFindings(input: {
+  runId: string;
+  findingIds?: readonly string[];
+  workspaceId?: string;
+}): Promise<{
+  updated: CleanupRunFindingRow[];
+  run: BulkRunRow | null;
+  refused: 'run_not_found' | 'not_in_review' | null;
+}> {
+  const { sql } = getOrgPg();
+  const ws = input.workspaceId ?? activeWorkspaceId();
+  const requested = [...new Set((input.findingIds ?? []).map((id) => id.trim()).filter(Boolean))];
+  return await sql.begin(async (tx) => {
+    const runRows = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+       FOR UPDATE
+    `;
+    if (!runRows[0]) return { updated: [], run: null, refused: 'run_not_found' as const };
+    const run = mapRunLoose(runRows[0]);
+    if (run.phase !== 'review') return { updated: [], run, refused: 'not_in_review' as const };
+    const rows = await tx<RawFindingRow[]>`
+      SELECT ${tx.unsafe(FINDING_COLUMNS)}
+        FROM harness_shared.plan_cleanup_run_findings
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+         AND outcome = 'skipped'
+         AND (disposition IS NULL OR disposition IN ('legacy_skipped', 'skipped'))
+         AND (${requested.length === 0} OR finding_id = ANY(${requested}))
+       ORDER BY position ASC
+       FOR UPDATE
+    `;
+    const updated: CleanupRunFindingRow[] = [];
+    for (const row of rows) {
+      const classified = canonicalDispositionForRow({
+        outcome: 'skipped',
+        disposition: 'legacy_skipped',
+        itemKind: row.finding_kind,
+        title: row.target,
+        error: row.error,
+        itemId: row.finding_id,
+      });
+      const rec = classified.recommendation;
+      if (!rec) continue;
+      const changed = await tx<RawFindingRow[]>`
+        UPDATE harness_shared.plan_cleanup_run_findings
+           SET disposition = ${classified.disposition},
+               recommendation_kind = ${rec.kind},
+               recommendation_label = ${rec.label},
+               recommendation_rationale = ${rec.rationale},
+               evidence_basis = ${JSON.stringify(rec.evidenceBasis)}::jsonb,
+               responsibility = ${rec.responsibility},
+               confidence_level = ${rec.confidence},
+               retry_condition = ${rec.retryCondition ?? null},
+               updated_at = now()
+         WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+           AND finding_id = ${row.finding_id}
+        RETURNING ${tx.unsafe(FINDING_COLUMNS)}
+      `;
+      if (changed[0]) updated.push(mapFinding(changed[0]));
+    }
+    const refreshed = await tx<Parameters<typeof mapRunLoose>[0][]>`
+      SELECT ${tx.unsafe(RUN_COLUMNS)}
+        FROM harness_shared.attention_bulk_runs
+       WHERE workspace_id = ${ws} AND run_id = ${input.runId}
+    `;
+    return {
+      updated,
+      run: refreshed[0] ? mapRunLoose(refreshed[0]) : run,
+      refused: null,
+    };
+  });
+}
+
 /**
  * Record the OWNER's acceptance after the client has successfully dispatched
  * the canonical hand-edit path. Resolve-first/record-second mirrors

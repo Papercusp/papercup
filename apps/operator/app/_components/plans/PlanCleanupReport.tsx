@@ -21,6 +21,7 @@ import ReviewReportShell, {
   type ReviewRowStatus,
 } from "../review-report/ReviewReportShell";
 import {
+  canonicalPlanCleanupDisposition,
   derivePlanCleanupCounts,
   usePlanCleanupOps,
   type PlanCleanupFinding,
@@ -98,11 +99,18 @@ function reviewAccounting(
 ): ReviewRowAccounting {
   if (status === "applied") return "handled";
   if (status === "dismissed") return "not-applied";
-  if (finding.outcome !== "recommended") return "not-applied";
+  if (
+    finding.outcome !== "recommended" &&
+    canonicalPlanCleanupDisposition(finding) !== "recommended"
+  )
+    return "not-applied";
   return ACTIONABLE_KINDS.has(finding.kind) ? "ready" : "manual";
 }
 
 function manualReason(finding: PlanCleanupFinding): string | null {
+  if (finding.recommendation) {
+    return `${finding.recommendation.label}: ${finding.recommendation.rationale}`;
+  }
   if (finding.outcome === "pending")
     return "The resolver did not reach this finding; no action is available.";
   if (finding.kind === "stale-now") {
@@ -122,6 +130,14 @@ function evidenceLines(finding: PlanCleanupFinding): string[] {
     [entry.kind, entry.ref, entry.note].filter(Boolean).join(" · "),
   );
   if (finding.error) lines.push(`error · ${finding.error}`);
+  if (finding.recommendation?.confidence) {
+    lines.push(`confidence · ${finding.recommendation.confidence}`);
+  } else if (finding.confidence) {
+    lines.push(`confidence · ${finding.confidence === "provable" ? "high" : "medium"}`);
+  }
+  if (finding.recommendation?.responsibility) {
+    lines.push(`responsibility · ${finding.recommendation.responsibility}`);
+  }
   return lines.length > 0 ? lines : ["No evidence was recorded."];
 }
 
@@ -147,7 +163,10 @@ function reportRow(
         : (manualReason(finding) ?? undefined),
     error: localError,
     evidence: evidenceLines(finding),
-    confidence: finding.confidence,
+    confidence:
+      finding.recommendation?.confidence === "high" || finding.confidence === "provable"
+        ? "provable"
+        : "recommended",
     accounting: reviewAccounting(finding, status),
     status,
     selectable:
@@ -549,9 +568,12 @@ export default function PlanCleanupReport({
       subtitle={
         <span className="plan-cleanup-report__subtitle">
           <span>
-            {counts.forReview} proposed fix{counts.forReview === 1 ? "" : "es"}{" "}
-            across {planCount} plan{planCount === 1 ? "" : "s"} ·{" "}
-            {counts.applied} already applied
+            {counts.total} assessed across {planCount} plan{planCount === 1 ? "" : "s"} ·{" "}
+            {counts.applied} auto-applied · {counts.unresolved} still open
+            <br />
+            {counts.recommendationTotal} recommendations · {counts.ownerAction} owner actions ·{" "}
+            {counts.cleanupCandidate} cleanup · {counts.retryNeeded + counts.pending} retry needed ·{" "}
+            {counts.routed} routed · {counts.investigate} investigate
           </span>
           {notice ? (
             <span role="alert" className="plan-cleanup-report__error">

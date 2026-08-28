@@ -27,6 +27,7 @@ import {
   getRunFindings,
   markCleanupFindingAccepted,
   markCleanupFindingDismissed,
+  reclassifyLegacyFindings,
 } from '../../../plan-cleanup/run-store';
 import { buildCleanupResolverBrief } from '../../../plan-cleanup/resolver-brief';
 import {
@@ -41,6 +42,7 @@ import {
   resolverSpawnOutcome,
 } from './attention-bulk-resolve';
 import type { EffectiveBulkResolverLaunch } from '../../../agent-config-constants';
+import { normalizeBulkAutomationPolicy } from '../../../attention/bulk-dispositions';
 
 export const MAX_RUN_PLANS = 200;
 
@@ -96,7 +98,14 @@ async function launchCleanupResolver(
         }),
         env: {
           ...envelope.env,
-          PAPERCUSP_KICKOFF_PROMPT: buildCleanupResolverBrief(runId, planSlugs),
+          PAPERCUSP_KICKOFF_PROMPT: buildCleanupResolverBrief(
+            runId,
+            planSlugs,
+            normalizeBulkAutomationPolicy({
+              mode: launch?.automationMode,
+              minConfidence: launch?.minConfidence,
+            }),
+          ),
         },
       },
       label: `plan-cleanup-${runId.slice(0, 12)}`,
@@ -138,6 +147,33 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
   }
 
   try {
+    if (op === 'reclassify') {
+      const findingIds = Array.isArray(body.findingIds)
+        ? body.findingIds.filter((id): id is string => typeof id === 'string').slice(0, 500)
+        : undefined;
+      const result = await reclassifyLegacyFindings({ runId, findingIds });
+      if (result.refused) {
+        return Response.json(
+          {
+            error: {
+              code: result.refused,
+              message: `plan clean-up run ${runId} is not in owner review`,
+              runId,
+            },
+          },
+          { status: result.refused === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      await invalidateCleanupRun();
+      return Response.json({
+        ok: true,
+        runId,
+        reclassified: result.updated.length,
+        findingIds: result.updated.map((finding) => finding.findingId),
+        phase: result.run?.phase ?? null,
+      });
+    }
+
     if (op === 'stop') {
       const run = await settleRunPhase({ runId });
       await invalidateCleanupRun();
@@ -380,7 +416,7 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
       {
         error: {
           code: 'unknown_op',
-          message: `op must be start | stop | restart | resume | accept | recheck-finding | dismiss-finding | dismiss (got "${op}")`,
+          message: `op must be start | stop | restart | resume | reclassify | accept | recheck-finding | dismiss-finding | dismiss (got "${op}")`,
         },
       },
       { status: 400 },
@@ -405,7 +441,7 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
     return Response.json({ error: { code: 'invalid_json', message: 'request body must be JSON' } }, { status: 400 });
   }
   const op = typeof body.op === 'string' ? body.op : 'start';
-  const STOP_OPS = new Set(['stop', 'dismiss', 'recheck-finding', 'dismiss-finding']);
+  const STOP_OPS = new Set(['stop', 'dismiss', 'recheck-finding', 'dismiss-finding', 'reclassify']);
   if (!STOP_OPS.has(op)) {
     const gated = await gateApiRoute(req, FLAGS.PLAN_CLEANUP);
     if (gated) return gated;
@@ -440,6 +476,10 @@ export async function planCleanupHandler(req: Request, ctx: RouteContext): Promi
       seedRefs: planSlugs,
       filterSnapshot: filter,
       launchSnapshot: preflight.launch,
+      automationPolicy: normalizeBulkAutomationPolicy({
+        mode: preflight.launch.automationMode,
+        minConfidence: preflight.launch.minConfidence,
+      }),
       requestedBy: 'owner',
       harnessSlug: harness,
     });

@@ -39,6 +39,7 @@ const {
   reportFindingOutcomes,
   getRunFindings,
   getPendingReviewFindings,
+  reclassifyLegacyFindings,
 } = await import('./run-store');
 const {
   BulkRunAlreadyActiveError,
@@ -270,6 +271,50 @@ describe('plan-cleanup run store (real PG)', () => {
     expect(kept.find((f) => f.findingId === 'flip-to-done:papercusp/plan-a#P-001')!.evidence).toEqual([
       { kind: 'work-item', ref: 'WI-1', note: 're-verified at apply time' },
     ]);
+  });
+
+  it('reclassifies legacy skipped findings into typed recommendations without changing outcomes', async () => {
+    const run = await createRun({
+      items: [],
+      runKind: 'plan-cleanup',
+      seedRefs: ['legacy-plan'],
+    });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-resolver' });
+    await seedFindings({
+      runId: run.runId,
+      resolverOwner: 'su-resolver',
+      findings: [
+        {
+          findingId: 'semantic:papercusp/legacy-plan#P-001',
+          kind: 'semantic',
+          planSlug: 'legacy-plan',
+          harnessSlug: 'papercusp',
+          itemId: 'P-001',
+          target: 'legacy-plan#P-001',
+          from: 'todo',
+          to: 'done',
+        },
+      ],
+    });
+    await reportFindingOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-resolver',
+      reports: [{
+        findingId: 'semantic:papercusp/legacy-plan#P-001',
+        outcome: 'skipped',
+        error: 'Moot: already done; stale feed row',
+      }],
+    });
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-resolver' });
+
+    const result = await reclassifyLegacyFindings({ runId: run.runId });
+    expect(result.refused).toBeNull();
+    expect(result.updated[0]).toMatchObject({
+      outcome: 'skipped',
+      disposition: 'cleanup_candidate',
+      recommendationKind: 'cleanup_candidate',
+      confidenceLevel: 'high',
+    });
   });
 
   it('maps owner review verdicts onto the strip counters (accepted → applied, dismissed → skipped)', async () => {

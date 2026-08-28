@@ -20,6 +20,7 @@ import { formatRunElapsed } from "../review-report/bulk-run-time";
 import BulkResolverSettingsControl from "../bulk-resolver/BulkResolverSettingsControl";
 import { useBulkResolverSettings } from "../bulk-resolver/bulk-resolver-settings";
 import {
+  canonicalPlanCleanupDisposition,
   derivePlanCleanupCounts,
   usePlanCleanupOps,
   type PlanCleanupFinding,
@@ -52,20 +53,25 @@ export default function PlansCleanupStrip({
   filterSnapshot,
   run,
   findings,
-  recommendations,
-  pending,
   isRunning,
   isReview,
   onRunStarted,
   onReview,
   onRunCleared,
 }: PlansCleanupStripProps) {
-  const { start, stop, restart, resume } = usePlanCleanupOps();
+  const { start, stop, restart, resume, reclassify } = usePlanCleanupOps();
   const resolverSettings = useBulkResolverSettings("plan-cleanup");
   const [starting, setStarting] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [classifying, setClassifying] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const counts = derivePlanCleanupCounts(findings);
+  const retryableFindings = findings.filter(
+    (finding) =>
+      finding.outcome === "pending" ||
+      finding.outcome === "failed" ||
+      canonicalPlanCleanupDisposition(finding) === "retry_needed",
+  );
 
   const onStart = useCallback(async () => {
     if (planSlugs.length === 0 || starting || !resolverSettings.ready) return;
@@ -142,8 +148,8 @@ export default function PlansCleanupStrip({
   }, [run, busy, restart]);
 
   const onResume = useCallback(async () => {
-    if (!run || busy || pending.length === 0) return;
-    const findingIds = pending.map((finding) => finding.findingId);
+    if (!run || busy || retryableFindings.length === 0) return;
+    const findingIds = retryableFindings.map((finding) => finding.findingId);
     setBusy(true);
     setNotice(null);
     try {
@@ -163,7 +169,23 @@ export default function PlansCleanupStrip({
     } finally {
       setBusy(false);
     }
-  }, [busy, pending, resume, run]);
+  }, [busy, retryableFindings, resume, run]);
+
+  const onReclassify = useCallback(async () => {
+    if (!run || classifying) return;
+    setClassifying(true);
+    setNotice(null);
+    try {
+      const result = await reclassify(run.runId);
+      if (!result.ok) {
+        setNotice(result.error ?? "could not classify legacy skipped findings");
+      } else {
+        setNotice(`Classified ${result.preservedOutcomes ?? 0} legacy findings; no outcomes changed`);
+      }
+    } finally {
+      setClassifying(false);
+    }
+  }, [classifying, reclassify, run]);
 
   if (isRunning && run) {
     const scanOnly = counts.total === 0;
@@ -254,7 +276,6 @@ export default function PlansCleanupStrip({
 
   if (isReview && run) {
     const elapsed = formatRunElapsed(run.startedAt, run.finishedAt);
-    const awaiting = recommendations.length;
     return (
       <div
         className="op-inbox__bulk op-inbox__bulk--review"
@@ -276,14 +297,57 @@ export default function PlansCleanupStrip({
             className="op-inbox__bulk-title"
             data-testid="plans-cleanup-review-headline"
           >
-            {awaiting} fix{awaiting === 1 ? "" : "es"} need your call ·{" "}
-            {counts.applied} auto-applied
-            {pending.length > 0 ? ` · ${pending.length} not reached` : ""}
-            {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
+            {counts.total} assessed · {counts.applied} auto-applied ·{" "}
+            {counts.unresolved} still open
           </span>
           <span className="op-inbox__bulk-spacer" />
           {elapsed ? (
             <span className="op-inbox__bulk-elapsed">run {elapsed}</span>
+          ) : null}
+        </div>
+        <div
+          className="op-inbox__bulk-counts op-inbox__bulk-counts--accounting"
+          data-testid="plans-cleanup-accounting"
+          aria-label="Plan cleanup accounting"
+        >
+          <span className="op-inbox__bulk-count op-inbox__bulk-count--review">
+            <i aria-hidden="true" />
+            {counts.recommendationTotal} recommendations
+          </span>
+          {counts.ownerAction > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.ownerAction} owner actions
+            </span>
+          ) : null}
+          {counts.cleanupCandidate > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.cleanupCandidate} cleanup candidates
+            </span>
+          ) : null}
+          {counts.retryNeeded + counts.pending > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.retryNeeded + counts.pending} retry needed
+            </span>
+          ) : null}
+          {counts.routed > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.routed} routed
+            </span>
+          ) : null}
+          {counts.investigate > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.investigate} investigate
+            </span>
+          ) : null}
+          {counts.failed > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.failed} failed
+            </span>
+          ) : null}
+          {counts.legacySkipped > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" /> {counts.legacySkipped} legacy skips to classify
+            </span>
           ) : null}
         </div>
         <div className="op-inbox__bulk-actions">
@@ -291,18 +355,18 @@ export default function PlansCleanupStrip({
             type="button"
             className="op-inbox__bulk-accept-all"
             data-testid="plans-cleanup-open-review"
-            disabled={awaiting === 0 || busy}
+            disabled={counts.unresolved === 0 || busy || classifying}
             onClick={() => onReview(run.runId)}
           >
             <ChevronRight size={14} aria-hidden="true" />
-            Review {awaiting} fix{awaiting === 1 ? "" : "es"}
+            Review {counts.unresolved} unresolved
           </button>
-          {pending.length > 0 ? (
+          {retryableFindings.length > 0 ? (
             <button
               type="button"
               className="op-inbox__bulk-continue"
               data-testid="plans-cleanup-continue"
-              disabled={busy}
+              disabled={busy || classifying}
               onClick={() => void onResume()}
             >
               {busy ? (
@@ -312,7 +376,18 @@ export default function PlansCleanupStrip({
               ) : (
                 <RotateCw size={14} aria-hidden="true" />
               )}
-              {busy ? "Continuing…" : `Continue ${pending.length} remaining`}
+              {busy ? "Continuing…" : `Continue ${retryableFindings.length} retryable`}
+            </button>
+          ) : null}
+          {counts.legacySkipped > 0 ? (
+            <button
+              type="button"
+              className="op-inbox__bulk-ghost op-inbox__bulk-ghost--wide"
+              data-testid="plans-cleanup-classify"
+              disabled={busy || classifying}
+              onClick={() => void onReclassify()}
+            >
+              {classifying ? "Classifying…" : `Classify ${counts.legacySkipped} legacy skips`}
             </button>
           ) : null}
           <button
@@ -326,9 +401,9 @@ export default function PlansCleanupStrip({
           </button>
         </div>
         <p className="op-inbox__bulk-hint">
-          Review keeps the prepared findings grouped with their evidence.
-          Continue sends only the untouched remainder through the same saved run
-          and preserves every earlier outcome.
+          Review opens every unresolved finding with its proposed next step.
+          Continue retries only unavailable/failed findings through the same
+          saved run and preserves every earlier outcome.
         </p>
         {notice ? (
           <Notice text={notice} onClose={() => setNotice(null)} />

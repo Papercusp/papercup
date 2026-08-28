@@ -37,6 +37,15 @@ import type {
   EffectiveBulkResolverLaunch,
 } from "@papercusp/operator-core/lib/agent-config-constants";
 import type { RunLiveness } from "@papercusp/operator-core/lib/attention/bulk-run-store";
+import type {
+  BulkAutomationPolicy,
+  BulkConfidence,
+  BulkDispositionKind,
+  BulkRecommendation,
+  BulkRecommendationKind,
+  BulkResponsibility,
+} from "@papercusp/operator-core/lib/attention/bulk-dispositions";
+import { canonicalDispositionForRow } from "@papercusp/operator-core/lib/attention/bulk-dispositions";
 import { loadResolverLaunchProfile } from "../bulk-resolver/bulk-resolver-settings";
 
 /** Mirrors `BulkRunPhase` in packages/operator-core/lib/attention/bulk-run-store.ts. */
@@ -86,6 +95,7 @@ export interface BulkRun {
   heartbeatAt?: string | null;
   resolverOwner?: string | null;
   liveness?: RunLiveness;
+  automationPolicy?: BulkAutomationPolicy;
 }
 
 /** One item's outcome as the sync query returns it (`BulkRunItemRow`). */
@@ -108,6 +118,16 @@ export interface BulkRunItem {
   consultReply: string | null;
   error: string | null;
   decidedAt: string | null;
+  disposition?: BulkDispositionKind;
+  legacyDisposition?: string | null;
+  recommendation?: BulkRecommendation | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[];
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
 }
 
 export interface BulkRunState {
@@ -170,13 +190,41 @@ export function isActivePhase(phase: BulkRunPhase | null | undefined): boolean {
  * the same boundary instead of treating only `pending` rows as continuable.
  */
 export function isContinuableBulkRunItem(
-  item: Pick<BulkRunItem, "outcome">,
+  item: Pick<BulkRunItem, "outcome" | "disposition" | "kind" | "title" | "error" | "rationale" | "itemId">,
 ): boolean {
-  return (
-    item.outcome === "pending" ||
-    item.outcome === "skipped" ||
-    item.outcome === "failed"
-  );
+  if (item.outcome === "pending" || item.outcome === "failed") return true;
+  if (item.outcome !== "skipped") return false;
+  // Pre-1015/fixture rows carry no disposition metadata. Preserve the shipped
+  // continuation behavior for those rows; once the migration/classifier has
+  // supplied a disposition, only retry_needed is safe to bulk-requeue.
+  if (item.disposition === undefined) return true;
+  const disposition = canonicalDispositionForRow({
+    outcome: item.outcome,
+    disposition: item.disposition,
+    itemKind: item.kind,
+    title: item.title,
+    error: item.error,
+    rationale: item.rationale,
+    itemId: item.itemId,
+  }).disposition;
+  return disposition === "retry_needed";
+}
+
+/** Resolve the canonical typed disposition for a wire row, including legacy
+ * `skipped` rows that the migration has not yet explicitly reclassified. */
+export function canonicalInboxDisposition(item: BulkRunItem): BulkDispositionKind {
+  if (item.outcome === "recommended" && item.recommendation?.kind) {
+    return item.recommendation.kind;
+  }
+  return canonicalDispositionForRow({
+    outcome: item.outcome,
+    disposition: item.disposition,
+    itemKind: item.kind,
+    title: item.title,
+    error: item.error,
+    rationale: item.rationale,
+    itemId: item.itemId,
+  }).disposition;
 }
 
 /**
@@ -193,9 +241,18 @@ export function deriveRunCounts(
   total: number;
   resolved: number;
   forReview: number;
+  recommendationTotal: number;
   pending: number;
   skipped: number;
   failed: number;
+  legacySkipped: number;
+  ownerAction: number;
+  cleanupCandidate: number;
+  retryNeeded: number;
+  routed: number;
+  investigate: number;
+  dismissed: number;
+  unresolved: number;
   left: number;
   decided: number;
   percent: number;
@@ -205,26 +262,65 @@ export function deriveRunCounts(
   let pending = 0;
   let skipped = 0;
   let failed = 0;
+  let legacySkipped = 0;
+  let ownerAction = 0;
+  let cleanupCandidate = 0;
+  let retryNeeded = 0;
+  let routed = 0;
+  let investigate = 0;
+  let dismissed = 0;
   for (const i of items) {
+    const disposition = canonicalInboxDisposition(i);
     if (i.outcome === "auto_resolved") resolved += 1;
-    else if (i.outcome === "recommended") forReview += 1;
+    else if (i.outcome === "recommended") {
+      if (disposition === "recommended") forReview += 1;
+    }
     else if (i.outcome === "pending") pending += 1;
-    else if (i.outcome === "skipped" || i.outcome === "dismissed") skipped += 1;
+    else if (i.outcome === "skipped") {
+      skipped += 1;
+      if (
+        i.disposition === undefined ||
+        i.disposition === "legacy_skipped" ||
+        i.legacyDisposition === "legacy_skipped"
+      ) {
+        legacySkipped += 1;
+      }
+    }
+    else if (i.outcome === "dismissed") dismissed += 1;
     else if (i.outcome === "failed") failed += 1;
+    if (i.outcome === "recommended") {
+      // Typed recommendations are accounted for in their disposition bucket;
+      // retain a total for the headline without double-counting unresolved work.
+    }
+    if (disposition === "owner_action") ownerAction += 1;
+    else if (disposition === "cleanup_candidate") cleanupCandidate += 1;
+    else if (disposition === "retry_needed") retryNeeded += 1;
+    else if (disposition === "routed") routed += 1;
+    else if (disposition === "investigate") investigate += 1;
   }
   // `totalItems` is authoritative for the DENOMINATOR even when rows are still
   // arriving: the run knows how many items it was handed, and dividing by the
   // rows received so far would show a bar that sits at 100% from the first
   // report and slides BACKWARD as more rows land.
   const total = run?.totalItems ?? items.length;
-  const decided = resolved + forReview + skipped + failed;
+  const decided = items.filter((item) => item.outcome !== "pending").length;
   return {
     total,
     resolved,
     forReview,
+    recommendationTotal: items.filter((i) => i.outcome === "recommended").length,
     pending,
     skipped,
     failed,
+    legacySkipped,
+    ownerAction,
+    cleanupCandidate,
+    retryNeeded,
+    routed,
+    investigate,
+    dismissed,
+    unresolved:
+      forReview + pending + ownerAction + cleanupCandidate + retryNeeded + routed + investigate + failed,
     decided,
     left: Math.max(0, total - decided),
     percent: total > 0 ? Math.min(100, Math.round((decided / total) * 100)) : 0,
@@ -313,6 +409,7 @@ export function useBulkRunOps(): {
   stop: (runId: string) => Promise<void>;
   restart: (runId: string) => Promise<StartResult>;
   resume: (runId: string, itemIds: readonly string[]) => Promise<StartResult>;
+  reclassify: (runId: string, itemIds?: readonly string[]) => Promise<StartResult>;
   dismiss: (runId: string) => Promise<void>;
   dismissItem: (
     runId: string,
@@ -418,6 +515,28 @@ export function useBulkRunOps(): {
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         };
+      }
+    },
+    [],
+  );
+
+  const reclassify = useCallback(
+    async (runId: string, itemIds?: readonly string[]): Promise<StartResult> => {
+      try {
+        const json = await postOp({
+          op: "reclassify",
+          runId,
+          ...(itemIds && itemIds.length > 0 ? { itemIds } : {}),
+        });
+        return {
+          ok: true,
+          runId,
+          phase: (json.phase as BulkRunPhase | null | undefined) ?? null,
+          preservedOutcomes: Number(json.reclassified ?? 0),
+          launched: false,
+        };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
     [],
@@ -540,6 +659,7 @@ export function useBulkRunOps(): {
     stop,
     restart,
     resume,
+    reclassify,
     dismiss,
     dismissItem,
     reconcileItem,

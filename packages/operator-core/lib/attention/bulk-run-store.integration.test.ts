@@ -47,6 +47,7 @@ const {
   classifyRunLiveness,
   restartRun,
   resumeReviewRun,
+  reclassifyLegacySkipped,
   RUN_HEARTBEAT_STALE_MS,
 } = await import('./bulk-run-store');
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -317,6 +318,35 @@ describe('attention bulk-run store (real PG)', () => {
     expect(res.unknown).toEqual(['improvement:not-in-this-run']);
     // The run must still hold exactly the snapshot it was created with.
     expect(await getRunItems(run.runId)).toHaveLength(3);
+  });
+
+  it('reclassifies legacy skipped rows into typed recommendations without changing outcomes', async () => {
+    const run = await createRun({ items: seed('legacy-classify') });
+    await setRunPhase({ runId: run.runId, phase: 'running', resolverOwner: 'su-resolver' });
+    await reportOutcomes({
+      runId: run.runId,
+      resolverOwner: 'su-resolver',
+      outcomes: [
+        {
+          itemId: 'work-item-needs-human:legacy-classify-2',
+          outcome: 'skipped',
+          error: 'No terminal option offered (open/discuss are both non-terminal)',
+        },
+      ],
+    });
+    await settleRunPhase({ runId: run.runId, resolverOwner: 'su-resolver' });
+
+    const result = await reclassifyLegacySkipped({ runId: run.runId });
+    expect(result.refused).toBeNull();
+    expect(result.updated).toHaveLength(1);
+    expect(result.updated[0]).toMatchObject({
+      itemId: 'work-item-needs-human:legacy-classify-2',
+      outcome: 'skipped',
+      disposition: 'investigate',
+      recommendationKind: 'investigate',
+      confidenceLevel: 'insufficient',
+    });
+    expect((await getRun(run.runId))?.skipped).toBe(1);
   });
 
   it('settles to review while items still need the owner, and to complete once none do', async () => {

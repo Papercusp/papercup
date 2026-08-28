@@ -57,12 +57,17 @@ import {
   resumeReviewRun,
   markItemAccepted,
   markItemDismissed,
+  reclassifyLegacySkipped,
   setRunPhase,
   settleRunPhase,
   type BulkRunLaunchSnapshot,
   type BulkRunSeedItem,
 } from '../../../attention/bulk-run-store';
 import { notifyBulkRunChanged } from '../../../attention/bulk-run-sync';
+import {
+  normalizeBulkAutomationPolicy,
+  type BulkAutomationPolicy,
+} from '../../../attention/bulk-dispositions';
 
 /** Cap one run so a mis-click on an unfiltered inbox cannot enqueue thousands. */
 const MAX_RUN_ITEMS = 200;
@@ -92,7 +97,11 @@ function parseItems(raw: unknown): BulkRunSeedItem[] {
  * to name THIS run id, and because its policy half is the plan's D-001/D-002
  * decisions restated where the launch can actually enforce them.
  */
-export function buildResolverBrief(runId: string, itemCount: number): string {
+export function buildResolverBrief(
+  runId: string,
+  itemCount: number,
+  policy: BulkAutomationPolicy = { mode: 'safe-high', minConfidence: 'high' },
+): string {
   return [
     `You are the BULK RESOLVE resolver for run ${runId}. The owner is clearing their Inbox and has`,
     `asked you to settle ${itemCount} attention item(s) they filtered down to.`,
@@ -101,7 +110,11 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     `1. inbox:bulk-run-manifest { runId: "${runId}" } — read the run and every item, each with the`,
     '   LIVE options it actually offers. An option with terminal:false only opens a sub-surface and',
     '   resolves nothing; never treat one as a resolution.',
-    '2. For each item, decide:',
+    `2. For EVERY item, produce one typed disposition and a next-step recommendation. The run policy is ${policy.mode} (minimum confidence ${policy.minConfidence}).`,
+    '   A recommendation may carry an actionId only when the manifest offers that real terminal',
+    '   action; owner_action, cleanup_candidate, retry_needed, routed, and investigate may omit it.',
+    '   Never leave an item as an unexplained skip.',
+    '   For each item, decide:',
     '   - AUTO-RESOLVE when you can settle it from evidence: the ask is moot (its blocker already',
     '     cleared, the work already landed), it duplicates another item, it is a stale FYI, or it is a',
     '     plain acknowledgement. You have full authority to take the terminal action, INCLUDING',
@@ -113,15 +126,18 @@ export function buildResolverBrief(runId: string, itemCount: number): string {
     '     why. Give them a bounded window (~10 min). A reply that arrives lets you report the item',
     '     auto_resolved or recommended with confidence:"high"; a lapse means you recommend anyway with',
     '     confidence:"low" so the owner sees it is an inference, not evidence.',
-    '   - RECOMMEND otherwise: pre-select the option id you would pick, with a rationale of at most two',
-    '     sentences, plus a drafted reply where the path takes free text so the owner edits rather than',
-    '     composes.',
-    '   - SKIP when the item offers no options yet or you genuinely cannot judge it — with the reason.',
+    '   - RECOMMEND otherwise: choose recommendationKind from owner_action, cleanup_candidate,',
+    '     retry_needed, routed, or investigate; provide a concise label, evidenceBasis, responsibility,',
+    '     confidence (high|medium|low|insufficient), and rationale. Include a proposed actionId only',
+    '     when it is genuinely offered by the manifest.',
+    '   - RETRY-NEEDED when the item detail/actions are unavailable; this is a typed recommendation,',
+    '     not the legacy skipped outcome. Use skipped only for backward-compatible reporting when a',
+    '     caller cannot yet provide the typed fields, and always include its specific error.',
     `3. AUTO-RESOLVE only through inbox:bulk-run-act { runId: "${runId}", itemId, actionId,`,
     "   rationale, ... }. It is intentionally one action per call: the tool holds the run's revocable",
     '   authority lock across the real terminal dispatch, required audit row, outcome and counters.',
-    '   Report only recommended/skipped/failed items through inbox:bulk-run-report { items:[...] }',
-    '   (batch those non-action outcomes; do not call report once per item).',
+    '   Report all non-action outcomes through inbox:bulk-run-report { items:[...] } with the typed',
+    '   disposition/recommendation fields. Batch them; do not call report once per item.',
     `4. inbox:bulk-run-settle { runId: "${runId}" } when every item is reported.`,
     '',
     'RULES:',
@@ -227,6 +243,12 @@ export function resolvePersistedResolverLaunch(snapshot: BulkRunLaunchSnapshot) 
     effort: snapshot.effort ?? null,
     account: snapshot.account ?? 'default',
     carry: snapshot.carry ?? 'warm',
+    ...(snapshot.automationPolicy
+      ? {
+          automationMode: snapshot.automationPolicy.mode,
+          minConfidence: snapshot.automationPolicy.minConfidence,
+        }
+      : {}),
   });
 }
 
@@ -296,7 +318,17 @@ async function launchResolver(
       envelope: {
         ...envelope,
         greetingCmd,
-        env: { ...envelope.env, PAPERCUSP_KICKOFF_PROMPT: buildResolverBrief(runId, itemCount) },
+        env: {
+          ...envelope.env,
+          PAPERCUSP_KICKOFF_PROMPT: buildResolverBrief(
+            runId,
+            itemCount,
+            normalizeBulkAutomationPolicy({
+              mode: launch?.automationMode,
+              minConfidence: launch?.minConfidence,
+            }),
+          ),
+        },
       },
       label: `bulk-resolve-${runId.slice(0, 12)}`,
       coordOwnerId: resolverOwner,
@@ -360,6 +392,33 @@ async function handleOwnerOp(op: string, body: Record<string, unknown>): Promise
   }
 
   try {
+    if (op === 'reclassify') {
+      const itemIds = Array.isArray(body.itemIds)
+        ? body.itemIds.filter((id): id is string => typeof id === 'string').slice(0, MAX_RUN_ITEMS)
+        : undefined;
+      const result = await reclassifyLegacySkipped({ runId, itemIds });
+      if (result.refused) {
+        return Response.json(
+          {
+            error: {
+              code: result.refused,
+              message: `bulk-resolve run ${runId} is not in owner review`,
+              runId,
+            },
+          },
+          { status: result.refused === 'run_not_found' ? 404 : 409 },
+        );
+      }
+      await invalidateBulkRun();
+      return Response.json({
+        ok: true,
+        runId,
+        reclassified: result.updated.length,
+        itemIds: result.updated.map((item) => item.itemId),
+        phase: result.run?.phase ?? null,
+      });
+    }
+
     if (op === 'stop') {
       // Settle where it stands rather than forcing `complete`: settleRunPhase
       // derives the phase from the ITEM ROWS, so a stop mid-run parks in
@@ -651,7 +710,7 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
   // — `start` (spawns an agent) and `accept` (takes a terminal action on the
   // owner's behalf) — is ACTING, and stays gated. Nothing is lost by gating
   // `accept`: every recommended item remains resolvable by hand in the pane.
-  const STOP_OPS = new Set(['stop', 'dismiss', 'reconcile-item', 'dismiss-item']);
+  const STOP_OPS = new Set(['stop', 'dismiss', 'reconcile-item', 'dismiss-item', 'reclassify']);
   if (!STOP_OPS.has(op)) {
     const gated = await gateApiRoute(req, FLAGS.INBOX_BULK_RESOLVE);
     if (gated) return gated;
@@ -685,6 +744,10 @@ async function handler(req: Request, _ctx: RouteContext): Promise<Response> {
       items,
       filterSnapshot: filter,
       launchSnapshot: preflight.launch,
+      automationPolicy: normalizeBulkAutomationPolicy({
+        mode: preflight.launch.automationMode,
+        minConfidence: preflight.launch.minConfidence,
+      }),
       requestedBy: 'owner',
       harnessSlug: harness,
     });

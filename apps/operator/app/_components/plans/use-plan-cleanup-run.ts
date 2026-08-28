@@ -14,6 +14,15 @@ import type {
   EffectiveBulkResolverLaunch,
 } from "@papercusp/operator-core/lib/agent-config-constants";
 import type { RunLiveness } from "@papercusp/operator-core/lib/attention/bulk-run-store";
+import type {
+  BulkAutomationPolicy,
+  BulkConfidence,
+  BulkDispositionKind,
+  BulkRecommendation,
+  BulkRecommendationKind,
+  BulkResponsibility,
+} from "@papercusp/operator-core/lib/attention/bulk-dispositions";
+import { canonicalDispositionForRow } from "@papercusp/operator-core/lib/attention/bulk-dispositions";
 import { loadResolverLaunchProfile } from "../bulk-resolver/bulk-resolver-settings";
 
 export type PlanCleanupPhase =
@@ -51,6 +60,7 @@ export interface PlanCleanupRun {
   heartbeatAt?: string | null;
   resolverOwner?: string | null;
   liveness?: RunLiveness;
+  automationPolicy?: BulkAutomationPolicy;
 }
 
 export interface PlanCleanupFinding {
@@ -69,6 +79,16 @@ export interface PlanCleanupFinding {
   outcome: PlanCleanupOutcome;
   error: string | null;
   decidedAt: string | null;
+  disposition?: BulkDispositionKind;
+  legacyDisposition?: string | null;
+  recommendation?: BulkRecommendation | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[];
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
 }
 
 export interface PlanCleanupRunState {
@@ -103,14 +123,42 @@ export interface PlanCleanupCounts {
   applied: number;
   forReview: number;
   skipped: number;
+  legacySkipped: number;
   failed: number;
   pending: number;
+  recommendationTotal: number;
+  ownerAction: number;
+  cleanupCandidate: number;
+  retryNeeded: number;
+  routed: number;
+  investigate: number;
+  dismissed: number;
+  unresolved: number;
   decided: number;
   percent: number;
 }
 
 const ENDPOINT = "/api/admin/plan-cleanup";
 export const PLAN_CLEANUP_RUN_PARAM = "opcln";
+
+export function canonicalPlanCleanupDisposition(
+  finding: PlanCleanupFinding,
+): BulkDispositionKind {
+  if (finding.outcome === "auto_applied" || finding.outcome === "accepted") {
+    return "auto_resolved";
+  }
+  if (finding.outcome === "recommended" && finding.recommendation?.kind) {
+    return finding.recommendation.kind;
+  }
+  return canonicalDispositionForRow({
+    outcome: finding.outcome,
+    disposition: finding.disposition,
+    itemKind: finding.kind,
+    title: finding.target,
+    error: finding.error,
+    itemId: finding.findingId,
+  }).disposition;
+}
 
 /** The click-time membership snapshot. Keep the pane's order, trim once, and
  * dedupe before POSTing; the route repeats these guards as the trust boundary. */
@@ -138,24 +186,62 @@ export function derivePlanCleanupCounts(
   let skipped = 0;
   let failed = 0;
   let pending = 0;
+  let recommendationTotal = 0;
+  let ownerAction = 0;
+  let cleanupCandidate = 0;
+  let retryNeeded = 0;
+  let routed = 0;
+  let investigate = 0;
+  let dismissed = 0;
+  let legacySkipped = 0;
   for (const finding of findings) {
+    const disposition = canonicalPlanCleanupDisposition(finding);
     if (finding.outcome === "auto_applied" || finding.outcome === "accepted")
       applied += 1;
-    else if (finding.outcome === "recommended") forReview += 1;
-    else if (finding.outcome === "dismissed" || finding.outcome === "skipped")
+    else if (finding.outcome === "recommended") {
+      recommendationTotal += 1;
+      if (disposition === "recommended") forReview += 1;
+    }
+    else if (finding.outcome === "dismissed") {
+      dismissed += 1;
       skipped += 1;
+    } else if (finding.outcome === "skipped") {
+      skipped += 1;
+      if (
+        finding.disposition === undefined ||
+        finding.disposition === "legacy_skipped" ||
+        finding.legacyDisposition === "legacy_skipped"
+      ) {
+        legacySkipped += 1;
+      }
+    }
     else if (finding.outcome === "failed") failed += 1;
     else pending += 1;
+    if (disposition === "owner_action") ownerAction += 1;
+    else if (disposition === "cleanup_candidate") cleanupCandidate += 1;
+    else if (disposition === "retry_needed") retryNeeded += 1;
+    else if (disposition === "routed") routed += 1;
+    else if (disposition === "investigate") investigate += 1;
   }
   const total = findings.length;
-  const decided = applied + forReview + skipped + failed;
+  const decided = findings.filter((finding) => finding.outcome !== "pending").length;
   return {
     total,
     applied,
     forReview,
     skipped,
+    legacySkipped,
     failed,
     pending,
+    recommendationTotal,
+    ownerAction,
+    cleanupCandidate,
+    retryNeeded,
+    routed,
+    investigate,
+    dismissed,
+    unresolved:
+      forReview + pending + ownerAction + cleanupCandidate + retryNeeded + routed + investigate + failed,
     decided,
     percent: total > 0 ? Math.min(100, Math.round((decided / total) * 100)) : 0,
   };
@@ -230,6 +316,10 @@ export function usePlanCleanupOps(): {
   resume: (
     runId: string,
     findingIds: readonly string[],
+  ) => Promise<PlanCleanupStartResult>;
+  reclassify: (
+    runId: string,
+    findingIds?: readonly string[],
   ) => Promise<PlanCleanupStartResult>;
   dismiss: (runId: string) => Promise<void>;
   dismissFinding: (
@@ -387,6 +477,34 @@ export function usePlanCleanupOps(): {
     [],
   );
 
+  const reclassify = useCallback(
+    async (
+      runId: string,
+      findingIds?: readonly string[],
+    ): Promise<PlanCleanupStartResult> => {
+      try {
+        const json = await postOp({
+          op: "reclassify",
+          runId,
+          ...(findingIds && findingIds.length > 0 ? { findingIds } : {}),
+        });
+        return {
+          ok: true,
+          runId,
+          phase: (json.phase as PlanCleanupPhase | null | undefined) ?? null,
+          preservedOutcomes: Number(json.reclassified ?? 0),
+          launched: false,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    },
+    [],
+  );
+
   const accept = useCallback(
     async (runId: string, findingId: string, note?: string | null) => {
       try {
@@ -469,6 +587,7 @@ export function usePlanCleanupOps(): {
     stop,
     restart,
     resume,
+    reclassify,
     dismiss,
     accept,
     dismissFinding,

@@ -252,6 +252,11 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:cancel')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('work_items:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    // EI-21565982575605857: required friction filing must outlive the MCP
+    // transport cap on both the direct and deferred tools:invoke routes; a
+    // flat 30s deadline reports the write outcome as unknown while capture
+    // is still in flight.
+    expect(timeoutForTool('improvements:capture')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:checkpoint')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('loop:end')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
@@ -293,6 +298,10 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:checkpoint',
       args: { id: 'WI-41055', checkpoint: 'resume' },
+    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('tools:invoke', {
+      name: 'improvements:capture',
+      args: { title: 'timeout mapping regression' },
     })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('coord:orient')).toBe(PTOOL_COORD_ORIENT_TIMEOUT_MS);
     expect(timeoutForTool('release:trace')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
