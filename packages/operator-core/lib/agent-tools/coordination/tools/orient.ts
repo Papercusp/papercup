@@ -306,7 +306,7 @@ export interface OrientArgs {
   includeFleetCatchup?: boolean;
   /** Back-compat alias for includeFleetCatchUp (EI-20224878072252879). */
   includeCatchup?: boolean;
-  /** Max fleet catch-up messages to fold (default 8, hard-capped 25). */
+  /** Max fleet catch-up messages to fold (default 8, hard-capped 25; 0 skips the fold). */
   fleetCatchUpLimit?: number;
   /** Fold a COMPACT fleet-health glance (coord:glance's health subset — bees
    *  running/working, staged wakes, paused governor buckets) when you belong to a
@@ -2056,32 +2056,36 @@ export async function composeOrient(
   const includeFleetHealth = args.includeFleetHealth ?? args.includeFleet;
   if (!monitor && (includeFleetCatchUp !== false || includeFleetHealth !== false)) {
     if (fleetSlug && includeFleetCatchUp !== false) {
-      try {
-        const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
-        const cu = (await call('coord:catch-up', {
-          audience: `@fleet:${fleetSlug}`,
-          limit: cuLimit,
-        })) as { total?: number; rows?: unknown[] } | undefined;
-        const rows = Array.isArray(cu?.rows) ? (cu!.rows as unknown[]) : [];
-        const total = typeof cu?.total === 'number' ? cu.total : rows.length;
-        const recent = rows.slice(0, cuLimit);
-        // P-005: same full-mode delta treatment as plan-events — an append-only
-        // message log where "nothing new since last orient" is a safe, fully
-        // actionable answer. FAIL-OPEN on any cursor error.
-        let unchanged = false;
-        if (fleetCatchUpCursor) {
-          try {
-            const ack = await fleetCatchUpCursor(fingerprintIdList(recent.map(rowKey)));
-            unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
-          } catch {
-            /* fail-open: full delivery */
+      const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
+      // A zero limit is the explicit lean-bootstrap form: coord:catch-up requires a
+      // positive limit, so skip the fold instead of forwarding an invalid request.
+      if (cuLimit > 0) {
+        try {
+          const cu = (await call('coord:catch-up', {
+            audience: `@fleet:${fleetSlug}`,
+            limit: cuLimit,
+          })) as { total?: number; rows?: unknown[] } | undefined;
+          const rows = Array.isArray(cu?.rows) ? (cu!.rows as unknown[]) : [];
+          const total = typeof cu?.total === 'number' ? cu.total : rows.length;
+          const recent = rows.slice(0, cuLimit);
+          // P-005: same full-mode delta treatment as plan-events — an append-only
+          // message log where "nothing new since last orient" is a safe, fully
+          // actionable answer. FAIL-OPEN on any cursor error.
+          let unchanged = false;
+          if (fleetCatchUpCursor) {
+            try {
+              const ack = await fleetCatchUpCursor(fingerprintIdList(recent.map(rowKey)));
+              unchanged = !ack.baseline && idListUnchanged(ack.committed, recent.map(rowKey));
+            } catch {
+              /* fail-open: full delivery */
+            }
           }
+          result.fleetCatchUp = unchanged
+            ? { fleet: fleetSlug, total, recent: [], unchanged: true }
+            : { fleet: fleetSlug, total, recent };
+        } catch {
+          result.fleetCatchUp = null;
         }
-        result.fleetCatchUp = unchanged
-          ? { fleet: fleetSlug, total, recent: [], unchanged: true }
-          : { fleet: fleetSlug, total, recent };
-      } catch {
-        result.fleetCatchUp = null;
       }
     }
     // fleet-health (fold #1) — COMPACT: coord:glance's health subset only (bees/wake/
@@ -2841,10 +2845,10 @@ export default defineTool({
     fleetCatchUpLimit: z
       .number()
       .int()
-      .positive()
+      .nonnegative()
       .max(25)
       .optional()
-      .describe('Max fleet catch-up messages to fold (default 8).'),
+      .describe('Max fleet catch-up messages to fold (default 8; 0 skips the catch-up fold).'),
     includeFleetHealth: z
       .boolean()
       .optional()
