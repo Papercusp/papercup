@@ -32,6 +32,8 @@ import { Button } from "@/app/harness/Button";
 import { Modal } from "@/app/harness/Modal";
 import { Select } from "@/app/harness/Select";
 import { TextInput } from "@/app/harness/TextInput";
+import { HostedWorkspaceSession } from "./HostedWorkspaceSession";
+import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
 import styles from "./cloud-workspaces.module.css";
 
 type ProviderTarget = "gcp" | "aws" | "azure";
@@ -585,6 +587,9 @@ export default function CloudWorkspacesPage() {
     sizeParam === (selectedSize?.id ?? "") &&
     imageParam === (selectedImage?.id ?? "") &&
     networkParam === (selectedNetwork?.id ?? "");
+  const diskGiB = Number(diskParam);
+  const diskGiBValid =
+    Number.isInteger(diskGiB) && diskGiB >= 20 && diskGiB <= 16_384;
 
   useEffect(() => {
     if (connections.length === 0) return;
@@ -627,6 +632,9 @@ export default function CloudWorkspacesPage() {
     !catalogSelectionCanonical
       ? "wait for URL-backed selections to finish syncing"
       : null,
+    !diskGiBValid
+      ? "enter a whole-number disk size between 20 and 16,384 GiB"
+      : null,
     selectedConnection && selectedConnection.target !== "gcp"
       ? "choose a supported Google Cloud connection"
       : null,
@@ -645,15 +653,11 @@ export default function CloudWorkspacesPage() {
     !selectedImage ? "load an image from the provider catalog" : null,
     !selectedNetwork ? "load a network from the provider catalog" : null,
   ].filter((blocker): blocker is string => Boolean(blocker));
-  const diskGiB = Number.parseInt(diskParam, 10);
-  const validDiskGiB = Number.isFinite(diskGiB)
-    ? Math.max(20, Math.min(16_384, diskGiB))
-    : 100;
   const estimatedMonthlyUsd =
-    selectedSize?.hourlyUsd === undefined
+    selectedSize?.hourlyUsd === undefined || !diskGiBValid
       ? undefined
       : selectedSize.hourlyUsd * 730 +
-        validDiskGiB * (selectedConnection?.diskPricePerGiBMonth ?? 0);
+        diskGiB * (selectedConnection?.diskPricePerGiBMonth ?? 0);
   const destroyWorkspace =
     workspaces.find((row) => row.id === destroyId) ?? null;
   const connectedProviderCount = connections.filter(
@@ -752,6 +756,7 @@ export default function CloudWorkspacesPage() {
 
   const canProvision = Boolean(
     catalogSelectionCanonical &&
+    diskGiBValid &&
     selectedConnection?.target === "gcp" &&
     selectedConnection?.status === "connected" &&
     nameParam.trim() &&
@@ -1043,7 +1048,8 @@ export default function CloudWorkspacesPage() {
                 !selectedZone ||
                 !selectedSize ||
                 !selectedImage ||
-                !selectedNetwork
+                !selectedNetwork ||
+                !diskGiBValid
               )
                 return;
               void perform(
@@ -1065,7 +1071,7 @@ export default function CloudWorkspacesPage() {
                         ? { version: selectedImage.version }
                         : {}),
                     },
-                    data: { volumeGiB: validDiskGiB, encrypted: true },
+                    data: { volumeGiB: diskGiB, encrypted: true },
                     provider: { network: { mode: "managed" } },
                   },
                 },
@@ -1215,16 +1221,26 @@ export default function CloudWorkspacesPage() {
                   />
                 )}
               </Field>
-              <Field label="Disk (GiB)" hint="20–16,384 GiB">
+              <Field
+                label="Disk (GiB)"
+                hint={
+                  diskGiBValid
+                    ? "20–16,384 GiB"
+                    : "Enter a whole number between 20 and 16,384 GiB."
+                }
+              >
                 {(hintId) => (
                   <TextInput
                     type="number"
                     min={20}
                     max={16_384}
+                    step={1}
+                    required
                     value={diskParam}
                     onChange={(event) => void setDiskParam(event.target.value)}
                     aria-label="Disk size in GiB"
                     aria-describedby={hintId}
+                    aria-invalid={!diskGiBValid}
                   />
                 )}
               </Field>
@@ -1348,7 +1364,11 @@ export default function CloudWorkspacesPage() {
           </div>
         ) : (
           <div className={styles.workspaceList}>
-            {workspaces.map((workspace) => (
+            {workspaces.map((workspace) => {
+              const hostedConnector = readHostedWorkspaceConnector(
+                workspace.tunnel,
+              );
+              return (
               <article className={styles.workspaceCard} key={workspace.id}>
                 <div className={styles.workspaceHeader}>
                   <div className={styles.workspaceIdentity}>
@@ -1734,8 +1754,17 @@ export default function CloudWorkspacesPage() {
                     </Button>
                   </div>
                 </div>
+
+                {hostedConnector ? (
+                  <HostedWorkspaceSession
+                    hostId={workspace.id}
+                    routeLabel={hostedConnector.routeLabel}
+                    workspaceName={workspace.name}
+                  />
+                ) : null}
               </article>
-            ))}
+              );
+            })}
           </div>
         )}
       </section>

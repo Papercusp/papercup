@@ -455,6 +455,70 @@ describe("CloudWorkspacesPage", () => {
     );
   });
 
+  it("blocks silent disk correction and submits only an explicitly valid volume", async () => {
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), {
+      target: { value: "Disk Check" },
+    });
+    const disk = screen.getByRole("spinbutton", {
+      name: "Disk size in GiB",
+    }) as HTMLInputElement;
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    }) as HTMLButtonElement;
+
+    for (const invalidValue of ["", "19", "20.5", "16385"]) {
+      fireEvent.change(disk, { target: { value: invalidValue } });
+      await waitFor(() => expect(provision.disabled).toBe(true));
+      expect(disk.getAttribute("aria-invalid")).toBe("true");
+      expect(screen.getByRole("status").textContent).toContain(
+        "enter a whole-number disk size between 20 and 16,384 GiB",
+      );
+    }
+
+    fireEvent.change(disk, { target: { value: "120" } });
+    await waitFor(() => expect(provision.disabled).toBe(false));
+    expect(disk.getAttribute("aria-invalid")).toBe("false");
+    fireEvent.click(provision);
+
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "provision",
+          desired: expect.objectContaining({
+            data: { volumeGiB: 120, encrypted: true },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("mounts the browser session plane when a WebSocket connector is advertised", () => {
+    H.rows = rows.map((row) =>
+      row.kind === "workspace"
+        ? {
+            ...row,
+            tunnel: {
+              hostedConnector: {
+                routeLabel: "workspace-relay",
+                transport: "websocket",
+              },
+            },
+          }
+        : row,
+    );
+
+    render(<CloudWorkspacesPage />);
+
+    const session = screen.getByRole("region", {
+      name: "Browser workspace session for research-control",
+    });
+    expect(session).toBeTruthy();
+    expect(session.textContent).toContain("outbound relay · workspace-relay");
+    expect(session.textContent).toContain("Connect to open the authenticated PTY");
+  });
+
   it("canonicalizes stale URL-backed catalog IDs before provisioning", async () => {
     H.queryDefaults = {
       connection: "retired-connection",

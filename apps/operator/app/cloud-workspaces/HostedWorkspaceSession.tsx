@@ -75,7 +75,12 @@ function fileSize(bytes: number | undefined): string {
 }
 
 function downloadFile(path: string, data: string): void {
-  const blob = new Blob([base64ToBytes(data)]);
+  const bytes = base64ToBytes(data);
+  // Copy into a concrete ArrayBuffer: Uint8Array<ArrayBufferLike> also permits
+  // SharedArrayBuffer, which the DOM BlobPart type intentionally rejects.
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  const blob = new Blob([buffer]);
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
   anchor.href = url;
@@ -619,4 +624,3 @@ export function HostedWorkspaceSession({
     </section>
   );
 }
-
