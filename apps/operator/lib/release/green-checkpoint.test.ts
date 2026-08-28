@@ -390,6 +390,85 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
     expect(queue).toBeNull();
   });
 
+  it("defers automatic first-red fixer dispatch until stale-tip re-triage", async () => {
+    vi.stubEnv("PAPERCUSP_QUIET_CUT", "0");
+    vi.stubEnv("PAPERCUSP_GATE_AUTO_REFIRE_CAP", "0");
+    try {
+      const ready = await commit("a", "1", "ready");
+      await git(repo, ["branch", "ready", ready]);
+      const candidate = await commit("b", "2", "automatic candidate");
+      const { deps, calls } = stubDeps(false, ["lib/broken.test.ts"]);
+      let movingTip: string | null = null;
+      let queue: FrozenCandidateRepairQueue | null = null;
+      const writes: Array<FrozenCandidateRepairQueue | null> = [];
+      let prepared = false;
+      let dispatched = false;
+      deps.runGreen = async () => {
+        calls.push("runGreen");
+        // The automatic candidate is cut before this commit lands, so the red verdict has a
+        // newer tip available for the cheap stale-candidate check.
+        movingTip = await commit("c", "3", "tip landed during suite");
+        return {
+          green: false,
+          summary: "1 failed",
+          failingTests: ["@papercusp/web"],
+          failingFiles: [
+            { file: "lib/broken.test.ts", workspace: "@papercusp/web" },
+          ],
+        };
+      };
+      deps.resolveTip = async () => movingTip;
+      deps.runTestsAtRef = async (tip) => {
+        calls.push("runTestsAtRef");
+        expect(tip).toBe(movingTip);
+        return { pass: true, summary: "pass at tip" };
+      };
+      deps.readFrozenRepairQueue = async () => queue;
+      deps.writeFrozenRepairQueue = async (next) => {
+        writes.push(next);
+        queue = next;
+      };
+      deps.prepareFrozenRepairWorktree = async () => {
+        prepared = true;
+        throw new Error("automatic first-red path must re-triage before preparing a fixer");
+      };
+      deps.dispatchFrozenRepairFixer = async () => {
+        dispatched = true;
+        throw new Error("automatic first-red path must re-triage before dispatching a fixer");
+      };
+
+      const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(result).toMatchObject({
+        advanced: false,
+        candidate,
+        green: false,
+        reason: "not-green",
+          retriage: {
+            classification: "stale-candidate",
+            autoRefire: false,
+          },
+      });
+      expect(writes.map((entry) => entry?.phase ?? "clear")).toEqual([
+        "ready-to-test",
+        "awaiting-fixer",
+      ]);
+      expect(calls.indexOf("runTestsAtRef")).toBeGreaterThan(
+        calls.indexOf("runGreen"),
+      );
+      expect(prepared).toBe(false);
+      expect(dispatched).toBe(false);
+      expect(queue).toMatchObject({
+        phase: "awaiting-fixer",
+        candidate,
+        repairHead: candidate,
+        attempts: 0,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("freezes the first red candidate and does not run or dispatch again while its fixer is live", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
