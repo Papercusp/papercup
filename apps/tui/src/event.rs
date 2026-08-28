@@ -392,6 +392,7 @@ pub enum Event {
         harness: String,
         chat_id: Option<String>,
         role: String,
+        load_token: u64,
         summaries: Vec<crate::agent_chats::AgentChatSummary>,
         messages: Vec<crate::models::ChatMessage>,
         approvals: Vec<crate::models::PendingApproval>,
@@ -423,9 +424,20 @@ pub enum Event {
     /// usable, but the error remains explicit instead of silently falling back
     /// to the owned-loop-only path.
     SuSessionError(String),
+    /// A stream-scoped failure.  The chat id lets the reducer discard a late
+    /// EOF/error from a session that the owner has already switched away from.
+    SuSessionStreamError { chat_id: String, message: String },
     /// Immediate acknowledgement from a SU-session control POST. Terminal
     /// completion/refusal still arrives on the ordered session stream.
     SuSessionCommandResult(String),
+    /// Bounded startup inventory of every chat that has a durable SU-session
+    /// binding.  This is separate from the selected session state so ended
+    /// sessions remain inspectable in the picker.
+    SuSessionInventory {
+        harness: String,
+        selected_chat_id: Option<String>,
+        entries: Vec<crate::su_session::SuSessionInventoryEntry>,
+    },
     /// Snapshot from the one shared conversations.contextProjection query.
     /// `None` is an honest capability-tier absence for the requested target.
     ConversationContextProjectionLoaded {

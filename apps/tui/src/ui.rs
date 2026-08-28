@@ -2644,6 +2644,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             "  Ctrl+X interrupt · R resume · K fork · F focus · E end",
             Theme::dim(),
         )));
+        lines.push(Line::from(Span::styled(
+            format!("  reconciliation: {}", session.reconciliation),
+            Theme::dim(),
+        )));
         if let Some(error) = session.error.as_deref() {
             lines.push(Line::from(Span::styled(
                 format!("  {}", error),

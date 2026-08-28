@@ -657,7 +657,13 @@ async fn run<B: Backend>(
     // Operator chat pane (tui-operator-surface-2026-06-04): load the workspace's
     // operator conversation on open so the transcript is seeded from the same
     // thread the desktop surface shares.
-    tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
+    let chat_load_token = app.next_agent_chat_load_token();
+    tokio::spawn(agent_chat_load(
+        app.harness.clone(),
+        None,
+        chat_load_token,
+        tx.clone(),
+    ));
     if let Some(target) = app.context_projection_target.clone() {
         tokio::spawn(fetch_context_projection(target, tx.clone()));
     }
@@ -746,7 +752,13 @@ async fn run<B: Backend>(
             app.reset_agent_chat_binding();
             app.agent_chat_role = "operator".to_string();
             app.agent_chat_summaries.clear();
-            tokio::spawn(agent_chat_load(app.harness.clone(), None, tx.clone()));
+            app.su_session_inventory.clear();
+            tokio::spawn(agent_chat_load(
+                app.harness.clone(),
+                None,
+                app.chat_load_token,
+                tx.clone(),
+            ));
         }
         if app.context_projection_target != prior_context_target {
             if let Some(target) = app.context_projection_target.clone() {
@@ -1389,8 +1401,17 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::LoadAgentChat { harness, chat_id } => {
-                    tokio::spawn(agent_chat_load(harness, Some(chat_id), tx.clone()));
+                Action::LoadAgentChat {
+                    harness,
+                    chat_id,
+                    load_token,
+                } => {
+                    tokio::spawn(agent_chat_load(
+                        harness,
+                        Some(chat_id),
+                        load_token,
+                        tx.clone(),
+                    ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
                 Action::CancelChat => {
@@ -3657,6 +3678,7 @@ fn finish_native_agent_chat_turn(tx: &UnboundedSender<Event>, final_text: String
 async fn agent_chat_load(
     harness: String,
     selected_chat_id: Option<String>,
+    load_token: u64,
     tx: UnboundedSender<Event>,
 ) {
     let client = match OperatorClient::from_discovery().await {
@@ -3667,6 +3689,10 @@ async fn agent_chat_load(
         }
     };
     let options = agent_chats::AgentChatListOptions {
+        // Keep archived chats in the inventory so an ended SU session remains
+        // selectable for transcript inspection after a restart.  The default
+        // operator selection below still excludes archived rows.
+        include_archived: true,
         limit: Some(100),
         ..Default::default()
     };
@@ -3677,6 +3703,15 @@ async fn agent_chat_load(
             return;
         }
     };
+    // Probe each bounded chat summary against the canonical SU-session route.
+    // A 404 means this is a legacy chat; any successful snapshot is retained
+    // even when terminal so the picker can inspect it after a restart.
+    let inventory = probe_su_session_inventory(&client, &harness, &summaries).await;
+    let _ = tx.send(Event::SuSessionInventory {
+        harness: harness.clone(),
+        selected_chat_id: selected_chat_id.clone(),
+        entries: inventory,
+    });
     let selected = if let Some(id) = selected_chat_id.as_deref() {
         match summaries.iter().find(|chat| chat.id == id).cloned() {
             Some(chat) => Some(chat),
@@ -3697,11 +3732,12 @@ async fn agent_chat_load(
             .cloned()
     };
     let Some(summary) = selected else {
-        let _ = tx.send(Event::AgentChatLoaded {
-            harness,
-            chat_id: None,
-            role: "operator".to_string(),
-            summaries,
+    let _ = tx.send(Event::AgentChatLoaded {
+        harness,
+        chat_id: None,
+        role: "operator".to_string(),
+        load_token,
+        summaries,
             messages: Vec::new(),
             approvals: Vec::new(),
         });
@@ -3729,6 +3765,7 @@ async fn agent_chat_load(
                 harness: harness.clone(),
                 chat_id: Some(chat.id.clone()),
                 role: chat.role,
+                load_token,
                 summaries,
                 messages: chat
                     .transcript
@@ -3769,6 +3806,23 @@ async fn agent_chat_load(
             let _ = tx.send(Event::Error(format!("native agent chat resume: {error}")));
         }
     }
+}
+
+async fn probe_su_session_inventory(
+    client: &OperatorClient,
+    harness: &str,
+    summaries: &[agent_chats::AgentChatSummary],
+) -> Vec<crate::su_session::SuSessionInventoryEntry> {
+    let mut entries = Vec::new();
+    for summary in summaries {
+        if let Ok(snapshot) = client.su_session_snapshot(harness, &summary.id).await {
+            entries.push(crate::su_session::SuSessionInventoryEntry::from_snapshot(
+                &snapshot,
+            ));
+        }
+    }
+    entries.sort_by_key(|entry| entry.adv_session_id);
+    entries
 }
 
 /// Open one PUI SU session and attach its canonical stream.  The first owner
@@ -3897,12 +3951,16 @@ async fn stream_su_session_events(
         }
     }
     let Some(mut stream) = stream else {
-        let _ = tx.send(Event::SuSessionError(last_error.unwrap_or_else(|| {
+        let message = last_error.unwrap_or_else(|| {
             format!(
                 "SU-session host is not attached (adv {})",
                 binding.adv_session_id
             )
-        })));
+        });
+        let _ = tx.send(Event::SuSessionStreamError {
+            chat_id: chat_id.clone(),
+            message,
+        });
         return;
     };
 
@@ -3912,7 +3970,10 @@ async fn stream_su_session_events(
             Ok(event) => event,
             Err(error) => {
                 if !terminal_seen {
-                    let _ = tx.send(Event::SuSessionError(error.to_string()));
+                    let _ = tx.send(Event::SuSessionStreamError {
+                        chat_id: chat_id.clone(),
+                        message: error.to_string(),
+                    });
                 }
                 return;
             }
@@ -3957,7 +4018,10 @@ async fn stream_su_session_events(
         let _ = tx.send(Event::SuSessionEvent(event));
     }
     if !terminal_seen {
-        let _ = tx.send(Event::SuSessionError("SU-session stream closed".into()));
+        let _ = tx.send(Event::SuSessionStreamError {
+            chat_id,
+            message: "SU-session stream closed".into(),
+        });
     }
 }
 

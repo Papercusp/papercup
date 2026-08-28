@@ -14,6 +14,7 @@ use crate::models::{
     TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
+use crate::su_session::SuSessionInventoryEntry;
 use crossterm::event::{KeyCode, KeyModifiers};
 use pui_companion_proto::Topology;
 use serde_json::{json, Value};
@@ -213,6 +214,7 @@ pub enum Action {
     LoadAgentChat {
         harness: String,
         chat_id: String,
+        load_token: u64,
     },
     /// Abort the local native-chat stream; the dropped transport propagates
     /// cancellation to the operator and the bubble becomes retryable.
@@ -1914,6 +1916,9 @@ pub struct App {
     /// The concrete role/persona and selectable sessions under the active pot.
     pub agent_chat_role: String,
     pub agent_chat_summaries: Vec<crate::agent_chats::AgentChatSummary>,
+    /// Monotonic token for async chat loads. Late responses from an earlier
+    /// selection are discarded instead of replacing the newly selected chat.
+    pub chat_load_token: u64,
     /// HITL requests parked on the native seam, oldest first. Non-empty means a
     /// turn is STALLED waiting on a decision only this pane can supply — the
     /// composer swaps to the approve/deny prompt while any entry stands.
@@ -1924,6 +1929,10 @@ pub struct App {
     pub su_backend: Option<crate::su_session::SuSessionBackend>,
     /// Durable SU-session binding + canonical lifecycle/sequence read-model.
     pub su_session: Option<crate::su_session::SuSessionState>,
+    /// All durable SU sessions discovered for the active harness.  This
+    /// inventory is kept independently of the selected stream so ended and
+    /// archived sessions remain available for inspection after a restart.
+    pub su_session_inventory: Vec<SuSessionInventoryEntry>,
     pub su_command_counter: u64,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
@@ -2223,9 +2232,11 @@ impl App {
             agent_chat_id: None,
             agent_chat_role: "operator".to_string(),
             agent_chat_summaries: Vec::new(),
+            chat_load_token: 0,
             pending_approvals: Vec::new(),
             su_backend: None,
             su_session: None,
+            su_session_inventory: Vec::new(),
             su_command_counter: 0,
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
@@ -2361,6 +2372,7 @@ impl App {
     }
 
     pub fn reset_agent_chat_binding(&mut self) {
+        self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
         self.su_session = None;
         self.chat_messages.clear();
@@ -2369,6 +2381,13 @@ impl App {
         self.chat_retry_after_cancel = false;
         self.chat_step = None;
         self.chat_scroll = 0;
+    }
+
+    /// Advance the async-load token before spawning a load that did not first
+    /// reset the binding (the initial startup load is the common case).
+    pub fn next_agent_chat_load_token(&mut self) -> u64 {
+        self.chat_load_token = self.chat_load_token.saturating_add(1);
+        self.chat_load_token
     }
 
     /// Install a create/attach result and keep the canonical identity visible
@@ -2394,12 +2413,51 @@ impl App {
             state.stale = true;
             return;
         }
+        let previous_native = state
+            .identity
+            .as_ref()
+            .map(|identity| identity.native_session_id.as_str());
+        let previous_generation = state
+            .descriptor
+            .as_ref()
+            .map(|descriptor| descriptor.runtime_generation);
+        let binding_native = state.binding.native_session.as_ref().and_then(|native| {
+            match native {
+                crate::models::NativeSessionHandle::Claude { session_id, .. } => session_id.as_deref(),
+                crate::models::NativeSessionHandle::Codex { rollout_id, .. } => rollout_id.as_deref(),
+                crate::models::NativeSessionHandle::Omp { omp_thread_id, .. } => omp_thread_id.as_deref(),
+            }
+        });
+        let runtime_replaced = previous_native
+            .or(binding_native)
+            .is_some_and(|native| native != snapshot.descriptor.identity.native_session_id)
+            || previous_generation.is_some_and(|generation| {
+                snapshot.descriptor.runtime_generation > generation
+            });
+        let snapshot_adv_session_id = snapshot.descriptor.identity.adv_session_id;
         state.identity = Some(snapshot.descriptor.identity.clone());
         state.lifecycle = snapshot.descriptor.lifecycle;
         state.descriptor = Some(snapshot.descriptor);
         state.last_sequence = snapshot.last_sequence;
         state.stale = false;
         state.error = None;
+        state.reconciliation = if state.lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+            crate::su_session::SuSessionReconciliation::FailedOrphaned
+        } else if state.lifecycle == crate::su_session::SuSessionLifecycleState::Ended || snapshot.terminal {
+            crate::su_session::SuSessionReconciliation::EndedArchived
+        } else if runtime_replaced {
+            crate::su_session::SuSessionReconciliation::RuntimeReplaced
+        } else {
+            crate::su_session::SuSessionReconciliation::Attached
+        };
+        if runtime_replaced {
+            self.session_note = Some(format!(
+                "SU runtime replaced for adv {}; reattached native session",
+                snapshot_adv_session_id
+            ));
+        } else if state.reconciliation == crate::su_session::SuSessionReconciliation::EndedArchived {
+            self.session_note = Some("SU session ended; transcript preserved for inspection".into());
+        }
         self.agent_chat_id = state.identity.as_ref().map(|i| i.agent_chat_id.clone());
     }
 
@@ -2449,6 +2507,20 @@ impl App {
                         | crate::su_session::SuSessionLifecycleState::Failed
                 ) {
                     self.chat_streaming = false;
+                }
+                state.reconciliation = if lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+                    crate::su_session::SuSessionReconciliation::FailedOrphaned
+                } else if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
+                    crate::su_session::SuSessionReconciliation::EndedArchived
+                } else {
+                    crate::su_session::SuSessionReconciliation::Attached
+                };
+                if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
+                    self.session_note =
+                        Some("SU session ended; transcript preserved for inspection".into());
+                } else if lifecycle == crate::su_session::SuSessionLifecycleState::Failed {
+                    self.session_note =
+                        Some("SU session failed; preserved as an orphaned session".into());
                 }
             }
             crate::su_session::SuSessionEvent::Transcript {
@@ -2537,6 +2609,7 @@ impl App {
             }
             crate::su_session::SuSessionEvent::Error { message, .. } => {
                 state.error = Some(message.clone());
+                state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
                 self.last_error = Some(format!("SU-session: {message}"));
             }
             crate::su_session::SuSessionEvent::Card {
@@ -3469,17 +3542,31 @@ impl App {
                 .filter(|t| !t.is_empty())
                 .unwrap_or("untitled");
             let active = self.agent_chat_id.as_deref() == Some(chat.id.as_str());
+            let inventory = self
+                .su_session_inventory
+                .iter()
+                .find(|entry| entry.agent_chat_id == chat.id);
+            let status = inventory
+                .map(|entry| format!(" · {} · {}", entry.backend.label(), entry.lifecycle))
+                .unwrap_or_default();
+            let reconciliation = inventory
+                .map(|entry| entry.reconciliation.to_string())
+                .unwrap_or_else(|| "legacy chat".to_string());
             PickerOption {
                 id: format!("session:{}", chat.id),
                 label: format!(
-                    "{}{} · {} · {} turn{}",
+                    "{}{} · {}{} · {} turn{}",
                     if active { "● " } else { "" },
                     chat.role,
                     title,
+                    status,
                     chat.turn_count,
                     if chat.turn_count == 1 { "" } else { "s" }
                 ),
-                hint: Some(format!("{} · updated {}", chat.id, chat.updated_at)),
+                hint: Some(format!(
+                    "{} · updated {} · {}",
+                    chat.id, chat.updated_at, reconciliation
+                )),
                 disabled: false,
             }
         }));
@@ -3595,6 +3682,7 @@ impl App {
                             return Action::LoadAgentChat {
                                 harness: self.harness.clone(),
                                 chat_id: chat_id.to_string(),
+                                load_token: self.chat_load_token,
                             };
                         }
                     }
@@ -7248,12 +7336,60 @@ impl App {
                 if let Some(state) = self.su_session.as_mut() {
                     state.error = Some(error.clone());
                     state.stale = true;
+                    state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
                 }
                 self.last_error = Some(format!("SU-session: {error}"));
                 Action::Render
             }
+            Event::SuSessionStreamError { chat_id, message } => {
+                // A late EOF from a previously selected chat must not poison
+                // the newly selected session.  Stream errors carry their chat
+                // identity; only the active stream may update the pane.
+                if self.agent_chat_id.as_deref() == Some(chat_id.as_str()) {
+                    if let Some(state) = self.su_session.as_mut() {
+                        state.error = Some(message.clone());
+                        state.stale = true;
+                        state.reconciliation =
+                            crate::su_session::SuSessionReconciliation::FailedOrphaned;
+                    }
+                    self.last_error = Some(format!("SU-session: {message}"));
+                }
+                Action::Render
+            }
             Event::SuSessionCommandResult(status) => {
                 self.session_note = Some(format!("SU-session command {status}"));
+                Action::Render
+            }
+            Event::SuSessionInventory {
+                harness,
+                selected_chat_id,
+                entries,
+            } => {
+                if harness != self.harness
+                    || selected_chat_id
+                        .as_deref()
+                        .is_some_and(|chat_id| self.agent_chat_id.as_deref() != Some(chat_id))
+                {
+                    return Action::Render;
+                }
+                let previous = self.su_session_inventory.clone();
+                self.su_session_inventory = entries
+                    .into_iter()
+                    .map(|mut entry| {
+                        if let Some(old) = previous
+                            .iter()
+                            .find(|old| old.agent_chat_id == entry.agent_chat_id)
+                        {
+                            if old.native_session_id != entry.native_session_id
+                                || old.runtime_generation != entry.runtime_generation
+                            {
+                                entry.reconciliation =
+                                    crate::su_session::SuSessionReconciliation::RuntimeReplaced;
+                            }
+                        }
+                        entry
+                    })
+                    .collect();
                 Action::Render
             }
             Event::ConversationContextProjectionLoaded { target, projection } => {
@@ -7282,13 +7418,14 @@ impl App {
                 harness,
                 chat_id,
                 role,
+                load_token,
                 summaries,
                 messages,
                 approvals,
             } => {
                 // A slow fetch from the previously selected pot must never
                 // replace the newly selected pot's native chat.
-                if harness == self.harness && !self.chat_streaming {
+                if harness == self.harness && load_token == self.chat_load_token && !self.chat_streaming {
                     self.agent_chat_id = chat_id;
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
@@ -10453,6 +10590,7 @@ mod tests {
             Action::LoadAgentChat {
                 harness: "papercup".into(),
                 chat_id: "chat-review".into(),
+                load_token: 1,
             }
         );
         assert_eq!(a.agent_chat_role, "reviewer");
@@ -10511,6 +10649,139 @@ mod tests {
         }
         assert_eq!(a.su_session_control(crate::su_session::SuSessionControl::Fork { from_sequence: None }), Action::Render);
         assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
+    }
+
+    #[test]
+    fn su_snapshot_surfaces_runtime_replacement_and_preserves_ended_sessions() {
+        let mut app = App::new();
+        app.set_su_session_binding(crate::su_session::SuSessionBinding {
+            native_session: Some(crate::models::NativeSessionHandle::Claude {
+                source: "adv_sessions".into(),
+                owner_id: Some("su-1".into()),
+                session_id: Some("native-old".into()),
+                config_dir: None,
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..su_binding()
+        });
+        let snapshot: crate::su_session::SuSessionSnapshot = serde_json::from_value(json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-new", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+                "lifecycle":"ready", "runtimeGeneration":2, "role":"su", "carry":"warm", "modes":[],
+                "capabilities": {"commands":{}, "features":{}},
+                "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+            },
+            "floorSequence":1, "lastSequence":3, "terminal":false
+        })).unwrap();
+        app.apply_su_session_snapshot(snapshot);
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::RuntimeReplaced
+        );
+        assert!(app.session_note.as_deref().unwrap().contains("runtime replaced"));
+
+        let mut ended = su_event_base("lifecycle", 4);
+        ended["previousState"] = json!("ready");
+        ended["state"] = json!("ended");
+        ended["runtimeGeneration"] = json!(2);
+        app.apply_su_session_event(su_event(ended));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::EndedArchived
+        );
+        assert!(app
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("preserved for inspection"));
+    }
+
+    #[test]
+    fn stale_su_stream_errors_cannot_cross_session_boundary() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-2".into());
+        app.set_su_session_binding(su_binding());
+        app.update(Event::SuSessionStreamError {
+            chat_id: "chat-1".into(),
+            message: "old stream closed".into(),
+        });
+        assert!(app.su_session.as_ref().unwrap().error.is_none());
+        app.update(Event::SuSessionStreamError {
+            chat_id: "chat-2".into(),
+            message: "current stream closed".into(),
+        });
+        assert_eq!(
+            app.su_session.as_ref().unwrap().error.as_deref(),
+            Some("current stream closed")
+        );
+    }
+
+    #[test]
+    fn stale_agent_chat_load_tokens_cannot_replace_a_new_selection() {
+        let mut app = App::new();
+        let stale_token = app.next_agent_chat_load_token();
+        app.reset_agent_chat_binding();
+        let harness = app.harness.clone();
+        app.update(Event::AgentChatLoaded {
+            harness: harness.clone(),
+            chat_id: Some("stale-chat".into()),
+            role: "operator".into(),
+            load_token: stale_token,
+            summaries: Vec::new(),
+            messages: vec![ChatMessage::assistant("stale")],
+            approvals: Vec::new(),
+        });
+        assert!(app.agent_chat_id.is_none());
+        let current_token = app.chat_load_token;
+        app.update(Event::AgentChatLoaded {
+            harness,
+            chat_id: Some("current-chat".into()),
+            role: "operator".into(),
+            load_token: current_token,
+            summaries: Vec::new(),
+            messages: vec![ChatMessage::assistant("current")],
+            approvals: Vec::new(),
+        });
+        assert_eq!(app.agent_chat_id.as_deref(), Some("current-chat"));
+        assert_eq!(app.chat_messages[0].content, "current");
+    }
+
+    #[test]
+    fn su_inventory_keeps_ended_rows_and_marks_runtime_changes() {
+        let mut app = App::new();
+        let row = crate::su_session::SuSessionInventoryEntry {
+            agent_chat_id: "chat-1".into(),
+            adv_session_id: 7,
+            backend: crate::su_session::SuSessionBackend::Codex,
+            lifecycle: crate::su_session::SuSessionLifecycleState::Ended,
+            runtime_generation: 1,
+            native_session_id: "rollout-1".into(),
+            terminal: true,
+            reconciliation: crate::su_session::SuSessionReconciliation::EndedArchived,
+        };
+        app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: None,
+            entries: vec![row.clone()],
+        });
+        assert_eq!(app.su_session_inventory.len(), 1);
+        let mut replacement = row;
+        replacement.lifecycle = crate::su_session::SuSessionLifecycleState::Ready;
+        replacement.terminal = false;
+        replacement.runtime_generation = 2;
+        replacement.native_session_id = "rollout-2".into();
+        replacement.reconciliation = crate::su_session::SuSessionReconciliation::Attached;
+        app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: None,
+            entries: vec![replacement],
+        });
+        assert_eq!(
+            app.su_session_inventory[0].reconciliation,
+            crate::su_session::SuSessionReconciliation::RuntimeReplaced
+        );
     }
 
     #[test]
@@ -15056,6 +15327,7 @@ mod tests {
             harness: "old-pot".into(),
             chat_id: Some("wrong".into()),
             role: "operator".into(),
+            load_token: a.chat_load_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("wrong")],
             approvals: Vec::new(),
@@ -15065,6 +15337,7 @@ mod tests {
             harness: "pot-a".into(),
             chat_id: Some("chat-a".into()),
             role: "reviewer".into(),
+            load_token: a.chat_load_token,
             summaries: Vec::new(),
             messages: vec![ChatMessage::assistant("persisted")],
             approvals: Vec::new(),

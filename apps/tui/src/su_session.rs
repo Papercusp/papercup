@@ -65,6 +65,39 @@ pub enum SuSessionLifecycleState {
     Failed,
 }
 
+/// How a PUI process reconciled a durable SU session with the runtime it found
+/// after startup or reconnect.  This is intentionally separate from the
+/// backend lifecycle: `ended` is a provider/runtime state while
+/// `ended-archived` tells the owner why the session remains selectable in the
+/// PUI session picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum SuSessionReconciliation {
+    Pending,
+    Attached,
+    RuntimeReplaced,
+    EndedArchived,
+    FailedOrphaned,
+}
+
+impl SuSessionReconciliation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Attached => "attached",
+            Self::RuntimeReplaced => "runtime-replaced",
+            Self::EndedArchived => "ended-archived",
+            Self::FailedOrphaned => "failed-orphaned",
+        }
+    }
+}
+
+impl std::fmt::Display for SuSessionReconciliation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl SuSessionLifecycleState {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -228,6 +261,8 @@ pub struct SuSessionState {
     pub last_sequence: u64,
     pub stale: bool,
     pub error: Option<String>,
+    /// Startup/reconnect outcome surfaced beside the lifecycle in the PUI.
+    pub reconciliation: SuSessionReconciliation,
 }
 
 impl SuSessionState {
@@ -240,6 +275,7 @@ impl SuSessionState {
             last_sequence: 0,
             stale: false,
             error: None,
+            reconciliation: SuSessionReconciliation::Pending,
         }
     }
 
@@ -257,6 +293,44 @@ impl SuSessionState {
             "SU · {backend} · adv {adv} · chat {short_chat} · {}",
             self.lifecycle
         )
+    }
+}
+
+/// A bounded inventory row used by the session picker.  Inventory is derived
+/// from the canonical per-chat SU-session snapshot; ended rows remain present
+/// so their transcript can be inspected after the runtime is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuSessionInventoryEntry {
+    pub agent_chat_id: String,
+    pub adv_session_id: i64,
+    pub backend: SuSessionBackend,
+    pub lifecycle: SuSessionLifecycleState,
+    pub runtime_generation: u64,
+    pub native_session_id: String,
+    pub terminal: bool,
+    pub reconciliation: SuSessionReconciliation,
+}
+
+impl SuSessionInventoryEntry {
+    pub fn from_snapshot(snapshot: &SuSessionSnapshot) -> Self {
+        let lifecycle = snapshot.descriptor.lifecycle;
+        let reconciliation = if lifecycle == SuSessionLifecycleState::Failed {
+            SuSessionReconciliation::FailedOrphaned
+        } else if lifecycle == SuSessionLifecycleState::Ended || snapshot.terminal {
+            SuSessionReconciliation::EndedArchived
+        } else {
+            SuSessionReconciliation::Attached
+        };
+        Self {
+            agent_chat_id: snapshot.descriptor.identity.agent_chat_id.clone(),
+            adv_session_id: snapshot.descriptor.identity.adv_session_id,
+            backend: snapshot.descriptor.identity.backend,
+            lifecycle,
+            runtime_generation: snapshot.descriptor.runtime_generation,
+            native_session_id: snapshot.descriptor.identity.native_session_id.clone(),
+            terminal: snapshot.terminal,
+            reconciliation,
+        }
     }
 }
 
