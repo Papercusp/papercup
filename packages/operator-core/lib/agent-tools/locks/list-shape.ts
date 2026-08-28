@@ -41,6 +41,12 @@ export function shapeLocksList(data: unknown, tier: LocksTier): unknown {
       mode: r.mode ?? null,
       status: r.status ?? null,
       expires_ts: r.expires_ts ?? null,
+      // EI-21733256625452096: this projection is an ALLOWLIST, so a field added
+      // upstream is silently dropped here. locks:list merges holders across
+      // coordination domains, and the domain is what tells a reader which
+      // namespace holds the lock — stripping it at the trimmed tier would hide
+      // that from exactly the sessions (su) that read this tool most.
+      coordination_domain: r.coordination_domain ?? null,
       ...(c.reason > 0 ? { reason: clip(r.reason, c.reason) } : {}),
     };
   };

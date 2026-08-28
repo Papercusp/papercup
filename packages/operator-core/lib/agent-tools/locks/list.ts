@@ -11,12 +11,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
-import {
-  hostGlobalLockDomain,
-  HOST_GLOBAL_RESOURCES,
-  isWorkspaceScopedResource,
-  workspaceScopedLockDomain,
-} from './coordination-domain';
+import { hostGlobalLockDomain, workspaceScopedLockDomain } from './coordination-domain';
 import {
   getTxPool,
   getResource,
@@ -92,36 +87,51 @@ export default defineTool({
     // for a lock provably held elsewhere (observed live for both families:
     // 'release-deploy' under EI-18674647773291145, `git-sync:<slug>` under
     // WI-5960 — an su that had genuinely acquired the tree-pause lock saw
-    // `locks:list` report it as unheld). When the caller scoped the query to
-    // one such resource, follow it into its real domain; when unscoped
-    // (listing everything), query every domain that's actually in play and
-    // merge, so an unscoped `locks:list` can never silently omit a
-    // special-domain resource's holders just because the caller happens to
-    // be running from a different tree / a different workspace.
+    // `locks:list` report it as unheld).
+    //
+    // EI-21733256625452096: those two fixes each taught the SCOPED branch one
+    // more name-shaped special case, and the branch stayed wrong for every
+    // resource whose name does not advertise its domain. `libs-papercusp-submodule`
+    // is the live case: git-sync acquires EVERY lock in its set — the restart
+    // barrier, `git-sync:<slug>`, AND each `trigger_config.extra_lock_resources`
+    // name — under one `cd = workspaceId || '*'` (git-sync-action.ts's
+    // `handleGitSync`), but the extras match neither HOST_GLOBAL_RESOURCES nor
+    // isWorkspaceScopedResource(), so this branch looked in the caller's tree
+    // domain and reported `holders: []` for a lock held, exclusive and
+    // unexpired, under the workspace domain (falsified against
+    // agent_resource_locks 21:20:11Z, reproduced 8 min apart).
+    //
+    // So stop INFERRING the one right domain from the name and query all the
+    // domains actually in play, exactly as the unscoped branch already did.
+    // The asymmetry was the whole defect: the same call answered truthfully
+    // when unscoped and falsely when scoped to one resource. Over-reporting a
+    // holder from another domain is safe (a reader waits); under-reporting
+    // reads as permission to write on a resource a peer holds, and enforcement
+    // on these rows is `advisory`, so nothing downstream would stop it.
     const hgDomain = hostGlobalLockDomain();
     const wsDomain = workspaceScopedLockDomain();
-    const domains = args.resource
-      ? [
-          HOST_GLOBAL_RESOURCES.has(args.resource)
-            ? hgDomain
-            : isWorkspaceScopedResource(args.resource)
-              ? wsDomain
-              : callerDomain,
-        ]
-      : [...new Set([callerDomain, hgDomain, wsDomain])];
+    const domains = [...new Set([callerDomain, hgDomain, wsDomain])];
 
     const queues = await Promise.all(
-      domains.map((coordinationDomain) => readResourceQueue(pool, { coordinationDomain, resource: args.resource })),
+      domains.map(async (coordinationDomain) => ({
+        coordinationDomain,
+        queue: await readResourceQueue(pool, { coordinationDomain, resource: args.resource }),
+      })),
     );
-    const holders = queues.flatMap((q) => q.holders);
-    const draining = queues.some((q) => q.draining);
+    // Stamp the domain each row came from: merging several domains makes an
+    // unlabelled holder list ambiguous about WHICH namespace holds the lock,
+    // and that is precisely what a reader needs in order to act on it.
+    const holders = queues.flatMap(({ coordinationDomain, queue }) =>
+      queue.holders.map((h) => ({ ...holderJson(h), coordination_domain: coordinationDomain })),
+    );
+    const draining = queues.some(({ queue }) => queue.draining);
 
     // {data} envelope so the payload-tier shapers apply.
     return {
       data: {
         ok: true,
         resources: registry.map(registryJson),
-        holders: holders.map(holderJson),
+        holders,
         draining,
         // EI-19400582907190258: this result enumerates the NAMED-RESOURCE lock
         // plane only (dev:restart, db:migrate, git-sync:<slug>, …) — rows carry
