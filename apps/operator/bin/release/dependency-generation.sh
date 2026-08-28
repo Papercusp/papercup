@@ -1578,7 +1578,7 @@ dependency_generation_ensure() {
 }
 
 dependency_generation_main() {
-  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' retention_rc=0
+  local integration_root='' generation_root='' select_inputs_from='' ensure_ref='' fingerprint_ref='' retention_rc=0
   local input_before='' input_after='' exact_input='' selector=''
   local workspace_dirs=()
   while [ "$#" -gt 0 ]; do
@@ -1588,6 +1588,7 @@ dependency_generation_main() {
       --workspace-dir) workspace_dirs+=("$2"); shift 2 ;;
       --select-inputs-from) select_inputs_from="$2"; shift 2 ;;
       --ensure-ref) ensure_ref="$2"; shift 2 ;;
+      --fingerprint-ref) fingerprint_ref="$2"; shift 2 ;;
       *) dependency_generation_log "unknown arg: $1"; return 2 ;;
     esac
   done
@@ -1597,9 +1598,29 @@ dependency_generation_main() {
   }
   integration_root="$(cd "$integration_root" && pwd -P)"
   generation_root="${generation_root:-$integration_root/.papercusp/dependency-generations}"
-  if [ -n "$select_inputs_from" ] && [ -n "$ensure_ref" ]; then
-    dependency_generation_log '--select-inputs-from and --ensure-ref are mutually exclusive'
+  if [ -n "$select_inputs_from" ] && { [ -n "$ensure_ref" ] || [ -n "$fingerprint_ref" ]; }; then
+    dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
     return 2
+  fi
+  if [ -n "$ensure_ref" ] && [ -n "$fingerprint_ref" ]; then
+    dependency_generation_log '--select-inputs-from, --ensure-ref, and --fingerprint-ref are mutually exclusive'
+    return 2
+  fi
+  if [ -n "$fingerprint_ref" ]; then
+    [ "${#workspace_dirs[@]}" -eq 0 ] || {
+      dependency_generation_log '--fingerprint-ref cannot select a workspace-scoped generation'
+      return 2
+    }
+    fingerprint_ref="$(git -C "$integration_root" rev-parse --verify "$fingerprint_ref^{commit}" 2>/dev/null)" || {
+      dependency_generation_log "FATAL: --fingerprint-ref is not a commit: $fingerprint_ref"
+      return 74
+    }
+    exact_input="$(
+      dependency_generation_input_fingerprint_ref "$integration_root" "$fingerprint_ref"
+    )" || return $?
+    printf 'DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=%s input=%s\n' \
+      "$fingerprint_ref" "$exact_input"
+    return 0
   fi
   if [ -n "$select_inputs_from" ]; then
     [ "${#workspace_dirs[@]}" -eq 0 ] || {

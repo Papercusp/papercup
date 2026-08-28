@@ -49,10 +49,12 @@ import {
   acquireCheckpointRunLock,
   beginCheckpointPreflight,
   checkpointRunLockDir,
+  checkpointDependencyInputFingerprint,
   ensureCheckpointDependencyGeneration,
   realCheckpointDeps,
   runCmd,
   runGreenCheckpoint,
+  selectPersistedCheckpointDependencyGeneration,
   retireInFlightCandidateAfterResult,
   startMaterializationHeartbeat,
   writeCheckpointRunPhase,
@@ -2215,6 +2217,106 @@ describe("realCheckpointDeps.runGreen — real-path wiring (gap #10)", () => {
 
 describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", () => {
   const generationId = FIXTURE_DEPENDENCY_GENERATION_ID;
+
+  it("P-004: consumes an exact persisted ready marker after only the cheap candidate-input probe", async () => {
+    const candidate = "a".repeat(40);
+    const inputFingerprint = "b".repeat(64);
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      expect(args).toContain("--fingerprint-ref");
+      expect(args).not.toContain("--ensure-ref");
+      return {
+        code: 0,
+        stdout:
+          `DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${candidate} ` +
+          `input=${inputFingerprint}\n`,
+        stderr: "",
+      };
+    };
+    const log = vi.fn();
+    const selected = await selectPersistedCheckpointDependencyGeneration(
+      cfg,
+      candidate,
+      exec,
+      {
+        target: { workspaceId: "ws-1", installSlug: "papercusp" },
+        waitMs: 1,
+        log,
+        awaitState: async () => ({
+          schema: 1,
+          status: "ready",
+          key: `${candidate}:${inputFingerprint}`,
+          candidate,
+          inputFingerprint,
+          attemptId: "attempt-ready",
+          queuedAtMs: 1,
+          startedAtMs: 2,
+          updatedAtMs: 3,
+          completedAtMs: 3,
+          producerPid: 4,
+          childPid: 5,
+          identity: generationId,
+          token: FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+          reused: true,
+        }),
+      },
+    );
+
+    expect(calls).toHaveLength(1);
+    expect(selected).toEqual({
+      candidate,
+      identity: generationId,
+      token: FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      inputFingerprint,
+      reused: true,
+    });
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining("dependency-prebuild READY"),
+    );
+  });
+
+  it("P-004: a mismatched persisted marker is never accepted as the candidate's dependency proof", async () => {
+    const candidate = "c".repeat(40);
+    const otherCandidate = "d".repeat(40);
+    const inputFingerprint = "e".repeat(64);
+    const exec: CheckpointExec = async () => ({
+      code: 0,
+      stdout:
+        `DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${candidate} ` +
+        `input=${inputFingerprint}\n`,
+      stderr: "",
+    });
+
+    const selected = await selectPersistedCheckpointDependencyGeneration(
+      cfg,
+      candidate,
+      exec,
+      {
+        target: { workspaceId: "ws-1", installSlug: "papercusp" },
+        log: () => {},
+        awaitState: async () => ({
+          schema: 1,
+          status: "ready",
+          key: `${otherCandidate}:${inputFingerprint}`,
+          candidate: otherCandidate,
+          inputFingerprint,
+          attemptId: "attempt-other",
+          queuedAtMs: 1,
+          startedAtMs: 2,
+          updatedAtMs: 3,
+          completedAtMs: 3,
+          producerPid: 4,
+          childPid: 5,
+          identity: generationId,
+          token: FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+          reused: true,
+        }),
+      },
+    );
+
+    expect(selected).toBeNull();
+  });
 
   it("D-081: the pre-lock exact-candidate producer transports its selector/token into setup without an in-lock reselect", async () => {
     const candidate = "a".repeat(40);

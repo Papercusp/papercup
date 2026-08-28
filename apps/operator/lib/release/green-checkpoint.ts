@@ -64,6 +64,12 @@ import {
   type ManagedHandle,
 } from "@papercusp/scheduled-registry";
 import { gateVerdictTargetFromEnv } from "@papercusp/operator-core/lib/release/gate-verdict-target";
+import {
+  DEPENDENCY_PREBUILD_WAIT_MS,
+  awaitDependencyPrebuildState,
+  type DependencyPrebuildState,
+  type DependencyPrebuildTarget,
+} from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
@@ -10514,6 +10520,121 @@ export async function ensureCheckpointDependencyGeneration(
   return { candidate, identity, token, inputFingerprint, reused };
 }
 
+export interface CheckpointDependencyPrebuildDeps {
+  /** Explicit null disables the state plane (old/manual launcher compatibility). */
+  target?: DependencyPrebuildTarget | null;
+  awaitState?: (
+    target: DependencyPrebuildTarget,
+    candidate: string,
+    inputFingerprint: string,
+    options: { timeoutMs: number },
+  ) => Promise<DependencyPrebuildState | null>;
+  waitMs?: number;
+  log?: (message: string) => void;
+}
+
+/** Cheap immutable input identity. This reads candidate Git blobs only. */
+export async function checkpointDependencyInputFingerprint(
+  cfg: ReleaseConfig,
+  candidate: string,
+  exec: CheckpointExec = runCmd,
+): Promise<string> {
+  const generationScript = path.join(
+    toolingRoot(),
+    "apps/operator/bin/release/dependency-generation.sh",
+  );
+  const result = await exec(
+    "bash",
+    [
+      generationScript,
+      "--integration",
+      cfg.integrationRoot,
+      "--fingerprint-ref",
+      candidate,
+    ],
+    {
+      timeoutMs: SETUP_TREE_TIMEOUT_MS,
+      killProcessGroupOnTimeout: true,
+    },
+  );
+  const output = result.stdout + result.stderr;
+  const match =
+    /DEPENDENCY_INPUT_FINGERPRINT\s+schema=1\s+candidate=([0-9a-f]{40,64})\s+input=([0-9a-f]{64})\b/i.exec(
+      output,
+    );
+  if (
+    result.code !== 0 ||
+    !match ||
+    match[1].toLowerCase() !== candidate.toLowerCase()
+  ) {
+    throw new Error(
+      `dependency input fingerprint probe produced no exact result for ${candidate.slice(0, 64)}`,
+    );
+  }
+  return match[2].toLowerCase();
+}
+
+/**
+ * Consume the git-sync producer's exact ready marker, or briefly await its
+ * cross-process terminal edge. A miss/error returns null so the caller joins
+ * the existing install-safe publisher outside the checkpoint serializer; no
+ * state-plane failure can relax immutable-generation validation.
+ */
+export async function selectPersistedCheckpointDependencyGeneration(
+  cfg: ReleaseConfig,
+  candidate: string,
+  exec: CheckpointExec = runCmd,
+  deps: CheckpointDependencyPrebuildDeps = {},
+): Promise<PrewarmedCheckpointDependencyGeneration | null> {
+  const target = Object.prototype.hasOwnProperty.call(deps, "target")
+    ? (deps.target ?? null)
+    : gateVerdictTargetFromEnv();
+  if (!target) return null;
+  const inputFingerprint = await checkpointDependencyInputFingerprint(
+    cfg,
+    candidate,
+    exec,
+  );
+  const state = await (deps.awaitState ?? awaitDependencyPrebuildState)(
+    target,
+    candidate,
+    inputFingerprint,
+    { timeoutMs: deps.waitMs ?? DEPENDENCY_PREBUILD_WAIT_MS },
+  );
+  const log = deps.log ?? ((message: string) => console.error(message));
+  if (
+    state?.status !== "ready" ||
+    state.candidate.toLowerCase() !== candidate.toLowerCase() ||
+    state.inputFingerprint.toLowerCase() !== inputFingerprint
+  ) {
+    if (state?.status === "failed") {
+      log(
+        `${orchestratorStdoutTag()} dependency-prebuild failed for ${candidate.slice(0, 12)} ` +
+          `input=${inputFingerprint}: ${state.error.slice(0, 500)}; joining fail-closed publisher fallback`,
+      );
+    } else if (state?.status === "building") {
+      log(
+        `${orchestratorStdoutTag()} dependency-prebuild still building after ${deps.waitMs ?? DEPENDENCY_PREBUILD_WAIT_MS}ms ` +
+          `for ${candidate.slice(0, 12)} input=${inputFingerprint}; joining install-safe fallback`,
+      );
+    }
+    return null;
+  }
+  log(
+    `${orchestratorStdoutTag()} dependency-prebuild READY identity=${state.identity} ` +
+      `candidate=${candidate.slice(0, 12)} input=${inputFingerprint}; skipping live generation walk`,
+  );
+  return {
+    candidate,
+    identity: state.identity,
+    token: state.token,
+    inputFingerprint,
+    // A persisted ready marker necessarily predates this gate. Materialization
+    // still validates its token, but never needs the whole-box publish barrier.
+    reused: true,
+  };
+}
+
 /**
  * D-082 production preflight shared by the CLI and its joined recurrence.
  * Ordering is structural: exact candidate resolution + dependency publication
@@ -10523,13 +10644,30 @@ export async function beginCheckpointPreflight(
   cfg: ReleaseConfig,
   candidateRef: string,
   exec: CheckpointExec = runCmd,
+  dependencyPrebuildDeps: CheckpointDependencyPrebuildDeps = {},
 ): Promise<{
   candidate: string;
   prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration;
   lock: CheckpointRunLock;
 }> {
   const candidate = await revParse(cfg.integrationRoot, candidateRef);
-  const prewarmedDependencyGeneration =
+  let prewarmedDependencyGeneration: PrewarmedCheckpointDependencyGeneration | null =
+    null;
+  try {
+    prewarmedDependencyGeneration =
+      await selectPersistedCheckpointDependencyGeneration(
+        cfg,
+        candidate,
+        exec,
+        dependencyPrebuildDeps,
+      );
+  } catch (error) {
+    console.error(
+      `${orchestratorStdoutTag()} dependency-prebuild state/identity lookup failed for ${candidate.slice(0, 12)}: ` +
+        `${error instanceof Error ? error.message : String(error)}; joining fail-closed publisher fallback`,
+    );
+  }
+  prewarmedDependencyGeneration ??=
     await ensureCheckpointDependencyGeneration(cfg, candidate, exec);
   const lock = acquireCheckpointRunLock(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
