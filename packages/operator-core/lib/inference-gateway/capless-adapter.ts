@@ -173,7 +173,7 @@ export class CaplessGatewayAdmissionAdapter {
     return this.#ready;
   }
 
-  private async #hydrate(): Promise<void> {
+  async #hydrate(): Promise<void> {
     if (!this.#store) {
       if (this.#legacySeedWindow !== undefined) {
         const seededAtMs = this.#now();

@@ -413,7 +413,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
       ).resolves.not.toThrow();
 
       const repairedDef = (
-        await client.unsafe<{ def: string }>(
+        await client.unsafe<{ def: string }[]>(
           `SELECT pg_get_viewdef('${directSchema}.harness_features'::regclass, true) AS def`,
         )
       )[0]?.def ?? '';
