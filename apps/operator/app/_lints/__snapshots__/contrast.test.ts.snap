@@ -332,7 +332,7 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
     honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
-  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .railStep:hover:not(:disabled) :: color:--fg on background:--bg-2
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .railStep:hover:not([aria-disabled="true"]) :: color:--fg on background:--bg-2
     black:background:unsupported-function(rgba(255, 255, 255, 0.045))
     default:background:unsupported-function(rgba(255, 255, 255, 0.045))
     frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
