@@ -133,6 +133,11 @@ import {
   type GatewayAdmissionRequestInput,
   type GatewayAdmissionGovernor,
 } from './admission-context';
+import {
+  PayloadSpoolPersistenceError,
+  PayloadTooLargeError,
+  type GatewayPayloadSpool,
+} from './payload-spool';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -832,8 +837,20 @@ export interface GatewayDeps {
   /** Concurrency authority — max requests forwarded at once (the queue cap). Default 24. */
   concurrency?: number;
   /** Max requests allowed to WAIT for a slot before the gateway sheds load (429 + retry-after) instead
-   *  of growing an unbounded backlog. Prevents the slot-squat-under-sustained-throttle wedge. Default 256. */
+   *  of growing an unbounded backlog. Prevents the slot-squat-under-sustained-throttle wedge. Default 256.
+   *  NOTE (D-003): once `payloadSpool` is configured this is no longer the primary backpressure — an
+   *  accepted request becomes a durable receipt instead of a 429. The cap remains as the
+   *  persistence-unavailable fallback, which is the one failure D-003 still permits. */
   maxQueued?: number;
+  /** PRE-ACCEPTANCE request-body spool (capless-inference-gateway-2026-08-28 D-004/D-011).
+   *  When present, a body-bearing proxy request is persisted to a content-addressed blob BEFORE the
+   *  admission decision, and its `payloadRef` is the sha256 of that body — so queue depth stops
+   *  scaling resident memory and a durable receipt can own execution after the socket is gone.
+   *  ABSENT ⇒ byte-identical legacy behaviour: the body stays unread in the socket until a handler
+   *  asks for it. Deliberately injected rather than constructed here, for the same reason the durable
+   *  admission driver is: a hermetic `startGatewayService` unit test must not acquire a Postgres
+   *  dependency. `sidecar-main` supplies the Postgres-backed spool in production. */
+  payloadSpool?: GatewayPayloadSpool;
   /** Aging interval for the priority queue (ms a waiter takes to gain +1 priority). Default 1000. */
   agingIntervalMs?: number;
   /** OPTIONAL priority-TIER admission layer (gateway-priority-tiers-2026-06-22, `GATEWAY_PRIORITY_TIERS`).
@@ -1513,7 +1530,31 @@ function headersToObject(h: Headers): Record<string, string | undefined> {
   return o;
 }
 
+/**
+ * Bodies consumed BEFORE admission by the pre-acceptance spool (D-004).
+ *
+ * The spool has to read the request stream to persist it, but the six handler
+ * sites below all call `readBody(req)` AFTER admission — by which point the
+ * stream is drained and would yield an empty buffer. Rather than add a seventh
+ * body-reading path (D-011 explicitly forbids that), the already-read bytes are
+ * parked here and handed back by `readBody` itself, so every existing call site
+ * inherits the behaviour unchanged.
+ *
+ * A WeakMap keyed on the request keeps this leak-free: the entry dies with the
+ * request object, with no explicit cleanup for a handler to forget on an error
+ * path.
+ */
+const preReadRequestBodies = new WeakMap<http.IncomingMessage, Buffer>();
+
+/** Park a body the spool has already consumed, so `readBody` can serve it. */
+function setPreReadBody(req: http.IncomingMessage, body: Buffer): void {
+  preReadRequestBodies.set(req, body);
+}
+
 async function readBody(req: http.IncomingMessage): Promise<Buffer> {
+  // The spool path already drained the stream; iterating it again yields nothing.
+  const preRead = preReadRequestBodies.get(req);
+  if (preRead) return preRead;
   const chunks: Buffer[] = [];
   for await (const c of req) chunks.push(c as Buffer);
   return Buffer.concat(chunks);
@@ -1659,6 +1700,43 @@ export function createInferenceGateway(deps: GatewayDeps) {
     new Governor(new AdmitImmediatelyDriver(), { bypassKeys: GATEWAY_ADMISSION_BYPASS_REGISTRY });
   const gatewayAdmissionParent = deps.admissionParent ?? null;
   let gatewayAdmissionRequestSeq = 0;
+  // D-004 pre-acceptance body spool. Absent ⇒ legacy behaviour, byte-identical.
+  const payloadSpool = deps.payloadSpool;
+  /** Requests that carry a body worth spooling. GET/HEAD/DELETE have nothing to persist. */
+  const METHODS_WITH_SPOOLABLE_BODY = new Set(['POST', 'PUT', 'PATCH']);
+  let spooledPayloads = 0;
+  let spooledPayloadBytes = 0;
+  let spoolDedupes = 0;
+  /**
+   * Persist this request's body and return its `payloadRef`, BEFORE the admission decision.
+   *
+   * Returns undefined — meaning "carry no payloadRef", exactly as before this existed — when no
+   * spool is configured, the method cannot carry a body, or the body is empty. Those are not
+   * failures and must not be turned into one.
+   *
+   * Throws only what D-003 permits a request to fail on: an oversize body (the client's fault) or
+   * a genuine inability to persist. Both are handled by the dispatch catch below; neither may be
+   * swallowed into an admitted request the gateway cannot honour.
+   */
+  async function spoolRequestBodyForAdmission(req: http.IncomingMessage): Promise<string | undefined> {
+    if (!payloadSpool) return undefined;
+    if (!METHODS_WITH_SPOOLABLE_BODY.has((req.method ?? '').toUpperCase())) return undefined;
+
+    // Reading here drains the stream; `readBody` serves the parked copy to the handler afterwards.
+    const body = await readBody(req);
+    setPreReadBody(req, body);
+    if (body.byteLength === 0) return undefined;
+
+    const result = await payloadSpool.spool(body, {
+      contentType: (req.headers['content-type'] as string | undefined) ?? undefined,
+    });
+    if (result.payloadRef) {
+      spooledPayloads += 1;
+      spooledPayloadBytes += result.bytes;
+      if (result.deduped) spoolDedupes += 1;
+    }
+    return result.payloadRef ?? undefined;
+  }
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const maintenanceModel = deps.maintenanceModel ?? DEFAULT_MAINTENANCE_MODEL;
   const maintenanceMaxTokens = deps.maintenanceMaxTokens ?? DEFAULT_MAINTENANCE_MAX_TOKENS;
@@ -6354,7 +6432,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Run one static legacy entry inside a lane's existing callback-scoped
    * admission authority. There is intentionally no lease or release callback:
    * the queue releases only after `task` (including in-flight unregister) settles. */
-  function executeLegacyLaneTask<TResult>(opts: {
+  // `async` because the D-004 pre-acceptance spool must persist the body BEFORE the admission
+  // decision is taken. Callers already treat the result as a promise, so this is not a contract
+  // change — the bypass path below still returns without awaiting anything.
+  async function executeLegacyLaneTask<TResult>(opts: {
     req: http.IncomingMessage;
     lane: GatewayLaneDescriptor;
     admission: Pick<GatewayKernelAdmissionController<GatewayLegacyExecutorId, never, never>, 'run'>;
@@ -6393,6 +6474,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // admission. Every other lane crosses Governor.admit before its legacy
     // executor can start provider/local work.
     if (gatewayAdmissionBypassKeyForRequest(opts.req.method, opts.req.url)) return execute();
+    // D-004: the body is persisted BEFORE the admission decision, so queue depth stops scaling
+    // resident memory and the receipt can be executed after this socket is gone. A client that
+    // already spooled its own payload passes the ref explicitly and is left alone.
+    const clientPayloadRef = (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined;
+    const spooledPayloadRef = clientPayloadRef ?? (await spoolRequestBodyForAdmission(opts.req));
     const request = gatewayAdmissionInputForLane({
       lane: opts.lane,
       idempotencyKey:
@@ -6404,10 +6490,22 @@ export function createInferenceGateway(deps: GatewayDeps) {
       pinMode,
       priority: priorityFromLabel((opts.req.headers[PRIORITY_HEADER] as string | undefined)?.trim()),
       deadlineAtMs: Date.now() + requestCeilingMs,
-      payloadRef: (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined,
+      payloadRef: spooledPayloadRef,
       parent: gatewayAdmissionParent,
     });
-    return withGatewayAdmission(gatewayAdmissionGovernor, request, async () => execute());
+    // The payload is pinned for exactly as long as the receipt could still need it. `release` is
+    // NOT a delete (the spool sweeps lazily), so a retry landing between settle and sweep still
+    // resolves — which is what keeps the dedupe path from racing its own GC.
+    if (spooledPayloadRef && spooledPayloadRef !== clientPayloadRef) {
+      await payloadSpool?.retain(spooledPayloadRef).catch(() => undefined);
+    }
+    try {
+      return await withGatewayAdmission(gatewayAdmissionGovernor, request, async () => execute());
+    } finally {
+      if (spooledPayloadRef && spooledPayloadRef !== clientPayloadRef) {
+        void payloadSpool?.release(spooledPayloadRef).catch(() => undefined);
+      }
+    }
   }
 
   /**
@@ -7228,9 +7326,53 @@ export function createInferenceGateway(deps: GatewayDeps) {
       },
       task: runHandler,
     }).catch((e) => {
+      // D-003 permits a request to fail for invalid input or an inability to persist truthfully —
+      // and for nothing else. These two branches are those cases; both happen BEFORE admission, so
+      // no receipt exists and no upstream work has started.
+      if (e instanceof PayloadTooLargeError) {
+        req.resume(); // the body was over the cap: drain the socket rather than leak it
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            413,
+            {
+              type: 'error',
+              error: { type: 'invalid_request_error', message: e.message },
+              gateway: true,
+            },
+            { connection: 'close' },
+          );
+        }
+        return;
+      }
+      if (e instanceof PayloadSpoolPersistenceError) {
+        // Truthful refusal: the body could not be persisted, so an accepted receipt would be a lie.
+        // This is the ONE capacity-shaped failure D-003 still allows, and it is deliberately a 503
+        // (the durable path is unavailable) rather than the 429 backlog signal below.
+        log('warn', `inference-gateway: refusing request — payload spool unavailable: ${e.message}`);
+        req.resume();
+        if (!res.headersSent) {
+          sendJson(
+            res,
+            503,
+            {
+              type: 'error',
+              error: {
+                type: 'overloaded_error',
+                message: 'inference-gateway: request body could not be persisted; retry shortly',
+              },
+              gateway: true,
+            },
+            { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), connection: 'close' },
+          );
+        }
+        return;
+      }
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
+      // D-003: once a payload spool is configured this is the PERSISTENCE-UNAVAILABLE fallback, not
+      // the primary backpressure — accepted capacity pressure becomes a durable receipt instead.
       if (e instanceof QueueFullError) {
         shed429++;
         markRequestShed(req);
