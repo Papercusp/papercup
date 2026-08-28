@@ -92,7 +92,9 @@ export function ConnectStage({
    * to tab forward through the remaining provider rows to reach the form they
    * just asked for.
    */
-  const triggerRefs = useRef(new Map<ProviderTarget, HTMLButtonElement | null>());
+  const triggerRefs = useRef(
+    new Map<ProviderTarget, HTMLButtonElement | null>(),
+  );
   const panelRef = useRef<HTMLFormElement | null>(null);
   const previousTarget = useRef<ProviderTarget | null>(null);
 
