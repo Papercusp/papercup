@@ -60,18 +60,58 @@ export interface DependencyPrebuildBuildingState extends DependencyPrebuildBase 
   completedAtMs: null;
 }
 
+/**
+ * One `PHASE schema=1 phase=… outcome=… duration_ms=…` record as the publisher
+ * itself emitted it. The publisher is the only clock that can time its own
+ * phases, so these are copied through verbatim rather than re-derived here.
+ */
+export interface DependencyPrebuildPhaseRecord {
+  phase: string;
+  outcome: string;
+  durationMs: number;
+}
+
+/**
+ * Writer-emitted phase telemetry for the publisher invocation this state
+ * recorded.
+ *
+ * The publisher writes PHASE/SUMMARY records to stderr, and until this field
+ * existed the producer kept that stream ONLY on the failure path
+ * (`boundedFailure`). A successful build therefore threw its own timings away,
+ * which made the plan's own completion bar — writer-backed phase timings, not
+ * timings inferred by a caller or read off file mtimes — unobtainable from
+ * exactly the runs that mattered. Persisted here, on the existing routine-row
+ * marker, so no second store is introduced.
+ *
+ * Absent means "no publisher invocation produced telemetry for this state" (a
+ * re-keyed generation ran none), never "the build emitted none".
+ */
+export interface DependencyPrebuildTelemetry {
+  schema: 1;
+  phases: DependencyPrebuildPhaseRecord[];
+  result?: string;
+  predecessor?: string;
+  treesTotal?: number;
+  treesReused?: number;
+  treesCopied?: number;
+  treesRemoved?: number;
+  totalMs?: number;
+}
+
 export interface DependencyPrebuildReadyState extends DependencyPrebuildBase {
   status: 'ready';
   completedAtMs: number;
   identity: string;
   token: string;
   reused: boolean;
+  telemetry?: DependencyPrebuildTelemetry;
 }
 
 export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
   status: 'failed';
   completedAtMs: number;
   error: string;
+  telemetry?: DependencyPrebuildTelemetry;
 }
 
 export type DependencyPrebuildState =
@@ -258,6 +298,9 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
   const completedAtMs = finiteInt(raw.completedAtMs);
   if (completedAtMs === null) return null;
   if (completedAtMs < startedAtMs) return null;
+  // Telemetry is diagnostic, never a readiness or correctness input, so
+  // malformed telemetry degrades to absence instead of voiding a usable state.
+  const telemetry = parseDependencyPrebuildTelemetry(raw.telemetry);
   if (raw.status === 'ready') {
     const identity = typeof raw.identity === 'string' ? raw.identity : '';
     const token = typeof raw.token === 'string' ? raw.token : '';
@@ -269,12 +312,13 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
       identity,
       token,
       reused: raw.reused === true,
+      ...(telemetry ? { telemetry } : {}),
     };
   }
   if (raw.status === 'failed') {
     const error = typeof raw.error === 'string' ? raw.error.trim() : '';
     if (!error) return null;
-    return { ...base, status: 'failed', completedAtMs, error };
+    return { ...base, status: 'failed', completedAtMs, error, ...(telemetry ? { telemetry } : {}) };
   }
   return null;
 }
@@ -632,6 +676,106 @@ export function parseDependencyInputFingerprintResult(output: string, expectedCa
   return match[2].toLowerCase();
 }
 
+/**
+ * Bound on retained phase records. Real invocations emit a handful; the cap
+ * exists so a pathological publisher cannot grow the routine row without limit.
+ */
+export const DEPENDENCY_PREBUILD_TELEMETRY_PHASE_CAP = 64;
+
+const telemetryInt = (line: string, field: string): number | undefined => {
+  const raw = new RegExp(`\\b${field}=(\\d+)\\b`).exec(line)?.[1];
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isSafeInteger(value) && value >= 0 ? value : undefined;
+};
+
+const telemetryWord = (line: string, field: string): string | undefined => {
+  const raw = new RegExp(`\\b${field}=([^\\s]+)`).exec(line)?.[1];
+  return raw ? raw.slice(0, 200) : undefined;
+};
+
+/**
+ * Lift the publisher's own PHASE/SUMMARY records out of its combined output.
+ *
+ * Only the writer can time its own phases, so nothing here re-derives a
+ * duration: a malformed record is skipped rather than repaired, and no records
+ * at all returns null so "the publisher emitted none" stays distinguishable
+ * from "the producer recorded none".
+ */
+export function parseDependencyGenerationTelemetry(output: string): DependencyPrebuildTelemetry | null {
+  const phases: DependencyPrebuildPhaseRecord[] = [];
+  let summary: Omit<DependencyPrebuildTelemetry, 'schema' | 'phases'> | null = null;
+  for (const line of output.split(/\r?\n/)) {
+    if (/\bPHASE\s+schema=1\b/.test(line)) {
+      const phase = telemetryWord(line, 'phase');
+      const outcome = telemetryWord(line, 'outcome');
+      const durationMs = telemetryInt(line, 'duration_ms');
+      if (!phase || !outcome || durationMs === undefined) continue;
+      if (phases.length < DEPENDENCY_PREBUILD_TELEMETRY_PHASE_CAP) {
+        phases.push({ phase, outcome, durationMs });
+      }
+      continue;
+    }
+    if (!/\bSUMMARY\s+schema=1\b/.test(line)) continue;
+    // A later SUMMARY supersedes an earlier one: the last record the publisher
+    // wrote is the one describing the generation it actually published.
+    summary = {
+      result: telemetryWord(line, 'result'),
+      predecessor: telemetryWord(line, 'predecessor'),
+      treesTotal: telemetryInt(line, 'trees_total'),
+      treesReused: telemetryInt(line, 'trees_reused'),
+      treesCopied: telemetryInt(line, 'trees_copied'),
+      treesRemoved: telemetryInt(line, 'trees_removed'),
+      totalMs: telemetryInt(line, 'total_ms'),
+    };
+  }
+  if (!phases.length && !summary) return null;
+  const telemetry: DependencyPrebuildTelemetry = { schema: 1, phases };
+  if (summary) {
+    if (summary.result !== undefined) telemetry.result = summary.result;
+    if (summary.predecessor !== undefined) telemetry.predecessor = summary.predecessor;
+    if (summary.treesTotal !== undefined) telemetry.treesTotal = summary.treesTotal;
+    if (summary.treesReused !== undefined) telemetry.treesReused = summary.treesReused;
+    if (summary.treesCopied !== undefined) telemetry.treesCopied = summary.treesCopied;
+    if (summary.treesRemoved !== undefined) telemetry.treesRemoved = summary.treesRemoved;
+    if (summary.totalMs !== undefined) telemetry.totalMs = summary.totalMs;
+  }
+  return telemetry;
+}
+
+/** Strictly decode persisted telemetry. Malformed telemetry is absence, never a fabricated timing. */
+export function parseDependencyPrebuildTelemetry(value: unknown): DependencyPrebuildTelemetry | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  if (raw.schema !== 1 || !Array.isArray(raw.phases)) return undefined;
+  const phases: DependencyPrebuildPhaseRecord[] = [];
+  for (const entry of raw.phases.slice(0, DEPENDENCY_PREBUILD_TELEMETRY_PHASE_CAP)) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return undefined;
+    const record = entry as Record<string, unknown>;
+    const durationMs = finiteInt(record.durationMs);
+    if (
+      typeof record.phase !== 'string' ||
+      !record.phase ||
+      typeof record.outcome !== 'string' ||
+      !record.outcome ||
+      durationMs === null ||
+      durationMs < 0
+    ) {
+      return undefined;
+    }
+    phases.push({ phase: record.phase, outcome: record.outcome, durationMs });
+  }
+  const telemetry: DependencyPrebuildTelemetry = { schema: 1, phases };
+  for (const field of ['result', 'predecessor'] as const) {
+    if (typeof raw[field] === 'string' && raw[field]) telemetry[field] = raw[field] as string;
+  }
+  for (const field of ['treesTotal', 'treesReused', 'treesCopied', 'treesRemoved', 'totalMs'] as const) {
+    const value = finiteInt(raw[field]);
+    if (value !== null && value >= 0) telemetry[field] = value;
+  }
+  return telemetry;
+}
+
 export function parseDependencyGenerationReadyResult(
   output: string,
   expectedInputFingerprint: string,
@@ -785,7 +929,12 @@ export async function runDependencyGenerationPrebuild(
     },
   );
   const completedAtMs = now();
-  const parsed = parseDependencyGenerationReadyResult(result.stdout + result.stderr, inputFingerprint);
+  const publisherOutput = result.stdout + result.stderr;
+  const parsed = parseDependencyGenerationReadyResult(publisherOutput, inputFingerprint);
+  // The publisher's PHASE/SUMMARY records used to survive only on the failure
+  // path, so a SUCCESSFUL build discarded the one timing source that can speak
+  // for its own phases. Capture them on both terminal branches.
+  const telemetry = parseDependencyGenerationTelemetry(publisherOutput);
   if (result.code === 0 && parsed) {
     const ready: DependencyPrebuildReadyState = {
       ...building,
@@ -793,6 +942,7 @@ export async function runDependencyGenerationPrebuild(
       completedAtMs,
       updatedAtMs: completedAtMs,
       ...parsed,
+      ...(telemetry ? { telemetry } : {}),
     };
     if (await settleState(target, ready)) await emitTerminal(target, ready);
     return 'ready';
@@ -804,6 +954,7 @@ export async function runDependencyGenerationPrebuild(
     updatedAtMs: completedAtMs,
     error:
       result.code === 0 ? 'publisher completed without a matching immutable generation result' : boundedFailure(result),
+    ...(telemetry ? { telemetry } : {}),
   };
   if (await settleState(target, failed)) await emitTerminal(target, failed);
   return 'failed';

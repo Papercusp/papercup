@@ -139,6 +139,119 @@ describe('dependency generation background prebuild', () => {
     expect(emitted[0]).toMatchObject({ status: 'ready', identity: IDENTITY });
   });
 
+  it('P-005: keeps the publisher-emitted phase timings on a SUCCESSFUL build, not only on failure', async () => {
+    let state: DependencyPrebuildState | null = null;
+    let clock = 1_000;
+    const command: DependencyPrebuildCommand = vi.fn(async (_command, args) => {
+      if (args.includes('--fingerprint-ref')) return fingerprintResult(CANDIDATE_A);
+      return {
+        code: 0,
+        stdout:
+          `DEPENDENCY_GENERATION_RESULT schema=1 identity=${IDENTITY} source=fixture ` +
+          `input=${INPUT} scope=full reused=false token=${TOKEN} path=/generation\n`,
+        // Shape copied from a real producer row: the publisher writes its phase
+        // records to stderr, which the success path used to discard entirely.
+        stderr: [
+          '[dependency-generation] PHASE schema=1 phase=source-manifest-before outcome=ok duration_ms=8180',
+          '[dependency-generation] PHASE schema=1 phase=cache-validation outcome=miss duration_ms=13',
+          '[dependency-generation] PHASE schema=1 phase=tree-copy outcome=ok duration_ms=10845' +
+            ' trees_reused=93 trees_copied=1 trees_removed=0 predecessor=v1-predecessor',
+          '[dependency-generation] SUMMARY schema=1 result=incremental source=fixture' +
+            ` identity=${IDENTITY} predecessor=v1-predecessor trees_total=94 trees_reused=93` +
+            ' trees_copied=1 trees_removed=0 total_ms=753500',
+        ].join('\n'),
+      };
+    });
+
+    const outcome = await runDependencyGenerationPrebuild(
+      { ...TARGET, candidate: CANDIDATE_A, integrationRoot: '/integration', toolingRoot: '/tooling', queuedAtMs: 999 },
+      {
+        command,
+        now: () => clock++,
+        attemptId: () => 'attempt-1',
+        readState: async () => state,
+        claimState: async (_target, next) => ((state = next), true),
+        heartbeatState: async (_target, next) => ((state = next), true),
+        settleState: async (_target, next) => ((state = next), true),
+        emitTerminal: async () => {},
+      },
+    );
+
+    // Read through a closure so the assertion sees the settled state rather
+    // than the initializer's narrowed `null` type.
+    const settled = (): DependencyPrebuildReadyState => {
+      if (!state || state.status !== 'ready') throw new Error(`expected ready, got ${state?.status ?? 'null'}`);
+      return state;
+    };
+
+    expect(outcome).toBe('ready');
+    const persisted = settled();
+    // The durations must be the publisher's own numbers, never re-derived here.
+    expect(persisted.telemetry).toEqual({
+      schema: 1,
+      phases: [
+        { phase: 'source-manifest-before', outcome: 'ok', durationMs: 8180 },
+        { phase: 'cache-validation', outcome: 'miss', durationMs: 13 },
+        { phase: 'tree-copy', outcome: 'ok', durationMs: 10845 },
+      ],
+      result: 'incremental',
+      predecessor: 'v1-predecessor',
+      treesTotal: 94,
+      treesReused: 93,
+      treesCopied: 1,
+      treesRemoved: 0,
+      totalMs: 753500,
+    });
+
+    // Persisting is only half the fix: the strict decoder reconstructs state
+    // from named fields, so telemetry it does not name would round-trip away
+    // and the producer would look fixed while the evidence still vanished.
+    const roundTripped = parseDependencyPrebuildState(JSON.parse(JSON.stringify(persisted)));
+    expect(roundTripped).toEqual(persisted);
+  });
+
+  it('P-005: records no telemetry for a re-keyed generation, and drops malformed telemetry without voiding state', async () => {
+    // A re-key runs no publisher, so there are no phases to attribute to it.
+    let state: DependencyPrebuildState | null = ready(CANDIDATE_A, INPUT);
+    let clock = 2_000;
+    const command: DependencyPrebuildCommand = vi.fn(async (_command, args) => {
+      expect(args).toContain('--fingerprint-ref');
+      return fingerprintResult(CANDIDATE_B);
+    });
+
+    const outcome = await runDependencyGenerationPrebuild(
+      { ...TARGET, candidate: CANDIDATE_B, integrationRoot: '/integration', toolingRoot: '/tooling' },
+      {
+        command,
+        now: () => clock++,
+        attemptId: () => 'attempt-2',
+        readState: async () => state,
+        claimState: async (_target, next) => ((state = next), true),
+        heartbeatState: async (_target, next) => ((state = next), true),
+        settleState: async (_target, next) => ((state = next), true),
+        emitTerminal: async () => {},
+      },
+    );
+
+    const settled = (): DependencyPrebuildReadyState => {
+      if (!state || state.status !== 'ready') throw new Error(`expected ready, got ${state?.status ?? 'null'}`);
+      return state;
+    };
+
+    expect(outcome).toBe('ready');
+    expect(settled().reused).toBe(true);
+    expect(settled().telemetry).toBeUndefined();
+
+    // Telemetry is diagnostic, never a readiness input: a corrupt record must
+    // not promote itself into a fabricated timing, nor void a usable marker.
+    const corrupt = parseDependencyPrebuildState({
+      ...ready(),
+      telemetry: { schema: 1, phases: [{ phase: 'tree-copy', outcome: 'ok', durationMs: 'soon' }] },
+    });
+    expect(corrupt).toMatchObject({ status: 'ready', identity: IDENTITY });
+    expect(corrupt?.status === 'ready' ? corrupt.telemetry : 'not-ready').toBeUndefined();
+  });
+
   it('dedupes an exact ready marker before running or claiming the publisher', async () => {
     const claimState = vi.fn(async () => true);
     const command: DependencyPrebuildCommand = vi.fn(async (_command, args) => {
