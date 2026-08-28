@@ -51,6 +51,7 @@ impl std::fmt::Display for SuSessionBackend {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum SuSessionLifecycleState {
     Starting,
     Ready,
@@ -105,20 +106,24 @@ pub struct SuSessionIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(tag = "backend", rename_all = "lowercase")]
+#[serde(tag = "backend", rename_all = "camelCase")]
 pub enum SuSessionBackendExtension {
     Claude {
         #[serde(default)]
+        #[serde(rename = "configDir")]
         config_dir: Option<String>,
         #[serde(default)]
+        #[serde(rename = "configDirSource")]
         config_dir_source: Option<String>,
     },
     Codex {
         #[serde(default)]
+        #[serde(rename = "codexHome")]
         codex_home: Option<String>,
     },
     Omp {
         #[serde(default)]
+        #[serde(rename = "agentHome")]
         agent_home: Option<String>,
     },
 }
@@ -246,11 +251,12 @@ impl SuSessionState {
         let adv = identity
             .map(|i| i.adv_session_id)
             .unwrap_or(self.binding.adv_session_id);
-        let chat = identity
-            .map(|i| i.agent_chat_id.as_str())
-            .unwrap_or("");
+        let chat = identity.map(|i| i.agent_chat_id.as_str()).unwrap_or("");
         let short_chat: String = chat.chars().take(12).collect();
-        format!("SU · {backend} · adv {adv} · chat {short_chat} · {}", self.lifecycle)
+        format!(
+            "SU · {backend} · adv {adv} · chat {short_chat} · {}",
+            self.lifecycle
+        )
     }
 }
 
@@ -284,8 +290,10 @@ pub enum SuSessionEvent {
     Lifecycle {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
+        #[serde(rename = "previousState")]
         previous_state: Option<SuSessionLifecycleState>,
         state: SuSessionLifecycleState,
+        #[serde(rename = "runtimeGeneration")]
         runtime_generation: u64,
         #[serde(default)]
         reason: Option<String>,
@@ -293,7 +301,9 @@ pub enum SuSessionEvent {
     CommandResult {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
+        #[serde(rename = "commandId")]
         command_id: String,
+        #[serde(rename = "commandType")]
         command_type: String,
         status: String,
         #[serde(default)]
@@ -303,6 +313,7 @@ pub enum SuSessionEvent {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
         phase: String,
+        #[serde(rename = "turnId")]
         turn_id: String,
         role: String,
         channel: String,
@@ -313,7 +324,9 @@ pub enum SuSessionEvent {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
         phase: String,
+        #[serde(rename = "turnId")]
         turn_id: String,
+        #[serde(rename = "callId")]
         call_id: String,
         name: String,
         #[serde(default)]
@@ -321,16 +334,19 @@ pub enum SuSessionEvent {
         #[serde(default)]
         output: Option<Value>,
         #[serde(default)]
+        #[serde(rename = "isError")]
         is_error: bool,
     },
     Card {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
         phase: String,
+        #[serde(rename = "turnId")]
         turn_id: String,
         #[serde(default)]
         card: Option<Value>,
         #[serde(default)]
+        #[serde(rename = "correlationId")]
         correlation_id: Option<String>,
         #[serde(default)]
         resolution: Option<String>,
@@ -348,6 +364,7 @@ pub enum SuSessionEvent {
         message: String,
         recoverable: bool,
         #[serde(default)]
+        #[serde(rename = "commandId")]
         command_id: Option<String>,
         #[serde(default)]
         details: Option<Value>,
@@ -376,8 +393,8 @@ pub fn decode_su_session_event(frame: &SseFrame) -> Result<SuSessionEvent> {
     if frame.event != "session_event" && frame.event != "message" {
         bail!("unsupported SU-session SSE event `{}`", frame.event);
     }
-    let event: SuSessionEvent = serde_json::from_str(&frame.data)
-        .with_context(|| "decode SU-session SSE payload")?;
+    let event: SuSessionEvent =
+        serde_json::from_str(&frame.data).with_context(|| "decode SU-session SSE payload")?;
     let envelope = event.envelope();
     if envelope.schema != SU_SESSION_SCHEMA {
         return Err(anyhow!(
@@ -434,38 +451,66 @@ mod tests {
         if let (Some(dst), Some(src)) = (value.as_object_mut(), extra.as_object()) {
             dst.extend(src.clone());
         }
-        SseFrame { event: "session_event".into(), data: value.to_string() }
+        SseFrame {
+            event: "session_event".into(),
+            data: value.to_string(),
+        }
     }
 
     #[test]
     fn decodes_lifecycle_transcript_tool_and_refusal_events() {
-        let lifecycle = decode_su_session_event(&envelope("lifecycle", json!({
-            "previousState": "starting", "state": "ready", "runtimeGeneration": 2
-        }))).unwrap();
-        assert!(matches!(lifecycle, SuSessionEvent::Lifecycle { state: SuSessionLifecycleState::Ready, .. }));
+        let lifecycle = decode_su_session_event(&envelope(
+            "lifecycle",
+            json!({
+                "previousState": "starting", "state": "ready", "runtimeGeneration": 2
+            }),
+        ))
+        .unwrap();
+        assert!(matches!(
+            lifecycle,
+            SuSessionEvent::Lifecycle {
+                state: SuSessionLifecycleState::Ready,
+                ..
+            }
+        ));
 
         let transcript = decode_su_session_event(&envelope("transcript", json!({
             "phase": "delta", "turnId": "turn-1", "role": "assistant", "channel": "text", "content": "hello"
         }))).unwrap();
-        assert!(matches!(transcript, SuSessionEvent::Transcript { content: Some(ref c), .. } if c == "hello"));
+        assert!(
+            matches!(transcript, SuSessionEvent::Transcript { content: Some(ref c), .. } if c == "hello")
+        );
 
         let tool = decode_su_session_event(&envelope("tool", json!({
             "phase": "completed", "turnId": "turn-1", "callId": "call-1", "name": "read", "output": {"ok": true}, "isError": false
         }))).unwrap();
         assert!(matches!(tool, SuSessionEvent::Tool { ref call_id, .. } if call_id == "call-1"));
 
-        let refusal = decode_su_session_event(&envelope("command_result", json!({
-            "commandId": "cmd-1", "commandType": "fork", "status": "refused",
-            "refusal": {"code": "unsupported", "message": "not available", "retryable": false}
-        }))).unwrap();
-        assert!(matches!(refusal, SuSessionEvent::CommandResult { refusal: Some(_), .. }));
+        let refusal = decode_su_session_event(&envelope(
+            "command_result",
+            json!({
+                "commandId": "cmd-1", "commandType": "fork", "status": "refused",
+                "refusal": {"code": "unsupported", "message": "not available", "retryable": false}
+            }),
+        ))
+        .unwrap();
+        assert!(matches!(
+            refusal,
+            SuSessionEvent::CommandResult {
+                refusal: Some(_),
+                ..
+            }
+        ));
     }
 
     #[test]
     fn rejects_schema_drift_instead_of_silently_rendering() {
-        let mut frame = envelope("lifecycle", json!({
-            "previousState": null, "state": "starting", "runtimeGeneration": 0
-        }));
+        let mut frame = envelope(
+            "lifecycle",
+            json!({
+                "previousState": null, "state": "starting", "runtimeGeneration": 0
+            }),
+        );
         frame.data = frame.data.replace(SU_SESSION_SCHEMA, "other/v9");
         let error = decode_su_session_event(&frame).unwrap_err().to_string();
         assert!(error.contains("unsupported SU-session schema"));
@@ -473,7 +518,72 @@ mod tests {
 
     #[test]
     fn backend_and_lifecycle_labels_are_stable() {
-        assert_eq!(SuSessionBackend::ALL.map(SuSessionBackend::as_str), ["claude", "codex", "omp"]);
-        assert_eq!(SuSessionLifecycleState::WaitingForOwner.to_string(), "waiting-for-owner");
+        assert_eq!(
+            SuSessionBackend::ALL.map(SuSessionBackend::as_str),
+            ["claude", "codex", "omp"]
+        );
+        assert_eq!(
+            SuSessionLifecycleState::WaitingForOwner.to_string(),
+            "waiting-for-owner"
+        );
+    }
+
+    #[test]
+    fn decodes_snapshot_with_backend_extension_and_capabilities() {
+        let snapshot: SuSessionSnapshot = serde_json::from_value(json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {
+                    "agentChatId":"chat-1", "advSessionId":7, "backend":"codex",
+                    "nativeSessionId":"rollout-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+                },
+                "lifecycle":"waiting-for-owner", "runtimeGeneration":2, "role":"su",
+                "model":"gpt-5.5", "accountRoute":"auto", "carry":"warm", "modes":["auto"],
+                "capabilities": {
+                    "commands": {"owner_turn": {"state":"supported", "implementation":"native"}, "fork":{"state":"unsupported", "reason":"provider"}},
+                    "features": {"tool-events": {"state":"supported", "implementation":"native"}}
+                },
+                "backendExtension": {"backend":"codex", "codexHome":"/tmp/codex"}
+            },
+            "floorSequence":1, "lastSequence":4, "terminal":false
+        })).expect("decode snapshot");
+        assert_eq!(
+            snapshot.descriptor.identity.backend,
+            SuSessionBackend::Codex
+        );
+        assert_eq!(
+            snapshot.descriptor.lifecycle,
+            SuSessionLifecycleState::WaitingForOwner
+        );
+        assert!(
+            matches!(snapshot.descriptor.backend_extension, SuSessionBackendExtension::Codex { codex_home: Some(ref home) } if home == "/tmp/codex")
+        );
+        assert_eq!(snapshot.last_sequence, 4);
+    }
+
+    #[test]
+    fn create_and_attach_requests_match_launch_su_wire_names() {
+        let create = serde_json::to_value(SuSessionCreateRequest {
+            agent: SuSessionBackend::Omp,
+            harness_slug: Some("papercup".into()),
+            plan_slug: None,
+            carry: "warm".into(),
+            defer_spawn: true,
+            agent_chat_id: "chat-1".into(),
+        }).unwrap();
+        assert_eq!(create["agent"], "omp");
+        assert_eq!(create["harness_slug"], "papercup");
+        assert_eq!(create["defer_spawn"], true);
+        assert_eq!(create["agent_chat_id"], "chat-1");
+        assert!(create.get("harnessSlug").is_none());
+
+        let attach = serde_json::to_value(SuSessionAttachRequest {
+            agent: SuSessionBackend::Claude,
+            attach_adv_session_id: 42,
+            harness_slug: None,
+            plan_slug: None,
+        }).unwrap();
+        assert_eq!(attach["attach_adv_session_id"], 42);
+        assert!(attach.get("attachAdvSessionId").is_none());
     }
 }

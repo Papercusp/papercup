@@ -30,8 +30,8 @@ use crate::models::{
 use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
 use crate::su_session::{
-    decode_su_session_stream, SuSessionAttachRequest, SuSessionBackend, SuSessionBinding,
-    SuSessionCreateRequest, SuSessionEventStream, SuSessionOpenRequest, SuSessionSnapshot,
+    decode_su_session_stream, SuSessionBackend, SuSessionBinding, SuSessionEventStream,
+    SuSessionOpenRequest, SuSessionSnapshot,
 };
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
@@ -177,6 +177,19 @@ struct ServerIdentity {
     store: StoreIdentity,
     build: BuildIdentity,
     agent_chat: AgentChatIdentity,
+}
+
+fn su_segment(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// The complete, non-secret rendezvous record shown by `pui doctor`, stamped
@@ -843,7 +856,10 @@ impl OperatorClient {
             .await
             .context("open SU session")?;
         if value.get("status").and_then(|v| v.as_str()) != Some("ok") {
-            let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("launch_failed");
+            let code = value
+                .get("code")
+                .and_then(|v| v.as_str())
+                .unwrap_or("launch_failed");
             let message = value
                 .get("error")
                 .and_then(|v| v.as_str())
@@ -876,7 +892,10 @@ impl OperatorClient {
             operation: operation.to_string(),
             backend,
             adv_session_id,
-            owner_id: value.get("ownerId").and_then(|v| v.as_str()).map(str::to_string),
+            owner_id: value
+                .get("ownerId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
             workspace_id: value
                 .get("workspaceId")
                 .and_then(|v| v.as_str())
@@ -899,12 +918,16 @@ impl OperatorClient {
     }
 
     /// Read the canonical descriptor/lifecycle snapshot for one attached chat.
-    pub async fn su_session_snapshot(&self, harness: &str, chat_id: &str) -> Result<SuSessionSnapshot> {
+    pub async fn su_session_snapshot(
+        &self,
+        harness: &str,
+        chat_id: &str,
+    ) -> Result<SuSessionSnapshot> {
         let value = self
             .get_json(&format!(
                 "/api/harness/{}/agent-chats/{}/su-session",
-                encode_segment(harness),
-                encode_segment(chat_id)
+                su_segment(harness),
+                su_segment(chat_id)
             ))
             .await?;
         serde_json::from_value(value).context("decode SU-session snapshot")
@@ -921,8 +944,8 @@ impl OperatorClient {
         let frames = self
             .subscribe_sse(&format!(
                 "/api/harness/{}/agent-chats/{}/su-session/events",
-                encode_segment(harness),
-                encode_segment(chat_id)
+                su_segment(harness),
+                su_segment(chat_id)
             ))
             .await?;
         Ok(decode_su_session_stream(frames))
@@ -940,8 +963,8 @@ impl OperatorClient {
         self.post_json(
             &format!(
                 "/api/harness/{}/agent-chats/{}/su-session/commands",
-                encode_segment(harness),
-                encode_segment(chat_id)
+                su_segment(harness),
+                su_segment(chat_id)
             ),
             command,
         )

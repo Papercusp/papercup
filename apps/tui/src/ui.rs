@@ -2627,6 +2627,26 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
 
     let inner_w = transcript_area.width.saturating_sub(2).max(1) as usize; // minus borders
     let mut lines: Vec<Line> = Vec::new();
+    if let Some(session) = app.su_session.as_ref() {
+        let lifecycle = format!(
+            "SU session · {} · adv {} · seq {}{}",
+            session.lifecycle,
+            session.binding.adv_session_id,
+            session.last_sequence,
+            if session.stale {
+                " · reconnecting"
+            } else {
+                ""
+            }
+        );
+        lines.push(Line::from(Span::styled(lifecycle, Theme::notify())));
+        if let Some(error) = session.error.as_deref() {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", error),
+                Theme::danger(),
+            )));
+        }
+    }
     if app.chat_messages.is_empty() {
         lines.push(Line::from(Span::styled(
             "No messages yet — press i to talk to this agent, or s to choose a role/session.",

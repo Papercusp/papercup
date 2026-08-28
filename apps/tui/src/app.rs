@@ -10,8 +10,8 @@ use crate::models::{
     ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptAvailability, SessionTranscriptTurn,
-    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    SessionTranscriptAvailability, SessionTranscriptTurn, TestingDomain, ToolOutcome,
+    TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -2366,11 +2366,6 @@ impl App {
     /// before the first stream event arrives.  A binding is not a transcript;
     /// the host snapshot/stream remains authoritative for lifecycle state.
     pub fn set_su_session_binding(&mut self, binding: crate::su_session::SuSessionBinding) {
-        self.agent_chat_id = binding
-            .native_session
-            .as_ref()
-            .and_then(|_| None)
-            .or_else(|| self.agent_chat_id.clone());
         self.su_backend = Some(binding.backend);
         self.su_session = Some(crate::su_session::SuSessionState::from_binding(binding));
     }
@@ -2432,14 +2427,18 @@ impl App {
                 state.lifecycle = descriptor.lifecycle;
                 state.descriptor = Some(descriptor);
             }
-            crate::su_session::SuSessionEvent::Lifecycle { state: lifecycle, .. } => {
+            crate::su_session::SuSessionEvent::Lifecycle {
+                state: lifecycle, ..
+            } => {
                 state.lifecycle = lifecycle;
                 if let Some(descriptor) = state.descriptor.as_mut() {
                     descriptor.lifecycle = lifecycle;
                 }
-                if matches!(lifecycle, crate::su_session::SuSessionLifecycleState::Ended
-                    | crate::su_session::SuSessionLifecycleState::Failed)
-                {
+                if matches!(
+                    lifecycle,
+                    crate::su_session::SuSessionLifecycleState::Ended
+                        | crate::su_session::SuSessionLifecycleState::Failed
+                ) {
                     self.chat_streaming = false;
                 }
             }
@@ -2479,6 +2478,9 @@ impl App {
                 ..
             } => {
                 if phase == "started" {
+                    if !self.chat_messages.iter().any(|message| message.streaming) {
+                        self.chat_messages.push(ChatMessage::streaming_assistant());
+                    }
                     self.push_chat_tool(ChatToolCall {
                         name,
                         id: Some(call_id),
@@ -2490,7 +2492,11 @@ impl App {
                     });
                 } else if phase == "completed" {
                     for message in self.chat_messages.iter_mut().rev() {
-                        if let Some(tool) = message.tools.iter_mut().find(|tool| tool.id.as_deref() == Some(call_id.as_str())) {
+                        if let Some(tool) = message
+                            .tools
+                            .iter_mut()
+                            .find(|tool| tool.id.as_deref() == Some(call_id.as_str()))
+                        {
                             tool.result = output;
                             tool.outcome = if is_error {
                                 ToolOutcome::Failed("SU-session tool failed".into())
@@ -2502,7 +2508,9 @@ impl App {
                     }
                 }
             }
-            crate::su_session::SuSessionEvent::CommandResult { status, refusal, .. } => {
+            crate::su_session::SuSessionEvent::CommandResult {
+                status, refusal, ..
+            } => {
                 if status == "refused" {
                     let message = refusal
                         .map(|r| format!("{}: {}", r.code, r.message))
@@ -3346,18 +3354,23 @@ impl App {
         // New rows are explicitly paired with a backend.  The backend is part
         // of the durable launch request, not a process-local preference that
         // could silently change when `/settings/agent` changes.
+        let picker_harness = self.harness.clone();
         let mut options: Vec<PickerOption> = roles
             .into_iter()
             .flat_map(|role| {
-                crate::su_session::SuSessionBackend::ALL.into_iter().map(move |backend| PickerOption {
-                    id: format!("new:{backend}:{role}"),
-                    label: format!("New {role} · {} session", backend.label()),
-                    hint: Some(format!(
-                        "Create a durable {} SU session in pot {} on first send.",
-                        backend.label(), self.harness
-                    )),
-                    disabled: false,
-                })
+                let role_harness = picker_harness.clone();
+                crate::su_session::SuSessionBackend::ALL
+                    .into_iter()
+                    .map(move |backend| PickerOption {
+                        id: format!("new:{backend}:{role}"),
+                        label: format!("New {role} · {} session", backend.label()),
+                        hint: Some(format!(
+                            "Create a durable {} SU session in pot {} on first send.",
+                            backend.label(),
+                            role_harness
+                        )),
+                        disabled: false,
+                    })
             })
             .collect();
         options.extend(self.agent_chat_summaries.iter().map(|chat| {
@@ -3455,18 +3468,22 @@ impl App {
                                 }
                                 // Compatibility with old persisted picker ids.
                                 (Some(role), None) => (
-                                    self.su_backend.unwrap_or(crate::su_session::SuSessionBackend::Claude),
+                                    self.su_backend
+                                        .unwrap_or(crate::su_session::SuSessionBackend::Claude),
                                     role,
                                 ),
                                 _ => (crate::su_session::SuSessionBackend::Claude, "operator"),
                             };
                             self.agent_chat_role = role.to_string();
+                            self.su_session = None;
                             self.su_backend = Some(backend);
                             self.reset_agent_chat_binding();
                             self.su_backend = Some(backend);
                             self.session_note = Some(format!(
                                 "new {} {} SU session selected in {} — it opens on send",
-                                backend.label(), self.agent_chat_role, self.harness
+                                backend.label(),
+                                self.agent_chat_role,
+                                self.harness
                             ));
                         } else if let Some(chat_id) = id.strip_prefix("session:") {
                             let role = self
@@ -3475,6 +3492,12 @@ impl App {
                                 .find(|chat| chat.id == chat_id)
                                 .map(|chat| chat.role.clone())
                                 .unwrap_or_else(|| "operator".to_string());
+                            // A selected legacy agent-chat may or may not have
+                            // a durable SU binding; clear the backend intent
+                            // until `agent_chat_load` probes the canonical
+                            // snapshot, avoiding an accidental new SU session
+                            // on an old chat.
+                            self.su_backend = None;
                             self.reset_agent_chat_binding();
                             self.agent_chat_id = Some(chat_id.to_string());
                             self.agent_chat_role = role;
@@ -3517,7 +3540,10 @@ impl App {
     /// Concrete execution identity rendered next to the composer.
     pub fn agent_chat_selection_label(&self) -> String {
         if let Some(label) = self.su_session_selection_label() {
-            return format!("{} · pot {} · role {}", label, self.harness, self.agent_chat_role);
+            return format!(
+                "{} · pot {} · role {}",
+                label, self.harness, self.agent_chat_role
+            );
         }
         let session = self
             .agent_chat_id
@@ -7120,6 +7146,23 @@ impl App {
                 }
                 Action::Render
             }
+            Event::SuSessionOpened(binding) => {
+                self.set_su_session_binding(binding);
+                Action::Render
+            }
+            Event::SuSessionSnapshot(snapshot) => {
+                self.apply_su_session_snapshot(snapshot);
+                Action::Render
+            }
+            Event::SuSessionEvent(event) => self.apply_su_session_event(event),
+            Event::SuSessionError(error) => {
+                if let Some(state) = self.su_session.as_mut() {
+                    state.error = Some(error.clone());
+                    state.stale = true;
+                }
+                self.last_error = Some(format!("SU-session: {error}"));
+                Action::Render
+            }
             Event::ConversationContextProjectionLoaded { target, projection } => {
                 // A slow response for the previously focused native session is
                 // discarded rather than repainting Context with the wrong agent.
@@ -8214,13 +8257,10 @@ impl App {
                 // A detached test owns Esc while it is in flight. Keep the
                 // pane entered and request cancellation by run id; the status
                 // poller will paint the terminal `cancelled` snapshot.
-                if self.tab == Tab::Testing
-                    && self.test_run.as_ref().is_some_and(|run| run.running)
+                if self.tab == Tab::Testing && self.test_run.as_ref().is_some_and(|run| run.running)
                 {
                     let Some((run_id, file)) = self.test_run.as_ref().and_then(|run| {
-                        run.run_id
-                            .as_ref()
-                            .map(|id| (id.clone(), run.file.clone()))
+                        run.run_id.as_ref().map(|id| (id.clone(), run.file.clone()))
                     }) else {
                         return Action::Render;
                     };
@@ -8845,10 +8885,7 @@ impl App {
         // Conversations are now an Inbox/Threads subview. Keep the lazy fetch
         // on entry to the parent so opening Inbox always has a discoverable
         // thread list, without exposing a seventh standalone destination.
-        if tab == Tab::Inbox
-            && self.conversations.is_empty()
-            && !self.conversations_loading
-        {
+        if tab == Tab::Inbox && self.conversations.is_empty() && !self.conversations_loading {
             return self.refetch_conversations();
         }
         if tab == Tab::Sessions {
@@ -9591,6 +9628,126 @@ mod tests {
         }
     }
 
+    fn su_binding() -> crate::su_session::SuSessionBinding {
+        crate::su_session::SuSessionBinding {
+            operation: "created".into(),
+            backend: crate::su_session::SuSessionBackend::Claude,
+            adv_session_id: 7,
+            owner_id: Some("su-1".into()),
+            workspace_id: Some("ws-1".into()),
+            harness_slug: Some("papercup".into()),
+            plan_slug: None,
+            native_session: None,
+        }
+    }
+
+    fn su_event(value: serde_json::Value) -> crate::su_session::SuSessionEvent {
+        crate::su_session::decode_su_session_event(&crate::sse::SseFrame {
+            event: "session_event".into(),
+            data: value.to_string(),
+        })
+        .expect("decode SU event")
+    }
+
+    fn su_event_base(kind: &str, sequence: u64) -> serde_json::Value {
+        json!({
+            "type": kind,
+            "schema": crate::su_session::SU_SESSION_SCHEMA,
+            "protocolVersion": 1,
+            "eventId": format!("chat-1:{sequence}"),
+            "sequence": sequence,
+            "at": "2026-08-28T00:00:00Z",
+            "session": {"agentChatId":"chat-1","advSessionId":7,"backend":"claude","nativeSessionId":"native-1","ownerId":"su-1","workspaceId":"ws-1","harnessSlug":"papercup"}
+        })
+    }
+
+    #[test]
+    fn su_session_reducer_renders_lifecycle_transcript_and_tools() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let mut lifecycle = su_event_base("lifecycle", 1);
+        lifecycle["previousState"] = json!("starting");
+        lifecycle["state"] = json!("ready");
+        lifecycle["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(lifecycle));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().lifecycle,
+            crate::su_session::SuSessionLifecycleState::Ready
+        );
+
+        let mut started = su_event_base("transcript", 2);
+        started["phase"] = json!("started");
+        started["turnId"] = json!("turn-1");
+        started["role"] = json!("assistant");
+        started["channel"] = json!("text");
+        app.apply_su_session_event(su_event(started));
+        let mut delta = su_event_base("transcript", 3);
+        delta["phase"] = json!("delta");
+        delta["turnId"] = json!("turn-1");
+        delta["role"] = json!("assistant");
+        delta["channel"] = json!("text");
+        delta["content"] = json!("hello");
+        app.apply_su_session_event(su_event(delta));
+        let mut completed = su_event_base("transcript", 4);
+        completed["phase"] = json!("completed");
+        completed["turnId"] = json!("turn-1");
+        completed["role"] = json!("assistant");
+        completed["channel"] = json!("text");
+        app.apply_su_session_event(su_event(completed));
+        assert_eq!(app.chat_messages.last().unwrap().content, "hello");
+        assert!(!app.chat_messages.last().unwrap().streaming);
+
+        let mut tool = su_event_base("tool", 5);
+        tool["phase"] = json!("started");
+        tool["turnId"] = json!("turn-1");
+        tool["callId"] = json!("call-1");
+        tool["name"] = json!("read");
+        tool["input"] = json!({"path":"README.md"});
+        app.apply_su_session_event(su_event(tool));
+        assert_eq!(app.chat_messages.last().unwrap().tools[0].name, "read");
+
+        let mut tool_done = su_event_base("tool", 6);
+        tool_done["phase"] = json!("completed");
+        tool_done["turnId"] = json!("turn-1");
+        tool_done["callId"] = json!("call-1");
+        tool_done["name"] = json!("read");
+        tool_done["output"] = json!({"ok":true});
+        tool_done["isError"] = json!(false);
+        app.apply_su_session_event(su_event(tool_done));
+        assert_eq!(
+            app.chat_messages.last().unwrap().tools[0].outcome,
+            ToolOutcome::Ok
+        );
+    }
+
+    #[test]
+    fn su_session_reducer_marks_sequence_gaps_and_rejects_foreign_identity() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        let mut event = su_event_base("lifecycle", 2);
+        event["previousState"] = json!("starting");
+        event["state"] = json!("running");
+        event["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(event));
+        assert!(app.su_session.as_ref().unwrap().stale);
+
+        let mut foreign = su_event_base("lifecycle", 3);
+        foreign["session"]["advSessionId"] = json!(99);
+        foreign["state"] = json!("failed");
+        foreign["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(foreign));
+        assert!(app
+            .su_session
+            .as_ref()
+            .unwrap()
+            .error
+            .as_deref()
+            .unwrap()
+            .contains("identity mismatch"));
+    }
+
     #[test]
     fn claude_transcript_gate_tracks_disk_state() {
         use crate::models::{NativeSessionHandle, RosterEntry};
@@ -10182,6 +10339,32 @@ mod tests {
         assert_eq!(a.agent_chat_role, "reviewer");
         assert_eq!(a.agent_chat_id.as_deref(), Some("chat-review"));
         assert_eq!(a.chat_input, "half typed");
+    }
+
+    #[test]
+    fn new_session_picker_requires_an_explicit_su_backend() {
+        let mut a = App::new();
+        a.open_agent_session_picker();
+        let options = &a.session_picker.as_ref().unwrap().options;
+        assert!(options
+            .iter()
+            .any(|option| option.id == "new:claude:operator"));
+        assert!(options
+            .iter()
+            .any(|option| option.id == "new:codex:operator"));
+        assert!(options.iter().any(|option| option.id == "new:omp:operator"));
+
+        let idx = options
+            .iter()
+            .position(|option| option.id == "new:codex:operator")
+            .unwrap();
+        a.session_picker.as_mut().unwrap().sel = idx;
+        assert_eq!(a.commit_session_picker(), Action::Render);
+        assert_eq!(
+            a.su_backend,
+            Some(crate::su_session::SuSessionBackend::Codex)
+        );
+        assert_eq!(a.agent_chat_role, "operator");
     }
 
     #[test]
@@ -15317,11 +15500,11 @@ mod tests {
 
         let snapshot = |run_id: &str, status: &str, output: &str| {
             crate::models::TestRunSnapshot {
-                run_id: run_id.into(),
-                file_path: Some("a.test.ts".into()),
-                status: status.into(),
-                output: output.into(),
-                ..Default::default()
+            run_id: run_id.into(),
+            file_path: Some("a.test.ts".into()),
+            status: status.into(),
+            output: output.into(),
+            ..Default::default()
             }
         };
         a.update(Event::TestRunProgress {

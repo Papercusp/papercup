@@ -866,259 +866,243 @@ async fn run<B: Backend>(
         // of dropping it after posting the intent result.
         let mut action_queue = vec![action];
         while let Some(action) = action_queue.pop() {
-        match action {
-            Action::Render => {
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::PublishBeeSelection { owner_id, name } => {
-                // In-process selection drive (pui-dock-consolidation-2026-06-07):
-                // the dossier renders inside the Fleet tab now — apply the
-                // selection to app state and fetch the bee's dossier directly.
-                // (The old `fleet:selected_bee` relay POST is gone — the
-                // endpoint was retired with the bee tier, P-003 2026-08-24.)
-                let changed = app.bee.owner_id != owner_id;
-                app.update(Event::BeeSelection {
-                    owner_id: owner_id.clone(),
-                    name,
-                });
-                if changed {
-                    if let Some(o) = owner_id {
-                        tokio::spawn(bee_dossier_fetch(o, tx.clone()));
+            match action {
+                Action::Render => {
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::PublishBeeSelection { owner_id, name } => {
+                    // In-process selection drive (pui-dock-consolidation-2026-06-07):
+                    // the dossier renders inside the Fleet tab now — apply the
+                    // selection to app state and fetch the bee's dossier directly.
+                    // (The old `fleet:selected_bee` relay POST is gone — the
+                    // endpoint was retired with the bee tier, P-003 2026-08-24.)
+                    let changed = app.bee.owner_id != owner_id;
+                    app.update(Event::BeeSelection {
+                        owner_id: owner_id.clone(),
+                        name,
+                    });
+                    if changed {
+                        if let Some(o) = owner_id {
+                            tokio::spawn(bee_dossier_fetch(o, tx.clone()));
+                        }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchFleetAssignments => {
-                // Whole-fleet liveness + canonical work frontier are independent
-                // reads and land as separate events; either can still render if
-                // the other is temporarily unavailable.
-                tokio::spawn(fetch_fleet_assignments(tx.clone()));
-                let harness = app
-                    .active_harness
-                    .lock()
-                    .map(|value| value.clone())
-                    .unwrap_or_default();
-                tokio::spawn(fetch_work_frontier(harness.clone(), tx.clone()));
-                if let Some(fleet) = app.fleet.leader_fleet.clone() {
-                    tokio::spawn(fetch_fleet_leader_brief(fleet, harness, tx.clone()));
+                Action::FetchFleetAssignments => {
+                    // Whole-fleet liveness + canonical work frontier are independent
+                    // reads and land as separate events; either can still render if
+                    // the other is temporarily unavailable.
+                    tokio::spawn(fetch_fleet_assignments(tx.clone()));
+                    let harness = app
+                        .active_harness
+                        .lock()
+                        .map(|value| value.clone())
+                        .unwrap_or_default();
+                    tokio::spawn(fetch_work_frontier(harness.clone(), tx.clone()));
+                    if let Some(fleet) = app.fleet.leader_fleet.clone() {
+                        tokio::spawn(fetch_fleet_leader_brief(fleet, harness, tx.clone()));
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SetWakeMode { agent, mode } => {
-                // P-008: set the agent's wake mode via coord:wake-mode (run_tool).
-                // Best-effort; the next roster poll refreshes the ⏸MANUAL badge.
-                tokio::spawn(set_wake_mode(agent, mode, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchWakeQueue { agent } => {
-                // P-009: list the agent's staged wakes for the review overlay.
-                tokio::spawn(fetch_wake_queue(agent, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::WakeQueueAct {
-                agent,
-                release,
-                id,
-                edited,
-            } => {
-                // P-009: release (as-is or edited) / skip one staged wake, then
-                // re-list so the overlay refreshes.
-                tokio::spawn(wake_queue_act(agent, release, id, edited, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchWakeBoard => {
-                // EI-312: re-snapshot the staged-wake board (this pane's scope).
-                tokio::spawn(fetch_wake_board(app.wake_filter.clone(), tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::WakeBoardAct {
-                agent,
-                verb,
-                id,
-                edited,
-            } => {
-                // EI-312: act on the board (release/skip one, or drain all),
-                // then re-snapshot so the pane refreshes.
-                tokio::spawn(wake_board_act(
+                Action::SetWakeMode { agent, mode } => {
+                    // P-008: set the agent's wake mode via coord:wake-mode (run_tool).
+                    // Best-effort; the next roster poll refreshes the ⏸MANUAL badge.
+                    tokio::spawn(set_wake_mode(agent, mode, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchWakeQueue { agent } => {
+                    // P-009: list the agent's staged wakes for the review overlay.
+                    tokio::spawn(fetch_wake_queue(agent, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::WakeQueueAct {
+                    agent,
+                    release,
+                    id,
+                    edited,
+                } => {
+                    // P-009: release (as-is or edited) / skip one staged wake, then
+                    // re-list so the overlay refreshes.
+                    tokio::spawn(wake_queue_act(agent, release, id, edited, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchWakeBoard => {
+                    // EI-312: re-snapshot the staged-wake board (this pane's scope).
+                    tokio::spawn(fetch_wake_board(app.wake_filter.clone(), tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::WakeBoardAct {
                     agent,
                     verb,
                     id,
                     edited,
-                    app.wake_filter.clone(),
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CreateFrameTabs { tabs } => {
-                // P-013: one zellij tab per deployed frame, created via the
-                // companion's NewTab (new_tabs_with_layout). The reducer's diff
-                // is topology-gated, so tabs are only ever offered while a
-                // companion is linked; the None arm is a defensive no-op.
-                if let Some(c) = &companion {
-                    for (name, layout) in tabs {
-                        c.send(pui_companion_proto::Command::NewTab {
-                            name: Some(name),
-                            layout: Some(layout),
-                        });
-                    }
+                } => {
+                    // EI-312: act on the board (release/skip one, or drain all),
+                    // then re-snapshot so the pane refreshes.
+                    tokio::spawn(wake_board_act(
+                        agent,
+                        verb,
+                        id,
+                        edited,
+                        app.wake_filter.clone(),
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CreateHiveTabs { tabs } => {
-                // B4 (P-004): one persistent zellij tab per live federated peer,
-                // created via the companion's NewTab — same path + linked-companion
-                // gating as the per-frame tabs (the reducer's diff is roster-gated).
-                if let Some(c) = &companion {
-                    for (name, layout) in tabs {
-                        c.send(pui_companion_proto::Command::NewTab {
-                            name: Some(name),
-                            layout: Some(layout),
-                        });
-                    }
-                }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchHives => {
-                // The federated p2p roster for the Hives tab — fetched off the
-                // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
-                // the P2P directory fetch (p2p-hive-directory P-006) so entering
-                // the tab populates both the live roster + the browseable hives.
-                tokio::spawn(fetch_hives(tx.clone()));
-                tokio::spawn(fetch_hive_directory(tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchContextProjection => {
-                if let Some(target) = app.context_projection_target.clone() {
-                    tokio::spawn(fetch_context_projection(target, tx.clone()));
-                }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchSessionSwitcher { query } => {
-                // D-009: search the live + ended roster and indexed session
-                // corpus off the UI thread. The query rides the response so
-                // the reducer can reject a stale result after more typing.
-                tokio::spawn(fetch_session_switcher(query, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchSessionBrowser { query } => {
-                tokio::spawn(fetch_session_browser(query, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::ResolveSessionTranscript {
-                session_key,
-                target,
-            } => {
-                tokio::spawn(resolve_session_transcript(session_key, target, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchSessionTranscript {
-                session_key,
-                reference,
-            } => {
-                tokio::spawn(fetch_session_transcript(session_key, reference, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchPlanItemStates { harness, plan } => {
-                // pui-plans-status-board P-008: the plans board's selection
-                // moved — fetch the selected plan's per-item states for the
-                // right-side work-items detail. → Event::PlanItemStates.
-                tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::PreviewFleetLaunch { fleet, args } => {
-                tokio::spawn(preview_fleet_launch(fleet, args, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LaunchFleetOnPlan { fleet, args } => {
-                tokio::spawn(launch_fleet_on_plan(fleet, args, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchNetworkBoard => {
-                // B-09: the network-pane's manual `g` refresh — the refetch
-                // loop covers the push-driven cadence (SSE + 60s safety net).
-                // A pinned hive-pane also re-pulls its drill-in dossier
-                // (beacon history + ask log, P-014 item 2).
-                tokio::spawn(fetch_network_board(tx.clone()));
-                if let Some(key) = &app.network_focus {
-                    tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
-                }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::OpenNetworkDrillIn(req) => {
-                // B-10 SEAM: the per-hive drill-in open action (hive-network-
-                // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
-                // hive — its "drill-in" is the dock's `this hive` tab (always
-                // the FIRST tab, agreed with B-10). Tiers 2-4 open B-10's
-                // generated per-hive tab (hive-pane detail; tier 2 adds the
-                // hive-scoped wake board; the per-bee watch panes were dropped
-                // when hive-agent-tabs P-014 retired the watch-pane surface).
-                // The KDL goes through a materialized file + the zellij CLI
-                // because the companion is NEVER spawned in pinned panes
-                // (Companion::spawn gating above) — `Command::NewTab` over
-                // the companion can't fire from the pinned network-pane.
-                if req.tier <= 1 {
-                    let _ = Zellij.run_action(&MuxAction::GoToTab(1));
-                } else {
-                    let spec = layout::HiveTabSpec {
-                        tier: req.tier,
-                        key: req.key.clone(),
-                        title: req.title.clone(),
-                    };
-                    match materialize_hive_tab(&spec) {
-                        Ok(path) => {
-                            let _ = Zellij.run_action(&MuxAction::NewTab {
-                                name: Some(layout::hive_tab_name(&spec)),
-                                layout: Some(path.to_string_lossy().into_owned()),
+                Action::CreateFrameTabs { tabs } => {
+                    // P-013: one zellij tab per deployed frame, created via the
+                    // companion's NewTab (new_tabs_with_layout). The reducer's diff
+                    // is topology-gated, so tabs are only ever offered while a
+                    // companion is linked; the None arm is a defensive no-op.
+                    if let Some(c) = &companion {
+                        for (name, layout) in tabs {
+                            c.send(pui_companion_proto::Command::NewTab {
+                                name: Some(name),
+                                layout: Some(layout),
                             });
                         }
-                        Err(e) => {
-                            let _ = tx.send(Event::Error(format!("pot tab: {e}")));
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CreateHiveTabs { tabs } => {
+                    // B4 (P-004): one persistent zellij tab per live federated peer,
+                    // created via the companion's NewTab — same path + linked-companion
+                    // gating as the per-frame tabs (the reducer's diff is roster-gated).
+                    if let Some(c) = &companion {
+                        for (name, layout) in tabs {
+                            c.send(pui_companion_proto::Command::NewTab {
+                                name: Some(name),
+                                layout: Some(layout),
+                            });
                         }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::JoinHive { slug, links } => {
-                // Join every member harness of a discovered hive (P-006): POST each
-                // link to /api/harness/join-link off the UI thread → Notify/Error.
-                tokio::spawn(join_hive(slug, links, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::DocsAction { action, doc_id } => {
-                // Fire the docs action (regenerate|verify) off the UI thread; the
-                // periodic refetch loop refreshes the badges on its next tick
-                // (harness-docs-integration P-009).
-                tokio::spawn(apply_docs_action(
-                    app.harness.clone(),
-                    action,
-                    doc_id,
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::Launch(spec) => {
-                // Record the launch into the crew roster (P12b) before spawning.
-                app.record_launch(&spec);
-                // Prefer the companion plugin's real host command (reliable +
-                // observable — its CommandPaneExited feeds pane-exit detection);
-                // fall back to fire-and-forget `zellij action new-pane` when no
-                // companion is linked.
-                match &companion {
-                    Some(c) => c.open_pane(&spec),
-                    None => {
-                        if let Err(e) = Zellij.open_pane(&spec) {
-                            app.update(Event::Error(format!("launch: {e}")));
+                Action::FetchHives => {
+                    // The federated p2p roster for the Hives tab — fetched off the
+                    // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
+                    // the P2P directory fetch (p2p-hive-directory P-006) so entering
+                    // the tab populates both the live roster + the browseable hives.
+                    tokio::spawn(fetch_hives(tx.clone()));
+                    tokio::spawn(fetch_hive_directory(tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchContextProjection => {
+                    if let Some(target) = app.context_projection_target.clone() {
+                        tokio::spawn(fetch_context_projection(target, tx.clone()));
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchSessionSwitcher { query } => {
+                    // D-009: search the live + ended roster and indexed session
+                    // corpus off the UI thread. The query rides the response so
+                    // the reducer can reject a stale result after more typing.
+                    tokio::spawn(fetch_session_switcher(query, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchSessionBrowser { query } => {
+                    tokio::spawn(fetch_session_browser(query, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ResolveSessionTranscript {
+                    session_key,
+                    target,
+                } => {
+                    tokio::spawn(resolve_session_transcript(session_key, target, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchSessionTranscript {
+                    session_key,
+                    reference,
+                } => {
+                    tokio::spawn(fetch_session_transcript(session_key, reference, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchPlanItemStates { harness, plan } => {
+                    // pui-plans-status-board P-008: the plans board's selection
+                    // moved — fetch the selected plan's per-item states for the
+                    // right-side work-items detail. → Event::PlanItemStates.
+                    tokio::spawn(fetch_plan_item_states(harness, plan, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::PreviewFleetLaunch { fleet, args } => {
+                    tokio::spawn(preview_fleet_launch(fleet, args, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::LaunchFleetOnPlan { fleet, args } => {
+                    tokio::spawn(launch_fleet_on_plan(fleet, args, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchNetworkBoard => {
+                    // B-09: the network-pane's manual `g` refresh — the refetch
+                    // loop covers the push-driven cadence (SSE + 60s safety net).
+                    // A pinned hive-pane also re-pulls its drill-in dossier
+                    // (beacon history + ask log, P-014 item 2).
+                    tokio::spawn(fetch_network_board(tx.clone()));
+                    if let Some(key) = &app.network_focus {
+                        tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::OpenNetworkDrillIn(req) => {
+                    // B-10 SEAM: the per-hive drill-in open action (hive-network-
+                    // surface B-09→B-10, coord 2026-06-11). Tier 1 is the local
+                    // hive — its "drill-in" is the dock's `this hive` tab (always
+                    // the FIRST tab, agreed with B-10). Tiers 2-4 open B-10's
+                    // generated per-hive tab (hive-pane detail; tier 2 adds the
+                    // hive-scoped wake board; the per-bee watch panes were dropped
+                    // when hive-agent-tabs P-014 retired the watch-pane surface).
+                    // The KDL goes through a materialized file + the zellij CLI
+                    // because the companion is NEVER spawned in pinned panes
+                    // (Companion::spawn gating above) — `Command::NewTab` over
+                    // the companion can't fire from the pinned network-pane.
+                    if req.tier <= 1 {
+                        let _ = Zellij.run_action(&MuxAction::GoToTab(1));
+                    } else {
+                        let spec = layout::HiveTabSpec {
+                            tier: req.tier,
+                            key: req.key.clone(),
+                            title: req.title.clone(),
+                        };
+                        match materialize_hive_tab(&spec) {
+                            Ok(path) => {
+                                let _ = Zellij.run_action(&MuxAction::NewTab {
+                                    name: Some(layout::hive_tab_name(&spec)),
+                                    layout: Some(path.to_string_lossy().into_owned()),
+                                });
+                            }
+                            Err(e) => {
+                                let _ = tx.send(Event::Error(format!("pot tab: {e}")));
+                            }
                         }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LaunchMany(specs) => {
-                // P-031: resume the crew's ended members the user confirmed in
-                // the crew-restore prompt. Each spec follows the exact `Launch`
-                // path (companion when linked, else the zellij CLI); the
-                // reducer already `record_launch`ed each spec — no re-record.
-                for spec in specs {
+                Action::JoinHive { slug, links } => {
+                    // Join every member harness of a discovered hive (P-006): POST each
+                    // link to /api/harness/join-link off the UI thread → Notify/Error.
+                    tokio::spawn(join_hive(slug, links, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::DocsAction { action, doc_id } => {
+                    // Fire the docs action (regenerate|verify) off the UI thread; the
+                    // periodic refetch loop refreshes the badges on its next tick
+                    // (harness-docs-integration P-009).
+                    tokio::spawn(apply_docs_action(
+                        app.harness.clone(),
+                        action,
+                        doc_id,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::Launch(spec) => {
+                    // Record the launch into the crew roster (P12b) before spawning.
+                    app.record_launch(&spec);
+                    // Prefer the companion plugin's real host command (reliable +
+                    // observable — its CommandPaneExited feeds pane-exit detection);
+                    // fall back to fire-and-forget `zellij action new-pane` when no
+                    // companion is linked.
                     match &companion {
                         Some(c) => c.open_pane(&spec),
                         None => {
@@ -1127,80 +1111,96 @@ async fn run<B: Backend>(
                             }
                         }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LaunchPanes { sessions, bees } => {
-                // Reactive work-area panes for new LOCAL workbench launches
-                // (pui-reactive-session-panes D-006). EI-358 CLAIM-THEN-OPEN:
-                // mark-launched is the ATOMIC claim (`launched_at IS NULL` —
-                // stamped=true for exactly one caller across EVERY pui process),
-                // so we claim FIRST and open only on a won claim. The old order
-                // (open, then fire-and-forget mark) let every roster-watching
-                // pui process open its own pane for one click — the owner got
-                // five planner chats. A lost claim = another instance owns the
-                // launch (skip forever, stays tracked); a transport error is
-                // RETRYABLE (un-track via LaunchClaimRetry so a later roster
-                // tick re-attempts — the row is still pending server-side).
-                for p in sessions {
-                    let claim = match OperatorClient::from_discovery().await {
-                        Ok(c) => c.mark_session_launched(p.adv_session_id).await,
-                        Err(e) => Err(e),
-                    };
-                    match claim {
-                        Ok(true) => { /* won — open below */ }
-                        Ok(false) => continue,
-                        Err(_) => {
-                            app.update(Event::LaunchClaimRetry(p.adv_session_id));
-                            continue;
-                        }
-                    }
-                    match &companion {
-                        Some(c) => c.open_pane(&p.spec),
-                        None => {
-                            if let Err(e) = Zellij.open_pane(&p.spec) {
-                                app.update(Event::Error(format!("launch pane: {e}")));
+                Action::LaunchMany(specs) => {
+                    // P-031: resume the crew's ended members the user confirmed in
+                    // the crew-restore prompt. Each spec follows the exact `Launch`
+                    // path (companion when linked, else the zellij CLI); the
+                    // reducer already `record_launch`ed each spec — no re-record.
+                    for spec in specs {
+                        match &companion {
+                            Some(c) => c.open_pane(&spec),
+                            None => {
+                                if let Err(e) = Zellij.open_pane(&spec) {
+                                    app.update(Event::Error(format!("launch: {e}")));
+                                }
                             }
                         }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                // Dock agent stack (hive-agent-tabs P-004): live `claude
-                // --resume` panes for active fleet bees — CLI only (no
-                // companion in the dock, nothing to mark consumed).
-                let opened_bees = bees.len();
-                for spec in bees {
-                    if let Err(e) = Zellij.open_pane(&spec) {
-                        app.update(Event::Error(format!("cup pane: {e}")));
+                Action::LaunchPanes { sessions, bees } => {
+                    // Reactive work-area panes for new LOCAL workbench launches
+                    // (pui-reactive-session-panes D-006). EI-358 CLAIM-THEN-OPEN:
+                    // mark-launched is the ATOMIC claim (`launched_at IS NULL` —
+                    // stamped=true for exactly one caller across EVERY pui process),
+                    // so we claim FIRST and open only on a won claim. The old order
+                    // (open, then fire-and-forget mark) let every roster-watching
+                    // pui process open its own pane for one click — the owner got
+                    // five planner chats. A lost claim = another instance owns the
+                    // launch (skip forever, stays tracked); a transport error is
+                    // RETRYABLE (un-track via LaunchClaimRetry so a later roster
+                    // tick re-attempts — the row is still pending server-side).
+                    for p in sessions {
+                        let claim = match OperatorClient::from_discovery().await {
+                            Ok(c) => c.mark_session_launched(p.adv_session_id).await,
+                            Err(e) => Err(e),
+                        };
+                        match claim {
+                            Ok(true) => { /* won — open below */ }
+                            Ok(false) => continue,
+                            Err(_) => {
+                                app.update(Event::LaunchClaimRetry(p.adv_session_id));
+                                continue;
+                            }
+                        }
+                        match &companion {
+                            Some(c) => c.open_pane(&p.spec),
+                            None => {
+                                if let Err(e) = Zellij.open_pane(&p.spec) {
+                                    app.update(Event::Error(format!("launch pane: {e}")));
+                                }
+                            }
+                        }
                     }
-                }
-                // Snap focus BACK to this pane (the operator chat) after a dock
-                // pane burst: zellij expands + focuses every new stacked pane as
-                // it opens, so a launch-time burst of bee panes flips the dock
-                // around for seconds and strands focus on the last bee (owner
-                // report 2026-06-07 "keeps refreshing like crazy ... before it
-                // settles"). One focus-restore per batch ends the flip on the
-                // chat. Workbench (companion) launches keep their own focus
-                // semantics — this is the dock-CLI path only.
-                if app.dock_agent_panes && opened_bees > 0 {
-                    if let Some(id) = app.hud_pane_id {
+                    // Dock agent stack (hive-agent-tabs P-004): live `claude
+                    // --resume` panes for active fleet bees — CLI only (no
+                    // companion in the dock, nothing to mark consumed).
+                    let opened_bees = bees.len();
+                    for spec in bees {
+                        if let Err(e) = Zellij.open_pane(&spec) {
+                            app.update(Event::Error(format!("cup pane: {e}")));
+                        }
+                    }
+                    // Snap focus BACK to this pane (the operator chat) after a dock
+                    // pane burst: zellij expands + focuses every new stacked pane as
+                    // it opens, so a launch-time burst of bee panes flips the dock
+                    // around for seconds and strands focus on the last bee (owner
+                    // report 2026-06-07 "keeps refreshing like crazy ... before it
+                    // settles"). One focus-restore per batch ends the flip on the
+                    // chat. Workbench (companion) launches keep their own focus
+                    // semantics — this is the dock-CLI path only.
+                    if app.dock_agent_panes && opened_bees > 0 {
+                        if let Some(id) = app.hud_pane_id {
                             if let Err(e) =
                                 Zellij.run_action(&crate::mux::MuxAction::FocusPaneId(id))
                             {
-                            app.update(Event::Error(format!("focus restore: {e}")));
+                                app.update(Event::Error(format!("focus restore: {e}")));
+                            }
                         }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::IntentResult {
-                id,
-                result_json,
-                error,
-            } => {
-                // An agent intent was applied (P12b) — ship the result back, redraw.
-                let _ = intent_result_tx.send((id, result_json, error));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
+                Action::IntentResult {
+                    id,
+                    result_json,
+                    error,
+                } => {
+                    // An agent intent was applied (P12b) — ship the result back, redraw.
+                    let _ = intent_result_tx.send((id, result_json, error));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
                 Action::IntentResultWithFollowup {
                     id,
                     result_json,
@@ -1211,324 +1211,375 @@ async fn run<B: Backend>(
                     action_queue.push(*follow_up);
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-            Action::Workbench(cmd) => {
-                // Execute a palette workbench command (P12b) off the UI thread; it
-                // reports results back as toasts. SaveCrew needs the current crew
-                // roster, and RestoreCrew routes members by liveness against the
-                // ACTIVE agent roster (P-031) — both snapshotted here from App.
-                tokio::spawn(execute_workbench_command(
-                    cmd,
-                    app.launched.clone(),
-                    app.roster.clone(),
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SaveCrewSelection { name, members } => {
-                // P-030 hands one selected browser row to the existing crew
-                // executor; it does not mutate the launched-pane roster.
-                tokio::spawn(execute_workbench_command(
-                    app::PaletteCommand::SaveCrew(name),
-                    members,
-                    app.roster.clone(),
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::Dock(cmd) => {
-                // Dockview dock-verbs (Brief 50 / D-008). Prefer the companion
-                // (id-addressed, reliable inside zellij); fall back to focused-
-                // pane / cycle `zellij action` CLI verbs when no companion is
-                // linked. The reducer already resolved ids/preset names + emitted
-                // a friendly error for the cases a fallback can't cover.
-                match cmd {
-                    DockCmd::Stack { pane_ids } => match &companion {
-                        // :stack is id-addressed → companion-only (the reducer
-                        // already error-toasted when there was no topology).
-                        Some(c) => c.stack_panes(pane_ids),
-                        None => {
-                            app.update(Event::Error(
-                                "stack: needs the companion plugin (run inside the workbench)"
+                Action::Workbench(cmd) => {
+                    // Execute a palette workbench command (P12b) off the UI thread; it
+                    // reports results back as toasts. SaveCrew needs the current crew
+                    // roster, and RestoreCrew routes members by liveness against the
+                    // ACTIVE agent roster (P-031) — both snapshotted here from App.
+                    tokio::spawn(execute_workbench_command(
+                        cmd,
+                        app.launched.clone(),
+                        app.roster.clone(),
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::SaveCrewSelection { name, members } => {
+                    // P-030 hands one selected browser row to the existing crew
+                    // executor; it does not mutate the launched-pane roster.
+                    tokio::spawn(execute_workbench_command(
+                        app::PaletteCommand::SaveCrew(name),
+                        members,
+                        app.roster.clone(),
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::Dock(cmd) => {
+                    // Dockview dock-verbs (Brief 50 / D-008). Prefer the companion
+                    // (id-addressed, reliable inside zellij); fall back to focused-
+                    // pane / cycle `zellij action` CLI verbs when no companion is
+                    // linked. The reducer already resolved ids/preset names + emitted
+                    // a friendly error for the cases a fallback can't cover.
+                    match cmd {
+                        DockCmd::Stack { pane_ids } => match &companion {
+                            // :stack is id-addressed → companion-only (the reducer
+                            // already error-toasted when there was no topology).
+                            Some(c) => c.stack_panes(pane_ids),
+                            None => {
+                                app.update(Event::Error(
+                                    "stack: needs the companion plugin (run inside the workbench)"
+                                        .into(),
+                                ));
+                            }
+                        },
+                        DockCmd::Float { pane_id } => match (&companion, pane_id) {
+                            (Some(c), Some(id)) => c.toggle_float(id),
+                            // Bare :float with a known HUD id → float that pane.
+                            (Some(c), None) if app.hud_pane_id.is_some() => {
+                                c.toggle_float(app.hud_pane_id.unwrap())
+                            }
+                            // Bare :float without a HUD id, or no companion: the
+                            // focused pane in the palette IS the HUD, so the CLI
+                            // focused-pane toggle floats it (D-002).
+                            _ => {
+                                if let Err(e) = Zellij.run_action(&MuxAction::ToggleFloat) {
+                                    app.update(Event::Error(format!("float: {e}")));
+                                }
+                            }
+                        },
+                        DockCmd::SelectLayout { name } => match &companion {
+                            Some(c) => c.select_swap_layout(name),
+                            // No companion → no select-by-name primitive; :dock needs
+                            // it. Tell the user (cycling can't reliably hit a target).
+                            None => {
+                                app.update(Event::Error(format!(
+                                "dock/layout {name}: needs the companion plugin (use :layout next/prev without it)"
+                            )));
+                            }
+                        },
+                        DockCmd::CycleLayout { next } => match &companion {
+                            Some(c) => {
+                                if next {
+                                    c.next_swap_layout()
+                                } else {
+                                    c.prev_swap_layout()
+                                }
+                            }
+                            None => {
+                                let act = if next {
+                                    MuxAction::NextSwapLayout
+                                } else {
+                                    MuxAction::PrevSwapLayout
+                                };
+                                if let Err(e) = Zellij.run_action(&act) {
+                                    app.update(Event::Error(format!("layout: {e}")));
+                                }
+                            }
+                        },
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::SendChat(text) => {
+                    // Native chat turn on the operator-owned loop (P-005 / D-011).
+                    // The reducer already appended the user message + a streaming
+                    // bubble; spawn the native turn against the active harness's
+                    // agent-chat. No transcript snapshot is sent — the loop owns the
+                    // history in PG, keyed by `agent_chat_id`.
+                    let retry_after_cancel = std::mem::take(&mut app.chat_retry_after_cancel);
+                    native_chat_turn = Some(tokio::spawn(stream_agent_chat_turn(
+                        text,
+                        app.harness.clone(),
+                        app.agent_chat_id.clone(),
+                        app.agent_chat_role.clone(),
+                        // The model picker's choice (P-005 final lane, WI-41189).
+                        // `None` still means "send no model", so the server applies
+                        // its own default (PAPERCUSP_LOOP_CHAT_MODEL) exactly as
+                        // before — the picker adds an override, it does not move
+                        // the default into the client.
+                        app.chat_model.clone(),
+                        app.chat_effort.clone(),
+                        app.chat_account.clone(),
+                        retry_after_cancel,
+                        tx.clone(),
+                    )));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::OpenSuSession {
+                    harness,
+                    role,
+                    backend,
+                    carry,
+                    initial_turn,
+                } => {
+                    tokio::spawn(open_su_session_task(
+                        harness,
+                        role,
+                        backend,
+                        carry,
+                        initial_turn,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::SendSuSessionTurn(text) => {
+                    if let Some(state) = app.su_session.as_ref() {
+                        if let Some(chat_id) = app.agent_chat_id.clone() {
+                            tokio::spawn(send_su_session_turn_task(
+                                app.harness.clone(),
+                                chat_id,
+                                state.binding.clone(),
+                                text,
+                                tx.clone(),
+                            ));
+                        } else {
+                            app.update(Event::SuSessionError(
+                                "SU-session has no agent-chat identity; reattach before sending"
                                     .into(),
                             ));
                         }
-                    },
-                    DockCmd::Float { pane_id } => match (&companion, pane_id) {
-                        (Some(c), Some(id)) => c.toggle_float(id),
-                        // Bare :float with a known HUD id → float that pane.
-                        (Some(c), None) if app.hud_pane_id.is_some() => {
-                            c.toggle_float(app.hud_pane_id.unwrap())
-                        }
-                        // Bare :float without a HUD id, or no companion: the
-                        // focused pane in the palette IS the HUD, so the CLI
-                        // focused-pane toggle floats it (D-002).
-                        _ => {
-                            if let Err(e) = Zellij.run_action(&MuxAction::ToggleFloat) {
-                                app.update(Event::Error(format!("float: {e}")));
-                            }
-                        }
-                    },
-                    DockCmd::SelectLayout { name } => match &companion {
-                        Some(c) => c.select_swap_layout(name),
-                        // No companion → no select-by-name primitive; :dock needs
-                        // it. Tell the user (cycling can't reliably hit a target).
-                        None => {
-                            app.update(Event::Error(format!(
-                                "dock/layout {name}: needs the companion plugin (use :layout next/prev without it)"
-                            )));
-                        }
-                    },
-                    DockCmd::CycleLayout { next } => match &companion {
-                        Some(c) => {
-                            if next {
-                                c.next_swap_layout()
-                            } else {
-                                c.prev_swap_layout()
-                            }
-                        }
-                        None => {
-                            let act = if next {
-                                MuxAction::NextSwapLayout
-                            } else {
-                                MuxAction::PrevSwapLayout
-                            };
-                            if let Err(e) = Zellij.run_action(&act) {
-                                app.update(Event::Error(format!("layout: {e}")));
-                            }
-                        }
-                    },
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SendChat(text) => {
-                // Native chat turn on the operator-owned loop (P-005 / D-011).
-                // The reducer already appended the user message + a streaming
-                // bubble; spawn the native turn against the active harness's
-                // agent-chat. No transcript snapshot is sent — the loop owns the
-                // history in PG, keyed by `agent_chat_id`.
-                let retry_after_cancel = std::mem::take(&mut app.chat_retry_after_cancel);
-                native_chat_turn = Some(tokio::spawn(stream_agent_chat_turn(
-                    text,
-                    app.harness.clone(),
-                    app.agent_chat_id.clone(),
-                    app.agent_chat_role.clone(),
-                    // The model picker's choice (P-005 final lane, WI-41189).
-                    // `None` still means "send no model", so the server applies
-                    // its own default (PAPERCUSP_LOOP_CHAT_MODEL) exactly as
-                    // before — the picker adds an override, it does not move
-                    // the default into the client.
-                    app.chat_model.clone(),
-                    app.chat_effort.clone(),
-                    app.chat_account.clone(),
-                    retry_after_cancel,
-                    tx.clone(),
-                )));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LoadAgentChat { harness, chat_id } => {
-                tokio::spawn(agent_chat_load(harness, Some(chat_id), tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CancelChat => {
-                if let Some(turn) = native_chat_turn.take() {
-                    turn.abort();
-                }
-                app.update(Event::ChatError(
-                    "agent chat cancelled — ready to retry".into(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::ResolveAgentChatApproval { call_id, approved } => {
-                // Answer a parked HITL request (P-005 slice 2). Guarded rather
-                // than unwrapped: the prompt cannot render without a bound chat,
-                // but a decision arriving in that state should be a no-op, not a
-                // panic that takes the whole TUI down.
-                if let Some(chat_id) = app.agent_chat_id.clone() {
-                    tokio::spawn(resolve_agent_chat_approval_send(
-                        app.harness.clone(),
+                Action::AttachSuSession {
+                    harness,
+                    chat_id,
+                    adv_session_id,
+                    backend,
+                } => {
+                    tokio::spawn(attach_su_session_task(
+                        harness,
                         chat_id,
-                        call_id,
-                        approved,
+                        adv_session_id,
+                        backend,
                         tx.clone(),
                     ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::MutateAgentChatTask {
-                harness,
-                chat_id,
-                mutation,
-            } => {
-                tokio::spawn(mutate_agent_chat_task_send(
+                Action::LoadAgentChat { harness, chat_id } => {
+                    tokio::spawn(agent_chat_load(harness, Some(chat_id), tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CancelChat => {
+                    if let Some(turn) = native_chat_turn.take() {
+                        turn.abort();
+                    }
+                    app.update(Event::ChatError(
+                        "agent chat cancelled — ready to retry".into(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ResolveAgentChatApproval { call_id, approved } => {
+                    // Answer a parked HITL request (P-005 slice 2). Guarded rather
+                    // than unwrapped: the prompt cannot render without a bound chat,
+                    // but a decision arriving in that state should be a no-op, not a
+                    // panic that takes the whole TUI down.
+                    if let Some(chat_id) = app.agent_chat_id.clone() {
+                        tokio::spawn(resolve_agent_chat_approval_send(
+                            app.harness.clone(),
+                            chat_id,
+                            call_id,
+                            approved,
+                            tx.clone(),
+                        ));
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::MutateAgentChatTask {
                     harness,
                     chat_id,
                     mutation,
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CardRespond {
-                correlation_id,
-                workspace_id,
-                action,
-                payload,
-            } => {
-                // Inline card answer (sentinel-tui-shared-backend-and-cards Phase
-                // 2a): POST /card-response so the server resolves the brain's
-                // blocked tool call. The reducer already optimistically dismissed
-                // the card; a fresh state-snapshot is the authoritative removal.
-                // Prefer the card's OWN workspace (wire snapshot) over the
-                // loop-resolved one for the defense-in-depth gate.
-                let ws = workspace_id.or_else(|| app.card_workspace.clone());
-                tokio::spawn(card_respond_send(
-                    app.conversation_id.clone(),
+                } => {
+                    tokio::spawn(mutate_agent_chat_task_send(
+                        harness,
+                        chat_id,
+                        mutation,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CardRespond {
                     correlation_id,
-                    ws,
+                    workspace_id,
                     action,
                     payload,
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SetMaxAgents(n) => {
-                // Overview top-bar cap edit (Brief 23 P-005): PUT the new
-                // `maxSimultaneousAgents` then refetch the read-model so the
-                // optimistic local value reconciles with truth.
-                tokio::spawn(set_max_agents(n, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::VoiceSessionStart => {
-                // Realtime operator voice (voice-realtime-tui P-007): replace
-                // any prior (possibly already-ended) session outright.
-                if let Some(h) = convai_session.take() {
-                    h.stop();
+                } => {
+                    // Inline card answer (sentinel-tui-shared-backend-and-cards Phase
+                    // 2a): POST /card-response so the server resolves the brain's
+                    // blocked tool call. The reducer already optimistically dismissed
+                    // the card; a fresh state-snapshot is the authoritative removal.
+                    // Prefer the card's OWN workspace (wire snapshot) over the
+                    // loop-resolved one for the defense-in-depth gate.
+                    let ws = workspace_id.or_else(|| app.card_workspace.clone());
+                    tokio::spawn(card_respond_send(
+                        app.conversation_id.clone(),
+                        correlation_id,
+                        ws,
+                        action,
+                        payload,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                convai_session = Some(voice_convai::start_session(
-                    workbench::workbench_owner(),
-                    voice_player.clone(),
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::VoiceSessionStop => {
-                if let Some(h) = convai_session.take() {
-                    h.stop();
+                Action::SetMaxAgents(n) => {
+                    // Overview top-bar cap edit (Brief 23 P-005): PUT the new
+                    // `maxSimultaneousAgents` then refetch the read-model so the
+                    // optimistic local value reconciles with truth.
+                    tokio::spawn(set_max_agents(n, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::VoiceSessionControl(control) => {
-                if let Some(h) = convai_session.as_ref() {
-                    h.control(control);
+                Action::VoiceSessionStart => {
+                    // Realtime operator voice (voice-realtime-tui P-007): replace
+                    // any prior (possibly already-ended) session outright.
+                    if let Some(h) = convai_session.take() {
+                        h.stop();
+                    }
+                    convai_session = Some(voice_convai::start_session(
+                        workbench::workbench_owner(),
+                        voice_player.clone(),
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::VoiceChan(cmd) => {
-                use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
-                match cmd {
-                    VC::Connect => {
-                        if voice_chan.is_none() {
-                            match voice_stream::VoiceStream::connect() {
-                                Ok((vs, ev_rx, mix_rx)) => {
-                                    let vs = std::sync::Arc::new(vs);
-                                    voice_chan = Some(vs.clone());
-                                    // Forward socket events (status/error/disconnect)
-                                    // onto the run-loop event channel.
-                                    let tx2 = tx.clone();
-                                    std::thread::spawn(move || {
-                                        while let Ok(ev) = ev_rx.recv() {
+                Action::VoiceSessionStop => {
+                    if let Some(h) = convai_session.take() {
+                        h.stop();
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::VoiceSessionControl(control) => {
+                    if let Some(h) = convai_session.as_ref() {
+                        h.control(control);
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::VoiceChan(cmd) => {
+                    use crate::voice_ui::{VoiceCmd as VC, VoiceUiEvent as VE};
+                    match cmd {
+                        VC::Connect => {
+                            if voice_chan.is_none() {
+                                match voice_stream::VoiceStream::connect() {
+                                    Ok((vs, ev_rx, mix_rx)) => {
+                                        let vs = std::sync::Arc::new(vs);
+                                        voice_chan = Some(vs.clone());
+                                        // Forward socket events (status/error/disconnect)
+                                        // onto the run-loop event channel.
+                                        let tx2 = tx.clone();
+                                        std::thread::spawn(move || {
+                                            while let Ok(ev) = ev_rx.recv() {
                                                 if tx2.send(Event::VoiceUi(VE::Stream(ev))).is_err()
                                                 {
-                                                break;
+                                                    break;
+                                                }
                                             }
+                                        });
+                                        // Mixed peer audio → local playback.
+                                        if let Err(e) = voice_stream::start_playback(mix_rx) {
+                                            let _ = tx.send(Event::VoiceUi(VE::Error(format!(
+                                                "voice playback: {e}"
+                                            ))));
                                         }
-                                    });
-                                    // Mixed peer audio → local playback.
-                                    if let Err(e) = voice_stream::start_playback(mix_rx) {
-                                        let _ = tx.send(Event::VoiceUi(VE::Error(format!(
-                                            "voice playback: {e}"
-                                        ))));
+                                        let _ = vs.request_status();
+                                        let _ = tx.send(Event::VoiceUi(VE::Connected(true)));
                                     }
-                                    let _ = vs.request_status();
-                                    let _ = tx.send(Event::VoiceUi(VE::Connected(true)));
+                                    Err(e) => {
+                                        let _ = tx.send(Event::VoiceUi(VE::Error(e.to_string())));
+                                    }
                                 }
-                                Err(e) => {
-                                    let _ = tx.send(Event::VoiceUi(VE::Error(e.to_string())));
-                                }
+                            } else if let Some(vs) = &voice_chan {
+                                let _ = vs.request_status();
                             }
-                        } else if let Some(vs) = &voice_chan {
-                            let _ = vs.request_status();
+                            // (Re)fetch the channel registry + voice prefs over HTTP
+                            // (prefs drive the open-mic auto-start; P-010).
+                            tokio::spawn(voice_channels_fetch(tx.clone()));
+                            tokio::spawn(voice_prefs_get(tx.clone()));
+                            terminal.draw(|f| ui::draw(f, &app))?;
                         }
-                        // (Re)fetch the channel registry + voice prefs over HTTP
-                        // (prefs drive the open-mic auto-start; P-010).
-                        tokio::spawn(voice_channels_fetch(tx.clone()));
-                        tokio::spawn(voice_prefs_get(tx.clone()));
-                        terminal.draw(|f| ui::draw(f, &app))?;
-                    }
-                    VC::Join(id) => {
-                        if let Some(vs) = &voice_chan {
-                            let _ = vs.join(&id);
+                        VC::Join(id) => {
+                            if let Some(vs) = &voice_chan {
+                                let _ = vs.join(&id);
+                            }
                         }
-                    }
-                    VC::Leave => {
-                        if let Some(vs) = &voice_chan {
-                            let _ = vs.leave();
+                        VC::Leave => {
+                            if let Some(vs) = &voice_chan {
+                                let _ = vs.leave();
+                            }
+                            voice_mic = None;
+                            open_mic_started = false; // re-arm open-mic for the next join
+                            let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
                         }
-                        voice_mic = None;
-                        open_mic_started = false; // re-arm open-mic for the next join
-                        let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
-                    }
-                    VC::SetMuted(m) => {
-                        if let Some(vs) = &voice_chan {
-                            let _ = vs.set_muted(m);
+                        VC::SetMuted(m) => {
+                            if let Some(vs) = &voice_chan {
+                                let _ = vs.set_muted(m);
+                            }
                         }
-                    }
-                    VC::MicOn => {
-                        if let Some(vs) = &voice_chan {
-                            match voice_stream::start_mic(vs.clone()) {
-                                Ok(h) => {
-                                    // PTT → gate off (the held key IS the gate);
-                                    // open-mic manual restart → VAD gate on (P-010).
-                                    let open_mic = app
-                                        .voice_ui
-                                        .prefs
-                                        .as_ref()
-                                        .map(|p| p.input_mode == "open-mic")
-                                        .unwrap_or(false);
-                                    vs.set_tx_gate(open_mic);
-                                    voice_mic = Some(h);
-                                    let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
-                                }
-                                Err(e) => {
+                        VC::MicOn => {
+                            if let Some(vs) = &voice_chan {
+                                match voice_stream::start_mic(vs.clone()) {
+                                    Ok(h) => {
+                                        // PTT → gate off (the held key IS the gate);
+                                        // open-mic manual restart → VAD gate on (P-010).
+                                        let open_mic = app
+                                            .voice_ui
+                                            .prefs
+                                            .as_ref()
+                                            .map(|p| p.input_mode == "open-mic")
+                                            .unwrap_or(false);
+                                        vs.set_tx_gate(open_mic);
+                                        voice_mic = Some(h);
+                                        let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
+                                    }
+                                    Err(e) => {
                                         let _ =
                                             tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    VC::MicOff => {
-                        voice_mic = None;
-                        // User explicitly stopped — don't let open-mic auto-start
-                        // immediately re-arm it (P-010 restart-fight guard).
-                        open_mic_started = true;
-                        let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
+                        VC::MicOff => {
+                            voice_mic = None;
+                            // User explicitly stopped — don't let open-mic auto-start
+                            // immediately re-arm it (P-010 restart-fight guard).
+                            open_mic_started = true;
+                            let _ = tx.send(Event::VoiceUi(VE::MicState(false)));
+                        }
+                        VC::Create(name) => {
+                            tokio::spawn(voice_channel_create(name, tx.clone()));
+                        }
+                        VC::PrefsGet => {
+                            tokio::spawn(voice_prefs_get(tx.clone()));
+                        }
+                        VC::PrefsSet(key, value) => {
+                            tokio::spawn(voice_prefs_set(key.to_string(), value, tx.clone()));
+                        }
                     }
-                    VC::Create(name) => {
-                        tokio::spawn(voice_channel_create(name, tx.clone()));
-                    }
-                    VC::PrefsGet => {
-                        tokio::spawn(voice_prefs_get(tx.clone()));
-                    }
-                    VC::PrefsSet(key, value) => {
-                        tokio::spawn(voice_prefs_set(key.to_string(), value, tx.clone()));
-                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FocusPane { intent_id, pane_id } => {
-                // Operator pane-driving affordance (P2): drive the companion to
-                // focus the pane, then POST the intent result back.
-                let (result_json, error) = match &companion {
+                Action::FocusPane { intent_id, pane_id } => {
+                    // Operator pane-driving affordance (P2): drive the companion to
+                    // focus the pane, then POST the intent result back.
+                    let (result_json, error) = match &companion {
                     Some(c) => {
                         c.focus_pane(pane_id);
                         (format!("{{\"ok\":true,\"pane_id\":{pane_id}}}"), None)
@@ -1541,198 +1592,198 @@ async fn run<B: Backend>(
                         ),
                     ),
                 };
-                let _ = intent_result_tx.send((intent_id, result_json, error));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FocusLocalPane { pane_id } => {
-                // Enter-by-location LOCAL route (pui-workbench-usability D-001):
-                // bring the selected agent's workbench pane to front. Companion-
-                // only (id-addressed); without a link, tell the user.
-                match &companion {
-                    Some(c) => c.focus_pane(pane_id),
-                    None => {
-                        app.update(Event::Error(
+                    let _ = intent_result_tx.send((intent_id, result_json, error));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FocusLocalPane { pane_id } => {
+                    // Enter-by-location LOCAL route (pui-workbench-usability D-001):
+                    // bring the selected agent's workbench pane to front. Companion-
+                    // only (id-addressed); without a link, tell the user.
+                    match &companion {
+                        Some(c) => c.focus_pane(pane_id),
+                        None => {
+                            app.update(Event::Error(
                                 "focus: needs the companion plugin (run inside the workbench)"
                                     .into(),
-                        ));
+                            ));
+                        }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FocusWindow {
-                adv_session_id,
-                pid,
-                window_id,
-                label,
-            } => {
-                // Enter-by-location EXTERNAL-WINDOW route (D-001): wmctrl the
-                // agent's terminal window to the front off the UI thread; the
-                // outcome returns as a toast (Event::Notify/Error).
-                tokio::spawn(focus_session_window(
+                Action::FocusWindow {
                     adv_session_id,
                     pid,
                     window_id,
                     label,
-                    tx.clone(),
-                ));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LoadEarlierChat => {
-                // Load-earlier history (scroll-back). The reducer set the in-flight
-                // flag; spawn the fetch with a snapshot of the conversation id +
-                // oldest cursor. A missing cursor/conversation just clears the flag.
-                match (app.conversation_id.clone(), app.chat_oldest_seq) {
-                    (Some(conv_id), Some(before_seq)) => {
-                        tokio::spawn(load_earlier_chat(conv_id, before_seq, tx.clone()));
-                    }
-                    _ => {
-                        let _ = tx.send(Event::ChatEarlier {
-                            messages: Vec::new(),
-                            has_more_earlier: false,
-                            oldest_seq: None,
-                        });
-                    }
+                } => {
+                    // Enter-by-location EXTERNAL-WINDOW route (D-001): wmctrl the
+                    // agent's terminal window to the front off the UI thread; the
+                    // outcome returns as a toast (Event::Notify/Error).
+                    tokio::spawn(focus_session_window(
+                        adv_session_id,
+                        pid,
+                        window_id,
+                        label,
+                        tx.clone(),
+                    ));
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchTestingFiles { harness, domain_id } => {
-                // Testing run-on-click (D-004a): resolve the selected domain's
-                // runnable files off the UI thread.
-                tokio::spawn(fetch_testing_files(harness, domain_id, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::RunTest { harness, file } => {
-                // Start the detached run and poll its rolling snapshot off the
-                // UI thread. This keeps the pane responsive and gives Esc a
-                // stable run id to cancel.
-                tokio::spawn(run_test_file(harness, file, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CancelTest {
-                harness,
-                run_id,
-                file,
-            } => {
-                // Cancellation is a request only; the existing status poller
-                // remains the authority for the terminal `cancelled` state.
-                tokio::spawn(cancel_test_run(harness, run_id, file, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::SearchMemory { query, harness } => {
-                // Memory semantic search (D-006 Step 2) off the UI thread.
-                tokio::spawn(search_memory(query, harness, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::ConfigEdit {
-                harness,
-                key,
-                value,
-            } => {
-                // Config-tab edit (D-013): read→edit→PUT→refetch off the UI
-                // thread; the refreshed effective view returns as Event::Config.
-                tokio::spawn(config_edit(harness, key, value, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::LoadPluginConfig { harness, plugin } => {
-                // Plugin-settings load (D-014): fetch the selected plugin's saved
-                // per-harness config; returns as Event::PluginConfig.
-                tokio::spawn(load_plugin_config(harness, plugin, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::PluginConfigEdit {
-                harness,
-                plugin,
-                key,
-                value,
-            } => {
-                // Plugin-settings edit (D-014): read→edit-path→PUT→refetch off
-                // the UI thread; the refreshed config returns as Event::PluginConfig.
-                tokio::spawn(plugin_config_edit(harness, plugin, key, value, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchCupboard {
-                kind,
-                query,
-                cursor,
-                append,
-            } => {
-                // Cupboard browse (D-011): GET the listings for the active
-                // (kind, query) filter off the UI thread.
-                tokio::spawn(fetch_cupboard(kind, query, cursor, append, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::CupboardAct { listing } => {
-                // A confirmed per-kind Cupboard action (D-011): join / fork /
-                // install. Outcomes ride Notify/Error events.
-                tokio::spawn(cupboard_act(listing, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchConversations { state, kind } => {
-                // Conversations browse (Brief 25): GET the list for the active
-                // state/kind filter off the UI thread → Event::Conversations.
-                tokio::spawn(fetch_conversations(state, kind, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::FetchConversationDetail { id } => {
-                // Load the selected conversation's full thread → ConversationDetail.
-                tokio::spawn(fetch_conversation_detail(id, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::PromoteConversation { id } => {
-                // Promote a conversation → engineer issue (carries the thread);
-                // outcome rides Notify/Error + a list/detail refetch.
-                tokio::spawn(promote_conversation(id, tx.clone()));
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
-            Action::Voice(cmd) => {
-                // Push-to-talk lifecycle (voice-mode-tui-port-2026-06-05 P2).
-                // The run loop owns the mic CaptureSession; the turn pipeline
-                // (transcribe → converse → speak) runs in a spawned task and
-                // feeds Event::Voice / Chat* events back.
-                use app::VoiceCmd;
-                match cmd {
-                    VoiceCmd::Start => match voice::start_capture() {
-                        Ok(session) => {
-                            voice_capture = Some(session);
-                            let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Ok(()))));
+                Action::LoadEarlierChat => {
+                    // Load-earlier history (scroll-back). The reducer set the in-flight
+                    // flag; spawn the fetch with a snapshot of the conversation id +
+                    // oldest cursor. A missing cursor/conversation just clears the flag.
+                    match (app.conversation_id.clone(), app.chat_oldest_seq) {
+                        (Some(conv_id), Some(before_seq)) => {
+                            tokio::spawn(load_earlier_chat(conv_id, before_seq, tx.clone()));
                         }
-                        Err(e) => {
+                        _ => {
+                            let _ = tx.send(Event::ChatEarlier {
+                                messages: Vec::new(),
+                                has_more_earlier: false,
+                                oldest_seq: None,
+                            });
+                        }
+                    }
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchTestingFiles { harness, domain_id } => {
+                    // Testing run-on-click (D-004a): resolve the selected domain's
+                    // runnable files off the UI thread.
+                    tokio::spawn(fetch_testing_files(harness, domain_id, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::RunTest { harness, file } => {
+                    // Start the detached run and poll its rolling snapshot off the
+                    // UI thread. This keeps the pane responsive and gives Esc a
+                    // stable run id to cancel.
+                    tokio::spawn(run_test_file(harness, file, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CancelTest {
+                    harness,
+                    run_id,
+                    file,
+                } => {
+                    // Cancellation is a request only; the existing status poller
+                    // remains the authority for the terminal `cancelled` state.
+                    tokio::spawn(cancel_test_run(harness, run_id, file, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::SearchMemory { query, harness } => {
+                    // Memory semantic search (D-006 Step 2) off the UI thread.
+                    tokio::spawn(search_memory(query, harness, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::ConfigEdit {
+                    harness,
+                    key,
+                    value,
+                } => {
+                    // Config-tab edit (D-013): read→edit→PUT→refetch off the UI
+                    // thread; the refreshed effective view returns as Event::Config.
+                    tokio::spawn(config_edit(harness, key, value, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::LoadPluginConfig { harness, plugin } => {
+                    // Plugin-settings load (D-014): fetch the selected plugin's saved
+                    // per-harness config; returns as Event::PluginConfig.
+                    tokio::spawn(load_plugin_config(harness, plugin, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::PluginConfigEdit {
+                    harness,
+                    plugin,
+                    key,
+                    value,
+                } => {
+                    // Plugin-settings edit (D-014): read→edit-path→PUT→refetch off
+                    // the UI thread; the refreshed config returns as Event::PluginConfig.
+                    tokio::spawn(plugin_config_edit(harness, plugin, key, value, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchCupboard {
+                    kind,
+                    query,
+                    cursor,
+                    append,
+                } => {
+                    // Cupboard browse (D-011): GET the listings for the active
+                    // (kind, query) filter off the UI thread.
+                    tokio::spawn(fetch_cupboard(kind, query, cursor, append, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::CupboardAct { listing } => {
+                    // A confirmed per-kind Cupboard action (D-011): join / fork /
+                    // install. Outcomes ride Notify/Error events.
+                    tokio::spawn(cupboard_act(listing, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchConversations { state, kind } => {
+                    // Conversations browse (Brief 25): GET the list for the active
+                    // state/kind filter off the UI thread → Event::Conversations.
+                    tokio::spawn(fetch_conversations(state, kind, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::FetchConversationDetail { id } => {
+                    // Load the selected conversation's full thread → ConversationDetail.
+                    tokio::spawn(fetch_conversation_detail(id, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::PromoteConversation { id } => {
+                    // Promote a conversation → engineer issue (carries the thread);
+                    // outcome rides Notify/Error + a list/detail refetch.
+                    tokio::spawn(promote_conversation(id, tx.clone()));
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
+                Action::Voice(cmd) => {
+                    // Push-to-talk lifecycle (voice-mode-tui-port-2026-06-05 P2).
+                    // The run loop owns the mic CaptureSession; the turn pipeline
+                    // (transcribe → converse → speak) runs in a spawned task and
+                    // feeds Event::Voice / Chat* events back.
+                    use app::VoiceCmd;
+                    match cmd {
+                        VoiceCmd::Start => match voice::start_capture() {
+                            Ok(session) => {
+                                voice_capture = Some(session);
+                                let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Ok(()))));
+                            }
+                            Err(e) => {
                                 let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Err(
                                     e.to_string()
                                 ))));
-                        }
-                    },
-                    VoiceCmd::Cancel => {
-                        if let Some(session) = voice_capture.take() {
-                            tokio::task::spawn_blocking(move || session.cancel());
-                        }
-                        let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
-                    }
-                    VoiceCmd::Stop => {
-                        if let Some(session) = voice_capture.take() {
-                            // Reflect the transcribing phase immediately, then run
-                            // the turn with a snapshot of the converse context
-                            // (the pipeline appends the transcribed text itself).
-                            app.voice_phase = app::VoicePhase::Transcribing;
-                            tokio::spawn(voice_turn(
-                                session,
-                                app.conversation_id.clone(),
-                                app.chat_history_for_send(),
-                                workbench::workbench_owner(),
-                                voice_player.clone(),
-                                tx.clone(),
-                            ));
-                        } else {
+                            }
+                        },
+                        VoiceCmd::Cancel => {
+                            if let Some(session) = voice_capture.take() {
+                                tokio::task::spawn_blocking(move || session.cancel());
+                            }
                             let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
                         }
+                        VoiceCmd::Stop => {
+                            if let Some(session) = voice_capture.take() {
+                                // Reflect the transcribing phase immediately, then run
+                                // the turn with a snapshot of the converse context
+                                // (the pipeline appends the transcribed text itself).
+                                app.voice_phase = app::VoicePhase::Transcribing;
+                                tokio::spawn(voice_turn(
+                                    session,
+                                    app.conversation_id.clone(),
+                                    app.chat_history_for_send(),
+                                    workbench::workbench_owner(),
+                                    voice_player.clone(),
+                                    tx.clone(),
+                                ));
+                            } else {
+                                let _ = tx.send(Event::Voice(event::VoiceMsg::Finished));
+                            }
+                        }
                     }
+                    terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                terminal.draw(|f| ui::draw(f, &app))?;
-            }
                 Action::Quit => break 'event_loop,
-            Action::None => {}
+                Action::None => {}
+            }
         }
-    }
     }
     Ok(())
 }
@@ -3124,10 +3175,10 @@ async fn fetch_agent_ctx(
             _ => roster
                 .iter()
                 .find(|r| {
-                    r.agent_pane_kind
-                        .as_deref()
-                        .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
-                }),
+                r.agent_pane_kind
+                    .as_deref()
+                    .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
+            }),
         };
         let owner = match (&scope, entry) {
             (app::WakeFilter::Owner(id), None) => Some(id.clone()), // gone but addressable
@@ -3662,8 +3713,8 @@ async fn agent_chat_load(
                 }
             };
             let _ = tx.send(Event::AgentChatLoaded {
-                harness,
-                chat_id: Some(chat.id),
+                harness: harness.clone(),
+                chat_id: Some(chat.id.clone()),
                 role: chat.role,
                 summaries,
                 messages: chat
@@ -3673,10 +3724,298 @@ async fn agent_chat_load(
                     .collect(),
                 approvals,
             });
+            // Existing chat rows may already be bound to a durable SU session.
+            // Probe the canonical host by chat id; a 404 simply means this is
+            // an older owned-loop chat and must not be treated as a fallback
+            // success for the corrected path.
+            if let Ok(snapshot) = client.su_session_snapshot(&harness, &chat.id).await {
+                let identity = snapshot.descriptor.identity.clone();
+                let binding = crate::su_session::SuSessionBinding {
+                    operation: "attached".into(),
+                    backend: identity.backend,
+                    adv_session_id: identity.adv_session_id,
+                    owner_id: Some(identity.owner_id.clone()),
+                    workspace_id: Some(identity.workspace_id.clone()),
+                    harness_slug: identity.harness_slug.clone(),
+                    plan_slug: None,
+                    native_session: None,
+                };
+                let _ = tx.send(Event::SuSessionOpened(binding.clone()));
+                let _ = tx.send(Event::SuSessionSnapshot(snapshot));
+                tokio::spawn(stream_su_session_events(
+                    client,
+                    harness,
+                    chat.id,
+                    binding,
+                    None,
+                    tx.clone(),
+                ));
+            }
         }
         Err(error) => {
             let _ = tx.send(Event::Error(format!("native agent chat resume: {error}")));
         }
+    }
+}
+
+/// Open one PUI SU session and attach its canonical stream.  The first owner
+/// turn is held until the stream's identity snapshot arrives, which gives us a
+/// complete target identity (including native session id) and prevents a
+/// create/attach race from dispatching to the wrong runtime.
+async fn open_su_session_task(
+    harness: String,
+    role: String,
+    backend: crate::su_session::SuSessionBackend,
+    carry: String,
+    initial_turn: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!("open SU session: {error}")));
+            return;
+        }
+    };
+    let chat = match client
+        .create_agent_chat(
+            &harness,
+            &crate::agent_chats::NewAgentChat {
+                role,
+                feature_id: None,
+                title: Some(format!("{} SU session", backend.label())),
+            },
+        )
+        .await
+    {
+        Ok(chat) => chat,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!(
+                "create SU agent chat: {error}"
+            )));
+            return;
+        }
+    };
+    let _ = tx.send(Event::AgentChatBound(chat.id.clone()));
+    let request = crate::su_session::SuSessionOpenRequest::Create(
+        crate::su_session::SuSessionCreateRequest {
+            agent: backend,
+            harness_slug: Some(harness.clone()),
+            plan_slug: None,
+            carry,
+            defer_spawn: true,
+            agent_chat_id: chat.id.clone(),
+        },
+    );
+    let binding = match client.open_su_session(&request).await {
+        Ok(binding) => binding,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(error.to_string()));
+            return;
+        }
+    };
+    let _ = tx.send(Event::SuSessionOpened(binding.clone()));
+    stream_su_session_events(client, harness, chat.id, binding, initial_turn, tx).await;
+}
+
+async fn attach_su_session_task(
+    harness: String,
+    chat_id: String,
+    adv_session_id: i64,
+    backend: crate::su_session::SuSessionBackend,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!("attach SU session: {error}")));
+            return;
+        }
+    };
+    let request = crate::su_session::SuSessionOpenRequest::Attach(
+        crate::su_session::SuSessionAttachRequest {
+            agent: backend,
+            attach_adv_session_id: adv_session_id,
+            harness_slug: Some(harness.clone()),
+            plan_slug: None,
+        },
+    );
+    let binding = match client.open_su_session(&request).await {
+        Ok(binding) => binding,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(error.to_string()));
+            return;
+        }
+    };
+    let _ = tx.send(Event::AgentChatBound(chat_id.clone()));
+    let _ = tx.send(Event::SuSessionOpened(binding.clone()));
+    stream_su_session_events(client, harness, chat_id, binding, None, tx).await;
+}
+
+async fn stream_su_session_events(
+    client: OperatorClient,
+    harness: String,
+    chat_id: String,
+    binding: crate::su_session::SuSessionBinding,
+    mut initial_turn: Option<String>,
+    tx: UnboundedSender<Event>,
+) {
+    // The deferred workbench pane may not have booted the host yet. Retry a
+    // bounded number of times, then surface the failure explicitly; callers can
+    // reattach later and the stable advSessionId prevents duplicate launches.
+    let mut stream = None;
+    let mut last_error = None;
+    for _ in 0..15 {
+        match client.su_session_snapshot(&harness, &chat_id).await {
+            Ok(snapshot) => {
+                let _ = tx.send(Event::SuSessionSnapshot(snapshot));
+            }
+            Err(error) => last_error = Some(error.to_string()),
+        }
+        match client.subscribe_su_session(&harness, &chat_id).await {
+            Ok(next) => {
+                stream = Some(next);
+                break;
+            }
+            Err(error) => {
+                last_error = Some(error.to_string());
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+    }
+    let Some(mut stream) = stream else {
+        let _ = tx.send(Event::SuSessionError(last_error.unwrap_or_else(|| {
+            format!(
+                "SU-session host is not attached (adv {})",
+                binding.adv_session_id
+            )
+        })));
+        return;
+    };
+
+    while let Some(next) = stream.recv().await {
+        let event = match next {
+            Ok(event) => event,
+            Err(error) => {
+                let _ = tx.send(Event::SuSessionError(error.to_string()));
+                return;
+            }
+        };
+        let is_session = matches!(event, crate::su_session::SuSessionEvent::Session { .. });
+        if is_session {
+            if let Some(text) = initial_turn.take() {
+                let identity = event.envelope().session.clone();
+                let command_id = format!(
+                    "pui-{}-{}",
+                    identity.adv_session_id,
+                    identity.sequence_token()
+                );
+                let command = serde_json::json!({
+                    "schema": crate::su_session::SU_SESSION_SCHEMA,
+                    "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
+                    "type": "owner_turn",
+                    "commandId": command_id,
+                    "issuedAt": chrono_like_now(),
+                    "target": identity,
+                    "turnId": format!("pui-turn-{}", command_id),
+                    "content": text,
+                });
+                if let Err(error) = client
+                    .send_su_session_command(&harness, &chat_id, command)
+                    .await
+                {
+                    let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+                }
+            }
+        }
+        let _ = tx.send(Event::SuSessionEvent(event));
+    }
+    let _ = tx.send(Event::SuSessionError("SU-session stream closed".into()));
+}
+
+async fn send_su_session_turn_task(
+    harness: String,
+    chat_id: String,
+    binding: crate::su_session::SuSessionBinding,
+    text: String,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+            return;
+        }
+    };
+    let snapshot = match client.su_session_snapshot(&harness, &chat_id).await {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!(
+                "owner turn snapshot: {error}"
+            )));
+            return;
+        }
+    };
+    let identity = snapshot.descriptor.identity;
+    if identity.adv_session_id != binding.adv_session_id || identity.backend != binding.backend {
+        let _ = tx.send(Event::SuSessionError(
+            "owner turn refused: session identity changed; reattach required".into(),
+        ));
+        return;
+    }
+    let command_id = format!(
+        "pui-{}-{}",
+        identity.adv_session_id,
+        identity.sequence_token()
+    );
+    let command = serde_json::json!({
+        "schema": crate::su_session::SU_SESSION_SCHEMA,
+        "protocolVersion": crate::su_session::SU_SESSION_PROTOCOL_VERSION,
+        "type": "owner_turn",
+        "commandId": command_id,
+        "issuedAt": chrono_like_now(),
+        "target": identity,
+        "turnId": format!("pui-turn-{command_id}"),
+        "content": text,
+    });
+    if let Err(error) = client
+        .send_su_session_command(&harness, &chat_id, command)
+        .await
+    {
+        let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+    }
+}
+
+fn chrono_like_now() -> String {
+    // Avoid pulling a time crate into the standalone TUI; RFC3339 precision is
+    // not semantically significant to command idempotency.
+    format!("{}Z", unix_epoch_seconds())
+}
+
+fn unix_epoch_seconds() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn command_nonce() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0)
+}
+
+/// A tiny deterministic suffix for owner-turn ids; the durable command id is
+/// unique within an adv session even when two PUI processes issue a turn in the
+/// same second.
+trait SuSessionIdentitySequenceToken {
+    fn sequence_token(&self) -> String;
+}
+
+impl SuSessionIdentitySequenceToken for crate::su_session::SuSessionIdentity {
+    fn sequence_token(&self) -> String {
+        format!("{}-{}", self.agent_chat_id, command_nonce())
     }
 }
 
