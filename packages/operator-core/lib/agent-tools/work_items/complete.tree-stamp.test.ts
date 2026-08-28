@@ -74,27 +74,41 @@ afterEach(() => {
 
 describe('completionSettlementManifest', () => {
   const identity = {
-    path: 'src/fix.ts', workingTreeBlobSha: 'b'.repeat(40), headBlobSha: 'c'.repeat(40),
+    path: 'src/fix.ts',
+    workingTreeBlobSha: 'b'.repeat(40),
+    headBlobSha: 'c'.repeat(40),
   };
   it('derives a versioned, deterministic receipt from server-stamped evidence', () => {
     const evidence = {
-      filesChanged: ['src/fix.ts'], testsRun: 'npm test',
+      filesChanged: ['src/fix.ts'],
+      testsRun: 'npm test',
       treeStamp: { repositoryRoot: '/repo/../repo', headSha: SHA, contentIdentity: [identity] },
     };
     const first = completionSettlementManifest(evidence);
-    expect(first).toEqual(completionSettlementManifest({
-      treeStamp: evidence.treeStamp, testsRun: evidence.testsRun, filesChanged: evidence.filesChanged,
-    }));
+    expect(first).toEqual(
+      completionSettlementManifest({
+        treeStamp: evidence.treeStamp,
+        testsRun: evidence.testsRun,
+        filesChanged: evidence.filesChanged,
+      }),
+    );
     expect(first).toMatchObject({
-      version: 1, generation: 1, repositoryRoot: ROOT, headSha: SHA,
-      normalizedPaths: ['src/fix.ts'], contentIdentity: [identity],
+      version: 1,
+      generation: 1,
+      repositoryRoot: ROOT,
+      headSha: SHA,
+      normalizedPaths: ['src/fix.ts'],
+      contentIdentity: [identity],
     });
     expect(first?.evidenceHash).toMatch(/^[0-9a-f]{64}$/);
   });
   it('does not invent a receipt without server-observed content identities', () => {
-    expect(completionSettlementManifest({
-      filesChanged: ['src/fix.ts'], treeStamp: { repositoryRoot: ROOT, headSha: SHA },
-    })).toBeUndefined();
+    expect(
+      completionSettlementManifest({
+        filesChanged: ['src/fix.ts'],
+        treeStamp: { repositoryRoot: ROOT, headSha: SHA },
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -226,8 +240,7 @@ describe('completionTreeStamp (EI-18682004530991057)', () => {
       // is listed FIRST so a naive scan hits it before any correct entry.
       const { probe } = probeOver({
         '/repo/.git/HEAD': 'ref: refs/heads/staging\n',
-        '/repo/.git/packed-refs':
-          `${OTHER_SHA} refs/remotes/origin/staging\n` + `${SHA} refs/heads/staging\n`,
+        '/repo/.git/packed-refs': `${OTHER_SHA} refs/remotes/origin/staging\n` + `${SHA} refs/heads/staging\n`,
       });
       expect(completionTreeStamp(probe)).toEqual({ repositoryRoot: ROOT, headSha: SHA });
     });
@@ -284,7 +297,11 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     mkdirSync(join(submodule, 'src'), { recursive: true });
 
     const git = (cwd: string, args: string[]) =>
-      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 }).trim();
+      execFileSync('git', ['-C', cwd, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      }).trim();
     git(root, ['init', '-q']);
     git(root, ['config', 'user.email', 'completion-test@example.invalid']);
     git(root, ['config', 'user.name', 'Completion Test']);
@@ -320,7 +337,11 @@ describe('completionTreeStamp — committed submodule content identity', () => {
     mkdirSync(join(submodule, 'src'), { recursive: true });
 
     const git = (cwd: string, args: string[]) =>
-      execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 }).trim();
+      execFileSync('git', ['-C', cwd, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      }).trim();
     git(root, ['init', '-q']);
     git(root, ['config', 'user.email', 'completion-test@example.invalid']);
     git(root, ['config', 'user.name', 'Completion Test']);
@@ -381,10 +402,7 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     const roots = completionRepoRootsFromRegistry(operatorRoot, { projects: [] });
     expect(roots).toEqual([operatorRoot, sidestageRoot]);
     expect(
-      completionTreeStampForEvidence(
-        { filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] },
-        roots,
-      ),
+      completionTreeStampForEvidence({ filesChanged: ['apps/web/src/BuyerTab.thumbnail.test.tsx'] }, roots),
     ).toEqual({ repositoryRoot: sidestageRoot, headSha: SIDESTAGE_SHA });
   });
 
@@ -404,11 +422,10 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
   it('stamps the owning checkout when filesChanged uses an absolute path', () => {
     const absolutePath = `${SIDESTAGE_ROOT}/apps/web/src/BuyerTab.thumbnail.test.tsx`;
     expect(
-      completionTreeStampForEvidence(
-        { filesChanged: [absolutePath] },
-        [OPERATOR_ROOT, SIDESTAGE_ROOT],
-        { exists: (abs) => abs === absolutePath, readFile },
-      ),
+      completionTreeStampForEvidence({ filesChanged: [absolutePath] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+        exists: (abs) => abs === absolutePath,
+        readFile,
+      }),
     ).toEqual({ repositoryRoot: SIDESTAGE_ROOT, headSha: SIDESTAGE_SHA });
   });
 
@@ -430,15 +447,14 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
 
     expect(completionCheckoutRootForPath(changedPath)).toBe(submoduleRoot);
     expect(
-      completionTreeStampForEvidence(
-        { filesChanged: [changedPath] },
-        [operatorRoot, submoduleRoot],
-        { exists: (abs) => abs === changedPath || abs === unrelatedDirtyPath, readFile: (abs) => {
+      completionTreeStampForEvidence({ filesChanged: [changedPath] }, [operatorRoot, submoduleRoot], {
+        exists: (abs) => abs === changedPath || abs === unrelatedDirtyPath,
+        readFile: (abs) => {
           if (abs === join(operatorRoot, '.git', 'HEAD')) return `${OPERATOR_SHA}\n`;
           if (abs === join(submoduleRoot, '.git', 'HEAD')) return `${SIDESTAGE_SHA}\n`;
           return undefined;
-        } },
-      ),
+        },
+      }),
     ).toMatchObject({ repositoryRoot: submoduleRoot });
   });
 
@@ -470,10 +486,9 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     git(nestedRoot, ['add', 'bin/mac-vm-health.sh']);
     git(nestedRoot, ['commit', '-qm', 'nested fix']);
 
-    const stamp = completionTreeStampForEvidence(
-      { filesChanged: ['papercusp-desktop/bin/mac-vm-health.sh'] },
-      [operatorRoot],
-    );
+    const stamp = completionTreeStampForEvidence({ filesChanged: ['papercusp-desktop/bin/mac-vm-health.sh'] }, [
+      operatorRoot,
+    ]);
 
     expect(stamp?.repositoryRoot).toBe(nestedRoot);
     expect(stamp?.contentIdentity).toEqual([
@@ -488,40 +503,40 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
 
   it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
     expect(
-      completionTreeStampForEvidence(
-        { filesChanged: ['shared/path.ts'] },
-        [OPERATOR_ROOT, SIDESTAGE_ROOT],
-        {
-          exists: (abs) => abs.endsWith('/shared/path.ts'),
-          readFile,
-        },
-      ),
+      completionTreeStampForEvidence({ filesChanged: ['shared/path.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+        exists: (abs) => abs.endsWith('/shared/path.ts'),
+        readFile,
+      }),
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
   });
 
   it('keeps the primary checkout when the completion declares no resolvable files', () => {
     expect(
-      completionTreeStampForEvidence(
-        { filesChanged: ['missing.ts'] },
-        [OPERATOR_ROOT, SIDESTAGE_ROOT],
-        { exists: () => false, readFile },
-      ),
+      completionTreeStampForEvidence({ filesChanged: ['missing.ts'] }, [OPERATOR_ROOT, SIDESTAGE_ROOT], {
+        exists: () => false,
+        readFile,
+      }),
     ).toEqual({ repositoryRoot: OPERATOR_ROOT, headSha: OPERATOR_SHA });
+  });
+
+  it('fails closed when any declared changed path is invalid', () => {
+    expect(
+      completionTreeStampForEvidence({ filesChanged: ['src/fix.ts', '*.ts'] }, [OPERATOR_ROOT], {
+        exists: () => true,
+        readFile,
+      }),
+    ).toBeUndefined();
   });
 
   it('records per-path working-tree and HEAD blob identities', () => {
     const workingTree = Buffer.from('dirty-but-present\n');
     const headBlob = '3'.repeat(40);
-    const result = completionTreeStampForEvidence(
-      { filesChanged: ['src/fix.ts'] },
-      [OPERATOR_ROOT],
-      {
-        exists: () => true,
-        readFile,
-        readBytes: () => workingTree,
-        headBlobs: () => new Map([['src/fix.ts', headBlob]]),
-      },
-    );
+    const result = completionTreeStampForEvidence({ filesChanged: ['src/fix.ts'] }, [OPERATOR_ROOT], {
+      exists: () => true,
+      readFile,
+      readBytes: () => workingTree,
+      headBlobs: () => new Map([['src/fix.ts', headBlob]]),
+    });
 
     expect(result).toMatchObject({
       repositoryRoot: OPERATOR_ROOT,
@@ -533,19 +548,13 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
   });
 
   it('records a null HEAD blob when a dirty worktree path is absent from HEAD', () => {
-    const result = completionTreeStampForEvidence(
-      { filesChanged: ['src/new-fix.ts'] },
-      [OPERATOR_ROOT],
-      {
-        exists: () => true,
-        readFile,
-        readBytes: () => Buffer.from('new fix\n'),
-        headBlobs: () => new Map(),
-      },
-    );
+    const result = completionTreeStampForEvidence({ filesChanged: ['src/new-fix.ts'] }, [OPERATOR_ROOT], {
+      exists: () => true,
+      readFile,
+      readBytes: () => Buffer.from('new fix\n'),
+      headBlobs: () => new Map(),
+    });
 
-    expect(result?.contentIdentity).toEqual([
-      expect.objectContaining({ path: 'src/new-fix.ts', headBlobSha: null }),
-    ]);
+    expect(result?.contentIdentity).toEqual([expect.objectContaining({ path: 'src/new-fix.ts', headBlobSha: null })]);
   });
 });

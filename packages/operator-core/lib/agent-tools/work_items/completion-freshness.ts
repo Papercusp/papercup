@@ -70,7 +70,11 @@ export interface CompletionTreeStampProbe {
   /** Declared paths whose working-tree and HEAD blob identities should be recorded. */
   filesChanged?: readonly string[];
   /** Injectable HEAD tree lookup; production uses one bounded `git ls-tree` read. */
-  headBlobs?: (repoRoot: string, headSha: string, paths: readonly string[]) => ReadonlyMap<string, string | null> | undefined;
+  headBlobs?: (
+    repoRoot: string,
+    headSha: string,
+    paths: readonly string[],
+  ) => ReadonlyMap<string, string | null> | undefined;
 }
 
 function normalizedRepoPath(repoRoot: string, raw: string): string | undefined {
@@ -87,18 +91,31 @@ function gitBlobSha(bytes: Uint8Array, shaLength: number): string {
   return createHash(algorithm).update(header).update(bytes).digest('hex');
 }
 
-export function completionHeadBlobMap(repoRoot: string, headSha: string, paths: readonly string[]): ReadonlyMap<string, string | null> | undefined {
+export function completionHeadBlobMap(
+  repoRoot: string,
+  headSha: string,
+  paths: readonly string[],
+): ReadonlyMap<string, string | null> | undefined {
   try {
-    const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) => execFileSync(
-      'git',
-      ['-C', root, 'ls-tree', ...(recursive ? ['-r'] : []), '-z', sha, ...(selected?.length ? ['--', ...selected] : [])],
-      {
-      encoding: 'utf8',
-      maxBuffer: 256 * 1024,
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-      },
-    );
+    const runLsTree = (root: string, sha: string, selected?: readonly string[], recursive = true) =>
+      execFileSync(
+        'git',
+        [
+          '-C',
+          root,
+          'ls-tree',
+          ...(recursive ? ['-r'] : []),
+          '-z',
+          sha,
+          ...(selected?.length ? ['--', ...selected] : []),
+        ],
+        {
+          encoding: 'utf8',
+          maxBuffer: 256 * 1024,
+          timeout: 5000,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        },
+      );
     const parseTree = (output: string) => {
       const blobs = new Map<string, string>();
       const gitlinks = new Map<string, string>();
@@ -171,7 +188,9 @@ function contentIdentity(
   filesChanged: readonly string[],
   probe: CompletionTreeStampProbe,
 ): CompletionTreeContentIdentity[] | undefined {
-  const paths = [...new Set(filesChanged.slice(0, MAX_PATHS_PROBED).map((path) => normalizedRepoPath(repositoryRoot, path)))] as string[];
+  const paths = [
+    ...new Set(filesChanged.slice(0, MAX_PATHS_PROBED).map((path) => normalizedRepoPath(repositoryRoot, path))),
+  ] as string[];
   if (paths.length === 0 || paths.some((path) => !path)) return undefined;
   const head = (probe.headBlobs ?? completionHeadBlobMap)(repositoryRoot, headSha, paths);
   if (!head) return undefined;
@@ -199,12 +218,12 @@ export function completionTreeContentIdentityMatches(
 ): boolean {
   return Boolean(
     identity?.length &&
-      identity.every(
-        (entry) =>
-          entry.workingTreeBlobSha !== null &&
-          entry.headBlobSha !== null &&
-          entry.workingTreeBlobSha === entry.headBlobSha,
-      ),
+    identity.every(
+      (entry) =>
+        entry.workingTreeBlobSha !== null &&
+        entry.headBlobSha !== null &&
+        entry.workingTreeBlobSha === entry.headBlobSha,
+    ),
   );
 }
 /**
@@ -268,7 +287,9 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     if (!head) return undefined;
     if (SHA_RE.test(head)) {
       const stamp: CompletionTreeStamp = { repositoryRoot, headSha: head };
-      const identity = probe.filesChanged ? contentIdentity(repositoryRoot, head, probe.filesChanged, probe) : undefined;
+      const identity = probe.filesChanged
+        ? contentIdentity(repositoryRoot, head, probe.filesChanged, probe)
+        : undefined;
       return identity ? { ...stamp, contentIdentity: identity } : stamp;
     }
 
@@ -278,7 +299,9 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
     const loose = readFile(nodePath.join(gitDir, ref))?.trim();
     if (loose && SHA_RE.test(loose)) {
       const stamp: CompletionTreeStamp = { repositoryRoot, headSha: loose };
-      const identity = probe.filesChanged ? contentIdentity(repositoryRoot, loose, probe.filesChanged, probe) : undefined;
+      const identity = probe.filesChanged
+        ? contentIdentity(repositoryRoot, loose, probe.filesChanged, probe)
+        : undefined;
       return identity ? { ...stamp, contentIdentity: identity } : stamp;
     }
 
@@ -289,7 +312,9 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
       const [sha, name] = line.trim().split(/\s+/, 2);
       if (name === ref && sha && SHA_RE.test(sha)) {
         const stamp: CompletionTreeStamp = { repositoryRoot, headSha: sha };
-        const identity = probe.filesChanged ? contentIdentity(repositoryRoot, sha, probe.filesChanged, probe) : undefined;
+        const identity = probe.filesChanged
+          ? contentIdentity(repositoryRoot, sha, probe.filesChanged, probe)
+          : undefined;
         return identity ? { ...stamp, contentIdentity: identity } : stamp;
       }
     }
@@ -307,7 +332,11 @@ export interface CompletionTreeStampForEvidenceProbe {
   /** Forwarded to completionTreeStamp after the owning repository is selected. */
   readFile?: (abs: string) => string | undefined;
   readBytes?: (abs: string) => Uint8Array | undefined;
-  headBlobs?: (repoRoot: string, headSha: string, paths: readonly string[]) => ReadonlyMap<string, string | null> | undefined;
+  headBlobs?: (
+    repoRoot: string,
+    headSha: string,
+    paths: readonly string[],
+  ) => ReadonlyMap<string, string | null> | undefined;
 }
 
 /**
@@ -360,17 +389,9 @@ export function completionTreeStampForEvidence(
     }
   }
 
-  const candidateRoots = [
-    ...new Set([
-      ...roots,
-      ...[...nestedOwners.values()].map(({ root }) => root),
-    ]),
-  ];
+  const candidateRoots = [...new Set([...roots, ...[...nestedOwners.values()].map(({ root }) => root)])];
 
-  const pathForRoot = (
-    root: string,
-    raw: string,
-  ): { absolutePath: string; relativePath: string } | undefined => {
+  const pathForRoot = (root: string, raw: string): { absolutePath: string; relativePath: string } | undefined => {
     const declaredPath = raw.trim();
     if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) return undefined;
     const nested = nestedOwners.get(declaredPath);
@@ -431,13 +452,15 @@ export function completionTreeStampForEvidence(
     const resolved = pathForRoot(selectedRoot, raw);
     return resolved?.relativePath ?? normalizedRepoPath(selectedRoot, raw);
   });
+  const validSelectedFiles = selectedFiles.filter((file): file is string => file !== undefined);
+  if (validSelectedFiles.length !== selectedFiles.length) return undefined;
 
   return completionTreeStamp({
     repoRoot: selectedRoot,
     readFile: probe.readFile,
     readBytes: probe.readBytes,
     headBlobs: probe.headBlobs,
-    filesChanged: selectedFiles,
+    filesChanged: validSelectedFiles,
   });
 }
 
@@ -463,7 +486,8 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
   const rawIdentity = record.contentIdentity;
   let contentIdentity: CompletionTreeContentIdentity[] | undefined;
   if (rawIdentity !== undefined) {
-    if (!Array.isArray(rawIdentity) || rawIdentity.length === 0 || rawIdentity.length > MAX_PATHS_PROBED) return undefined;
+    if (!Array.isArray(rawIdentity) || rawIdentity.length === 0 || rawIdentity.length > MAX_PATHS_PROBED)
+      return undefined;
     contentIdentity = [];
     for (const candidate of rawIdentity) {
       if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return undefined;
@@ -473,16 +497,20 @@ function storedTreeStamp(value: unknown): CompletionTreeStamp | undefined {
       const headBlobSha = entry.headBlobSha;
       if (
         !path ||
-        (workingTreeBlobSha !== null && (typeof workingTreeBlobSha !== 'string' || !OBJECT_SHA_RE.test(workingTreeBlobSha))) ||
+        (workingTreeBlobSha !== null &&
+          (typeof workingTreeBlobSha !== 'string' || !OBJECT_SHA_RE.test(workingTreeBlobSha))) ||
         (headBlobSha !== null && (typeof headBlobSha !== 'string' || !OBJECT_SHA_RE.test(headBlobSha)))
-      ) return undefined;
+      )
+        return undefined;
       contentIdentity.push({ path, workingTreeBlobSha, headBlobSha });
     }
   }
   return { repositoryRoot: nodePath.resolve(repositoryRoot), headSha, ...(contentIdentity ? { contentIdentity } : {}) };
 }
 
-function identityByPath(identity: readonly CompletionTreeContentIdentity[]): Map<string, CompletionTreeContentIdentity> | undefined {
+function identityByPath(
+  identity: readonly CompletionTreeContentIdentity[],
+): Map<string, CompletionTreeContentIdentity> | undefined {
   const byPath = new Map<string, CompletionTreeContentIdentity>();
   for (const entry of identity) {
     if (byPath.has(entry.path)) return undefined;
@@ -514,13 +542,14 @@ export function completionFreshnessForEvidence(
 
   let current: CompletionTreeStamp | undefined;
   try {
-    current =
-      (probe.currentStamp ??
-        ((stamp) =>
-          completionTreeStamp({
-            repoRoot: stamp.repositoryRoot,
-            filesChanged: stamp.contentIdentity?.map((entry) => entry.path),
-          })))(stored);
+    current = (
+      probe.currentStamp ??
+      ((stamp) =>
+        completionTreeStamp({
+          repoRoot: stamp.repositoryRoot,
+          filesChanged: stamp.contentIdentity?.map((entry) => entry.path),
+        }))
+    )(stored);
   } catch {
     current = undefined;
   }
@@ -555,7 +584,8 @@ export function completionFreshnessForEvidence(
       verdict: 'stale',
       storedTreeStamp: stored,
       currentTreeStamp: current,
-      reason: 'Current working-tree content does not match committed HEAD for every declared path; re-verify before trusting it.',
+      reason:
+        'Current working-tree content does not match committed HEAD for every declared path; re-verify before trusting it.',
     };
   }
 
