@@ -20,6 +20,7 @@ import { updateExternalBlockerHistory } from '../external-blockers';
 import {
   decideLaneGate,
   detectCircularPrerequisite,
+  isDependencyDerivedPlanLanePark,
   planLaneBlockerRef,
   restoreStateAfterUngate,
   selectCanonicalLinkedWorkItem,
@@ -338,6 +339,84 @@ describe('restoreStateAfterUngate — what an un-park restores TO [WI-37914]', (
 describe('planLaneBlockerRef', () => {
   it('is a stable, plan-item-scoped ref', () => {
     expect(planLaneBlockerRef('p', 'P-001')).toBe('plan-lane:p#P-001');
+  });
+});
+
+describe('isDependencyDerivedPlanLanePark — provenance-safe hold clear [EI-21649364699609566]', () => {
+  const planSlug = 'byoc-cloud-workspaces-gcp-aws-azure-2026-08-22';
+  const itemId = 'P-068';
+  const ref = planLaneBlockerRef(planSlug, itemId);
+  const gatedAt = '2026-08-23T04:54:12.709Z';
+  const parkedAt = '2026-08-26T20:11:42.674Z';
+
+  function payload(
+    reason = 'P-068 requires production hosted auth/transport integration before acceptance review',
+    blocker: Partial<{
+      capability: string;
+      createdAt: string;
+      createdBy: string;
+      status: string;
+      clearedBy: string;
+      ref: string;
+    }> = {},
+    extra: Record<string, unknown> = {},
+  ) {
+    return {
+      _claimHold: true,
+      claim_hold_by: 'su-former-owner',
+      claim_hold_reason: reason,
+      claim_hold_at: parkedAt,
+      externalBlockers: [
+        {
+          kind: 'gate',
+          capability: 'live-dependency',
+          capabilitySource: 'explicit',
+          ref,
+          summary: 'plan lane blocked',
+          status: 'active',
+          createdAt: gatedAt,
+          createdBy: 'system:plan-item-lane-sync',
+          updatedAt: gatedAt,
+          ...blocker,
+        },
+      ],
+      ...extra,
+    };
+  }
+
+  const derived = (p: unknown) =>
+    isDependencyDerivedPlanLanePark(
+      { payload: p } as Parameters<typeof isDependencyDerivedPlanLanePark>[0],
+      ref,
+      { planSlug, itemId },
+    );
+
+  it('recognizes the live P-068 legacy dependency park that survived blocked → actionable', () => {
+    expect(derived(payload())).toBe(true);
+  });
+
+  it.each([
+    'D-143 keeps P-068 parked until the owner changes the policy',
+    'P-068 is owner-directed paused until a new authorization',
+    'P-068: do not self-select; this is an explicit manual park',
+  ])('preserves an explicit policy/manual park: %s', (reason) => {
+    expect(derived(payload(reason))).toBe(false);
+  });
+
+  it('preserves an unrelated durable park that does not name this exact lane', () => {
+    expect(derived(payload('Wait until P-069 is done'))).toBe(false);
+  });
+
+  it('requires exact system-authored live-dependency blocker history predating the park', () => {
+    expect(derived(payload(undefined, { createdBy: 'su-someone' }))).toBe(false);
+    expect(derived(payload(undefined, { capability: 'product-decision' }))).toBe(false);
+    expect(derived(payload(undefined, { createdAt: '2026-08-27T00:00:00.000Z' }))).toBe(false);
+    expect(derived(payload(undefined, { ref: planLaneBlockerRef(planSlug, 'P-069') }))).toBe(false);
+  });
+
+  it('preserves a coexisting hold-open lease and a cleared blocker cleared by another actor', () => {
+    expect(derived(payload(undefined, {}, { held_open_by: 'su-live', held_open_at: parkedAt }))).toBe(false);
+    expect(derived(payload(undefined, { status: 'cleared', clearedBy: 'su-someone' }))).toBe(false);
   });
 });
 
