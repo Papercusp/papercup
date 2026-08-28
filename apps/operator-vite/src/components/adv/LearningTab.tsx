@@ -1685,7 +1685,7 @@ function ImprovementsView({
   // loops is designed to be full auto so needs a call makes no sense" — owner
   // 2026-07-27].
   const [gradeOpen, setGradeOpen] = useQueryState("grade", parseAsString);
-  const [optimistic, setOptimistic] = useState<Record<string, EffectiveGrade>>(
+  const [optimistic, setOptimistic] = useState<Record<string, OptimisticGrade>>(
     {},
   );
   const [savingId, setSavingId] = useState("");
@@ -1693,7 +1693,21 @@ function ImprovementsView({
   const effectiveGrade = useCallback(
     (idea: ScoutRoutedItem): EffectiveGrade | null => {
       const opt = optimistic[idea.ideaId];
-      if (opt) return opt;
+      // The overlay applies while the write is IN FLIGHT — that is the whole of
+      // what it is for — and after that only until the read it is bridging
+      // answers (see OptimisticGrade). The in-flight term is the primary one:
+      // without it an unrelated snapshot arriving mid-POST expires the overlay
+      // and flashes the pre-write grade back at the user. Once EITHER bound
+      // breaks the ledger wins, because the ledger is the grade authority: this
+      // same column is written by peer owner sessions and by the auto-grader, so
+      // an overlay that never expires does not show "our write pending", it
+      // shows a stale grade forever (WI-518795).
+      if (
+        opt &&
+        (savingId === idea.ideaId ||
+          (opt.snapshot === snap && idea.humanGrade === opt.supersedes))
+      )
+        return opt;
       if (idea.humanGrade == null) return null;
       return {
         grade: idea.humanGrade,
@@ -1701,7 +1715,7 @@ function ImprovementsView({
         gradedBy: idea.gradedBy ?? "owner",
       };
     },
-    [optimistic],
+    [optimistic, snap, savingId],
   );
   const submitGrade = async (
     idea: ScoutRoutedItem,
@@ -1712,10 +1726,19 @@ function ImprovementsView({
     setSavingId(idea.ideaId);
     const prevEntry = optimistic[idea.ideaId] ?? null;
     // Optimistic: show the new grade immediately; the refetched snapshot
-    // confirms it (or the catch below rolls it back).
+    // supersedes it (or the catch below rolls it back). `snapshot`/`supersedes`
+    // are what make "supersedes" true rather than aspirational — they record
+    // exactly what the ledger read when we wrote, so the overlay expires the
+    // moment that stops being what it reads.
     setOptimistic((m) => ({
       ...m,
-      [idea.ideaId]: { grade, feedback, gradedBy: "owner" },
+      [idea.ideaId]: {
+        grade,
+        feedback,
+        gradedBy: "owner",
+        snapshot: snap,
+        supersedes: idea.humanGrade,
+      },
     }));
     try {
       const res = await fetch("/api/agent-tools/scout/grade-idea", {
@@ -5204,6 +5227,36 @@ interface EffectiveGrade {
   grade: number;
   feedback: string | null;
   gradedBy: string;
+}
+
+/**
+ * An optimistic grade PLUS the two facts that bound its life. The overlay is a
+ * BRIDGE across one refetch — it exists only to cover the gap between the POST
+ * and the snapshot `submitGrade` invalidates for — so it must yield the instant
+ * the ledger answers. Both fields are that expiry, and either one alone ends it:
+ *
+ *  - `snapshot` — the snapshot object the write was made against. A different
+ *    one means the refetch landed, so the ledger has spoken even if the value it
+ *    reports is unchanged.
+ *  - `supersedes` — the stored grade at write time. A different value means
+ *    SOMEBODY's write landed (ours, confirmed — or a peer's), and the ledger is
+ *    the grade authority either way.
+ *
+ * Checking both is not belt-and-braces for one hazard; each closes a hole the
+ * other leaves. A cached refetch that returns the same object identity still
+ * expires the overlay by value; and once `snapshot` has gone stale it can never
+ * become current again, so a later snapshot that happens to read `supersedes`
+ * once more (a peer regrading back to the prior value) cannot resurrect it.
+ *
+ * WI-518795: an overlay with no expiry outlives its own confirmation and wins
+ * over `humanGrade` for the LIFE OF THE MOUNTED VIEW — so on a live SSE row, a
+ * later grade from any other source (a peer owner session, the auto-grader, a
+ * corrective regrade, the server's own clamped feedback) renders behind this
+ * session's stale value with no stale marker and no way to clear it.
+ */
+interface OptimisticGrade extends EffectiveGrade {
+  snapshot: ScoutSnapshot | undefined;
+  supersedes: number | null;
 }
 
 const GRADE_MEANING: Record<number, string> = {

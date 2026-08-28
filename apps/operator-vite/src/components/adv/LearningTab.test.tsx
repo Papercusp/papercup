@@ -2435,6 +2435,81 @@ describe("LearningTab — grading, the only row control the merge kept (P-005: c
     expect(alert.textContent).toContain("idea is gone");
   });
 
+  // The grade chip is PER ROW, and idea-2 carries one straight from the fixture,
+  // so an unscoped `querySelector('.pc-learning__gradechip')` answers about
+  // whichever row happens to come first — scope to the row by its title.
+  const gradeChipFor = (title: string): string =>
+    screen
+      .getByText(title)
+      .closest("[data-index]")
+      ?.querySelector(".pc-learning__gradechip")
+      ?.textContent?.replace(/\s+/g, " ") ?? "";
+
+  /** The fixture snapshot with one idea's STORED grade replaced — i.e. what the
+      refetched read carries after somebody else graded that row. */
+  const snapshotWithStoredGrade = (
+    ideaId: string,
+    humanGrade: number,
+    gradedBy: string,
+  ) => ({
+    ...scoutSnapshot,
+    recent: scoutSnapshot.recent.map((idea) =>
+      idea.ideaId === ideaId
+        ? { ...idea, humanGrade, humanFeedback: "regraded elsewhere", gradedBy }
+        : idea,
+    ),
+  });
+
+  it("11c-calibration. a refetched snapshot DOES re-render the grade cell (row this session never graded)", () => {
+    // CALIBRATION for 11d below. It drives the SAME instrument — swap the
+    // module-level `scoutResult`, rerender — against a row carrying no
+    // optimistic overlay. If this one ever fails, 11d's failure proves nothing
+    // about the overlay, only that the snapshot swap is dead.
+    const { rerender } = render(<LearningTab />);
+    expect(gradeChipFor("Tighter scoper prompt")).toContain("★4");
+
+    scoutResult = {
+      ...scoutResult,
+      data: [snapshotWithStoredGrade("idea-2", 1, "auto-grader")],
+    };
+    rerender(<LearningTab />);
+
+    expect(gradeChipFor("Tighter scoper prompt")).toContain("★1");
+  });
+
+  it("11d. the optimistic grade YIELDS to the refetched snapshot — it must not shadow a later grade from another source", async () => {
+    stubFetch({ ok: true });
+    nuqsState.grade = "idea-1";
+    const { rerender } = render(<LearningTab />);
+
+    fireEvent.click(screen.getByLabelText("Grade 5 of 5"));
+    fireEvent.click(screen.getByText("save grade"));
+
+    // The overlay is doing its job first: ★5 shows immediately, before any
+    // refetch can land.
+    await waitFor(() =>
+      expect(gradeChipFor("Cache-warmup plan draft")).toContain("★5"),
+    );
+
+    // Now the invalidated read comes back and the LEDGER disagrees — a peer
+    // regraded idea-1 (owner regrade is always allowed, and the auto-grader
+    // writes this same column). The overlay was only ever a bridge to that
+    // refetch; the ledger is the authority the moment it answers. An overlay
+    // that outlives its own confirmation renders this session's stale value on
+    // a live SSE row forever, with no stale marker and no way to clear it.
+    scoutResult = {
+      ...scoutResult,
+      data: [snapshotWithStoredGrade("idea-1", 2, "auto-grader")],
+    };
+    rerender(<LearningTab />);
+
+    await waitFor(() => {
+      const chip = gradeChipFor("Cache-warmup plan draft");
+      expect(chip).toContain("★2");
+      expect(chip).not.toContain("★5");
+    });
+  });
+
   it("9. ?grade=<ideaId> opens the panel, and saving is gated on picking a star", () => {
     nuqsState.grade = "idea-1";
     render(<LearningTab />);
