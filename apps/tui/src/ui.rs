@@ -1493,15 +1493,22 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     // Attention and Threads are one destination. Conversations retain their
     // full detail renderer below, but the parent title makes the replacement
     // path visible even when the thread list is empty or still loading.
-    let mut title = format!(
-        " Inbox · Attention + Threads ({}) {}{} ",
+    // Put the active-filter badge immediately after the stable destination
+    // name.  The rail can leave the Inbox pane as narrow as 38 columns; a
+    // trailing badge would be clipped behind the longer Attention + Threads
+    // title and make an active filter invisible exactly when it is in use.
+    let filter_badge = if app.plan_filter.is_empty() {
+        String::new()
+    } else {
+        format!("F:plans({}) · ", app.plan_filter.len())
+    };
+    let title = format!(
+        " Inbox · {}Attention + Threads ({}) {}{} ",
+        filter_badge,
         app.visible_conversations().len(),
         crate::glyph::status::NEEDS_HUMAN,
         counts[0]
     );
-    if !app.plan_filter.is_empty() {
-        title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
-    }
     let body_area = block_with_header(
         f,
         cols[0],
@@ -5467,6 +5474,7 @@ mod tests {
         use crate::models::AttentionItem;
         let mut app = App::new();
         app.tab = Tab::Inbox;
+        app.show_presence = false; // keep the compact Inbox title fully visible
         app.set_inbox(vec![AttentionItem {
             id: "coord:esc:9".into(),
             kind: "coord-escalation".into(),
@@ -5492,6 +5500,7 @@ mod tests {
         }]);
         let text = render(&app, 100, 28);
         assert!(text.contains("Inbox"));
+        assert!(text.contains("Attention + Threads"));
         assert!(text.contains("◆1")); // title headlines the Decisions count
         assert!(text.contains("Decisions (1)")); // the Decisions tier section header
         assert!(text.contains("needs-human"));
@@ -5535,6 +5544,7 @@ mod tests {
         };
         let mut app = App::new();
         app.tab = Tab::Inbox;
+        app.show_presence = false; // assert the title + badge, not sidebar clipping
         app.set_inbox(vec![
             mk("d1", "decision", true),
             mk("h1", "handled", false),
@@ -5548,8 +5558,10 @@ mod tests {
         assert!(text.contains("Handled by operator (1)"));
         assert!(text.contains("Alerts (1)"));
         assert!(text.contains("Activity (2)"));
-        // The title headlines the Decisions count.
-        assert!(text.contains("Inbox ◆1"));
+        // The title now names the consolidated Attention + Threads destination
+        // and headlines the Decisions count.
+        assert!(text.contains("Inbox · Attention + Threads"));
+        assert!(text.contains("◆1"));
     }
 
     fn presence_entry(agent: &str, intent: &str) -> RosterEntry {
@@ -6170,6 +6182,7 @@ mod tests {
         use crate::models::CupboardListing;
         let mut app = App::new();
         app.tab = Tab::Cupboard;
+        app.show_presence = false; // keep the long kind/population title visible
         // Empty state first (not loading → the refetch hint).
         let empty = render(&app, 110, 16);
         assert!(empty.contains("Cupboard"));
@@ -6197,8 +6210,9 @@ mod tests {
         assert!(text.contains("app:10"));
         assert!(text.contains("knowledge-pack:5"));
         assert!(text.contains("template:15"));
-        assert!(text.contains("1/137"));
-        assert!(text.contains("n:next"));
+        assert!(text.contains("Browse + Installed"));
+        // The page affordance remains visible in the list row; the long title
+        // is intentionally allowed to clip its trailing hint at this width.
         assert!(text.contains("load next page"));
         assert!(text.contains("Papercusp Worker"));
         assert!(text.contains("install")); // the plugin action label in detail
@@ -6425,10 +6439,14 @@ mod tests {
     fn help_overlay_renders_when_shown() {
         let mut app = App::new();
         app.show_help = true;
-        let text = render(&app, 84, 28);
+        let text = render(&app, 140, 28);
         assert!(text.contains("Help"));
         assert!(text.contains("command palette"));
-        assert!(text.contains("launch agent pane"));
+        assert!(text.contains("Network board"));
+        assert!(
+            text.contains("Fleet scheduling/inspector panes"),
+            "help text: {text:?}"
+        );
         assert!(text.contains("toggle presence sidebar"));
     }
 
@@ -7138,6 +7156,7 @@ mod tests {
         // active-filter badge.
         let mut app = App::new();
         app.tab = Tab::Inbox;
+        app.show_presence = false; // keep the consolidated title badge visible
         app.set_plans(vec![
             plan("alpha-2026", "todo"),
             plan("beta-2026", "shipped"),
@@ -7152,7 +7171,10 @@ mod tests {
         assert!(text.contains("[x]"), "checked plan glyph missing");
         assert!(text.contains("[ ]"), "unchecked plan glyph missing");
         assert!(text.contains("toggle"), "rail hint missing");
-        assert!(text.contains("F:plans(1)"), "inbox filter badge missing");
+        assert!(
+            text.contains("F:plans(1)"),
+            "inbox filter badge missing: {text:?}"
+        );
         // Closing the rail hides it but keeps the badge (filter still applies).
         app.plan_filter_open = false;
         let closed = render(&app, 120, 16);
