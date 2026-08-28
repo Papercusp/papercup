@@ -12433,12 +12433,14 @@ mod tests {
     }
 
     #[test]
-    fn n_launches_on_brew_only() {
-        // The agent launcher folded from Sessions into Fleet (D-002b): `n` only
-        // launches on the Fleet tab.
+    fn n_switches_to_network_and_launches_on_fleet() {
+        // `n` is the public Network destination shortcut.  On Fleet it remains
+        // the contextual fresh-agent launcher (the old Sessions launcher,
+        // folded in by D-002b).
         let mut a = App::new();
         a.update(key('3', KeyModifiers::NONE)); // Plans tab
-        assert_eq!(a.update(key('n', KeyModifiers::NONE)), Action::None);
+        assert_eq!(a.update(key('n', KeyModifiers::NONE)), Action::FetchNetworkBoard);
+        assert_eq!(a.tab, Tab::Network);
         a.update(key('4', KeyModifiers::NONE)); // Fleet
         match a.update(key('n', KeyModifiers::NONE)) {
             Action::Launch(spec) => assert_eq!(spec.argv[0], "psu"),
@@ -12753,8 +12755,12 @@ mod tests {
     #[test]
     fn plugins_tab_navigates_and_enter_launches_selected_pane() {
         let mut a = App::new();
-        // `9` switches to the Plugins tab.
-        assert_eq!(a.update(key('9', KeyModifiers::NONE)), Action::Render);
+        // Plugins is now an Installed subview hosted by Cupboard.  Keep the
+        // legacy enum renderer reachable for persisted pane compatibility, but
+        // do not reintroduce it as a public switch key.
+        assert_eq!(Tab::from_switch_key('9'), None);
+        assert_eq!(Tab::from_title("Plugins"), Some(Tab::Cupboard));
+        a.tab = Tab::Plugins;
         assert_eq!(a.tab, Tab::Plugins);
         // The tab defaults to the List sub-view (D-007); Tab toggles to the
         // panes launcher this test exercises.
@@ -13679,14 +13685,16 @@ mod tests {
     #[test]
     fn tui_set_tab_event_routes_non_lazy_tab_entry_actions() {
         let cases = [
-            ("Convos", "conversations"),
-            ("Sessions", "sessions"),
-            ("Voice", "voice"),
-            ("Fleet", "fleet"),
-            ("Hives", "hives"),
+            // Retired shell names resolve to their capability-complete parent;
+            // the second field is the canonical title after migration.
+            ("Convos", "Inbox", "conversations"),
+            ("Sessions", "Sessions", "sessions"),
+            ("Voice", "Voice", "voice"),
+            ("Fleet", "Fleet", "fleet"),
+            ("Hives", "Network", "network"),
         ];
 
-        for (title, expected) in cases {
+        for (title, canonical, expected) in cases {
             let mut a = App::new();
             let action = a.update(Event::TuiIntent {
                 id: 1,
@@ -13711,10 +13719,10 @@ mod tests {
                     assert!(!a.voice_ui.connected);
                 }
                 ("fleet", Action::FetchFleetAssignments) => {}
-                ("hives", Action::FetchHives) => {}
+                ("network", Action::FetchNetworkBoard) => {}
                 _ => panic!("unexpected follow-up for set_tab {title}"),
             }
-            assert_eq!(a.tab.title(), title);
+            assert_eq!(a.tab.title(), canonical);
         }
     }
 
@@ -13742,10 +13750,26 @@ mod tests {
     }
 
     #[test]
-    fn key_0_switches_to_settings_and_navigates() {
+    fn retired_settings_aliases_to_config_and_internal_flags_remain_compatible() {
         let mut a = App::new();
-        a.on_key(KeyCode::Char('0'), KeyModifiers::empty());
-        assert_eq!(a.tab, Tab::Settings);
+        // `0` was the retired Settings shell shortcut; it must not become a
+        // second public route.  Persisted/intention-based restores still map
+        // the old title to the capability-complete Config destination.
+        assert_eq!(
+            a.on_key(KeyCode::Char('0'), KeyModifiers::empty()),
+            Action::None
+        );
+        assert_eq!(Tab::from_switch_key('0'), None);
+        assert_eq!(Tab::from_title("Settings"), Some(Tab::Config));
+        let result = a
+            .apply_intent("set_tab", &json!({"tab": "Settings"}))
+            .unwrap();
+        assert_eq!(result, json!({"ok": true, "tab": "Config"}));
+        assert_eq!(a.tab, Tab::Config);
+
+        // The retired renderer remains internally testable so its flag cursor
+        // semantics do not regress while Configuration hosts it as a subview.
+        a.tab = Tab::Settings;
         // Empty list → move clamps to 0 (no panic).
         a.move_sel(1);
         assert_eq!(a.flag_sel, 0);
@@ -14107,18 +14131,37 @@ mod tests {
     }
 
     #[test]
-    fn conversations_tab_browse_filter_and_promote() {
+    fn conversations_compatibility_view_browse_filter_and_promote() {
         use crate::models::{ConvCore, ConvDetail, ConvSummary};
-        // Tab wiring: key 'd', title "Convos".
-        assert_eq!(Tab::from_switch_key('d'), Some(Tab::Conversations));
+        // Conversations is now an Inbox/Threads capability.  The old enum view
+        // remains available to persisted/internal pane state, but its switch
+        // key is intentionally absent from the public 14-destination registry.
+        assert_eq!(Tab::from_switch_key('d'), None);
+        assert_eq!(Tab::from_title("Convos"), Some(Tab::Inbox));
         assert_eq!(Tab::Conversations.title(), "Convos");
 
         let mut a = App::new();
-        // 'd' switches to Conversations + lazy-loads the list (Brief 25).
+        // Restoring the legacy title enters Inbox and keeps the thread fetch
+        // side effect on the parent destination.
+        let act = a.update(Event::TuiIntent {
+            id: 1,
+            intent: "set_tab".into(),
+            args: serde_json::json!({"tab": "Convos"}),
+        });
+        let Action::IntentResultWithFollowup { follow_up, .. } = act else {
+            panic!("expected set_tab follow-up for legacy Convos title");
+        };
+        assert!(matches!(*follow_up, Action::FetchConversations { .. }));
+        assert_eq!(a.tab, Tab::Inbox);
+        // Exercise the retained conversation renderer/keymap as an internal
+        // compatibility view after proving the public migration route.
+        a.tab = Tab::Conversations;
         let act = a.update(key('d', KeyModifiers::NONE));
+        assert_eq!(act, Action::None);
         assert_eq!(a.tab, Tab::Conversations);
-        assert!(matches!(act, Action::FetchConversations { .. }));
-        assert!(a.conversations_loading);
+        // The direct internal view does not own a public switch key; seed the
+        // same fetch state explicitly before exercising its controls.
+        a.conversations_loading = true;
 
         // The list lands: 2 tagged + 1 untagged, all open.
         let mk = |id: &str, kind: &str, topics: Vec<&str>| ConvSummary {
@@ -14709,17 +14752,32 @@ mod tests {
     }
 
     #[test]
-    fn switch_key_maps_ten_tabs_to_ten_digits() {
-        // D-002 reorder + D-004b Activity retirement: ten tabs, ten digits.
-        // from_switch_key is the inverse (the unified dispatch, g1).
+    fn switch_key_maps_public_destinations_and_hides_retired_shells() {
+        // D-002 reorder + P-006 consolidation: the public keymap is derived
+        // solely from the 14-destination registry (g1). Retired shell variants
+        // retain stable enum/title identities for state migration but no longer
+        // own a switch key.
         assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Plans.switch_key(), '3');
         assert_eq!(Tab::Fleet.switch_key(), '4');
-        assert_eq!(Tab::Plugins.switch_key(), '9');
-        assert_eq!(Tab::Settings.switch_key(), '0');
         assert_eq!(Tab::from_switch_key('1'), Some(Tab::Operator));
-        assert_eq!(Tab::from_switch_key('0'), Some(Tab::Settings));
+        assert_eq!(Tab::from_switch_key('0'), None);
+        assert_eq!(Tab::from_switch_key('9'), None);
+        assert_eq!(Tab::from_switch_key('d'), None);
+        assert_eq!(Tab::from_switch_key('i'), None);
+        assert_eq!(Tab::Network.switch_key(), 'n');
+        assert_eq!(Tab::from_switch_key('n'), Some(Tab::Network));
         assert_eq!(Tab::from_switch_key('z'), None);
+        assert_eq!(Tab::from_title("Plugins"), Some(Tab::Cupboard));
+        assert_eq!(Tab::from_title("Settings"), Some(Tab::Config));
+        assert_eq!(Tab::from_title("Convos"), Some(Tab::Inbox));
+        assert_eq!(Tab::from_title("Hives"), Some(Tab::Network));
+        for retired in [Tab::Plugins, Tab::Settings, Tab::Conversations, Tab::Hives] {
+            assert!(
+                !Tab::ALL.contains(&retired),
+                "retired shell leaked into ALL: {retired:?}"
+            );
+        }
         // Every tab's key is unique (the single-keymap invariant).
         for t in Tab::ALL {
             assert_eq!(Tab::from_switch_key(t.switch_key()), Some(t));
@@ -14745,21 +14803,20 @@ mod tests {
         assert_eq!(Tab::Operator.switch_key(), '1');
         assert_eq!(Tab::Operator.title(), "Operator");
         assert_eq!(Tab::from_title("Operator"), Some(Tab::Operator));
-        // Sessions folded into Fleet (D-002b) + Activity retired (D-004b) → ten
-        // digit tabs, plus the appended Memory ('m', D-006) + Cupboard ('c',
-        // D-011) + Conversations ('d', Brief 25) + Voice ('a', holepunch-voice-
-        // channels P-008) + Hives ('i', pui-hives-tab-2026-06-07) letter tabs
-        // + the prepended Overview ('h', Brief 23) + the Sessions archive
-        // destination (pui-agent-context-cockpit-2026-08-26 P-030).
-        assert_eq!(Tab::ALL.len(), 17);
+        // P-006 consolidates Plugins, Settings, Conversations, and Hives into
+        // Cupboard, Config, Inbox, and Network. The public registry therefore
+        // has 14 destinations; the retired enum variants remain migration-only.
+        assert_eq!(Tab::ALL.len(), 14);
         assert_eq!(Tab::Memory.switch_key(), 'm');
         assert_eq!(Tab::Cupboard.switch_key(), 'c');
-        assert_eq!(Tab::Conversations.switch_key(), 'd');
         assert_eq!(Tab::Voice.switch_key(), 'a');
-        assert_eq!(Tab::Hives.switch_key(), 'i');
+        assert_eq!(Tab::Network.switch_key(), 'n');
         assert_eq!(Tab::from_switch_key('a'), Some(Tab::Voice));
-        assert_eq!(Tab::from_switch_key('i'), Some(Tab::Hives));
-        assert_eq!(Tab::from_title("Hives"), Some(Tab::Hives));
+        assert_eq!(Tab::from_switch_key('n'), Some(Tab::Network));
+        assert_eq!(Tab::from_title("Hives"), Some(Tab::Network));
+        assert_eq!(Tab::from_title("Convos"), Some(Tab::Inbox));
+        assert_eq!(Tab::from_title("Plugins"), Some(Tab::Cupboard));
+        assert_eq!(Tab::from_title("Settings"), Some(Tab::Config));
         // `h` returns to the Overview from elsewhere; `1` still reaches the chat.
         let mut b = App::new();
         b.update(key('3', KeyModifiers::NONE));
