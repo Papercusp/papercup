@@ -63,6 +63,32 @@ describe('getDocs', () => {
     }
   });
 
+  it('slices by visible heading text when the caller does not pass the anchor id', async () => {
+    const pages = [
+      makePage({
+        slug: 'a',
+        toc: [
+          { id: 'first', text: 'First', depth: 2 },
+          { id: 'target-section', text: 'Target Section', depth: 2 },
+        ],
+      }),
+    ];
+    const contents = {
+      a: '## First\n\nintro\n\n## Target Section\n\ntarget body\n',
+    };
+    const out = await getDocs(makeSource({ pages, contents }), {
+      slugs: ['a'],
+      heading: ' target SECTION ',
+    });
+
+    expect(out.results[0]).toMatchObject({
+      slug: 'a',
+      found: true,
+      sliced: true,
+      content: expect.stringContaining('target body'),
+    });
+  });
+
   it('returns heading_not_found when slice misses', async () => {
     const pages = [
       makePage({

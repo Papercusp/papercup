@@ -128,6 +128,10 @@ describe('sliceByHeading', () => {
     expect(sliceByHeading(md, 'section-b', toc)).toBe('## Section B\n\ncontent B');
   });
 
+  it('accepts visible heading text when no anchor id matches', () => {
+    expect(sliceByHeading(md, '  sEcTiOn A  ', toc)).toBe('## Section A\n\ncontent A');
+  });
+
   it('returns null for a missing TOC entry', () => {
     expect(sliceByHeading(md, 'no-such-id', toc)).toBeNull();
   });

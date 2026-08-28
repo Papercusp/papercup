@@ -133,7 +133,7 @@ export interface OutlinePayload {
 export interface GetArgs {
   /** 1–10 slash-joined slugs. */
   slugs: string[];
-  /** Optional heading anchor id. Only honored when slugs.length === 1. */
+  /** Optional heading anchor id or visible heading text. Only honored when slugs.length === 1. */
   heading?: string;
 }
 

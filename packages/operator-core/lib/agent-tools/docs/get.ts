@@ -105,7 +105,9 @@ const argsSchema = z.preprocess(
       heading: z
         .string()
         .optional()
-        .describe('Heading anchor id (from docs:outline.pages[].headings[].id). Only honored when slugs.length === 1.'),
+        .describe(
+          'Heading anchor id or visible heading text (from docs:outline.pages[].headings[].id/text). Only honored when slugs.length === 1.',
+        ),
       harness: z
         .string()
         .optional()
@@ -126,9 +128,10 @@ const argsSchema = z.preprocess(
 export default defineTool({
   name: 'docs:get',
   description:
-    "Fetch documentation pages by slug — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Batch up to 10; pass `heading` (single-slug only) for a section slice. Per-slug error envelope.",
+    "Fetch documentation pages by slug — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Batch up to 10; pass a heading anchor id or visible heading text (single-slug only) for a section slice. Per-slug error envelope.",
   guidance: {
-    when: 'You have slugs from docs:outline and need page contents. Use `heading` (single-slug) when only one section of a long page is relevant.',
+    when:
+      'You have slugs from docs:outline and need page contents. Use `heading` with either headings[].id or headings[].text (single-slug) when only one section of a long page is relevant.',
     notWhen:
       "You do not yet know the slug — call docs:outline first. To fetch another harness's docs from outside, use cross_harness:docs_get.",
     chaining:

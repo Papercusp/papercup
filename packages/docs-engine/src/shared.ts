@@ -97,14 +97,25 @@ export function levenshteinNearest(
 }
 
 /**
- * Slice markdown body to the section starting at `headingId` and ending
+ * Slice markdown body to the section starting at `headingRef` and ending
  * at the next heading of equal-or-shallower depth (or EOF).
+ *
+ * Canonical anchor ids win. When no id matches, accept the visible heading
+ * text (trimmed + case-insensitive) because docs:outline exposes both forms
+ * and human callers naturally pass the label they just read.
  *
  * Returns null when the TOC entry is missing or the heading line can't
  * be located in the rendered markdown.
  */
-export function sliceByHeading(md: string, headingId: string, toc: TocEntry[]): string | null {
-  const target = toc.find((h) => (h.url ?? '').replace(/^#/, '') === headingId);
+export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]): string | null {
+  const targetById = toc.find((h) => (h.url ?? '').replace(/^#/, '') === headingRef);
+  const normalizedRef = headingRef.trim().toLowerCase();
+  const target =
+    targetById ??
+    toc.find((h) => {
+      const text = reactToText(h.title).trim().toLowerCase();
+      return text.length > 0 && text === normalizedRef;
+    });
   if (!target) return null;
 
   const text = reactToText(target.title);
