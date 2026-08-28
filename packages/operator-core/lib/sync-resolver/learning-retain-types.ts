@@ -18,9 +18,6 @@ export type RetainFeedKind = 'memory' | 'plan' | 'wi' | 'rubric' | 'runbook' | '
 export const RETAIN_FEED_TABS = ['all', 'memories', 'plans', 'wi', 'rubrics', 'runbooks', 'recipes'] as const;
 export type RetainFeedTab = (typeof RETAIN_FEED_TABS)[number];
 
-export const RETAIN_FEED_FILTERS = ['all', 'shipped', 'inflight'] as const;
-export type RetainFeedFilter = (typeof RETAIN_FEED_FILTERS)[number];
-
 /** Column-filter state the Retain client compiles from its `rtf` URL param.
  * Text/numeric presentation columns without a server predicate stay out of
  * this shape; these are exactly the persisted axes the six feed legs support. */
@@ -37,7 +34,6 @@ export interface RetainFeedColumnFilters {
  * `hive` is resolved to concrete store scopes by the registry layer. */
 export interface RetainFeedQueryArgs {
   tab?: RetainFeedTab;
-  filter?: RetainFeedFilter;
   cursor?: string | null;
   limit?: number;
   hive?: string;
@@ -55,10 +51,17 @@ export const RETAIN_KIND_FOR_TAB: Record<Exclude<RetainFeedTab, 'all'>, RetainFe
   recipes: 'recipe',
 };
 
-/** Kinds that carry a shipped/in-flight semantic. The Shipped ∕ In-flight
- *  filter constrains ONLY these; kinds without statuses (runbooks, recipes) and
- *  rubrics (status ≠ outcome) drop out of a filtered feed entirely — "filters
- *  apply where a type has statuses" (mockup caption). */
+/** Kinds that carry a shipped/in-flight semantic, and are therefore the ONLY
+ *  two the ledger's shipped-only population rule constrains (D-001,
+ *  learning-tab-improve-retain-clarity-2026-08-28). Kinds without an outcome —
+ *  memories, rubrics, runbooks, recipes — are retained unconditionally.
+ *
+ *  Exported for the read layer's population predicate and its tests; there is
+ *  deliberately no user-facing filter over this axis. It USED to back a
+ *  Shipped ∕ In-flight control, which the owner removed on 2026-08-28: because
+ *  a non-`all` filter dropped every kind NOT in this list, the control was
+ *  inert-or-empty on four of the six tabs, and Retain now simply means "what
+ *  landed" (in-flight work lives on the Improve tab alone — D-002). */
 export const RETAIN_STATUSFUL_KINDS: readonly RetainFeedKind[] = ['plan', 'wi'];
 
 export interface RetainFeedRowMeta {
@@ -99,8 +102,12 @@ export interface RetainFeedRow {
   meta: RetainFeedRowMeta;
 }
 
-/** Corpus size per kind (filter-INDEPENDENT — the tab badges). null = that
- *  count's read degraded, render as unknown, never as 0. */
+/** Corpus size per kind — the tab badges. For the two statusful kinds
+ *  (`plans`, `wi`) this counts the SHIPPED population, matching the rows the
+ *  tab actually yields; the other four are whole-corpus counts because those
+ *  kinds are retained unconditionally. A badge that could not promise the rows
+ *  behind it is the failure this alignment exists to prevent (D-001).
+ *  null = that count's read degraded, render as unknown, never as 0. */
 export interface RetainFeedCounts {
   memories: number | null;
   plans: number | null;

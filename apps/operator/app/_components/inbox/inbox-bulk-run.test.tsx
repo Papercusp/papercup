@@ -34,6 +34,7 @@ import type { AttentionItem } from "@/app/admin/plans/plans-api";
 const H = vi.hoisted(() => ({
   resolveAttentionAction: vi.fn(),
   replyToAttentionItem: vi.fn(),
+  reclassify: vi.fn(),
   calls: [] as string[],
   resolverProfile: {
     model: "sonnet",
@@ -93,6 +94,7 @@ import {
   isActivePhase,
   isContinuableBulkRunItem,
   useBulkRunOps,
+  type BulkRun,
   type BulkRunItem,
 } from "./use-inbox-bulk-run";
 import InboxBulkStrip, { formatRunElapsed, toBulkSeed } from "./InboxBulkStrip";
@@ -163,7 +165,19 @@ afterEach(() => {
 });
 
 describe("deriveRunCounts", () => {
-  const run = { runId: "r", phase: "running", totalItems: 10 } as never;
+  const run: BulkRun = {
+    runId: "r",
+    phase: "running",
+    totalItems: 10,
+    autoResolved: 0,
+    recommended: 0,
+    skipped: 0,
+    failed: 0,
+    error: null,
+    createdAt: null,
+    startedAt: null,
+    finishedAt: null,
+  };
 
   it("counts from the ITEM ROWS, not the run’s denormalized counters", () => {
     // The run row deliberately carries counters that DISAGREE with the rows —
@@ -255,7 +269,9 @@ describe("isContinuableBulkRunItem", () => {
       "dismissed",
     ];
     expect(
-      outcomes.filter((outcome) => isContinuableBulkRunItem({ outcome })),
+      outcomes.filter((outcome) =>
+        isContinuableBulkRunItem(mkRec({ outcome })),
+      ),
     ).toEqual(["pending", "skipped", "failed"]);
   });
 });
@@ -319,7 +335,7 @@ describe("InboxBulkStrip review handoff", () => {
     );
 
     const review = screen.getByTestId("inbox-bulk-review-decisions");
-    expect(review.textContent).toContain("Review 2 decisions");
+    expect(review.textContent).toContain("Review 2 unresolved");
     expect(screen.queryByTestId("inbox-bulk-accept-all")).toBeNull();
     fireEvent.click(review);
     expect(onReview).toHaveBeenCalledWith("run-latest-without-param");
@@ -389,10 +405,10 @@ describe("InboxBulkStrip review handoff", () => {
     );
 
     expect(screen.getByTestId("inbox-bulk-review-headline").textContent).toContain(
-      "9 need your call · 13 auto-resolved · 105 not reached",
+      "127 assessed · 13 auto-resolved · 114 still open",
     );
     const continueButton = screen.getByTestId("inbox-bulk-continue");
-    expect(continueButton.textContent).toContain("Continue 105 remaining");
+    expect(continueButton.textContent).toContain("Continue 105 retryable");
     fireEvent.click(continueButton);
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
@@ -468,9 +484,9 @@ describe("InboxBulkStrip review handoff", () => {
 
     expect(
       screen.getByTestId("inbox-bulk-review-headline").textContent,
-    ).toContain("9 need your call · 13 auto-resolved · 136 skipped");
+    ).toContain("158 assessed · 13 auto-resolved · 145 still open");
     expect(screen.getByTestId("inbox-bulk-continue").textContent).toContain(
-      "Continue 136 remaining",
+      "Continue 136 retryable",
     );
     fireEvent.click(screen.getByTestId("inbox-bulk-continue"));
 
@@ -481,6 +497,92 @@ describe("InboxBulkStrip review handoff", () => {
       runId: "run-partial-158",
       itemIds: skipped.map((item) => item.itemId),
     });
+  });
+
+  it("surfaces the classified 158-item partition with a truthful unresolved total", () => {
+    const recommendations = Array.from({ length: 9 }, (_, position) =>
+      mkRec({ itemId: `typed-review-${position}`, position }),
+    );
+    const resolved = Array.from({ length: 13 }, (_, index) =>
+      mkRec({
+        itemId: `typed-resolved-${index}`,
+        position: recommendations.length + index,
+        outcome: "auto_resolved",
+      }),
+    );
+    const makeLegacy = (
+      index: number,
+      disposition: "owner_action" | "cleanup_candidate" | "retry_needed" | "routed" | "investigate",
+      error: string,
+    ) =>
+      mkRec({
+        itemId: `typed-skipped-${index}`,
+        position: recommendations.length + resolved.length + index,
+        outcome: "skipped",
+        disposition,
+        legacyDisposition: "legacy_skipped",
+        recommendationKind: disposition,
+        recommendationLabel: disposition.replace(/_/g, " "),
+        recommendationRationale: error,
+        evidenceBasis: [error],
+        responsibility: disposition === "routed" ? "engineering" : "owner",
+        confidenceLevel: disposition === "retry_needed" || disposition === "investigate" ? "insufficient" : "high",
+        error,
+        actionId: null,
+      });
+    const skipped = [
+      ...Array.from({ length: 21 }, (_, i) => makeLegacy(i, "owner_action", "owner authority")),
+      ...Array.from({ length: 24 }, (_, i) => makeLegacy(i + 21, "owner_action", "owner-attended dependency")),
+      ...Array.from({ length: 15 }, (_, i) => makeLegacy(i + 45, "cleanup_candidate", "Moot: stale duplicate")),
+      ...Array.from({ length: 3 }, (_, i) => makeLegacy(i + 60, "retry_needed", "detail not loaded")),
+      makeLegacy(63, "routed", "real defect report; engineering work"),
+      ...Array.from({ length: 72 }, (_, i) => makeLegacy(i + 64, "investigate", "No terminal option offered")),
+    ];
+    const items = [...recommendations, ...resolved, ...skipped];
+    expect(items).toHaveLength(158);
+    render(
+      <InboxBulkStrip
+        visible={[]}
+        filterSnapshot={{ tier: "decision" }}
+        run={{
+          runId: "run-typed-158",
+          phase: "review",
+          totalItems: 158,
+          autoResolved: 13,
+          recommended: 9,
+          skipped: 136,
+          failed: 0,
+          error: null,
+          createdAt: null,
+          startedAt: null,
+          finishedAt: null,
+        }}
+        items={items}
+        recommendations={recommendations}
+        unreached={skipped.filter((item) => item.disposition === "retry_needed")}
+        isRunning={false}
+        isReview
+        onRunStarted={vi.fn()}
+        onReview={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("inbox-bulk-review-headline").textContent).toContain(
+      "158 assessed · 13 auto-resolved · 145 still open",
+    );
+    const accounting = screen.getByTestId("inbox-bulk-accounting").textContent;
+    expect(accounting).toContain("9 recommendations");
+    expect(accounting).toContain("45 owner actions");
+    expect(accounting).toContain("15 cleanup candidates");
+    expect(accounting).toContain("3 retry needed");
+    expect(accounting).toContain("1 routed");
+    expect(accounting).toContain("72 investigate");
+    expect(accounting).toContain("136 legacy skips classified above");
+    expect(screen.getByTestId("inbox-bulk-continue").textContent).toContain(
+      "Continue 3 retryable",
+    );
+    expect(screen.getByTestId("inbox-bulk-classify").textContent).toContain(
+      "Classify 136 legacy skips",
+    );
   });
 });
 

@@ -39,7 +39,6 @@ import {
   type RetainFeedCounts,
   type RetainFeedColumnFilters,
   type RetainFeedCursor,
-  type RetainFeedFilter,
   type RetainFeedKind,
   type RetainFeedPage,
   type RetainFeedQueryArgs,
@@ -54,7 +53,6 @@ export type {
   RetainFeedCounts,
   RetainFeedColumnFilters,
   RetainFeedCursor,
-  RetainFeedFilter,
   RetainFeedKind,
   RetainFeedPage,
   RetainFeedQueryArgs,
@@ -230,7 +228,6 @@ export type RetainFeedFacetKey = 'status' | 'lens';
 
 export interface NormalizedRetainFeedArgs {
   tab: RetainFeedTab;
-  filter: RetainFeedFilter;
   q: string | null;
   filters: {
     title: string | null;
@@ -257,7 +254,6 @@ export function normalizeRetainFeedArgs(args: RetainFeedQueryArgs | RetainFeedOp
     typeof args.limit === 'number' && Number.isFinite(args.limit) ? Math.floor(args.limit) : RETAIN_FEED_PAGE_SIZE;
   return {
     tab: args.tab ?? 'all',
-    filter: args.filter ?? 'all',
     q: args.q?.trim() || null,
     filters: {
       title: filters.title?.trim() || null,
@@ -311,13 +307,18 @@ export function matchesRetainFeedPredicate(
   );
 }
 
-/** The store kinds that form the selected tab/outcome population. Outcome is
- * scope here (before q/rtf), so summary.total and the row query name the same
- * reachable corpus. */
+/** The store kinds that form the selected tab's population.
+ *
+ * Every kind the tab names is in scope. The shipped-only rule (D-001) is a
+ * per-leg PREDICATE on the two statusful kinds, never a narrowing of the kind
+ * set: the four statusless kinds are retained unconditionally, so dropping
+ * them here would empty four of the six tabs. That is exactly what the removed
+ * Shipped ∕ In-flight filter did, which is why it had to be disabled on those
+ * tabs rather than answered. */
 export function retainFeedKindsForArgs(args: NormalizedRetainFeedArgs): RetainFeedKind[] {
-  const tabKinds: RetainFeedKind[] =
-    args.tab === 'all' ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe'] : [RETAIN_KIND_FOR_TAB[args.tab]];
-  return args.filter === 'all' ? tabKinds : tabKinds.filter((kind) => kind === 'plan' || kind === 'wi');
+  return args.tab === 'all'
+    ? ['memory', 'plan', 'wi', 'rubric', 'runbook', 'recipe']
+    : [RETAIN_KIND_FOR_TAB[args.tab]];
 }
 
 export interface RetainScalarSummary {
@@ -447,16 +448,21 @@ function retainFeedPredicateSql(sql: Sql, args: NormalizedRetainFeedArgs, omit?:
     }`;
 }
 
-/** Outcome is part of the selected population, not a column facet. */
-function retainOutcomeSql(sql: Sql, args: NormalizedRetainFeedArgs, kind: 'plan' | 'wi') {
-  if (args.filter === 'all') return sql`TRUE`;
-  if (kind === 'plan') {
-    return args.filter === 'shipped'
-      ? sql`x.status = 'shipped'`
-      : sql`x.status <> ALL(${PLAN_INFLIGHT_EXCLUDED}::text[])`;
-  }
-  const abandoned = [...ISSUE_ABANDONED_STATUSES];
-  return args.filter === 'shipped' ? sql`x.shipped` : sql`NOT x.shipped AND x.status <> ALL(${abandoned}::text[])`;
+/**
+ * The shipped-only population rule for the two statusful kinds (D-001).
+ *
+ * Outcome is part of the selected POPULATION, not a column facet — and it is
+ * no longer a user choice: Retain lists what LANDED, so a plan or work item
+ * appears here only once terminal, and in-flight work lives on Improve alone
+ * (D-002, owner 2026-08-28). Applied identically by the row legs, the exact
+ * summary and the tab badges, so all three name the same corpus.
+ *
+ * `args` is retained in the signature (unused today) because every other
+ * population predicate in this file takes the normalized args, and a caller
+ * reaching for this one should not have to learn which of them is the odd one.
+ */
+function retainOutcomeSql(sql: Sql, _args: NormalizedRetainFeedArgs, kind: 'plan' | 'wi') {
+  return kind === 'plan' ? sql`x.status = 'shipped'` : sql`x.shipped`;
 }
 
 /** The canonical-store population behind Mem0Backend.list() for a set of
@@ -589,8 +595,8 @@ export async function summarizeCanonicalRetainMemories(
  */
 const RETAIN_READ_BUDGET_MS = 6_000;
 
-/** A plan is "in flight" while it can still ship; superseded is abandoned. */
-const PLAN_INFLIGHT_EXCLUDED = ['shipped', 'superseded'];
+// (The in-flight plan-status set that backed the removed Shipped ∕ In-flight
+// filter is gone with it — D-001. Retain's plan leg is `status = 'shipped'`.)
 
 /**
  * One page of the unified Retained ledger. Five legs fetch up to `limit` rows
@@ -598,10 +604,10 @@ const PLAN_INFLIGHT_EXCLUDED = ['shipped', 'superseded'];
  * (ts DESC, kind ASC, id ASC) order. If the merged candidate set is smaller
  * than `limit`, every active leg is exhausted and `nextCursor` is null.
  *
- * The Shipped ∕ In-flight filter is applied SERVER-side per leg (it must
+ * The shipped-only population rule is applied SERVER-side per leg (it must
  * compose with the cursor — a client-side filter over a paged feed drops rows
- * unpredictably), and only statusful kinds (plan, wi) participate in a filtered
- * feed. Counts are corpus sizes, filter-independent, first page only.
+ * unpredictably) and constrains only the statusful kinds (plan, wi); the other
+ * four are retained unconditionally. Counts are first page only.
  */
 export async function readRetainFeed(
   sql: Sql,
@@ -612,7 +618,7 @@ export async function readRetainFeed(
   const generatedAt = new Date().toISOString();
   const normalized = normalizeRetainFeedArgs(opts);
   const predicate = buildRetainFeedPredicate(normalized);
-  const { filter, limit, cursor } = normalized;
+  const { limit, cursor } = normalized;
   const kinds = retainFeedKindsForArgs(normalized);
   const predicateActive = retainFeedPredicateIsActive(predicate);
 
@@ -689,12 +695,9 @@ export async function readRetainFeed(
 
   const legPlans = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('plan', cursor);
-    const filterPred =
-      filter === 'shipped'
-        ? sql`x.status = 'shipped'`
-        : filter === 'inflight'
-          ? sql`x.status <> ALL(${PLAN_INFLIGHT_EXCLUDED}::text[])`
-          : sql`TRUE`;
+    // Shipped-only population (D-001) — the same predicate the exact summary
+    // and the tab badge apply, via retainOutcomeSql.
+    const filterPred = retainOutcomeSql(sql, normalized, 'plan');
     const rows = (await sql`
       SELECT * FROM (
         SELECT DISTINCT ON (hp.plan_slug)
@@ -757,12 +760,8 @@ export async function readRetainFeed(
 
   const legWi = async (): Promise<RetainFeedRow[]> => {
     const w = retainLegWindowFor('wi', cursor);
-    const filterPred =
-      filter === 'shipped'
-        ? sql`x.shipped`
-        : filter === 'inflight'
-          ? sql`NOT x.shipped AND x.status <> ALL(${abandonedArr}::text[])`
-          : sql`TRUE`;
+    // Shipped-only population (D-001) — see legPlans.
+    const filterPred = retainOutcomeSql(sql, normalized, 'wi');
     // ⚠ The `= ANY(ARRAY(SELECT …))` form is LOAD-BEARING, not a style choice.
     // Written as a plain join (`JOIN engineer_issues ei ON ei.issue_id =
     // substring(r.routed_ref from 4)`) the planner cannot see that only ~1k ids
@@ -1287,6 +1286,10 @@ export async function readRetainCounts(
         : Promise.resolve(null),
     withinBudget(
       (async () => {
+        // SHIPPED-scoped, matching legPlans' population (D-001). A badge is a
+        // promise about the rows behind the tab: counting every routed plan
+        // here while the tab lists only shipped ones would restore, as a
+        // number, exactly the over-promise the removed filter used to make.
         const r = (await sql`
           SELECT count(DISTINCT hp.plan_slug)::int AS n
             FROM harness_shared.scout_routed_ideas r
@@ -1296,6 +1299,7 @@ export async function readRetainCounts(
            WHERE r.workspace_id = ${workspaceId}
              AND r.rail = 'plan'
              AND r.routed_ref LIKE 'plan:%'
+             AND COALESCE(hp.status, '') = 'shipped'
              AND ${opts.memberSlugs ? sql`hp.harness_slug = ANY(${opts.memberSlugs as string[]}::text[])` : sql`TRUE`}
         `) as Array<{ n: number }>;
         return Number(r[0]?.n ?? 0);
@@ -1313,11 +1317,14 @@ export async function readRetainCounts(
         // 91 issue_ids are duplicated across harnesses inside this workspace,
         // so a plain count over-reports the badge by exactly those rows
         // (measured 906 vs the correct 905, 2026-08-19).
+        // SHIPPED-scoped, matching legWi's population (D-001) — see the plans
+        // count above for why the badge must not out-promise its tab.
         const r = (await sql`
           SELECT count(DISTINCT ei.issue_id)::int AS n
             FROM harness_shared.engineer_issues ei
            WHERE ei.workspace_id = ${workspaceId}
              AND ei.source_plan_slug IS NULL
+             AND ei.state = ANY(${[...ISSUE_SHIPPED_STATUSES]}::text[])
              AND ${opts.harnessScopes ? sql`ei.scope = ANY(${opts.harnessScopes as string[]}::text[])` : sql`TRUE`}
              AND ei.issue_id = ANY(ARRAY(
                    SELECT DISTINCT substring(r2.routed_ref from 4)

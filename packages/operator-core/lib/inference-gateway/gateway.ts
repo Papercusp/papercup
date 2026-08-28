@@ -128,6 +128,9 @@ import {
   gatewayAdmissionKindForBypassKey,
   withGatewayAdmission,
   GATEWAY_ADMISSION_BYPASS_REGISTRY,
+  type GatewayAdmissionBypassKey,
+  type GatewayAdmissionKind,
+  type GatewayAdmissionRequestInput,
   type GatewayAdmissionGovernor,
 } from './admission-context';
 
@@ -6406,9 +6409,105 @@ export function createInferenceGateway(deps: GatewayDeps) {
     return withGatewayAdmission(gatewayAdmissionGovernor, request, async () => execute());
   }
 
-  const server = http.createServer((req, res) => {
+  /**
+   * Keep a server-level admission lease around control/metadata handlers. Most
+   * `/v1/*` requests are admitted by `executeLegacyLaneTask`, but the cheap
+   * handlers below return before a lane executor is selected. They still need a
+   * typed, auditable admission decision (an explicit registered bypass), and the
+   * lease must remain live until any promise-backed handler has settled.
+   */
+  function waitForResponseSettlement(res: http.ServerResponse, timeoutMs: number): Promise<void> {
+    if (res.writableEnded || res.destroyed) return Promise.resolve();
+    return new Promise((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = () => {
+        if (timer) clearTimeout(timer);
+        res.off('finish', finish);
+        res.off('close', finish);
+        res.off('error', finish);
+        resolve();
+      };
+      res.once('finish', finish);
+      res.once('close', finish);
+      res.once('error', finish);
+      // A malformed control handler must not pin a canonical admission lease
+      // forever. This is only a backstop; normal handlers finish on the events.
+      timer = setTimeout(() => {
+        if (!res.writableEnded && !res.destroyed) {
+          try {
+            res.destroy();
+          } catch {
+            /* already torn down */
+          }
+        }
+        finish();
+      }, Math.max(1, timeoutMs));
+      timer.unref?.();
+      if (res.writableEnded || res.destroyed) finish();
+    });
+  }
+
+  function requestHeader(req: http.IncomingMessage, name: string): string | undefined {
+    const value = req.headers[name];
+    const text = Array.isArray(value) ? value[0] : value;
+    const trimmed = typeof text === 'string' ? text.trim() : '';
+    return trimmed || undefined;
+  }
+
+  function gatewayAdmissionInputForRequest(
+    req: http.IncomingMessage,
+    kind: GatewayAdmissionKind,
+    bypassKey?: GatewayAdmissionBypassKey,
+  ): GatewayAdmissionRequestInput {
+    const path = (req.url ?? '/').split('?', 1)[0] || '/';
+    const sequence = ++gatewayAdmissionRequestSeq;
+    const idempotencyKey = requestHeader(req, 'x-papercusp-request-id') ?? `gateway:${kind}:${sequence}:${path}`;
+    const accountId = requestHeader(req, ACCOUNT_HEADER);
+    const pinMode = accountId
+      ? requestHeader(req, ACCOUNT_PIN_HEADER)?.toLowerCase() === 'hard'
+        ? ('hard' as const)
+        : ('soft' as const)
+      : ('none' as const);
+    const provider =
+      kind === 'codex'
+        ? ('codex' as const)
+        : kind === 'local' || kind === 'local-backend'
+          ? ('local' as const)
+          : ('claude' as const);
+    return {
+      kind,
+      provider,
+      lane: path,
+      accountId,
+      model: requestHeader(req, 'x-papercusp-model') ?? null,
+      ownerId: requestHeader(req, OWNER_HEADER) ?? null,
+      streaming: null,
+      pinMode,
+      transport: null,
+      priority: priorityFromLabel(effectivePriorityLabel(req.headers as Record<string, unknown>)),
+      deadlineAtMs: Date.now() + requestCeilingMs,
+      idempotencyKey,
+      payloadRef: requestHeader(req, 'x-papercusp-payload-ref'),
+      parent: gatewayAdmissionParent,
+      ...(bypassKey ? { bypassKey } : {}),
+    };
+  }
+
+  async function runServerAdmission(
+    res: http.ServerResponse,
+    input: GatewayAdmissionRequestInput,
+    dispatch: () => void,
+  ): Promise<void> {
+    await withGatewayAdmission(gatewayAdmissionGovernor, input, async () => {
+      dispatch();
+      await waitForResponseSettlement(res, requestCeilingMs);
+    });
+  }
+
+  const dispatchRequest = (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = req.url ?? '/';
-    if (req.method === 'GET' && url === '/healthz') {
+    const requestPath = url.split('?', 1)[0] || '/';
+    if (req.method === 'GET' && requestPath === '/healthz') {
       const s = stats();
       // EI-19303809952284205: `ok` used to be a HARDCODED literal `true` — it described only whether
       // the process was answering, so a gateway whose Postgres had been unreachable for hours (account
@@ -6419,7 +6518,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, s.pausedUntil > Date.now() || dbDown ? 503 : 200, { ok: !dbDown, ...s });
       return;
     }
-    if (req.method === 'GET' && (url === '/stats' || url === '/admin/stats')) {
+    if (req.method === 'GET' && (requestPath === '/stats' || requestPath === '/admin/stats')) {
       sendJson(res, 200, stats());
       return;
     }
@@ -6486,7 +6585,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, { ok: true, now: Date.now(), owners: top });
       return;
     }
-    if (req.method === 'GET' && url === '/admin/config') {
+    if (req.method === 'GET' && requestPath === '/admin/config') {
       // B-HOT-2: the LIVE config snapshot — pool version + account ids + the admission/AIMD state — so an
       // operator / gateway:status tool can read what the gateway is actually running, no restart.
       const s = stats();
@@ -6598,7 +6697,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if (req.method === 'POST' && url === '/admin/reload') {
+    if (req.method === 'POST' && requestPath === '/admin/reload') {
       // B-HOT-2: on-demand HOT-RELOAD — re-resolve the DB account pool + swap it live NOW (vs the 60s poll).
       if (!deps.onAdminReload) {
         sendJson(res, 503, {
@@ -6629,7 +6728,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
       return;
     }
-    if (req.method === 'GET' && url === '/admin/local-backends') {
+    if (req.method === 'GET' && requestPath === '/admin/local-backends') {
       // Admin visibility (D-002): the live local-backend registry + health + in-flight, so
       // gateway:status / an operator can see what's registered and whether it's actually healthy.
       if (!deps.localBackends) {
@@ -6726,7 +6825,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         );
       return;
     }
-    if (req.method === 'GET' && url === '/admin/owner-pins') {
+    if (req.method === 'GET' && requestPath === '/admin/owner-pins') {
       sendJson(res, 200, {
         ok: true,
         now: Date.now(),
@@ -7189,6 +7288,40 @@ export function createInferenceGateway(deps: GatewayDeps) {
           gateway: true,
         });
       else res.destroy();
+    });
+  };
+
+  const server = http.createServer((req, res) => {
+    const bypassKey = gatewayAdmissionBypassKeyForRequest(req.method, req.url);
+    const requestPath = (req.url ?? '/').split('?', 1)[0] || '/';
+    const isMaintenanceSummarize =
+      req.method === 'POST' && requestPath === MAINTENANCE_SUMMARIZE_PATH;
+    if (!bypassKey && !isMaintenanceSummarize) {
+      dispatchRequest(req, res);
+      return;
+    }
+
+    // Maintenance is a real control operation (and may launch a hosted model
+    // request), so it gets a normal canonical admission.  Cheap health,
+    // metadata, and admin surfaces carry an explicitly registered bypass key;
+    // the Governor, rather than the router, is the authority that authorizes it.
+    const kind = bypassKey ? gatewayAdmissionKindForBypassKey(bypassKey) : 'maintenance';
+    const input = gatewayAdmissionInputForRequest(req, kind, bypassKey ?? undefined);
+    void runServerAdmission(res, input, () => dispatchRequest(req, res)).catch((e) => {
+      if (res.headersSent || res.writableEnded || res.destroyed) {
+        if (!res.destroyed) res.destroy();
+        return;
+      }
+      const code = (e as { code?: string } | undefined)?.code;
+      const status = code === 'ADMISSION_INVALID_REQUEST' ? 400 : code === 'ADMISSION_BYPASS_UNAUTHORIZED' ? 500 : 503;
+      sendJson(res, status, {
+        type: 'error',
+        error: {
+          type: status === 400 ? 'invalid_request_error' : 'api_error',
+          message: `inference-gateway admission failed: ${(e as Error)?.message ?? 'unknown error'}`,
+        },
+        gateway: true,
+      });
     });
   });
 
