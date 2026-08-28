@@ -1,22 +1,33 @@
+/**
+ * AdvWorkflowsTab — the Workflows tab, as ONE frame.
+ *
+ * Plan: workflows-tab-one-frame-2026-08-28, governed by D-001..D-005.
+ *
+ * The tab used to route five sub-views through `?wfView=` (landing | flow | catalog |
+ * activity | sources) and carry TWO detail surfaces for the same object. It is now one
+ * frame: masthead → composer → needs-you strip → facet bar → ledger beside a persistent
+ * inspector. Kind and state are FACETS (D-001), the inspector is THE detail surface with
+ * `?wfId=` as its expansion (D-002), and source health lives in the masthead (D-003).
+ *
+ * ── WHAT THE SHAPE OF THIS FILE IS FOR ──────────────────────────────────────────────────
+ * Everything derivable lives in workflows-ledger-model.ts, so this component is the frame,
+ * the URL state and the write paths — nothing that needs a DOM to be tested. The two
+ * dialogs (agent composer, advanced manual setup) and every mutation route are carried over
+ * unchanged: this plan redesigns the surface, not the audited writes beneath it.
+ *
+ * ── URL STATE IS NOT A STYLE CHOICE ─────────────────────────────────────────────────────
+ * The agent control surface (ui:get_state / ui:dispatch) reads the URL, so every
+ * user-meaningful selection here is nuqs: mode, facets, source filter, sort, query, the
+ * inspected row, and the expanded workflow. A facet in useState would be invisible to the
+ * agents this surface exists to collaborate with.
+ */
+
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
+import * as Tabs from '@radix-ui/react-tabs';
 import { useSyncQuery } from '@papercusp/sync';
 import { toast } from 'sonner';
-import {
-  Activity,
-  AlertTriangle,
-  Bot,
-  CalendarClock,
-  ChevronRight,
-  CircleDollarSign,
-  DatabaseZap,
-  Play,
-  Plus,
-  Power,
-  RefreshCw,
-  Search,
-  X,
-} from 'lucide-react';
+import { CalendarClock, DatabaseZap, Plus, RefreshCw, Search, X } from 'lucide-react';
 import type { AutomationCatalog } from '@papercusp/operator-core/lib/automation/catalog';
 import type { ExternalTriggerAdminSnapshot } from '@papercusp/operator-core/lib/external-triggers/admin';
 import type { PlanInputSchemaInfo } from '@/app/admin/plans/plans-api';
@@ -28,40 +39,57 @@ import { useConfirmDialog } from '@/app/harness/useConfirmDialog';
 import { runScheduleTool } from './ScheduleEditor';
 import {
   buildAutomationActivity,
-  buildAutomationFlows,
   buildAutomationItems,
   buildAutomationSources,
-  filterAutomationItems,
-  nextFutureAutomationAt,
   relativeTime,
-  type AutomationActivityItem,
-  type AutomationFilter,
   type AutomationItem,
   type AutomationOccurrenceRow,
   type AutomationPlanRow,
   type AutomationScheduleRow,
 } from './workflows-model';
-import WorkflowsLanding from './WorkflowsLanding';
+import {
+  buildFacetCounts,
+  buildLedgerRows,
+  buildNeedsYou,
+  buildPopulationSummary,
+  buildSourceHealth,
+  buildSuggestionChips,
+  filterLedgerRows,
+  sortLedgerRows,
+  type KindFacet,
+  type LedgerSort,
+  type NeedsYouItem,
+  type StateFacet,
+} from './workflows-ledger-model';
+import WorkflowsLedger, { ActivityList } from './WorkflowsLedger';
+import WorkflowInspector, { type RunHistoryRow } from './WorkflowInspector';
 import WorkflowComposerDialog from './WorkflowComposerDialog';
 import WorkflowDetailView from './WorkflowDetailView';
-import { toLandingWorkflow, type NeedsYouItem } from './workflows-landing-model';
 import './adv-workflows.css';
 
-type View = 'landing' | 'flow' | 'catalog' | 'activity' | 'sources';
+type Mode = 'workflows' | 'activity';
 
-/**
- * The view bar's tabs, in order. A table rather than a chain of ternaries: the
- * landing (D-018) makes this five-way, and a 5-deep nested ternary in JSX is the
- * shape the legibility guard exists to catch.
- */
-const VIEW_TABS: readonly { readonly id: View; readonly label: string }[] = [
-  { id: 'landing', label: 'Overview' },
-  { id: 'flow', label: 'Flows' },
-  { id: 'catalog', label: 'Catalog' },
-  { id: 'activity', label: 'Activity' },
-  { id: 'sources', label: 'Sources' },
+const STATE_FACETS: ReadonlyArray<{ id: StateFacet; label: string }> = [
+  { id: 'all', label: 'All' },
+  { id: 'attention', label: 'Needs attention' },
+  { id: 'running', label: 'Running' },
+  { id: 'paused', label: 'Paused' },
 ];
-type FlowFilter = 'all' | 'attention' | 'paused';
+
+const KIND_FACETS: ReadonlyArray<{ id: KindFacet; label: string }> = [
+  { id: 'all', label: 'Every kind' },
+  { id: 'triggered', label: 'Triggered' },
+  { id: 'routine', label: 'Routines' },
+  { id: 'system', label: 'System' },
+];
+
+const SORTS: ReadonlyArray<{ id: LedgerSort; label: string }> = [
+  { id: 'attention', label: 'Attention first' },
+  { id: 'next', label: 'Next to fire' },
+  { id: 'last', label: 'Recently fired' },
+  { id: 'name', label: 'Name' },
+];
+
 type CreateTriggerKind = 'schedule' | 'external';
 type CreatePlanMode = 'existing' | 'new';
 type SchedulePreset = 'every-15-minutes' | 'hourly' | 'daily' | 'weekly';
@@ -145,77 +173,30 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-interface RunRow {
-  id: number;
-  status: string;
-  trigger: string | null;
-  outcome: string | null;
-  launchedAt: number;
-  durationMs: number | null;
-  costUsd: number;
-}
-
-interface RunHistoryRow {
-  runs: RunRow[];
-  rollup: {
-    total: number;
-    successRate: number;
-    totalCostUsd: number;
-    medianDurationMs: number | null;
-    running: number;
-    failed: number;
-  } | null;
-}
-
-const FILTERS: Array<{ id: AutomationFilter; label: string }> = [
-  { id: 'all', label: 'All' },
-  { id: 'triggered', label: 'Triggered plans' },
-  { id: 'ai', label: 'AI routines' },
-  { id: 'system', label: 'System tasks' },
-  { id: 'paused', label: 'Paused' },
-];
-
-function kindLabel(kind: AutomationItem['kind']): string {
-  if (kind === 'triggered-plan') return 'Triggered plan';
-  if (kind === 'ai-routine') return 'AI routine';
-  return 'System task';
-}
-
-function itemState(item: AutomationItem): string {
-  if (item.needsAttention) return 'Needs attention';
-  if (item.running) return 'Running';
-  if (item.paused) return 'Paused';
-  return 'Ready';
-}
-
-function durationLabel(ms: number | null): string {
-  if (ms == null) return '—';
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  return `${minutes}m ${seconds % 60}s`;
-}
-
 export default function AdvWorkflowsTab() {
   const resolvedHarnessSlug = useResolvedHarnessSlug();
-  const [view, setView] = useQueryState(
-    'wfView',
-    parseAsStringEnum<View>(['landing', 'flow', 'catalog', 'activity', 'sources']).withDefault('landing'),
+  const [mode, setMode] = useQueryState(
+    'wfMode',
+    parseAsStringEnum<Mode>(['workflows', 'activity']).withDefault('workflows'),
   );
-  const [flowFilter, setFlowFilter] = useQueryState(
-    'wfFlowFilter',
-    parseAsStringEnum<FlowFilter>(['all', 'attention', 'paused']).withDefault('all'),
+  const [stateFacet, setStateFacet] = useQueryState(
+    'wfState',
+    parseAsStringEnum<StateFacet>(['all', 'attention', 'running', 'paused']).withDefault('all'),
   );
-  const [filter, setFilter] = useQueryState(
-    'wfFilter',
-    parseAsStringEnum<AutomationFilter>(['all', 'triggered', 'ai', 'system', 'paused']).withDefault('all'),
+  const [kindFacet, setKindFacet] = useQueryState(
+    'wfKind',
+    parseAsStringEnum<KindFacet>(['all', 'triggered', 'routine', 'system']).withDefault('all'),
   );
-  const [selectedId, setSelectedId] = useQueryState('wfSelId', parseAsString);
-  // The opened workflow's read-only graph + agent chat (D-016/D-018). Distinct from
-  // `wfSelId`, which is the catalog/flow list selection — opening a workflow is a
-  // different destination, not a different row highlight.
-  const [wfId, setWfId] = useQueryState('wfId', parseAsString);
+  const [sourceFacet, setSourceFacet] = useQueryState('wfSource', parseAsString);
+  const [sort, setSort] = useQueryState(
+    'wfSort',
+    parseAsStringEnum<LedgerSort>(['attention', 'next', 'last', 'name']).withDefault('attention'),
+  );
   const [query, setQuery] = useQueryState('wfQ', parseAsString.withDefault(''));
+  const [selectedId, setSelectedId] = useQueryState('wfSelId', parseAsString);
+  // The EXPANSION of the inspector (D-002): the full topology + agent chat. A distinct
+  // param from `wfSelId` because it is a destination, not a row highlight.
+  const [wfId, setWfId] = useQueryState('wfId', parseAsString);
   const [, setAdvTab] = useQueryState('tab', parseAsString);
   const [, setCalendarPlan] = useQueryState('calPlan', parseAsString);
   const { confirm, element: confirmElement } = useConfirmDialog();
@@ -224,9 +205,10 @@ export default function AdvWorkflowsTab() {
   const [composerOpen, setComposerOpen] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   // Mid-edit intent handed into the canonical workflow-agent conversation.
-  // The advanced manual form may reuse it only after the operator explicitly
-  // chooses that lower-level route.
   const [composerPrompt, setComposerPrompt] = useState('');
+  // Draft text is mid-edit state, so it is useState by the repo's own split; every
+  // user-meaningful selection above is nuqs.
+  const [draft, setDraft] = useState('');
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
     queryName: 'automation.catalog',
@@ -237,10 +219,9 @@ export default function AdvWorkflowsTab() {
 
   const plansQuery = useSyncQuery<AutomationPlanRow>({
     queryName: 'plans.list',
-    // No args is the canonical active-workspace superset: callPlansReadRaw
-    // injects workspaceWide:true. Do not fan out the project registry here —
-    // harness_slugs is capped at 64 and a large workspace would strand this
-    // view in Loading after the resolver rejects the oversized list.
+    // No args is the canonical active-workspace superset: callPlansReadRaw injects
+    // workspaceWide:true. Do not fan out the project registry here — harness_slugs is
+    // capped at 64 and a large workspace would strand this view in Loading.
     args: {},
   });
   const schedulesQuery = useSyncQuery<AutomationScheduleRow>({
@@ -278,40 +259,41 @@ export default function AdvWorkflowsTab() {
     occurrences: occurrencesQuery.data ?? [],
     external,
   }), [catalog, external, occurrencesQuery.data, plansQuery.data, schedulesQuery.data]);
+
   const items = useMemo(() => buildAutomationItems(modelInput), [modelInput]);
-  const flows = useMemo(() => buildAutomationFlows(items), [items]);
-  const visibleFlows = useMemo(() => flows.filter((item) => {
-    if (flowFilter === 'attention' && !item.needsAttention) return false;
-    if (flowFilter === 'paused' && !item.paused) return false;
-    return filterAutomationItems([item], 'all', query).length === 1;
-  }), [flowFilter, flows, query]);
-  const visibleItems = useMemo(
-    () => filterAutomationItems(items, filter, query),
-    [filter, items, query],
-  );
-  const selected = items.find((item) => item.id === selectedId)
-    ?? (view === 'flow' ? visibleFlows[0] : visibleItems[0])
-    ?? items[0]
-    ?? null;
-  const selectedFlow = selected?.kind === 'triggered-plan' ? selected : visibleFlows[0] ?? null;
-  const inspected = view === 'flow' ? selectedFlow : selected;
+  const rows = useMemo(() => buildLedgerRows(items), [items]);
+  const counts = useMemo(() => buildFacetCounts(rows), [rows]);
   const activity = useMemo(() => buildAutomationActivity(modelInput), [modelInput]);
   const sources = useMemo(() => buildAutomationSources(modelInput), [modelInput]);
-
-  // ── Workflows landing (D-018) ────────────────────────────────────────────
-  // A workflow IS a triggered plan (D-013), so the landing reads `flows`, not the
-  // whole catalog — routines without a trigger are not workflows and stay in Catalog.
-  const landingWorkflows = useMemo(() => flows.map(toLandingWorkflow), [flows]);
-  // ExternalTriggerSourceAdminRow is a structural superset of LandingSourceInput,
-  // so it satisfies the landing directly — no lossy adapter in between.
+  const sourceHealth = useMemo(() => buildSourceHealth(sources), [sources]);
   const landingSources = external?.sources ?? [];
+  const needsYou = useMemo(
+    () => buildNeedsYou({ sources: landingSources, rows }),
+    [landingSources, rows],
+  );
+  const chips = useMemo(() => buildSuggestionChips(landingSources), [landingSources]);
 
-  // ── Opened workflow: read-only graph + agent chat (D-016/D-018) ──────────
-  const openedWorkflow = wfId ? items.find((item) => item.id === wfId) ?? null : null;
-  const openedBinding = useMemo(() => {
-    if (!openedWorkflow?.planSlug || !external) return null;
-    return external.bindings.find((binding) => binding.planSlug === openedWorkflow.planSlug) ?? null;
-  }, [external, openedWorkflow?.planSlug]);
+  const visibleRows = useMemo(
+    () => sortLedgerRows(
+      filterLedgerRows(rows, { state: stateFacet, kind: kindFacet, source: sourceFacet, query }),
+      sort,
+    ),
+    [rows, stateFacet, kindFacet, sourceFacet, query, sort],
+  );
+
+  // The inspected workflow: the explicit selection when it still exists, else the first
+  // visible row. Falling through keeps the inspector populated as facets change instead of
+  // emptying it under the operator.
+  const selectedRow = visibleRows.find((row) => row.id === selectedId)
+    ?? rows.find((row) => row.id === selectedId)
+    ?? visibleRows[0]
+    ?? null;
+  const inspected = selectedRow ? items.find((item) => item.id === selectedRow.id) ?? null : null;
+
+  const inspectedBinding = useMemo(() => {
+    if (!inspected?.planSlug || !external) return null;
+    return external.bindings.find((binding) => binding.planSlug === inspected.planSlug) ?? null;
+  }, [external, inspected?.planSlug]);
 
   const [inputs, setInputs] = useState<PlanInputSchemaInfo | null>(null);
   useEffect(() => {
@@ -497,60 +479,90 @@ export default function AdvWorkflowsTab() {
     }
   }, [confirm, refreshAll]);
 
-  const loading = catalogQuery.loading || plansQuery.loading || schedulesQuery.loading;
-  const attentionCount = items.filter((item) => item.needsAttention).length;
-  const runningCount = items.filter((item) => item.running).length;
-  const nextAt = nextFutureAutomationAt(items);
-  const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
-  const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
+  /** Toggle every automatic trigger on a row from the ledger's single arm control. */
+  const toggleRowArm = useCallback((rowId: string) => {
+    const item = items.find((candidate) => candidate.id === rowId);
+    if (!item) return;
+    if (item.routine?.controllable) { void toggleRoutine(item); return; }
+    const anyArmed = item.triggers.some((trigger) => trigger.armed === true);
+    if (anyArmed) { void pauseAutomaticTriggers(item); return; }
+    const schedule = item.triggers.find((trigger) => trigger.kind === 'schedule');
+    if (schedule && item.planSlug) {
+      void invoke(
+        `schedule:${item.id}`,
+        'plans:arm-schedule',
+        { slug: item.planSlug, ...(item.harness ? { harness: item.harness } : {}) },
+        'Schedule armed',
+      );
+      return;
+    }
+    const binding = item.triggers.find((trigger) => trigger.kind === 'external' && trigger.bindingId);
+    if (binding?.bindingId) void setBindingArmed(binding.bindingId, true);
+  }, [invoke, items, pauseAutomaticTriggers, setBindingArmed, toggleRoutine]);
+
+  const openComposer = useCallback((prompt: string) => {
+    setComposerPrompt(prompt);
+    setComposerOpen(true);
+  }, []);
 
   /**
-   * The count badge for one view tab. Overview and Flows both count workflows —
-   * a workflow IS a triggered plan (D-013), and the landing is a different
-   * presentation of that same set, not a different population.
+   * The needs-you strip's action.
+   *
+   * `review-runs` switches to the Activity mode — the runs are right there in the same
+   * frame. `reconnect` opens the workflow agent seeded with the strip's own sentence:
+   * chasing a broken provider connection is exactly the agent-mediated work D-016 routes
+   * through the chat, and the tab itself has never had a reconnect write of its own.
    */
-  const viewCount = (id: View): number => {
-    switch (id) {
-      case 'landing':
-      case 'flow':
-        return flows.length;
-      case 'catalog':
-        return items.length;
-      case 'activity':
-        return activity.length;
-      case 'sources':
-        return sources.length;
+  const onNeedsYouAction = useCallback((entry: NeedsYouItem) => {
+    if (entry.kind === 'reconnect') {
+      openComposer(`${entry.message}. Check the connection and tell me what it needs to be restored.`);
+      return;
     }
-  };
+    void setMode('activity');
+  }, [openComposer, setMode]);
 
-  // Opening a workflow is a DESTINATION, not a row highlight (D-018): the read-only
-  // graph + agent chat replaces the tab body, with its own back affordance. A `wfId`
-  // that resolves to nothing (stale URL) falls through to the landing rather than
-  // rendering an empty shell.
-  if (openedWorkflow) {
-    const armBusyKey = openedBinding ? `binding:${openedBinding.id}` : null;
+  const submitComposer = useCallback((event: FormEvent) => {
+    event.preventDefault();
+    const prompt = draft.trim();
+    if (!prompt) return;
+    openComposer(prompt);
+    setDraft('');
+  }, [draft, openComposer]);
+
+  const loading = catalogQuery.loading || plansQuery.loading || schedulesQuery.loading;
+  const planHarnesses = [...new Set((plansQuery.data ?? []).map((plan) => plan.harness).filter(Boolean))];
+  const creationHarness = resolvedHarnessSlug ?? (planHarnesses.length === 1 ? planHarnesses[0] : null);
+  const filtered = stateFacet !== 'all' || kindFacet !== 'all' || sourceFacet != null || query.trim() !== '';
+
+  // The expansion (D-002). A `wfId` that resolves to nothing (a stale URL) falls through to
+  // the frame rather than rendering an empty shell.
+  const expandedWorkflow = wfId ? items.find((item) => item.id === wfId) ?? null : null;
+  const expandedBinding = expandedWorkflow?.planSlug && external
+    ? external.bindings.find((binding) => binding.planSlug === expandedWorkflow.planSlug) ?? null
+    : null;
+
+  if (expandedWorkflow) {
+    const armBusyKey = expandedBinding ? `binding:${expandedBinding.id}` : null;
     return (
-      <section className="pc-workflows" aria-label="Workflow detail">
+      <section className="pc-wf" aria-label="Workflow detail">
         {confirmElement}
         <WorkflowDetailView
-          workflowLabel={openedWorkflow.label}
-          planSlug={openedWorkflow.planSlug ?? null}
-          harnessSlug={openedWorkflow.harness ?? null}
-          binding={openedBinding}
-          // `external === null` means the snapshot has not been read yet — the
-          // component renders "pending" rather than "unwired" off this.
+          workflowLabel={expandedWorkflow.label}
+          planSlug={expandedWorkflow.planSlug ?? null}
+          harnessSlug={expandedWorkflow.harness ?? null}
+          binding={expandedBinding}
           bindingLoaded={external !== null}
-          lastFiredLabel={openedWorkflow.lastAt == null ? null : `last fired ${relativeTime(openedWorkflow.lastAt)}`}
-          lastTestRunId={lastTestRun?.workflowId === openedWorkflow.id ? lastTestRun.runId : null}
+          lastFiredLabel={expandedWorkflow.lastAt == null ? null : `last fired ${relativeTime(expandedWorkflow.lastAt)}`}
+          lastTestRunId={lastTestRun?.workflowId === expandedWorkflow.id ? lastTestRun.runId : null}
           busy={armBusyKey !== null && busy === armBusyKey
             ? 'arm'
-            : busy === `run:${openedWorkflow.id}` ? 'test' : null}
+            : busy === `run:${expandedWorkflow.id}` ? 'test' : null}
           onBack={() => void setWfId(null)}
-          onToggleArm={() => openedBinding && void setBindingArmed(openedBinding.id, !openedBinding.armed)}
-          onTest={() => openedBinding && void runWithLastEvent(
-            openedWorkflow.id,
-            openedWorkflow.label,
-            openedBinding.id,
+          onToggleArm={() => expandedBinding && void setBindingArmed(expandedBinding.id, !expandedBinding.armed)}
+          onTest={() => expandedBinding && void runWithLastEvent(
+            expandedWorkflow.id,
+            expandedWorkflow.label,
+            expandedBinding.id,
           )}
         />
       </section>
@@ -558,7 +570,7 @@ export default function AdvWorkflowsTab() {
   }
 
   return (
-    <section className="pc-workflows" aria-label="Workflows">
+    <section className="pc-wf" aria-label="Workflows">
       {confirmElement}
       {composerOpen ? (
         <WorkflowComposerDialog
@@ -578,209 +590,222 @@ export default function AdvWorkflowsTab() {
           onClose={() => { setCreateOpen(false); setComposerPrompt(''); }}
           onCreated={(plan) => {
             refreshAll();
-            void setView('flow');
             void setSelectedId(`plan:${planRefKey(plan)}`);
           }}
         />
       ) : null}
-      <header className="pc-workflows__tab-masthead">
-        <div>
-          <div className="pc-workflows__eyebrow">Workspace control plane</div>
-          <h1>Workflows</h1>
-          <p>Everything that can run in the background—what starts it, whether it is running, what it can spend, and how to stop it.</p>
+
+      <header className="pc-wf__mast">
+        <div className="pc-wf__mast-ident">
+          <h1 className="pc-wf__title">Workflows</h1>
+          <span className="pc-wf__summary">{buildPopulationSummary(counts)}</span>
+          {sourceHealth.length > 0 ? (
+            <span className="pc-wf__sources" role="group" aria-label="Source health">
+              {sourceHealth.map((entry) => {
+                const active = sourceFacet === entry.token;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className="pc-wf__source"
+                    data-tone={entry.tone}
+                    data-active={active}
+                    aria-pressed={active}
+                    aria-label={`${entry.label}: ${entry.status}, ${entry.armedCount} of ${entry.bindingCount} armed`}
+                    onClick={() => void setSourceFacet(active ? null : entry.token)}
+                  >
+                    <span className="pc-wf__btn-inner">
+                      <i className="pc-wf__dot" data-tone={entry.tone} aria-hidden />
+                      <span className="pc-wf__source-name">{entry.label}</span>
+                      <span className="pc-wf__source-count">{entry.armedCount}/{entry.bindingCount}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </span>
+          ) : null}
         </div>
-        <div className="pc-workflows__mast-actions">
-          <button type="button" onClick={refreshAll} aria-label="Refresh workflows">
-            <span className="pc-workflows__button-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
+        <div className="pc-wf__mast-actions">
+          <button type="button" className="pc-wf__btn" onClick={refreshAll} aria-label="Refresh workflows">
+            <span className="pc-wf__btn-inner"><RefreshCw size={14} aria-hidden /> Refresh</span>
           </button>
-          <button type="button" className="pc-workflows__primary" onClick={() => {
-            setComposerPrompt('');
-            setComposerOpen(true);
-          }}>
-            <span className="pc-workflows__button-inner"><Plus size={14} aria-hidden /> New workflow</span>
+          <button type="button" className="pc-wf__btn pc-wf__btn--primary" onClick={() => openComposer('')}>
+            <span className="pc-wf__btn-inner"><Plus size={14} aria-hidden /> New workflow</span>
           </button>
         </div>
       </header>
 
-      <div className="pc-workflows__viewbar">
-        <nav aria-label="Workflow views">
-          {VIEW_TABS.map(({ id, label }) => (
-            <button key={id} type="button" data-active={view === id} onClick={() => void setView(id)}>
-              <span className="pc-workflows__viewtab-inner">
-                {label}
-                <span className="pc-workflows__viewtab-count">{viewCount(id)}</span>
-              </span>
+      <section className="pc-wf__composer" aria-label="Describe a workflow">
+        <form onSubmit={submitComposer}>
+          <div className="pc-wf__composer-row">
+            <label className="pc-wf__composer-label" htmlFor="pc-wf-compose">
+              What should happen automatically? The agent wires it.
+            </label>
+            <input
+              id="pc-wf-compose"
+              className="pc-wf__composer-input"
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              placeholder="When an email from a client arrives…"
+            />
+            <button type="submit" className="pc-wf__btn pc-wf__btn--tint" disabled={draft.trim().length === 0}>
+              <span className="pc-wf__btn-inner">Wire it</span>
             </button>
-          ))}
-        </nav>
-        <span>Source → plan → Outcome / next</span>
-      </div>
+          </div>
+        </form>
+        {chips.length > 0 ? (
+          <div className="pc-wf__chips" data-testid="workflows-chips">
+            {chips.map((chip) => (
+              <button key={chip.id} type="button" className="pc-wf__suggest" onClick={() => setDraft(chip.text)}>
+                <span className="pc-wf__btn-inner">{chip.text}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </section>
+
+      {/* D-018, preserved by D-004: rendered ONLY when non-empty. No empty-state branch. */}
+      {needsYou.length > 0 ? (
+        <section className="pc-wf__needs" aria-label="Needs you" data-testid="workflows-needs-you">
+          <span className="pc-wf__needs-lead">Needs you</span>
+          <ul className="pc-wf__needs-list">
+            {needsYou.map((entry) => (
+              <li key={entry.id} className="pc-wf__needs-item" data-severity={entry.severity}>
+                <i className="pc-wf__dot" data-state={entry.severity === 'bad' ? 'attention' : 'paused'} aria-hidden />
+                <span className="pc-wf__needs-msg">{entry.message}</span>
+                <button type="button" className="pc-wf__btn pc-wf__btn--sm" onClick={() => onNeedsYouAction(entry)}>
+                  <span className="pc-wf__btn-inner">{entry.actionLabel}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {externalError ? (
-        <div className="pc-workflows__notice" role="status">
+        <div className="pc-wf__notice" role="status">
           External sources are temporarily unavailable: {externalError}. Routine and schedule data remain live.
         </div>
       ) : null}
 
-      {view === 'flow' || view === 'catalog' ? (
-        <div className="pc-workflows__metrics" aria-label="Workflow summary">
-          <Metric icon={AlertTriangle} label="Needs attention" value={String(attentionCount)} tone={attentionCount > 0 ? 'warn' : 'good'} />
-          <Metric icon={Play} label="Running now" value={String(runningCount)} tone={runningCount > 0 ? 'blue' : 'neutral'} />
-          <Metric icon={CalendarClock} label="Next run" value={nextAt == null ? '—' : relativeTime(nextAt)} tone="neutral" />
-          <Metric icon={CircleDollarSign} label="Spend · 7 days" value={`$${(catalog?.spend7dTotalUsd ?? 0).toFixed(2)}`} tone="spend" />
-        </div>
-      ) : null}
+      <div className="pc-wf__facets">
+        <Tabs.Root value={mode} onValueChange={(next) => void setMode(next as Mode)}>
+          <Tabs.List className="pc-wf__seg" aria-label="Workflows view">
+            <Tabs.Trigger value="workflows" className="pc-wf__seg-tab">Workflows</Tabs.Trigger>
+            <Tabs.Trigger value="activity" className="pc-wf__seg-tab">Activity</Tabs.Trigger>
+          </Tabs.List>
+        </Tabs.Root>
 
-      {view === 'landing' ? (
-        <WorkflowsLanding
-          workflows={landingWorkflows}
-          sources={landingSources}
-          // Deliberately NOT measured. The only fire feed here is
-          // external.recentRuns — a bounded recent window, so counting today's
-          // entries in it would render an undercount as a fact. null makes the
-          // landing say "fires not counted", which is the truth.
-          firesToday={null}
-          // The catalog carries a 7-DAY spend total only; labelling it "today"
-          // would be a wrong number, not a rounded one.
-          spendTodayLabel={null}
-          onOpenWorkflow={(workflowId) => void setWfId(workflowId)}
-          onNeedsYouAction={(item: NeedsYouItem) => {
-            void setView(item.kind === 'reconnect' ? 'sources' : 'activity');
-          }}
-          // Until the pack browser lands, the agent can inspect canonical
-          // templates/tools without exposing the low-level structural form.
-          onInstallFromCupboard={() => {
-            setComposerPrompt('Help me choose and install a workflow from the Cupboard. Keep it disarmed until I review it.');
-            setComposerOpen(true);
-          }}
-          onComposeWorkflow={(prompt) => {
-            setComposerPrompt(prompt);
-            setComposerOpen(true);
-          }}
-        />
-      ) : view === 'flow' ? (
-        <>
-          <div className="pc-workflows__flow-toolbar">
-            <label>
-              <Search size={14} aria-hidden />
-              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search trigger flows" aria-label="Search trigger flows" />
-            </label>
-            <div role="group" aria-label="Filter trigger flows">
-              {([
-                ['all', `All flows · ${flows.length}`],
-                ['attention', `Needs attention · ${flows.filter((item) => item.needsAttention).length}`],
-                ['paused', `Paused · ${flows.filter((item) => item.paused).length}`],
-              ] as const).map(([id, label]) => (
-                <button key={id} type="button" data-active={flowFilter === id} onClick={() => void setFlowFilter(id)}>{label}</button>
-              ))}
-            </div>
-          </div>
-          <div className="pc-workflows__workspace">
-            <FlowCanvas
-              items={visibleFlows}
-              loading={loading}
-              selectedId={selectedFlow?.id ?? null}
-              onSelect={(item) => void setSelectedId(item.id)}
-            />
-            <AutomationDetail
-              variant="flow"
-              item={selectedFlow}
-              inputs={inputs}
-              runs={runHistory}
-              busy={busy}
-              onRun={() => selectedFlow?.planSlug && void invoke(
-                `run:${selectedFlow.id}`,
-                'plans:run-now',
-                { slug: selectedFlow.planSlug, ...(selectedFlow.harness ? { harness: selectedFlow.harness } : {}) },
-                `${selectedFlow.label} started`,
-              )}
-              onToggleSchedule={(armed) => selectedFlow?.planSlug && void invoke(
-                `schedule:${selectedFlow.id}`,
-                armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
-                { slug: selectedFlow.planSlug, ...(selectedFlow.harness ? { harness: selectedFlow.harness } : {}) },
-                armed ? 'Schedule armed' : 'Schedule paused',
-              )}
-              onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
-              onToggleRoutine={() => selectedFlow && void toggleRoutine(selectedFlow)}
-              onPauseAll={() => selectedFlow && void pauseAutomaticTriggers(selectedFlow)}
-              onEditSchedule={() => {
-                if (!selectedFlow?.planSlug) return;
-                void setCalendarPlan(selectedFlow.planSlug);
-                void setAdvTab('calendar');
-              }}
-              onViewActivity={() => void setView('activity')}
-            />
-          </div>
-        </>
-      ) : view === 'catalog' ? (
-        <>
-          <div className="pc-workflows__filters">
-            <div role="group" aria-label="Filter workflows">
-              {FILTERS.map((candidate) => (
-                <button key={candidate.id} type="button" data-active={filter === candidate.id} onClick={() => void setFilter(candidate.id)}>
-                  {candidate.label}
+        {mode === 'workflows' ? (
+          <>
+            <div className="pc-wf__facet-group" role="group" aria-label="Filter by state">
+              {STATE_FACETS.map((facet) => (
+                <button
+                  key={facet.id}
+                  type="button"
+                  className="pc-wf__facet"
+                  aria-pressed={stateFacet === facet.id}
+                  onClick={() => void setStateFacet(facet.id)}
+                >
+                  <span className="pc-wf__btn-inner">
+                    {facet.label}
+                    <span className="pc-wf__facet-n">{facet.id === 'all' ? counts.all : counts[facet.id]}</span>
+                  </span>
                 </button>
               ))}
             </div>
-            <label>
-              <Search size={13} aria-hidden />
-              <input value={query} onChange={(event) => void setQuery(event.target.value)} placeholder="Search workflows" aria-label="Search workflows" />
-            </label>
-          </div>
-
-          <div className="pc-workflows__workspace">
-            <div className="pc-workflows__catalog">
-              <div className="pc-workflows__panelhead">
-                <strong>Workflow catalog</strong>
-                <span>{visibleItems.length} shown · attention first, then next run</span>
-              </div>
-              {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading workflows…</div> : null}
-              {!loading && visibleItems.length === 0 ? <div className="pc-workflows__list-empty">No workflows match this filter.</div> : null}
-              <div className="pc-workflows__rows">
-                {visibleItems.map((item) => (
-                  <AutomationRow key={item.id} item={item} selected={selected?.id === item.id} onSelect={() => void setSelectedId(item.id)} />
-                ))}
-              </div>
+            <div className="pc-wf__facet-group" role="group" aria-label="Filter by kind">
+              {KIND_FACETS.map((facet) => (
+                <button
+                  key={facet.id}
+                  type="button"
+                  className="pc-wf__facet"
+                  aria-pressed={kindFacet === facet.id}
+                  onClick={() => void setKindFacet(facet.id)}
+                >
+                  <span className="pc-wf__btn-inner">
+                    {facet.label}
+                    <span className="pc-wf__facet-n">{facet.id === 'all' ? counts.all : counts[facet.id]}</span>
+                  </span>
+                </button>
+              ))}
             </div>
-            <AutomationDetail
-              variant="catalog"
-              item={selected}
-              inputs={inputs}
-              runs={runHistory}
-              busy={busy}
-              onRun={() => selected?.planSlug && void invoke(
-                `run:${selected.id}`,
-                'plans:run-now',
-                { slug: selected.planSlug, ...(selected.harness ? { harness: selected.harness } : {}) },
-                `${selected.label} started`,
-              )}
-              onToggleSchedule={(armed) => selected?.planSlug && void invoke(
-                `schedule:${selected.id}`,
-                armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
-                { slug: selected.planSlug, ...(selected.harness ? { harness: selected.harness } : {}) },
-                armed ? 'Schedule armed' : 'Schedule paused',
-              )}
-              onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
-              onToggleRoutine={() => selected && void toggleRoutine(selected)}
-              onPauseAll={() => selected && void pauseAutomaticTriggers(selected)}
-              onEditSchedule={() => {
-                if (!selected?.planSlug) return;
-                void setCalendarPlan(selected.planSlug);
-                void setAdvTab('calendar');
-              }}
-              onViewActivity={() => void setView('activity')}
+            <label className="pc-wf__search">
+              <Search size={13} aria-hidden />
+              <input
+                value={query}
+                onChange={(event) => void setQuery(event.target.value)}
+                placeholder="Search workflows"
+                aria-label="Search workflows"
+              />
+            </label>
+            <Select
+              value={sort}
+              onChange={(value) => void setSort(value as LedgerSort)}
+              ariaLabel="Sort workflows"
+              triggerClassName="pc-wf__sort"
+              options={SORTS.map((entry) => ({ value: entry.id, label: entry.label }))}
             />
-          </div>
-        </>
-      ) : view === 'activity' ? (
-        <ActivityView activity={activity} spend={catalog?.spend7d ?? []} onOpen={(item) => {
-          if (item.automationId) void setSelectedId(item.automationId);
-          const automation = items.find((candidate) => candidate.id === item.automationId);
-          void setView(automation?.kind === 'triggered-plan' ? 'flow' : 'catalog');
-        }} />
-      ) : (
-        <SourcesView sources={sources} />
-      )}
+          </>
+        ) : null}
+      </div>
+
+      <div className="pc-wf__body">
+        {mode === 'activity' ? (
+          <ActivityList
+            activity={activity}
+            onOpen={(entry) => { if (entry.automationId) void setSelectedId(entry.automationId); }}
+          />
+        ) : (
+          <WorkflowsLedger
+            rows={visibleRows}
+            selectedId={selectedRow?.id ?? null}
+            loading={loading}
+            emptyLabel={filtered
+              ? 'No workflows match these filters.'
+              : 'No workflows are installed yet. Describe one above and the agent will wire it.'}
+            onSelect={(row) => void setSelectedId(row.id)}
+            onToggleArm={(row) => toggleRowArm(row.id)}
+            busyRowId={busy?.startsWith('schedule:') || busy?.startsWith('pause:') || busy?.startsWith('routine:')
+              ? busy.slice(busy.indexOf(':') + 1)
+              : null}
+          />
+        )}
+        <WorkflowInspector
+          item={inspected}
+          row={selectedRow}
+          inputs={inputs}
+          runs={runHistory}
+          binding={inspectedBinding}
+          bindingLoaded={external !== null}
+          busy={busy}
+          onRun={() => inspected?.planSlug && void invoke(
+            `run:${inspected.id}`,
+            'plans:run-now',
+            { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
+            `${inspected.label} started`,
+          )}
+          onToggleSchedule={(armed) => inspected?.planSlug && void invoke(
+            `schedule:${inspected.id}`,
+            armed ? 'plans:arm-schedule' : 'plans:disarm-schedule',
+            { slug: inspected.planSlug, ...(inspected.harness ? { harness: inspected.harness } : {}) },
+            armed ? 'Schedule armed' : 'Schedule paused',
+          )}
+          onToggleBinding={(id, armed) => void setBindingArmed(id, armed)}
+          onToggleRoutine={() => inspected && void toggleRoutine(inspected)}
+          onPauseAll={() => inspected && void pauseAutomaticTriggers(inspected)}
+          onEditSchedule={() => {
+            if (!inspected?.planSlug) return;
+            void setCalendarPlan(inspected.planSlug);
+            void setAdvTab('calendar');
+          }}
+          onExpand={() => inspected && void setWfId(inspected.id)}
+          onAsk={() => {
+            if (!inspected) return;
+            openComposer(`About the workflow "${inspected.label}": `);
+          }}
+        />
+      </div>
     </section>
   );
 }
@@ -825,7 +850,7 @@ function CreateAutomationModal({
   plans: AutomationPlanRow[];
   sources: ExternalTriggerAdminSnapshot['sources'];
   defaultHarness: string | null;
-  /** Seed for the outcome field, handed over from the landing's agent composer (D-018). */
+  /** Seed for the outcome field, handed over from the agent composer. */
   initialOutcome?: string;
   onClose: () => void;
   onCreated: (plan: CreatePlanRef) => void;
@@ -1172,274 +1197,5 @@ function CreateAutomationModal({
         )}
       </form>
     </Modal>
-  );
-}
-
-function Metric({ icon: Icon, label, value, tone }: { icon: typeof Activity; label: string; value: string; tone: string }) {
-  return (
-    <div className="pc-workflows__metric" data-tone={tone}>
-      <span><Icon size={14} aria-hidden /> {label}</span>
-      <strong>{value}</strong>
-    </div>
-  );
-}
-
-function AutomationRow({ item, selected, onSelect }: { item: AutomationItem; selected: boolean; onSelect: () => void }) {
-  return (
-    <button type="button" className="pc-workflows__row" data-selected={selected} data-state={itemState(item).toLowerCase().replaceAll(' ', '-')} onClick={onSelect}>
-      <span className="pc-workflows__row-layout">
-        <span className="pc-workflows__row-main">
-          <span className="pc-workflows__row-title">
-            <i aria-hidden /> <strong>{item.label}</strong><em>{kindLabel(item.kind)}</em>
-          </span>
-          <span className="pc-workflows__row-copy">{item.description}</span>
-          {item.triggers.length > 0 ? (
-            <span className="pc-workflows__row-chips">
-              {item.triggers.slice(0, 5).map((trigger) => <span key={trigger.id}>{trigger.provider}</span>)}
-            </span>
-          ) : null}
-        </span>
-        <span className="pc-workflows__row-state">
-          <strong>{item.timingLabel}</strong>
-          <small>{item.running ? 'Live execution observed' : item.lastAt ? `Last ${relativeTime(item.lastAt)}` : itemState(item)}</small>
-        </span>
-        <span className="pc-workflows__row-spend">
-          <strong>{item.spendLabel}</strong>
-          <small>{item.kind === 'triggered-plan' ? 'Verified costs shown per run' : 'No guessed routine attribution'}</small>
-        </span>
-        <ChevronRight size={15} aria-hidden />
-      </span>
-    </button>
-  );
-}
-
-function FlowCanvas({
-  items,
-  loading,
-  selectedId,
-  onSelect,
-}: {
-  items: AutomationItem[];
-  loading: boolean;
-  selectedId: string | null;
-  onSelect: (item: AutomationItem) => void;
-}) {
-  return (
-    <section className="pc-workflows__flow-canvas" aria-label="Trigger flows">
-      <div className="pc-workflows__panelhead">
-        <strong>Trigger flows</strong>
-        <span>Click a flow to inspect its sources, controls, and linked activity</span>
-      </div>
-      <div className="pc-workflows__flow-columns" aria-hidden>
-        <span>Trigger source</span><span>Plan</span><span>Outcome / next</span>
-      </div>
-      <div className="pc-workflows__flows">
-        {items.map((item) => {
-          const flow = item.flow;
-          if (!flow) return null;
-          return (
-            <button
-              type="button"
-              className="pc-workflows__flow-row"
-              data-selected={selectedId === item.id}
-              key={item.id}
-              onClick={() => onSelect(item)}
-              aria-label={`${flow.sourceLabel} starts ${item.label}; outcome or next: ${flow.outcomeLabel}`}
-            >
-              <span className="pc-workflows__flow-row-layout">
-                <span className="pc-workflows__flow-line" aria-hidden />
-                <span className="pc-workflows__flow-node is-source" data-state={flow.sourceState}>
-                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{flow.sourceLabel}</strong></span>
-                  <span className="pc-workflows__flow-node-copy">{flow.sourceDetail}</span>
-                  <span className="pc-workflows__flow-node-meta">{item.triggers.length} installed trigger{item.triggers.length === 1 ? '' : 's'}</span>
-                </span>
-                <span className="pc-workflows__flow-node is-plan" data-state={itemState(item).toLowerCase().replaceAll(' ', '-')}>
-                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{item.label}</strong></span>
-                  <span className="pc-workflows__flow-node-copy">{item.description}</span>
-                  <span className="pc-workflows__flow-node-meta">{flow.planDetail}</span>
-                </span>
-                <span className="pc-workflows__flow-node is-outcome" data-state={flow.outcomeState}>
-                  <span className="pc-workflows__flow-node-title"><i aria-hidden /><strong>{flow.outcomeLabel}</strong></span>
-                  <span className="pc-workflows__flow-node-copy">{flow.outcomeDetail}</span>
-                  <span className="pc-workflows__flow-node-meta">{item.timingLabel}</span>
-                </span>
-              </span>
-            </button>
-          );
-        })}
-        {loading && items.length === 0 ? <div className="pc-workflows__list-empty">Loading trigger flows…</div> : null}
-        {!loading && items.length === 0 ? (
-          <div className="pc-workflows__list-empty">
-            No triggered plans match this view. Non-triggered AI routines and system tasks remain available in Catalog.
-          </div>
-        ) : null}
-      </div>
-    </section>
-  );
-}
-
-function AutomationDetail({
-  variant,
-  item,
-  inputs,
-  runs,
-  busy,
-  onRun,
-  onToggleSchedule,
-  onToggleBinding,
-  onToggleRoutine,
-  onPauseAll,
-  onEditSchedule,
-  onViewActivity,
-}: {
-  variant: 'flow' | 'catalog';
-  item: AutomationItem | null;
-  inputs: PlanInputSchemaInfo | null;
-  runs: RunHistoryRow | null;
-  busy: string | null;
-  onRun: () => void;
-  onToggleSchedule: (armed: boolean) => void;
-  onToggleBinding: (id: string, armed: boolean) => void;
-  onToggleRoutine: () => void;
-  onPauseAll: () => void;
-  onEditSchedule: () => void;
-  onViewActivity: () => void;
-}) {
-  if (!item) return <aside className="pc-workflows__detail"><div className="pc-workflows__list-empty">Select a workflow.</div></aside>;
-  const automatic = item.triggers;
-  const runRows = runs?.runs.slice(0, 5) ?? [];
-  return (
-    <aside className="pc-workflows__detail" aria-label="Workflow details">
-      <div className="pc-workflows__panelhead"><strong>{variant === 'flow' ? 'Flow inspector' : 'Workflow details'}</strong><span>one identity across every view</span></div>
-      <div className="pc-workflows__detailbody">
-        <div className="pc-workflows__detail-kicker">{kindLabel(item.kind)} · {itemState(item)}</div>
-        <h2>{item.label}</h2>
-        <p>{item.description}</p>
-        <div className="pc-workflows__statechips">
-          <span data-tone={item.paused ? 'warn' : 'good'}>{item.paused ? 'Paused' : 'Enabled'}</span>
-          <span data-tone={item.running ? 'blue' : 'neutral'}>{item.running ? 'Running' : 'Not running'}</span>
-          {item.needsAttention ? <span data-tone="warn">Needs attention</span> : null}
-        </div>
-
-        <div className="pc-workflows__detailgrid">
-          <DetailCard label="Next scheduled" value={item.nextAt ? relativeTime(item.nextAt) : 'None'} />
-          <DetailCard label="Last activity" value={item.lastAt ? relativeTime(item.lastAt) : 'No run recorded'} />
-          <DetailCard label="Plan inputs" value={inputs ? `${inputs.required.length} required · ${inputs.ready ? 'ready' : `${inputs.missing.length} missing`}` : item.planSlug ? 'Checking…' : 'Not a plan'} />
-          <DetailCard label="Run-linked cost" value={runs?.rollup ? `$${runs.rollup.totalCostUsd.toFixed(2)} · ${runs.rollup.total} runs` : 'No verified run cost'} />
-        </div>
-
-        {variant === 'flow' && item.flow ? (
-          <section className="pc-workflows__causal-path">
-            <header><strong>Causal path</strong><span>observed state and declared next action</span></header>
-            <div><span>Source</span><p><strong>{item.flow.sourceLabel}</strong><small>{item.flow.sourceDetail}</small></p><em data-state={item.flow.sourceState}>{item.flow.sourceState.replaceAll('-', ' ')}</em></div>
-            <div><span>Plan</span><p><strong>{item.label}</strong><small>{item.flow.planDetail}</small></p><em>{itemState(item)}</em></div>
-            <div><span>Outcome / next</span><p><strong>{item.flow.outcomeLabel}</strong><small>{item.flow.outcomeDetail}</small></p><em data-state={item.flow.outcomeState}>{item.flow.outcomeState}</em></div>
-          </section>
-        ) : null}
-
-        <section className="pc-workflows__trigger-section">
-          <header><strong>Automatic triggers</strong><span>installed and armed are separate</span></header>
-          {item.triggers.map((trigger) => (
-            <div className="pc-workflows__trigger" key={trigger.id}>
-              <span>{trigger.provider}</span>
-              <div><strong>{trigger.label}</strong><small>{trigger.detail}</small></div>
-              <button
-                type="button"
-                disabled={busy != null || trigger.armed == null || (trigger.kind === 'external' && !trigger.bindingId)}
-                onClick={() => {
-                  if (trigger.kind === 'schedule') onToggleSchedule(trigger.armed !== true);
-                  else if (trigger.bindingId) onToggleBinding(trigger.bindingId, trigger.armed !== true);
-                }}
-              >
-                <span className="pc-workflows__button-inner">{trigger.armed == null ? 'Unknown' : trigger.armed ? 'Armed' : 'Paused'}</span>
-              </button>
-            </div>
-          ))}
-          {item.triggers.length === 0 ? <div className="pc-workflows__list-empty">Automatic trigger details are unavailable.</div> : null}
-        </section>
-
-        <section className="pc-workflows__cost">
-          <header><span>Spend & permission</span><strong>{item.spendLabel}</strong></header>
-          <p>{item.kind === 'triggered-plan'
-            ? 'Costs come from runs linked to this plan. A schedule never proves a run happened.'
-            : 'Routine-level dollars are not inferred from role totals; only the ability to spend is shown.'}</p>
-        </section>
-
-        <div className="pc-workflows__actions">
-          {item.planSlug ? <button type="button" className="is-primary" disabled={busy != null || inputs?.ready === false} onClick={onRun}><span className="pc-workflows__button-inner"><Play size={13} aria-hidden /> Run manually</span></button> : null}
-          {item.planSlug ? <button type="button" disabled={busy != null} onClick={onEditSchedule}><span className="pc-workflows__button-inner"><CalendarClock size={13} aria-hidden /> Edit schedule</span></button> : null}
-          <button type="button" disabled={busy != null} onClick={onViewActivity}><span className="pc-workflows__button-inner"><Activity size={13} aria-hidden /> View activity</span></button>
-          {item.routine?.controllable ? <button type="button" disabled={busy != null} onClick={onToggleRoutine}><span className="pc-workflows__button-inner"><Power size={13} aria-hidden /> {item.routine.active ? 'Pause' : 'Resume'}</span></button> : null}
-          {automatic.some((trigger) => trigger.armed === true) ? <button type="button" className="is-warn" disabled={busy != null} onClick={onPauseAll}><span className="pc-workflows__button-inner"><Power size={13} aria-hidden /> Pause automatic triggers</span></button> : null}
-        </div>
-
-        <section className="pc-workflows__history">
-          <header><strong>Recent activity</strong>{runs?.rollup ? <span>{Math.round(runs.rollup.successRate * 100)}% success · median {durationLabel(runs.rollup.medianDurationMs)}</span> : null}</header>
-          {runRows.map((run) => (
-            <div key={run.id}><i data-status={run.outcome ?? run.status} /><span>{run.trigger ?? run.status} · {run.outcome ?? run.status} · {relativeTime(run.launchedAt)}</span><em>{run.costUsd > 0 ? `$${run.costUsd.toFixed(2)}` : '—'}</em></div>
-          ))}
-          {runRows.length === 0 ? <p>No plan-run history yet.</p> : null}
-        </section>
-      </div>
-    </aside>
-  );
-}
-
-function DetailCard({ label, value }: { label: string; value: string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>;
-}
-
-function ActivityView({
-  activity,
-  spend,
-  onOpen,
-}: {
-  activity: AutomationActivityItem[];
-  spend: AutomationCatalog['spend7d'];
-  onOpen: (item: AutomationActivityItem) => void;
-}) {
-  return (
-    <div className="pc-workflows__activity-layout">
-      <div className="pc-workflows__widepanel">
-        <div className="pc-workflows__panelhead"><strong>Workflow activity</strong><span>external runs and routine fires · newest first</span></div>
-        <div className="pc-workflows__activity">
-          {activity.map((item) => (
-            <button type="button" key={item.id} onClick={() => onOpen(item)}>
-              <span className="pc-workflows__activity-row-layout"><i data-status={item.status} /><span><strong>{item.label}</strong><small>{item.detail}</small></span><em>{item.status}</em><time>{relativeTime(item.at)}</time></span>
-            </button>
-          ))}
-          {activity.length === 0 ? <div className="pc-workflows__list-empty">No workflow activity has been recorded yet.</div> : null}
-        </div>
-      </div>
-      <div className="pc-workflows__widepanel">
-        <div className="pc-workflows__panelhead"><strong>Workspace spend · 7 days</strong><span>by agent role · not guessed per routine</span></div>
-        <div className="pc-workflows__spend-rows">
-          {spend.map((row) => (
-            <div key={`${row.role}:${row.modelClass ?? ''}`}>
-              <span><strong>{row.role}</strong><small>{row.modelClass ?? 'model class unavailable'} · {row.turns} turns</small></span>
-              <span><strong>${row.costUsd.toFixed(2)}</strong><small>{row.outputTokens.toLocaleString()} output tokens</small></span>
-            </div>
-          ))}
-          {spend.length === 0 ? <div className="pc-workflows__list-empty">No model spend recorded in this window.</div> : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function SourcesView({ sources }: { sources: ReturnType<typeof buildAutomationSources> }) {
-  return (
-    <div className="pc-workflows__widepanel">
-      <div className="pc-workflows__panelhead"><strong>Trigger sources</strong><span>connection health and installed bindings</span></div>
-      <div className="pc-workflows__sources">
-        {sources.map((source) => (
-          <article key={source.id}>
-            <div className="pc-workflows__source-icon">{source.kind === 'schedule' ? <CalendarClock size={18} /> : <DatabaseZap size={18} />}</div>
-            <div><strong>{source.label}</strong><span>{source.detail}</span></div>
-            <dl><div><dt>State</dt><dd>{source.status}</dd></div><div><dt>Bindings</dt><dd>{source.armedCount}/{source.bindingCount} armed</dd></div></dl>
-          </article>
-        ))}
-      </div>
-    </div>
   );
 }
