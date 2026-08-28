@@ -1283,6 +1283,11 @@ export default defineTool({
                   writeMcpJson: false,
                   scheme,
                   allowDesktopBridge: true,
+                  // `pid` is the terminal emulator (or its launcher), not the
+                  // interactive shell that owns the tab. Capture the shell's
+                  // authenticated PID so respawn cleanup can pass it to
+                  // fleet:kill's terminal_pids path.
+                  captureTerminalPid: true,
                   displayOverride: memberSpecs[i]?.display ?? args.display,
                   // EI-21010422711013687: the server-side gnome-terminal factory can
                   // open the requested window but silently drop the `-- CMD`
@@ -1553,7 +1558,11 @@ export default defineTool({
       }
       for (const o of opened) {
         if (o.status !== 'ok') continue;
-        lines.push(`  • ${o.terminal} (pid ${o.pid ?? '?'}) in ${cwd}${o.display ? ` [DISPLAY=${o.display}]` : ''}`);
+        const terminalPid = o.terminalPid == null ? 'unavailable' : String(o.terminalPid);
+        lines.push(
+          `  • ${o.terminal} (launcher pid ${o.pid ?? '?'}; terminal pid ${terminalPid}) in ${cwd}` +
+            `${o.display ? ` [DISPLAY=${o.display}]` : ''}`,
+        );
       }
       const hasLaunchBrief = Boolean(isSuccessor ? successorBrief : args.brief || anyMemberBrief);
       if (hasLaunchBrief) {
@@ -1601,6 +1610,7 @@ export default defineTool({
                 taskId: result.taskId ?? null,
                 logPath: result.logPath ?? null,
                 pid: result.pid,
+                terminalPid: result.terminalPid ?? null,
                 label: memberLabels[i],
                 headless: !!foldedConfigs[i].headless,
               },

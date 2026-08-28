@@ -374,6 +374,81 @@ describe('buildConsoleOneliner boot-receipt tee (EI-19330040718883562)', () => {
   });
 });
 
+describe('spawnConsole terminal PID receipt (EI-21653040525457620)', () => {
+  const envelope: ConsoleEnvelope = {
+    cwd: '/tmp',
+    env: {},
+    mcpJsonContents: '',
+    greetingCmd: 'true',
+    needsSuperuserBootstrap: false,
+    sessionId: 'terminal-pid-sid',
+  };
+
+  beforeEach(() => {
+    vi.mocked(isWindowsDesktopHost).mockReturnValue(false);
+    spawnMock.mockReset();
+    vi.stubEnv('DISPLAY', ':99');
+    vi.stubEnv('TERMINAL', 'bash');
+    _resetTerminalCacheForTests();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetTerminalCacheForTests();
+  });
+
+  it('writes the interactive shell PID from inside the terminal, not the emulator PID', () => {
+    const out = buildConsoleOneliner(
+      '/repo',
+      {},
+      'true',
+      APPEARANCE,
+      null,
+      true,
+      true,
+      '/tmp/terminal-pid.receipt',
+    );
+    const script = interactiveRcScript(out);
+    expect(script).toContain(`printf '%s\\n' "$$" > '/tmp/terminal-pid.receipt'`);
+  });
+
+  it('returns the receipt PID separately while preserving the emulator PID', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7005));
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      captureTerminalPid: true,
+      terminalPidProbes: {
+        readReceipt: () => '7006\n',
+        sleep: async () => {},
+        windowMs: 60,
+      },
+    });
+
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(7005);
+    expect((r as { terminalPid: number | null }).terminalPid).toBe(7006);
+  });
+
+  it('returns null when the receipt is absent instead of reusing the emulator PID', async () => {
+    spawnMock.mockImplementation(() => fakeChild(7007));
+    const r = await spawnConsole({
+      envelope,
+      desktopEnvProbes: FAKE_DESKTOP_PROBES,
+      captureTerminalPid: true,
+      terminalPidProbes: {
+        readReceipt: () => '',
+        sleep: async () => {},
+        windowMs: 0,
+      },
+    });
+
+    expect(r.status).toBe('ok');
+    expect((r as { pid: number | null }).pid).toBe(7007);
+    expect((r as { terminalPid: number | null }).terminalPid).toBeNull();
+  });
+});
+
 describe('headlessLogPath — per-session log filename (headless-fleet-launch P-002)', () => {
   it('slugifies the label + stamps pid/time under the given dir', () => {
     const p = headlessLogPath({ logDir: '/var/log/fleet', label: 'my-fleet · member 1/3 (plan)', pid: 42, nowMs: 1000 });
