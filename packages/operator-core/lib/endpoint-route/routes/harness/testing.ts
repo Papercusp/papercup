@@ -45,6 +45,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { computePlanItemTestStatus } from '../../../harness-test-rollup';
 import { runGovernedOperation } from '../../../resource-governor/execution';
+import { startRun, getRun, cancelRun } from '../../../testing-run-store';
 
 interface HarnessTestRow {
   id: string;
@@ -385,6 +386,54 @@ const run = defineTool({
   },
 });
 
+// Detached run lifecycle for the TUI. The legacy synchronous route above is
+// retained for API compatibility; these endpoints share the admin run store so
+// callers can observe rolling output and cancel the whole process group.
+const runDetached = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/testing/run-detached',
+  auth: 'loopback',
+  async handler(req, ctx) {
+    const slug = ctx.params.slug as string;
+    const resolved = await resolveCtx(slug, new URL(req.url).searchParams.get('phase'));
+    if (resolved instanceof Response) return resolved;
+    const body = (await req.json().catch(() => ({}))) as { filePath?: unknown };
+    const filePath = typeof body.filePath === 'string' ? body.filePath : '';
+    if (!filePath || !/^[A-Za-z0-9_./*-]+$/.test(filePath) || filePath.includes('..')) {
+      return Response.json({ error: 'filePath is required and must be repo-relative' }, { status: 400 });
+    }
+    const snapshot = startRun({
+      kind: 'vitest',
+      label: `vitest ${filePath}`,
+      filePath,
+      command: 'npx',
+      args: ['vitest', 'run', filePath],
+      cwd: resolved.root,
+    });
+    return Response.json(snapshot);
+  },
+});
+
+const runDetachedStatus = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/testing/run-detached/:runId',
+  auth: 'loopback',
+  handler(_req, ctx) {
+    const snapshot = getRun(ctx.params.runId as string);
+    return snapshot ? Response.json(snapshot) : Response.json({ error: 'unknown runId' }, { status: 404 });
+  },
+});
+
+const runDetachedCancel = defineTool({
+  method: 'POST',
+  path: '/harness/:slug/testing/run-detached/:runId/cancel',
+  auth: 'loopback',
+  handler(_req, ctx) {
+    const ok = cancelRun(ctx.params.runId as string);
+    return ok ? Response.json({ ok: true }) : Response.json({ ok: false, reason: 'not_running_or_unknown' }, { status: 404 });
+  },
+});
+
 // ── Per-file run history (P-007/P-020) ─────────────────────────────────────
 // Mirrors /admin/testing/file-history but scoped to THIS hive:
 //   WHERE harness_slug = :slug AND workspace_id = activeWorkspaceId()
@@ -567,4 +616,4 @@ const planItemsTestStatus = defineTool({
   },
 });
 
-export default [domainDetail, listDomains, fileStatus, healthStrip, run, fileHistory, listAssertions, patchAssertion, planItemsTestStatus];
+export default [domainDetail, listDomains, fileStatus, healthStrip, run, runDetached, runDetachedStatus, runDetachedCancel, fileHistory, listAssertions, patchAssertion, planItemsTestStatus];
