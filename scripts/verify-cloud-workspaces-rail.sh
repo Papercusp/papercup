@@ -156,14 +156,16 @@ else
 fi
 
 # ── R2: step routing, and unreachable steps degrading rather than blanking ───
-settle 2 '[data-stage]' 1 \
+# Still on the nav-0 document here — no navigation has happened since, so this
+# reuses nonce 0. (Pinning a nonce that was never navigated to is unfalsifiable:
+# the condition can never become true and the assertion just burns its timeout.)
+settle 0 '[data-stage]' 1 \
   "(function(){ \
      var reachable=!!document.querySelector('${RAIL} button:not([disabled])[aria-current=\"step\"]'); \
      var stage=document.querySelector('[data-stage]').getAttribute('data-stage'); \
      var cur=document.querySelector('${CURRENT}').getAttribute('aria-label')||''; \
      return reachable && cur.indexOf(stage.charAt(0).toUpperCase()+stage.slice(1))>0; })()" \
-  "R2 the rendered stage and the rail's current step always agree" \
-  || true
+  "R2 the rendered stage and the rail's current step always agree"
 nav 3 "step=configure"
 settle 3 '[data-stage]' 1 \
   "(function(){ \
