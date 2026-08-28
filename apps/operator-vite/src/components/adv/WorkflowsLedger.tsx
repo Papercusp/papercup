@@ -30,6 +30,16 @@ const KIND_CHIP: Record<LedgerRow['kind'], string | null> = {
   system: 'system',
 };
 
+/**
+ * The shared <Table> primitive sets its own inline `fontSize: 11` on <th> and 12 on the
+ * table. Inline styles beat a stylesheet, so the legibility floors this surface is held to
+ * (secondary metadata at 12px or larger, on --fg-dim) are asserted HERE, through the
+ * primitive's own per-column style hooks, rather than with an `!important` in the CSS.
+ * `adv-workflows.legibility.test.ts` pins both numbers.
+ */
+export const LEDGER_HEADER_STYLE = { fontSize: 12, color: 'var(--fg-dim)', opacity: 1 } as const;
+export const LEDGER_CELL_STYLE = { padding: '9px 10px' } as const;
+
 export interface WorkflowsLedgerProps {
   rows: readonly LedgerRow[];
   selectedId: string | null;
