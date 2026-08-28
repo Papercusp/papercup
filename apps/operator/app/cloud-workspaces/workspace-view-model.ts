@@ -714,8 +714,11 @@ export function railModel(
   const configureEvidence = (): string => {
     if (connections.length === 0) return "Needs a validated connection";
     if (workspaces.length === 0) return "No workspace provisioned yet";
+    /* `created_at` is projected as `provisionedAt` and survives every
+       observation refresh. Do not fall back to `observedAt`: that timestamp
+       moves after lifecycle actions and would make this label false again. */
     const newest = workspaces
-      .map((row) => row.observedAt)
+      .map((row) => row.provisionedAt)
       .filter((value): value is string => Boolean(value))
       .sort()
       .at(-1);
