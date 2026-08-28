@@ -774,6 +774,37 @@ export async function emitScorecard(
       };
     }
     const sourceHive = args.sourceHive ?? input.ctxHarness;
+    // P-013: a pending subject card is waiting for a GRADING-INTEGRITY audit,
+    // not another ordinary scorecard against the same rubric. Without this
+    // boundary a non-author auditor can accidentally file a second peer card
+    // that looks successful while leaving the original card pending until the
+    // far-end completion gate notices. Refuse the ambiguous form before any
+    // scorecard write and teach the only form that settles the pending stamp.
+    if (args.subject) {
+      const pendingSubject = (await listScorecards({
+        rubricRef: args.rubricRef,
+        subjectRef: args.subject.ref,
+        limit: 100,
+      })).find(
+        (card) =>
+          card.gradingAudit?.state === 'pending' &&
+          card.subject?.ref === args.subject?.ref &&
+          (card.subject?.kind ?? null) === (args.subject?.kind ?? null) &&
+          card.createdBy != null &&
+          card.createdBy !== input.createdBy,
+      );
+      if (pendingSubject) {
+        return {
+          ok: false as const,
+          code: 'grading_audit_required' as const,
+          error:
+            `scorecard '${pendingSubject.issueId}' for rubric '${args.rubricRef}' has a pending grading audit — ` +
+            "emit the audit as { rubricRef:'grading-integrity', ratings, terminal:true, " +
+            `subject:{ kind:'scorecard', ref:'${pendingSubject.issueId}' } } instead of filing another ` +
+            'same-rubric peer scorecard',
+        };
+      }
+    }
     if (args.supersedes) {
       const superseded = await getIssue(args.supersedes);
       const raw =
