@@ -1842,11 +1842,32 @@ function ImprovementsView({
     });
   }, [digest, ideaByItemId, lane, routed]);
 
+  // WI-471938: a filter control's OPTION SET is a claim about what EXISTS, so every source
+  // it can answer must come from the CORPUS — never from the rows this read happened to
+  // load. Three tiers, corpus-wide first, and the window is only the last resort:
+  //
+  //   1. `improveSummary` facets — corpus-wide, with the source dimension omitted from its
+  //      own selection (so picking a source does not collapse the set to that source).
+  //      Present only while `serverPredicateActive`, i.e. NOT on the default landing view.
+  //   2. `digest.sourceOptions` — the corpus-wide aggregate the unfiltered snapshot path
+  //      carries for exactly that gap. Absent (not empty) if the aggregate failed.
+  //   3. the loaded window — kept as the degraded fallback for both of those going missing.
+  //
+  // Tier 2 exists because tier 3 was silently wrong on the landing view: the window is
+  // capped at 500 over a corpus that is thousands of rows, so a source whose rows all sit
+  // past the cap rendered NO chip and could not be selected at all. Measured on the live
+  // corpus 2026-08-28: `system` had 15 rows and none of them inside the window, while
+  // `Scout`'s newest row sat at rank 474 of 500 — 27 more arrivals and the strip would have
+  // rendered nothing at all (it is gated on `sources.length > 0`) over a corpus holding
+  // 1,022 sourced rows. The rail chips beside these already take their option set from a
+  // corpus-wide source (`snap.railCounts`); this closes the asymmetry.
   const sources = useMemo<string[]>(() => {
     const serverFacet = improveSummary?.facets?.find(
       (facet) => facet.key === "source",
     );
     if (serverFacet) return serverFacet.values.map((value) => value.value);
+    if (digest?.sourceOptions)
+      return digest.sourceOptions.map((option) => option.value);
     const s = new Set<string>();
     for (const it of [
       ...(digest?.autoEligible ?? []),

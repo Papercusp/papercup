@@ -1010,6 +1010,102 @@ describe("LearningTab — Improvements view (default)", () => {
     ).toBeTruthy();
   });
 
+  // ── WI-471938: the "Filed by" OPTION SET is a corpus claim, not a window one ──
+  //
+  // The chips used to derive their options from `autoEligible + humanQueue` — the
+  // projected 500-row window — whenever no server predicate was active, which is exactly
+  // the default landing view. A source whose rows all sat past the cap therefore rendered
+  // NO chip and could not be selected, and the only way to reach it was to filter by
+  // something else first. Measured on the live corpus 2026-08-28: `system` had 15 rows and
+  // none of them in the window.
+
+  it("offers a chip for a source that exists in the corpus but has NO row in the loaded window", () => {
+    improvementsResult = {
+      ...improvementsResult,
+      data: [
+        {
+          ...improvementsDigest,
+          // The window holds only Scout rows…
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], source: "Scout" },
+          ],
+          humanQueue: [],
+          // …while the corpus aggregate knows about `system` too. Counts mirror the
+          // live measurement that motivated the fix.
+          sourceOptions: [
+            { value: "Scout", count: 1007 },
+            { value: "system", count: 15 },
+          ],
+        },
+      ],
+    };
+    render(<LearningTab />);
+
+    const filedBy = screen.getByLabelText("Filed by");
+    // The window-derived option is still there…
+    expect(within(filedBy).getByRole("button", { name: "Scout" })).toBeTruthy();
+    // …and so is the one that exists only in the unloaded tail. Before the fix this
+    // getByRole threw: the chip was never rendered.
+    const system = within(filedBy).getByRole("button", { name: "system" });
+
+    // And it is a working filter, not just a visible one: selecting it sends the
+    // predicate to the server, which filters the CORPUS rather than the window.
+    fireEvent.click(system);
+    expect(nuqsState.lsrc).toBe("system");
+    cleanup();
+    render(<LearningTab />);
+    expect(seenArgs["learning.improvements"]).toMatchObject({
+      sources: ["system"],
+    });
+  });
+
+  it("still derives the option set from the window when the corpus aggregate is ABSENT", () => {
+    // The aggregate is best-effort on the server: a failed read degrades to `undefined`
+    // rather than sinking the digest, and the old window-derived behaviour has to remain
+    // as the fallback — wrong in the tail, but not a blank filter strip.
+    improvementsResult = {
+      ...improvementsResult,
+      data: [
+        {
+          ...improvementsDigest,
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], source: "Scout" },
+          ],
+          humanQueue: [],
+          // no sourceOptions key at all
+        },
+      ],
+    };
+    render(<LearningTab />);
+    const filedBy = screen.getByLabelText("Filed by");
+    expect(within(filedBy).getByRole("button", { name: "Scout" })).toBeTruthy();
+    expect(
+      within(filedBy).queryByRole("button", { name: "system" }),
+    ).toBeNull();
+  });
+
+  it("treats an EMPTY corpus aggregate as 'no sources exist', not as 'we could not ask'", () => {
+    // The distinction the wire field is shaped around: `[]` is an answer (nothing is
+    // filed under any source), `undefined` is the absence of one. An empty answer must
+    // NOT silently fall through to the window, or a corpus with no sources would show
+    // chips derived from whatever rows happened to load.
+    improvementsResult = {
+      ...improvementsResult,
+      data: [
+        {
+          ...improvementsDigest,
+          autoEligible: [
+            { ...improvementsDigest.autoEligible[0], source: "Scout" },
+          ],
+          humanQueue: [],
+          sourceOptions: [],
+        },
+      ],
+    };
+    render(<LearningTab />);
+    expect(screen.queryByLabelText("Filed by")).toBeNull();
+  });
+
   it("filters the backlog through the quick-search box, Work-Queue style (owner ask 2026-07-19)", () => {
     nuqsState.impq = "massacre";
     render(<LearningTab />);

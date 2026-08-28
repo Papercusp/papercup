@@ -2004,6 +2004,131 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
 }
 
 /**
+ * Count issues by `payload.sourceRole` — the CORPUS-wide histogram of "who filed it".
+ *
+ * EI-21708963364424082 / WI-471938. A filter control's OPTION SET is a claim about what
+ * exists, not about what happens to be loaded. The Learning tab's "Filed by" chips derived
+ * their options from the digest's 500-row window, so a source living only in the unloaded
+ * tail offered no chip and could not be selected at all. Measured live 2026-08-28 on the
+ * loop-output corpus: `system` had 15 rows, ZERO of them inside the newest-500 window (its
+ * best rank was 708). This is the same class as WI-39675 — a windowed value read as a
+ * corpus value — and the same remedy: ask Postgres for the aggregate instead of tallying
+ * whatever the row read happened to fetch.
+ *
+ * The WHERE mirrors {@link countIssues} rather than {@link countIssuesByState}: the latter
+ * omits `q` and `severities`, which is safe for its callers but would silently widen THIS
+ * histogram past the row read it is meant to describe. A caller that filters by text and
+ * gets back options that ignore the text has the original bug pointed the other way.
+ *
+ * ⚠ COST: `payload ->> 'sourceRole'` is not a cheap column — payload is large and stored
+ * out-of-line, so this forces the datum (see WI-7102, which tracks migrating the remaining
+ * payload predicates to generated columns). Acceptable here because the only caller runs it
+ * once per digest computation, on the precompute path that already runs `countIssues`, over
+ * an id-bounded corpus of ~2k rows. Do not add a hot per-request caller without measuring.
+ *
+ * A row with no `sourceRole` is folded to the `''` key rather than dropped, so the histogram
+ * total still equals `countIssues()` over the same filter; callers that want only the
+ * selectable option set skip the empty key.
+ */
+export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Promise<Record<string, number>> {
+  const { sql } = getOrgPg();
+  const q = filter.q?.trim();
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  const rows = filter.topic
+    ? await sql<{ source_role: string | null; n: number }[]>`
+      SELECT ei.payload ->> 'sourceRole' AS source_role, count(DISTINCT ei.issue_id)::int AS n
+        FROM harness_shared.engineer_issues ei
+        JOIN harness_shared.coord_links cl
+          ON cl.workspace_id = ${coordScopeWorkspace()}
+         AND cl.rel = 'tagged'
+         AND cl.src_kind = ${ISSUE_KIND}
+         AND cl.src_ref = ei.issue_id
+         AND cl.dst_kind = 'topic'
+         AND cl.dst_ref = ${filter.topic}
+       WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+         AND ei.kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+         AND ${q ? sql`(COALESCE(ei.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(ei.body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`ei.scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`ei.scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
+         AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : filter.severities ? sql`ei.severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.createdBefore ? sql`ei.created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, true, filter)}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
+         AND ${
+           filter.audit
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSqlFor(sql, filter.audit, 'ei')})`
+             : sql`TRUE`
+         }
+         AND ${
+           filter.completionAuthority
+             ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
+             : sql`TRUE`
+         }
+         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
+         AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
+       GROUP BY ei.payload ->> 'sourceRole'`
+    : await sql<{ source_role: string | null; n: number }[]>`
+      SELECT payload ->> 'sourceRole' AS source_role, count(*)::int AS n
+        FROM harness_shared.engineer_issues
+       WHERE workspace_id = ${issuesScopeWorkspace()}
+         AND kind = ANY(${kindSet as string[]}::text[])
+         AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+         AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
+         AND ${
+           filter.scope
+             ? sql`scope = ${filter.scope}`
+             : filter.scopes
+               ? sql`scope = ANY(${filter.scopes as string[]}::text[])`
+               : sql`TRUE`
+         }
+         AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
+         AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
+         AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+         AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
+         AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${filter.createdBefore ? sql`created_at < ${filter.createdBefore}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, false, filter)}
+         AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
+         AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
+         AND ${
+           filter.audit
+             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${auditPredicateSql(sql, filter.audit)})`
+             : sql`TRUE`
+         }
+         AND ${
+           filter.completionAuthority
+             ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
+             : sql`TRUE`
+         }
+         AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
+         AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
+         AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
+         AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
+       GROUP BY payload ->> 'sourceRole'`;
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    const key = row.source_role ?? '';
+    out[key] = (out[key] ?? 0) + row.n;
+  }
+  return out;
+}
+
+/**
  * Count observations by kind — returns a map of kind → count for the observations
  * matching the filter. Used by the Observations panel to show signal distribution
  * with real database counts instead of loaded-list-length fallback (WI-4374).

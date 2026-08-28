@@ -21,6 +21,7 @@
 
 import {
   countIssues,
+  countIssuesBySourceRole,
   listIssueScopes,
   listIssues,
   projectAllIssuesForBoundedRead,
@@ -499,6 +500,78 @@ export async function countImprovementItems(
     return counts.reduce((a, b) => a + b, 0);
   }
   return deps.countIssues(base);
+}
+
+/**
+ * Deps for {@link improvementSourceCounts}. Narrow for the same reason as
+ * {@link CountImprovementDeps}: a new required member on a shared deps type stales every
+ * fixture that constructs it, in files neither `test:affected` nor the per-file tsc
+ * baseline selects.
+ */
+export interface ImprovementSourceCountDeps {
+  countIssuesBySourceRole: (filter: ListIssuesFilter) => Promise<Record<string, number>>;
+  readLoopOutputIds?: () => Promise<readonly string[]>;
+}
+
+const defaultImprovementSourceCountDeps: ImprovementSourceCountDeps = {
+  countIssuesBySourceRole,
+  readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
+};
+
+/**
+ * The CORPUS-wide `sourceRole` histogram for the SAME filter {@link readImprovementItems}
+ * applies — "which values of Filed-by exist", not "which happen to be in the window".
+ *
+ * EI-21708963364424082 / WI-471938. The Learning tab's source chips derived their OPTION
+ * SET from the projected rows, so a source whose rows all sit past the 500-row window
+ * offered no chip and could not be selected — measured live 2026-08-28: `system` had 15
+ * corpus rows and ZERO in the window. This is `countImprovementItems`' twin (WI-39675, a
+ * windowed total read as the corpus total) one dimension over, and it is deliberately
+ * built the same way: one aggregate over the same predicate, never a tally of the rows
+ * the read happened to fetch.
+ *
+ * Structure mirrors {@link countImprovementItems} exactly — same `loopOutputOnly` id
+ * resolution with the same fail-loud stance, same per-scope summing for a Hive's scope
+ * SET — so the two can never disagree about which population they describe. The empty-key
+ * bucket (rows with no `sourceRole`) is preserved from the SQL layer and dropped by the
+ * caller, keeping "no source" distinguishable from "no rows".
+ */
+export async function improvementSourceCounts(
+  opts: ReadImprovementOpts = {},
+  deps: ImprovementSourceCountDeps = defaultImprovementSourceCountDeps,
+): Promise<Record<string, number>> {
+  const origins = opts.origins ?? ORGANIC_ONLY;
+  const base: ListIssuesFilter = {
+    topic: IMPROVEMENT_TOPIC,
+    state: opts.state,
+    q: opts.q,
+    kinds: opts.kinds,
+    severities: opts.severities,
+    signalOrigins: origins,
+  };
+  if (opts.loopOutputOnly) {
+    if (!deps.readLoopOutputIds) {
+      throw new Error(
+        'improvementSourceCounts: loopOutputOnly requires deps.readLoopOutputIds (see improvements/loop-output.ts)',
+      );
+    }
+    const loopIds = await deps.readLoopOutputIds();
+    if (loopIds.length === 0) return {};
+    base.issueIds = loopIds;
+  }
+  const scopeSet = effectiveScopes(opts);
+  if (scopeSet) {
+    if (scopeSet.length === 0) return {}; // an empty requested/lens intersection matches nothing
+    const perScope = await Promise.all(
+      scopeSet.map((scope) => deps.countIssuesBySourceRole({ ...base, scope })),
+    );
+    const merged: Record<string, number> = {};
+    for (const counts of perScope) {
+      for (const [source, n] of Object.entries(counts)) merged[source] = (merged[source] ?? 0) + n;
+    }
+    return merged;
+  }
+  return deps.countIssuesBySourceRole(base);
 }
 
 /**

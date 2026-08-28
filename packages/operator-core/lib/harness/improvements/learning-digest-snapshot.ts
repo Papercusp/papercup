@@ -119,6 +119,25 @@ export type LearningImprovementsRow = Omit<ImprovementDigest, 'humanQueue'> & {
    * and DO change when the risk-tier policy changes).
    */
   tierReasonLegend: string[];
+  /**
+   * The CORPUS-wide set of `Filed by` (sourceRole) values, with their corpus counts —
+   * NOT the values present in this payload's rows.
+   *
+   * EI-21708963364424082 / WI-471938. The tab's source chips fell back to deriving their
+   * option set from `autoEligible + humanQueue`, which is the projected WINDOW: a source
+   * whose rows all sit past the 500-row cap offered no chip and could not be selected at
+   * all (measured live 2026-08-28: `system`, 15 corpus rows, 0 in the window). A filter
+   * control's option set is a claim about what EXISTS, so it has to come from an aggregate
+   * over the corpus — the same argument `digest.total` already settled in WI-39675.
+   *
+   * Only the NON-EMPTY sourceRole values appear here: rows with no source are not a
+   * selectable option (`sources: ['<blank>']` would render a chip that means "unfiled").
+   * Present only on the unfiltered snapshot path — a predicate-bearing read carries the
+   * same information, dimension-omitted, through the paired `CompanionListSummary` facets.
+   * Absent (rather than empty) when the aggregate could not be read, so a client can tell
+   * "no sources exist" from "we did not manage to ask".
+   */
+  sourceOptions?: Array<{ value: string; count: number }>;
 };
 
 export interface LearningImprovementsArgs {
@@ -281,6 +300,7 @@ function toLearningImprovementsWireRow(
   digest: ImprovementDigest,
   flow: import('./flow-metrics').ImprovementFlow,
   routedRows?: ScoutRoutedItem[],
+  sourceOptions?: Array<{ value: string; count: number }>,
 ): LearningImprovementsRow {
   const tierReasonLegend: string[] = [];
   const tierReasonCodes = new Map<string, number>();
@@ -307,6 +327,7 @@ function toLearningImprovementsWireRow(
     flow,
     tierReasonLegend,
     ...(routedRows ? { routedRows } : {}),
+    ...(sourceOptions ? { sourceOptions } : {}),
   };
 }
 
@@ -364,7 +385,7 @@ export async function computeLearningImprovementsSnapshot(
   if (hasLearningImproveViewPredicate(normalized)) {
     return computeFilteredLearningImprovements(a);
   }
-  const { readImprovementItems, countImprovementItems } = await import('./read-items');
+  const { readImprovementItems, countImprovementItems, improvementSourceCounts } = await import('./read-items');
   const { buildDigest } = await import('./digest');
   const { applyHumanQueueRanking } = await import('../../queue-ranker/human-queue');
   const { activeWorkspaceId } = await import('../../workspace-registry');
@@ -403,10 +424,27 @@ export async function computeLearningImprovementsSnapshot(
   // Best-effort, exactly as on that path: a count failure must never sink an
   // otherwise-good digest, so it degrades to `undefined` and buildDigest falls
   // back to candidates.length (the prior behavior) rather than throwing.
-  const [items, corpusTotal] = await Promise.all([
+  // WI-471938: the same argument, one dimension over. `corpusTotal` stops the WINDOW SIZE
+  // being read as the corpus total; `sourceCounts` stops the WINDOW'S SOURCES being read as
+  // the corpus's source vocabulary — which is what the tab's "Filed by" chips do when they
+  // fall back to deriving their option set from the projected rows. Both are aggregates over
+  // the SAME `readOpts` the row read applies, and both degrade to `undefined` on failure
+  // rather than sinking an otherwise-good digest (the client then falls back to its old
+  // window-derived behaviour, which is wrong but not broken).
+  const [items, corpusTotal, sourceCounts] = await Promise.all([
     readImprovementItems(readOpts),
     countImprovementItems(readOpts).catch(() => undefined),
+    improvementSourceCounts(readOpts).catch(() => undefined),
   ]);
+  // Drop the empty-string bucket (rows with no sourceRole): the SQL layer keeps it so its
+  // histogram still totals `countIssues`, but "unfiled" is not a selectable chip. Sorted by
+  // value so the chip strip has a stable order across reads rather than PG's group order.
+  const sourceOptions = sourceCounts
+    ? Object.entries(sourceCounts)
+        .filter(([value]) => value !== '')
+        .map(([value, count]) => ({ value, count }))
+        .sort((a, b) => a.value.localeCompare(b.value))
+    : undefined;
   // Human lane ordered by the ONE ranker (frontier P-040; feature #1 is
   // consume-edges P-022's blocking impact) — the owner's queue leads with
   // what blocks the most, each item carrying its per-feature breakdown.
@@ -415,5 +453,5 @@ export async function computeLearningImprovementsSnapshot(
     { candidates: items },
   );
   const flow = await computeFlowForDigest(items, digest, nowMs);
-  return [toLearningImprovementsWireRow(digest, flow)];
+  return [toLearningImprovementsWireRow(digest, flow, undefined, sourceOptions)];
 }

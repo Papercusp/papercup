@@ -4,6 +4,7 @@ import {
   readImprovementItems,
   readObservationItems,
   countImprovementItems,
+  improvementSourceCounts,
   IMPROVEMENT_TOPIC,
   OBSERVATION_LANE,
   OBSERVATION_TOPIC,
@@ -391,6 +392,105 @@ describe('countImprovementItems (EI-18790490225750395 D2 — the TRUE corpus tot
     await expect(
       countImprovementItems({ loopOutputOnly: true }, { countIssues: async () => 0 }),
     ).rejects.toThrow(/loopOutputOnly/);
+  });
+});
+
+describe('improvementSourceCounts (WI-471938 — the corpus source VOCABULARY, not the window\'s)', () => {
+  // The bug this guards: the Learning tab derived its "Filed by" chip OPTIONS from the
+  // projected rows, so a source whose rows all sat past the 500-row window offered no chip
+  // and could not be selected. Measured live 2026-08-28: `system` had 15 corpus rows and 0
+  // in the window. The remedy is structural — ask for an aggregate over the same predicate
+  // the read applies — so these assertions are about the PREDICATE, not about any count.
+
+  it('asks over the SAME filter readImprovementItems applies, with no `limit` in it anywhere', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const counts = await improvementSourceCounts(
+      { q: 'timeout', kinds: ['bug'], severities: ['critical'], state: 'open' },
+      { countIssuesBySourceRole: async (f) => (calls.push(f), { Scout: 7, system: 15 }) },
+    );
+    expect(counts).toEqual({ Scout: 7, system: 15 });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      topic: IMPROVEMENT_TOPIC,
+      q: 'timeout',
+      kinds: ['bug'],
+      severities: ['critical'],
+      state: 'open',
+    });
+    // A `limit` here would reintroduce the very defect: a windowed vocabulary read as the
+    // corpus's. The function takes no limit argument, so there is nothing to vary.
+    expect(calls[0]).not.toHaveProperty('limit');
+  });
+
+  it('resolves loopOutputOnly into the SAME issueIds predicate the read and the count use', async () => {
+    const calls: ListIssuesFilter[] = [];
+    await improvementSourceCounts(
+      { loopOutputOnly: true },
+      {
+        countIssuesBySourceRole: async (f) => (calls.push(f), { Scout: 1 }),
+        readLoopOutputIds: async () => ['EI-1', 'EI-2'],
+      },
+    );
+    expect(calls[0]?.issueIds).toEqual(['EI-1', 'EI-2']);
+  });
+
+  it('an EMPTY loop-output id set is {} — never a vocabulary read over the untagged corpus', async () => {
+    // Mirrors countImprovementItems' own empty-set rule. Degrading to an unscoped read here
+    // would offer chips for sources that are not in the loop's output at all.
+    let called = false;
+    const counts = await improvementSourceCounts(
+      { loopOutputOnly: true },
+      {
+        countIssuesBySourceRole: async () => ((called = true), { Scout: 9 }),
+        readLoopOutputIds: async () => [],
+      },
+    );
+    expect(counts).toEqual({});
+    expect(called).toBe(false);
+  });
+
+  it('fails LOUDLY when loopOutputOnly has no resolver, rather than reading the whole corpus', async () => {
+    await expect(
+      improvementSourceCounts({ loopOutputOnly: true }, { countIssuesBySourceRole: async () => ({}) }),
+    ).rejects.toThrow(/readLoopOutputIds/);
+  });
+
+  it('sums one aggregate per scope for a harnessScopes SET, merging the per-source counts', async () => {
+    const calls: ListIssuesFilter[] = [];
+    const counts = await improvementSourceCounts(
+      { harnessScopes: ['harness:my-hive', 'harness:member-a'] },
+      {
+        countIssuesBySourceRole: async (f) => {
+          calls.push(f);
+          return f.scope === 'harness:my-hive' ? { Scout: 3, system: 1 } : { Scout: 5 };
+        },
+      },
+    );
+    // Scout appears in BOTH scopes and must be summed, not overwritten by the last read.
+    expect(counts).toEqual({ Scout: 8, system: 1 });
+    expect(calls.map((c) => c.scope).sort()).toEqual(['harness:member-a', 'harness:my-hive']);
+  });
+
+  it('an EMPTY harnessScopes set is {} without calling the aggregate (mirrors the read)', async () => {
+    let called = false;
+    const counts = await improvementSourceCounts(
+      { harnessScopes: [] },
+      { countIssuesBySourceRole: async () => ((called = true), { Scout: 9 }) },
+    );
+    expect(counts).toEqual({});
+    expect(called).toBe(false);
+  });
+
+  it('preserves the empty-key bucket the SQL layer returns — "unfiled" is data, not absence', async () => {
+    // The '' key is how a row with no sourceRole is reported, and keeping it is what makes
+    // the histogram total equal countIssues() over the same filter. Dropping it is the
+    // CALLER's job (an unfiled row is not a selectable chip), and doing it here instead
+    // would silently make this aggregate disagree with the count beside it.
+    const counts = await improvementSourceCounts(
+      {},
+      { countIssuesBySourceRole: async () => ({ '': 1048, Scout: 1007, system: 15 }) },
+    );
+    expect(counts['']).toBe(1048);
   });
 });
 
