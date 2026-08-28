@@ -718,6 +718,38 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     ).toBeTruthy();
   });
 
+  it("moves focus into the connect panel and hands it back when the panel closes", () => {
+    /* The panel is conditionally rendered, so closing it UNMOUNTS the button
+       holding focus. The browser's fallback for a removed active element is
+       <body> — a keyboard user silently dropped to the start of the document,
+       a screen-reader user with no place left (WCAG 2.4.3). Restoring focus to
+       the provider row that opened the panel is the half that matters; moving
+       focus in on open is the same contract from the other side, since the form
+       renders elsewhere in the DOM. */
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+
+    const trigger = screen.getByRole("button", {
+      name: "Connect Google Cloud",
+    }) as HTMLButtonElement;
+    fireEvent.click(trigger);
+
+    /* Opened: focus is inside the panel, on its first field. */
+    const panelInput = screen.getByLabelText(
+      "Connection label",
+    ) as HTMLInputElement;
+    expect(document.activeElement).toBe(panelInput);
+
+    /* Closed: focus returns to the trigger, NOT to <body>. */
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("heading", { name: "Connect Google Cloud" })).
+      toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Connect Google Cloud" }),
+    );
+  });
+
   it("marks unsupported providers as planned rather than merely disabled", () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
