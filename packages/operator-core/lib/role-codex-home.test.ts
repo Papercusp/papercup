@@ -381,6 +381,7 @@ describe('writeRoleCodexHome', () => {
     expect(hooks.hooks.SessionEnd).toHaveLength(1);
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain('lifecycle-report.sh');
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_SID='role-abc-9'");
+    expect(hooks.hooks.SessionStart[0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='71'");
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });
 
@@ -1025,6 +1026,7 @@ describe('writeSuCodexHome', () => {
     for (const event of ['SessionStart', 'SessionEnd']) {
       expect(hooks.hooks[event][0].hooks[0].command).toContain('lifecycle-report.sh');
       expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_SID='su-abc-123'");
+      expect(hooks.hooks[event][0].hooks[0].command).toContain("PAPERCUSP_ADV_SESSION_ID='12'");
     }
     expect(hooks.hooks.SessionEnd[0].hooks[0].command).toContain('PAPERCUSP_ACTIVITY_SYNC=1');
   });

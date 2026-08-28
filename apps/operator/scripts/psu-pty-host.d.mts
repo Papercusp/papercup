@@ -173,11 +173,31 @@ export function writeHostHandoff(ownerId: any, record: any): string | null;
  * never completed, whose argv now names a rotated session id nothing will
  * accept). A rejected record is still consumed: leaving it behind means the next
  * launch re-litigates the same stale orders.
+ * @param {string} ownerId
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
  */
-export function readHostHandoff(ownerId: any, { maxAgeMs, now, isAlive }?: {
-    maxAgeMs?: number | undefined;
-    now?: (() => number) | undefined;
-    isAlive?: typeof pidAlive | undefined;
+export function readHostHandoff(ownerId: string, opts?: {
+    maxAgeMs?: number;
+    now?: () => number;
+    isAlive?: (pid: number) => boolean;
+}): any;
+/**
+ * Read the single handoff written by this launcher's parent shim. A host
+ * re-exec starts the launcher with the shim's original argv and environment,
+ * so the numeric adv id/CODEX_HOME that were resolved after bootstrap are not
+ * otherwise available yet. The handoff records the shim pid as a rendezvous
+ * key, allowing the launcher to consume its own orders before running a fresh
+ * bootstrap and accidentally minting a sibling adv row.
+ *
+ * Refuse an ambiguous parent match: selecting the newest file would recreate
+ * the same cross-session identity split this handoff path is meant to prevent.
+ * @param {number} parentPid
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ */
+export function readHostHandoffForParentPid(parentPid: number, opts?: {
+    maxAgeMs?: number;
+    now?: () => number;
+    isAlive?: (pid: number) => boolean;
 }): any;
 /** Is a pid alive? (signal 0 probe.) */
 export function pidAlive(pid: any): unknown;

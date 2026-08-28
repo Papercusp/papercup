@@ -8438,6 +8438,19 @@ impl App {
         if tab == Tab::Hives {
             return Action::FetchHives;
         }
+        if tab == Tab::Plans {
+            return match self.selected_plan() {
+                Some(plan) => Action::FetchPlanItemStates {
+                    harness: plan
+                        .harness
+                        .clone()
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or_else(|| self.harness.clone()),
+                    plan: plan.slug.clone(),
+                },
+                None => Action::Render,
+            };
+        }
         Action::Render
     }
 
@@ -8498,11 +8511,10 @@ impl App {
         let count = self
             .cupboard_kind_facets
             .iter()
-            .filter_map(|(facet, count)| {
-                (normalize_cupboard_kind(facet) == kind).then(|| {
-                    found = true;
-                    *count
-                })
+            .filter(|(facet, _)| normalize_cupboard_kind(facet) == kind)
+            .map(|(_, count)| {
+                found = true;
+                *count
             })
             .sum();
         found.then_some(count)
@@ -12500,6 +12512,45 @@ mod tests {
                 append: false,
             } if kind == "all" && query.is_empty()
         ));
+    }
+
+    #[test]
+    fn plans_entry_fetches_selected_items_for_key_and_tui_intent_navigation() {
+        let selected_plan = || {
+            let mut summary = plan("delivery-plan");
+            summary.harness = Some("plan-harness".into());
+            summary
+        };
+
+        let mut via_key = App::new();
+        via_key.set_plans(vec![selected_plan()]);
+        assert_eq!(
+            via_key.update(key('3', KeyModifiers::NONE)),
+            Action::FetchPlanItemStates {
+                harness: "plan-harness".into(),
+                plan: "delivery-plan".into(),
+            }
+        );
+        assert_eq!(via_key.tab, Tab::Plans);
+
+        let mut via_intent = App::new();
+        via_intent.set_plans(vec![selected_plan()]);
+        let action = via_intent.update(Event::TuiIntent {
+            id: 43,
+            intent: "set_tab".into(),
+            args: serde_json::json!({"tab":"Plans"}),
+        });
+        let Action::IntentResultWithFollowup { follow_up, .. } = action else {
+            panic!("expected Plans set_tab result with follow-up action");
+        };
+        assert_eq!(
+            *follow_up,
+            Action::FetchPlanItemStates {
+                harness: "plan-harness".into(),
+                plan: "delivery-plan".into(),
+            }
+        );
+        assert_eq!(via_intent.tab, Tab::Plans);
     }
 
     #[test]

@@ -36,7 +36,11 @@ import { isWorkspaceContended } from '../locks/contention-retry';
 import { releaseAllWorkItemLeasesForOwner } from '../../work-item-lease-release';
 import { consumeRespawnExpected } from '../../carry-respawn-marker';
 import { recentContextResetWake } from '../../session-reset-continuation';
-import { NATIVE_SESSION_ID_RE, reanchorAdvSessionNativeIdByOwner } from '../../adv-sessions';
+import {
+  NATIVE_SESSION_ID_RE,
+  reanchorAdvSessionNativeId,
+  reanchorAdvSessionNativeIdByOwner,
+} from '../../adv-sessions';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { fileLockCoordinationDomain, lockDomainForProjectDir } from '../locks/coordination-domain';
 import { releaseAllOwnedLocks } from '../locks/release-all-owned';
@@ -120,6 +124,8 @@ export default defineTool({
     agent: z.string().max(32).optional(),
     /** The CLI's native session id (for resume correlation). */
     session_id: z.string().max(256).optional(),
+    /** The stable adv_sessions row id, when the launcher can carry it. */
+    adv_session_id: z.coerce.number().int().positive().optional(),
     /** The harness the worker is in (its cwd's repo), when known. */
     harness_slug: z.string().max(256).optional(),
     /** Override the derived kind; otherwise inferred (todos > tool > lifecycle). */
@@ -264,7 +270,10 @@ export default defineTool({
           // already-current id is a safe no-op. Best-effort: reanchor hygiene
           // must never fail this report.
           if (args.session_id && NATIVE_SESSION_ID_RE.test(args.session_id.trim())) {
-            await reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim()).catch((e) => {
+            const reanchor = args.adv_session_id != null
+              ? reanchorAdvSessionNativeId(args.adv_session_id, args.session_id.trim())
+              : reanchorAdvSessionNativeIdByOwner(owner, args.session_id.trim());
+            await reanchor.catch((e) => {
               console.warn(
                 `[activity:report] SessionStart reanchor for ${owner} failed: ${e instanceof Error ? e.message : e}`,
               );

@@ -21,6 +21,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { cancelSubtree } from '../../fleet/nursery';
+import { killTask } from '../../task-manager/control';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 
@@ -90,17 +91,82 @@ export default defineTool({
           reason: clampText(args.reason, 4000) ?? 'fleet:cancel',
           actor,
         });
-        let processes_aborted = 0;
+
+        // EI-21662411450018664: `abortLocalSpawn` covers only children launched by
+        // THIS operator process. Release-fixers and other task-manager-confined
+        // agents survive an operator handoff in a durable `pc-*.scope`, so their
+        // spawn row could be marked cancelled while the real cgroup kept running.
+        // Address those jobs by their exact task-ledger handle and reuse the same
+        // whole-subtree kill primitive exposed by processes:kill. Include already-
+        // terminal spawn rows so a retry can reap a process left behind by an older
+        // fleet:cancel call; reapTerminalResidue remains fail-closed unless the
+        // task-manager positively re-verifies a live confined scope.
+        const affectedSpawnIds = [
+          ...new Set([
+            ...res.cancelled.map((c) => c.spawnId),
+            ...res.alreadyTerminal,
+          ]),
+        ];
+        const taskRows = affectedSpawnIds.length
+          ? await sql<{ task_id: string; spawn_id: string }[]>`
+              SELECT task_id, detail->>'spawnRecordId' AS spawn_id
+                FROM harness_shared.task_ledger
+               WHERE workspace_id = ${workspaceId}
+                 AND class = 'agent-session'
+                 AND detail->>'spawnRecordId' = ANY(${affectedSpawnIds}::text[])
+            `
+          : [];
+        const processAbortFailures: Array<{
+          taskId: string;
+          spawnId: string;
+          error: string;
+          detail?: string;
+        }> = [];
+        const abortedSpawnIds = new Set<string>();
+        let taskScopesAborted = 0;
+        for (const row of taskRows) {
+          const outcome = await killTask(row.task_id, {
+            signal: 'SIGTERM',
+            includeSubtree: true,
+            escalateAfterMs: 5_000,
+            reapTerminalResidue: true,
+          });
+          if (outcome.ok) {
+            taskScopesAborted++;
+            abortedSpawnIds.add(row.spawn_id);
+            continue;
+          }
+          // A raced task reconciliation or an already-empty terminal scope means
+          // there is no process left to cancel. Every other refusal is actionable:
+          // returning ok:true would recreate the registry/process divergence this
+          // path exists to prevent.
+          if (outcome.error === 'not_live') continue;
+          processAbortFailures.push({
+            taskId: row.task_id,
+            spawnId: row.spawn_id,
+            error: outcome.error,
+            ...(outcome.detail ? { detail: outcome.detail } : {}),
+          });
+        }
+
         if (abortLocalSpawn) {
-          for (const c of res.cancelled) {
-            if (abortLocalSpawn(c.spawnId)) processes_aborted++;
+          for (const id of affectedSpawnIds) {
+            if (abortLocalSpawn(id)) abortedSpawnIds.add(id);
           }
         }
+        const processAbortOk = processAbortFailures.length === 0;
         return {
-          ok: true as const,
+          ok: processAbortOk,
           spawn_id: res.rootSpawnId,
           cancelled: res.cancelled.map((c) => c.spawnId),
-          processes_aborted,
+          processes_aborted: abortedSpawnIds.size,
+          task_scopes_aborted: taskScopesAborted,
+          ...(processAbortOk
+            ? {}
+            : {
+                error: `cancelled the durable subtree, but ${processAbortFailures.length} task scope(s) could not be terminated`,
+                process_abort_failures: processAbortFailures,
+              }),
           already_terminal: res.alreadyTerminal,
           claims_released: res.claimsReleased,
           plan_claims_released: res.planClaimsReleased,

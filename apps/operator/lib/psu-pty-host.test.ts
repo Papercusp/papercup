@@ -67,6 +67,7 @@ import {
   handoffPathFor,
   writeHostHandoff,
   readHostHandoff,
+  readHostHandoffForParentPid,
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
@@ -3723,6 +3724,17 @@ describe('host handoff record (WI-38292 increment 2)', () => {
   it('round-trips the successor\'s marching orders', () => {
     expect(writeHostHandoff(owner, orders)).toBe(handoffPathFor(owner));
     expect(readAsSuccessor(owner)).toMatchObject({ ...orders, ownerId: owner, fromPid: process.pid });
+  });
+
+  it('records and resolves the shim parent rendezvous key', () => {
+    writeHostHandoff(owner, { ...orders, advSessionId: 42, codexHome: '/tmp/codex-home' });
+    expect(readHostHandoffForParentPid(process.ppid, { isAlive: () => false })).toMatchObject({
+      ...orders,
+      advSessionId: 42,
+      codexHome: '/tmp/codex-home',
+      ownerId: owner,
+      parentPid: process.ppid,
+    });
   });
 
   it('is SINGLE-SHOT — a crashed successor must not have the same carry replayed into every later launch', () => {

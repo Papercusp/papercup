@@ -203,6 +203,14 @@ function existingCodexHomeOwnerSid(codexHome: string): string | null {
   }
 }
 
+/** Normalize a session key to the numeric adv_sessions id used by Codex homes.
+ * Temporary session-port keys are UUIDs and must not be baked into lifecycle
+ * hooks as if they were durable row ids. */
+function numericAdvSessionId(value: string | number | null | undefined): string | null {
+  const n = typeof value === 'number' ? value : Number(String(value ?? '').trim());
+  return Number.isSafeInteger(n) && n > 0 ? String(n) : null;
+}
+
 /**
  * Move an already-materialized isolated Codex home from a temporary launch
  * key to the durable adv-session id used by every native resume path.
@@ -493,6 +501,8 @@ export function writeCodexLockHooks(
     lockSid?: string;
     coordSid?: string;
     activitySid?: string;
+    /** Durable adv_sessions row id for exact lifecycle re-anchors. */
+    advSessionId?: string | number;
     objectiveSid?: string;
     /** codex-context-injection-parity-2026-08-09 P-004: session id baked into
      *  the context-injection dispatcher invocation. Absent ⇒ no injection hooks
@@ -572,7 +582,11 @@ export function writeCodexLockHooks(
   const sessionEnd: CodexHook[] = [];
   if (opts.activitySid && existsSync(lifecycle)) {
     const lifecycleIdentity =
-      `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` + `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}`;
+      `PAPERCUSP_WORKSPACE_ROOT=${root} PAPERCUSP_AGENT=codex ` +
+      `PAPERCUSP_SID=${shellSingleQuote(opts.activitySid)}` +
+      (numericAdvSessionId(opts.advSessionId)
+        ? ` PAPERCUSP_ADV_SESSION_ID=${shellSingleQuote(numericAdvSessionId(opts.advSessionId)!)}`
+        : '');
     sessionStart.push({
       matcher: '.*',
       hooks: [{ type: 'command', command: `${lifecycleIdentity} ${lifecycle}` }],
@@ -742,6 +756,7 @@ function writeCodexHomeDiagnostics(
 export function repairSuCodexHomeIdentity(
   codexHome: string,
   sid: string,
+  advSessionId?: string | number,
 ): { repaired: boolean; hooksInstalled: boolean; reason?: 'no-home' } {
   if (!existsSync(codexHome)) return { repaired: false, hooksInstalled: false, reason: 'no-home' };
 
@@ -765,6 +780,7 @@ export function repairSuCodexHomeIdentity(
 
   const hookOwners = Array.from(hooksText.matchAll(/PAPERCUSP_(?:LOCK_)?SID='([^']+)'/g), (match) => match[1]);
   const hooksExpected = diagnostics.lockEnforcement === 'hooks-configured' || existsSync(hooksPath);
+  const expectedAdvSessionId = numericAdvSessionId(advSessionId);
   const hooksMatch = hooksExpected
     ? hookOwners.length > 0 && hookOwners.every((owner) => owner === sid)
     : hookOwners.length === 0;
@@ -779,7 +795,10 @@ export function repairSuCodexHomeIdentity(
       return ['SessionStart', 'SessionEnd'].every((event) =>
         parsed.hooks?.[event]?.some((group) =>
           group.hooks?.some(
-            (hook) => hook.command?.includes('lifecycle-report.sh') && hook.command.includes(`PAPERCUSP_SID='${sid}'`),
+            (hook) =>
+              hook.command?.includes('lifecycle-report.sh') &&
+              hook.command.includes(`PAPERCUSP_SID='${sid}'`) &&
+              (!expectedAdvSessionId || hook.command.includes(`PAPERCUSP_ADV_SESSION_ID='${expectedAdvSessionId}'`)),
           ),
         ),
       );
@@ -795,6 +814,7 @@ export function repairSuCodexHomeIdentity(
     lockSid: sid,
     coordSid: sid,
     activitySid: sid,
+    advSessionId,
     objectiveSid: sid,
     injectSid: sid,
   });
@@ -903,6 +923,7 @@ export function writeRoleCodexHome(opts: {
   // (PAPERCUSP_COORD_FOLD=0, roles don't ride the SU coord bus).
   const hooksInstalled = writeCodexLockHooks(codexHome, {
     lockSid: opts.sid,
+    advSessionId: opts.sessionKey,
     activitySid: opts.sid,
     objectiveSid: opts.sid,
     injectSid: opts.sid,
@@ -1086,7 +1107,7 @@ export function ensureSuCodexHomeConfig(opts: SuCodexConfigInput & { sessionKey:
   if (!configReady) {
     writeFileSync(configPath, suCodexConfigToml({ ...opts, logDir }), { mode: 0o600 });
   }
-  const identity = repairSuCodexHomeIdentity(codexHome, opts.sid);
+  const identity = repairSuCodexHomeIdentity(codexHome, opts.sid, opts.sessionKey);
   return {
     codexHome,
     configPath,
@@ -1179,6 +1200,7 @@ export function writeSuCodexHome(opts: {
     lockSid: opts.sid,
     coordSid: opts.sid,
     activitySid: opts.sid,
+    advSessionId: opts.sessionKey,
     objectiveSid: opts.sid,
     injectSid: opts.sid,
   });

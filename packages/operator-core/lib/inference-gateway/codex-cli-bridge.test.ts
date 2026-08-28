@@ -60,6 +60,11 @@ describe('parseBridgeModel', () => {
     expect(parseBridgeModel('chatgpt:5.4')).toEqual({ id: 'gpt-5.4', effort: 'medium' });
     expect(parseBridgeModel('chatgpt:5.4:high')).toEqual({ id: 'gpt-5.4', effort: 'high' });
   });
+  it('normalizes bare Papercusp Codex family aliases before the backend sees them', () => {
+    expect(parseBridgeModel('sol:xhigh')).toEqual({ id: 'gpt-5.6-sol', effort: 'xhigh' });
+    expect(parseBridgeModel('terra')).toEqual({ id: 'gpt-5.6-terra', effort: 'medium' });
+    expect(parseBridgeModel('luna:max')).toEqual({ id: 'gpt-5.6-luna', effort: 'max' });
+  });
   it('strips a provider prefix (openai-codex/…)', () => {
     expect(parseBridgeModel('openai-codex/gpt-5.4:low')).toEqual({ id: 'gpt-5.4', effort: 'low' });
   });

@@ -9891,7 +9891,7 @@
           "POST"
         ]
       },
-      "description": "Fetch documentation pages by slug — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Batch up to 10; pass `heading` (single-slug only) for a section slice. Per-slug error envelope.",
+      "description": "Fetch documentation pages by slug — your harness's docs (in a harness), your project's docs (PAPERCUSP_PROJECT_DOCS_ROOT env var), or the Papercusp framework reference (papercusp-su callers only). Batch up to 10; pass a heading anchor id or visible heading text (single-slug only) for a section slice. Per-slug error envelope.",
       "capabilities": [
         "docs:read"
       ],
@@ -9909,7 +9909,7 @@
         "papercup-deep"
       ],
       "guidance": {
-        "when": "You have slugs from docs:outline and need page contents. Use `heading` (single-slug) when only one section of a long page is relevant.",
+        "when": "You have slugs from docs:outline and need page contents. Use `heading` with either headings[].id or headings[].text (single-slug) when only one section of a long page is relevant.",
         "notWhen": "You do not yet know the slug — call docs:outline first. To fetch another harness's docs from outside, use cross_harness:docs_get.",
         "chaining": "docs:outline → docs:get { slugs } (batch up to 10) → optionally re-fetch with { slugs: [picked], heading } for surgical reads. A result carrying `trust` (OKF v0.2) reports the page's reliability: `stale:true` means it is past its author-set stale_after and its content is prefixed with a ⚠ STALE banner — re-check those claims against the code before acting on them. No `trust` field = unverified and not stale, which is nearly every doc today."
       }

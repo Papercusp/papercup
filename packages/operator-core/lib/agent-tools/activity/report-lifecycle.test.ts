@@ -9,7 +9,13 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ arm: vi.fn(), cancel: vi.fn(), heal: vi.fn(), reanchor: vi.fn() }));
+const h = vi.hoisted(() => ({
+  arm: vi.fn(),
+  cancel: vi.fn(),
+  heal: vi.fn(),
+  reanchor: vi.fn(),
+  reanchorById: vi.fn(),
+}));
 
 vi.mock('@papercusp/activity-bridge', () => ({ recordActivity: vi.fn(async () => ({ id: 42 })) }));
 vi.mock('../../activity-pg-store', () => ({ createPgTelemetryStore: () => ({}) }));
@@ -29,6 +35,7 @@ vi.mock('../../events/await/inbox-wake-arm', () => ({
 // validation production applies.
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
+  reanchorAdvSessionNativeId: h.reanchorById,
   reanchorAdvSessionNativeIdByOwner: h.reanchor,
 }));
 
@@ -42,6 +49,7 @@ beforeEach(() => {
   h.cancel.mockReset().mockResolvedValue(1);
   h.heal.mockReset().mockResolvedValue(false);
   h.reanchor.mockReset().mockResolvedValue({ reanchored: true, owner: 'su-abc' });
+  h.reanchorById.mockReset().mockResolvedValue({ reanchored: true, owner: 'su-abc' });
 });
 
 describe('activity:report lifecycle → inbox-wake (always-arm)', () => {
@@ -125,6 +133,18 @@ describe('activity:report SessionStart → adv_sessions reanchor (WI-37420)', ()
     await run({ owner: 'su-abc', kind: 'lifecycle', summary: '▶ session started', session_id: validId });
     expect(h.reanchor).toHaveBeenCalledTimes(1);
     expect(h.reanchor).toHaveBeenCalledWith('su-abc', validId);
+  });
+
+  it('SessionStart with the stable adv row id reanchors by id, never by mutable owner ordering', async () => {
+    await run({
+      owner: 'su-abc',
+      kind: 'lifecycle',
+      summary: '▶ session started',
+      session_id: validId,
+      adv_session_id: 42,
+    });
+    expect(h.reanchorById).toHaveBeenCalledWith(42, validId);
+    expect(h.reanchor).not.toHaveBeenCalled();
   });
 
   it('SessionStart with a non-UUID session_id does NOT call the reanchor (no malformed write)', async () => {

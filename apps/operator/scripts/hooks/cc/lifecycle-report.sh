@@ -76,6 +76,18 @@ args = {
     'session_id': ev.get('session_id') or ev.get('sessionId') or '',
     'cwd': ev.get('cwd') or '',
 }
+# Codex hooks receive a minimal environment, so managed homes bake the stable
+# adv_sessions row id into this command. Claude normally inherits the same
+# variable from its launcher. Forward it when present so SessionStart re-anchors
+# the exact row instead of selecting a sibling by mutable started_at ordering.
+adv_session_id = os.environ.get('PAPERCUSP_ADV_SESSION_ID') or ''
+if adv_session_id:
+    try:
+        value = int(adv_session_id)
+        if value > 0:
+            args['adv_session_id'] = value
+    except (TypeError, ValueError):
+        pass
 if agent:
     args['agent'] = agent
 if harness_slug:

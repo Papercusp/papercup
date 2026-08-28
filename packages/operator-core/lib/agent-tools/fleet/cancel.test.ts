@@ -20,6 +20,7 @@ const h = vi.hoisted(() => ({
   identity: vi.fn(),
   cancelSubtree: vi.fn(),
   abortLocalSpawn: vi.fn(),
+  killTask: vi.fn(),
   sql: vi.fn(),
   getOrgPg: vi.fn(),
 }));
@@ -33,6 +34,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: h.getOrgPg,
 }));
 vi.mock('../../fleet/nursery', () => ({ cancelSubtree: h.cancelSubtree }));
+vi.mock('../../task-manager/control', () => ({ killTask: h.killTask }));
 // The tool dynamic-imports operator-spawn for abortLocalSpawn — mock the module so
 // the import resolves to our spy (and one test makes it reject).
 vi.mock('../../fleet/operator-spawn', () => ({ abortLocalSpawn: h.abortLocalSpawn }));
@@ -60,7 +62,10 @@ beforeEach(() => {
   h.identity.mockReset().mockReturnValue({ ownerId: 'op-1', ownerLabel: 'Operator', workspaceId: 'default' });
   h.cancelSubtree.mockReset();
   h.abortLocalSpawn.mockReset();
-  h.sql.mockReset().mockImplementation(async (_strings: TemplateStringsArray, _workspaceId: string, spawnId: string) => [{ spawn_id: spawnId }]);
+  h.killTask.mockReset();
+  h.sql.mockReset().mockImplementation(async (strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
+    strings.join(' ').includes('harness_shared.task_ledger') ? [] : [{ spawn_id: spawnId }],
+  );
   h.getOrgPg.mockReset().mockReturnValue({ sql: h.sql });
 });
 
@@ -93,6 +98,67 @@ describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: any) => r.spawn_id)).toEqual(['root-a', 'root-b']);
     expect(b.results[0].cancelled).toEqual(['root-a-child']);
+  });
+
+  it('terminates a correlated durable task scope when no local abort handle exists', async () => {
+    h.cancelSubtree.mockResolvedValue(baseCancelResult('root', ['s-fixer']));
+    h.abortLocalSpawn.mockReturnValue(false);
+    h.sql.mockImplementation(async (strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
+      strings.join(' ').includes('harness_shared.task_ledger')
+        ? [{ task_id: 'task-fixer', spawn_id: 's-fixer' }]
+        : [{ spawn_id: spawnId }],
+    );
+    h.killTask.mockResolvedValue({ ok: true, taskId: 'task-fixer', action: 'kill' });
+
+    const b = env(await (cancelTool as any).handler({ spawn_id: 'root' }, CTX));
+
+    expect(b.counts).toEqual({ ok: 1, failed: 0 });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      processes_aborted: 1,
+      task_scopes_aborted: 1,
+    });
+    expect(h.killTask).toHaveBeenCalledWith('task-fixer', {
+      signal: 'SIGTERM',
+      includeSubtree: true,
+      escalateAfterMs: 5_000,
+      reapTerminalResidue: true,
+    });
+  });
+
+  it('fails loudly when a correlated durable task scope cannot be terminated', async () => {
+    h.cancelSubtree.mockResolvedValue(baseCancelResult('root', ['s-fixer']));
+    h.abortLocalSpawn.mockReturnValue(false);
+    h.sql.mockImplementation(async (strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
+      strings.join(' ').includes('harness_shared.task_ledger')
+        ? [{ task_id: 'task-fixer', spawn_id: 's-fixer' }]
+        : [{ spawn_id: spawnId }],
+    );
+    h.killTask.mockResolvedValue({
+      ok: false,
+      taskId: 'task-fixer',
+      action: 'kill',
+      error: 'incomplete',
+      detail: 'scope still holds children',
+    });
+
+    const b = env(await (cancelTool as any).handler({ spawn_id: 'root' }, CTX));
+
+    expect(b.counts).toEqual({ ok: 0, failed: 1 });
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      processes_aborted: 0,
+      task_scopes_aborted: 0,
+      error: expect.stringContaining('could not be terminated'),
+      process_abort_failures: [
+        {
+          taskId: 'task-fixer',
+          spawnId: 's-fixer',
+          error: 'incomplete',
+          detail: 'scope still holds children',
+        },
+      ],
+    });
   });
 
   it('one failing root fails ONLY itself — batch survives (top-level ok:true)', async () => {

@@ -51,6 +51,7 @@ import {
   findLiveHostFor,
   hostIdleMs,
   readHostHandoff,
+  readHostHandoffForParentPid,
   reexecExitCodeFrom,
 } from "./psu-pty-host.mjs";
 import { runPsuConnectionFrontController } from "./psu-connection-front-controller.mjs";
@@ -2442,9 +2443,8 @@ export function installBootLogCapture(
   };
 }
 
-/** The coordOwnerId this native session was born with, or null (no entry /
- *  unreadable / malformed — all degrade to the caller minting, never throw). */
-export function recoverSessionOwner(
+/** The durable identity recorded when this native session was born. */
+export function recoverSessionIdentity(
   nativeSessionId,
   { home = homedir() } = {},
 ) {
@@ -2456,12 +2456,28 @@ export function recoverSessionOwner(
         "utf8",
       ),
     );
-    return typeof parsed?.ownerId === "string" && parsed.ownerId
-      ? parsed.ownerId
-      : null;
+    const ownerId =
+      typeof parsed?.ownerId === "string" && parsed.ownerId
+        ? parsed.ownerId
+        : null;
+    if (!ownerId) return null;
+    const adv = Number(parsed?.advSessionId);
+    return {
+      ownerId,
+      advSessionId: Number.isSafeInteger(adv) && adv > 0 ? adv : null,
+    };
   } catch {
     return null;
   }
+}
+
+/** The coordOwnerId this native session was born with, or null (no entry /
+ *  unreadable / malformed — all degrade to the caller minting, never throw). */
+export function recoverSessionOwner(
+  nativeSessionId,
+  { home = homedir() } = {},
+) {
+  return recoverSessionIdentity(nativeSessionId, { home })?.ownerId ?? null;
 }
 
 /**
@@ -2472,11 +2488,18 @@ export function recoverSessionOwner(
  * sessions and older launches that predate the adv-keyed index.
  */
 export function recoverResumeSessionOwner(session, { home = homedir() } = {}) {
+  return recoverResumeSessionIdentity(session, { home })?.ownerId ?? null;
+}
+
+/** Recover both durable identity halves for an out-of-window resume. The
+ * adv-keyed entry wins when the row id is known; otherwise the native-session
+ * entry supplies the id recorded at launch. */
+export function recoverResumeSessionIdentity(session, { home = homedir() } = {}) {
   if (session?.id != null) {
-    const advOwner = recoverSessionOwner(`adv-${session.id}`, { home });
-    if (advOwner) return advOwner;
+    const advIdentity = recoverSessionIdentity(`adv-${session.id}`, { home });
+    if (advIdentity) return advIdentity;
   }
-  return recoverSessionOwner(session?.sessionId || session?.ompThreadId, {
+  return recoverSessionIdentity(session?.sessionId || session?.ompThreadId, {
     home,
   });
 }
@@ -8496,6 +8519,7 @@ function repoCwdOrRedirect(cwd) {
  * @property {string|null} [kickoffFile]
  * @property {any} [sessionPort]
  * @property {boolean} [preserveCwd]
+ * @property {any} [hostHandoff] already-consumed host handoff orders
  * @property {(...args:any[])=>any} [reportSessionEndedImpl]
  * @property {()=>any} [onSpawn]
  * @property {(()=>any)|null} [onSpawnFailure]
@@ -8512,6 +8536,7 @@ export function runWrapper(options) {
     kickoffFile = null,
     sessionPort = null,
     preserveCwd = false,
+    hostHandoff: initialHostHandoff = null,
     reportSessionEndedImpl = reportSessionEnded,
     onSpawn = () => {},
     onSpawnFailure = null,
@@ -8654,7 +8679,7 @@ export function runWrapper(options) {
   // included) because it could not put anything in our environment — the psu
   // shim's re-exec loop spawned us, not it. Consuming is single-shot and
   // self-validating; a null here is the ordinary cold-launch case.
-  const hostHandoff = ownerId ? readHostHandoff(ownerId) : null;
+  const hostHandoff = initialHostHandoff || (ownerId ? readHostHandoff(ownerId) : null);
   if (hostHandoff) {
     // Use the predecessor's argv VERBATIM. It was minted from an argv that had
     // already been through this launcher's whole normalization pass, so
@@ -11207,8 +11232,16 @@ async function resumeFlow(args = {}) {
     //    identity — fleet leadership, file locks, presence, pty-host discovery —
     //    instead of minting a fresh SID and orphaning all four (the 2026-07-02
     //    identity-split bug). A fork still mints (resumeEnvFor's fork branch).
-    const bornOwnerId = recoverResumeSessionOwner(untracked);
-    if (bornOwnerId) untracked.coordOwnerId = bornOwnerId;
+    const bornIdentity = recoverResumeSessionIdentity(untracked);
+    if (bornIdentity) {
+      untracked.coordOwnerId = bornIdentity.ownerId;
+      // A transcript can remain on disk after its adv row falls outside the
+      // recent API window. Restore the row id recorded at launch so every
+      // subsequent respawn report uses the exact Codex-home key instead of the
+      // owner-only started_at fallback.
+      if (untracked.id == null && bornIdentity.advSessionId != null)
+        untracked.id = bornIdentity.advSessionId;
+    }
 
     // 4. Untracked = NOT launched by psu → its engineer playbook (and, for codex,
     //    the papercusp-su tools) are NOT loaded. Require an explicit confirm.
@@ -11786,6 +11819,38 @@ async function ensureBackendInstalled(
   return true;
 }
 
+/**
+ * Continue a host-code handoff without running bootstrap-su a second time.
+ * The shim re-executes this launcher with its original argv, but the original
+ * bootstrap result (adv row, Codex home, and route identity) was only held in
+ * the predecessor process. Consuming the handoff before the normal launch
+ * flow keeps the successor on that exact row/home instead of minting a sibling.
+ */
+async function launchHostHandoff(handoff) {
+  const childEnv =
+    handoff?.childEnv && typeof handoff.childEnv === "object" && !Array.isArray(handoff.childEnv)
+      ? { ...handoff.childEnv }
+      : {};
+  if (handoff?.ownerId) childEnv.PAPERCUSP_SID = String(handoff.ownerId);
+  if (handoff?.agent) childEnv.PAPERCUSP_AGENT = String(handoff.agent);
+  if (handoff?.advSessionId != null)
+    childEnv.PAPERCUSP_ADV_SESSION_ID = String(handoff.advSessionId);
+  if (handoff?.codexHome) childEnv.CODEX_HOME = String(handoff.codexHome);
+  if (!childEnv.PAPERCUSP_SID || typeof handoff?.command !== "string" || !handoff.command) {
+    console.error("psu: host handoff is missing its session identity or backend command; refusing a bare successor");
+    process.exitCode = 1;
+    return;
+  }
+  runWrapper({
+    wrapperBin: handoff.command,
+    args: Array.isArray(handoff.args) ? handoff.args : [],
+    cwd: typeof handoff.cwd === "string" && handoff.cwd ? handoff.cwd : process.cwd(),
+    preserveCwd: true,
+    envelopeEnv: childEnv,
+    hostHandoff: handoff,
+  });
+}
+
 async function main() {
   const connection = await runPsuConnectionFrontController(
     process.argv.slice(2),
@@ -11799,6 +11864,18 @@ async function main() {
   // prompt, read credentials, contact the operator, or create a session.
   if (args.help) {
     process.stdout.write(`${PSU_HELP_TEXT}\n`);
+    return;
+  }
+  // A host-code adoption handoff is consumed BEFORE any normal fresh/resume
+  // flow. Re-running bootstrap-su here would select or mint another adv row
+  // while the handoff's already-minted child belongs to the predecessor row.
+  if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
+  const hostHandoff =
+    reexecExitCodeFrom(process.env) != null
+      ? readHostHandoffForParentPid(process.ppid)
+      : null;
+  if (hostHandoff) {
+    await launchHostHandoff(hostHandoff);
     return;
   }
   // WI-37841 — FIRST, before any flow can fail. A launch carrying a PRE-PINNED
@@ -11815,7 +11892,6 @@ async function main() {
   // usePtyHost({ env }) keep the managed pty despite no TTY, and (b) hands the posture
   // down to the agent child. `--headless` is the CLI face of PAPERCUSP_PSU_HEADLESS=1;
   // setting the env var directly (a headless spawner) works identically.
-  if (args.headless) process.env.PAPERCUSP_PSU_HEADLESS = "1";
   // One-time credential maintenance commands run before any launch flow.
   if (args.setClaudeToken) {
     await setClaudeTokenFlow(args.setClaudeTokenValue);

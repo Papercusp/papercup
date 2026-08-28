@@ -1555,9 +1555,12 @@ export async function reanchorAdvSessionNativeId(
  * name the coord ownerId. Without this path that whole cohort was invisible to
  * WI-5075: its adv row kept naming the dead predecessor and the compaction
  * watchdog re-killed each successor (2026-07-18 su-57b6247d, 3 cuts in 16 min).
- * Re-anchors the NEWEST row for the owner — the same row `resolveSessionRef`
- * reads (both order by started_at DESC), so the two stay consistent by
- * construction. Idempotent per native id.
+ * Re-anchors an UNAMBIGUOUS row for the owner. A coord owner can temporarily
+ * have more than one non-ended adv row while a launcher handoff is settling;
+ * choosing by `started_at` in that shape can point the native id at a different
+ * row's per-session CODEX_HOME (WI-42507). Prefer the sole active row, or the
+ * sole row when no active row remains; refuse an ambiguous owner rather than
+ * corrupting the owner→native mapping. Idempotent per native id.
  */
 export async function reanchorAdvSessionNativeIdByOwner(
   coordOwnerId: string,
@@ -1566,18 +1569,38 @@ export async function reanchorAdvSessionNativeIdByOwner(
   if (!coordOwnerId || !sessionId) return { reanchored: false, owner: null };
   try {
     const { sql } = getOrgPg();
+    // `started_at` is a mutable activation clock (resume/re-anchor bumps it),
+    // not a stable row identity. The exact adv id is preferred everywhere, but
+    // legacy owner-only reports still need a safe fallback. Select the sole
+    // active row; if there is no active row, accept only a single total row.
+    // Two active rows (or two terminal rows) are ambiguous and must not let one
+    // session's native id overwrite another session's home key.
+    const target = await sql<{ id: number }[]>`
+      WITH owner_rows AS (
+        SELECT id,
+               ended_at,
+               ended_by,
+               count(*) FILTER (WHERE ended_at IS NULL AND ended_by IS NULL) OVER () AS active_count,
+               count(*) OVER () AS total_count
+          FROM harness_shared.adv_sessions
+         WHERE coord_owner_id = ${coordOwnerId}
+      ), target AS (
+        SELECT id
+          FROM owner_rows
+         WHERE (active_count = 1 AND ended_at IS NULL AND ended_by IS NULL)
+            OR (active_count = 0 AND total_count = 1)
+      )
+      SELECT id FROM target LIMIT 1
+    `;
+    const targetId = target[0]?.id;
+    if (targetId == null) return { reanchored: false, owner: null };
     const rows = await sql<{ id: number }[]>`
       UPDATE harness_shared.adv_sessions
          SET session_id = ${sessionId}, ended_at = NULL, exit_code = NULL,
              ended_by = NULL, ended_signal = NULL, started_at = now(),
              shutdown_accepted_at = NULL, resume_claim_key = NULL,
              resume_claimed_at = NULL
-       WHERE id = (
-         SELECT id FROM harness_shared.adv_sessions
-          WHERE coord_owner_id = ${coordOwnerId}
-          ORDER BY started_at DESC
-          LIMIT 1
-       ) AND session_id IS DISTINCT FROM ${sessionId}
+       WHERE id = ${targetId} AND session_id IS DISTINCT FROM ${sessionId}
       RETURNING id
     `;
     if (rows.length > 0) return { reanchored: true, owner: coordOwnerId };
@@ -1586,13 +1609,7 @@ export async function reanchorAdvSessionNativeIdByOwner(
     // the context-usage + anchor cache clears — must still run for that owner.
     // Confirm the owner really does have a row, then report it with
     // reanchored:false so "did I change it" stays honest.
-    const existing = await sql<{ id: number }[]>`
-      SELECT id FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${coordOwnerId}
-       ORDER BY started_at DESC
-       LIMIT 1
-    `;
-    return { reanchored: false, owner: existing.length > 0 ? coordOwnerId : null };
+    return { reanchored: false, owner: coordOwnerId };
   } catch (e) {
     warnUnlessMissingTable(e, 'reanchorAdvSessionNativeIdByOwner');
     return { reanchored: false, owner: null };

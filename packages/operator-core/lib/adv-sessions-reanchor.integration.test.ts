@@ -9,8 +9,9 @@
  * The compaction watchdog's estimate stayed pinned to each dead predecessor's
  * transcript and only the streak breaker capped the successor-kill loop
  * (2026-07-18 su-57b6247d: 3 successor cuts in 16 min). Also pins the owner-keyed
- * sibling (interactive / `psu --resume` sessions have no adv id in env) and its
- * consistency with resolveSessionRef — both must resolve the SAME row.
+ * sibling (interactive / legacy `psu --resume` sessions may have no adv id in env)
+ * and its ambiguity guard — multiple active rows must not be selected by mutable
+ * `started_at` ordering.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
@@ -93,7 +94,7 @@ describe('reanchorAdvSessionNativeId (real PG — the 42703 RETURNING-column reg
 });
 
 describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` cohort)', () => {
-  it('re-anchors the NEWEST row for the owner — the same row resolveSessionRef reads', async () => {
+  it('re-anchors the sole active row for the owner without consulting mutable started_at', async () => {
     await seedAdv({ coordOwnerId: OWNER, sessionId: 'a1a1a1a1-0000-4000-8000-000000000001', startedAgoSec: 3600, ended: true });
     const newest = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, startedAgoSec: 60 });
     const res = await reanchorAdvSessionNativeIdByOwner(OWNER, FRESH_ID);
@@ -120,6 +121,27 @@ describe('reanchorAdvSessionNativeIdByOwner (the interactive/`psu --resume` coho
       SELECT session_id FROM harness_shared.adv_sessions WHERE id = ${other}
     `;
     expect(row.session_id).toBe(DEAD_ID);
+  });
+
+  it('refuses two active rows instead of selecting one by mutable started_at (WI-42507)', async () => {
+    const first = await seedAdv({ coordOwnerId: OWNER, sessionId: DEAD_ID, startedAgoSec: 60 });
+    const second = await seedAdv({
+      coordOwnerId: OWNER,
+      sessionId: 'a1a1a1a1-0000-4000-8000-000000000002',
+      startedAgoSec: 3600,
+    });
+    const res = await reanchorAdvSessionNativeIdByOwner(OWNER, FRESH_ID);
+    expect(res).toEqual({ reanchored: false, owner: null });
+    const rows = await admin<{ id: number; session_id: string }[]>`
+      SELECT id, session_id
+        FROM harness_shared.adv_sessions
+       WHERE id IN (${first}, ${second})
+       ORDER BY id
+    `;
+    expect(rows.map((row) => row.session_id)).toEqual([
+      DEAD_ID,
+      'a1a1a1a1-0000-4000-8000-000000000002',
+    ]);
   });
 
   it('an unknown owner touches nothing and reports false', async () => {

@@ -102,7 +102,9 @@ import {
   findTrackedCodexHomeRollout,
   sessionOwnersRoot,
   recordSessionOwner,
+  recoverSessionIdentity,
   recoverSessionOwner,
+  recoverResumeSessionIdentity,
   recoverResumeSessionOwner,
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
@@ -6268,6 +6270,15 @@ describe("session-owner index (identity-split fix 2026-07-02 — untracked resum
       readFileSync(join(sessionOwnersRoot(home), UUID), "utf8"),
     );
     expect(raw).toMatchObject({ v: 1, ownerId: "su-born", advSessionId: "42" });
+    expect(recoverSessionIdentity(UUID, { home })).toEqual({ ownerId: "su-born", advSessionId: 42 });
+  });
+
+  it("recovers the concrete adv row id alongside the born owner for an out-of-window resume", () => {
+    recordSessionOwner(UUID, "su-born", { home, advSessionId: "77" });
+    expect(recoverResumeSessionIdentity({ agent: "claude", sessionId: UUID }, { home })).toEqual({
+      ownerId: "su-born",
+      advSessionId: 77,
+    });
   });
 
   it("WI-1863: adv-keyed entry resolves an omp launch (no native UUID) to its ownerId", () => {

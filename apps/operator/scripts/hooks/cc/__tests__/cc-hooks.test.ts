@@ -640,6 +640,7 @@ function runLifecycle(
 
 async function runLifecycleAgainstDisposition(
   disposition: "terminal" | "continuation",
+  advSessionId?: string,
 ) {
   const requests: Array<{ path: string; body: Record<string, unknown> }> = [];
   const server = createServer((req, res) => {
@@ -691,6 +692,7 @@ async function runLifecycleAgainstDisposition(
       PAPERCUSP_SID: "su-lifecycle-terminal",
       PAPERCUSP_AGENT: "codex",
       PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${address.port}`,
+      ...(advSessionId ? { PAPERCUSP_ADV_SESSION_ID: advSessionId } : {}),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -757,7 +759,7 @@ describe("cc lifecycle hook — operator-independent paths", () => {
 
   it("a terminal SessionEnd reports first, then reuses the audited admin fleet:kill route", async () => {
     const { exitCode, requests } =
-      await runLifecycleAgainstDisposition("terminal");
+      await runLifecycleAgainstDisposition("terminal", "42");
     expect(exitCode).toBe(0);
     expect(requests.map((r) => r.path)).toEqual([
       expect.stringMatching(/^\/api\/mcp\?/),
@@ -770,6 +772,7 @@ describe("cc lifecycle hook — operator-independent paths", () => {
       owner: "su-lifecycle-terminal",
       kind: "lifecycle",
       summary: "■ session ended",
+      adv_session_id: 42,
     });
     expect(requests[1].body).toMatchObject({
       owner: "su-lifecycle-terminal",

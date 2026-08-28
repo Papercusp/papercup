@@ -709,7 +709,18 @@ export function writeHostHandoff(ownerId, record) {
     const p = handoffPathFor(ownerId);
     writeFileSync(
       p,
-      JSON.stringify({ ownerId, fromPid: process.pid, createdAt: new Date().toISOString(), ...record }),
+      JSON.stringify({
+        ownerId,
+        fromPid: process.pid,
+        createdAt: new Date().toISOString(),
+        ...record,
+        // The successor is launched by the shim, not by this process. Its
+        // parent pid is therefore the one stable rendezvous key available to
+        // the next launcher before it has reconstructed PAPERCUSP_SID. Keep
+        // this server-derived value authoritative even if a caller supplies a
+        // similarly named field in its opaque record.
+        parentPid: process.ppid,
+      }),
       { mode: 0o600 },
     );
     return p;
@@ -718,21 +729,11 @@ export function writeHostHandoff(ownerId, record) {
   }
 }
 
-/**
- * WI-38292: read AND consume (unlink) this owner's handoff. Single-shot by
- * construction — the file is removed before its contents are returned, so a
- * successor that crashes mid-boot cannot have the same carry replayed into it on
- * every subsequent launch.
- *
- * Rejects a record that is not ours to act on: a different ownerId (a copied
- * file), one written by a STILL-LIVE host (we are not its successor — that host
- * is running and owns the session), or one older than `maxAgeMs` (a re-exec that
- * never completed, whose argv now names a rotated session id nothing will
- * accept). A rejected record is still consumed: leaving it behind means the next
- * launch re-litigates the same stale orders.
- */
-export function readHostHandoff(ownerId, { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive } = {}) {
-  const p = handoffPathFor(ownerId);
+function readHostHandoffFile(
+  p,
+  expectedOwnerId,
+  { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive } = {},
+) {
   let raw;
   try {
     raw = readFileSync(p, 'utf8');
@@ -751,7 +752,7 @@ export function readHostHandoff(ownerId, { maxAgeMs = 120_000, now = Date.now, i
     return null;
   }
   if (!rec || typeof rec !== 'object') return null;
-  if (rec.ownerId && rec.ownerId !== ownerId) return null;
+  if (expectedOwnerId && rec.ownerId && rec.ownerId !== expectedOwnerId) return null;
   // A LIVE writer means we are not its successor — that host is running and owns
   // the session, and acting on its argv would put a second child behind a live
   // discovery key. No self-exemption: a process is never its own successor, so
@@ -762,6 +763,67 @@ export function readHostHandoff(ownerId, { maxAgeMs = 120_000, now = Date.now, i
   if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return null;
   if (!Array.isArray(rec.args) || rec.args.length === 0) return null;
   return rec;
+}
+
+/**
+ * WI-38292: read AND consume (unlink) this owner's handoff. Single-shot by
+ * construction — the file is removed before its contents are returned, so a
+ * successor that crashes mid-boot cannot have the same carry replayed into it on
+ * every subsequent launch.
+ *
+ * Rejects a record that is not ours to act on: a different ownerId (a copied
+ * file), one written by a STILL-LIVE host (we are not its successor — that host
+ * is running and owns the session), or one older than `maxAgeMs` (a re-exec that
+ * never completed, whose argv now names a rotated session id nothing will
+ * accept). A rejected record is still consumed: leaving it behind means the next
+ * launch re-litigates the same stale orders.
+ * @param {string} ownerId
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ */
+export function readHostHandoff(ownerId, opts = {}) {
+  return readHostHandoffFile(handoffPathFor(ownerId), ownerId, opts);
+}
+
+/**
+ * Read the single handoff written by this launcher's parent shim. A host
+ * re-exec starts the launcher with the shim's original argv and environment,
+ * so the numeric adv id/CODEX_HOME that were resolved after bootstrap are not
+ * otherwise available yet. The handoff records the shim pid as a rendezvous
+ * key, allowing the launcher to consume its own orders before running a fresh
+ * bootstrap and accidentally minting a sibling adv row.
+ *
+ * Refuse an ambiguous parent match: selecting the newest file would recreate
+ * the same cross-session identity split this handoff path is meant to prevent.
+ * @param {number} parentPid
+ * @param {{maxAgeMs?: number, now?: () => number, isAlive?: (pid: number) => boolean}} [opts]
+ */
+export function readHostHandoffForParentPid(parentPid, opts = {}) {
+  if (!Number.isInteger(parentPid) || parentPid <= 0) return null;
+  let names;
+  try {
+    names = readdirSync(PSU_PTY_DIR);
+  } catch {
+    return null;
+  }
+  const candidates = [];
+  for (const name of names) {
+    if (!name.endsWith('.handoff.json')) continue;
+    const p = join(PSU_PTY_DIR, name);
+    try {
+      const parsed = JSON.parse(readFileSync(p, 'utf8'));
+      if (parsed?.parentPid === parentPid) {
+        candidates.push({
+          path: p,
+          ownerId: typeof parsed.ownerId === 'string' ? parsed.ownerId : null,
+        });
+      }
+    } catch {
+      /* a malformed file is not evidence for this parent */
+    }
+  }
+  if (candidates.length !== 1) return null;
+  const candidate = candidates[0];
+  return readHostHandoffFile(candidate.path, candidate.ownerId, opts);
 }
 
 /** Is a pid alive? (signal 0 probe.) */
@@ -5963,20 +6025,63 @@ export function hostThroughPty(o) {
           /* a probe failure must never cost a respawn — stay on the old path */
         }
         if (hostCode.stale) {
+          // The shim re-runs the launcher with its ORIGINAL environment, not
+          // the local child environment assembled after bootstrap. Preserve
+          // only the identity/configuration keys needed to reconstruct this
+          // exact session; do not serialize the full environment (which may
+          // contain unrelated credentials).
+          const handoffEnv = {};
+          for (const key of [
+            'PAPERCUSP_SID',
+            'PAPERCUSP_AGENT',
+            'PAPERCUSP_ADV_SESSION_ID',
+            'PAPERCUSP_WORKSPACE',
+            'PAPERCUSP_HARNESS_SLUG',
+            'PAPERCUSP_PROFILE',
+            'PAPERCUSP_FLEET_SLUG',
+            'PAPERCUSP_FLEET_ROLE',
+            'PAPERCUSP_ACCOUNT_ID',
+            'PAPERCUSP_ACCOUNT_ROUTING_MODE',
+            'PAPERCUSP_OPERATOR_URL',
+            'PAPERCUSP_AGENT_SESSION',
+            'PAPERCUSP_AUTO_MODE',
+            'PAPERCUSP_DRAIN_MODE',
+            'PAPERCUSP_MODEL',
+            'CODEX_HOME',
+            'CLAUDE_CONFIG_DIR',
+            'PI_CONFIG_DIR',
+            'PI_CODING_AGENT_DIR',
+            'ANTHROPIC_BASE_URL',
+            'ANTHROPIC_AUTH_TOKEN',
+            'ANTHROPIC_CUSTOM_HEADERS',
+            'DISABLE_AUTO_COMPACT',
+            'DISABLE_COMPACT',
+          ]) {
+            const value = env[key];
+            if (typeof value === 'string' && value.length > 0) handoffEnv[key] = value;
+          }
+          if (advSessionId != null && !handoffEnv.PAPERCUSP_ADV_SESSION_ID) {
+            handoffEnv.PAPERCUSP_ADV_SESSION_ID = String(advSessionId);
+          }
           const handoffPath = writeHostHandoff(ownerId, {
             mode: respawnMode,
             command,
             args: recycleArgs,
             cwd,
             nativeId: nativeId ?? null,
+            advSessionId: advSessionId ?? env.PAPERCUSP_ADV_SESSION_ID ?? null,
+            codexHome: env.CODEX_HOME ?? null,
             launchContextPath,
             // The successor builds its env from the shim's, not from ours, so the
             // deltas this respawn would have applied to the child have to travel
             // with the orders. P-018/P-022: a carry successor must not keep
             // Claude's native compactors, which would race the deterministic one.
-            childEnv: systemPromptAddendum
-              ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' }
-              : {},
+            childEnv: {
+              ...handoffEnv,
+              ...(systemPromptAddendum
+                ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' }
+                : {}),
+            },
             loaded: hostCode.loaded,
             onDisk: hostCode.onDisk,
             drillId: drillId || null,

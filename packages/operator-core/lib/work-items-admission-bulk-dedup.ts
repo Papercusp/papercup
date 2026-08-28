@@ -85,6 +85,10 @@ export interface BulkDedupStageResult {
   tokensIn: number;
   tokensOut: number;
   modelRetries: number;
+  modelProtocolFailures: number;
+  modelProtocolExhaustedBatches: number;
+  ignoredUnknownJudgements: number;
+  omittedExpectedJudgements: number;
   censusBefore: number;
   censusAfter: number;
   scopedPairsAfter: number;
@@ -323,7 +327,13 @@ export function serializeBulkErrorCause(error: unknown, depth = 0, seen = new We
   seen.add(error);
   if (error instanceof Error) {
     const out: Record<string, unknown> = { name: error.name, message: error.message };
-    const source = error as Error & { cause?: unknown; code?: unknown; status?: unknown; errno?: unknown; type?: unknown };
+    const source = error as Error & {
+      cause?: unknown;
+      code?: unknown;
+      status?: unknown;
+      errno?: unknown;
+      type?: unknown;
+    };
     for (const key of ['code', 'status', 'errno', 'type'] as const) {
       if (source[key] !== undefined) out[key] = source[key];
     }
@@ -344,7 +354,7 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
   await sql`
     UPDATE harness_shared.admission_runs
        SET finished_at = now(),
-           detail = COALESCE(detail, '{}'::jsonb) ||
+           detail = (COALESCE(detail, '{}'::jsonb) - 'errorCause') ||
                     ${JSON.stringify({
                       status: 'failed',
                       error: message,
@@ -353,16 +363,61 @@ async function failBulkStage(sql: OrgSql, runId: string, error: unknown): Promis
      WHERE id = ${runId}`.catch(() => undefined);
 }
 
-async function callBulkModelBatchWithRetry(
-  call: () => Promise<ReturnType<PromoterLlmCall> extends Promise<infer T> ? T : never>,
+type BulkModelResponse = Awaited<ReturnType<PromoterLlmCall>>;
+
+async function callBulkModelBatchWithRetry<T>(
+  call: () => Promise<BulkModelResponse>,
+  validate: (response: BulkModelResponse) => T,
   opts: { backoffsMs: readonly number[]; delay: (ms: number) => Promise<void> },
-): Promise<{ response: Awaited<ReturnType<PromoterLlmCall>>; retries: number }> {
+): Promise<{
+  response: BulkModelResponse;
+  value: T | null;
+  retries: number;
+  protocolFailures: number;
+  protocolError: string | null;
+  tokensIn: number;
+  tokensOut: number;
+}> {
   let retries = 0;
+  let protocolFailures = 0;
+  let tokensIn = 0;
+  let tokensOut = 0;
   for (;;) {
+    let response: BulkModelResponse;
     try {
-      return { response: await call(), retries };
+      response = await call();
     } catch (error) {
       if (!isTransientNetworkError(error) || retries >= opts.backoffsMs.length) throw error;
+      await opts.delay(opts.backoffsMs[retries]!);
+      retries += 1;
+      continue;
+    }
+    tokensIn += response.inputTokens;
+    tokensOut += response.outputTokens;
+    try {
+      return {
+        response,
+        value: validate(response),
+        retries,
+        protocolFailures,
+        protocolError: null,
+        tokensIn,
+        tokensOut,
+      };
+    } catch (error) {
+      protocolFailures += 1;
+      const protocolError = error instanceof Error ? error.message : String(error);
+      if (retries >= opts.backoffsMs.length) {
+        return {
+          response,
+          value: null,
+          retries,
+          protocolFailures,
+          protocolError,
+          tokensIn,
+          tokensOut,
+        };
+      }
       await opts.delay(opts.backoffsMs[retries]!);
       retries += 1;
     }
@@ -383,6 +438,11 @@ async function judgeBulkPairs(
   judgements: PromoterJudgement[];
   modelCalls: number;
   modelRetries: number;
+  modelProtocolFailures: number;
+  modelProtocolExhaustedBatches: number;
+  modelProtocolLastError: string | null;
+  ignoredUnknownJudgements: number;
+  omittedExpectedJudgements: number;
   tokensIn: number;
   tokensOut: number;
 }> {
@@ -398,6 +458,11 @@ async function judgeBulkPairs(
     judgements: PromoterJudgement[];
     modelCalls: number;
     modelRetries: number;
+    modelProtocolFailures: number;
+    modelProtocolExhaustedBatches: number;
+    modelProtocolLastError: string | null;
+    ignoredUnknownJudgements: number;
+    omittedExpectedJudgements: number;
     tokensIn: number;
     tokensOut: number;
   }>(shardEntries.length);
@@ -406,6 +471,11 @@ async function judgeBulkPairs(
     const judgements: PromoterJudgement[] = [];
     let modelCalls = 0;
     let modelRetries = 0;
+    let modelProtocolFailures = 0;
+    let modelProtocolExhaustedBatches = 0;
+    let modelProtocolLastError: string | null = null;
+    let ignoredUnknownJudgements = 0;
+    let omittedExpectedJudgements = 0;
     let tokensIn = 0;
     let tokensOut = 0;
     const ghostItems = (input.ghostIdsByShard.get(shard) ?? [])
@@ -424,23 +494,40 @@ async function judgeBulkPairs(
             maxTokens: Math.min(8_000, 500 + batch.length * 180),
             ...(opts.ownerId ? { ownerId: opts.ownerId } : {}),
           }),
+        (response) => parsePromoterJudgements(responsePayload(response)),
         { backoffsMs: opts.batchRetryBackoffsMs, delay: opts.batchRetryDelay },
       );
-      const response = attempted.response;
       modelRetries += attempted.retries;
-      const parsed = parsePromoterJudgements(responsePayload(response));
+      modelProtocolFailures += attempted.protocolFailures;
+      if (attempted.protocolError) modelProtocolLastError = attempted.protocolError;
       const expected = new Set(batch.map((pair) => pair.pairKey));
-      const unknown = parsed.find((judgement) => !expected.has(judgement.pairKey));
-      if (unknown) throw new Error(`bulk model returned unknown pairKey ${unknown.pairKey}`);
-      const returned = new Set(parsed.map((judgement) => judgement.pairKey));
+      const parsed = attempted.value ?? [];
+      if (attempted.value === null) modelProtocolExhaustedBatches += 1;
+      const accepted = parsed.filter((judgement) => expected.has(judgement.pairKey));
+      ignoredUnknownJudgements += parsed.length - accepted.length;
+      const returned = new Set(accepted.map((judgement) => judgement.pairKey));
       const missing = batch.map((pair) => pair.pairKey).filter((key) => !returned.has(key));
-      if (missing.length > 0) throw new Error(`bulk model omitted pairKey(s): ${missing.join(', ')}`);
-      judgements.push(...parsed);
+      omittedExpectedJudgements += missing.length;
+      // Model text is untrusted evidence. Extra cross-pairs are ignored, while
+      // omitted expected pairs flow into planPromoterDispositions' existing
+      // fail-open hold path and are reconsidered in the next shrinking stage.
+      judgements.push(...accepted);
       modelCalls += 1;
-      tokensIn += response.inputTokens;
-      tokensOut += response.outputTokens;
+      tokensIn += attempted.tokensIn;
+      tokensOut += attempted.tokensOut;
     }
-    return { judgements, modelCalls, modelRetries, tokensIn, tokensOut };
+    return {
+      judgements,
+      modelCalls,
+      modelRetries,
+      modelProtocolFailures,
+      modelProtocolExhaustedBatches,
+      modelProtocolLastError,
+      ignoredUnknownJudgements,
+      omittedExpectedJudgements,
+      tokensIn,
+      tokensOut,
+    };
   };
   const workers = Array.from({ length: Math.min(opts.shardConcurrency, shardEntries.length) }, async () => {
     while (nextShardIndex < shardEntries.length) {
@@ -455,6 +542,15 @@ async function judgeBulkPairs(
     judgements: results.flatMap((result) => result.judgements),
     modelCalls: results.reduce((sum, result) => sum + result.modelCalls, 0),
     modelRetries: results.reduce((sum, result) => sum + result.modelRetries, 0),
+    modelProtocolFailures: results.reduce((sum, result) => sum + result.modelProtocolFailures, 0),
+    modelProtocolExhaustedBatches: results.reduce((sum, result) => sum + result.modelProtocolExhaustedBatches, 0),
+    modelProtocolLastError:
+      results
+        .map((result) => result.modelProtocolLastError)
+        .filter((error): error is string => Boolean(error))
+        .at(-1) ?? null,
+    ignoredUnknownJudgements: results.reduce((sum, result) => sum + result.ignoredUnknownJudgements, 0),
+    omittedExpectedJudgements: results.reduce((sum, result) => sum + result.omittedExpectedJudgements, 0),
     tokensIn: results.reduce((sum, result) => sum + result.tokensIn, 0),
     tokensOut: results.reduce((sum, result) => sum + result.tokensOut, 0),
   };
@@ -473,7 +569,8 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const batchRetryBackoffsMs = (opts.batchRetryBackoffsMs ?? DEFAULT_BULK_BATCH_RETRY_BACKOFFS_MS).filter(
     (delayMs) => Number.isFinite(delayMs) && delayMs >= 0,
   );
-  const batchRetryDelay = opts.batchRetryDelay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const batchRetryDelay =
+    opts.batchRetryDelay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const runCensus = opts.runCensus ?? runWorkItemAdmissionCensus;
   const censusBase = {
     ...(opts.census ?? {}),
@@ -529,6 +626,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
         held: 0,
         modelCalls: 0,
         modelRetries: 0,
+        modelProtocolFailures: 0,
+        modelProtocolExhaustedBatches: 0,
+        ignoredUnknownJudgements: 0,
+        omittedExpectedJudgements: 0,
         tokensIn: 0,
         tokensOut: 0,
         censusBefore: census.censusAfter,
@@ -605,6 +706,10 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           held,
           modelCalls: judged.modelCalls,
           modelRetries: judged.modelRetries,
+          modelProtocolFailures: judged.modelProtocolFailures,
+          modelProtocolExhaustedBatches: judged.modelProtocolExhaustedBatches,
+          ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
+          omittedExpectedJudgements: judged.omittedExpectedJudgements,
           tokensIn: judged.tokensIn,
           tokensOut: judged.tokensOut,
           censusBefore: census.censusAfter,
@@ -634,6 +739,13 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
                        : null,
                    modelCalls: judged.modelCalls,
                    modelRetries: judged.modelRetries,
+                   modelProtocol: {
+                     failures: judged.modelProtocolFailures,
+                     exhaustedBatches: judged.modelProtocolExhaustedBatches,
+                     lastError: judged.modelProtocolLastError,
+                     ignoredUnknownJudgements: judged.ignoredUnknownJudgements,
+                     omittedExpectedJudgements: judged.omittedExpectedJudgements,
+                   },
                    verdicts,
                    ratchet: { before: census.censusAfter, after: nextCensus.censusAfter, ok: true },
                  })}::text::jsonb
