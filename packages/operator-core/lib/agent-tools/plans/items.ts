@@ -100,7 +100,13 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .optional()
-    .describe("Restrict to one plan. Omit for cross-plan."),
+    .describe("Restrict to one plan. Required with itemIds; omit for cross-plan."),
+  itemIds: z
+    .array(z.string().regex(/^P-\d{3,}$/, "P-NNN form required"))
+    .min(1)
+    .max(200)
+    .optional()
+    .describe("Restrict the result to these items from the exact `slug` plan (homogeneous)."),
   status: z
     .enum([...ITEM_STATUSES] as [string, ...string[]])
     .optional()
@@ -127,7 +133,10 @@ const argsSchema = z.object({
       "Max items returned after importance ordering. Set this to keep a cross-plan read bounded; truncated:true reports when more matched.",
     ),
   harness: harnessArg,
-});
+}).refine(
+  (args) => !args.itemIds || Boolean(args.slug),
+  "itemIds requires an exact plan slug; cross-plan item selection is not supported",
+);
 
 interface ItemRow {
   plan: string;
@@ -157,13 +166,13 @@ interface ItemRow {
 export default defineTool({
   name: "plans:items",
   description:
-    'Cross-plan item query. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
+    'Plan-item query across one or all plans. `itemIds:[…]` restricts results to exact P-NNN ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus="todo"). needsHuman=true returns the human\'s inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller\'s workspace. Cross-plan queries still require a concrete `harness`; `harness: \'all\'` is valid only in an unscoped (--all-workspaces) session.',
   guidance: {
-    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
+    when: 'You want to find items by status across all plans — "what can I pick up", "what needs the human", or filter one exact plan\'s items. Use `itemIds:[…]` with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.',
     notWhen:
       "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
     chaining:
-      "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug } for one auto-resolved plan.",
+      "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug, itemIds:[…] } for an exact subset of one auto-resolved plan.",
   },
   capability: "plans:read",
   requirePrincipal: false,
@@ -239,6 +248,7 @@ export default defineTool({
           needsHuman: args.needsHuman === true,
           includeArchived,
           limit: args.limit ?? null,
+          itemIds: args.itemIds ?? null,
           harness: opts.harnessSlug,
           specTriad: specTriadFlag,
         },
@@ -327,6 +337,7 @@ export default defineTool({
           );
 
           for (const item of resolvedItems) {
+            if (args.itemIds && !args.itemIds.includes(item.id)) continue;
             if (args.actionable && item.effectiveStatus !== "todo") continue;
             if (args.actionable && triad.gated) continue;
             // needsHuman keys on the DERIVED top band (B-12 / P-072), not the raw

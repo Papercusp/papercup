@@ -11,6 +11,7 @@ import { setFlagOverridesForTest } from "@papercusp/flags/test";
 
 const M = vi.hoisted(() => ({
   listPlanRows: vi.fn(async () => [] as unknown[]),
+  getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn((row: unknown) => (row as { planItems?: unknown[] }).planItems ?? []),
   getAllPlanItemCoverage: vi.fn(async () => new Map()),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
@@ -21,6 +22,7 @@ vi.mock("./source", async (orig) => {
   return {
     ...actual,
     listPlanRows: M.listPlanRows,
+    getPlanRow: M.getPlanRow,
     planItemsForRow: M.planItemsForRow,
   };
 });
@@ -92,6 +94,8 @@ beforeEach(async () => {
   resetOperatorCacheForTests();
   resetCachedReadStatsForTests();
   M.listPlanRows.mockReset();
+  M.getPlanRow.mockReset();
+  M.getPlanRow.mockResolvedValue(null);
   M.planItemsForRow.mockClear();
   M.getAllPlanItemCoverage.mockReset();
   M.getAllPlanItemCoverage.mockResolvedValue(new Map());
@@ -114,6 +118,44 @@ describe("plans:items bounded limit", () => {
     expect(tool.args.safeParse({ harness: "papercup", limit: 0 }).success).toBe(false);
     expect(tool.args.safeParse({ harness: "papercup", limit: 501 }).success).toBe(false);
     expect(tool.args.safeParse({ harness: "papercup", limit: 1.5 }).success).toBe(false);
+  });
+
+  it("validates itemIds as an exact-slug homogeneous selector", () => {
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", itemIds: ["P-001", "P-002"] }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: "papercup", itemIds: ["P-001"] }).success).toBe(false);
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", itemIds: ["P-01"] }).success).toBe(false);
+    expect(tool.args.safeParse({ harness: "papercup", slug: "plan-a", itemIds: [] }).success).toBe(false);
+  });
+
+  it("filters exact itemIds from the requested plan only", async () => {
+    M.getPlanRow.mockResolvedValue(
+      plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
+    );
+
+    const result = (await run({ harness: "papercup", slug: "plan-a", itemIds: ["P-002"] })) as {
+      data: { items: Array<{ plan: string; item: { id: string } }> };
+    };
+
+    expect(result.data.items).toEqual([{ plan: "plan-a", archived: false, item: expect.objectContaining({ id: "P-002" }) }]);
+    expect(M.getPlanRow).toHaveBeenCalledWith("plan-a", expect.anything());
+    expect(M.listPlanRows).not.toHaveBeenCalled();
+  });
+
+  it("keeps different itemIds selections in separate cache entries", async () => {
+    M.getPlanRow.mockResolvedValue(
+      plan("plan-a", [item("P-001", "normal"), item("P-002", "high")]),
+    );
+
+    const first = (await run({ harness: "papercup", slug: "plan-a", itemIds: ["P-001"] })) as {
+      data: { items: Array<{ item: { id: string } }> };
+    };
+    const second = (await run({ harness: "papercup", slug: "plan-a", itemIds: ["P-002"] })) as {
+      data: { items: Array<{ item: { id: string } }> };
+    };
+
+    expect(first.data.items.map((row) => row.item.id)).toEqual(["P-001"]);
+    expect(second.data.items.map((row) => row.item.id)).toEqual(["P-002"]);
+    expect(M.getPlanRow).toHaveBeenCalledTimes(2);
   });
 
   it("caps after importance ordering and reports truncation", async () => {
