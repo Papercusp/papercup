@@ -853,6 +853,95 @@ export interface DirectVitestRouteGroup {
   files: string[];
 }
 
+/**
+ * Parse the router's terminal report when the selected runner does not emit a
+ * Vitest JSON report. `scripts/test-files.mjs` uses this path for registered
+ * `node:test` files (for example `papercusp-desktop/test/*.test.js`): it emits
+ * the stamped `TEST_FILE_RESULT` marker plus Node's numeric summary, but
+ * `--reporter=json --outputFile` is not meaningful to Node's test runner.
+ *
+ * Keep this parser strict. A marker without a non-zero test summary is not
+ * enough to establish that tests actually ran, so the caller retains its
+ * existing `no_report` refusal in that case.
+ */
+export function parseRouterTestResult(
+  output: string,
+  files: readonly string[] = [],
+  opts: { maxFailures?: number } = {},
+): DistilledTestRun | null {
+  const markerRe = /^TEST_FILE_RESULT\s+requested=(\d+)\s+executed=(\d+)\s+matched=(\d+)\s+status=(passed|failed)\b[^\r\n]*$/gm;
+  let marker: RegExpExecArray | null = null;
+  for (const match of output.matchAll(markerRe)) marker = match;
+  if (!marker) return null;
+
+  const requested = Number(marker[1]);
+  const executed = Number(marker[2]);
+  const matched = Number(marker[3]);
+  const status = marker[4];
+  if (
+    !Number.isSafeInteger(requested) ||
+    !Number.isSafeInteger(executed) ||
+    !Number.isSafeInteger(matched) ||
+    requested < 1 ||
+    executed < 1 ||
+    matched !== requested ||
+    executed !== matched
+  ) {
+    return null;
+  }
+
+  const summaryValue = (label: string): number | null => {
+    const re = new RegExp(`^\\s*(?:ℹ|#)?\\s*${label}\\s+(\\d+)\\s*$`, 'gm');
+    let value: number | null = null;
+    for (const match of output.matchAll(re)) value = Number(match[1]);
+    return value !== null && Number.isSafeInteger(value) ? value : null;
+  };
+  const tests = summaryValue('tests');
+  const passed = summaryValue('pass');
+  const reportedFailed = summaryValue('fail');
+  if (tests === null || passed === null || reportedFailed === null || tests < 1) return null;
+
+  const skipped =
+    (summaryValue('skipped') ?? 0) +
+    (summaryValue('todo') ?? 0) +
+    (summaryValue('cancelled') ?? 0);
+  const durationMatch = /^(?:\s*)(?:ℹ|#)?\s*duration_ms\s+([0-9]+(?:\.[0-9]+)?)\s*$/gm;
+  let durationMs: number | null = null;
+  for (const match of output.matchAll(durationMatch)) durationMs = Math.max(0, Math.round(Number(match[1])));
+
+  const failed = Math.max(reportedFailed, status === 'failed' ? 1 : 0);
+  const maxFailures = Math.max(1, Math.floor(opts.maxFailures ?? 20));
+  const failureFile = files.length === 1 ? files[0]! : '(node:test failure)';
+  const failureNames = [...output.matchAll(/^\s*not ok(?:\s+\d+)?\s+-\s+([^\r\n]+)$/gm)].map((m) => m[1]!.trim());
+  const failures = failureNames.slice(0, maxFailures).map((test) => ({
+    file: failureFile,
+    test: test || '(unnamed node:test failure)',
+    message: 'node:test reported a failure; structured Vitest failure details are unavailable for this runner.',
+  }));
+  if (failed > 0 && failures.length === 0) {
+    failures.push({
+      file: failureFile,
+      test: '(node:test failure details unavailable)',
+      message: `node:test reported ${failed} failed test(s); structured failure details were not emitted.`,
+    });
+  }
+
+  const byFile =
+    files.length === 1 && executed === 1
+      ? { [files[0]!]: { passed, failed, skipped, collectionFailed: false } }
+      : {};
+  return {
+    passed,
+    failed,
+    skipped,
+    files: executed,
+    failures,
+    failuresTruncated: failureNames.length > maxFailures,
+    durationMs,
+    byFile,
+  };
+}
+
 const VITEST_LAYER_CONFIGS = {
   integration: [
     'vitest.integration.config.ts',
@@ -1162,6 +1251,16 @@ export async function runTestFilesCore(opts: {
       reportTexts = [];
     }
     if (reportTexts.length === 0) {
+      // Registered node:test files run through scripts/test-files.mjs and do
+      // not produce Vitest's JSON report. Their terminal TEST_FILE_RESULT
+      // plus Node's numeric summary is still a complete, structured verdict;
+      // use it before treating the missing JSON file as a false-green refusal.
+      const routerResult = parseRouterTestResult(outcome.output, pathResolution.files, {
+        ...(opts.maxFailures !== undefined ? { maxFailures: opts.maxFailures } : {}),
+      });
+      if (routerResult) {
+        return boundTestRunPayload({ ok: routerResult.failed === 0 && outcome.code === 0, runId, root }, routerResult) as TestFilesCoreResult;
+      }
       // Exit 1 with no report is the REFUSED false-green (the router bailed
       // before running anything) — the one case where "no results" is the
       // answer, and must never read as a pass.
