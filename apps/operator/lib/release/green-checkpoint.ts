@@ -72,6 +72,7 @@ import {
 } from "@papercusp/operator-core/lib/release/dependency-generation-prebuild";
 import { stagingContainsFrozenRepairPatch } from "@papercusp/operator-core/lib/release/checkpoint-required-ancestor";
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from "@papercusp/operator-core/lib/release/checkpoint-qualification-transaction";
+import { reapAbandonedCandidateWorktrees } from "@papercusp/operator-core/lib/release/green-candidate-worktree-reaper";
 import type { EmitAwaitedEventOpts } from "@papercusp/operator-core/lib/events/await/engine";
 // P-005 / D-008: the hygiene-vs-product classifier. Pure and fail-closed — it decides,
 // it never files and never promotes. Actuation (the condition flip below, and filing the
@@ -845,6 +846,13 @@ export interface CheckpointDeps {
   cleanupFrozenRepairWorktree?(
     queue: FrozenCandidateRepairQueue,
   ): Promise<void>;
+  /** WI-488635: reclaim candidate worktrees left behind by runs that DIED before reaching
+   *  a `cleanupFrozenRepairWorktree` path (crash, kill, timeout, host restart). Those are
+   *  ~13 GiB each and walk the box past the Cargo pre-spawn admission floor, after which
+   *  every affected-tests run on the host silently drops its Rust coverage. `activePaths`
+   *  are never reaped; the reaper additionally refuses anything younger than its own age
+   *  floor, so an in-flight tree is unreachable even if `activePaths` is incomplete. */
+  reapAbandonedCandidateWorktrees?(activePaths: string[]): Promise<void>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -8352,6 +8360,28 @@ async function runGreenCheckpointInner(
   deps.log(
     `checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? "none"})`,
   );
+
+  // WI-488635: sweep worktrees abandoned by earlier runs BEFORE this pass calls setupTree,
+  // so the space is back before the Cargo admission check reads free disk. The candidate is
+  // final here, so both live paths are known. Non-fatal by construction — reclaiming disk
+  // must never be able to fail the gate.
+  await deps
+    .reapAbandonedCandidateWorktrees?.(
+      [
+        repairQueue?.worktreePath,
+        path.join(
+          cfg.integrationRoot,
+          ".papercusp",
+          "worktrees",
+          `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
+        ),
+      ].filter((p): p is string => typeof p === "string" && p.length > 0),
+    )
+    .catch((error) =>
+      deps.log(
+        `warn: abandoned candidate-worktree sweep failed: ${error instanceof Error ? error.message : error}`,
+      ),
+    );
   /**
    * WI-7069: the instant the candidate became FINAL.
    *
@@ -13335,6 +13365,50 @@ export function realCheckpointDeps(
           },
         }
       : {}),
+    // WI-488635: the retention sweep the per-queue cleanup above cannot provide — it only
+    // ever runs on a path a LIVING run reaches, so a run that dies leaks its tree forever.
+    async reapAbandonedCandidateWorktrees(activePaths: string[]) {
+      await reapAbandonedCandidateWorktrees({
+        integrationRoot: cfg.integrationRoot,
+        pipeline: pipelineName(cfg.integrationRoot),
+        activeWorktreePaths: activePaths,
+        deps: {
+          async gitWorktreeRemove(worktreePath: string) {
+            const removed = await exec(
+              "git",
+              [
+                "-C",
+                cfg.integrationRoot,
+                "worktree",
+                "remove",
+                "--force",
+                worktreePath,
+              ],
+              { timeoutMs: SETUP_TREE_TIMEOUT_MS, allowNonZero: true },
+            );
+            return removed.code === 0
+              ? { ok: true }
+              : {
+                  ok: false,
+                  detail: (removed.stderr || removed.stdout || "")
+                    .trim()
+                    .slice(0, 200),
+                };
+          },
+          async removeDirectory(worktreePath: string) {
+            rmSync(worktreePath, { recursive: true, force: true });
+          },
+          async gitWorktreePrune() {
+            await exec(
+              "git",
+              ["-C", cfg.integrationRoot, "worktree", "prune"],
+              { timeoutMs: SETUP_TREE_TIMEOUT_MS },
+            );
+          },
+          log,
+        },
+      });
+    },
     // WI-38422: the cheap candidate-scoped rejection pass. This intentionally shells
     // the SAME lint:tsc script the post-suite leg runs, with the SAME release-gate env
     // isolation and the SAME 16 GiB sequential-leg heap. The only difference is scope:
