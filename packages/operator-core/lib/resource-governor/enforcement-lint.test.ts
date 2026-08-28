@@ -51,6 +51,23 @@ describe('resource governor enforcement lint', () => {
     ).not.toContain('resource-start-outside-admission');
   });
 
+  it('detects called aliases bound to child-process starts without widening arbitrary names', () => {
+    expect(
+      inspectGovernorSource(`const spawnImpl = spawn; spawnImpl('agent-wrapper', [], { detached: true });`),
+    ).toContain('resource-start-outside-admission');
+    expect(
+      inspectGovernorSource(`const exec = promisify(execFile); await exec('git', ['rev-parse', 'HEAD']);`),
+    ).toContain('resource-start-outside-admission');
+    expect(
+      inspectGovernorSource(
+        `const spawnImpl = spawn; await beginGovernedExecution(request, owner, runtime); spawnImpl('agent-wrapper', []);`,
+      ),
+    ).not.toContain('resource-start-outside-admission');
+    expect(inspectGovernorSource(`const spawnRowKind = new Map(); spawnRowKind.set('x', 1);`)).not.toContain(
+      'resource-start-outside-admission',
+    );
+  });
+
   it('does not treat prose inside strings as executable resource-control code', () => {
     expect(inspectGovernorSource(`const guidance = 'waited for a semaphore slot';`)).toEqual([]);
     expect(inspectGovernorSource(`const guidance = 'call spawn(worker) next';`)).toEqual([]);
