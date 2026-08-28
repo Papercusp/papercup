@@ -22,6 +22,7 @@ import type { ReactNode } from 'react';
 import { Crosshair, GraduationCap, Repeat2, ShieldCheck } from 'lucide-react';
 import { useSyncQuery } from '@papercusp/sync';
 import type { EfficacyMetric, LearningEfficacy } from '@papercusp/operator-core/lib/learning/efficacy-read';
+import { LoopSection } from './LearningVisuals';
 
 function pct(v: number | null): string {
   return v == null ? '—' : `${Math.round(v * 100)}%`;
@@ -59,9 +60,14 @@ function Chip({
 export default function LearningEfficacyPanel(): ReactNode {
   const sync = useSyncQuery<LearningEfficacy>({ queryName: 'learning.efficacy', args: {}, staleTime: 30_000 });
   const eff = sync.data?.[0];
+  // P-004: the panel wraps ITSELF in its "Did it stick?" section, because it is
+  // the only thing that knows it has no data — a caller-side wrapper would leave
+  // a labelled card standing empty on every workspace whose efficacy read is
+  // still cold.
   if (!eff) return null;
 
   return (
+    <LoopSection label="Did it stick?" answer="whether past fixes and lessons actually held">
     <div className="pc-learning__flow" aria-label="Learning efficacy">
       <span
         className="pc-learning__flowchip"
@@ -87,5 +93,6 @@ export default function LearningEfficacyPanel(): ReactNode {
       <Chip icon={<Repeat2 size={11} aria-hidden />} label="recurrence decay" m={eff.recurrenceDecay} fmt={pct} />
       <Chip icon={<Crosshair size={11} aria-hidden />} label="memory FP@5" m={eff.memoryFpAt5} fmt={pct} />
     </div>
+    </LoopSection>
   );
 }
