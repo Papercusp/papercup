@@ -267,11 +267,18 @@ pub enum Action {
         harness: String,
         domain_id: String,
     },
-    /// Run one test file via `POST /api/harness/:slug/testing/run` (D-004a).
-    /// The reducer already marked the run in-flight; the result returns as
-    /// `Event::TestRunDone`.
+    /// Start one test file via the observable detached lifecycle (D-004a).
+    /// The reducer already marked the run in-flight; rolling snapshots return
+    /// as `Event::TestRunProgress` until a terminal status is reached.
     RunTest {
         harness: String,
+        file: String,
+    },
+    /// Request cancellation of the selected detached test run.  The status
+    /// poller remains authoritative for the terminal `cancelled` snapshot.
+    CancelTest {
+        harness: String,
+        run_id: String,
         file: String,
     },
     /// Semantic memory search (D-006 Step 2) — the run loop calls the
@@ -1438,8 +1445,14 @@ pub enum PluginsFocus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestRunState {
     pub running: bool,
+    /// Stable detached run id, assigned by the first start snapshot. `None`
+    /// only during the short start request before the server returns its id.
+    pub run_id: Option<String>,
     /// The file being run (the run pane's title).
     pub file: String,
+    /// True after Esc requested cancellation; the process may still be winding
+    /// down while the status endpoint reports `running`.
+    pub cancelling: bool,
     /// "pass" | "fail" once finished; empty while running.
     pub status: String,
     /// Tail of the runner output (server clips to ~8000 chars).
@@ -3069,7 +3082,9 @@ impl App {
                         let file = f.clone();
                         self.test_run = Some(TestRunState {
                             running: true,
+                            run_id: None,
                             file: file.clone(),
+                            cancelling: false,
                             status: String::new(),
                             output: String::new(),
                         });
@@ -6166,10 +6181,40 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
+            Event::TestRunProgress { file, snapshot } => {
+                // Ignore a late poll from a prior run. A new run replaces the
+                // pane wholesale, so only the bound run id may paint it.
+                let Some(run) = self.test_run.as_mut() else {
+                    return Action::Render;
+                };
+                if run.file != file {
+                    return Action::Render;
+                }
+                if let Some(current) = run.run_id.as_deref() {
+                    if current != snapshot.run_id {
+                        return Action::Render;
+                    }
+                } else {
+                    run.run_id = Some(snapshot.run_id.clone());
+                }
+                run.running = matches!(snapshot.status.as_str(), "" | "running");
+                if snapshot.status != "running" && !snapshot.status.is_empty() {
+                    run.cancelling = false;
+                    run.status = snapshot.status;
+                } else if run.cancelling {
+                    run.status = "cancelling".into();
+                } else {
+                    run.status = "running".into();
+                }
+                run.output = snapshot.output;
+                Action::Render
+            }
             Event::TestRunDone { file, result } => {
                 self.test_run = Some(TestRunState {
                     running: false,
+                    run_id: None,
                     file,
+                    cancelling: false,
                     status: if result.status.is_empty() {
                         format!("exit {}", result.exit_code)
                     } else {
@@ -7899,6 +7944,28 @@ impl App {
                     self.voice_phase = VoicePhase::Idle;
                     self.voice_level = 0.0;
                     return Action::Voice(VoiceCmd::Cancel);
+                }
+                // A detached test owns Esc while it is in flight. Keep the
+                // pane entered and request cancellation by run id; the status
+                // poller will paint the terminal `cancelled` snapshot.
+                if self.tab == Tab::Testing
+                    && self.test_run.as_ref().is_some_and(|run| run.running)
+                {
+                    let Some((run_id, file)) = self.test_run.as_ref().and_then(|run| {
+                        run.run_id
+                            .as_ref()
+                            .map(|id| (id.clone(), run.file.clone()))
+                    }) else {
+                        return Action::Render;
+                    };
+                    let run = self.test_run.as_mut().expect("test run checked above");
+                    run.cancelling = true;
+                    run.status = "cancelling".into();
+                    return Action::CancelTest {
+                        harness: self.harness.clone(),
+                        run_id,
+                        file,
+                    };
                 }
                 // On a side-by-side 2-pane tab (Pots/Testing), Esc first steps OUT
                 // of an entered pane back to browsing (two-level nav, owner ask
@@ -14958,6 +15025,89 @@ mod tests {
         let run = a.test_run.as_ref().unwrap();
         assert_eq!(run.status, "exit 1");
         assert!(!run.running);
+    }
+
+    #[test]
+    fn testing_detached_progress_binds_run_id_and_drops_stale_polls() {
+        let mut a = App::new();
+        a.update(key('7', KeyModifiers::NONE));
+        a.set_testing(vec![test_domain("unit")]);
+        a.testing_focus = TestingFocus::Files;
+        a.testing_files = vec!["a.test.ts".into()];
+        a.pane_entered = true;
+        assert!(matches!(a.update(ev(KeyCode::Enter)), Action::RunTest { .. }));
+
+        let snapshot = |run_id: &str, status: &str, output: &str| {
+            crate::models::TestRunSnapshot {
+                run_id: run_id.into(),
+                file_path: Some("a.test.ts".into()),
+                status: status.into(),
+                output: output.into(),
+                ..Default::default()
+            }
+        };
+        a.update(Event::TestRunProgress {
+            file: "a.test.ts".into(),
+            snapshot: snapshot("run-1", "running", "first chunk"),
+        });
+        let run = a.test_run.as_ref().unwrap();
+        assert_eq!(run.run_id.as_deref(), Some("run-1"));
+        assert!(run.running);
+        assert_eq!(run.output, "first chunk");
+
+        // A late response from another run cannot overwrite the active pane.
+        a.update(Event::TestRunProgress {
+            file: "a.test.ts".into(),
+            snapshot: snapshot("run-old", "fail", "stale"),
+        });
+        let run = a.test_run.as_ref().unwrap();
+        assert_eq!(run.run_id.as_deref(), Some("run-1"));
+        assert!(run.running);
+        assert_eq!(run.output, "first chunk");
+
+        a.update(Event::TestRunProgress {
+            file: "a.test.ts".into(),
+            snapshot: snapshot("run-1", "cancelled", "cancelled by user"),
+        });
+        let run = a.test_run.as_ref().unwrap();
+        assert!(!run.running);
+        assert_eq!(run.status, "cancelled");
+        assert!(!run.cancelling);
+    }
+
+    #[test]
+    fn testing_esc_requests_cancel_without_leaving_the_pane() {
+        let mut a = App::new();
+        a.update(key('7', KeyModifiers::NONE));
+        a.set_testing(vec![test_domain("unit")]);
+        a.testing_focus = TestingFocus::Files;
+        a.testing_files = vec!["a.test.ts".into()];
+        a.pane_entered = true;
+        assert!(matches!(a.update(ev(KeyCode::Enter)), Action::RunTest { .. }));
+        a.update(Event::TestRunProgress {
+            file: "a.test.ts".into(),
+            snapshot: crate::models::TestRunSnapshot {
+                run_id: "run-cancel".into(),
+                status: "running".into(),
+                ..Default::default()
+            },
+        });
+
+        match a.update(ev(KeyCode::Esc)) {
+            Action::CancelTest {
+                harness,
+                run_id,
+                file,
+            } => {
+                assert_eq!(harness, "papercup");
+                assert_eq!(run_id, "run-cancel");
+                assert_eq!(file, "a.test.ts");
+            }
+            other => panic!("expected CancelTest, got {other:?}"),
+        }
+        assert!(a.pane_entered);
+        assert!(a.test_run.as_ref().unwrap().cancelling);
+        assert_eq!(a.test_run.as_ref().unwrap().status, "cancelling");
     }
 
     // ─── Operator dock (operator-always-visible-2026-06-05, Brief 24) ───

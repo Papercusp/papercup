@@ -1601,9 +1601,20 @@ async fn run<B: Backend>(
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::RunTest { harness, file } => {
-                // The backend run is synchronous (up to ~120s); awaiting it in a
-                // task keeps the UI live while the run pane shows "running…".
+                // Start the detached run and poll its rolling snapshot off the
+                // UI thread. This keeps the pane responsive and gives Esc a
+                // stable run id to cancel.
                 tokio::spawn(run_test_file(harness, file, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::CancelTest {
+                harness,
+                run_id,
+                file,
+            } => {
+                // Cancellation is a request only; the existing status poller
+                // remains the authority for the terminal `cancelled` state.
+                tokio::spawn(cancel_test_run(harness, run_id, file, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
             Action::SearchMemory { query, harness } => {
@@ -2083,10 +2094,14 @@ async fn plugin_config_edit(
     }
 }
 
-/// Run one test file (D-004a) and emit `Event::TestRunDone`. A transport error
-/// becomes a `status:"error"` result so the run pane always resolves.
+/// Start one test file through the detached harness route, then poll its
+/// observable snapshot until a terminal status. A transport error becomes a
+/// terminal `error` snapshot so the run pane always resolves.
 async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>) {
-    let fail = |msg: String| models::TestRunResult {
+    let fail_file = file.clone();
+    let fail = move |run_id: String, msg: String| models::TestRunSnapshot {
+        run_id,
+        file_path: Some(fail_file.clone()),
         status: "error".to_string(),
         output: msg,
         ..Default::default()
@@ -2094,23 +2109,72 @@ async fn run_test_file(harness: String, file: String, tx: UnboundedSender<Event>
     let client = match OperatorClient::from_discovery().await {
         Ok(c) => c,
         Err(e) => {
-            let _ = tx.send(Event::TestRunDone {
+            let _ = tx.send(Event::TestRunProgress {
                 file,
-                result: fail(format!("{e}")),
+                snapshot: fail(String::new(), format!("{e}")),
             });
             return;
         }
     };
-    match client.testing_run(&harness, &file).await {
-        Ok(result) => {
-            let _ = tx.send(Event::TestRunDone { file, result });
-        }
+    let started = match client.testing_run_detached(&harness, &file).await {
+        Ok(snapshot) => snapshot,
         Err(e) => {
-            let _ = tx.send(Event::TestRunDone {
+            let _ = tx.send(Event::TestRunProgress {
                 file,
-                result: fail(format!("{e}")),
+                snapshot: fail(String::new(), format!("{e}")),
             });
+            return;
         }
+    };
+    let run_id = started.run_id.clone();
+    let terminal = |status: &str| matches!(status, "pass" | "fail" | "cancelled" | "error");
+    let is_terminal = terminal(&started.status);
+    let _ = tx.send(Event::TestRunProgress {
+        file: file.clone(),
+        snapshot: started,
+    });
+    if is_terminal {
+        return;
+    }
+
+    loop {
+        // A short interval gives useful rolling output without turning the
+        // status endpoint into a tight request loop.
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        match client.testing_run_status(&harness, &run_id).await {
+            Ok(snapshot) => {
+                let done = terminal(&snapshot.status);
+                let _ = tx.send(Event::TestRunProgress {
+                    file: file.clone(),
+                    snapshot,
+                });
+                if done {
+                    break;
+                }
+            }
+            Err(e) => {
+                let _ = tx.send(Event::TestRunProgress {
+                    file: file.clone(),
+                    snapshot: fail(run_id.clone(), format!("status poll: {e}")),
+                });
+                break;
+            }
+        }
+    }
+}
+
+/// Request cancellation for a detached test run. The run's polling task keeps
+/// running independently and will paint the authoritative terminal snapshot.
+async fn cancel_test_run(harness: String, run_id: String, _file: String, tx: UnboundedSender<Event>) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = tx.send(Event::Error(format!("cancel test: {e}")));
+            return;
+        }
+    };
+    if let Err(e) = client.testing_run_cancel(&harness, &run_id).await {
+        let _ = tx.send(Event::Error(format!("cancel test: {e}")));
     }
 }
 

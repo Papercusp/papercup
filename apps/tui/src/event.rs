@@ -148,7 +148,15 @@ pub enum Event {
         query: String,
         results: Vec<crate::models::MemoryEntry>,
     },
-    /// A test run finished (D-004a) — the file that ran + its result.
+    /// Rolling snapshot from the detached test lifecycle (D-004a).  The first
+    /// snapshot binds the UI to a run id; subsequent snapshots update output
+    /// until a terminal status arrives.
+    TestRunProgress {
+        file: String,
+        snapshot: crate::models::TestRunSnapshot,
+    },
+    /// A test run finished (legacy synchronous seam, retained for compatibility
+    /// with older callers and reducer tests).
     TestRunDone {
         file: String,
         result: crate::models::TestRunResult,

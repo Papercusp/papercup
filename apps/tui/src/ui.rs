@@ -6252,7 +6252,9 @@ mod tests {
         app.testing_focus = TestingFocus::Files;
         app.test_run = Some(TestRunState {
             running: false,
+            run_id: Some("run-ui".into()),
             file: "lib/a.test.ts".into(),
+            cancelling: false,
             status: "pass".into(),
             output: "✓ 3 tests passed".into(),
         });
@@ -6264,7 +6266,9 @@ mod tests {
         // The in-flight state labels the pane as running.
         app.test_run = Some(TestRunState {
             running: true,
+            run_id: Some("run-ui".into()),
             file: "lib/a.test.ts".into(),
+            cancelling: false,
             status: String::new(),
             output: String::new(),
         });
