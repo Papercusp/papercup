@@ -16,94 +16,292 @@ import { stripCommentsAndStrings } from "./lib/strip-comments-and-strings.mjs";
 const ROOT = new URL("..", import.meta.url).pathname;
 
 export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
-  inventory(
-    "agent-process-memory",
-    "P-013",
-    [
+  inventory({
+    id: "agent-process-memory",
+    migration: "P-013",
+    enforcement: "active",
+    paths: [
       "packages/operator-core/lib/agent-",
       "packages/operator-core/lib/fleet/",
+      "packages/operator-core/lib/pty-",
       "apps/operator/scripts/psu-",
     ],
-    ["cpu", "memory", "process", "pty"],
-    "active",
-  ),
-  inventory(
-    "mcp-http-operator-transport",
-    "P-014",
-    [
+    resourceDimensions: ["cpu", "memory", "process", "pty"],
+    fanOut:
+      "one admission per agent process, one per pty child; nested tool starts inherit the parent AdmissionContext, so the Nth fleet member is attributed to the launch that created it rather than counted as an independent root",
+    durableSource:
+      "capability:launch-agent's idempotencyKey agent-spawn:<caller>:<spawnStartedAt>:<i>, and the fleet/plan work-item that commissioned the launch",
+    telemetry:
+      "admissionClass 'agent' and 'process' admission/queue depth, plus psu host liveness through coord presence sessionState",
+    contextAndRelease:
+      "spawnGovernedAgentProcess holds the execution across the child's whole lifetime and releases actual cost on exit; a throwing spawn calls execution.cancel so a failed start never leaks a reservation",
+    currentCaps:
+      "none left in-lane: the per-launch spawn ceiling was deleted when capability:launch-agent moved onto spawnGovernedAgentProcess; psu-launcher/psu-pty-host hold no ceiling of their own",
+    writerEvidence:
+      "beginGovernedExecution at spawn-execution.ts and pty-bridge.ts with AdmissionContext propagated into the spawned process; residual probe/release/ledger sites carry explicit BYPASS_REGISTRY rows",
+    sites: [
+      {
+        path: "packages/operator-core/lib/agent-tools/capability/launch-agent.ts",
+        start: "psu agent process — governed, admissionClass 'agent'",
+      },
+      {
+        path: "packages/operator-core/lib/resource-governor/spawn-execution.ts",
+        start: "spawnGovernedAgentProcess — the lane's admission seam",
+      },
+      {
+        path: "packages/operator-core/lib/pty-bridge.ts",
+        start: "pty child — governed, admissionClass 'process'",
+      },
+      {
+        path: "packages/operator-core/lib/fleet/sidecar-exec-process.ts",
+        start: "fleet sidecar exec — governed",
+      },
+      {
+        path: "apps/operator/scripts/psu-launcher.mjs",
+        start:
+          "agent wrapper via spawnInherit — admitted upstream by launch-agent; probes bypass-registered",
+      },
+      {
+        path: "apps/operator/scripts/psu-pty-host.mjs",
+        start:
+          "pty.spawn of the launched agent's own child — admitted upstream; bypass-registered",
+      },
+    ],
+  }),
+  inventory({
+    id: "mcp-http-operator-transport",
+    migration: "P-014",
+    enforcement: "active",
+    paths: [
       "packages/operator-core/lib/endpoint-",
       "packages/operator-core/lib/agent-tools/",
       "apps/operator/bin/",
     ],
-    ["cpu", "memory", "socket", "process"],
-    "active",
-  ),
-  inventory(
-    "inference-embedding-provider-batching",
-    "P-015",
-    [
+    resourceDimensions: ["cpu", "memory", "socket", "process"],
+    fanOut:
+      "one admission per tool invocation that starts a subprocess; a tool called by an agent inherits that agent's context, so a fleet-wide tool storm attributes to its callers instead of appearing as unrelated roots",
+    durableSource:
+      "the tool_invocations ledger row for the call, plus the caller's own work-item; never an in-process request queue",
+    telemetry:
+      "per-tool admission counts and MCP proxy shed responses (HTTP 429 + Retry-After) surfaced as governor admission pressure",
+    currentCaps:
+      "none; the MCP proxy sheds with a retryable 429 under pressure instead of holding a fixed concurrency ceiling",
+    contextAndRelease:
+      "runGovernedOperation wraps each subprocess-starting tool and releases on settle; the host bootstrap admits its own long-lived listeners once at start",
+    writerEvidence:
+      "beginGovernedExecution across 21 agent-tools/endpoint writers (build/typecheck, db/migrate, computer, backup/diff, host-bootstrap); cheap git/probe metadata reads carry explicit BYPASS_REGISTRY rows",
+    sites: [
+      {
+        path: "apps/operator/bin/host-bootstrap.ts",
+        start: "operator host listeners — governed at boot",
+      },
+      {
+        path: "packages/operator-core/lib/agent-tools/build/typecheck.ts",
+        start: "tsc subprocess — governed",
+      },
+      {
+        path: "packages/operator-core/lib/agent-tools/db/migrate.ts",
+        start: "migration runner subprocess — governed",
+      },
+      {
+        path: "packages/operator-core/lib/agent-tools/computer/computer.ts",
+        start: "desktop automation subprocess — governed",
+      },
+    ],
+  }),
+  inventory({
+    id: "inference-embedding-provider-batching",
+    migration: "P-015",
+    paths: [
       "packages/operator-core/lib/inference-",
       "packages/operator-core/lib/memory/",
       "packages/operator-core/lib/llm-",
     ],
-    ["cpu", "memory", "gpu", "network"],
-  ),
-  inventory(
-    "database-sidecar-checkpoint-dbos",
-    "P-015",
-    [
+    resourceDimensions: ["cpu", "memory", "gpu", "network"],
+    fanOut:
+      "one admission per embedding batch and per provider request; a recall that fans into N provider calls must carry one parent context, not N roots",
+    durableSource:
+      "the memory/embedding job row that requested the batch; embed-admission already reads it rather than holding an in-memory backlog",
+    telemetry:
+      "embedding queue depth and provider latency/ratelimit state, with unknown preserved when a provider does not report",
+    contextAndRelease:
+      "embed-admission holds admission for the batch; the remaining llm-/inference-gateway writers still release implicitly and must move to exact actual-token release during P-015",
+    currentCaps:
+      "inference-gateway/watchdog.mjs still carries a numeric ceiling; delete it once provider admission reports real headroom",
+    writerEvidence:
+      "partially migrated: memory/embed-admission.ts and memory/bench/index-cap.ts are governed; the inference-gateway writers are not yet and are why this lane stays pending",
+    sites: [
+      {
+        path: "packages/operator-core/lib/memory/embed-admission.ts",
+        start: "embedding batch — governed",
+      },
+      {
+        path: "packages/operator-core/lib/inference-gateway/watchdog.mjs",
+        start: "provider watchdog — UNGOVERNED, holds the cap to delete",
+      },
+    ],
+  }),
+  inventory({
+    id: "database-sidecar-checkpoint-dbos",
+    migration: "P-015",
+    paths: [
       "packages/operator-core/lib/db",
       "packages/operator-core/lib/derived-",
       "packages/operator-core/lib/harness/routines/",
     ],
-    ["cpu", "memory", "database", "process"],
-  ),
-  inventory(
-    "p2p-sync-index-cache-compaction",
-    "P-016",
-    [
+    resourceDimensions: ["cpu", "memory", "database", "process"],
+    fanOut:
+      "one admission per DBOS workflow start and per sidecar process; a routine that fans into per-harness work must propagate one context so a 21-install sweep is not 21 unrelated roots",
+    durableSource:
+      "the DBOS workflow row and the routines table entry that scheduled it — both already durable, which is why this lane needs admission rather than a new queue",
+    telemetry:
+      "connection-pool saturation and per-routine fire/skip counts; pool exhaustion must read as pressure, not as an error",
+    contextAndRelease:
+      "not yet wired: no writer in this lane calls beginGovernedExecution today, so neither context lineage nor exact release exists — the concrete gap P-015 closes",
+    currentCaps:
+      "no numeric ceiling in-lane; the effective limit is the Postgres connection pool, a physical upstream constraint to observe rather than duplicate",
+    writerEvidence:
+      "none yet — this lane has zero governed writers, which is precisely why it must not be flipped active before P-015 migrates it",
+    sites: [
+      {
+        path: "packages/operator-core/lib/dbos/bootstrap.ts",
+        start: "DBOS workflow host — UNGOVERNED, to migrate in P-015",
+      },
+      {
+        path: "packages/operator-core/lib/harness/routines/gc-verify-instances.ts",
+        start: "routine sweep subprocess — UNGOVERNED",
+      },
+    ],
+  }),
+  inventory({
+    id: "p2p-sync-index-cache-compaction",
+    migration: "P-016",
+    paths: [
       "packages/operator-core/lib/p2p/",
       "packages/operator-core/lib/sync/",
       "packages/operator-core/lib/search/",
     ],
-    ["cpu", "memory", "network", "disk"],
-  ),
-  inventory(
-    "ci-release-test-workers",
-    "P-016",
-    [
+    resourceDimensions: ["cpu", "memory", "network", "disk"],
+    fanOut:
+      "one admission per fetch/index/compaction pass; a multi-pot sync fans out per pot and must attribute to the sync that started it",
+    durableSource:
+      "the pot-git fetch cursor and the index generation record; compaction is restartable from them, so nothing needs an in-memory backlog",
+    telemetry:
+      "index lag, fetch bytes in flight, and compaction backlog age — with stale preserved rather than coerced to zero",
+    contextAndRelease:
+      "fetch-transport is governed today; index and compaction passes still release implicitly and must move to exact disk/network release in P-016",
+    currentCaps:
+      "no numeric ceiling in-lane; disk throughput is the physical upstream constraint and is observed, not duplicated",
+    writerEvidence:
+      "one governed writer (sync/pot-git/fetch-transport.ts); the search-index and compaction writers are unmigrated, so the lane stays pending",
+    sites: [
+      {
+        path: "packages/operator-core/lib/sync/pot-git/fetch-transport.ts",
+        start: "git fetch transport — governed",
+      },
+    ],
+  }),
+  inventory({
+    id: "ci-release-test-workers",
+    migration: "P-016",
+    paths: [
       "packages/operator-core/lib/release/",
       "apps/operator/lib/release/",
       "scripts/",
     ],
-    ["cpu", "memory", "process", "disk"],
-  ),
-  inventory(
-    "background-routines-watchdogs",
-    "P-016",
-    [
+    resourceDimensions: ["cpu", "memory", "process", "disk"],
+    fanOut:
+      "one admission per test worker and per release step; the affected-tests runner fans out per workspace and propagates a single parent context so a 71-workspace run is one attributed tree",
+    durableSource:
+      "the test_runs ledger row per file and the release checkpoint record; a killed worker is re-derivable from them",
+    telemetry:
+      "per-worker CPU claim and suite wall-time, plus green-checkpoint gate health (consecutive reds, observed candidate)",
+    contextAndRelease:
+      "governed-test-process.mjs admits each worker and releases on exit; the release/deploy steps are not yet governed and are this lane's remaining P-016 work",
+    currentCaps:
+      "no numeric worker ceiling; scripts/lib/governed-test-process.mjs replaced the former fixed worker count with admission",
+    writerEvidence:
+      "runGovernedTestProcess in scripts/lib/governed-test-process.mjs, consumed by affected-tests.mjs and test-files.mjs; release-side writers remain unmigrated",
+    sites: [
+      {
+        path: "scripts/lib/governed-test-process.mjs",
+        start: "test worker — governed admission seam",
+      },
+      {
+        path: "scripts/affected-tests.mjs",
+        start: "affected-suite fan-out — governed via the seam above",
+      },
+      {
+        path: "apps/operator/lib/release/deploy-cli.ts",
+        start: "release deploy — UNGOVERNED, to migrate in P-016",
+      },
+    ],
+  }),
+  inventory({
+    id: "background-routines-watchdogs",
+    migration: "P-016",
+    paths: [
       "packages/operator-core/lib/system-health/",
       "packages/operator-core/lib/harness/routines/",
       "packages/operator-core/lib/events/",
     ],
-    ["cpu", "memory", "database", "network"],
-  ),
-  {
+    resourceDimensions: ["cpu", "memory", "database", "network"],
+    fanOut:
+      "one admission per routine fire; the ephemeral executor fans out per host and per install, so a fleet-wide tick must attribute to the tick rather than to each install separately",
+    durableSource:
+      "the routines table row (nextFireAt/lastFiredAt) — a skipped fire is recoverable from it, so a dropped tick must never be re-queued in memory",
+    telemetry:
+      "routine fire/skip/overrun counts and watchdog liveness, observed from OUTSIDE the routine process so a saturated main thread cannot self-report healthy",
+    contextAndRelease:
+      "not yet wired: routine fires start work with no admission and no release, so an overrunning routine is invisible to the governor — the gap P-016 closes here",
+    currentCaps:
+      "no numeric ceiling; managedSetInterval makes timers visible in schedule:inventory but visibility is not control, which is why admission is still required",
+    writerEvidence:
+      "none yet — zero governed writers in this lane; flipping it active before P-016 would light up every routine at once",
+    sites: [
+      {
+        path: "packages/operator-core/lib/harness/routines/supervision-reconcile-action.ts",
+        start: "supervision reconcile fire — UNGOVERNED",
+      },
+      {
+        path: "packages/operator-core/lib/system-health/index.ts",
+        start: "health sweep — UNGOVERNED, to migrate in P-016",
+      },
+    ],
+  }),
+  inventory({
     id: "governor-core",
-    disposition: "govern",
+    migration: "P-012",
     enforcement: "active",
     paths: ["packages/operator-core/lib/resource-governor/"],
     resourceDimensions: ["cpu", "memory", "process", "database", "network"],
-    fanOut: "typed admissionClass plus child AdmissionContext lineage",
-    durableSource: "work_items-backed durable queue receipts",
+    fanOut:
+      "the governor itself starts no resource work; it MEASURES fan-out by minting the typed admissionClass and the child AdmissionContext lineage every other lane propagates",
+    durableSource:
+      "work_items-backed durable queue receipts — the record that lets capacity pressure queue instead of reject (D-001)",
     telemetry:
-      "governor health/admission/queue/resources/recovery state snapshot",
+      "the governor health/admission/queue/resources/recovery snapshot, which preserves unknown and stale rather than coercing either to zero",
     contextAndRelease:
-      "AdmissionContext propagated to exact Governor.release(actualDemand)",
-    currentCaps: "none; desired windows are transient feedback state",
+      "AdmissionContext is propagated to an exact Governor.release(actualDemand); the release path is deliberately never gated on admission so recovery stays runnable under saturation",
+    currentCaps:
+      "none by construction (D-002): desired admission windows and lease credit are transient feedback state with no upper bound",
     writerEvidence:
-      "Governor.admit + valid local lease + AdmissionContext + Governor.release + governor state writer",
-  },
+      "Governor.admit plus a valid local lease, AdmissionContext, Governor.release, and the governor state writer — all five present in execution.ts and spawn-execution.ts",
+    sites: [
+      {
+        path: "packages/operator-core/lib/resource-governor/execution.ts",
+        start: "beginGovernedExecution — the admission primitive",
+      },
+      {
+        path: "packages/operator-core/lib/resource-governor/spawn-execution.ts",
+        start: "spawnGovernedAgentProcess — the process-spawn wrapper",
+      },
+      {
+        path: "packages/operator-core/lib/resource-governor/live-health-supervisor.ts",
+        start: "live health sampling that feeds the admission window",
+      },
+    ],
+  }),
 ]);
 
 /**
@@ -533,23 +731,49 @@ function scanTree() {
       /* concurrent deletion */
     }
   }
+  const tracked = new Set(files);
+  const enforced = RESOURCE_GOVERNOR_INVENTORY.filter(
+    (row) => row.enforcement === "active",
+  );
+  const pending = RESOURCE_GOVERNOR_INVENTORY.filter(
+    (row) => row.enforcement !== "active",
+  );
+  const scannedCount = sourceFiles.filter(([path]) =>
+    enforced.some((row) => row.paths.some((prefix) => path.startsWith(prefix))),
+  ).length;
   return {
     findings: [
-      ...validateInventory(),
+      ...validateInventory(RESOURCE_GOVERNOR_INVENTORY, {
+        pathExists: (path) => tracked.has(path),
+      }),
       ...scanActiveInventory(sourceFiles, { validateRegistry: "strict" }),
     ],
     unscanned,
+    coverage: { enforced, pending, scannedCount, sourceCount: sourceFiles.length },
   };
 }
 
 function main() {
-  const { findings, unscanned } = scanTree();
+  const { findings, unscanned, coverage } = scanTree();
+  // A lane sitting at `pending-P-NNN` is NOT scanned, so "8 lanes inventoried"
+  // read as "8 lanes checked" while only two were — the exact misreading that let
+  // the agent-process lane stay blind through a whole audit (D-026). Report what
+  // was ENFORCED and name what was not, so the gate's own output can never again
+  // present coverage it does not have.
+  const coverageLine =
+    `${coverage.enforced.length}/${RESOURCE_GOVERNOR_INVENTORY.length} lanes ENFORCED ` +
+    `(${coverage.scannedCount}/${coverage.sourceCount} source files scanned)` +
+    (coverage.pending.length
+      ? `; ${coverage.pending.length} NOT ENFORCED and therefore UNSCANNED: ` +
+        coverage.pending.map((r) => `${r.id}(${r.enforcement})`).join(", ")
+      : "");
   if (findings.length === 0) {
     console.log(
-      `[resource-governor-enforcement] OK — ${RESOURCE_GOVERNOR_INVENTORY.length} subsystem lanes inventoried; active writer evidence clean${unscanned.length ? `; ${unscanned.length} unscanned submodule(s)` : ""}.`,
+      `[resource-governor-enforcement] OK — ${coverageLine}; active writer evidence clean${unscanned.length ? `; ${unscanned.length} unscanned submodule(s)` : ""}.`,
     );
     return;
   }
+  console.error(`[resource-governor-enforcement] coverage: ${coverageLine}`);
   console.error(
     "[resource-governor-enforcement] FAIL — capless admission/queue/state policy violations:",
   );

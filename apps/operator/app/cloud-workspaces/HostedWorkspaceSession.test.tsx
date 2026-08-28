@@ -464,4 +464,53 @@ describe("HostedWorkspaceSession", () => {
     await waitFor(() => expect(socket.send).toHaveBeenCalled());
     expect((pathInput as HTMLInputElement).value).toBe("logs");
   });
+
+  it("keeps the last confirmed directory after a failed list", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+      }),
+    });
+    await waitFor(() => {
+      const status = screen.getByText("live", { exact: true }).parentElement;
+      expect(status?.textContent).toContain("controller");
+    });
+
+    const pathInput = screen.getByLabelText("Workspace file path");
+    fireEvent.change(pathInput, { target: { value: "missing" } });
+    socket.send.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+
+    const listRequest = JSON.parse(
+      socket.send.mock.calls.at(-1)?.[0] as string,
+    ) as { requestId: string; path: string };
+    expect(listRequest).toMatchObject({ type: "file.list", path: "missing" });
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "operation.error",
+        requestId: listRequest.requestId,
+        operation: "list",
+        code: "path_not_found",
+      }),
+    });
+
+    await waitFor(() =>
+      expect(screen.getByText("list failed: path_not_found")).toBeTruthy(),
+    );
+    expect((pathInput as HTMLInputElement).value).toBe(".");
+  });
 });

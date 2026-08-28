@@ -777,14 +777,24 @@ export function railModel(
       running: workspaces.filter((row) => row.observedState === "running").length,
       stopped: workspaces.filter((row) => row.observedState === "stopped").length,
       drifting: drifting.length,
-      monthlyUsd: workspaces.reduce(
-        (total, row) =>
-          total +
-          (Number.isFinite(row.estimatedMonthlyUsd)
-            ? (row.estimatedMonthlyUsd ?? 0)
-            : 0),
-        0,
-      ),
+      /* Cost tracks what is actually running, so it keys on the OBSERVED state
+         like Running and Stopped do. `absent` means the provider confirmed the
+         instance gone: the destroy path moves the row to `absent` but never
+         clears its provision-time `estimated_monthly_usd`, and the row is never
+         deleted, so counting it would bill for vanished hardware forever — and
+         would contradict the Running/Stopped counts beside it, which already
+         ignore `absent`. `destroying` still counts: the instance is up until
+         the provider says otherwise. */
+      monthlyUsd: workspaces
+        .filter((row) => row.observedState !== "absent")
+        .reduce(
+          (total, row) =>
+            total +
+            (Number.isFinite(row.estimatedMonthlyUsd)
+              ? (row.estimatedMonthlyUsd ?? 0)
+              : 0),
+          0,
+        ),
     },
   };
 }

@@ -617,6 +617,54 @@ describe("rail model", () => {
       monthlyUsd: 100,
     });
   });
+
+  it("stops billing for a host that has been destroyed", () => {
+    /* Nothing clears `estimated_monthly_usd` when a host is destroyed — the
+       destroy path only moves desired/observed to `absent` — so a destroyed row
+       still carries its provision-time estimate. The rail has to exclude it, or
+       the Fleet posture panel bills for hardware that no longer exists and
+       contradicts its own Running/Stopped counts, which already ignore
+       `absent`. */
+    const model = railModel(
+      [connection()],
+      [
+        workspace({ estimatedMonthlyUsd: 100 }),
+        workspace({
+          id: "destroyed",
+          desiredState: "absent",
+          observedState: "absent",
+          estimatedMonthlyUsd: 318.4,
+        }),
+      ],
+      "operate",
+      now,
+    );
+    expect(model.stats).toEqual({
+      running: 1,
+      stopped: 0,
+      drifting: 0,
+      monthlyUsd: 100,
+    });
+  });
+
+  it("keeps billing for a host that is still being destroyed", () => {
+    /* `destroying` is not `absent`: the instance is still up and still costing
+       until the provider confirms it gone, so the estimate stays in the total. */
+    const model = railModel(
+      [connection()],
+      [
+        workspace({
+          id: "going",
+          desiredState: "absent",
+          observedState: "destroying",
+          estimatedMonthlyUsd: 318.4,
+        }),
+      ],
+      "operate",
+      now,
+    );
+    expect(model.stats.monthlyUsd).toBe(318.4);
+  });
 });
 
 describe("formatters", () => {
