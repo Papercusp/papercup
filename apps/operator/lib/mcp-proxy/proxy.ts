@@ -273,6 +273,12 @@ export interface McpProxyOptions {
    * unbounded default, but a send that never reached the handler is safe to reject/retry.
    */
   coordSendQueueWaitMs?: number;
+  /**
+   * EI-21657694253110031 — `loop:checkpoint` must fail before the client deadline when the
+   * continuation slot is occupied. Unlike `work_items:checkpoint`, it is the loop's only
+   * recovery record, so it gets a bounded queue dwell rather than inheriting the generic zero.
+   */
+  loopCheckpointQueueWaitMs?: number;
   /** Per-waiter telemetry cadence (ms) for the critical-continuation FIFO. */
   criticalContinuationQueueWaitLogMs?: number;
   /**
@@ -1220,6 +1226,12 @@ export const DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS =
  * opaque client timeout with outcome unknown.
  */
 export const DEFAULT_COORD_SEND_QUEUE_WAIT_MS = 20_000;
+/**
+ * Leave enough of the MCP client's deadline for `loop:checkpoint` to report an honest retryable
+ * result when its dedicated continuation socket is occupied. `work_items:checkpoint` retains
+ * the generic zero/unbounded default because it is the fallback record for this boundary.
+ */
+export const DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS = 20_000;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -1699,6 +1711,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
   const coordSendQueueWaitMs =
     opts.coordSendQueueWaitMs ?? DEFAULT_COORD_SEND_QUEUE_WAIT_MS;
+  const loopCheckpointQueueWaitMs =
+    opts.loopCheckpointQueueWaitMs ?? DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS;
   const criticalContinuationQueueWaitLogMs =
     opts.criticalContinuationQueueWaitLogMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS;
@@ -2158,6 +2172,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               max: maxCriticalContinuationQueue,
               maxWaitMs: maxCriticalContinuationQueueWaitMs,
               coordSendMaxWaitMs: coordSendQueueWaitMs,
+              loopCheckpointMaxWaitMs: loopCheckpointQueueWaitMs,
               oldestAgeMs:
                 waitingCriticalContinuationRequests.length > 0
                   ? Math.max(
@@ -2451,14 +2466,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           )
             ? coordSendQueueWaitMs
             : 0;
+          const loopCheckpointWaitBound = criticalContinuationTools.some((tool) =>
+            loopCheckpointContinuationTools.has(tool),
+          )
+            ? loopCheckpointQueueWaitMs
+            : 0;
+          const positiveQueueWaitBounds = [
+            maxCriticalContinuationQueueWaitMs,
+            coordSendWaitBound,
+            loopCheckpointWaitBound,
+          ].filter((waitMs): waitMs is number => waitMs > 0);
           const effectiveQueueWaitMs = nonExpiring
             ? 0
-            : maxCriticalContinuationQueueWaitMs > 0 && coordSendWaitBound > 0
-              ? Math.min(
-                  maxCriticalContinuationQueueWaitMs,
-                  coordSendWaitBound,
-                )
-              : maxCriticalContinuationQueueWaitMs || coordSendWaitBound;
+            : positiveQueueWaitBounds.length > 0
+              ? Math.min(...positiveQueueWaitBounds)
+              : 0;
           const granted = await new Promise<boolean>((resolve) => {
             queuedCriticalContinuation = {
               resolve,

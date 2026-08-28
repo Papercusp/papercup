@@ -36,6 +36,7 @@ import {
   DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE,
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   DEFAULT_COORD_SEND_QUEUE_WAIT_MS,
+  DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
   isCriticalContinuationCall,
@@ -4712,6 +4713,105 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     expect(send.status).toBe(429);
     expect(JSON.parse(send.body)).toMatchObject({
+      error: "mcp_proxy_critical_continuation_queue_dwell",
+      forwardingResult: "not_forwarded",
+    });
+    expect(hits).toEqual(["held-completion"]);
+
+    releaseFirst();
+    expect((await first).status).toBe(200);
+  });
+
+  it("EI-21657694253110031: expires a queued loop:checkpoint with an explicit not-forwarded result before the client deadline", async () => {
+    expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
+    expect(DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS).toBe(20_000);
+    expect(DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS).toBeLessThan(60_000);
+
+    let releaseFirst: () => void = () => {};
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    let noteFirstStarted: () => void = () => {};
+    const firstStarted = new Promise<void>((resolve) => {
+      noteFirstStarted = resolve;
+    });
+    const hits: string[] = [];
+    const logs: string[] = [];
+    const upstream = track(
+      http.createServer((req, res) => {
+        const client =
+          new URL(req.url ?? "/", "http://127.0.0.1").searchParams.get(
+            "client",
+          ) ?? "";
+        hits.push(client);
+        if (client === "held-completion") {
+          noteFirstStarted();
+          void firstGate.then(() => res.end('{"result":{"held":true}}'));
+          return;
+        }
+        res.end('{"result":{"checkpoint":true}}');
+      }),
+    );
+    await listen(upstream);
+    const proxy = track(
+      createMcpProxy({
+        listenPort: 0,
+        targetHost: "127.0.0.1",
+        targetPort: port(upstream),
+        retryWindowMs: 1_000,
+        maxInFlight: 10,
+        controlPlaneReserve: 1,
+        maxCriticalContinuationQueue: 1,
+        loopCheckpointQueueWaitMs: 1_000,
+        criticalContinuationQueueWaitLogMs: 10,
+        log: (line) => logs.push(line),
+      }),
+    );
+    await listen(proxy);
+
+    const body = (id: number, name: string) =>
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id,
+        method: "tools/call",
+        params: { name, arguments: {} },
+      });
+    const first = request(
+      port(proxy),
+      body(1, "work_items:complete"),
+      "/api/mcp?client=held-completion",
+    );
+    await firstStarted;
+
+    const checkpoint = request(
+      port(proxy),
+      body(2, "loop:checkpoint"),
+      "/api/mcp?client=queued-loop-checkpoint",
+    );
+    await waitFor(() =>
+      logs.some((line) =>
+        line.includes("queued critical-continuation request"),
+      ),
+    );
+    const health = JSON.parse(
+      (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
+    );
+    expect(health.inFlight.criticalContinuationQueue).toMatchObject({
+      waiting: 1,
+      max: 1,
+      maxWaitMs: 0,
+      loopCheckpointMaxWaitMs: 1_000,
+      requests: [
+        expect.objectContaining({
+          tools: ["loop:checkpoint"],
+          maxWaitMs: 1_000,
+        }),
+      ],
+    });
+
+    const expired = await checkpoint;
+    expect(expired.status).toBe(429);
+    expect(JSON.parse(expired.body)).toMatchObject({
       error: "mcp_proxy_critical_continuation_queue_dwell",
       forwardingResult: "not_forwarded",
     });
