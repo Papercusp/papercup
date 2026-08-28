@@ -8,7 +8,10 @@
  * to the running gateway without a restart.
  *
  * Selection is least-loaded (fewest in-flight requests) among ENABLED,
- * HEALTHY, under-`maxConcurrent` backends serving the requested model id.
+ * HEALTHY backends serving the requested model id. When the backend engine
+ * reports fresh physical slots, that reading is the capacity gate;
+ * registry `maxConcurrent` remains policy/diagnostic metadata only. Missing
+ * or stale engine evidence is deliberately unbounded for routing.
  * Health demotes after HEALTH_FAIL_THRESHOLD consecutive failures — periodic
  * probes (runHealthChecks) AND live request outcomes (recordOutcome) both feed
  * it, so a backend that dies mid-traffic is skipped within 2 failed requests,
@@ -61,6 +64,43 @@ export interface LocalBackendCandidate {
   backend: LocalBackend;
   inFlight: number;
   healthy: boolean;
+  /** Fresh physical engine evidence. The pool adjusts freeSlots for activity
+   * since the observation before exposing candidates. */
+  engineCapacity?: LocalBackendEngineCapacity | null;
+}
+
+/** Physical capacity reported by a backend engine (for example llama-server
+ * `/props`). This is deliberately separate from registry maxConcurrent, which
+ * is local policy and never a physical ceiling. */
+export interface LocalBackendEngineCapacity {
+  readonly freeSlots?: number | null;
+  readonly totalSlots?: number | null;
+  readonly contextTokens?: number | null;
+  readonly observedAtMs: number;
+  readonly source?: string;
+}
+
+/** Engine readings older than this are unsuitable for headroom/saturation. */
+export const ENGINE_CAPACITY_FRESH_FOR_MS = 15_000;
+
+function finiteNonNegative(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function freshEngineCapacity(capacity: LocalBackendEngineCapacity | null | undefined, now = Date.now()): boolean {
+  return (
+    capacity !== null &&
+    capacity !== undefined &&
+    finiteNonNegative(capacity.freeSlots) &&
+    Number.isFinite(capacity.observedAtMs) &&
+    now >= capacity.observedAtMs &&
+    now - capacity.observedAtMs <= ENGINE_CAPACITY_FRESH_FOR_MS
+  );
+}
+
+function engineFreeSlots(candidate: LocalBackendCandidate, now = Date.now()): number | undefined {
+  if (!freshEngineCapacity(candidate.engineCapacity, now)) return undefined;
+  return Math.max(0, candidate.engineCapacity!.freeSlots!);
 }
 
 /** Consecutive failures (probe OR live request) before a backend drops out of
@@ -73,8 +113,9 @@ export const DEFAULT_HEALTH_TIMEOUT_MS = 4000;
 /**
  * Pure selection: the least-loaded eligible backend serving `model`, or null
  * when none qualify (not registered for this model, disabled, unhealthy, or
- * every candidate is already at its `maxConcurrent` ceiling — the caller
- * should shed the request, not queue it against a dead/saturated pool).
+ * every candidate with fresh engine evidence has no free slot). Candidates
+ * without fresh evidence are eligible: unknown/stale capacity is unbounded
+ * for routing and never falls back to maxConcurrent.
  * Ties broken by id for determinism (round-robin-ish across equally-idle
  * backends without needing a cursor).
  */
@@ -88,7 +129,7 @@ export function pickLeastLoaded(
       c.backend.enabled &&
       c.healthy &&
       c.backend.models.includes(model) &&
-      c.inFlight < c.backend.maxConcurrent &&
+      (engineFreeSlots(c) === undefined || engineFreeSlots(c)! > 0) &&
       !exclude?.has(c.backend.id),
   );
   if (eligible.length === 0) return null;
@@ -98,11 +139,12 @@ export function pickLeastLoaded(
 
 /**
  * Pure saturation check — the exact complement of `pickLeastLoaded` returning null. True when
- * `model` IS served by ≥1 enabled + healthy (non-excluded) backend but EVERY such backend is
- * already at its `maxConcurrent` ceiling: retryable BACKPRESSURE the caller should answer with a
+ * `model` IS served by ≥1 enabled + healthy (non-excluded) backend but EVERY such backend with
+ * fresh engine evidence has no free slot: retryable BACKPRESSURE the caller should answer with a
  * 429 + Retry-After. False when NO enabled+healthy backend serves the model (unmatched /
  * all-unhealthy — a genuine dead end the caller should 502), or when a slot is free (select() would
- * have returned a backend). `exclude` matches `pickLeastLoaded` (ids already tried this request).
+ * have returned a backend). Unknown/stale engine evidence is not saturation evidence. `exclude`
+ * matches `pickLeastLoaded` (ids already tried this request).
  */
 export function isSaturatedFor(
   candidates: readonly LocalBackendCandidate[],
@@ -113,18 +155,23 @@ export function isSaturatedFor(
     (c) => c.backend.enabled && c.healthy && c.backend.models.includes(model) && !exclude?.has(c.backend.id),
   );
   if (serving.length === 0) return false;
-  return serving.every((c) => c.inFlight >= c.backend.maxConcurrent);
+  return serving.every((c) => {
+    const free = engineFreeSlots(c);
+    return free !== undefined && free <= 0;
+  });
 }
 
 /**
  * Pure capacity count: how many local inference slots are free RIGHT NOW across the whole
- * pool — Σ max(0, maxConcurrent − inFlight) over ENABLED + HEALTHY backends.
+ * pool — Σ measured engine free slots over ENABLED + HEALTHY backends.
  *
  * Deliberately MODEL-AGNOSTIC, unlike `pickLeastLoaded`/`isSaturatedFor`: those answer "can I
  * route THIS request", while this answers "how much local capacity does this host have to
  * offer" — the D-007 PHYSICS input the p2p claim gate reads (host-availability.ts), where no
  * model is known at claim time. It shares their eligibility predicate (enabled + healthy) on
  * purpose so a backend that selection refuses can never be counted as offerable capacity.
+ * Unknown/stale engine readings contribute zero: headroom fails closed even
+ * though routing treats those readings as unbounded.
  *
  * Unit = SLOTS, matching the `local` budget axis (offer-budget.ts) and the `axis.slots`
  * absolute cap a P-201 gpu allotment row carries — so `min(cap, freeSlots)` is unit-correct.
@@ -133,7 +180,7 @@ export function freeSlots(candidates: readonly LocalBackendCandidate[]): number 
   let free = 0;
   for (const c of candidates) {
     if (!c.backend.enabled || !c.healthy) continue;
-    free += Math.max(0, c.backend.maxConcurrent - c.inFlight);
+    free += engineFreeSlots(c) ?? 0;
   }
   return free;
 }
@@ -162,7 +209,7 @@ export function pickWithAffinity(
         c.backend.enabled &&
         c.healthy &&
         c.backend.models.includes(model) &&
-        c.inFlight < c.backend.maxConcurrent,
+        (engineFreeSlots(c) === undefined || engineFreeSlots(c)! > 0),
     );
     if (preferred) return { backend: preferred.backend, outcome: 'hit' };
   }
@@ -222,7 +269,8 @@ export interface LocalBackendPool {
   /** Affinity hit/switch/cold counters since boot (P-028) — `switches` is the dashboard's
    *  eviction-rate numerator (a sticky backend abandoned → KV re-prefill on the new one). */
   affinityStats(): AffinityStats;
-  /** True when `model` is served by ≥1 enabled+healthy backend but ALL are at `maxConcurrent` — i.e.
+  /** True when `model` is served by ≥1 enabled+healthy backend but ALL have measured engine
+   * capacity exhausted — i.e.
    *  select() returned null from SATURATION (retryable backpressure → 429), not from the model being
    *  unmatched / all-unhealthy (a genuine dead end → 502). `exclude` matches select()'s. */
   saturatedFor(model: string, exclude?: ReadonlySet<string>): boolean;
@@ -233,6 +281,12 @@ export interface LocalBackendPool {
    *  within HEALTH_FAIL_THRESHOLD failed requests, without waiting for the next probe tick. */
   recordOutcome(id: string, ok: boolean, error?: string | null): void;
   health(): ReadonlyMap<string, LocalBackendHealth>;
+  /** Replace the latest physical engine-capacity reading for one registered backend. */
+  updateEngineCapacity(id: string, capacity: LocalBackendEngineCapacity | null): void;
+  /** Alias for updateEngineCapacity, retained for setter-oriented callers. */
+  setEngineCapacity(id: string, capacity: LocalBackendEngineCapacity | null): void;
+  /** Read the latest raw engine-capacity reading (without in-flight adjustment). */
+  engineCapacity(id: string): LocalBackendEngineCapacity | null;
   /** Probe every registered backend's `${baseUrl}/v1/models` (supported by llama-server, vllm, and
    *  ollama's OpenAI-compat surface alike) and update health state. Injectable fetch for tests. */
   runHealthChecks(fetchImpl?: typeof fetch, timeoutMs?: number): Promise<void>;
@@ -242,19 +296,36 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
   let backends = new Map<string, LocalBackend>(initial.map((b) => [b.id, b]));
   const inFlightCounts = new Map<string, number>();
   const healthMap = new Map<string, LocalBackendHealth>();
+  // Keep the raw engine reading plus the pool counter observed alongside it.
+  // The baseline lets us reconcile local starts/ends against a physical
+  // reading without treating the same request as two slots consumed.
+  const engineCapacityMap = new Map<string, { capacity: LocalBackendEngineCapacity; inFlightAtObservation: number }>();
   // P-028: owner → last backend. Insertion-ordered Map doubles as the LRU — a re-assignment
   // deletes + re-sets so the oldest entry is always first for pruning.
   const affinity = new Map<string, { backendId: string; assignedAt: number }>();
   const affinityCounters = { hits: 0, switches: 0, cold: 0 };
 
   function candidatesFor(): LocalBackendCandidate[] {
-    return [...backends.values()].map((backend) => ({
-      backend,
-      inFlight: inFlightCounts.get(backend.id) ?? 0,
-      // Optimistic default: a backend never checked yet (fresh register, checks not yet ticked) is
-      // usable immediately — the FIRST probe or live failure is what demotes it, not silence.
-      healthy: healthMap.get(backend.id)?.healthy ?? true,
-    }));
+    return [...backends.values()].map((backend) => {
+      const inFlight = inFlightCounts.get(backend.id) ?? 0;
+      const measured = engineCapacityMap.get(backend.id);
+      let engineCapacity: LocalBackendEngineCapacity | null = null;
+      if (measured) {
+        const delta = inFlight - measured.inFlightAtObservation;
+        const freeSlots = finiteNonNegative(measured.capacity.freeSlots)
+          ? Math.max(0, measured.capacity.freeSlots - delta)
+          : measured.capacity.freeSlots;
+        engineCapacity = { ...measured.capacity, freeSlots };
+      }
+      return {
+        backend,
+        inFlight,
+        // Optimistic default: a backend never checked yet (fresh register, checks not yet ticked) is
+        // usable immediately — the FIRST probe or live failure is what demotes it, not silence.
+        healthy: healthMap.get(backend.id)?.healthy ?? true,
+        engineCapacity,
+      };
+    });
   }
 
   return {
@@ -265,6 +336,7 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
       backends = new Map(next.map((b) => [b.id, b]));
       for (const id of [...inFlightCounts.keys()]) if (!nextIds.has(id)) inFlightCounts.delete(id);
       for (const id of [...healthMap.keys()]) if (!nextIds.has(id)) healthMap.delete(id);
+      for (const id of [...engineCapacityMap.keys()]) if (!nextIds.has(id)) engineCapacityMap.delete(id);
       for (const [owner, a] of [...affinity.entries()]) if (!nextIds.has(a.backendId)) affinity.delete(owner);
     },
     select(model, exclude, ownerId) {
@@ -302,6 +374,32 @@ export function createLocalBackendPool(initial: readonly LocalBackend[] = []): L
       healthMap.set(id, nextHealthState(healthMap.get(id), ok, healthMap.get(id)?.latencyMs ?? 0, error, Date.now()));
     },
     health: () => new Map(healthMap),
+    updateEngineCapacity(id, capacity) {
+      if (!backends.has(id)) return;
+      if (capacity === null) {
+        engineCapacityMap.delete(id);
+        return;
+      }
+      engineCapacityMap.set(id, {
+        capacity: { ...capacity },
+        inFlightAtObservation: inFlightCounts.get(id) ?? 0,
+      });
+    },
+    setEngineCapacity(id, capacity) {
+      if (!backends.has(id)) return;
+      if (capacity === null) {
+        engineCapacityMap.delete(id);
+        return;
+      }
+      engineCapacityMap.set(id, {
+        capacity: { ...capacity },
+        inFlightAtObservation: inFlightCounts.get(id) ?? 0,
+      });
+    },
+    engineCapacity: (id) => {
+      const value = engineCapacityMap.get(id)?.capacity;
+      return value ? { ...value } : null;
+    },
     async runHealthChecks(fetchImpl = fetch, timeoutMs = DEFAULT_HEALTH_TIMEOUT_MS) {
       await Promise.all(
         [...backends.values()].map(async (backend) => {

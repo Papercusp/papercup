@@ -3,6 +3,7 @@ import {
   AFFINITY_MAX_OWNERS,
   AFFINITY_TTL_MS,
   createLocalBackendPool,
+  ENGINE_CAPACITY_FRESH_FOR_MS,
   freeSlots,
   HEALTH_FAIL_THRESHOLD,
   isSaturatedFor,
@@ -12,6 +13,14 @@ import {
   type LocalBackend,
   type LocalBackendCandidate,
 } from './local-backend-pool';
+
+const engineCapacity = (freeSlots: number, totalSlots = freeSlots) => ({
+  freeSlots,
+  totalSlots,
+  contextTokens: 131_072,
+  observedAtMs: Date.now(),
+  source: '/props',
+});
 
 function backend(over: Partial<LocalBackend> = {}): LocalBackend {
   return {
@@ -35,14 +44,14 @@ describe('freeSlots (WI-3590 — pool capacity for the p2p claim gate)', () => {
   it('sums remaining concurrency across eligible backends', () => {
     expect(
       freeSlots([
-        cand({ backend: backend({ id: 'a', maxConcurrent: 4 }), inFlight: 1 }),
-        cand({ backend: backend({ id: 'b', maxConcurrent: 2 }), inFlight: 0 }),
+        cand({ backend: backend({ id: 'a', maxConcurrent: 4 }), inFlight: 1, engineCapacity: engineCapacity(3, 4) }),
+        cand({ backend: backend({ id: 'b', maxConcurrent: 2 }), inFlight: 0, engineCapacity: engineCapacity(2, 2) }),
       ]),
     ).toBe(5);
   });
 
   it('counts a backend regardless of which models it serves (a claim gate knows no model yet)', () => {
-    expect(freeSlots([cand({ backend: backend({ models: ['something-else'], maxConcurrent: 3 }) })])).toBe(3);
+    expect(freeSlots([cand({ backend: backend({ models: ['something-else'], maxConcurrent: 3 }), engineCapacity: engineCapacity(3) })])).toBe(3);
   });
 
   it('ignores disabled and unhealthy backends — it must never count capacity selection would refuse', () => {
@@ -50,24 +59,36 @@ describe('freeSlots (WI-3590 — pool capacity for the p2p claim gate)', () => {
       freeSlots([
         cand({ backend: backend({ id: 'a', enabled: false, maxConcurrent: 4 }) }),
         cand({ backend: backend({ id: 'b', maxConcurrent: 4 }), healthy: false }),
-        cand({ backend: backend({ id: 'c', maxConcurrent: 2 }) }),
+        cand({ backend: backend({ id: 'c', maxConcurrent: 2 }), engineCapacity: engineCapacity(2) }),
       ]),
     ).toBe(2);
   });
 
   it('is 0 (never negative) when backends are saturated or over-counted', () => {
-    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 2 })])).toBe(0);
-    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 9 })])).toBe(0);
+    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 2, engineCapacity: engineCapacity(0, 2) })])).toBe(0);
+    expect(freeSlots([cand({ backend: backend({ id: 'a', maxConcurrent: 2 }), inFlight: 9, engineCapacity: engineCapacity(0, 2) })])).toBe(0);
   });
 
   it('agrees with isSaturatedFor: zero free slots ⇒ no model can be selected', () => {
-    const c = [cand({ backend: backend({ id: 'a', maxConcurrent: 1 }), inFlight: 1 })];
+    const c = [cand({ backend: backend({ id: 'a', maxConcurrent: 1 }), inFlight: 1, engineCapacity: engineCapacity(0, 1) })];
     expect(freeSlots(c)).toBe(0);
     expect(isSaturatedFor(c, 'ornith-35b')).toBe(true);
   });
 
   it('is 0 for an empty pool', () => {
     expect(freeSlots([])).toBe(0);
+  });
+
+  it('fails closed for headroom when engine capacity is unknown or stale', () => {
+    expect(freeSlots([cand({ backend: backend({ maxConcurrent: 99 }) })])).toBe(0);
+    expect(
+      freeSlots([
+        cand({
+          backend: backend({ maxConcurrent: 99 }),
+          engineCapacity: { freeSlots: 4, observedAtMs: Date.now() - ENGINE_CAPACITY_FRESH_FOR_MS - 1 },
+        }),
+      ]),
+    ).toBe(0);
   });
 });
 
@@ -109,11 +130,17 @@ describe('pickLeastLoaded', () => {
 
   it('excludes a backend already at maxConcurrent (saturated — shed, do not queue onto it)', () => {
     const a = backend({ maxConcurrent: 2 });
-    expect(pickLeastLoaded([cand({ backend: a, inFlight: 2 })], 'ornith-35b')).toBeNull();
+    expect(pickLeastLoaded([cand({ backend: a, inFlight: 2, engineCapacity: engineCapacity(0, 2) })], 'ornith-35b')).toBeNull();
   });
 
   it('returns null when candidates is empty', () => {
     expect(pickLeastLoaded([], 'ornith-35b')).toBeNull();
+  });
+
+  it('treats unknown/stale engine capacity as unbounded for routing', () => {
+    const unknown = backend({ maxConcurrent: 1 });
+    expect(pickLeastLoaded([cand({ backend: unknown, inFlight: 100 })], 'ornith-35b')?.id).toBe('b1');
+    expect(isSaturatedFor([cand({ backend: unknown, inFlight: 100 })], 'ornith-35b')).toBe(false);
   });
 
   it('exclude skips an id already tried this request (in-request failover)', () => {
@@ -134,7 +161,7 @@ describe('isSaturatedFor', () => {
   it('is true when the model is served but every backend is at maxConcurrent (retryable backpressure → 429)', () => {
     const a = backend({ id: 'a', maxConcurrent: 2 });
     const b = backend({ id: 'b', maxConcurrent: 1 });
-    expect(isSaturatedFor([cand({ backend: a, inFlight: 2 }), cand({ backend: b, inFlight: 1 })], 'ornith-35b')).toBe(true);
+    expect(isSaturatedFor([cand({ backend: a, inFlight: 2, engineCapacity: engineCapacity(0, 2) }), cand({ backend: b, inFlight: 1, engineCapacity: engineCapacity(0, 1) })], 'ornith-35b')).toBe(true);
   });
 
   it('is false when a slot is free (select() would return a backend, not shed)', () => {
@@ -208,6 +235,32 @@ describe('createLocalBackendPool', () => {
     pool.reload([backend({ id: 'a' }), backend({ id: 'b' })]);
     expect(pool.size()).toBe(2);
     expect(pool.entries().map((b) => b.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('uses fresh engine freeSlots as the routing ceiling and reconciles pool starts/ends', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a', maxConcurrent: 99 })]);
+    pool.updateEngineCapacity('a', { freeSlots: 1, totalSlots: 2, contextTokens: 131_072, observedAtMs: Date.now(), source: '/props' });
+    expect(pool.select('ornith-35b')?.id).toBe('a');
+    pool.recordStart('a');
+    expect(pool.select('ornith-35b')).toBeNull();
+    expect(pool.saturatedFor('ornith-35b')).toBe(true);
+    pool.recordEnd('a');
+    expect(pool.select('ornith-35b')?.id).toBe('a');
+  });
+
+  it('retains engine capacity for surviving backends across reload and drops removed ids', () => {
+    const pool = createLocalBackendPool([backend({ id: 'a' }), backend({ id: 'b' })]);
+    const reading = { freeSlots: 2, totalSlots: 2, observedAtMs: Date.now(), source: '/props' };
+    pool.setEngineCapacity('a', reading);
+    pool.reload([backend({ id: 'a', maxConcurrent: 1 })]);
+    expect(pool.engineCapacity('a')).toEqual(reading);
+    expect(pool.engineCapacity('b')).toBeNull();
+    expect(pool.select('ornith-35b')?.id).toBe('a');
+    pool.setEngineCapacity('a', null);
+    expect(pool.engineCapacity('a')).toBeNull();
+    // Clearing physical evidence restores unbounded routing, never the stale registry ceiling.
+    pool.recordStart('a');
+    expect(pool.select('ornith-35b')?.id).toBe('a');
   });
 
   it('select() honors in-flight tracking (recordStart/recordEnd) for least-loaded routing', () => {
@@ -297,7 +350,7 @@ describe('slot affinity (P-028)', () => {
   it('pickWithAffinity falls over (never queues) when the sticky backend is saturated — a counted switch', () => {
     const a = backend({ id: 'a', maxConcurrent: 1 });
     const b = backend({ id: 'b' });
-    const r = pickWithAffinity([cand({ backend: a, inFlight: 1 }), cand({ backend: b })], 'ornith-35b', 'a');
+    const r = pickWithAffinity([cand({ backend: a, inFlight: 1, engineCapacity: engineCapacity(0, 1) }), cand({ backend: b })], 'ornith-35b', 'a');
     expect(r).toEqual({ backend: b, outcome: 'switch' });
   });
 
@@ -309,7 +362,7 @@ describe('slot affinity (P-028)', () => {
 
   it('pickWithAffinity: nothing eligible → null pick, null outcome (no affinity event)', () => {
     const a = backend({ id: 'a', maxConcurrent: 1 });
-    const r = pickWithAffinity([cand({ backend: a, inFlight: 1 })], 'ornith-35b', 'a');
+    const r = pickWithAffinity([cand({ backend: a, inFlight: 1, engineCapacity: engineCapacity(0, 1) })], 'ornith-35b', 'a');
     expect(r).toEqual({ backend: null, outcome: null });
   });
 
@@ -331,6 +384,7 @@ describe('slot affinity (P-028)', () => {
 
   it('a saturated sticky backend produces a switch and the NEW backend becomes sticky', () => {
     const pool = createLocalBackendPool([backend({ id: 'a', maxConcurrent: 1 }), backend({ id: 'b' })]);
+    pool.updateEngineCapacity('a', { freeSlots: 1, totalSlots: 1, observedAtMs: Date.now(), source: '/props' });
     expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('a');
     pool.recordStart('a'); // 'a' at capacity
     expect(pool.select('ornith-35b', undefined, 'owner-1')?.id).toBe('b'); // switch

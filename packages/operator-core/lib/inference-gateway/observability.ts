@@ -11,7 +11,7 @@
 import type { GatewayStats } from './gateway';
 import { gatewayPort } from './spawn-env';
 import type { RawGatewayStats } from './gateway-wedge';
-import type { LocalBackend, LocalBackendCandidate } from './local-backend-pool';
+import type { LocalBackend, LocalBackendCandidate, LocalBackendEngineCapacity } from './local-backend-pool';
 
 export interface GatewayHeadroom {
   /** Provider whose admission/account fields were projected from /stats. */
@@ -251,6 +251,7 @@ interface LocalBackendAdminRow {
   enabled?: unknown;
   inFlight?: unknown;
   health?: { healthy?: unknown } | null;
+  engineCapacity?: LocalBackendEngineCapacity | null;
 }
 
 export interface LocalBackendsSnapshot {
@@ -305,6 +306,16 @@ export async function fetchLocalBackends(
         // real probe/live failure demotes a backend. Diverging here would count capacity the
         // gateway's own selection refuses, or vice versa.
         healthy: r.health?.healthy !== false,
+        engineCapacity:
+          r.engineCapacity && typeof r.engineCapacity === 'object'
+            ? {
+                freeSlots: Number.isFinite(Number(r.engineCapacity.freeSlots)) ? Number(r.engineCapacity.freeSlots) : null,
+                totalSlots: Number.isFinite(Number(r.engineCapacity.totalSlots)) ? Number(r.engineCapacity.totalSlots) : null,
+                contextTokens: Number.isFinite(Number(r.engineCapacity.contextTokens)) ? Number(r.engineCapacity.contextTokens) : null,
+                observedAtMs: Number(r.engineCapacity.observedAtMs),
+                source: typeof r.engineCapacity.source === 'string' ? r.engineCapacity.source : undefined,
+              }
+            : null,
       });
     }
     return { reachable: true, configured: body.configured === true, candidates };

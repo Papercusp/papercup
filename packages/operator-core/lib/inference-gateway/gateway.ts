@@ -107,16 +107,6 @@ import {
 } from './cache-policy';
 import type { LocalBackend, LocalBackendPool } from './local-backend-pool';
 import {
-  CLIENT_CIRCUIT_ZERO,
-  DEFAULT_CLIENT_CIRCUIT_COOLDOWN_MS,
-  DEFAULT_CLIENT_FAILURE_THRESHOLD,
-  DEFAULT_CLIENT_MAX_IN_FLIGHT,
-  admitClient,
-  nextClientCircuitState,
-  shouldShedClient,
-  type ClientCircuitState,
-} from './local-backend-client-circuit';
-import {
   AdmitImmediatelyDriver,
   Governor,
   type AdmissionContext,
@@ -544,14 +534,6 @@ const DEFAULT_SELFHEAL_POLL_MS = Number(process.env.PAPERCUSP_GATEWAY_SELFHEAL_P
  *  can be slow on a loaded box, but a request that never resolves must still fail over. */
 const DEFAULT_LOCAL_BACKEND_TIMEOUT_MS =
   Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_TIMEOUT_MS) || 5 * 60 * 1000;
-/** Per-CLIENT (owner) local-backend guardrails (P-015/D-010): protect the shared local-backend
- *  pool from one storming/wedged agent — see local-backend-client-circuit.ts for the design. */
-const DEFAULT_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT =
-  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT) || DEFAULT_CLIENT_MAX_IN_FLIGHT;
-const DEFAULT_LOCAL_BACKEND_CLIENT_FAILURE_THRESHOLD =
-  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_FAILURE_THRESHOLD) || DEFAULT_CLIENT_FAILURE_THRESHOLD;
-const DEFAULT_LOCAL_BACKEND_CLIENT_COOLDOWN_MS =
-  Number(process.env.PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_COOLDOWN_MS) || DEFAULT_CLIENT_CIRCUIT_COOLDOWN_MS;
 /** Header a bee/spawn sets to prioritise its requests (interactive/queen > batch). */
 export const PRIORITY_HEADER = 'x-papercusp-priority';
 /** MAINTENANCE lane (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3): the
@@ -978,19 +960,6 @@ export interface GatewayDeps {
   localBackends?: LocalBackendPool;
   /** Per-attempt timeout for a local-backend proxy request. Default DEFAULT_LOCAL_BACKEND_TIMEOUT_MS (5m). */
   localBackendTimeoutMs?: number;
-  /** Max concurrent local-backend requests allowed from ONE owner (`x-papercusp-owner`) at a
-   *  time — protects a small shared backend pool from a single caller's parallel fan-out
-   *  (P-015/D-010). An unidentified caller (no owner header) is NOT gated by this. Default
-   *  `DEFAULT_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT` (env `PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT`, 2). */
-  localBackendClientMaxInFlight?: number;
-  /** Consecutive REQUEST-level local-backend failures (every backend attempt exhausted with none
-   *  reachable) from ONE owner before that owner's circuit opens and further requests are shed
-   *  immediately (no backend attempt). Default `DEFAULT_LOCAL_BACKEND_CLIENT_FAILURE_THRESHOLD`
-   *  (env `PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_FAILURE_THRESHOLD`, 3). */
-  localBackendClientFailureThreshold?: number;
-  /** How long an opened per-owner local-backend circuit stays open before self-closing. Default
-   *  `DEFAULT_LOCAL_BACKEND_CLIENT_COOLDOWN_MS` (env `PAPERCUSP_GATEWAY_LOCAL_BACKEND_CLIENT_COOLDOWN_MS`, 15s). */
-  localBackendClientCooldownMs?: number;
   /** HOT-RELOAD the local-backend registry from the DB source of truth (parity with `onAdminReload` for
    *  the account pool) — folded into the SAME `POST /admin/reload` response when present. Absent ⇒
    *  `/admin/reload` simply omits the `localBackends` field (no error — this is an independent axis from
@@ -3057,22 +3026,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  concurrent agent should back off briefly and retry, not treat capacity as a hard failure. */
   const LOCAL_BACKEND_SATURATION_RETRY_AFTER_SEC = 1;
 
-  // PER-CLIENT local-backend circuit (P-015/D-010, local-backend-client-circuit.ts): keyed by the
-  // `x-papercusp-owner` header, bounded like ownerLedger/lastRouteByOwner (delete-oldest over the
-  // cap — insertion order only, matching that established discipline in this file).
-  const LOCAL_CLIENT_CIRCUIT_MAX = 4096;
-  const clientCircuits = new Map<string, ClientCircuitState>();
-  function getClientCircuit(ownerId: string): ClientCircuitState {
-    return clientCircuits.get(ownerId) ?? CLIENT_CIRCUIT_ZERO;
-  }
-  function setClientCircuit(ownerId: string, state: ClientCircuitState): void {
-    if (!clientCircuits.has(ownerId) && clientCircuits.size >= LOCAL_CLIENT_CIRCUIT_MAX) {
-      const oldest = clientCircuits.keys().next().value;
-      if (oldest !== undefined) clientCircuits.delete(oldest);
-    }
-    clientCircuits.set(ownerId, state);
-  }
-
   /** In-flight cold starts, keyed by backend id (P-008/D-009). systemd already merges concurrent
    *  `start` jobs for one unit, so this is not needed for CORRECTNESS — it de-duplicates the WAIT,
    *  so N simultaneous requests for a stopped backend share ONE poll loop instead of each holding a
@@ -3179,49 +3132,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
 
-    // PER-CLIENT admission gate (P-015/D-010, local-backend-client-circuit.ts) — checked BEFORE
-    // reading the body: reject a storming/circuit-open owner for ~free, with no JSON parse and no
-    // backend I/O. An unidentified caller (no x-papercusp-owner header) is NOT gated here — same
-    // precedent as recordOwnerOutcome/recordStall/recordRoute — and falls through to the
-    // backend-level maxConcurrent ceiling only.
+    // Owner attribution is used only for slot affinity and request telemetry. Admission is owned by
+    // the canonical durable gateway governor, so no local per-client cap/circuit may shed work before
+    // a receipt exists.
     const ownerId = (req.headers[OWNER_HEADER] as string | undefined)?.trim();
-    if (ownerId) {
-      const circuitBefore = getClientCircuit(ownerId);
-      const verdict = shouldShedClient(
-        circuitBefore,
-        Date.now(),
-        deps.localBackendClientMaxInFlight ?? DEFAULT_LOCAL_BACKEND_CLIENT_MAX_IN_FLIGHT,
-      );
-      if (verdict.shed) {
-        markRequestShed(req);
-        req.resume(); // drain the unread body so the socket releases cleanly (queue-full shed precedent)
-        recordOwnerOutcome(ownerId, 'shed', { detail: `local-backend client ${verdict.reason}` }); // P-008 ledger
-        sendJson(
-          res,
-          429,
-          {
-            type: 'error',
-            error: {
-              type: 'rate_limit_error',
-              message:
-                verdict.reason === 'circuit_open'
-                  ? `inference-gateway: local-backend circuit open for this caller (${circuitBefore.consecutiveFailures} consecutive failures) — retry shortly`
-                  : `inference-gateway: local-backend in-flight cap reached for this caller — retry shortly`,
-            },
-            gateway: true,
-          },
-          { 'retry-after': String(verdict.retryAfterSec ?? 1) },
-        );
-        return;
-      }
-      setClientCircuit(ownerId, admitClient(circuitBefore));
-    }
-
-    // requestOk feeds the per-owner circuit on the way out (finally, below) — true means the local
-    // pool served this owner (any forwarded upstream response, or a caller-input 400 that's the
-    // owner's OWN mistake, not the pool being wedged); false means every backend attempt was
-    // exhausted with none reachable, the actual "this owner is wedging the pool" signal.
-    let requestOk = false;
     try {
       stageSpan?.beginStage('bodyRead');
       let bodyBuf: Buffer;
@@ -3243,7 +3157,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
         sendJson(res, 400, {
           error: { message: 'request body must be JSON with a "model" field', type: 'invalid_request_error' },
         });
-        requestOk = true;
         return;
       }
       stageSpan?.setModel(model);
@@ -3362,7 +3275,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
           } else {
             res.end(await upstream.text().catch(() => ''));
           }
-          requestOk = true;
           return;
         } catch (e) {
           stageSpan?.endStage('upstreamTtfb');
@@ -3399,12 +3311,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // on); dead end → 502. Only saturation when we never got a backend to even try (tried.size ===
       // 0, no transport error) — once a real backend error occurred, that's a 502.
       if (tried.size === 0 && lastError === null && pool.saturatedFor(model)) {
-        // NOT the owner's fault — the pool is merely busy (often from OTHER owners). Don't count it
-        // against this owner's failure-streak circuit: a genuine wedge surfaces as 502 exhaustion, and
-        // a fan-out storm is already stopped by the in-flight cap. requestOk=true → the finally
-        // releases the admitted in-flight slot and leaves the owner's streak reset, not advanced.
-        requestOk = true;
-        if (ownerId) recordOwnerOutcome(ownerId, 'shed', { detail: `local-backend saturated for '${model}'` });
+        // This is retryable backpressure from the measured backend state. The canonical durable
+        // admission lease remains the only request-level capacity authority; local routing does not
+        // maintain a second owner or backend policy cap.
         sendJson(
           res,
           429,
@@ -3437,19 +3346,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
         },
         gateway: true,
       });
-      // requestOk stays false — every backend attempt was exhausted with none reachable.
-    } finally {
-      if (ownerId) {
-        setClientCircuit(
-          ownerId,
-          nextClientCircuitState(
-            getClientCircuit(ownerId),
-            requestOk,
-            Date.now(),
-            deps.localBackendClientFailureThreshold ?? DEFAULT_LOCAL_BACKEND_CLIENT_FAILURE_THRESHOLD,
-            deps.localBackendClientCooldownMs ?? DEFAULT_LOCAL_BACKEND_CLIENT_COOLDOWN_MS,
-          ),
-        );
+    } catch (e) {
+      // Keep an unexpected local proxy failure request-scoped after removing
+      // the legacy per-client circuit's finally block.
+      if (!res.headersSent) {
+        sendJson(res, 502, {
+          type: 'error',
+          error: { type: 'api_error', message: `inference-gateway local backend error: ${(e as Error).message ?? String(e)}` },
+          gateway: true,
+        });
+      } else {
+        try {
+          res.destroy();
+        } catch {
+          /* already torn down */
+        }
       }
     }
   }
@@ -6847,12 +6758,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       }
       const pool = deps.localBackends;
       const health = pool.health();
-      // Per-CLIENT circuit state (P-015/D-010): only "interesting" owners (currently in flight,
-      // mid-failure-streak, or circuit open) — a clean/idle owner contributes nothing worth showing.
       const now = Date.now();
-      const clients = [...clientCircuits.entries()]
-        .filter(([, s]) => s.inFlight > 0 || s.consecutiveFailures > 0 || s.openUntil !== null)
-        .map(([ownerId, s]) => ({ ownerId, ...s, circuitOpen: s.openUntil !== null && now < s.openUntil }));
       sendJson(res, 200, {
         ok: true,
         configured: true,
@@ -6861,8 +6767,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
           ...b,
           inFlight: pool.inFlight(b.id),
           health: health.get(b.id) ?? null,
+          engineCapacity: pool.engineCapacity(b.id),
         })),
-        clients,
         // P-028 slot-affinity visibility: switches/(hits+switches) is the eviction rate — how
         // often a session's warm backend had to be abandoned (→ full KV re-prefill).
         affinity: pool.affinityStats(),
@@ -7218,13 +7124,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const span = beginRequestTelemetry(req, res, 'local', 'openai-chat', 'local-http');
       span.setCacheRouting('not-applicable');
       span.routeSelected();
-      span.admitted(); // local capacity is enforced inside proxyLocal; there is no outer cloud queue.
       const localUrl = url.startsWith('/v1/chat/completions') ? '/v1/chat/completions' : '/v1/completions';
       void executeLegacyLaneTask({
         req,
         lane: gatewayLaneRegistry.localOpenAiChat,
         admission: unqueuedLegacyAdmission,
-        task: (executor) => legacyGatewayEntryExecutors[executor](req, res, localUrl),
+        // executeLegacyLaneTask crosses the canonical gateway governor before invoking this task.
+        // Mark the telemetry span admitted at that boundary, not when the socket first arrives.
+        task: (executor) => {
+          span.admitted();
+          return legacyGatewayEntryExecutors[executor](req, res, localUrl);
+        },
       }).catch((e) => {
         markRequestGatewayError(req);
         log('error', `inference-gateway: local-backend handler crashed: ${(e as Error).message}`);
