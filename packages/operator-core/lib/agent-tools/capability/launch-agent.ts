@@ -40,7 +40,12 @@ import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole, spawnHeadless, type SpawnChildExit } from '../../console-spawn';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
-import { fleetSlugFromName, getFleetHeadcountTarget, getFleetScheme } from '../../agent-fleets-store';
+import {
+  createFleetIfAbsent,
+  fleetSlugFromName,
+  getFleetHeadcountTarget,
+  getFleetScheme,
+} from '../../agent-fleets-store';
 import { latestFleetMembership } from '../../fleet-membership-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { fetchContextPressure } from '../coordination/context-pressure';
@@ -812,6 +817,27 @@ export default defineTool({
     let fleetSlug: string | null = args.fleet ? fleetSlugFromName(args.fleet) : null;
     let scheme: ColorScheme | null = null;
     if (fleetSlug) {
+      // An explicit fleet is also a supported way to create a fresh fleet. Ensure
+      // its durable registry row exists before any scheme/profile read: those
+      // readers intentionally return null for an unknown slug, which previously
+      // let this launch proceed with a fleet argument that had never been
+      // registered. createFleetIfAbsent is idempotent, so existing fleets keep
+      // their authoritative owner/leader and only a first insert uses the caller
+      // as the fleet owner and initial leader.
+      try {
+        await createFleetIfAbsent({
+          workspaceId,
+          fleetSlug,
+          title: args.fleet?.trim() || fleetSlug,
+          owner: callerOwnerId,
+          leaderOwnerId: callerOwnerId,
+        });
+      } catch (e) {
+        return err(
+          `Could not ensure fleet \`${fleetSlug}\` exists: ${(e as Error)?.message ?? e}. ` +
+            'No agent was spawned.',
+        );
+      }
       try {
         scheme = await getFleetScheme(workspaceId, fleetSlug);
       } catch {

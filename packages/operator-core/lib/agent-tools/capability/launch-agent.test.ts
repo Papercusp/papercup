@@ -129,6 +129,8 @@ const spawnGovernedAgentProcessMock = vi.fn(
     spawnProcess({ receiptId: 'WI-governed-test', leaseId: 'lease-governed-test' }),
 );
 const getFleetHeadcountTargetMock = vi.hoisted(() => vi.fn());
+const createFleetIfAbsentMock = vi.hoisted(() => vi.fn());
+const getFleetSchemeMock = vi.hoisted(() => vi.fn());
 vi.mock('../../console-spawn', () => ({
   spawnConsole: (o: unknown) => spawnConsoleMock(o),
   spawnHeadless: (o: unknown) => spawnHeadlessMock(o),
@@ -146,9 +148,9 @@ vi.mock('../../fleet-membership-store', () => ({
 vi.mock('../../agent-fleets-store', () => ({
   FLEET_TYPES: ['single', 'paired'] as const,
   fleetSlugFromName: (name: string) => name.toLowerCase().replace(/\s+/g, '-'),
+  createFleetIfAbsent: (...args: unknown[]) => createFleetIfAbsentMock(...args),
   getFleetHeadcountTarget: (...args: unknown[]) => getFleetHeadcountTargetMock(...args),
-  getFleetScheme: async (_ws: string, slug: string) =>
-    slug === 'alpha-fleet' ? { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' } : null,
+  getFleetScheme: (...args: unknown[]) => getFleetSchemeMock(...args),
 }));
 
 const fetchPresenceFleetMock = vi.fn(
@@ -279,6 +281,10 @@ beforeEach(() => {
   listFactsMock.mockResolvedValue([]);
   getLoopStatusMock.mockResolvedValue(null);
   getFleetHeadcountTargetMock.mockResolvedValue(null);
+  createFleetIfAbsentMock.mockResolvedValue({ record: null, created: false });
+  getFleetSchemeMock.mockImplementation(async (_ws: string, slug: string) =>
+    slug === 'alpha-fleet' ? { name: 'royal-purple', bg: '#581c87', fg: '#f5e8ff', cursor: '#d8b4fe' } : null,
+  );
 });
 
 describe('launch-tool routing guidance', () => {
@@ -526,6 +532,27 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
 });
 
 describe('fleet composition (D-003: fleet is an ARG, not a separate tool)', () => {
+  it('creates a fresh explicit fleet before reading its scheme or launch profile', async () => {
+    createFleetIfAbsentMock.mockResolvedValueOnce({
+      record: { fleetSlug: 'fresh-fleet', leaderOwnerId: 'su-caller' },
+      created: true,
+    });
+
+    await launchAgent.handler({ brief: 'start the fresh fleet', fleet: 'fresh fleet' }, ctx);
+
+    expect(createFleetIfAbsentMock).toHaveBeenCalledWith({
+      workspaceId: 'ws-test',
+      fleetSlug: 'fresh-fleet',
+      title: 'fresh fleet',
+      owner: 'su-caller',
+      leaderOwnerId: 'su-caller',
+    });
+    const createOrder = createFleetIfAbsentMock.mock.invocationCallOrder[0]!;
+    expect(createOrder).toBeLessThan(getFleetSchemeMock.mock.invocationCallOrder[0]!);
+    expect(createOrder).toBeLessThan(getFleetHeadcountTargetMock.mock.invocationCallOrder[0]!);
+    expect(spawnedCommand()).toContain('--fleet=fresh-fleet');
+  });
+
   it('joins an explicit fleet — membership AND colour, from one slug', async () => {
     const res = await launchAgent.handler({ brief: 'work the release', fleet: 'alpha fleet' }, ctx);
     expect(spawnedCommand()).toContain('--fleet=alpha-fleet');
