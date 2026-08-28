@@ -25,6 +25,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
       "apps/operator/scripts/psu-",
     ],
     ["cpu", "memory", "process", "pty"],
+    "active",
   ),
   inventory(
     "mcp-http-operator-transport",
