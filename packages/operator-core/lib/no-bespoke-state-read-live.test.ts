@@ -162,6 +162,7 @@ describe('the live gate is actually scanning', () => {
       'loop:status',
       'processes:list',
       'state:read',
+      'testing:run-status',
       'triggers:status',
     ]);
     expect(scan.lenses.map((l) => l.cell)).toContain('git.pipelinePosition');

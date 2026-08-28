@@ -11,7 +11,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { getOrgPg } from '@papercusp/db-org';
 import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
-import { getAcceptanceRubricForPlan } from './rubrics';
+import { getAcceptanceRubricsForPlan } from './rubrics';
 import {
   getEffectiveItemAudits,
   getLatestPlanAudit,
@@ -28,7 +28,7 @@ vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: vi.fn() }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 vi.mock('./rubrics', () => ({
-  getAcceptanceRubricForPlan: vi.fn(),
+  getAcceptanceRubricsForPlan: vi.fn(),
   getRubric: vi.fn(),
   getRubricPlanRevision: vi.fn(),
   META_ACCEPTANCE_RUBRIC_ID: 'meta-acceptance-rubric',
@@ -47,7 +47,7 @@ vi.mock('./plan-audits', async (importOriginal) => {
 
 const mockFlag = vi.mocked(getFlag);
 const mockPg = vi.mocked(getOrgPg);
-const mockRubric = vi.mocked(getAcceptanceRubricForPlan);
+const mockRubric = vi.mocked(getAcceptanceRubricsForPlan);
 const mockLatestAudit = vi.mocked(getLatestPlanAudit);
 const mockEffectiveAudits = vi.mocked(getEffectiveItemAudits);
 const mockPlanItems = vi.mocked(getPlanItemStatuses);
@@ -188,7 +188,7 @@ describe('evaluatePlanAcceptanceGate — plan-item completion', () => {
       async (flag) => flag === FLAGS.PLAN_ITEM_COMPLETION_GATE || flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE,
     );
     mockPlanItems.mockResolvedValue([{ itemId: 'P-001', status: 'needs-human', itemText: 'unfinished requirement' }]);
-    mockRubric.mockResolvedValue(null);
+    mockRubric.mockResolvedValue([]);
 
     const verdict = await evaluatePlanAcceptanceGate(PLAN, {
       force: { reason: 'waive code-truth checks only' },

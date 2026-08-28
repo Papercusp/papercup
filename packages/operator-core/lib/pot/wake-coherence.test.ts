@@ -36,6 +36,10 @@ vi.mock('../workspace-registry', () => ({
   backgroundWorkspaceIds: () => ['ws-a', 'ws-b'],
 }));
 
+// P-068/D-098 retires the Pot actuator by default. This suite exercises the
+// live cross-process projection path, so keep that tier enabled explicitly.
+vi.mock('./started', () => ({ mugKettleSystemEnabled: vi.fn(async () => true) }));
+
 vi.mock('../sync-sse', () => ({
   subscribe: vi.fn(async (send: typeof subscriber) => {
     subscriber = send;

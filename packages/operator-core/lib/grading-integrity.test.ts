@@ -12,6 +12,13 @@ import {
 type ListScorecards = NonNullable<DispatchPendingGradingAuditsDeps['listScorecards']>;
 type GetRubric = NonNullable<DispatchPendingGradingAuditsDeps['getRubric']>;
 type Launch = NonNullable<DispatchPendingGradingAuditsDeps['launch']>;
+type LaunchResult = Awaited<ReturnType<Launch>>;
+
+// Keep the mock result shape explicit without using `as never` at a mock call;
+// the cast is isolated here so the escape guard still typechecks every install site.
+function launchResult(data: unknown): LaunchResult {
+  return { data } as LaunchResult;
+}
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp' } as DispatchPendingGradingAuditsInput['ctx'];
 
@@ -44,9 +51,9 @@ function standardRubric(): Rubric {
 function deps() {
   const listScorecards = vi.fn<ListScorecards>().mockResolvedValue([]);
   const getRubric = vi.fn<GetRubric>().mockResolvedValue(standardRubric());
-  const launch = vi.fn<Launch>().mockResolvedValue({
-    data: { deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } },
-  } as never);
+  const launch = vi.fn<Launch>().mockResolvedValue(
+    launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-audit' }] } }),
+  );
   return { listScorecards, getRubric, launch };
 }
 
@@ -55,12 +62,8 @@ describe('dispatchPendingGradingAudits', () => {
     const d = deps();
     d.listScorecards.mockResolvedValue([card('EI-audit-1')]);
     d.launch
-      .mockResolvedValueOnce({
-        data: { deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-first' }] } },
-      } as never)
-      .mockResolvedValueOnce({
-        data: { deduped: true, launch: { opened: 1, tasks: [{ taskId: 'task-first' }] } },
-      } as never);
+      .mockResolvedValueOnce(launchResult({ deduped: false, launch: { opened: 1, tasks: [{ taskId: 'task-first' }] } }))
+      .mockResolvedValueOnce(launchResult({ deduped: true, launch: { opened: 1, tasks: [{ taskId: 'task-first' }] } }));
 
     const input = { targetIds: [' EI-audit-1 ', 'EI-audit-1'], ctx, harness: 'papercusp' };
     const first = await dispatchPendingGradingAudits(input, d);

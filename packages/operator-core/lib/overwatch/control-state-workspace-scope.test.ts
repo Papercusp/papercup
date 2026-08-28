@@ -77,6 +77,7 @@ vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({
     projects: h.registeredHives.map((slug) => ({ slug, harness_kind: 'hive' })),
   })),
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 
 import {

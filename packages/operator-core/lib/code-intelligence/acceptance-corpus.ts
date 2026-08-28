@@ -202,7 +202,7 @@ export const ACCEPTANCE_CORPUS: readonly CorpusCase[] = Object.freeze([
     expectedSites: [
       {
         path: 'packages/operator-core/lib/voice-node/local-whisper-service.ts',
-        line1: 353,
+        line1: 406,
         symbolOnLine: 'await managedSpawn',
       },
       {

@@ -245,7 +245,7 @@ export default defineTool({
     // consumable export), which is why it lost to the rg/backtick and background-job
     // guidance. If it needs to be agent-facing again, put it in a doc and point at it.
     when:
-      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; single-quote the pattern, since an unmatched backtick fails before either tool runs. For repository regex searches, ' +
+      'Run builds, tests, checks, or scripts. For fixed-string searches prefer `rg -F`, else `grep -F`; use a shell-safe single-quoted argument, since an unmatched backtick fails before either search tool runs. For repository regex searches, ' +
       `${RIPGREP_SCOPE_GUIDANCE} Do not run an unbounded search from the repository root. For jobs over 1–2 minutes use run_in_background:true → capability:bash_output; defaults are 4h/12h max.`,
     notWhen:
       'Use capability:read/write/edit for one-file operations and capability:git for git. Shell execution strips database credential environment variables, so use dev:pg_query for read-only operator DB queries.',

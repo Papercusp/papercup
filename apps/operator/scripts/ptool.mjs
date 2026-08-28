@@ -971,6 +971,12 @@ export const PTOOL_SCORECARD_EMIT_TIMEOUT_MS = 915_000;
 // cutoff — instead of pre-empting both.
 export const PTOOL_FOREGROUND_TOOL_TIMEOUT_MS = 60_000;
 
+// work_items:complete can spend the full dispatcher/transport window validating
+// evidence and releasing the claim. Keep this client deadline above the 60s
+// foreground boundary so a committed completion returns its typed receipt
+// instead of becoming outcome-unknown at the client.
+export const PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS = 70_000;
+
 // WI-2944 / EI-21637077415806005: capability:launch-agent uses the tooldef
 // default 60s handler budget. The MCP transport deliberately waits another 5s
 // so the handler can settle, commit, and persist mcp_tool_results. A 60s ptool
@@ -1083,7 +1089,7 @@ const PTOOL_LONG_RUNNING_TIMEOUTS_MS = new Map([
   // claim release, and broadcasts before returning. Under operator pressure
   // the writer can outlive the ordinary 30s client deadline, so preserve its
   // typed receipt instead of reconnecting with an outcome-unknown result.
-  ['work_items:complete', PTOOL_FOREGROUND_TOOL_TIMEOUT_MS],
+  ['work_items:complete', PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS],
   // EI-21386877660531420: activity:tool-log scans and compacts the activity
   // ledger. In a concurrent projected batch that read can outlive ptool's
   // ordinary 30s deadline even though it is bounded and still progressing.

@@ -87,6 +87,7 @@ vi.mock('../harness-registry', () => ({
     projects: h.registeredProjects,
   })),
   isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
+  deregisterEphemeralForeignHarness: vi.fn(async () => false),
 }));
 
 import {

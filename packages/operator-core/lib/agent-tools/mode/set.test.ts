@@ -584,9 +584,9 @@ describe('wakeSourceWarning (pure)', () => {
     expect(warn({ modeId: 'drain', axis: 'overlay' })).toContain('NO WAKE SOURCE');
   });
 
-  it('does NOT fire for overlay modes that imply no autonomy (ideate, grade)', () => {
+  it('fires only for overlays that imply autonomy (grade) and stays silent for ideate', () => {
     expect(warn({ modeId: 'ideate', axis: 'overlay' })).toBeNull();
-    expect(warn({ modeId: 'grade', axis: 'overlay' })).toBeNull();
+    expect(warn({ modeId: 'grade', axis: 'overlay' })).toContain('NO WAKE SOURCE');
   });
 });
 
