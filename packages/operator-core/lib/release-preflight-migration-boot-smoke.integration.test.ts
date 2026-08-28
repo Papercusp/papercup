@@ -45,6 +45,7 @@ import { getTestPg } from '@papercusp/test-config/pg';
 // hand-written `ApplyPendingMigrations` cast; both are gone now that the real
 // signature is generated from the source's JSDoc.
 import { applyPendingMigrations } from '@papercusp/embedded-postgres-server';
+import { compareMigrationFilenames } from '../../../libs/papercusp/packages/embedded-postgres-server/src/migration-runner.js';
 import { resolveSqlDir } from './migration-drift';
 
 // The runner applies each file as a raw `BEGIN; <ddl>; COMMIT;` via .unsafe(),
@@ -162,7 +163,9 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     const sqlDir = resolveSqlDir();
     expect(sqlDir).toBeTruthy();
 
-    const files = (await readdir(sqlDir!)).filter((f) => f.endsWith('.sql')).sort();
+    const files = (await readdir(sqlDir!))
+      .filter((f) => f.endsWith('.sql'))
+      .sort(compareMigrationFilenames);
 
     // The cut = the first migration that reads Pots AND mutates work_items, i.e. the first
     // one whose behaviour depends on data it did not create. Discovered rather than
