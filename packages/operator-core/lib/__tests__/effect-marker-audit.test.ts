@@ -34,6 +34,9 @@ const NON_SUFFIX_MUTATORS = [
   'capability:edit',
   'capability:git',
   'capability:computer',
+  'capability:terminal', // opens arbitrary command windows
+  'capability:launch-agent', // capability:terminal — launches/resumes/forks agent processes
+  'fleet:launch-on-plan', // capability:terminal — launches a visible/headless member fleet
   'processes:kill',
   'knowledge_packs:export', // capability memory:read + explicit effect:'write' (writes pack files)
   'plans:export', // capability plans:read + explicit effect:'write' (toDir writes .md files)
