@@ -19,6 +19,7 @@ import {
   emptyLiveHealthObservations,
   emptyLiveHealthSignals,
   isLiveHealthFragment,
+  isLiveHealthSnapshot,
   liveHealthWindow,
   measuredLiveHealthReading,
   mergeLiveHealthFragments,
@@ -32,6 +33,8 @@ import {
 } from './live-health';
 
 export const LIVE_HEALTH_DEFAULT_CADENCE_MS = 2_000;
+/** A missing or older-than-this atomic snapshot is not current host evidence. */
+export const LIVE_HEALTH_SNAPSHOT_MAX_AGE_MS = 15_000;
 export const LIVE_HEALTH_FRAGMENT_RETENTION_MS = 24 * 60 * 60_000;
 export const LIVE_HEALTH_PAGE_BYTES = 4_096;
 
@@ -67,6 +70,28 @@ export async function writeLiveHealthJson(path: string, value: unknown): Promise
   } catch (error) {
     await unlink(tmp).catch(() => {});
     throw error;
+  }
+}
+
+/**
+ * Read the monitor's atomic snapshot only when it is structurally valid and
+ * recent enough to describe the current host. A malformed, missing, future, or
+ * stale file is an unknown reading rather than a healthy default.
+ */
+export async function readLiveHealthSnapshot(
+  paths: LiveHealthPaths = resolveLiveHealthPaths(),
+  nowMs = Date.now(),
+  maxAgeMs = LIVE_HEALTH_SNAPSHOT_MAX_AGE_MS,
+): Promise<LiveHealthSnapshot | null> {
+  if (!Number.isFinite(nowMs) || !Number.isFinite(maxAgeMs) || maxAgeMs < 0) return null;
+  try {
+    const value: unknown = JSON.parse(await readFile(paths.snapshotPath, 'utf8'));
+    if (!isLiveHealthSnapshot(value)) return null;
+    const ageMs = nowMs - value.sampledAtMs;
+    if (ageMs < 0 || ageMs > maxAgeMs) return null;
+    return value;
+  } catch {
+    return null;
   }
 }
 

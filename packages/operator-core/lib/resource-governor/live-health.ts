@@ -546,6 +546,169 @@ export function emptyLiveHealthObservations(): Record<LiveHealthSignalKey, Recor
   >;
 }
 
+const LIVE_HEALTH_PLATFORMS = new Set<NodeJS.Platform>([
+  'aix',
+  'android',
+  'darwin',
+  'freebsd',
+  'haiku',
+  'linux',
+  'openbsd',
+  'sunos',
+  'win32',
+]);
+const LIVE_HEALTH_WRITER_KINDS = new Set<LiveHealthWriterKind>([
+  'monitor',
+  'operator',
+  'database',
+  'service',
+  'provider',
+  'queue',
+  'governor',
+]);
+const LIVE_HEALTH_READING_STATES = new Set<LiveHealthReadingState>(['measured', 'unknown', 'stale']);
+const LIVE_HEALTH_WINDOW_KINDS = new Set<LiveHealthWindowKind>(['instant', 'delta', 'rolling']);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function finite(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isLiveHealthWriter(value: unknown): value is LiveHealthWriter {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    value.id.length > 0 &&
+    typeof value.kind === 'string' &&
+    LIVE_HEALTH_WRITER_KINDS.has(value.kind as LiveHealthWriterKind) &&
+    typeof value.instanceId === 'string' &&
+    value.instanceId.length > 0 &&
+    (value.pid === null || (finite(value.pid) && Number.isInteger(value.pid) && value.pid >= 0)) &&
+    typeof value.platform === 'string' &&
+    LIVE_HEALTH_PLATFORMS.has(value.platform as NodeJS.Platform) &&
+    finite(value.startedAtMs)
+  );
+}
+
+function isLiveHealthWindowForKey(key: LiveHealthSignalKey, value: unknown): value is LiveHealthWindow {
+  if (!isRecord(value)) return false;
+  const spec = LIVE_HEALTH_SIGNAL_SPECS[key];
+  if (
+    typeof value.kind !== 'string' ||
+    !LIVE_HEALTH_WINDOW_KINDS.has(value.kind as LiveHealthWindowKind) ||
+    value.kind !== spec.windowKind ||
+    !finite(value.durationMs) ||
+    value.durationMs < 0 ||
+    !finite(value.startedAtMs) ||
+    !finite(value.endedAtMs) ||
+    value.endedAtMs < value.startedAtMs
+  ) {
+    return false;
+  }
+  if (value.kind === 'instant') return value.durationMs === 0 && value.startedAtMs === value.endedAtMs;
+  return value.durationMs === value.endedAtMs - value.startedAtMs;
+}
+
+/** Validate one reading independently of its source container. */
+function isLiveHealthReadingForKey(
+  key: LiveHealthSignalKey,
+  value: unknown,
+  expectedWriterId?: string,
+): value is LiveHealthReading {
+  if (!isRecord(value)) return false;
+  const spec = LIVE_HEALTH_SIGNAL_SPECS[key];
+  const state = value.state;
+  if (typeof state !== 'string' || !LIVE_HEALTH_READING_STATES.has(state as LiveHealthReadingState)) return false;
+  if (typeof value.writerId !== 'string' || value.writerId.length === 0) return false;
+  if (expectedWriterId !== undefined && value.writerId !== expectedWriterId) return false;
+  if (value.unit !== spec.unit || !finite(value.observedAtMs) || !finite(value.collectedAtMs)) return false;
+  if (!isLiveHealthWindowForKey(key, value.window)) return false;
+  if (!finite(value.confidence) || value.confidence < 0 || value.confidence > 1) return false;
+  if (state === 'measured') {
+    if (value.reason !== null || !finite(value.lastMeasuredAtMs)) return false;
+    if (spec.unit === 'boolean') {
+      if (typeof value.value !== 'boolean') return false;
+    } else if (!finite(value.value)) {
+      return false;
+    }
+  } else {
+    if (value.value !== null || typeof value.reason !== 'string' || value.reason.length === 0) return false;
+    if (state === 'unknown' ? value.lastMeasuredAtMs !== null : !finite(value.lastMeasuredAtMs)) return false;
+  }
+  return true;
+}
+
+function isCompleteSignalRecord(value: unknown): value is Record<LiveHealthSignalKey, unknown> {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === LIVE_HEALTH_SIGNAL_KEYS.length && LIVE_HEALTH_SIGNAL_KEYS.every((key) => key in value);
+}
+
+function isSyntheticUnknownWriter(key: LiveHealthSignalKey, reading: LiveHealthReading): boolean {
+  return reading.state === 'unknown' && reading.writerId === `${LIVE_HEALTH_SIGNAL_SPECS[key].writerKind}:unobserved`;
+}
+
+/**
+ * Strictly validate the atomic snapshot before any consumer treats it as host
+ * evidence. The monitor intentionally emits synthetic `*:unobserved` writers
+ * for signal families that have not published yet; those are the only compact
+ * readings allowed without a corresponding entry in `writers`.
+ */
+export function isLiveHealthSnapshot(value: unknown): value is LiveHealthSnapshot {
+  if (!isRecord(value)) return false;
+  if (value.schemaVersion !== LIVE_HEALTH_SCHEMA_VERSION) return false;
+  if (!finite(value.sequence) || !Number.isInteger(value.sequence) || value.sequence < 1) return false;
+  if (!finite(value.sampledAtMs) || !finite(value.monitorStartedAtMs) || value.monitorStartedAtMs > value.sampledAtMs) {
+    return false;
+  }
+  if (!finite(value.cadenceMs) || value.cadenceMs <= 0) return false;
+  if (!isRecord(value.profile)) return false;
+  const profile = value.profile;
+  if (
+    typeof profile.platform !== 'string' ||
+    !LIVE_HEALTH_PLATFORMS.has(profile.platform as NodeJS.Platform) ||
+    typeof profile.arch !== 'string' ||
+    typeof profile.release !== 'string' ||
+    !finite(profile.effectiveCores) ||
+    profile.effectiveCores <= 0 ||
+    !finite(profile.physicalCores) ||
+    profile.physicalCores <= 0 ||
+    profile.physicalCores < profile.effectiveCores ||
+    !finite(profile.totalMemoryBytes) ||
+    profile.totalMemoryBytes <= 0 ||
+    typeof profile.embeddedPg !== 'boolean' ||
+    typeof profile.hostRole !== 'string' ||
+    profile.source !== '@papercusp/resource-profile'
+  ) {
+    return false;
+  }
+  if (!isRecord(value.writers) || !isCompleteSignalRecord(value.observations) || !isCompleteSignalRecord(value.signals)) {
+    return false;
+  }
+
+  for (const [writerId, rawWriter] of Object.entries(value.writers)) {
+    if (!isLiveHealthWriter(rawWriter) || rawWriter.id !== writerId) return false;
+  }
+  for (const key of LIVE_HEALTH_SIGNAL_KEYS) {
+    const compact = value.signals[key];
+    if (!isLiveHealthReadingForKey(key, compact)) return false;
+    if (!isSyntheticUnknownWriter(key, compact) && !Object.hasOwn(value.writers, compact.writerId)) return false;
+
+    const rawObservations = value.observations[key];
+    if (!isRecord(rawObservations)) return false;
+    for (const [writerId, rawReading] of Object.entries(rawObservations)) {
+      if (!Object.hasOwn(value.writers, writerId)) return false;
+      const writer = value.writers[writerId];
+      if (!isLiveHealthWriter(writer) || writer.kind !== LIVE_HEALTH_SIGNAL_SPECS[key].writerKind) return false;
+      if (!isLiveHealthReadingForKey(key, rawReading, writerId)) return false;
+    }
+  }
+  return true;
+}
+
 /** Validate the parts that would otherwise let malformed fragments lie healthy. */
 export function isLiveHealthFragment(value: unknown): value is LiveHealthFragment {
   if (!value || typeof value !== 'object') return false;
