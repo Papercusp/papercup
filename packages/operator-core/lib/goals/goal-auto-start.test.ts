@@ -36,7 +36,10 @@ const sqlTag = Object.assign(
   { begin: vi.fn() },
 );
 
-vi.mock('@papercusp/db-org', async (orig) => ({ ...(await orig<typeof import('@papercusp/db-org')>()), getOrgPg: () => ({ sql: sqlTag }) }));
+vi.mock('@papercusp/db-org', async (orig) => ({
+  ...(await orig<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: sqlTag }),
+}));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../papercusp-root', () => ({ papercuspPathForWorkspace: () => '/tmp/papercusp-ws' }));
 vi.mock('../mcp-base-url', () => ({ resolveSpawnHostOperatorBaseUrl: () => 'http://127.0.0.1:3070' }));
@@ -114,10 +117,7 @@ type Readiness = {
 };
 const ACTIONABLE: Readiness = { actionable: true, premiseInvalidated: false, blockers: [] };
 const applyBlockedByMock = vi.fn(
-  async (
-    _sql: unknown,
-    _o: unknown,
-  ): Promise<{ ok: true; blockers: unknown[] } | { ok: false; problem: string }> => {
+  async (_sql: unknown, _o: unknown): Promise<{ ok: true; blockers: unknown[] } | { ok: false; problem: string }> => {
     order.push('deps-apply');
     return { ok: true, blockers: [] };
   },
@@ -210,7 +210,7 @@ describe('goal-auto-start — blocked-by edge wiring (P-004)', () => {
     expect(readinessMock).not.toHaveBeenCalled();
   });
 
-  it('applies the edges with the rail\'s provenance (createdBy = launchedBy default)', async () => {
+  it("applies the edges with the rail's provenance (createdBy = launchedBy default)", async () => {
     await call({ blockedBy: ['WI-100'] });
     expect(applyBlockedByMock).toHaveBeenCalledTimes(1);
     const opts = applyBlockedByMock.mock.calls[0][1] as Record<string, unknown>;

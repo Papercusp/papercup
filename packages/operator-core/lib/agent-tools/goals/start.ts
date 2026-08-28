@@ -46,11 +46,7 @@ import { activeWorkspaceId } from '../../workspace-registry';
 import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import { buildAgentLaunchCommand, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
-import {
-  drainFleetAutoMintEnabled,
-  mintDrainFleetForGoal,
-  teardownDrainFleetMint,
-} from '../../goals/drain-fleet-mint';
+import { drainFleetAutoMintEnabled, mintDrainFleetForGoal, teardownDrainFleetMint } from '../../goals/drain-fleet-mint';
 import {
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
@@ -210,19 +206,15 @@ export default defineTool({
   needsWorkspaceTx: true,
   description:
     'Open a GOAL and spawn the GOAL-mode agent that owns it, atomically — the goal row, the agent, and the agent_modes stamp joining them, or none of them. ' +
-    '{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent\'s ownerId. ' +
+    "{ title, killCriterion, budgetCents, body?, tripwires?, parentId?, agent?, model?, account?, headless? }. Returns the goal id AND the new agent's ownerId. " +
     'Kill criterion and ceiling are REQUIRED: GOAL mode mandates both at creation, and this is the surface that enforces it.',
   guidance: {
-    when:
-      'Starting a NEW outcome that needs an agent to own it end-to-end — the "+ Start a goal" path. One call: goal + its agent + the join between them.',
+    when: 'Starting a NEW outcome that needs an agent to own it end-to-end — the "+ Start a goal" path. One call: goal + its agent + the join between them.',
     notWhen:
       'Recording a goal with NO agent (a goal you or an existing session will own): goals:create. Proposing one for the owner to confirm: goals:propose. Launching an agent for a non-goal task: capability:launch-agent.',
     chaining:
       'goals:start → the spawned agent orients in GOAL mode with the goal as its subject and works the portfolio itself. Watch it on the Goals board, or coord:presence by the returned ownerId.',
-    seeAlso: [
-      'goals:create (the goal row alone, no agent)',
-      'capability:launch-agent (an agent alone, no goal)',
-    ],
+    seeAlso: ['goals:create (the goal row alone, no agent)', 'capability:launch-agent (an agent alone, no goal)'],
   },
   // Same gate as goals:create, deliberately, and NOT capability:terminal. The
   // privileged thing capability:terminal guards is running an ARBITRARY
@@ -277,7 +269,7 @@ export default defineTool({
       .positive()
       .optional()
       .describe(
-        'OPTIONAL — the denominator for budgetCents, in seconds (e.g. 604800 = weekly). Omitted ⇒ the ceiling is for the goal\'s LIFETIME. Strongly advised WITH standing:true: a standing goal\'s lifetime spend crosses any finite ceiling eventually, so a lifetime ceiling on one is really a scheduled auto-kill.',
+        "OPTIONAL — the denominator for budgetCents, in seconds (e.g. 604800 = weekly). Omitted ⇒ the ceiling is for the goal's LIFETIME. Strongly advised WITH standing:true: a standing goal's lifetime spend crosses any finite ceiling eventually, so a lifetime ceiling on one is really a scheduled auto-kill.",
       ),
     /* work-on-everything-goal-2026-08-23 P-001. Default false, and the DEFAULT
        is the honest one for every caller that has no opinion: a goal is an
@@ -297,11 +289,7 @@ export default defineTool({
           "{ requireLive: false } for a goal driven by routines rather than a held session. onLoss defaults to 'deactivate'; 'respawn' is opt-in per goal. " +
           'Omitting this entirely is refused: the goal would inherit the live-holder requirement without anyone having chosen it.',
       ),
-    body: z
-      .string()
-      .max(20000)
-      .optional()
-      .describe('the full statement: what winning looks like, scope, constraints'),
+    body: z.string().max(20000).optional().describe('the full statement: what winning looks like, scope, constraints'),
     tripwires: z
       .array(TripwireSchema)
       .max(12)
@@ -325,19 +313,25 @@ export default defineTool({
       .string()
       .max(2000)
       .optional()
-      .describe('Why starting despite unsatisfied blockers is right anyway — recorded verbatim as start_blocked_override.'),
+      .describe(
+        'Why starting despite unsatisfied blockers is right anyway — recorded verbatim as start_blocked_override.',
+      ),
     harness: z
       .string()
       .max(120)
       .optional()
-      .describe('Harness slug to file the goal under and bootstrap the agent in. Required when the caller context is wildcard/unset.'),
+      .describe(
+        'Harness slug to file the goal under and bootstrap the agent in. Required when the caller context is wildcard/unset.',
+      ),
     agent: z.string().max(40).optional().describe("Which backend to launch (default 'claude')."),
     model: z.string().max(80).optional().describe('Model override for the spawned agent.'),
     account: z
       .string()
       .max(80)
       .optional()
-      .describe("Account routing: 'default' (system credential, the default), 'auto' (gateway-routed with failover), or a pool account id."),
+      .describe(
+        "Account routing: 'default' (system credential, the default), 'auto' (gateway-routed with failover), or a pool account id.",
+      ),
     headless: z
       .boolean()
       .optional()
@@ -372,13 +366,11 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
+    const workspaceId = ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
     if (!workspaceId) {
       return err('No concrete workspace in scope — a goal cannot be filed workspace-less.');
     }
-    const installSlug =
-      args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
+    const installSlug = args.harness?.trim() || (ctx.harnessSlug && ctx.harnessSlug !== '*' ? ctx.harnessSlug : null);
     if (!installSlug) {
       return err('No harness in scope — goals are filed against an install_slug. Pass `harness`.');
     }
@@ -443,11 +435,7 @@ export default defineTool({
     // refs must resolve in datatype_registry; defaults must satisfy their
     // datatype's payload_schema), same placement as the IO-schema gates above.
     if (args.propertySchema) {
-      const propCheck = await validatePropertySchemaDeclaration(
-        ctx.tx as never,
-        workspaceId,
-        args.propertySchema,
-      );
+      const propCheck = await validatePropertySchemaDeclaration(ctx.tx as never, workspaceId, args.propertySchema);
       if (!propCheck.ok) return err(`propertySchema refused: ${propCheck.issues.join('; ')}`);
     }
 
@@ -536,8 +524,7 @@ export default defineTool({
           );
         }
         startBlockedOverride =
-          args.startBlockedReason?.trim() ||
-          `started despite unsatisfied blocker(s): ${unsatisfied}`;
+          args.startBlockedReason?.trim() || `started despite unsatisfied blocker(s): ${unsatisfied}`;
       }
     }
 
@@ -676,7 +663,9 @@ export default defineTool({
       });
     } catch (e) {
       await rollback();
-      return err(`Could not build the launch command (nothing spawned, goal rolled back): ${(e as Error)?.message ?? e}`);
+      return err(
+        `Could not build the launch command (nothing spawned, goal rolled back): ${(e as Error)?.message ?? e}`,
+      );
     }
     command = injectLaunchedByArg(command, callerOwnerId).command;
 

@@ -534,8 +534,7 @@ type GoalPortfolioSourceRow = {
 const portfolioObject = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 const portfolioArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
-const portfolioString = (value: unknown): string | null =>
-  typeof value === 'string' && value.trim() ? value : null;
+const portfolioString = (value: unknown): string | null => (typeof value === 'string' && value.trim() ? value : null);
 const portfolioNumber = (value: unknown): number => {
   const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0;
   return Number.isFinite(n) ? n : 0;
@@ -565,24 +564,26 @@ function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
       const blockedBy = portfolioArray(item.blockedBy).map(String).filter(Boolean);
       return status === 'todo' && blockedBy.length === 0;
     });
-    return [{
-      ref,
-      ordinal: portfolioNumber(row.ordinal),
-      harness: portfolioString(row.harness),
-      slug,
-      title: portfolioString(row.title),
-      status: portfolioString(row.status),
-      next: nextRow
-        ? {
-            id: portfolioString(nextRow.id) ?? 'unknown',
-            text: portfolioString(nextRow.text) ?? '',
-            phase: portfolioString(nextRow.phase),
-            blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
-          }
-        : null,
-      counts,
-      ambiguousMatches: portfolioNumber(row.ambiguousMatches),
-    }];
+    return [
+      {
+        ref,
+        ordinal: portfolioNumber(row.ordinal),
+        harness: portfolioString(row.harness),
+        slug,
+        title: portfolioString(row.title),
+        status: portfolioString(row.status),
+        next: nextRow
+          ? {
+              id: portfolioString(nextRow.id) ?? 'unknown',
+              text: portfolioString(nextRow.text) ?? '',
+              phase: portfolioString(nextRow.phase),
+              blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
+            }
+          : null,
+        counts,
+        ambiguousMatches: portfolioNumber(row.ambiguousMatches),
+      },
+    ];
   });
 }
 
@@ -593,7 +594,9 @@ export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
         .map((p) => `${p.ordinal}. ${p.ref} [${p.status ?? 'missing'}]${p.next ? ` next=${p.next.id}` : ''}`)
         .join('; ')
     : 'none declared';
-  const priorities = brief.priorities.length ? brief.priorities.map((p, i) => `${i + 1}. ${p}`).join('\n') : '1. Re-read the goal before any write.';
+  const priorities = brief.priorities.length
+    ? brief.priorities.map((p, i) => `${i + 1}. ${p}`).join('\n')
+    : '1. Re-read the goal before any write.';
   return [
     `GOAL PORTFOLIO SNAPSHOT — assembled ${brief.assembledAt} (schema v${brief.schemaVersion})`,
     `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
@@ -640,9 +643,20 @@ export async function readGoalPortfolioBrief(args: {
       maxAgents: resolveCeiling(policy.settings?.maxAgents, GOAL_LAUNCH_DEFAULTS.maxAgents),
       maxPerFleet: resolveCeiling(policy.settings?.maxPerFleet, GOAL_LAUNCH_DEFAULTS.maxPerFleet),
     };
-    const counted = await goalHeadcount({ workspaceId: args.workspaceId, goalId: args.goalId, fleetSlug: policy.drainFleetSlug, sql: args.sql });
+    const counted = await goalHeadcount({
+      workspaceId: args.workspaceId,
+      goalId: args.goalId,
+      fleetSlug: policy.drainFleetSlug,
+      sql: args.sql,
+    });
     if (counted.error) degradedReasons.push(`headcount degraded: ${counted.error}`);
-    launch = { goalBrief: policy.brief, settings: policy.settings, budget: policy.budget, ceilings, headcount: counted.headcount };
+    launch = {
+      goalBrief: policy.brief,
+      settings: policy.settings,
+      budget: policy.budget,
+      ceilings,
+      headcount: counted.headcount,
+    };
   }
   const sql = pg(args.sql);
   let liveHolderOwnerIds: string[] = [];
@@ -658,12 +672,12 @@ export async function readGoalPortfolioBrief(args: {
     });
     liveHolderOwnerIds = holders.live.map((holder) => holder.ownerId);
     if (holders.liveness === 'unknown') {
-      degradedReasons.push('goal holder liveness unavailable; holder-scoped report and Blender counts may be incomplete');
+      degradedReasons.push(
+        'goal holder liveness unavailable; holder-scoped report and Blender counts may be incomplete',
+      );
     }
   } catch (error) {
-    degradedReasons.push(
-      `goal holder liveness read failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
+    degradedReasons.push(`goal holder liveness read failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
     const rows = await sql<GoalPortfolioSourceRow[]>`
@@ -786,7 +800,8 @@ export async function readGoalPortfolioBrief(args: {
       .map(portfolioObject)
       .filter((candidate): candidate is Record<string, unknown> => candidate !== null);
     let claimable: number | null = candidates.length === 0 ? 0 : null;
-    let claimabilityScope: GoalPortfolioBrief['queue']['claimabilityScope'] = candidates.length === 0 ? 'none' : 'unknown';
+    let claimabilityScope: GoalPortfolioBrief['queue']['claimabilityScope'] =
+      candidates.length === 0 ? 'none' : 'unknown';
     if (candidates.length > 0) {
       try {
         const { explainIssueClaimFloors } = await import('./work-items');
@@ -805,7 +820,9 @@ export async function readGoalPortfolioBrief(args: {
         claimable = admissible;
         claimabilityScope = 'issue-family';
       } catch (error) {
-        degradedReasons.push(`goal-scoped claimability unavailable: ${error instanceof Error ? error.message : String(error)}`);
+        degradedReasons.push(
+          `goal-scoped claimability unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
 
@@ -820,7 +837,13 @@ export async function readGoalPortfolioBrief(args: {
       const pot = portfolioObject(value);
       const harness = portfolioString(pot?.harness);
       if (!pot || !harness) return [];
-      return [{ harness, role: pot.role === 'owner' ? ('owner' as const) : ('contributing' as const), note: portfolioString(pot.note) }];
+      return [
+        {
+          harness,
+          role: pot.role === 'owner' ? ('owner' as const) : ('contributing' as const),
+          note: portfolioString(pot.note),
+        },
+      ];
     });
     const fleetRaw = portfolioObject(row.drain_fleet);
     const declaredFleet = portfolioString(portfolioObject(row.metadata)?.drainFleet);
@@ -830,13 +853,15 @@ export async function readGoalPortfolioBrief(args: {
       const tripwire = portfolioObject(value);
       const metric = portfolioString(tripwire?.metric);
       if (!tripwire || !metric) return [];
-      return [{
-        metric,
-        ...(portfolioString(tripwire.label) ? { label: portfolioString(tripwire.label)! } : {}),
-        ...(tripwire.threshold != null ? { threshold: portfolioNumber(tripwire.threshold) } : {}),
-        ...(tripwire.current != null ? { current: portfolioNumber(tripwire.current) } : {}),
-        ...(portfolioString(tripwire.unit) ? { unit: portfolioString(tripwire.unit)! } : {}),
-      }];
+      return [
+        {
+          metric,
+          ...(portfolioString(tripwire.label) ? { label: portfolioString(tripwire.label)! } : {}),
+          ...(tripwire.threshold != null ? { threshold: portfolioNumber(tripwire.threshold) } : {}),
+          ...(tripwire.current != null ? { current: portfolioNumber(tripwire.current) } : {}),
+          ...(portfolioString(tripwire.unit) ? { unit: portfolioString(tripwire.unit)! } : {}),
+        },
+      ];
     });
     const queue = {
       total: portfolioNumber(queueRaw.total),
@@ -849,14 +874,20 @@ export async function readGoalPortfolioBrief(args: {
     };
     const priorities: string[] = [];
     if (!declaredFleet) priorities.push('Declare and delegate the standing drain fleet.');
-    else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0) priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
+    else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0)
+      priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
     if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
     const nextPlan = worklist.find((plan) => plan.next);
-    if (nextPlan?.next) priorities.push(`Place ${nextPlan.ref}#${nextPlan.next.id} with an independently led plan fleet.`);
-    if ((claimable ?? 0) > 0) priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);
-    if (queue.blocked > 0) priorities.push(`Triage ${queue.blocked} blocked/cursed queue item(s) and remove stranded blockers.`);
-    if (portfolioNumber(row.blender_pending) > 0) priorities.push(`Grade or route ${portfolioNumber(row.blender_pending)} pending Blender idea(s).`);
-    if (priorities.length === 0) priorities.push('Refresh the worklist and queue, then continue supervision; do not self-implement.');
+    if (nextPlan?.next)
+      priorities.push(`Place ${nextPlan.ref}#${nextPlan.next.id} with an independently led plan fleet.`);
+    if ((claimable ?? 0) > 0)
+      priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);
+    if (queue.blocked > 0)
+      priorities.push(`Triage ${queue.blocked} blocked/cursed queue item(s) and remove stranded blockers.`);
+    if (portfolioNumber(row.blender_pending) > 0)
+      priorities.push(`Grade or route ${portfolioNumber(row.blender_pending)} pending Blender idea(s).`);
+    if (priorities.length === 0)
+      priorities.push('Refresh the worklist and queue, then continue supervision; do not self-implement.');
 
     return {
       schemaVersion: 1,
@@ -891,18 +922,24 @@ export async function readGoalPortfolioBrief(args: {
       tripwires,
       pending: {
         blenderIdeas: row.blender_pending == null ? null : portfolioNumber(row.blender_pending),
-        acceptanceRubric: rubricRaw && portfolioString(rubricRaw.id)
-          ? { id: portfolioString(rubricRaw.id)!, status: portfolioString(rubricRaw.status), latestScorecardAt: portfolioString(rubricRaw.latestScorecardAt) }
-          : null,
+        acceptanceRubric:
+          rubricRaw && portfolioString(rubricRaw.id)
+            ? {
+                id: portfolioString(rubricRaw.id)!,
+                status: portfolioString(rubricRaw.status),
+                latestScorecardAt: portfolioString(rubricRaw.latestScorecardAt),
+              }
+            : null,
       },
       continuity: {
-        checkpoint: checkpointRaw && portfolioString(checkpointRaw.workItemId)
-          ? {
-              workItemId: portfolioString(checkpointRaw.workItemId)!,
-              updatedAt: new Date(portfolioNumber(checkpointRaw.updatedAtMs)).toISOString(),
-              note: portfolioString(checkpointRaw.note) ?? '',
-            }
-          : null,
+        checkpoint:
+          checkpointRaw && portfolioString(checkpointRaw.workItemId)
+            ? {
+                workItemId: portfolioString(checkpointRaw.workItemId)!,
+                updatedAt: new Date(portfolioNumber(checkpointRaw.updatedAtMs)).toISOString(),
+                note: portfolioString(checkpointRaw.note) ?? '',
+              }
+            : null,
         lastOwnerReportAt: portfolioString(row.last_owner_report_at),
       },
       priorities: priorities.slice(0, 6),
@@ -924,7 +961,15 @@ export async function readGoalPortfolioBrief(args: {
       worklist: [],
       pots: [],
       drainFleet: { slug: null, exists: null, controlState: null, leaderOwnerId: null, live: null, working: null },
-      queue: { total: 0, terminal: 0, inFlight: 0, blocked: 0, needsHuman: 0, claimable: null, claimabilityScope: 'unknown' },
+      queue: {
+        total: 0,
+        terminal: 0,
+        inFlight: 0,
+        blocked: 0,
+        needsHuman: 0,
+        claimable: null,
+        claimabilityScope: 'unknown',
+      },
       launch: { settings: launch.settings, ceilings: launch.ceilings, headcount: launch.headcount },
       budget: {
         budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
@@ -936,7 +981,12 @@ export async function readGoalPortfolioBrief(args: {
       pending: { blenderIdeas: null, acceptanceRubric: null },
       continuity: { checkpoint: null, lastOwnerReportAt: null },
       priorities: ['Re-read the goal portfolio before any placement or write.'],
-      degradedReasons: [...new Set([...degradedReasons, `portfolio read failed: ${error instanceof Error ? error.message : String(error)}`])],
+      degradedReasons: [
+        ...new Set([
+          ...degradedReasons,
+          `portfolio read failed: ${error instanceof Error ? error.message : String(error)}`,
+        ]),
+      ],
     };
   }
 }

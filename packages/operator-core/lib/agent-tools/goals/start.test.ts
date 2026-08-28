@@ -256,22 +256,19 @@ describe('goals:start — the happy path', () => {
     expect(setModeCalls[0].ownerId).toBe(ownerId);
     // ...and the launch pins that exact identity, which is the only thing that
     // makes writing-before-spawning meaningful.
-    const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope
-      .greetingCmd;
+    const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(cmd).toContain(`--owner-id=${ownerId}`);
   });
 
-  it('delivers the goal as the agent\'s first turn via the env, not the command line', async () => {
+  it("delivers the goal as the agent's first turn via the env, not the command line", async () => {
     const res = await call();
-    const env = (spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } })
-      .envelope.env;
+    const env = (spawnConsoleMock.mock.calls[0][0] as { envelope: { env: Record<string, string> } }).envelope.env;
     const brief = env.PAPERCUSP_KICKOFF_PROMPT;
     expect(brief).toContain(dataOf(res).id as string);
     expect(brief).toContain('Ship a paid app');
     expect(brief).toContain('no paying user by day 30');
     // Free-form prose must never ride the greeting one-liner.
-    const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope
-      .greetingCmd;
+    const cmd = (spawnConsoleMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(cmd).not.toContain('Ship a paid app');
   });
 
@@ -292,8 +289,7 @@ describe('goals:start — the happy path', () => {
     // member. The agent is the first, identified by its pre-pinned identity.
     expect(spawnConsoleMock).not.toHaveBeenCalled();
     expect(spawnHeadlessMock).toHaveBeenCalledTimes(2);
-    const agentCmd = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } })
-      .envelope.greetingCmd;
+    const agentCmd = (spawnHeadlessMock.mock.calls[0][0] as { envelope: { greetingCmd: string } }).envelope.greetingCmd;
     expect(agentCmd).toContain('--owner-id=');
   });
 });
@@ -775,9 +771,7 @@ describe('goals:start — the activation gate (P-004)', () => {
       startBlockedReason: 'prerequisite lands tomorrow; scaffolding can start today',
     });
     expect(isError(res)).toBe(false);
-    expect(dataOf(res).start_blocked_override).toBe(
-      'prerequisite lands tomorrow; scaffolding can start today',
-    );
+    expect(dataOf(res).start_blocked_override).toBe('prerequisite lands tomorrow; scaffolding can start today');
     // The override changes the verdict, never the order contract.
     expect(stampPrecedesSpawn(order)).toBe(true);
   });
