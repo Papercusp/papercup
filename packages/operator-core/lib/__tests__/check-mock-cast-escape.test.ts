@@ -9,7 +9,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { decide, findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
+import { decide, decidePerFile, findMockCastEscapesInText } from '../../../../scripts/check-mock-cast-escape.mjs';
 import { runGuardScript } from '../testing-guard-script';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
@@ -169,6 +169,34 @@ describe('decide (ratchet-only-down policy)', () => {
   });
 });
 
+describe('decidePerFile (non-fungible ratchet policy)', () => {
+  it('fails when a different file adds an escape even if another file removes more', () => {
+    expect(
+      decidePerFile({
+        baseline: { 'a.test.ts': 10, 'b.test.ts': 2 },
+        current: { 'a.test.ts': 8, 'b.test.ts': 3 },
+      }),
+    ).toMatchObject({
+      verdict: 'fail-file-increase',
+      increases: [{ file: 'b.test.ts', count: 3, baselineCount: 2, delta: 1 }],
+      decreases: [{ file: 'a.test.ts', count: 8, baselineCount: 10, delta: 2 }],
+    });
+  });
+
+  it('treats the first escape in a new file as an increase from zero', () => {
+    expect(decidePerFile({ baseline: {}, current: { 'new.test.ts': 1 } })).toMatchObject({
+      verdict: 'fail-file-increase',
+      increases: [{ file: 'new.test.ts', count: 1, baselineCount: 0, delta: 1 }],
+    });
+  });
+
+  it('only locks decreases in with an explicit update', () => {
+    const args = { baseline: { 'a.test.ts': 3 }, current: { 'a.test.ts': 2 } };
+    expect(decidePerFile(args).verdict).toBe('ok-below-files');
+    expect(decidePerFile({ ...args, updateFlag: true }).verdict).toBe('ok-ratchet-files');
+  });
+});
+
 describe('the --json CLI report', () => {
   it('fully drains a large piped report before returning the verdict status', () => {
     const guard = runGuardScript('node', ['scripts/check-mock-cast-escape.mjs', '--json'], {
@@ -176,7 +204,14 @@ describe('the --json CLI report', () => {
       timeoutMs: 180_000,
     });
 
-    let report: { count: number; baselineCount: number; verdict: string; byFile: Record<string, unknown> };
+    let report: {
+      count: number;
+      baselineCount: number;
+      targetCount: number;
+      verdict: string;
+      increases: unknown[];
+      byFile: Record<string, unknown>;
+    };
     try {
       report = JSON.parse(guard.stdout) as typeof report;
     } catch {
@@ -185,7 +220,9 @@ describe('the --json CLI report', () => {
 
     expect(report.count).toBeGreaterThanOrEqual(0);
     expect(report.baselineCount).toBeGreaterThanOrEqual(0);
-    expect(report.verdict).toMatch(/^(?:fail-exceeds|ok-ratchet|ok-below|ok)$/);
-    expect(guard.status, guard.output).toBe(report.verdict === 'fail-exceeds' ? 1 : 0);
+    expect(report.targetCount).toBeGreaterThanOrEqual(0);
+    expect(report.increases).toEqual([]);
+    expect(report.verdict).toMatch(/^(?:fail-file-increase|fail-exceeds|ok-ratchet-files|ok-below-files|ok-ratchet|ok-below|ok)$/);
+    expect(guard.status, guard.output).toBe(report.verdict.startsWith('fail-') ? 1 : 0);
   });
 });
