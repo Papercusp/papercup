@@ -36,6 +36,42 @@ interface ShellResult {
   stderr: string;
 }
 
+type TelemetryRecord = Record<string, string>;
+
+function telemetryRecords(
+  stderr: string,
+  kind: 'PHASE' | 'SUMMARY',
+): TelemetryRecord[] {
+  const prefix = `[dependency-generation] ${kind} `;
+  return stderr
+    .split('\n')
+    .filter((line) => line.startsWith(prefix))
+    .map((line) =>
+      Object.fromEntries(
+        line
+          .slice(prefix.length)
+          .trim()
+          .split(/\s+/)
+          .map((field) => {
+            const separator = field.indexOf('=');
+            if (separator < 1)
+              throw new Error(`malformed telemetry field: ${field}`);
+            return [field.slice(0, separator), field.slice(separator + 1)];
+          }),
+      ),
+    );
+}
+
+function lastSummary(result: ShellResult): TelemetryRecord {
+  const summaries = telemetryRecords(result.stderr, 'SUMMARY');
+  const summary = summaries.at(-1);
+  if (!summary)
+    throw new Error(
+      `missing dependency-generation summary in: ${result.stderr}`,
+    );
+  return summary;
+}
+
 function makeIntegration(): string {
   // Retention intentionally imports DIRECT sibling checkout markers. Put each
   // fixture under a private parent so that contract scans only this test's
@@ -274,6 +310,88 @@ describe('immutable dependency generation', () => {
     expect(second.stdout).toContain('reused=true');
     expect(publishedPath(second.stdout)).toBe(generation);
   });
+
+  it(
+    'P-001: reports writer-owned phases and deterministic full/hit/one-change counters',
+    () => {
+      const integration = makeIntegration();
+
+      const full = publish(integration, {
+        DEPENDENCY_GENERATION_WALK_JOBS: '1',
+      });
+      expect(full.status, full.stderr).toBe(0);
+      const fullSummary = lastSummary(full);
+      expect(fullSummary).toMatchObject({
+        schema: '1',
+        result: 'published',
+        predecessor: 'none',
+        trees_total: '3',
+        trees_reused: '0',
+        trees_copied: '3',
+        trees_removed: '0',
+      });
+      expect(fullSummary.source).toMatch(/^[0-9a-f]{64}$/);
+      expect(fullSummary.identity).toBe(`v1-${fullSummary.source}`);
+      const fullPhases = telemetryRecords(full.stderr, 'PHASE');
+      expect(fullPhases.map(({ phase }) => phase)).toEqual(
+        expect.arrayContaining([
+          'source-manifest-before',
+          'cache-validation',
+          'tree-copy',
+          'source-manifest-after-copy',
+          'freeze',
+          'snapshot-fingerprint',
+          'publish',
+        ]),
+      );
+      for (const phase of fullPhases) {
+        expect(Number(phase.duration_ms)).toBeGreaterThanOrEqual(0);
+      }
+      expect(Number(fullSummary.total_ms)).toBeGreaterThanOrEqual(0);
+
+      const hit = publish(integration, {
+        DEPENDENCY_GENERATION_WALK_JOBS: '1',
+      });
+      expect(hit.status, hit.stderr).toBe(0);
+      expect(lastSummary(hit)).toMatchObject({
+        result: 'cache-hit',
+        trees_total: '3',
+        trees_reused: '3',
+        trees_copied: '0',
+        trees_removed: '0',
+      });
+      expect(
+        telemetryRecords(hit.stderr, 'PHASE').map(({ phase }) => phase),
+      ).toEqual([
+        'source-manifest-before',
+        'cache-validation',
+        'source-manifest-after-cache',
+      ]);
+
+      writeFileSync(
+        join(integration, 'packages/a/node_modules/local/index.js'),
+        'local-v2-with-one-tree-change\n',
+      );
+      const oneChanged = publish(integration, {
+        DEPENDENCY_GENERATION_WALK_JOBS: '1',
+      });
+      expect(oneChanged.status, oneChanged.stderr).toBe(0);
+      // P-001 freezes the baseline: before incremental predecessor reuse, a
+      // one-tree change rebuilds all three trees. P-002 deliberately changes this
+      // expectation to reused=2/copied=1 while preserving the same source identity.
+      expect(lastSummary(oneChanged)).toMatchObject({
+        result: 'published',
+        trees_total: '3',
+        trees_reused: '0',
+        trees_copied: '3',
+        trees_removed: '0',
+      });
+      expect(publishedIdentity(oneChanged.stdout)).not.toBe(
+        publishedIdentity(full.stdout),
+      );
+    },
+    NATIVE_SHELL_TIMEOUT_MS,
+  );
 
   it('WI-41491: selects a prewarmed input by immutable identity without a generation walk', () => {
     const integration = makeIntegration();
@@ -581,6 +699,13 @@ describe('immutable dependency generation', () => {
       'changed input: node_modules (metadata fingerprint changed)',
     );
     expect(result.stderr).toContain('refusing a torn snapshot');
+    expect(lastSummary(result)).toMatchObject({
+      result: 'torn-source',
+      trees_total: '3',
+      trees_reused: '0',
+      trees_copied: '3',
+      trees_removed: '0',
+    });
     const entries = readdirSync(
       join(integration, '.papercusp/dependency-generations'),
     );

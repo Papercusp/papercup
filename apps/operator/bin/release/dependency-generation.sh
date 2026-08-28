@@ -15,6 +15,40 @@ dependency_generation_log() {
   printf '[dependency-generation] %s\n' "$*" >&2
 }
 
+# Writer-owned monotonic-enough wall clock for phase telemetry. GNU date gives
+# millisecond resolution; BSD date prints the unsupported %N literally, so fall
+# back to whole seconds expressed as milliseconds. Durations are diagnostic and
+# never participate in generation identity or correctness decisions.
+dependency_generation_now_ms() {
+  local now
+  now="$(date +%s%3N 2>/dev/null || true)"
+  case "$now" in
+    ''|*[!0-9]*) printf '%s000\n' "$(date +%s)" ;;
+    *) printf '%s\n' "$now" ;;
+  esac
+}
+
+dependency_generation_emit_phase() {
+  local phase="$1" started_ms="$2" outcome="$3" now_ms duration_ms
+  shift 3
+  now_ms="$(dependency_generation_now_ms)"
+  duration_ms=$((now_ms - started_ms))
+  [ "$duration_ms" -ge 0 ] || duration_ms=0
+  dependency_generation_log \
+    "PHASE schema=1 phase=$phase outcome=$outcome duration_ms=$duration_ms${*:+ $*}"
+}
+
+dependency_generation_emit_summary() {
+  local result="$1" started_ms="$2" source="$3" identity="$4" predecessor="$5"
+  local trees_total="$6" trees_reused="$7" trees_copied="$8" trees_removed="$9"
+  local now_ms duration_ms
+  now_ms="$(dependency_generation_now_ms)"
+  duration_ms=$((now_ms - started_ms))
+  [ "$duration_ms" -ge 0 ] || duration_ms=0
+  dependency_generation_log \
+    "SUMMARY schema=1 result=$result source=${source:-unresolved} identity=${identity:-unresolved} predecessor=${predecessor:-none} trees_total=$trees_total trees_reused=$trees_reused trees_copied=$trees_copied trees_removed=$trees_removed total_ms=$duration_ms"
+}
+
 dependency_generation_sha256() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum | awk '{ print $1 }'
@@ -954,7 +988,10 @@ dependency_generation_ensure() {
   local source_before source_after identity generation build tree nm rel snapshot marker
   local quarantine before_manifest after_manifest
   local incumbent_token_before incumbent_token_after incumbent_token
-  local current_incumbent_token publish_replacement
+  local current_incumbent_token publish_replacement publish_rc
+  local total_started_ms phase_started_ms tree_total=0 tree_reused=0 tree_copied=0 tree_removed=0
+  local predecessor_identity='none'
+  total_started_ms="$(dependency_generation_now_ms)"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
   fi
@@ -968,28 +1005,37 @@ dependency_generation_ensure() {
   mkdir -p "$tree"
   dependency_generation_write_owner "$build/.papercusp-generation-writer"
   dependency_generation_log 'capturing live dependency manifest (before copy)'
+  phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_set_manifest "$integration_root" > "$before_manifest" || {
+    dependency_generation_emit_phase source-manifest-before "$phase_started_ms" failed
     dependency_generation_remove_build "$build"
     return 1
   }
+  dependency_generation_emit_phase source-manifest-before "$phase_started_ms" ok
   source_before="$(dependency_generation_source_fingerprint "$before_manifest")" || {
     dependency_generation_remove_build "$build"
     return 1
   }
+  tree_total="$(awk 'END { print NR + 0 }' "$before_manifest")"
   dependency_generation_log \
-    "captured live dependency manifest (before copy): trees=$(wc -l < "$before_manifest") source=$source_before"
+    "captured live dependency manifest (before copy): trees=$tree_total source=$source_before"
   identity="v1-$source_before"
   generation="$generation_root/$identity"
   incumbent_token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
   dependency_generation_log "validating existing generation $identity"
+  phase_started_ms="$(dependency_generation_now_ms)"
   if dependency_generation_is_valid \
     "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
+    dependency_generation_emit_phase cache-validation "$phase_started_ms" hit
     dependency_generation_log "validated existing generation $identity; confirming live source stability"
     dependency_generation_log 'capturing live dependency manifest (after existing-generation validation)'
+    phase_started_ms="$(dependency_generation_now_ms)"
     dependency_generation_set_manifest "$integration_root" > "$after_manifest" || {
+      dependency_generation_emit_phase source-manifest-after-cache "$phase_started_ms" failed
       dependency_generation_remove_build "$build"
       return 1
     }
+    dependency_generation_emit_phase source-manifest-after-cache "$phase_started_ms" ok
     source_after="$(dependency_generation_source_fingerprint "$after_manifest")" || {
       dependency_generation_remove_build "$build"
       return 1
@@ -998,6 +1044,9 @@ dependency_generation_ensure() {
       "captured live dependency manifest (after existing-generation validation): trees=$(wc -l < "$after_manifest") source=$source_after"
     if [ "$source_after" != "$source_before" ]; then
       dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
+      dependency_generation_emit_summary \
+        torn-cache-hit "$total_started_ms" "$source_before" "$identity" \
+        "$predecessor_identity" "$tree_total" 0 0 0
       dependency_generation_remove_build "$build"
       dependency_generation_log 'FATAL: live node_modules changed while pinning an existing generation'
       return 75
@@ -1008,8 +1057,13 @@ dependency_generation_ensure() {
     DEPENDENCY_GENERATION_TREE="$generation/tree"
     DEPENDENCY_GENERATION_SOURCE_FINGERPRINT="$source_before"
     DEPENDENCY_GENERATION_REUSED='true'
+    tree_reused="$tree_total"
+    dependency_generation_emit_summary \
+      cache-hit "$total_started_ms" "$source_before" "$identity" \
+      "$predecessor_identity" "$tree_total" "$tree_reused" 0 0
     return 0
   fi
+  dependency_generation_emit_phase cache-validation "$phase_started_ms" miss
   # Keep the token only when the same directory was the object that failed the
   # initial validation. If a concurrent publisher replaced it during that walk,
   # force the serialized path below to perform its full validation instead.
@@ -1022,27 +1076,42 @@ dependency_generation_ensure() {
   fi
 
   dependency_generation_log "building $identity from a stable live dependency snapshot"
+  phase_started_ms="$(dependency_generation_now_ms)"
   while IFS= read -r nm; do
     rel="${nm#"$integration_root"/}"
     dependency_generation_log "copying dependency tree: $rel"
     if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+      dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
+        "trees_copied=$tree_copied"
       dependency_generation_remove_build "$build"
       return 1
     fi
     dependency_generation_prune_ephemeral "$tree/$rel"
+    tree_copied=$((tree_copied + 1))
     dependency_generation_log "copied dependency tree: $rel"
   done < <(dependency_generation_enumerate_node_modules "$integration_root")
+  dependency_generation_emit_phase tree-copy "$phase_started_ms" ok \
+    "trees_copied=$tree_copied"
 
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
   fi
   dependency_generation_log 'capturing live dependency manifest (after copy)'
+  phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_set_manifest "$integration_root" > "$after_manifest" 2>/dev/null || true
   source_after="$(dependency_generation_source_fingerprint "$after_manifest" 2>/dev/null || true)"
+  if [ -n "$source_after" ]; then
+    dependency_generation_emit_phase source-manifest-after-copy "$phase_started_ms" ok
+  else
+    dependency_generation_emit_phase source-manifest-after-copy "$phase_started_ms" failed
+  fi
   dependency_generation_log \
     "captured live dependency manifest (after copy): trees=$(wc -l < "$after_manifest") source=${source_after:-unresolved}"
   if [ -z "$source_after" ] || [ "$source_after" != "$source_before" ]; then
     dependency_generation_log_manifest_delta "$before_manifest" "$after_manifest"
+    dependency_generation_emit_summary \
+      torn-source "$total_started_ms" "$source_before" "$identity" \
+      "$predecessor_identity" "$tree_total" "$tree_reused" "$tree_copied" "$tree_removed"
     dependency_generation_log 'FATAL: live node_modules changed during generation build; refusing a torn snapshot'
     dependency_generation_remove_build "$build"
     return 75
@@ -1051,21 +1120,29 @@ dependency_generation_ensure() {
   # part of the metadata fingerprint. Recording first would make every freshly
   # published generation invalidate itself on its next read.
   dependency_generation_log 'freezing copied dependency file modes'
+  phase_started_ms="$(dependency_generation_now_ms)"
   find "$tree" -type f -exec chmod a-w {} +
+  dependency_generation_emit_phase freeze "$phase_started_ms" ok
   dependency_generation_log 'fingerprinting immutable copied dependency snapshot'
+  phase_started_ms="$(dependency_generation_now_ms)"
   snapshot="$(dependency_generation_set_fingerprint "$tree")" || {
+    dependency_generation_emit_phase snapshot-fingerprint "$phase_started_ms" failed
     dependency_generation_remove_build "$build"
     return 1
   }
+  dependency_generation_emit_phase snapshot-fingerprint "$phase_started_ms" ok
   dependency_generation_log "fingerprinted immutable copied dependency snapshot: snapshot=$snapshot"
   marker="$build/.papercusp-dependency-generation"
   printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n%s\n' \
     "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
     "$snapshot" "$(date +%s)" "$DEPENDENCY_GENERATION_SCOPE_RECORD" > "$marker"
 
+  phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_acquire_publish_lock "$generation_root" || {
+    publish_rc=$?
+    dependency_generation_emit_phase publish "$phase_started_ms" failed
     dependency_generation_remove_build "$build"
-    return $?
+    return "$publish_rc"
   }
   dependency_generation_log "acquired dependency-generation publish lock for $identity"
   # Keep the build-owner marker until the short publish lock is held; otherwise
@@ -1109,11 +1186,22 @@ dependency_generation_ensure() {
     dependency_generation_log "published immutable dependency generation $identity"
   fi
   dependency_generation_release_publish_lock
+  dependency_generation_emit_phase publish "$phase_started_ms" ok \
+    "generation_reused=${DEPENDENCY_GENERATION_REUSED:-false}"
 
   DEPENDENCY_GENERATION_ID="$identity"
   DEPENDENCY_GENERATION_PATH="$generation"
   DEPENDENCY_GENERATION_TREE="$generation/tree"
   DEPENDENCY_GENERATION_SOURCE_FINGERPRINT="$source_after"
+  if [ "${DEPENDENCY_GENERATION_REUSED:-false}" = 'true' ]; then
+    dependency_generation_emit_summary \
+      concurrent-winner "$total_started_ms" "$source_after" "$identity" \
+      "$predecessor_identity" "$tree_total" "$tree_reused" "$tree_copied" "$tree_removed"
+  else
+    dependency_generation_emit_summary \
+      published "$total_started_ms" "$source_after" "$identity" \
+      "$predecessor_identity" "$tree_total" "$tree_reused" "$tree_copied" "$tree_removed"
+  fi
 }
 
 dependency_generation_main() {
