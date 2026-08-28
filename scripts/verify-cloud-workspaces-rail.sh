@@ -50,9 +50,11 @@ CURRENT="${RAIL} button[aria-current=\"step\"]"
 TABLIST='[role="tablist"][aria-label^="Detail for"]'
 
 failures=0
-pass() { printf 'PASS  %s\n' "$*"; }
-skip() { printf 'SKIP  %s\n' "$*"; }
-fail() { printf 'FAIL  %s\n' "$*" >&2; failures=$((failures + 1)); }
+passes=0
+skips=0
+pass() { passes=$((passes + 1)); printf 'PASS  %s\n' "$*"; }
+skip() { skips=$((skips  + 1)); printf 'SKIP  %s\n' "$*"; }
+fail() { failures=$((failures + 1)); printf 'FAIL  %s\n' "$*" >&2; }
 
 # Raw one-shot evaluation; prints the pretty-printed result.
 ev() { "$TAT" eval --pid "$P" "$1" 2>&1; }
@@ -245,8 +247,27 @@ settle 8 "$RAIL" 1 \
   "!/undefined|\\[object Object\\]|NaN/.test((document.querySelector('main')||document.body).innerText)" \
   "no undefined / NaN / [object Object] leaked into the rendered page"
 
+# A machine-readable coverage line, because "exit 0" is NOT the same claim as
+# "the redesign was exercised". Every assertion below is fixture-dependent, so a
+# run against an empty install can SKIP its way to a green exit and look
+# identical to a real verification. Read `skipped` before you cite `exit=0`:
+# skips are unverified coverage, not passes. `exercised` names the assertions
+# that can only pass against real data, which is what makes the run evidence.
+EXERCISED=""
+grep_pass() { case "$1" in *"$2"*) return 0 ;; esac; return 1; }
+[ "$HOSTS" -gt 0 ] && EXERCISED="${EXERCISED}landing-operate,expanded-host-tabs,"
+[ "$DRIFTING" -gt 0 ] && EXERCISED="${EXERCISED}drift-divergent-form,"
+EXERCISED="${EXERCISED%,}"
+printf 'CW_RAIL_RESULT passed=%d failed=%d skipped=%d hosts=%d drifting=%d exercised=%s\n' \
+  "$passes" "$failures" "$skips" "$HOSTS" "$DRIFTING" "${EXERCISED:-none}"
+
 if [ "$failures" -gt 0 ]; then
   echo "== ${failures} assertion(s) FAILED =="
   exit 1
 fi
-echo "== all live assertions passed =="
+if [ "$skips" -gt 0 ]; then
+  echo "== ${passes} passed, ${skips} SKIPPED (fixture could not exercise them) =="
+  echo "   A skipped assertion is UNVERIFIED. Do not cite this run as full coverage." >&2
+  exit 0
+fi
+echo "== all ${passes} live assertions passed, nothing skipped =="
