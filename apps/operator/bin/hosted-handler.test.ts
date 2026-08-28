@@ -102,7 +102,15 @@ describe("hosted handler", () => {
       websocket.once("message", (value) => resolve(value.toString()));
       websocket.once("error", reject);
     });
-    expect(JSON.parse(message)).toEqual({ type: "bound", binding });
-    websocket.close();
+    expect(JSON.parse(message)).toEqual(expect.objectContaining({
+      type: "bound",
+      role: "connector",
+      protocol: "papercusp-hosted-workspace.v1",
+      binding,
+    }));
+    await new Promise<void>((resolve) => {
+      websocket.once("close", resolve);
+      websocket.close();
+    });
   });
 });

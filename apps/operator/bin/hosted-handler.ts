@@ -11,7 +11,8 @@ import { createSpaRoutes } from "./host-spa";
 import { WebSocketServer } from "ws";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { authenticateHostedConnectorTransport } from "@papercusp/operator-core/lib/endpoint-route/routes/hosted-workspace-connector";
+import { authenticateHostedConnectorSocket } from "@papercusp/operator-core/lib/endpoint-route/routes/hosted-workspace-connector";
+import { HostedWorkspaceSessionBroker } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-session";
 
 /** Local server-rendered namespaces that must never become SPA-looking 200s. */
 export const HOSTED_FORBIDDEN_HOST_PATH_PREFIXES = [
@@ -52,6 +53,7 @@ export function createHostedHandler(
 
   const websocketServer = new WebSocketServer({ noServer: true });
   const gateway = plane.components.connectorGateway;
+  const sessionBroker = new HostedWorkspaceSessionBroker();
 
   return {
     plane,
@@ -63,12 +65,13 @@ export function createHostedHandler(
       const headers = new Headers();
       for (const [name, value] of Object.entries(request.headers)) if (value !== undefined) headers.set(name, Array.isArray(value) ? value.join(",") : value);
       const fetchRequest = new Request(`https://${host}${request.url}`, { headers });
-      const binding = await authenticateHostedConnectorTransport(gateway, fetchRequest, "websocket");
-      if (!binding) { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
+      const authenticated = await authenticateHostedConnectorSocket(gateway, fetchRequest);
+      if (!authenticated) { socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n"); socket.destroy(); return true; }
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        const untrack = gateway.track(binding, (reason) => websocket.close(4001, reason));
+        const untrack = gateway.track(authenticated.binding, (reason) => websocket.close(4001, reason));
         websocket.once("close", untrack);
-        websocket.send(JSON.stringify({ type: "bound", binding }));
+        if (authenticated.role === "connector") sessionBroker.attachConnector(authenticated.binding, websocket);
+        else sessionBroker.attachBrowser(authenticated.binding, websocket);
         websocketServer.emit("connection", websocket, request);
       });
       return true;

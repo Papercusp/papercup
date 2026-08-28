@@ -6,6 +6,7 @@ import {
   readHostedConnectorBearer,
   readHostedConnectorTicket,
   type HostedConnectorBinding,
+  type HostedConnectorTicketBinding,
   type HostedConnectorTransport,
 } from '../hosted-workspace-connector';
 
@@ -82,6 +83,33 @@ export async function authenticateHostedConnectorTransport(
     return ticket ? gateway.consumeSessionTicket(ticket) : null;
   })();
   return binding && binding.transport === expectedTransport && connectorHostMatches(request, binding) ? binding : null;
+}
+
+export type HostedConnectorSocketAuthentication =
+  | { role: 'connector'; binding: HostedConnectorBinding }
+  | { role: 'browser'; binding: HostedConnectorTicketBinding };
+
+/** Authenticate a native upgrade without mixing connector bearers into browser auth. */
+export async function authenticateHostedConnectorSocket(
+  gateway: HostedWorkspaceConnectorGateway,
+  request: Request,
+): Promise<HostedConnectorSocketAuthentication | null> {
+  const bearer = readHostedConnectorBearer(request.headers);
+  if (bearer) {
+    const binding = await gateway.authenticate(bearer);
+    return binding && binding.transport === 'websocket' && connectorHostMatches(request, binding)
+      ? { role: 'connector', binding }
+      : null;
+  }
+  const ticket = readHostedConnectorTicket(request);
+  if (!ticket) return null;
+  const binding = await gateway.consumeSessionTicket(ticket);
+  return binding && binding.transport === 'websocket' &&
+    binding.kind === 'session' &&
+    binding.audience === 'workspace-operator' &&
+    connectorHostMatches(request, binding)
+    ? { role: 'browser', binding }
+    : null;
 }
 
 export function createHostedWorkspaceConnectorRoutes(gateway: HostedWorkspaceConnectorGateway) {
