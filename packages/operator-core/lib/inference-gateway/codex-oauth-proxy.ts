@@ -199,13 +199,15 @@ export function normalizeCodexChatGptResponsesBody(bodyBuf: Buffer): { body: Buf
           : {};
       body.reasoning = { ...reasoning, effort: parsedModel.effort };
     }
+    const maxOutputTokensNormalized = Object.prototype.hasOwnProperty.call(body, 'max_output_tokens');
+    if (maxOutputTokensNormalized) delete body.max_output_tokens;
     const inputNormalized = typeof body.input === 'string';
     if (inputNormalized) {
       body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
     }
     const storeNormalized = body.store !== false;
     if (storeNormalized) body.store = false;
-    if (!modelNormalized && !inputNormalized && !storeNormalized) {
+    if (!modelNormalized && !maxOutputTokensNormalized && !inputNormalized && !storeNormalized) {
       return { body: bodyBuf, inputNormalized: false };
     }
     return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized };

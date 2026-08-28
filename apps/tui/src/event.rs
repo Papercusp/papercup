@@ -18,6 +18,25 @@ use pui_companion_proto::Topology;
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
+/// Result of loading the Memory tab.  A backend that is disabled is a valid
+/// response from `memory:list`; authentication and transport failures are
+/// different states and must not be rendered as "backend unavailable".
+#[derive(Debug, Clone)]
+pub enum MemoryLoadState {
+    Available {
+        results: Vec<crate::models::MemoryEntry>,
+    },
+    BackendUnavailable {
+        reason: Option<String>,
+    },
+    AuthFailure {
+        message: String,
+    },
+    TransportFailure {
+        message: String,
+    },
+}
+
 /// Everything the update loop reacts to.
 #[derive(Debug, Clone)]
 pub enum Event {
@@ -76,16 +95,32 @@ pub enum Event {
     /// status/error/mic + HTTP-fetched channel list / prefs, folded into the
     /// Voice tab's state by the reducer.
     VoiceUi(crate::voice_ui::VoiceUiEvent),
-    /// Fresh features for the active harness.
-    Features(Vec<HarnessFeature>),
-    /// Fresh issues for the active harness.
-    Issues(Vec<HarnessIssue>),
+    /// Fresh features for a harness. The slug guards against an in-flight
+    /// response for the previous pot repainting the newly selected pot.
+    Features {
+        harness: String,
+        features: Vec<HarnessFeature>,
+    },
+    /// Fresh issues for a harness. The slug guards against an in-flight
+    /// response for the previous pot repainting the newly selected pot.
+    Issues {
+        harness: String,
+        issues: Vec<HarnessIssue>,
+    },
     /// The harness list (for the selector).
     Harnesses(Vec<HarnessRef>),
-    /// Project docs (file list + active doc content) for the active harness.
-    Docs(DocsResponse),
-    /// Testing domains for the active harness.
-    Testing(Vec<TestingDomain>),
+    /// Project docs (file list + active doc content) for a harness. The slug
+    /// guards against a stale response after switching pots.
+    Docs {
+        harness: String,
+        docs: DocsResponse,
+    },
+    /// Testing domains for a harness. The slug guards against a stale response
+    /// after switching pots.
+    Testing {
+        harness: String,
+        testing: Vec<TestingDomain>,
+    },
     /// The selected testing domain's runnable files (D-004a, from domain-detail).
     /// Carries the domain id so a stale fetch never paints the wrong domain.
     TestingFiles {
@@ -98,6 +133,9 @@ pub enum Event {
         available: bool,
         results: Vec<crate::models::MemoryEntry>,
     },
+    /// Typed memory-list outcome. This keeps auth/transport failures distinct
+    /// from the backend's intentional `ok:false` unavailable envelope.
+    MemoryLoad(MemoryLoadState),
     /// Semantic hits from `memory:search` for the query the user typed (D-006).
     MemoryHits {
         query: String,
@@ -108,8 +146,12 @@ pub enum Event {
         file: String,
         result: crate::models::TestRunResult,
     },
-    /// Plugin-contributed TUI panes for the active harness (D-002).
-    TuiPanes(Vec<TuiPaneContribution>),
+    /// Plugin-contributed TUI panes for a harness (D-002). The slug guards
+    /// against a stale response after switching pots.
+    TuiPanes {
+        harness: String,
+        panes: Vec<TuiPaneContribution>,
+    },
     /// All installed plugin manifests for the Plugins tab (D-007) — identity +
     /// frontend/backend contribution surfaces + configSchema.
     Plugins(Vec<crate::models::PluginManifest>),
@@ -120,10 +162,14 @@ pub enum Event {
         plugin: String,
         config: serde_json::Value,
     },
-    /// The active harness's effective claude-settings view (D-013) — defaults
-    /// overlaid by the file, plus the raw file body the `:set`/`:unset` editor
-    /// round-trips.
-    Config(EffectiveClaudeSettings),
+    /// A harness's effective claude-settings view (D-013) — defaults overlaid
+    /// by the file, plus the raw file body the `:set`/`:unset` editor
+    /// round-trips. The slug guards against a stale response after switching
+    /// pots.
+    Config {
+        harness: String,
+        config: EffectiveClaudeSettings,
+    },
     /// Feature flags + values for the read-only Settings tab (P10).
     Flags(FlagsResponse),
     /// Merged plan-item assignment/claim/liveness for the SELECTED plan (P-005a) —
@@ -147,7 +193,11 @@ pub enum Event {
     /// Fresh inference-gateway pool rows for the Agent Chat account picker.
     AccountRows(Vec<crate::session_config::AccountRow>),
     /// Fleet-wide work items (work_items:list) for the Fleet tab (P0).
-    WorkItems(Vec<WorkItem>),
+    /// Keep transport failures with this panel instead of routing them through
+    /// the global status error, where a later poll can erase the diagnosis.
+    WorkItems {
+        result: Result<Vec<WorkItem>, String>,
+    },
     /// Activity backfill (activity:recent, newest-first) seeding the Fleet feed (P1).
     ActivitySeed(Vec<ActivityRow>),
     /// A dedicated todos backfill (activity:recent kind=todos) for the per-agent

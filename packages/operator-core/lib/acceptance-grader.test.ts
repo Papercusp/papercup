@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   acceptanceGraderLabelPrefix,
   buildAssignedAcceptanceGraderBrief,
+  classifyAcceptanceGraderStartupStall,
   classifyAcceptanceGraderTerminalFailure,
   detectAcceptanceGraderTerminalFailure,
   launchAcceptanceGrader,
@@ -39,14 +40,16 @@ const audit = {
   items: [{ itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'test', path: 'lib/thing.test.ts' }] }],
 } as never;
 
-const workItems = [{
-  id: 'WI-1',
-  state: 'done',
-  title: 'Implement the thing',
-  terminalOwner: 'su-implementer',
-  terminalCompletionRef: 'test:thing',
-  terminalCompletionEvidence: { command: 'vitest', exitCode: 0 },
-}] as never;
+const workItems = [
+  {
+    id: 'WI-1',
+    state: 'done',
+    title: 'Implement the thing',
+    terminalOwner: 'su-implementer',
+    terminalCompletionRef: 'test:thing',
+    terminalCompletionEvidence: { command: 'vitest', exitCode: 0 },
+  },
+] as never;
 
 const ctx = { workspaceId: 'ws-test', harnessSlug: 'papercusp', role: 'su' } as never;
 
@@ -151,8 +154,7 @@ describe('launchAcceptanceGrader', () => {
   });
 
   it('retires a quota-blocked Claude judge and performs one deterministic Codex fallback', async () => {
-    const quotaLog =
-      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    const quotaLog = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       args.agent === 'codex'
         ? {
@@ -200,8 +202,7 @@ describe('launchAcceptanceGrader', () => {
   });
 
   it('rechecks the headless log after launch returns before deciding quota fallback', async () => {
-    const quotaLog =
-      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    const quotaLog = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
     let primaryReads = 0;
     const launch = vi.fn(async (args: Record<string, unknown>) =>
       args.agent === 'codex'
@@ -244,18 +245,69 @@ describe('launchAcceptanceGrader', () => {
     });
   });
 
+  it('retires a Claude judge stuck on the connection screen and performs one deterministic Codex fallback', async () => {
+    const connectingLog =
+      'psu: cwd /tmp/papercusp — role-scoped MCP (judge); resume from here\n' +
+      '/rc connecting…\n' +
+      'psu: the MCP proxy is overloaded; retrying in 1s (attempt 2/5)…';
+    const launch = vi.fn(async (args: Record<string, unknown>) =>
+      args.agent === 'codex'
+        ? {
+            content: [{ type: 'text', text: 'launched fallback' }],
+            data: { deduped: false, launch: { tasks: [{ taskId: 'task-fallback' }] } },
+          }
+        : {
+            content: [{ type: 'text', text: 'launched primary' }],
+            data: {
+              deduped: false,
+              launch: { tasks: [{ taskId: 'task-connecting', logPath: '/tmp/connecting.log' }] },
+            },
+          },
+    );
+    const kill = vi.fn(async () => ({ ok: true }));
+    const sleep = vi.fn(async () => undefined);
+    const result = await launchAcceptanceGrader('ship-the-thing', ctx, {
+      ...deps(launch),
+      killTask: kill as never,
+      sleep,
+      terminalLogMaxRechecks: 0,
+      startupStallLogRecheckDelayMs: 0,
+      startupStallLogMaxRechecks: 1,
+      readLogTail: (path) => (path === '/tmp/connecting.log' ? connectingLog : ''),
+    });
+
+    expect(sleep).toHaveBeenCalledTimes(1);
+    expect(kill).toHaveBeenCalledWith('task-connecting', { includeSubtree: true, escalateAfterMs: 5_000 });
+    expect(launch).toHaveBeenCalledTimes(2);
+    expect(launch.mock.calls[1][0]).toMatchObject({
+      account: 'default',
+      agent: 'codex',
+      members: [{ role: 'judge', agent: 'codex', model: 'gpt-5.6-sol', effort: 'high' }],
+      idempotencyKey: expect.stringMatching(/:recovery:[a-f0-9]{16}$/),
+    });
+    expect(result).toMatchObject({
+      state: 'launched',
+      terminalRecovery: {
+        retiredTaskIds: ['task-connecting'],
+        attempts: 2,
+        codes: ['startup_connection_stalled'],
+      },
+    });
+  });
+
   it('stops after the single terminal fallback when its model is quota-blocked too', async () => {
-    const quotaLog =
-      "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
+    const quotaLog = "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.";
     const launch = vi.fn(async (args: Record<string, unknown>) => ({
       content: [{ type: 'text', text: 'launched' }],
       data: {
         deduped: false,
         launch: {
-          tasks: [{
-            taskId: args.agent === 'codex' ? 'task-fallback-quota' : 'task-primary-quota',
-            logPath: args.agent === 'codex' ? '/tmp/fallback-quota.log' : '/tmp/primary-quota.log',
-          }],
+          tasks: [
+            {
+              taskId: args.agent === 'codex' ? 'task-fallback-quota' : 'task-primary-quota',
+              logPath: args.agent === 'codex' ? '/tmp/fallback-quota.log' : '/tmp/primary-quota.log',
+            },
+          ],
         },
       },
     }));
@@ -270,10 +322,7 @@ describe('launchAcceptanceGrader', () => {
     expect(kill).toHaveBeenCalledTimes(2);
     expect(result.state).toBe('failed');
     expect(result.error).toContain('one-retry ceiling');
-    expect(result.terminalRecovery?.retiredTaskIds).toEqual([
-      'task-primary-quota',
-      'task-fallback-quota',
-    ]);
+    expect(result.terminalRecovery?.retiredTaskIds).toEqual(['task-primary-quota', 'task-fallback-quota']);
   });
 
   it('uses the same label prefix algebra that cleanup matches', () => {
@@ -288,14 +337,36 @@ describe('classifyAcceptanceGraderTerminalFailure', () => {
       'Run /usage-credits to continue or switch models with /model.';
     expect(classifyAcceptanceGraderTerminalFailure(raw)).toEqual({
       code: 'model_quota_exhausted',
-      evidence:
-        "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
+      evidence: "You've reached your Fable 5 limit. Run /usage-credits to continue or switch models with /model.",
     });
   });
 
   it('does not treat broad error/limit prose in frozen evidence as a terminal mission failure', () => {
-    expect(classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.')).toBeNull();
+    expect(
+      classifyAcceptanceGraderTerminalFailure('The plan documents a request limit and an error budget.'),
+    ).toBeNull();
     expect(classifyAcceptanceGraderTerminalFailure("You've reached your test limit.")).toBeNull();
+  });
+});
+
+describe('classifyAcceptanceGraderStartupStall', () => {
+  it('matches only the exact connection screen when no first-turn progress exists', () => {
+    expect(
+      classifyAcceptanceGraderStartupStall(
+        'psu: role-scoped MCP (judge)\n/rc connecting…\n' +
+          'psu: the MCP proxy is overloaded; retrying in 1s (attempt 2/5)…',
+      ),
+    ).toEqual({
+      code: 'startup_connection_stalled',
+      evidence: '/rc connecting… · the MCP proxy is overloaded; retrying in 1s (attempt 2/5)…',
+    });
+  });
+
+  it('rejects generic prose and any tail that has entered the first turn', () => {
+    expect(classifyAcceptanceGraderStartupStall('The plan describes a client connecting to MCP.')).toBeNull();
+    expect(
+      classifyAcceptanceGraderStartupStall('/rc connecting…\nWorking (4s)\npapercusp.tools:invoke({})'),
+    ).toBeNull();
   });
 });
 
@@ -315,6 +386,48 @@ describe('detectAcceptanceGraderTerminalFailure', () => {
 
     expect(readLogTail).toHaveBeenCalledTimes(3);
     expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for the bounded startup window before classifying a persistent connection stall', async () => {
+    const readLogTail = vi.fn(() => '/rc connecting…');
+    const sleep = vi.fn(async () => undefined);
+
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        readLogTail,
+        sleep,
+        delayMs: 0,
+        maxRechecks: 0,
+        startupStallDelayMs: 0,
+        startupStallMaxRechecks: 2,
+      }),
+    ).resolves.toEqual({
+      code: 'startup_connection_stalled',
+      evidence: '/rc connecting…; no first-turn progress after 0ms bounded recheck',
+    });
+
+    expect(readLogTail).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('returns healthy as soon as the connecting tail shows first-turn progress', async () => {
+    const readLogTail = vi
+      .fn()
+      .mockReturnValueOnce('/rc connecting…')
+      .mockReturnValueOnce('/rc connecting…\nWorking (4s)\npapercusp.tools:invoke({})');
+
+    await expect(
+      detectAcceptanceGraderTerminalFailure('/tmp/judge.log', {
+        readLogTail,
+        sleep: async () => undefined,
+        delayMs: 0,
+        maxRechecks: 0,
+        startupStallDelayMs: 0,
+        startupStallMaxRechecks: 2,
+      }),
+    ).resolves.toBeNull();
+
+    expect(readLogTail).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -427,11 +540,11 @@ describe('buildAssignedAcceptanceGraderBrief (cross-hive reachability)', () => {
   it('pins both the plan read and deterministic scorecard checks to the subject harness', () => {
     const brief = buildAssignedAcceptanceGraderBrief('ship-the-thing', 'papercusp', 'acceptance-ship-the-thing');
 
-    expect(brief).toContain("plans:get { slug:\"ship-the-thing\", harness:\"papercusp\" }");
+    expect(brief).toContain('plans:get { slug:"ship-the-thing", harness:"papercusp" }');
     expect(brief).toContain(
-      "scorecards:emit { rubricRef:\"acceptance-ship-the-thing\", targetHive:\"papercusp\", ratings:",
+      'scorecards:emit { rubricRef:"acceptance-ship-the-thing", targetHive:"papercusp", ratings:',
     );
-    expect(brief).toContain('subject tree rather than the grader\'s checkout');
+    expect(brief).toContain("subject tree rather than the grader's checkout");
     expect(brief).toContain('gitlink');
     expect(brief).toContain('cwd` set to the nested submodule');
   });

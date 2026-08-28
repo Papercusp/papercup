@@ -673,7 +673,7 @@ export async function runTestFilesCore(opts: {
     // tool's own contract from depending on a repair one layer down.
     if (opts.testNamePattern) vitestArgs.push(`--testNamePattern=${opts.testNamePattern}`);
 
-    const childEnv = {
+    const childEnv: NodeJS.ProcessEnv = {
       ...process.env,
       PAPERCUSP_TEST_RUN_GROUP: runId,
       PAPERCUSP_TEST_ATTRIBUTION: '1',

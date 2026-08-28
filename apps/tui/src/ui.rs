@@ -3396,13 +3396,31 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
         .collect();
     let body = if items.is_empty() {
         let hint = if !app.memory_available {
-            "(memory backend unavailable — not configured yet)"
+            match &app.memory_load_state {
+                crate::event::MemoryLoadState::BackendUnavailable { reason } => format!(
+                    "(memory backend unavailable — {})",
+                    trunc(reason.as_deref().unwrap_or("not configured yet"), 72)
+                ),
+                crate::event::MemoryLoadState::AuthFailure { message } => format!(
+                    "(memory request unauthorized — {})",
+                    trunc(message, 72)
+                ),
+                crate::event::MemoryLoadState::TransportFailure { message } => format!(
+                    "(memory request failed — {})",
+                    trunc(message, 72)
+                ),
+                crate::event::MemoryLoadState::Available { .. } =>
+                    "(memory data unavailable)".to_string(),
+            }
         } else if app.memory_hits.is_some() {
-            "(no hits — Esc returns to the list)"
+            "(no hits — Esc returns to the list)".to_string()
         } else {
-            "(no memories stored yet)"
+            "(no memories stored yet)".to_string()
         };
-        vec![ListItem::new(Line::from(Span::styled(hint, Theme::dim())))]
+        vec![ListItem::new(Line::from(Span::styled(
+            hint,
+            Theme::dim(),
+        )))]
     } else {
         items
     };

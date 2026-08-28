@@ -113,6 +113,25 @@ describe('normalizeCodexChatGptResponsesBody', () => {
     });
   });
 
+  it('removes public max_output_tokens, which the ChatGPT Codex backend rejects', () => {
+    const result = normalizeCodexChatGptResponsesBody(
+      Buffer.from(
+        JSON.stringify({
+          model: 'gpt-5.6-sol',
+          input: [{ role: 'user', content: [] }],
+          max_output_tokens: 8_000,
+          store: false,
+        }),
+      ),
+    );
+    expect(result.inputNormalized).toBe(false);
+    expect(JSON.parse(result.body.toString('utf8'))).toEqual({
+      model: 'gpt-5.6-sol',
+      input: [{ role: 'user', content: [] }],
+      store: false,
+    });
+  });
+
   it('expands public input:string into the canonical one-user-message list', () => {
     const result = normalizeCodexChatGptResponsesBody(
       Buffer.from(

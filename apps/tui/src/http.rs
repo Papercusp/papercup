@@ -10,7 +10,30 @@
 use crate::sse::{parse_sse_frames, SseFrame};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
+use std::fmt;
 use tokio::sync::mpsc;
+
+/// A non-success HTTP response, preserved as a typed error so callers can
+/// distinguish authentication failures from network/transport failures.
+#[derive(Debug)]
+pub struct HttpStatusError {
+    pub method: String,
+    pub path: String,
+    pub status: u16,
+    pub body: String,
+}
+
+impl fmt::Display for HttpStatusError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} -> {}: {}",
+            self.method, self.path, self.status, self.body
+        )
+    }
+}
+
+impl std::error::Error for HttpStatusError {}
 
 pub struct HttpClient {
     base: String, // operator httpUrl, no trailing slash
@@ -70,7 +93,12 @@ impl HttpClient {
         let bytes = resp.bytes().await.context("read body")?;
         if !(status.is_success() || status.is_redirection()) {
             let txt: String = String::from_utf8_lossy(&bytes).chars().take(200).collect();
-            return Err(anyhow!("{method} {path} -> {}: {txt}", status.as_u16()));
+            return Err(anyhow::Error::new(HttpStatusError {
+                method: method.to_string(),
+                path: path.to_string(),
+                status: status.as_u16(),
+                body: txt,
+            }));
         }
         Ok(bytes.to_vec())
     }

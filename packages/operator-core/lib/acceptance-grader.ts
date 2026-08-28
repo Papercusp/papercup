@@ -38,9 +38,10 @@ export type AcceptanceGraderLifecycle = {
    * represented. When that receipt pointed at an ended/over-age task, these
    * are the stale task ids bypassed before a fresh deterministic retry. */
   staleRecovery?: { retiredTaskIds: string[]; attempts: number };
-  /** A judge can complete its first turn without grading at all (the live case
-   * is the model's quota-limit response). The launcher retires that failed
-   * mission and makes one cross-backend retry on the same system-account route. */
+  /** A judge can fail before grading at all (a terminal model-limit response,
+   * or a bounded connection-startup stall with no first-turn progress). The
+   * launcher retires that failed mission and makes one cross-backend retry on
+   * the same system-account route. */
   terminalRecovery?: {
     retiredTaskIds: string[];
     attempts: number;
@@ -62,6 +63,16 @@ const ACCEPTANCE_GRADER_MAX_TERMINAL_FALLBACKS = 1;
  */
 export const ACCEPTANCE_GRADER_TERMINAL_LOG_RECHECK_DELAY_MS = 250;
 export const ACCEPTANCE_GRADER_TERMINAL_LOG_MAX_RECHECKS = 4;
+/**
+ * Only an exact connection-startup candidate enters this slower window. A
+ * normal launch therefore keeps the one-second terminal-response check above,
+ * while a judge that remains on `/rc connecting…` gets one bounded minute to
+ * show first-turn progress before the launcher retires it. This is far below
+ * the two-hour stale-receipt ceiling without treating an ordinary slow model
+ * turn as a connection failure.
+ */
+export const ACCEPTANCE_GRADER_STARTUP_STALL_RECHECK_DELAY_MS = 2_000;
+export const ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS = 30;
 const ACCEPTANCE_GRADER_FALLBACK = {
   agent: 'codex' as const,
   model: 'gpt-5.6-sol' as const,
@@ -76,9 +87,9 @@ const ACCEPTANCE_GRADER_FALLBACK = {
  * expected miss rather than evidence that the audit fabricated the path.
  */
 const ACCEPTANCE_CITATION_SPOT_CHECK_GUIDANCE =
-  'For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader\'s checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.';
+  "For manual citation spot-checks, first resolve the subject harness checkout (a fresh judge is launched in it; a cross-hive judge can use `harness:phase_path` for the subject staging path), then use `capability:read` on the cited repository-relative path there. Do not use the grader's checkout as a substitute. For a path below a git submodule (for example `libs/papercusp/...`), the superproject stores only a gitlink: `git rev-parse <superproject-ref>:<nested-path>` and `git show <superproject-ref>:<nested-path>` are expected to fail and are not evidence of a fabricated citation. Inspect the working-tree file or, when history is required, inspect the superproject gitlink and run `capability:git` with `cwd` set to the nested submodule and its pinned submodule SHA. Mark a citation unresolved only when the subject root or the relevant submodule cannot resolve it.";
 
-export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted';
+export type AcceptanceGraderTerminalFailureCode = 'model_quota_exhausted' | 'startup_connection_stalled';
 
 export interface AcceptanceGraderTerminalFailure {
   code: AcceptanceGraderTerminalFailureCode;
@@ -103,23 +114,54 @@ export async function detectAcceptanceGraderTerminalFailure(
     sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
     delayMs = ACCEPTANCE_GRADER_TERMINAL_LOG_RECHECK_DELAY_MS,
     maxRechecks = ACCEPTANCE_GRADER_TERMINAL_LOG_MAX_RECHECKS,
+    startupStallDelayMs = ACCEPTANCE_GRADER_STARTUP_STALL_RECHECK_DELAY_MS,
+    startupStallMaxRechecks = ACCEPTANCE_GRADER_STARTUP_STALL_MAX_RECHECKS,
   }: {
     readLogTail: AcceptanceGraderLogTailReader;
     sleep?: (ms: number) => Promise<void>;
     delayMs?: number;
     maxRechecks?: number;
+    startupStallDelayMs?: number;
+    startupStallMaxRechecks?: number;
   },
 ): Promise<AcceptanceGraderTerminalFailure | null> {
   if (!logPath) return null;
   const boundedRechecks = Math.max(0, Math.floor(maxRechecks));
   const boundedDelay = Math.max(0, Math.floor(delayMs));
+  let latestRawLog = '';
   for (let recheck = 0; recheck <= boundedRechecks; recheck += 1) {
-    const rawLog = await readLogTail(logPath);
-    const terminalFailure = classifyAcceptanceGraderTerminalFailure(rawLog);
+    latestRawLog = await readLogTail(logPath);
+    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog);
     if (terminalFailure) return terminalFailure;
     if (recheck < boundedRechecks) await sleep(boundedDelay);
   }
-  return null;
+
+  let startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
+  if (!startupStall) return null;
+
+  const boundedStartupRechecks = Math.max(0, Math.floor(startupStallMaxRechecks));
+  const boundedStartupDelay = Math.max(0, Math.floor(startupStallDelayMs));
+  for (let recheck = 0; recheck < boundedStartupRechecks; recheck += 1) {
+    await sleep(boundedStartupDelay);
+    latestRawLog = await readLogTail(logPath);
+    const terminalFailure = classifyAcceptanceGraderTerminalFailure(latestRawLog);
+    if (terminalFailure) return terminalFailure;
+    startupStall = classifyAcceptanceGraderStartupStall(latestRawLog);
+    if (!startupStall) return null;
+  }
+  return {
+    ...startupStall,
+    evidence:
+      `${startupStall.evidence}; no first-turn progress after ` +
+      `${boundedStartupRechecks * boundedStartupDelay}ms bounded recheck`,
+  };
+}
+
+function normalizeAcceptanceGraderLog(rawLog: string): string {
+  return rawLog
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+    .replace(/\r/g, '\n');
 }
 
 /**
@@ -128,13 +170,8 @@ export async function detectAcceptanceGraderTerminalFailure(
  * plan evidence is rendered in the same log, so broad words would create false
  * positives from the material the judge was asked to inspect.
  */
-export function classifyAcceptanceGraderTerminalFailure(
-  rawLog: string,
-): AcceptanceGraderTerminalFailure | null {
-  const normalized = rawLog
-    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, '')
-    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
-    .replace(/\r/g, '\n');
+export function classifyAcceptanceGraderTerminalFailure(rawLog: string): AcceptanceGraderTerminalFailure | null {
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
   const quota = normalized.match(
     /You've reached your [^\n]{1,120} limit\.[\s\S]{0,240}?Run \/usage-credits to continue or switch models with \/model\./i,
   );
@@ -143,6 +180,38 @@ export function classifyAcceptanceGraderTerminalFailure(
     code: 'model_quota_exhausted',
     evidence: quota[0].replace(/\s+/g, ' ').trim().slice(0, 400),
   };
+}
+
+/**
+ * Candidate-only classifier for the exact Claude startup wedge observed in
+ * EI-21646725695632868. Duration is deliberately owned by
+ * `detectAcceptanceGraderTerminalFailure`; this pure helper only says whether
+ * the current tail is still the connection screen and has no evidence that the
+ * judge entered its first turn. False negatives are safer than broad matching:
+ * frozen plan evidence shares the same log, so generic "connecting" prose must
+ * never retire a healthy judge.
+ */
+export function classifyAcceptanceGraderStartupStall(rawLog: string): AcceptanceGraderTerminalFailure | null {
+  const normalized = normalizeAcceptanceGraderLog(rawLog);
+  const connecting = normalized.match(/(?:^|\n)\s*\/rc\s+connecting(?:…|\.{3})/i);
+  if (!connecting) return null;
+
+  const hasFirstTurnProgress =
+    /scorecards:emit|rubrics:get|plans:get|work_items:get|papercusp(?:\.tools:invoke|\/tools:invoke)|\bmcp__|PostToolUse hook|\btool(?:_use| call| invocation)\b/i.test(
+      normalized,
+    ) ||
+    /\b(?:Thinking|Working)\s*(?:\(|·)/.test(normalized) ||
+    /^\s*[•└├]\s+/m.test(normalized);
+  if (hasFirstTurnProgress) return null;
+
+  const overload = normalized.match(/the MCP proxy is overloaded; retrying[^\n]{0,160}/i);
+  const evidence = [connecting[0], overload?.[0]]
+    .filter((value): value is string => Boolean(value))
+    .join(' · ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 400);
+  return { code: 'startup_connection_stalled', evidence };
 }
 
 function readAcceptanceGraderLogTail(path: string): string {
@@ -159,7 +228,11 @@ function readAcceptanceGraderLogTail(path: string): string {
     return '';
   } finally {
     if (fd !== null) {
-      try { closeSync(fd); } catch { /* already closed */ }
+      try {
+        closeSync(fd);
+      } catch {
+        /* already closed */
+      }
     }
   }
 }
@@ -169,7 +242,11 @@ const trim = (value: unknown, max: number): string | null =>
 
 /** Shared label algebra: scorecards:emit uses this exact prefix to reap the judge. */
 export function acceptanceGraderLabelPrefix(rubricRef: string): string {
-  const safe = rubricRef.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 72);
+  const safe = rubricRef
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 72);
   return `acceptance-grader:${safe || 'rubric'}:`;
 }
 
@@ -290,7 +367,10 @@ export function boundedSnapshotJson(snapshot: ReturnType<typeof compactSnapshot>
     {
       label: 'plan.decisions[].body shortened to 120 chars',
       apply: () => {
-        working.plan = { ...plan(), decisions: snapshot.plan.decisions.map((d) => ({ ...d, body: trim(d.body, 120) })) };
+        working.plan = {
+          ...plan(),
+          decisions: snapshot.plan.decisions.map((d) => ({ ...d, body: trim(d.body, 120) })),
+        };
       },
     },
     {
@@ -390,19 +470,14 @@ async function prodDiscoverGrader(
   rubric: NonNullable<Awaited<ReturnType<typeof getAcceptanceRubricForPlan>>>,
   ctx: LaunchCtx,
 ): Promise<GraderDiscoveryResult> {
-  const [
-    { getOrgPg },
-    { routeConsult },
-    { buildQueryEmbedder },
-    { resolveSessionStates },
-    { selectAcceptanceGrader },
-  ] = await Promise.all([
-    import('@papercusp/db-org'),
-    import('./consult/relevance-router'),
-    import('./agent-tools/search/embedder'),
-    import('./agent-tools/coordination/liveness-oracle'),
-    import('./consult/acceptance-grader-select'),
-  ]);
+  const [{ getOrgPg }, { routeConsult }, { buildQueryEmbedder }, { resolveSessionStates }, { selectAcceptanceGrader }] =
+    await Promise.all([
+      import('@papercusp/db-org'),
+      import('./consult/relevance-router'),
+      import('./agent-tools/search/embedder'),
+      import('./agent-tools/coordination/liveness-oracle'),
+      import('./consult/acceptance-grader-select'),
+    ]);
   const embed = await buildQueryEmbedder();
   const r = rubric as unknown as {
     rubricId: string;
@@ -602,6 +677,8 @@ export async function launchAcceptanceGrader(
     sleep?: (ms: number) => Promise<void>;
     terminalLogRecheckDelayMs?: number;
     terminalLogMaxRechecks?: number;
+    startupStallLogRecheckDelayMs?: number;
+    startupStallLogMaxRechecks?: number;
     nowMs?: () => number;
     staleAfterMs?: number;
   } = {},
@@ -614,20 +691,34 @@ export async function launchAcceptanceGrader(
   const [rubric, audit, workItems] = await Promise.all([
     (deps.getRubric ?? getAcceptanceRubricForPlan)(planSlug),
     (deps.getAudit ?? getLatestPlanAudit)(planSlug),
-    (deps.listWork ?? listWorkItems)({ harness: plan.row.harnessSlug, sourcePlanSlug: planSlug, includeChildren: true, limit: 2_000 }),
+    (deps.listWork ?? listWorkItems)({
+      harness: plan.row.harnessSlug,
+      sourcePlanSlug: planSlug,
+      includeChildren: true,
+      limit: 2_000,
+    }),
   ]);
-  if (!rubric) return { state: 'failed', idempotencyKey: '', label: '', error: `acceptance rubric missing for '${planSlug}'` };
+  if (!rubric)
+    return { state: 'failed', idempotencyKey: '', label: '', error: `acceptance rubric missing for '${planSlug}'` };
   if (!audit) return { state: 'failed', idempotencyKey: '', label: '', error: `plan audit missing for '${planSlug}'` };
 
   const rubricRef = String((rubric as unknown as { rubricId: string }).rubricId);
   const identity = createHash('sha256')
-    .update([plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef, plan.row.version, plan.row.contentHash].join('\0'))
+    .update(
+      [plan.row.workspaceId, plan.row.harnessSlug, planSlug, rubricRef, plan.row.version, plan.row.contentHash].join(
+        '\0',
+      ),
+    )
     .digest('hex');
   const idempotencyKey = `acceptance-grader:${identity}`;
   const label = `${acceptanceGraderLabelPrefix(rubricRef)}${identity.slice(0, 12)}`;
   const snapshot = boundedSnapshotJson(compactSnapshot({ plan, rubric, audit, workItems }));
-  const testPaths = audit.items.flatMap((i) => i.citations.filter((c) => c.kind === 'test' && c.path).map((c) => c.path!));
-  const rerun = testPaths.length ? `npx vitest run ${[...new Set(testPaths)].join(' ')}` : 'No test citations were recorded; inspect the frozen audit evidence directly.';
+  const testPaths = audit.items.flatMap((i) =>
+    i.citations.filter((c) => c.kind === 'test' && c.path).map((c) => c.path!),
+  );
+  const rerun = testPaths.length
+    ? `npx vitest run ${[...new Set(testPaths)].join(' ')}`
+    : 'No test citations were recorded; inspect the frozen audit evidence directly.';
   const brief = [
     `You are the dedicated acceptance judge for plan ${planSlug}. Grade rubric ${rubricRef} as a fresh non-implementer.`,
     'Do not modify implementation files, run shell commands, recruit peers, or broaden scope. Inspect the frozen evidence below, spot-check cited source/tests with read-only tools, and emit exactly one complete scorecards:emit verdict with concrete evidence for every criterion. After a successful create or unchanged-evidence result, the scorecard writer terminates this task automatically.',
@@ -652,9 +743,7 @@ export async function launchAcceptanceGrader(
     let terminalFallbacks = 0;
 
     const recoveryFields = (attempts: number) => ({
-      ...(staleTaskIds.length
-        ? { staleRecovery: { retiredTaskIds: staleTaskIds, attempts } }
-        : {}),
+      ...(staleTaskIds.length ? { staleRecovery: { retiredTaskIds: staleTaskIds, attempts } } : {}),
       ...(terminalTaskIds.length
         ? {
             terminalRecovery: {
@@ -696,9 +785,11 @@ export async function launchAcceptanceGrader(
         content?: Array<{ text?: string }>;
         data?: { deduped?: boolean; launch?: unknown };
       };
-      const launchData = result.data?.launch as {
-        tasks?: Array<{ taskId?: unknown; logPath?: unknown }>;
-      } | undefined;
+      const launchData = result.data?.launch as
+        | {
+            tasks?: Array<{ taskId?: unknown; logPath?: unknown }>;
+          }
+        | undefined;
       const launchedTask = launchData?.tasks?.[0];
       const taskId = typeof launchedTask?.taskId === 'string' ? launchedTask.taskId : null;
       const logPath = typeof launchedTask?.logPath === 'string' ? launchedTask.logPath : null;
@@ -706,11 +797,13 @@ export async function launchAcceptanceGrader(
         ? await detectAcceptanceGraderTerminalFailure(logPath, {
             readLogTail,
             ...(sleep ? { sleep } : {}),
-            ...(deps.terminalLogRecheckDelayMs !== undefined
-              ? { delayMs: deps.terminalLogRecheckDelayMs }
+            ...(deps.terminalLogRecheckDelayMs !== undefined ? { delayMs: deps.terminalLogRecheckDelayMs } : {}),
+            ...(deps.terminalLogMaxRechecks !== undefined ? { maxRechecks: deps.terminalLogMaxRechecks } : {}),
+            ...(deps.startupStallLogRecheckDelayMs !== undefined
+              ? { startupStallDelayMs: deps.startupStallLogRecheckDelayMs }
               : {}),
-            ...(deps.terminalLogMaxRechecks !== undefined
-              ? { maxRechecks: deps.terminalLogMaxRechecks }
+            ...(deps.startupStallLogMaxRechecks !== undefined
+              ? { startupStallMaxRechecks: deps.startupStallLogMaxRechecks }
               : {}),
           })
         : null;
