@@ -82,4 +82,31 @@ describe('runDbosWorkflowGcOnce', () => {
     expect(r.batches).toBe(1);
     expect(r.deletedWorkflows).toBe(2);
   });
+
+  it('uses a liveness budget instead of a fixed batch ceiling', async () => {
+    let call = 0;
+    let clock = 0;
+    const deps: DbosGcDeps = {
+      selectTerminalVictims: async () => {
+        call += 1;
+        clock += 10;
+        return ['a'];
+      },
+      deleteOutputs: async (ids) => ids.length,
+      deleteWorkflows: async (ids) => ids.length,
+    };
+    const r = await runDbosWorkflowGcOnce({
+      enabled: true,
+      batchLimit: 1,
+      timeBudgetMs: 25,
+      nowMs: 0,
+      nowClockMs: () => clock,
+      deps,
+    });
+    // Two committed batches fit in the budget; the next tick resumes the rest.
+    expect(r.batches).toBe(2);
+    expect(r.deletedWorkflows).toBe(2);
+    expect(r.budgetExhausted).toBe(true);
+    expect(call).toBe(2);
+  });
 });

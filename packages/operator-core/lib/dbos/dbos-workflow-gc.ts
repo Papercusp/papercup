@@ -39,7 +39,14 @@ export const DBOS_TERMINAL_STATUSES = [
 
 const DEFAULT_RETENTION_DAYS = 2; // keep ~2d of terminal history — small enough that a daily GC holds workflow_status far under the ~300k freeze threshold (re-bloat prevention; owner durable-stability directive 2026-06-19). Tune via PAPERCUSP_DBOS_WORKFLOW_GC_DAYS.
 const DEFAULT_BATCH_LIMIT = 5000;
-const MAX_BATCHES = 2000; // hard backstop: ≤ 2000 × 5000 = 10M rows/run
+/**
+ * Per-invocation maintenance budget. This is a liveness policy, not a
+ * productive-capacity ceiling: each DELETE remains a small committed batch,
+ * and a later routine tick resumes where this one stopped.  The old
+ * MAX_BATCHES constant encoded an arbitrary 10M-row throughput ceiling and
+ * silently left terminal rows behind once it was reached.
+ */
+const DEFAULT_TIME_BUDGET_MS = 30_000;
 
 export function dbosWorkflowGcEnabled(): boolean {
   // DEFAULT-ON (owner durable-stability directive, 2026-06-19): the GC MUST run
@@ -71,6 +78,7 @@ export interface DbosWorkflowGcResult {
   deletedOutputs: number;
   cutoffMs: number | null;
   batches: number;
+  budgetExhausted?: boolean;
 }
 
 type SqlLike = <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]) => Promise<T>;
@@ -113,7 +121,9 @@ export async function runDbosWorkflowGcOnce(
     enabled?: boolean;
     retentionDays?: number;
     batchLimit?: number;
+    timeBudgetMs?: number;
     nowMs?: number;
+    nowClockMs?: () => number;
     deps?: DbosGcDeps;
   } = {},
 ): Promise<DbosWorkflowGcResult> {
@@ -123,13 +133,21 @@ export async function runDbosWorkflowGcOnce(
   const days = opts.retentionDays ?? dbosWorkflowGcRetentionDays();
   const batchLimit = opts.batchLimit ?? DEFAULT_BATCH_LIMIT;
   const nowMs = opts.nowMs ?? Date.now();
+  const timeBudgetMs = opts.timeBudgetMs ?? DEFAULT_TIME_BUDGET_MS;
+  const nowClockMs = opts.nowClockMs ?? Date.now;
+  const startedAtMs = nowClockMs();
   const cutoffMs = nowMs - days * 86_400_000;
   const deps = opts.deps ?? sqlDeps(getOrgPg().sql as SqlLike);
 
   let deletedWorkflows = 0;
   let deletedOutputs = 0;
   let batches = 0;
-  for (let i = 0; i < MAX_BATCHES; i++) {
+  let budgetExhausted = false;
+  while (true) {
+    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+      budgetExhausted = true;
+      break;
+    }
     const ids = await deps.selectTerminalVictims(cutoffMs, batchLimit);
     if (ids.length === 0) break;
     batches += 1;
@@ -138,5 +156,5 @@ export async function runDbosWorkflowGcOnce(
     deletedWorkflows += await deps.deleteWorkflows(ids);
     if (ids.length < batchLimit) break;
   }
-  return { skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches };
+  return { skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches, budgetExhausted };
 }
