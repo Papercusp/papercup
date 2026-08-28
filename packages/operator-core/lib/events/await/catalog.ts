@@ -87,6 +87,29 @@ export const EVENT_CATALOG: readonly EventCatalogEntry[] = [
     exists: true,
     replacesPoll: "state:read { cell: 'governor.health' } plus governor.admission/queue/resources/recovery polling",
   },
+  {
+    family: 'dependency-generation-prebuild',
+    keyTemplate: 'dependency-generation:prebuild:<status>:<candidate>:<inputFingerprint>',
+    params: [
+      { name: 'status', required: true, describe: 'building, ready, or failed' },
+      { name: 'candidate', required: false, describe: 'candidate commit; omit for any candidate at this status' },
+      { name: 'inputFingerprint', required: false, describe: 'exact dependency-input fingerprint' },
+    ],
+    describe: 'Immutable dependency generation entered building, ready, or failed state for a candidate.',
+    emitter: 'dependency prebuild producer (packages/operator-core/lib/release/dependency-generation-prebuild.ts)',
+    exists: true,
+    replacesPoll: 'dependency-generation routine-marker polling',
+    payloadFiltered: true,
+  },
+  {
+    family: 'fleet-headcount',
+    keyTemplate: 'fleet:headcount:<slug>',
+    params: [{ name: 'slug', required: true, describe: 'fleet slug' }],
+    describe: 'The fleet headcount reconciler changed the measured live-member count or refill disposition.',
+    emitter: 'fleet headcount routine (packages/operator-core/lib/harness/routines/fleet-headcount-action.ts)',
+    exists: true,
+    replacesPoll: 'fleet assignment/headcount polling while waiting for a refill',
+  },
   // ── Deploy / release pipeline ─────────────────────────────────────────────
   {
     family: 'deploy',

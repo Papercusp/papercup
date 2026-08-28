@@ -202,6 +202,15 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the ratified-design current-evidence mandate post-load (new CLAUDE.md section)',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-27',
+      plan: 'directed-pair-work-items-2026-08-25 P-037 / WI-40505',
+      // Commit 806cdee2dc moved corpus-parts 294 -> 295 and corpus-blocks
+      // 255 -> 256 while the frozen manifest remained at 253. The added block
+      // is the sudo-before-owner-wall privilege-exhaustion rule.
+      why: 'added the sudo-before-owner-wall privilege-exhaustion mandate post-load',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

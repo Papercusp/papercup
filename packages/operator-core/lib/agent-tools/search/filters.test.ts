@@ -60,8 +60,14 @@ describe('resolveSearchFilters — fleet: ever-members (D-002)', () => {
   function sqlReturning(rows: Array<{ owner_id: string }>): { sql: Sql; calls: number } {
     const state = { calls: 0 };
     const fn = (..._args: unknown[]) => {
-      state.calls += 1;
-      return Promise.resolve(rows);
+      // postgres.js fragments are lazy: an interpolated fragment is built but not
+      // executed. Count only the outer fragment that the production code awaits.
+      return {
+        then(resolve: (value: Array<{ owner_id: string }>) => void) {
+          state.calls += 1;
+          resolve(rows);
+        },
+      };
     };
     return { sql: fn as unknown as Sql, get calls() { return state.calls; } };
   }

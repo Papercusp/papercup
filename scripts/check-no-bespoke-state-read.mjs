@@ -236,6 +236,7 @@ export const WRITE_CAPABILITIES = new Set([
   'capability:git',
   'capability:computer',
   'capability:net',
+  'capability:terminal',
   'processes:kill',
   'processes:control',
   'turn:interrupt',

@@ -25,9 +25,9 @@ describe('provider-neutral transfer learning LLMs', () => {
       text: '[]',
       costUsd: 0.25,
     });
-    expect(TRANSFER_DISTILL_MODEL).toBe('claude-opus-5:xhigh');
+    expect(TRANSFER_DISTILL_MODEL).toBe('gpt-5.6-sol:xhigh');
     expect(call).toHaveBeenCalledWith(expect.objectContaining({
-      model: 'claude-opus-5:xhigh',
+      model: 'gpt-5.6-sol:xhigh',
       maxTokens: 128,
       system: 'system prompt',
       messages: [{ role: 'user', content: 'candidate' }],
@@ -45,7 +45,7 @@ describe('provider-neutral transfer learning LLMs', () => {
       outputTokens: 2,
       replayed: true,
     });
-    expect(TRANSFER_STUDENT_MODEL).toBe('claude-opus-5:xhigh');
-    expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-5:xhigh', maxTokens: 2_048 }));
+    expect(TRANSFER_STUDENT_MODEL).toBe('gpt-5.6-sol:xhigh');
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ model: 'gpt-5.6-sol:xhigh', maxTokens: 2_048 }));
   });
 });

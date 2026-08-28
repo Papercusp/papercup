@@ -25,6 +25,10 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'testing:run-status',
+  // @not-a-cell live state, but a SINGLE DOOR keyed by an ephemeral run id: getRun()
+  // is the one snapshot oracle and the admin route consumes that same function rather than
+  // re-deriving it. A scalar registry cell would require one entry per detached run and add
+  // a read door without removing one; revisit if another implementation derives run state.
   description:
     'Read the in-memory snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.',
   guidance: {

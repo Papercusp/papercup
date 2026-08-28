@@ -69,7 +69,7 @@ describe('affected-tests: non-workspace path routes (EI-19346163916263067)', () 
     // Without this, the assertion above is satisfied by a rule that selects everything
     // for everything, which would be a far worse bug than the one being fixed.
     expect(
-      affectedFor(['README.md']),
+      affectedFor(['UNROUTED_CONTROL.txt']),
       'A root file with no owning workspace and no route now selects workspaces. The ' +
         'routing fallback has become a catch-all; every commit would run those suites.',
     ).toEqual([]);

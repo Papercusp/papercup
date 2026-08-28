@@ -5,6 +5,7 @@ import { activeWorkspaceId } from '../../workspace-registry.js';
 import { materializePilotCohort } from '../../pilot-cohort.js';
 import { resolveAgentIdentity } from '../coordination/identity.js';
 import { COORD_ROLES } from '../coordination/roles.js';
+import { resolveConcreteHarnessSlug } from '../_harness-scope.js';
 
 const candidate = z.object({
   id: z.string().min(1),
@@ -41,7 +42,7 @@ export default defineTool({
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
     const workspaceId = identity.workspaceId ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
-    const harnessSlug = args.harness ?? ctx.harnessSlug;
+    const harnessSlug = resolveConcreteHarnessSlug(args.harness, ctx);
     if (!harnessSlug) throw new Error('pilot:assign requires a harness-scoped session or harness argument');
     const result = await materializePilotCohort({
       workspaceId,

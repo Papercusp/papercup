@@ -109,10 +109,10 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
 
     expect(pg.beginCalls).toBe(1);
     // EI-18802055183255275: the candidate set (spec filter + all claim floors) is
-    // materialized ONCE (the CREATE TEMP TABLE), then the four reads (counts, rows,
-    // sample, and the WI-6673 admitted-composition read) each scan that materialized
-    // snapshot instead of recomputing it from scratch...
-    expect(pg.queries).toHaveLength(5);
+    // materialized ONCE (the CREATE TEMP TABLE), then counts, rows, the two-part sample
+    // (floor ids + queue-control detail), and the WI-6673 admitted-composition read each
+    // scan that materialized snapshot instead of recomputing it from scratch...
+    expect(pg.queries).toHaveLength(6);
     // ...and NOTHING was issued on a fresh pool checkout outside the snapshot. This is the
     // regression: independent checkouts is what let the readings disagree.
     expect(pg.poolLog).toEqual([]);

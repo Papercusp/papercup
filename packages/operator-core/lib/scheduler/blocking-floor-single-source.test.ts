@@ -96,6 +96,14 @@ const BLOCKING_PREDICATE_ALLOWLIST: ReadonlyMap<string, string> = new Map([
       'therefore cannot use the shared exclusion fragment.',
   ],
   [
+    'pilot-materialization-core.ts',
+    'The directed-pair cohort transaction validates an exact frozen set across BOTH issue- and ' +
+      'feature-family ref shapes immediately before an all-or-nothing write. The shared claim ' +
+      'helpers are family-specific exclusion fragments over a scheduler alias and cannot return ' +
+      'the blocker ids this cross-family CAS precondition must name; behavioural tests pin the ' +
+      'same blocker vocabulary on preview and confirm.',
+  ],
+  [
     'dependency-traversal.ts',
     'The cross-store dependency graph read — enumerates blocks edges for traversal and rendering, '
       + 'never decides claimability. It needs the edge rows themselves, so the shared exclusion '
