@@ -448,7 +448,13 @@ export async function refreshCorestoreStateForSeed(inp: {
     workspaceId: inp.workspaceId,
     harnessSlug: inp.hive,
     ownLog,
-    append: (op: LocalWriteOp) => ownLog.append(op),
+    // Mirror the REAL append seam (boot.ts:743-750, implemented at boot.ts:5426).
+    // `OwnLog.append` takes a PeerLogOp whose `author_pubkey` is REQUIRED, while
+    // LocalWriteOp carries only an optional `writerPubkey`. Passing the op straight
+    // through appended it with no `author_pubkey` at all — the field the read-merge /
+    // admission stages attribute an op to a peer identity by (peer-log.ts:47+).
+    append: (op: LocalWriteOp) =>
+      ownLog.append({ ...op, author_pubkey: op.writerPubkey ?? '' }),
     registerCloseHook: () => {},
   } as unknown as BootedHarnessHandle;
 
@@ -462,7 +468,12 @@ export async function refreshCorestoreStateForSeed(inp: {
   const drain =
     inp.drainImpl ??
     ((h: BootedHarnessHandle, sql: postgres.Sql) =>
-      drainOutboxOnce(h, sql, { batch: 1000, _gcMaxBatches: 0 }));
+      // `_gcMaxBatches: 0` (no inline GC during a seed cut) was stranded when the GC
+      // bound moved from a batch COUNT to a wall-time budget — the count ceiling was
+      // removed for silently leaving rows behind (outbox-drain.ts:102). A 0 budget is
+      // the faithful equivalent: the loop tests it at the TOP of each iteration
+      // (outbox-drain.ts:513), so it breaks before the first GC batch.
+      drainOutboxOnce(h, sql, { batch: 1000, _gcBudgetMs: 0 }));
   for (;;) {
     const n = await drain(handle, pg);
     passes += 1;
