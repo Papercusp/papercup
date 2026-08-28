@@ -12,6 +12,10 @@ const h = vi.hoisted(() => {
       events.push('claims');
       return 1;
     }),
+    planClaims: vi.fn(async () => {
+      events.push('plan-claims');
+      return 0;
+    }),
     release: vi.fn(async (id: string) => {
       events.push(`release:${id}`);
       return true;
@@ -31,6 +35,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 }));
 vi.mock('./work-items', () => ({ releaseWorkItem: h.release }));
 vi.mock('./work-item-claims', () => ({ releaseAllClaimsForOwner: h.claims }));
+vi.mock('./plan-items/claims', () => ({ releaseAllClaimsForOwner: h.planClaims }));
 vi.mock('./issues-engineer', () => ({ issuesScopeWorkspace: () => 'ws' }));
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 vi.mock('./work-item-flight-record', () => ({
@@ -44,6 +49,7 @@ beforeEach(() => {
   h.events.length = 0;
   h.capture.mockClear();
   h.claims.mockClear();
+  h.planClaims.mockClear();
   h.release.mockClear();
   h.sql.mockClear();
 });
@@ -66,5 +72,20 @@ describe('releaseAllWorkItemLeasesForOwner flight-record ordering', () => {
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('release:WI-F'));
     expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('release:EI-I'));
     expect(result).toEqual({ releasedIds: ['WI-F', 'EI-I'], claimsCleared: 1 });
+  });
+
+  it('sweeps plan-item lane claims before releasing work-item leases', async () => {
+    h.planClaims.mockImplementationOnce(async () => {
+      h.events.push('plan-claims');
+      return 2;
+    });
+
+    const result = await releaseAllWorkItemLeasesForOwner('su-dead');
+
+    expect(h.planClaims).toHaveBeenCalledWith('ws', 'su-dead');
+    expect(h.events.indexOf('capture')).toBeLessThan(h.events.indexOf('plan-claims'));
+    expect(h.events.indexOf('plan-claims')).toBeLessThan(h.events.indexOf('release:WI-F'));
+    expect(h.events.indexOf('plan-claims')).toBeLessThan(h.events.indexOf('release:EI-I'));
+    expect(result).toEqual({ releasedIds: ['WI-F', 'EI-I'], claimsCleared: 3 });
   });
 });

@@ -21,6 +21,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { releaseWorkItem } from './work-items';
 import { releaseAllClaimsForOwner } from './work-item-claims';
+import { releaseAllClaimsForOwner as releaseAllPlanItemClaimsForOwner } from './plan-items/claims';
 import { issuesScopeWorkspace } from './issues-engineer';
 import { activeWorkspaceId } from './workspace-registry';
 import { captureWorkItemFlightRecordsForItems, harnessFromIssueScope } from './work-item-flight-record';
@@ -28,7 +29,7 @@ import { captureWorkItemFlightRecordsForItems, harnessFromIssueScope } from './w
 export interface OwnerLeaseReleaseResult {
   /** Work-item ids whose lease was released (or found already clear). */
   releasedIds: string[];
-  /** True when the coordination claim ledger (work_item_claims) was also swept for this owner. */
+  /** Number of rows swept from the work-item and plan-item coordination claim ledgers. */
   claimsCleared: number;
 }
 
@@ -82,15 +83,22 @@ export async function releaseAllWorkItemLeasesForOwner(ownerId: string): Promise
       ]);
     }
 
-    // Clear the coordination claim ledger BEFORE releasing the work-item rows.
+    // Clear both coordination claim ledgers BEFORE releasing the work-item rows.
     // releaseWorkItem() also schedules best-effort lease cleanup, so doing this
     // afterward made the explicit cleanup race with that fire-and-forget path and
     // report claimsCleared=0 even though the row disappeared (WI-11788/WI-4399).
+    // Plan-item lane claims are a separate table and ownership surface; omitting
+    // them leaves a completed plan item pinned to a dead session (EI-21674158297810406).
     let claimsCleared = 0;
     try {
       claimsCleared = await releaseAllClaimsForOwner(featureWs, ownerId);
     } catch (e) {
       console.warn(`[work-item-lease-release] claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
+    }
+    try {
+      claimsCleared += await releaseAllPlanItemClaimsForOwner(featureWs, ownerId);
+    } catch (e) {
+      console.warn(`[work-item-lease-release] plan-item claim-ledger reconcile failed for ${ownerId}:`, (e as Error)?.message ?? e);
     }
     for (const r of featureRows) {
       try {
