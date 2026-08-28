@@ -2361,7 +2361,12 @@ function ImprovementsView({
               value: digest.humanQueue.length,
               tone: digest.humanQueue.length > 0 ? "warn" : undefined,
             },
-            { label: "Resolved", value: resolved },
+            // D-005: landed work is no longer LISTED below — it moved to Retain. The
+            // count still belongs here (this line is the pipeline breakdown, not a
+            // description of the table), but an unqualified "Resolved" above a table
+            // with zero resolved rows sends the reader hunting for rows that are one
+            // tab over. The label says where they went.
+            { label: "Resolved (on Retain)", value: resolved },
           ]}
         />
       ) : null}
