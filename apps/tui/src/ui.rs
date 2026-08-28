@@ -1575,12 +1575,10 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             lines.push(Line::from(":resolve <note>  triage-resolve".to_string()));
             lines
         }
-        None => vec![Line::from(
-            format!(
-                "Inbox empty — nothing needs attention. Threads: {} (open Inbox to browse).",
-                app.visible_conversations().len()
-            ),
-        )],
+        None => vec![Line::from(format!(
+            "Inbox empty — nothing needs attention. Threads: {} (open Inbox to browse).",
+            app.visible_conversations().len()
+        ))],
     };
     let para = Paragraph::new(preview)
         .wrap(Wrap { trim: false })
@@ -6560,9 +6558,10 @@ mod tests {
                 let _ = std::fs::write(format!("/tmp/puiqa-render/{tab:?}.txt"), wrapped);
             }
             assert!(nonblank > 0, "tab {tab:?} rendered blank");
+            let label = tab.label(&app.lexicon);
             assert!(
-                text.contains(tab.title()),
-                "tab {tab:?} title missing from strip"
+                text.contains(label.as_str()),
+                "tab {tab:?} display label missing from strip"
             );
         }
     }

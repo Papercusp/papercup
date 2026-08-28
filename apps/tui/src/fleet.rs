@@ -2033,7 +2033,7 @@ fn draw_tape(f: &mut Frame, app: &App, area: Rect) {
                 Span::styled(format!("{:<8} ", hms(&row.created_at)), Theme::dim()),
                 Span::styled(format!("{:<12} ", badge), style),
                 Span::styled(
-                    format!("{:<18} ", trunc(&event.transition, 18)),
+                    format!("{:<18} ", trunc(&event.title, 18)),
                     Theme::dim(),
                 ),
                 Span::raw(format!("{:<22} ", trunc(&event.subject, 22))),
@@ -2470,6 +2470,22 @@ mod tests {
         let view = render_fleet(&app, 160, 24);
         assert!(view.contains("work-items error: array-root decode failed"));
         assert!(app.last_error.is_none());
+    }
+
+    #[test]
+    fn tape_renders_semantic_transition_title() {
+        let mut app = App::new();
+        app.tab = crate::app::Tab::Fleet;
+        app.show_presence = false;
+        app.fleet.mode = FleetMode::Tape;
+        app.fleet.activity.push(fleet_event_row(
+            "claim-released",
+            json!({"id":"WI-1","priorAssignee":"su-a"}),
+        ));
+
+        let view = render_fleet(&app, 160, 24);
+        assert!(view.contains("Transition tape"));
+        assert!(view.contains("Claim released"));
     }
 
     #[test]
