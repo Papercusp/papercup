@@ -977,6 +977,12 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       // The leader cockpit intentionally owns the right column while its
       // brief is available. A failed refresh must fall back to the canonical
       // whole-fleet frontier instead of leaving that work surface unreachable.
+      // Clear the explicit leader selection before exercising the whole-fleet
+      // fallback leg.
+      pane.write('\x1b');
+      await sleep(100);
+      pane.write('\x1b');
+      await sleep(100);
       operator.runToolResponses.set('fleet:leader-brief', 'invalid');
       pane.write('3');
       await pane.waitFor('HUD cockpit installed-binary gate');
