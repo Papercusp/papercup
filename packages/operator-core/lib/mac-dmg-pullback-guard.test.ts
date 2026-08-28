@@ -152,8 +152,15 @@ describe('WI-489075: mac-vm-verify-build.sh cannot reintroduce the silent-green 
   });
 
   it('does not announce BUILD DONE without an artifact assertion before it', () => {
-    const done = src.indexOf('BUILD DONE');
-    const assertAt = src.indexOf('assert_dmg_pullback "');
+    // Comment lines are stripped first: this file's own rationale comment quotes
+    // "BUILD DONE" while describing the bug, and matching that instead of the
+    // real `echo` would make this ordering check pass or fail for the wrong reason.
+    const code = src
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('#'))
+      .join('\n');
+    const done = code.indexOf('BUILD DONE');
+    const assertAt = code.indexOf('assert_dmg_pullback "');
     expect(done).toBeGreaterThan(-1);
     expect(assertAt).toBeGreaterThan(-1);
     expect(assertAt).toBeLessThan(done);
