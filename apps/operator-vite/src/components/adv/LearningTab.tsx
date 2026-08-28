@@ -52,7 +52,6 @@ import {
   FlaskConical,
   GitBranch,
   Beaker,
-  Search,
   Telescope,
   Rss,
   Microscope,
