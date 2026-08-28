@@ -32,6 +32,25 @@ export const DEFAULT_GHOST_FRACTION = 0.15;
 export const DEFAULT_EDGE_SCAN_CHUNKS = 16;
 export const TEXT_CONTEXT_TRGM_FLOOR = 0.45;
 export const TEXT_CONTEXT_NEIGHBOURS = 20;
+/**
+ * Bound the missing-embedding side of the text-context similarity scan.
+ *
+ * The corpus CTE is reused for each batch, but the lateral scorer only needs
+ * this many anchors at a time. Keeping the batch finite prevents a large
+ * text-only tail from producing one giant result/parse allocation while still
+ * evaluating every missing row deterministically.
+ */
+export const TEXT_CONTEXT_BATCH_SIZE = 128;
+
+/** Partition text-only anchors into deterministic, bounded query batches. */
+export function partitionTextContextIds(ids: readonly string[], batchSize = TEXT_CONTEXT_BATCH_SIZE): string[][] {
+  const size = Number.isFinite(batchSize) ? Math.max(1, Math.floor(batchSize)) : TEXT_CONTEXT_BATCH_SIZE;
+  const batches: string[][] = [];
+  for (let offset = 0; offset < ids.length; offset += size) {
+    batches.push([...ids.slice(offset, offset + size)]);
+  }
+  return batches;
+}
 
 export type AdmissionOriginClass = 'machine-emitter' | 'ideation' | 'agent-filed';
 
@@ -649,18 +668,21 @@ async function readTextContextEdges(
   corpusIds: readonly string[],
   missingEmbeddingIds: readonly string[],
 ): Promise<AdmissionCensusEdge[]> {
-  const rows = await sql<TextEdgeDbRow[]>`
+  const textEdges: AdmissionCensusEdge[] = [];
+  for (const missingChunk of partitionTextContextIds(missingEmbeddingIds)) {
+    const rows = await sql<TextEdgeDbRow[]>`
     WITH corpus AS MATERIALIZED (
       SELECT wi.feature_id AS id,
              COALESCE(wi.title, '') AS title,
-             wi.payload #>> '{admissionIdentity,titleKey}' AS title_key,
-             wi.embedding
+             wi.payload #>> '{admissionIdentity,titleKey}' AS title_key
         FROM harness_shared.work_items wi
        WHERE wi.workspace_id = ${opts.workspaceId}
          AND wi.harness_slug = ${opts.harnessSlug}
          AND wi.feature_id = ANY(${corpusIds}::text[])
     ), missing AS MATERIALIZED (
-      SELECT * FROM corpus WHERE id = ANY(${missingEmbeddingIds}::text[])
+      SELECT id, title, title_key
+        FROM corpus
+       WHERE id = ANY(${missingChunk}::text[])
     )
     SELECT m.id AS missing_id,
            neighbour.id AS other_id,
@@ -670,25 +692,31 @@ async function readTextContextEdges(
       JOIN LATERAL (
         SELECT c.id,
                similarity(m.title, c.title)::real AS trgm,
-               (m.title_key IS NOT NULL AND m.title_key = c.title_key) AS exact_key
+               COALESCE(m.title_key IS NOT NULL AND m.title_key = c.title_key, false) AS exact_key
           FROM corpus c
-         WHERE c.id <> m.id
-         ORDER BY (m.title_key IS NOT NULL AND m.title_key = c.title_key) DESC,
+          WHERE c.id <> m.id
+            AND (
+              (m.title_key IS NOT NULL AND m.title_key = c.title_key)
+              OR similarity(m.title, c.title) >= ${TEXT_CONTEXT_TRGM_FLOOR}
+            )
+         ORDER BY COALESCE(m.title_key IS NOT NULL AND m.title_key = c.title_key, false) DESC,
                   similarity(m.title, c.title) DESC,
                   c.id
          LIMIT ${TEXT_CONTEXT_NEIGHBOURS}
       ) neighbour ON neighbour.exact_key OR neighbour.trgm >= ${TEXT_CONTEXT_TRGM_FLOOR}
      ORDER BY m.id, neighbour.exact_key DESC, neighbour.trgm DESC, neighbour.id`;
-  return stableEdges(
-    rows.map((row) => ({
-      a: row.missing_id,
-      b: row.other_id,
-      similarity: row.exact_key ? 1 : Number(row.trgm),
-      trgm: Number(row.trgm),
-      source: 'text' as const,
-      hard: row.exact_key,
-    })),
-  );
+    textEdges.push(
+      ...rows.map((row) => ({
+        a: row.missing_id,
+        b: row.other_id,
+        similarity: row.exact_key ? 1 : Number(row.trgm),
+        trgm: Number(row.trgm),
+        source: 'text' as const,
+        hard: row.exact_key,
+      })),
+    );
+  }
+  return stableEdges(textEdges);
 }
 
 async function persistShardMap(

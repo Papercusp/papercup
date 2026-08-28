@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAdmissionShardPlan,
+  partitionTextContextIds,
+  TEXT_CONTEXT_BATCH_SIZE,
   type AdmissionCensusEdge,
   type AdmissionCensusItem,
 } from './work-items-admission-census';
@@ -95,5 +97,17 @@ describe('buildAdmissionShardPlan', () => {
     expect(() =>
       buildAdmissionShardPlan([item('huge', 101)], [], [], { targetTokens: 50, ceilingTokens: 100 }),
     ).toThrow(/ceiling/);
+  });
+});
+
+describe('text-context scan bounds', () => {
+  it('partitions missing-embedding anchors into deterministic bounded batches', () => {
+    const ids = Array.from({ length: TEXT_CONTEXT_BATCH_SIZE * 2 + 1 }, (_, i) => `missing-${i}`);
+    const batches = partitionTextContextIds(ids);
+
+    expect(batches).toHaveLength(3);
+    expect(Math.max(...batches.map((batch) => batch.length))).toBeLessThanOrEqual(TEXT_CONTEXT_BATCH_SIZE);
+    expect(batches.flat()).toEqual(ids);
+    expect(partitionTextContextIds([...ids].reverse()).flat()).toEqual([...ids].reverse());
   });
 });
