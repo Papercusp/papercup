@@ -33,6 +33,13 @@
  * directly instead — same idiom as `__PAPERCUSP_BUNDLED_SIDECAR__`
  * (util/cli-entry.ts): the identifier itself is the literal, so there is no
  * alias for esbuild to miss.
+ *
+ * EI-21647996938145436: the generated bg-host bundle is the code that actually
+ * runs scheduled routines. Falling back to `git rev-parse` from that bundle is
+ * not a loaded-code identity — it reads the current checkout even when the
+ * bundle on disk is older. `bundle-host.sh` therefore bakes the source SHA into
+ * a dedicated identifier. An identity-less bundled artifact stays UNKNOWN
+ * rather than borrowing the checkout's current SHA.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -42,6 +49,8 @@ import { fileURLToPath } from 'node:url';
 // would throw ReferenceError) under tsx/dev/test/the non-bundled operator —
 // read it via `typeof` so the reference never throws.
 declare const __PAPERCUSP_SIDECAR_VERSION__: string | undefined;
+declare const __PAPERCUSP_BUNDLED_SOURCE_SHA__: string | undefined;
+declare const __PAPERCUSP_BUNDLED_SIDECAR__: boolean | undefined;
 
 export interface BuildInfo {
   /** Short git sha of the running checkout, or null if unresolved. */
@@ -56,6 +65,10 @@ export function resolveBuildInfo(opts: {
   gitSha?: () => string | null;
   /** Test seam for the esbuild-baked `__PAPERCUSP_SIDECAR_VERSION__` global. */
   bakedVersion?: string;
+  /** Test seam for the esbuild-baked source SHA used by generated host bundles. */
+  bakedSha?: string | null;
+  /** Test seam for the bundled-artifact guard (the real value is an esbuild global). */
+  bundled?: boolean;
 } = {}): BuildInfo {
   const env = opts.env ?? process.env;
   const envVersion = env.PAPERCUSP_BUILD_VERSION?.trim();
@@ -65,6 +78,19 @@ export function resolveBuildInfo(opts: {
   const version = envVersion || bakedVersion || env.npm_package_version || '0.0.0';
   const envSha = env.PAPERCUSP_BUILD_SHA?.trim();
   if (envSha) return { sha: envSha, version };
+  const bakedSha =
+    opts.bakedSha !== undefined
+      ? opts.bakedSha?.trim() || null
+      : (typeof __PAPERCUSP_BUNDLED_SOURCE_SHA__ !== 'undefined'
+        ? __PAPERCUSP_BUNDLED_SOURCE_SHA__?.trim() || null
+        : null);
+  if (bakedSha) return { sha: bakedSha, version };
+  const bundled =
+    opts.bundled ??
+    (typeof __PAPERCUSP_BUNDLED_SIDECAR__ !== 'undefined' && __PAPERCUSP_BUNDLED_SIDECAR__ === true);
+  // A generated bundle with no baked SHA cannot prove what source it contains.
+  // Do not report the checkout's current HEAD as if it were the loaded bytes.
+  if (bundled) return { sha: null, version };
   const gitSha = opts.gitSha ?? defaultGitSha;
   let sha: string | null = null;
   try {
