@@ -37,6 +37,8 @@ describe('workflow-graph-model — structural contract with operator-core', () =
       sourceStatus: 'connected',
       planHarnessSlug: 'papercusp',
       planSlug: 'meeting-prep-brief',
+      workItemHarnessSlug: null,
+      workItemKind: null,
       eventPattern: 'calendar.event.starts-in-30m',
       eventFilter: { 'attendees.0': { exists: true } },
       action: {},
