@@ -85,6 +85,15 @@ const WINDOW_CONTRADICTED_FACTOR = 2;
 /** Max limit-less live sessions seeded per pass — bounds fs/PG work per sweep. */
 const MAX_SEEDS_PER_PASS = 25;
 
+/**
+ * D-137: two completed `session:compacted:<owner>` boundaries are the minimum
+ * durable evidence that a session has repeatedly crossed a compaction boundary.
+ * A single fire is normal; the detector below only considers the repeated case.
+ */
+export const D137_REPEATED_COMPACTION_THRESHOLD = 2;
+/** Alias kept descriptive for callers that reason in terms of boundary fires. */
+export const REPEATED_COMPACTION_BOUNDARY_THRESHOLD = D137_REPEATED_COMPACTION_THRESHOLD;
+
 /** EI-10434 defense-in-depth, rung 2 (independent of the compaction-usage.ts
  *  root-cause fix — a bounded-scan misread — so a FUTURE misread source is
  *  caught the same way): a reading past this many × MODEL_WINDOW_1M is
@@ -276,6 +285,16 @@ const frozenCodexWarned = new Set<string>();
 /** Test seam (EI-21595542328480968). */
 export function resetFrozenCodexReadingsForTests(): void {
   frozenCodexWarned.clear();
+}
+
+/** D-137 escalation dedup. The durable escalation subject signature is the
+ * cross-process backstop; this set keeps one watchdog process from repeatedly
+ * logging/opening the same still-active condition on every sweep. */
+const compactionStrandingEscalated = new Set<string>();
+
+/** Test seam (D-137). */
+export function resetCompactionStrandingForTests(): void {
+  compactionStrandingEscalated.clear();
 }
 
 /**
@@ -1241,6 +1260,521 @@ async function resolveWindowForOwner(
   }
 }
 
+/** The exact durable boundary evidence read from event_key_fires. */
+export interface CompactionBoundaryEvidence {
+  /** The exact event key; optional for pure callers, enforced when supplied. */
+  key?: string;
+  /** Monotonic fire count recorded by the event latch. */
+  fireCount: number;
+  /** `last_fired_at`, converted to epoch milliseconds. */
+  latestBoundaryMs: number;
+}
+
+/** An expired file-lock row owned by the suspect session. */
+export interface ExpiredOwnerFileLockEvidence {
+  path: string;
+  expiresAtMs: number;
+}
+
+/** An edit-attribution row for one target path. */
+export interface TargetEditEvidence {
+  file: string;
+  editedAtMs: number;
+}
+
+/**
+ * Inputs to the D-137 detector. `null` means the corresponding read was
+ * unavailable or malformed and MUST fail open. Empty arrays are valid reads
+ * which simply do not satisfy that signal.
+ */
+export interface CompactionStrandingDetectorInput {
+  owner: string;
+  ownerLabel?: string;
+  event: CompactionBoundaryEvidence | null;
+  staleClaims: readonly StaleClaim[] | null;
+  targetPaths: readonly string[] | null;
+  expiredOwnerLocks: readonly ExpiredOwnerFileLockEvidence[] | null;
+  targetEditsAfterBoundary: readonly TargetEditEvidence[] | null;
+  /** Injectable clock for deterministic tests; defaults to Date.now(). */
+  nowMs?: number;
+}
+
+/** The durable, all-signals-agree D-137 alert returned by the detector. */
+export interface CompactionStrandingAlert {
+  owner: string;
+  ownerLabel?: string;
+  eventKey: string;
+  fireCount: number;
+  latestBoundaryMs: number;
+  workItemIds: string[];
+  staleClaims: StaleClaim[];
+  targetPaths: string[];
+  expiredOwnerLocks: ExpiredOwnerFileLockEvidence[];
+}
+
+function normalizeCompactionStrandingPath(path: string): string {
+  return path.trim().replace(/^\.\/+/, '').replace(/\/+$/, '');
+}
+
+function finiteEpochMs(value: unknown): number | null {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms : null;
+  }
+  if (typeof value !== 'string' || value.trim() === '') return null;
+  const asNumber = Number(value);
+  if (Number.isFinite(asNumber)) return asNumber;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function uniqueCompactionStrandingPaths(paths: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of paths) {
+    if (typeof raw !== 'string') continue;
+    const path = normalizeCompactionStrandingPath(raw);
+    if (!path || seen.has(path)) continue;
+    seen.add(path);
+    out.push(path);
+  }
+  return out;
+}
+
+/**
+ * PURE D-137 detector.
+ *
+ * It deliberately requires all four independent signals to be readable and
+ * affirmative:
+ *   1. the exact owner-keyed compaction event fired at least twice;
+ *   2. a live claim has stale or missing carry-checkpoint state;
+ *   3. an owner-held target-path lock is expired;
+ *   4. no target-path edit attribution exists after the latest boundary.
+ *
+ * Any unavailable/malformed input returns null. This is the fail-open
+ * recurrence guard: a degraded side DB, event latch, work-item read, or edit
+ * ledger must never manufacture a suspect-owner alert.
+ */
+export function detectCompactionStranding(
+  input: CompactionStrandingDetectorInput | null | undefined,
+): CompactionStrandingAlert | null {
+  if (!input || typeof input.owner !== 'string' || input.owner.trim() === '') return null;
+  const owner = input.owner.trim();
+  const eventKey = `session:compacted:${owner}`;
+  const event = input.event;
+  if (!event) return null;
+  if (event.key != null && event.key !== eventKey) return null;
+
+  const fireCount = finiteEpochMs(event.fireCount);
+  const latestBoundaryMs = finiteEpochMs(event.latestBoundaryMs);
+  const nowMs = input.nowMs ?? Date.now();
+  if (
+    fireCount == null ||
+    !Number.isInteger(fireCount) ||
+    fireCount < D137_REPEATED_COMPACTION_THRESHOLD ||
+    latestBoundaryMs == null ||
+    latestBoundaryMs <= 0 ||
+    !Number.isFinite(nowMs) ||
+    latestBoundaryMs > nowMs
+  ) {
+    return null;
+  }
+
+  const staleClaims = input.staleClaims;
+  const targetPathsInput = input.targetPaths;
+  const expiredOwnerLocks = input.expiredOwnerLocks;
+  const targetEditsAfterBoundary = input.targetEditsAfterBoundary;
+  if (
+    !Array.isArray(staleClaims) ||
+    !Array.isArray(targetPathsInput) ||
+    !Array.isArray(expiredOwnerLocks) ||
+    !Array.isArray(targetEditsAfterBoundary) ||
+    staleClaims == null ||
+    targetPathsInput == null ||
+    expiredOwnerLocks == null ||
+    targetEditsAfterBoundary == null ||
+    staleClaims.length === 0 ||
+    targetPathsInput.length === 0 ||
+    expiredOwnerLocks.length === 0
+  ) {
+    return null;
+  }
+
+  // A malformed row is a read-integrity failure, not an empty result.
+  const normalizedClaims: StaleClaim[] = [];
+  const workItemIds = new Set<string>();
+  for (const claim of staleClaims) {
+    if (
+      !claim ||
+      typeof claim.workItemId !== 'string' ||
+      claim.workItemId.trim() === '' ||
+      (claim.reason !== 'never' && claim.reason !== 'drift') ||
+      !Number.isFinite(claim.staleMs) ||
+      claim.staleMs < 0
+    ) {
+      return null;
+    }
+    const workItemId = claim.workItemId.trim();
+    normalizedClaims.push({ ...claim, workItemId });
+    workItemIds.add(workItemId);
+  }
+
+  if (targetPathsInput.some((path) => typeof path !== 'string' || path.trim() === '')) return null;
+  const targetPaths = uniqueCompactionStrandingPaths(targetPathsInput);
+  if (targetPaths.length === 0) return null;
+  const targetPathSet = new Set(targetPaths);
+  const matchingExpiredLocks: ExpiredOwnerFileLockEvidence[] = [];
+  for (const lock of expiredOwnerLocks) {
+    if (
+      !lock ||
+      typeof lock.path !== 'string' ||
+      lock.path.trim() === '' ||
+      !Number.isFinite(lock.expiresAtMs)
+    ) {
+      return null;
+    }
+    const path = normalizeCompactionStrandingPath(lock.path);
+    if (targetPathSet.has(path) && lock.expiresAtMs <= nowMs) {
+      matchingExpiredLocks.push({ path, expiresAtMs: lock.expiresAtMs });
+    }
+  }
+  if (matchingExpiredLocks.length === 0) return null;
+
+  // The read is allowed to be empty. A non-empty edit after the boundary is
+  // affirmative evidence that the owner did make progress, so suppress.
+  for (const edit of targetEditsAfterBoundary) {
+    if (
+      !edit ||
+      typeof edit.file !== 'string' ||
+      edit.file.trim() === '' ||
+      !Number.isFinite(edit.editedAtMs)
+    ) {
+      return null;
+    }
+    const file = normalizeCompactionStrandingPath(edit.file);
+    if (targetPathSet.has(file) && edit.editedAtMs > latestBoundaryMs) return null;
+  }
+
+  return {
+    owner,
+    ...(input.ownerLabel ? { ownerLabel: input.ownerLabel } : {}),
+    eventKey,
+    fireCount,
+    latestBoundaryMs,
+    workItemIds: [...workItemIds],
+    staleClaims: normalizedClaims,
+    targetPaths,
+    expiredOwnerLocks: matchingExpiredLocks,
+  };
+}
+
+/** Descriptive aliases for callers/tests that use the incident language. */
+export const detectD137CompactionStranding = detectCompactionStranding;
+export const detectRepeatedCompactionStranding = detectCompactionStranding;
+
+interface CompactionBoundaryDbRow {
+  event_key: string;
+  fire_count: number | string;
+  last_fired_at: Date | string;
+}
+
+async function readCompactionBoundaryEvidence(
+  sql: Sql,
+  workspaceId: string,
+  ownerId: string,
+): Promise<CompactionBoundaryEvidence | null> {
+  const key = `session:compacted:${ownerId}`;
+  if (!workspaceId || !ownerId) return null;
+  try {
+    const rows = await sql<CompactionBoundaryDbRow[]>`
+      SELECT event_key, fire_count, last_fired_at
+        FROM harness_shared.event_key_fires
+       WHERE workspace_id = ${workspaceId}
+         AND event_key = ${key}
+       LIMIT 1
+    `;
+    const row = rows[0];
+    const fireCount = finiteEpochMs(row?.fire_count);
+    const latestBoundaryMs = finiteEpochMs(row?.last_fired_at);
+    if (!row || fireCount == null || latestBoundaryMs == null) return null;
+    return { key: row.event_key, fireCount, latestBoundaryMs };
+  } catch {
+    return null;
+  }
+}
+
+function pathsFromJson(value: unknown): string[] | null {
+  if (Array.isArray(value)) {
+    if (value.some((path) => typeof path !== 'string' || path.trim() === '')) return null;
+    return value as string[];
+  }
+  if (typeof value !== 'string' || value.trim() === '') return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    if (parsed.some((path) => typeof path !== 'string' || path.trim() === '')) return null;
+    return parsed as string[];
+  } catch {
+    return [];
+  }
+}
+
+interface WorkItemTargetPathsDbRow {
+  work_item_id: string;
+  paths: unknown;
+}
+
+async function readTargetPathsByWorkItem(
+  sql: Sql,
+  ownerId: string,
+  workspaceId: string,
+  workItemIds: readonly string[],
+): Promise<Map<string, string[]> | null> {
+  const ids = [...new Set(workItemIds.map((id) => id.trim()).filter(Boolean))];
+  if (!ownerId || !workspaceId || ids.length === 0) return null;
+  try {
+    const rows = await sql<WorkItemTargetPathsDbRow[]>`
+      SELECT c.work_item_id,
+             COALESCE(wi.payload->'paths', '[]'::jsonb) AS paths
+        FROM harness_shared.work_item_claims c
+        JOIN harness_shared.work_items wi
+          ON wi.workspace_id = c.workspace_id
+         AND wi.harness_slug = c.harness_slug
+         AND wi.feature_id = c.work_item_id
+       WHERE c.workspace_id = ${workspaceId}
+         AND c.owner = ${ownerId}
+         AND c.expires_ts > clock_timestamp()
+         AND c.work_item_id = ANY(${ids}::text[])
+    `;
+    const out = new Map<string, string[]>();
+    for (const row of rows) {
+      if (!row || typeof row.work_item_id !== 'string') return null;
+      const rawPaths = pathsFromJson(row.paths);
+      if (rawPaths == null) return null;
+      const paths = uniqueCompactionStrandingPaths(rawPaths);
+      const prior = out.get(row.work_item_id);
+      // Work-item ids are normally globally unique, but the canonical contract
+      // is harness-local. Conflicting rows mean the read cannot identify the
+      // claimed target unambiguously, so fail open rather than choose one.
+      if (prior && JSON.stringify(prior) !== JSON.stringify(paths)) return null;
+      out.set(row.work_item_id, paths);
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+interface TargetEditDbRow {
+  file: string;
+  edited_ms: string | number;
+}
+
+async function readTargetEditsAfterBoundary(
+  sql: Sql,
+  ownerId: string,
+  targetPaths: readonly string[],
+  boundaryMs: number,
+): Promise<TargetEditEvidence[] | null> {
+  if (!ownerId || targetPaths.length === 0 || !Number.isFinite(boundaryMs)) return null;
+  try {
+    const rows = await sql<TargetEditDbRow[]>`
+      SELECT file, (extract(epoch FROM ts) * 1000)::bigint AS edited_ms
+        FROM harness_shared.edit_attribution_ledger
+       WHERE agent_id = ${ownerId}
+         AND file = ANY(${targetPaths}::text[])
+         AND ts > to_timestamp(${boundaryMs / 1000})
+       ORDER BY ts ASC
+    `;
+    const out: TargetEditEvidence[] = [];
+    for (const row of rows) {
+      const editedAtMs = finiteEpochMs(row?.edited_ms);
+      if (!row || typeof row.file !== 'string' || editedAtMs == null) return null;
+      out.push({ file: row.file, editedAtMs });
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Read expired owner-held locks from the separate SU lock database. The normal
+ * `locks:queue`/readQueue surface intentionally hides expired rows; D-137 needs
+ * the retained lease row itself to prove that a lock was held and then lapsed.
+ * Any side-DB failure returns null (fail open).
+ */
+export async function readExpiredOwnerFileLocks(
+  ownerId: string,
+  targetPaths: readonly string[],
+): Promise<ExpiredOwnerFileLockEvidence[] | null> {
+  const paths = uniqueCompactionStrandingPaths(targetPaths);
+  if (!ownerId || paths.length === 0) return null;
+  try {
+    const { ensureBootstrap, getTxPool } = await import('../agent-tools/locks/su-lock-store');
+    await ensureBootstrap();
+    const rows = await getTxPool()<Array<{ path: string; expires_ms: string | number }>>`
+      SELECT path, (extract(epoch FROM expires_ts) * 1000)::bigint AS expires_ms
+        FROM agent_file_locks
+       WHERE owner = ${ownerId}
+         AND path = ANY(${paths}::text[])
+         AND expires_ts <= clock_timestamp()
+       ORDER BY expires_ts ASC
+    `;
+    const out: ExpiredOwnerFileLockEvidence[] = [];
+    for (const row of rows) {
+      const expiresAtMs = finiteEpochMs(row?.expires_ms);
+      if (!row || typeof row.path !== 'string' || expiresAtMs == null) return null;
+      out.push({ path: row.path, expiresAtMs });
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+export type CompactionStrandingLockReader = (
+  ownerId: string,
+  targetPaths: readonly string[],
+) => Promise<ExpiredOwnerFileLockEvidence[] | null>;
+
+export interface CompactionStrandingDetectorDeps {
+  /** Optional cached stale-claim read, used by the main sweep to avoid a duplicate query. */
+  readStaleClaims?: () => Promise<readonly StaleClaim[] | null>;
+  /** Injectable side-DB lock reader for tests and alternate lock authorities. */
+  readExpiredOwnerFileLocks?: CompactionStrandingLockReader;
+}
+
+/**
+ * Async D-137 detector wired to the durable stores. The event latch is checked
+ * first so ordinary sessions pay only one indexed point read; claim, work-item,
+ * edit-ledger, and side-lock reads happen only after the repeated boundary
+ * threshold is met.
+ */
+export async function detectCompactionStrandingForOwner(
+  sql: Sql,
+  ownerId: string,
+  ownerLabel: string,
+  workspaceId: string,
+  deps: CompactionStrandingDetectorDeps = {},
+): Promise<CompactionStrandingAlert | null> {
+  const event = await readCompactionBoundaryEvidence(sql, workspaceId, ownerId);
+  if (!event || event.fireCount < D137_REPEATED_COMPACTION_THRESHOLD) return null;
+
+  let staleClaims: readonly StaleClaim[] | null;
+  if (deps.readStaleClaims) {
+    staleClaims = await deps.readStaleClaims().catch(() => null);
+  } else {
+    try {
+      const fresh = await listActiveClaimFreshnessForOwner(null, ownerId, { sql });
+      staleClaims = classifyStaleClaims(fresh, Date.now());
+    } catch {
+      staleClaims = null;
+    }
+  }
+  if (staleClaims == null || staleClaims.length === 0) return null;
+
+  const targetPathsByWorkItem = await readTargetPathsByWorkItem(
+    sql,
+    ownerId,
+    workspaceId,
+    staleClaims.map((claim) => claim.workItemId),
+  );
+  if (targetPathsByWorkItem == null) return null;
+  const targetPaths: string[] = [];
+  const seenPaths = new Set<string>();
+  // Missing paths for ANY stale claim suppress the whole alert. Partial
+  // evidence is not enough for a destructive-looking diagnosis.
+  for (const claim of staleClaims) {
+    const paths = targetPathsByWorkItem.get(claim.workItemId);
+    if (!paths || paths.length === 0) return null;
+    for (const path of paths) {
+      if (!seenPaths.has(path)) {
+        seenPaths.add(path);
+        targetPaths.push(path);
+      }
+    }
+  }
+
+  const targetEditsAfterBoundary = await readTargetEditsAfterBoundary(
+    sql,
+    ownerId,
+    targetPaths,
+    event.latestBoundaryMs,
+  );
+  if (targetEditsAfterBoundary == null) return null;
+
+  const readExpiredLocks = deps.readExpiredOwnerFileLocks ?? readExpiredOwnerFileLocks;
+  const expiredOwnerLocks = await readExpiredLocks(ownerId, targetPaths).catch(() => null);
+  if (expiredOwnerLocks == null) return null;
+
+  return detectCompactionStranding({
+    owner: ownerId,
+    ownerLabel,
+    event,
+    staleClaims,
+    targetPaths,
+    expiredOwnerLocks,
+    targetEditsAfterBoundary,
+  });
+}
+
+async function escalateCompactionStranding(alert: CompactionStrandingAlert): Promise<void> {
+  if (compactionStrandingEscalated.has(alert.owner)) return;
+  compactionStrandingEscalated.add(alert.owner);
+  const label = alert.ownerLabel ?? alert.owner;
+  console.warn(
+    `[compaction-watchdog] ${label} (${alert.owner}) is SUSPECT after ${alert.fireCount} ` +
+      `completed compaction boundaries: stale claim checkpoint + expired target lock + no target edit ` +
+      `after ${new Date(alert.latestBoundaryMs).toISOString()} (D-137).`,
+  );
+  try {
+    const { openEscalation } = await import('../agent-tools/coordination/escalations');
+    await openEscalation(
+      {
+        ownerId: 'compaction-watchdog',
+        ownerLabel: 'system · compaction-watchdog',
+        source: 'principal',
+        workspaceId: null,
+        userId: null,
+      },
+      {
+        severity: 'blocker',
+        summary:
+          `compaction-stranding SUSPECT: ${label} (${alert.owner}) repeatedly compacted ` +
+          `without editing its claimed target`,
+        body:
+          `D-137's independent signals agree for ${label} (${alert.owner}): the exact ` +
+          `${alert.eventKey} latch fired ${alert.fireCount} times (latest boundary ` +
+          `${new Date(alert.latestBoundaryMs).toISOString()}); live claim(s) ` +
+          `${alert.workItemIds.join(', ')} still have stale/missing carry checkpoints; ` +
+          `owner-held target lock(s) expired for ${alert.expiredOwnerLocks.map((lock) => lock.path).join(', ')}; ` +
+          `and the edit-attribution ledger has no target edit after that boundary. ` +
+          `Do not treat a pre-edit checkpoint as progress: checkpoint-or-release/relaunch the claim ` +
+          `before another compaction cycle strands it. (D-137)`,
+        meta: {
+          subjectSignature: `compaction-watchdog:compaction-stranding:${alert.owner}`,
+          eventKey: alert.eventKey,
+          fireCount: alert.fireCount,
+          latestBoundaryAt: new Date(alert.latestBoundaryMs).toISOString(),
+          workItemIds: alert.workItemIds,
+          targetPaths: alert.targetPaths,
+          expiredTargetPaths: alert.expiredOwnerLocks.map((lock) => lock.path),
+        },
+      },
+    );
+  } catch (e) {
+    // Best-effort — the result remains observable and the durable escalation
+    // retries after the next matching sweep.
+    compactionStrandingEscalated.delete(alert.owner);
+    console.warn(
+      `[compaction-watchdog] compaction-stranding escalation failed (will retry): ` +
+        `${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
 export interface CompactionComplianceResult {
   /** owners whose estimate was refreshed this pass. */
   estimated: string[];
@@ -1285,6 +1819,11 @@ export interface CompactionComplianceResult {
    *  resumes (see discoverPresencelessLoopOwners / healPresenceGap). Always paired
    *  with a 'dark-presence' bootConfigAlerts entry. */
   presenceGapsHealed: string[];
+  /** D-137: owners for whom repeated exact compaction boundaries, stale/missing
+   *  live-claim carry state, expired owner-held target locks, and no target edit
+   *  after the latest boundary all agree. Fail-open: any unreadable signal is
+   *  omitted rather than reported. */
+  compactionStrandingAlerts: CompactionStrandingAlert[];
 }
 
 /**
@@ -1295,8 +1834,30 @@ export interface CompactionComplianceResult {
  * session's context estimate and flag any that ran past its own limit.
  * Never throws (best-effort backstop).
  */
-export async function checkCompactionCompliance(sql: Sql): Promise<CompactionComplianceResult> {
-  const out: CompactionComplianceResult = { estimated: [], overLimit: [], forceCompacted: [], carryRespawned: [], relimited: [], seeded: [], contextDeaths: [], unflushedClaims: [], bootConfigAlerts: [], implausibleReadings: [], frozenCodexReadings: [], presenceGapsHealed: [] };
+export interface CompactionComplianceDeps {
+  /** Injectable D-137 side-lock reader; default reads papercusp_su. */
+  readExpiredOwnerFileLocks?: CompactionStrandingLockReader;
+}
+
+export async function checkCompactionCompliance(
+  sql: Sql,
+  deps: CompactionComplianceDeps = {},
+): Promise<CompactionComplianceResult> {
+  const out: CompactionComplianceResult = {
+    estimated: [],
+    overLimit: [],
+    forceCompacted: [],
+    carryRespawned: [],
+    relimited: [],
+    seeded: [],
+    contextDeaths: [],
+    unflushedClaims: [],
+    bootConfigAlerts: [],
+    implausibleReadings: [],
+    frozenCodexReadings: [],
+    presenceGapsHealed: [],
+    compactionStrandingAlerts: [],
+  };
   // P-013 flag mirror: read FLAGS.CONTEXT_GAUGE once per pass and mirror it into the
   // in-process gauge switch the (sync) result-annotator reads. Best-effort — a flag-infra
   // hiccup leaves the previous value untouched (fail to the default-ON gauge).
@@ -1461,6 +2022,37 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         }
       } catch {
         /* best-effort per owner */
+      }
+      // D-137 repeated-compaction/pre-first-edit detector. Cache the stale-claim
+      // classification for this owner so the existing over-limit P-003 surface
+      // and this detector share one read. The detector itself checks the event
+      // latch first, so ordinary sessions do not pay the cross-store reads.
+      let staleClaimsForOwner: StaleClaim[] | null | undefined;
+      const readStaleClaimsForOwner = async (): Promise<readonly StaleClaim[] | null> => {
+        if (staleClaimsForOwner !== undefined) return staleClaimsForOwner;
+        try {
+          const fresh = await listActiveClaimFreshnessForOwner(null, r.owner_id, { sql });
+          staleClaimsForOwner = classifyStaleClaims(fresh, Date.now());
+        } catch {
+          staleClaimsForOwner = null;
+        }
+        return staleClaimsForOwner;
+      };
+      const strandingAlert = await detectCompactionStrandingForOwner(
+        sql,
+        r.owner_id,
+        r.owner_label,
+        r.workspace_id,
+        {
+          readStaleClaims: readStaleClaimsForOwner,
+          readExpiredOwnerFileLocks: deps.readExpiredOwnerFileLocks,
+        },
+      );
+      if (strandingAlert) {
+        out.compactionStrandingAlerts.push(strandingAlert);
+        await escalateCompactionStranding(strandingAlert);
+      } else {
+        compactionStrandingEscalated.delete(r.owner_id);
       }
       // P-017 live-config reach: a stored limit ABOVE COMPACTION_LIMIT_DEFAULT_1M_CAP (the
       // ceiling clampCompactionLimit enforces on EVERY config:set-compaction-limit) cannot be a
@@ -1684,15 +2276,9 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         // the P-002 classifier over a fleet-wide freshness read on the watchdog's own sql seam) so
         // the loss is visible in the over-limit warning + the result. Best-effort; auto-reclaim is
         // deliberately NOT wired here. Owner is a globally-unique session uuid ⇒ null workspace.
-        let unflushed: StaleClaim[] = [];
-        try {
-          const fresh = await listActiveClaimFreshnessForOwner(null, r.owner_id, { sql });
-          unflushed = classifyStaleClaims(fresh, Date.now());
-          for (const s of unflushed) {
-            out.unflushedClaims.push({ owner: r.owner_id, workItemId: s.workItemId, reason: s.reason, staleMs: s.staleMs });
-          }
-        } catch {
-          /* best-effort per owner */
+        const unflushed = (await readStaleClaimsForOwner()) ?? [];
+        for (const s of unflushed) {
+          out.unflushedClaims.push({ owner: r.owner_id, workItemId: s.workItemId, reason: s.reason, staleMs: s.staleMs });
         }
         if (!overLimitOwners.has(r.owner_id)) {
           overLimitOwners.add(r.owner_id);
