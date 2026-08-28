@@ -13,10 +13,13 @@
  *  - A2 (drain coalescing): `startOutboxDrain` serializes drains via a `draining`
  *    flag and coalesces a concurrent trigger into one `runAgain` re-run, so two
  *    triggers fired while a drain is in-flight do NOT produce two extra passes.
- *  - A3 (inline-GC batch bound): the GC loops up to OUTBOX_GC_MAX_BATCHES ×
- *    OUTBOX_GC_BATCH rows, each batch its own committed DELETE, early-breaking on
- *    a partial batch (the EI-125 fix). Exercised here via the `_gcBatch` /
- *    `_gcMaxBatches` test seams so we don't seed 100k+ rows.
+ *  - A3 (inline-GC batch bound): the GC deletes OUTBOX_GC_BATCH rows per pass, each
+ *    batch its own committed DELETE, early-breaking on a partial batch (the EI-125
+ *    fix) and otherwise stopping at the OUTBOX_GC_BUDGET_MS wall-time budget. The
+ *    old OUTBOX_GC_MAX_BATCHES count ceiling was REMOVED — it silently left rows
+ *    behind after an arbitrary number of batches (outbox-drain.ts:102) — so there is
+ *    no `_gcMaxBatches` seam any more. Exercised here via the `_gcBatch` /
+ *    `_gcBudgetMs` seams so we don't seed 100k+ rows.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type postgres from 'postgres';
