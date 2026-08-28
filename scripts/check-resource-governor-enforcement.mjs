@@ -222,6 +222,76 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/inference-gateway/stall-waker.ts::unbounded-resident-queue',
     { disposition: 'semantic', reason: 'pending map is a TTL-bounded stall observation set; it never queues resource starts; evidence required' },
   ],
+  // ── P-013 agent-process-memory lane (D-026 remediation) ──────────────────────
+  // The lane's governed seams are pty-bridge.ts:192 (beginGovernedExecution,
+  // admissionClass 'process' -> spawn :247), resource-governor/spawn-execution.ts:46
+  // (admissionClass 'agent'), and fleet/sidecar-exec-process.ts:96. The rows below are
+  // the residue those seams deliberately do NOT cover: probes, release/control calls,
+  // and correlation ledgers. Each states what its own process actually does.
+  [
+    'apps/operator/scripts/psu-launcher.mjs::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'launcher CLI, 9 detected starts, every one a bounded probe or an interactive install: curl operator-health (:225,:250,:4390,:8214), systemctl unit query (:241), gh auth token (:5136), ps -o tty= (:6722), which-bin probe (:11660), runInstallerInherit (:11739, awaited, stdio inherit, one backend install). ⚠ EVIDENCE OF WHAT THIS ROW DOES NOT COVER: the file ALSO starts the real resident agent wrapper at spawnInherit (:8342) via spawnImpl(wrapperBin, args, {detached:true}) (:8367), where `spawnImpl = spawn` is defaulted at :8347 — the START regex cannot match an aliased call, so that start is registered here by hand rather than detected. It is admitted upstream when operator-launched (capability/launch-agent.ts:1250 -> spawnGovernedAgentProcess -> beginGovernedExecution admissionClass "agent"); a human typing psu in a terminal is the operator entry path itself, not fleet-initiated fan-out. Detector gap tracked separately; evidence required',
+    },
+  ],
+  [
+    'apps/operator/scripts/psu-pty-host.mjs::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'pty.spawn (:3743) starts the launched agent\'s OWN child under the host that already represents it; admission happened upstream at capability/launch-agent.ts:1250 -> spawnGovernedAgentProcess -> beginGovernedExecution admissionClass "agent" (spawn-execution.ts:46). Re-admitting the same logical agent inside its own host would double-count it. The other two START hits are a detector coincidence, not starts: turnCoalescer.admit (:4820) and staleFireGuard.admit (:5041) are local fold/dedupe methods matched by the `.admit(` alternative; evidence required',
+    },
+  ],
+  [
+    'apps/operator/scripts/psu-pty-host.mjs::unbounded-resident-queue',
+    {
+      disposition: 'semantic',
+      reason:
+        'neither collection queues resource starts. :1726 pending.add(key) is a respawn re-poll DEDUPE set — an arriving duplicate returns "duplicate"/"superseded" instead of enqueuing, and the key is removed on delivery. :3002 pending.set(...) is makeTurnCoalescer folding repeat injects onto ONE waiter (newest-wins, folded++). Both are keyed by inject key and bounded by distinct in-flight injects, not by arrival rate; same lifecycle-ledger shape as memory/op-deadline.ts; evidence required',
+    },
+  ],
+  [
+    'packages/operator-core/lib/agent-auth-detect.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'seven credential-presence probes, all spawnSync (awaited by construction) with explicit timeouts and no resident work: security find-generic-password (:42,:87), security dump-keychain (:100), a keychain read (:130), gh auth status (:312), git config --get-all credential.helper (:318). Same cheap-metadata class as agent-tools/plans/viewer-identity.ts; evidence required',
+    },
+  ],
+  [
+    'packages/operator-core/lib/agent-bin-detect.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'spawnSync("which", [bin]) (:111) — single binary-presence probe, awaited, exits immediately. Identical to the already-registered setup-pty-commands.ts "which gh" row; evidence required',
+    },
+  ],
+  [
+    'packages/operator-core/lib/agent-state-divergence.ts::unbounded-resident-queue',
+    {
+      disposition: 'semantic',
+      reason:
+        'pending.push(c) (:704) appends to a LOCAL DivergenceCall[] that cuts an already-materialized call timeline into consecutive-failure episodes; it is reset to [] at every success and discarded when the loop ends. It is an analysis buffer over finite input, bounded by the timeline being read, and starts nothing; evidence required',
+    },
+  ],
+  [
+    'packages/operator-core/lib/fleet/spawner-ipc-client.ts::unbounded-resident-queue',
+    {
+      disposition: 'semantic',
+      reason:
+        'this.pending.set(id, {resolve, reject}) (:186) is an in-flight RPC CORRELATION map, not queued work: every entry is self-evicting via a 30s default timeout that deletes it (:176-178) and both settle paths delete it. Bounded by concurrently in-flight RPCs; the requests it correlates were already started. Same lifecycle-ledger shape as memory/op-deadline.ts; evidence required',
+    },
+  ],
+  [
+    'packages/operator-core/lib/fleet/spawner-sidecar-spawn.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'killOwnedScope (:62) execFileSync systemctl --user kill of the sidecar\'s OWN managed scope — a RELEASE/control call that frees residency. Synchronous on purpose: its call sites are a process-exit hook and a timer callback, neither of which has an async turn left. Gating release on admission deadlocks recovery under saturation, exactly as the registered bash-jobs.ts row states; evidence required',
+    },
+  ],
 ]);
 
 function registryKey(path, code) {
