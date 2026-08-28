@@ -190,7 +190,16 @@ export function isActivePhase(phase: BulkRunPhase | null | undefined): boolean {
  * the same boundary instead of treating only `pending` rows as continuable.
  */
 export function isContinuableBulkRunItem(
-  item: Pick<BulkRunItem, "outcome" | "disposition" | "kind" | "title" | "error" | "rationale" | "itemId">,
+  item: Pick<
+    BulkRunItem,
+    | "outcome"
+    | "disposition"
+    | "kind"
+    | "title"
+    | "error"
+    | "rationale"
+    | "itemId"
+  >,
 ): boolean {
   if (item.outcome === "pending" || item.outcome === "failed") return true;
   if (item.outcome !== "skipped") return false;
@@ -212,7 +221,9 @@ export function isContinuableBulkRunItem(
 
 /** Resolve the canonical typed disposition for a wire row, including legacy
  * `skipped` rows that the migration has not yet explicitly reclassified. */
-export function canonicalInboxDisposition(item: BulkRunItem): BulkDispositionKind {
+export function canonicalInboxDisposition(
+  item: BulkRunItem,
+): BulkDispositionKind {
   if (item.outcome === "recommended" && item.recommendation?.kind) {
     return item.recommendation.kind;
   }
@@ -274,8 +285,7 @@ export function deriveRunCounts(
     if (i.outcome === "auto_resolved") resolved += 1;
     else if (i.outcome === "recommended") {
       if (disposition === "recommended") forReview += 1;
-    }
-    else if (i.outcome === "pending") pending += 1;
+    } else if (i.outcome === "pending") pending += 1;
     else if (i.outcome === "skipped") {
       skipped += 1;
       if (
@@ -285,8 +295,7 @@ export function deriveRunCounts(
       ) {
         legacySkipped += 1;
       }
-    }
-    else if (i.outcome === "dismissed") dismissed += 1;
+    } else if (i.outcome === "dismissed") dismissed += 1;
     else if (i.outcome === "failed") failed += 1;
     if (i.outcome === "recommended") {
       // Typed recommendations are accounted for in their disposition bucket;
@@ -308,7 +317,8 @@ export function deriveRunCounts(
     total,
     resolved,
     forReview,
-    recommendationTotal: items.filter((i) => i.outcome === "recommended").length,
+    recommendationTotal: items.filter((i) => i.outcome === "recommended")
+      .length,
     pending,
     skipped,
     failed,
@@ -320,7 +330,14 @@ export function deriveRunCounts(
     investigate,
     dismissed,
     unresolved:
-      forReview + pending + ownerAction + cleanupCandidate + retryNeeded + routed + investigate + failed,
+      forReview +
+      pending +
+      ownerAction +
+      cleanupCandidate +
+      retryNeeded +
+      routed +
+      investigate +
+      failed,
     decided,
     left: Math.max(0, total - decided),
     percent: total > 0 ? Math.min(100, Math.round((decided / total) * 100)) : 0,
@@ -409,7 +426,10 @@ export function useBulkRunOps(): {
   stop: (runId: string) => Promise<void>;
   restart: (runId: string) => Promise<StartResult>;
   resume: (runId: string, itemIds: readonly string[]) => Promise<StartResult>;
-  reclassify: (runId: string, itemIds?: readonly string[]) => Promise<StartResult>;
+  reclassify: (
+    runId: string,
+    itemIds?: readonly string[],
+  ) => Promise<StartResult>;
   dismiss: (runId: string) => Promise<void>;
   dismissItem: (
     runId: string,
@@ -521,7 +541,10 @@ export function useBulkRunOps(): {
   );
 
   const reclassify = useCallback(
-    async (runId: string, itemIds?: readonly string[]): Promise<StartResult> => {
+    async (
+      runId: string,
+      itemIds?: readonly string[],
+    ): Promise<StartResult> => {
       try {
         const json = await postOp({
           op: "reclassify",

@@ -198,7 +198,9 @@ export default function InboxBulkStrip({
       if (!result.ok) {
         setNotice(result.error ?? "could not classify legacy skipped rows");
       } else {
-        setNotice(`Classified ${result.preservedOutcomes ?? 0} legacy rows; no outcomes changed`);
+        setNotice(
+          `Classified ${result.preservedOutcomes ?? 0} legacy rows; no outcomes changed`,
+        );
       }
     } finally {
       setClassifying(false);
@@ -317,13 +319,15 @@ export default function InboxBulkStrip({
           {counts.ownerAction > 0 ? (
             <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
               <i aria-hidden="true" />
-              {counts.ownerAction} owner action{counts.ownerAction === 1 ? "" : "s"}
+              {counts.ownerAction} owner action
+              {counts.ownerAction === 1 ? "" : "s"}
             </span>
           ) : null}
           {counts.cleanupCandidate > 0 ? (
             <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
               <i aria-hidden="true" />
-              {counts.cleanupCandidate} cleanup candidate{counts.cleanupCandidate === 1 ? "" : "s"}
+              {counts.cleanupCandidate} cleanup candidate
+              {counts.cleanupCandidate === 1 ? "" : "s"}
             </span>
           ) : null}
           {counts.retryNeeded > 0 || counts.pending > 0 ? (
@@ -383,9 +387,7 @@ export default function InboxBulkStrip({
               ) : (
                 <RotateCw size={14} aria-hidden="true" />
               )}
-              {resuming
-                ? "Continuing…"
-                : `Continue ${retryable} retryable`}
+              {resuming ? "Continuing…" : `Continue ${retryable} retryable`}
             </button>
           ) : null}
           {counts.legacySkipped > 0 ? (
@@ -396,7 +398,9 @@ export default function InboxBulkStrip({
               disabled={classifying || resuming}
               onClick={() => void onReclassify()}
             >
-              {classifying ? "Classifying…" : `Classify ${counts.legacySkipped} legacy skips`}
+              {classifying
+                ? "Classifying…"
+                : `Classify ${counts.legacySkipped} legacy skips`}
             </button>
           ) : null}
         </div>
