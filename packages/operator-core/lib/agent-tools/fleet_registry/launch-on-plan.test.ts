@@ -284,6 +284,19 @@ describe('member baseline without a plan (P-003 — pure claim-spec fleet)', () 
   });
 });
 
+// EI-21252547896810039: the launch baseline is the first scheduler:get_next
+// instruction a fleet member sees. Keep its states guidance aligned with the
+// live pull-tool allowlist so members do not resurrect retired/floor states.
+describe('member baseline scheduler states guidance', () => {
+  it('documents only open|failing and tells members to omit states unless filtering', () => {
+    const baseline = renderMemberBaseline({ fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 });
+
+    expect(baseline).toContain('`states` — only `open|failing`; omit `states` unless deliberately filtering');
+    expect(baseline).toContain('never pass retired `todo` or floor/terminal states');
+    expect(baseline).not.toContain("states: ['todo'");
+  });
+});
+
 // P-003/P-004 arg-schema round-trip: both knobs parse, default undefined (→ visible + warm
 // downstream), reject bad values, and are optional.
 describe('headless + carry args (P-003/P-004)', () => {

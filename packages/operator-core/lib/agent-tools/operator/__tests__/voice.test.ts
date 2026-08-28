@@ -38,6 +38,15 @@ function parsePayload(result: { content: Array<{ text: string }> }): Record<stri
 }
 
 describe('operator:voice_utterance_log', () => {
+  it('guidance describes the append-only audit operation, not transcript reads', async () => {
+    const { default: tool } = await import('../voice_utterance_log');
+    const when = tool.guidance?.when ?? '';
+    expect(when).toMatch(/append.*voice-utterance audit row/i);
+    expect(when).not.toMatch(/read recent voice transcripts/i);
+    expect(when).not.toMatch(/what did i just say/i);
+    expect(tool.guidance?.notWhen ?? '').toContain('operator:conv_voice');
+  });
+
   it('returns the lib helper output', async () => {
     const logVoiceUtterance = vi.fn(async () => ({ ok: true }));
     vi.doMock('../../../voice-utterance-log', () => ({ logVoiceUtterance }));

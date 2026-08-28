@@ -264,7 +264,9 @@ async function listen(server: ServerType): Promise<number> {
 
 async function close(server: ServerType | undefined): Promise<void> {
   if (!server) return;
-  server.closeAllConnections?.();
+  if ('closeAllConnections' in server && typeof server.closeAllConnections === 'function') {
+    server.closeAllConnections();
+  }
   await Promise.race([
     new Promise<void>((resolve) => server.close(() => resolve())),
     new Promise<void>((resolve) => setTimeout(resolve, 2_000)),

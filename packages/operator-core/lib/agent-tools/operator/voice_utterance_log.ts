@@ -16,8 +16,8 @@ export default defineTool({
   description: 'Append a voice-utterance audit row (source/mode/length/persona-flags/modifications).',
   capability: 'operator:write',
   guidance: {
-    when: `Read recent voice transcripts — what STT heard, what TTS spoke. Useful for "what did I just say?" / debugging mishears.`,
-    notWhen: `For TEXT chat history, that lives in operator_turns. voice_utterance_log is voice-only.`,
+    when: `Append a voice-utterance audit row after a voice turn (source/mode/length/persona-flags/modifications). This tool records metadata; it does not read transcripts.`,
+    notWhen: `For voice-conversation state or transcripts, use \`operator:conv_voice\`; for the process-local debug ring, use \`operator:voice_debug\`. For TEXT chat history, that lives in operator_turns. voice_utterance_log is voice-only.`,
     seeAlso: [
       'operator:voice_spend_summary (voice spend rollup)',
       'operator:voice_debug (runtime voice session state)',

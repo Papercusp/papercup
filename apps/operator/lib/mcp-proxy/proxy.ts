@@ -267,6 +267,12 @@ export interface McpProxyOptions {
   maxCriticalContinuationQueue?: number;
   /** Maximum time (ms) a critical-continuation write may wait for the dedicated slot. */
   maxCriticalContinuationQueueWaitMs?: number;
+  /**
+   * EI-21653510279635866 — `coord:send` must fail before ptool's 60s client deadline when
+   * the shared continuation slot is occupied. Other durability writes deliberately inherit the
+   * unbounded default, but a send that never reached the handler is safe to reject/retry.
+   */
+  coordSendQueueWaitMs?: number;
   /** Per-waiter telemetry cadence (ms) for the critical-continuation FIFO. */
   criticalContinuationQueueWaitLogMs?: number;
   /**
@@ -1207,6 +1213,13 @@ export const DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS =
   configuredCriticalContinuationQueueWaitMs >= 0
     ? Math.floor(configuredCriticalContinuationQueueWaitMs)
     : 0;
+/**
+ * Leave enough of ptool's 60s `coord:send` deadline for the handler's bounded wake preflight
+ * (two 15s stages) plus persistence/transport margin. Unlike checkpoints, a send still sitting
+ * in the proxy FIFO has not mutated anything, so an explicit 429/not_forwarded is safer than an
+ * opaque client timeout with outcome unknown.
+ */
+export const DEFAULT_COORD_SEND_QUEUE_WAIT_MS = 20_000;
 const configuredCriticalContinuationQueueWaitLogMs = Number(
   process.env.PAPERCUSP_MCP_PROXY_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS ??
     5_000,
@@ -1684,6 +1697,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const maxCriticalContinuationQueueWaitMs =
     opts.maxCriticalContinuationQueueWaitMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
+  const coordSendQueueWaitMs =
+    opts.coordSendQueueWaitMs ?? DEFAULT_COORD_SEND_QUEUE_WAIT_MS;
   const criticalContinuationQueueWaitLogMs =
     opts.criticalContinuationQueueWaitLogMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_LOG_MS;
@@ -1759,6 +1774,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   interface QueuedCriticalContinuation extends QueuedAdmission {
     traceId: string;
     tools: string[];
+    maxWaitMs: number;
   }
   type QueuedHandshake = QueuedAdmission;
   const handshakeQueue: QueuedHandshake[] = [];
@@ -2122,6 +2138,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           traceId: waiter.traceId,
           tools: waiter.tools,
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
+          maxWaitMs: waiter.maxWaitMs,
         }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
@@ -2140,6 +2157,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               waiting: criticalContinuationQueueLength(),
               max: maxCriticalContinuationQueue,
               maxWaitMs: maxCriticalContinuationQueueWaitMs,
+              coordSendMaxWaitMs: coordSendQueueWaitMs,
               oldestAgeMs:
                 waitingCriticalContinuationRequests.length > 0
                   ? Math.max(
@@ -2428,6 +2446,19 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const nonExpiring = hasNonExpiringCriticalContinuation(
             criticalContinuationTools,
           );
+          const coordSendWaitBound = criticalContinuationTools.some((tool) =>
+            coordSendContinuationTools.has(tool),
+          )
+            ? coordSendQueueWaitMs
+            : 0;
+          const effectiveQueueWaitMs = nonExpiring
+            ? 0
+            : maxCriticalContinuationQueueWaitMs > 0 && coordSendWaitBound > 0
+              ? Math.min(
+                  maxCriticalContinuationQueueWaitMs,
+                  coordSendWaitBound,
+                )
+              : maxCriticalContinuationQueueWaitMs || coordSendWaitBound;
           const granted = await new Promise<boolean>((resolve) => {
             queuedCriticalContinuation = {
               resolve,
@@ -2437,6 +2468,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               expired: false,
               traceId: requestTraceId,
               tools: criticalContinuationTools,
+              maxWaitMs: effectiveQueueWaitMs,
             };
             if (
               compactionPriority ||
@@ -2457,7 +2489,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
 
             const armCriticalContinuationWaitWatch = (): void => {
               if (
-                maxCriticalContinuationQueueWaitMs === 0 &&
+                queuedCriticalContinuation.maxWaitMs === 0 &&
                 criticalContinuationQueueWaitLogMs === 0
               ) {
                 return;
@@ -2465,8 +2497,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               const waitedMs =
                 Date.now() - queuedCriticalContinuation.enqueuedAtMs;
               const remainingMs =
-                maxCriticalContinuationQueueWaitMs > 0 && !nonExpiring
-                  ? Math.max(1, maxCriticalContinuationQueueWaitMs - waitedMs)
+                queuedCriticalContinuation.maxWaitMs > 0
+                  ? Math.max(
+                      1,
+                      queuedCriticalContinuation.maxWaitMs - waitedMs,
+                    )
                   : Number.POSITIVE_INFINITY;
               const nextLogMs =
                 criticalContinuationQueueWaitLogMs > 0
@@ -2483,9 +2518,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 const waitedSoFarMs =
                   Date.now() - queuedCriticalContinuation.enqueuedAtMs;
                 if (
-                  maxCriticalContinuationQueueWaitMs > 0 &&
-                  !nonExpiring &&
-                  waitedSoFarMs >= maxCriticalContinuationQueueWaitMs
+                  queuedCriticalContinuation.maxWaitMs > 0 &&
+                  waitedSoFarMs >= queuedCriticalContinuation.maxWaitMs
                 ) {
                   queuedCriticalContinuation.expired = true;
                   clearQueuedWaitTimer(queuedCriticalContinuation);
@@ -2507,7 +2541,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   criticalContinuationInFlight,
                   queueLength: criticalContinuationQueueLength(),
                   maxCriticalContinuationQueue,
-                  maxCriticalContinuationQueueWaitMs,
+                  maxCriticalContinuationQueueWaitMs:
+                    queuedCriticalContinuation.maxWaitMs,
                 });
                 armCriticalContinuationWaitWatch();
               }, nextDelayMs);
@@ -2527,7 +2562,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               criticalContinuationInFlight,
               queueLength: criticalContinuationQueueLength(),
               maxCriticalContinuationQueue,
-              maxCriticalContinuationQueueWaitMs,
+              maxCriticalContinuationQueueWaitMs: effectiveQueueWaitMs,
               forwardingResult: "queued",
             });
           });
@@ -2553,7 +2588,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   error: "mcp_proxy_critical_continuation_queue_dwell",
                   retryable: true,
                   forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
-                  detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${maxCriticalContinuationQueueWaitMs}ms)`,
+                  detail: `critical-continuation write waited ${waitedMs}ms in the FIFO (max ${queuedCriticalContinuation.maxWaitMs}ms)`,
                   retryAfterSec: 2,
                   traceId: requestTraceId,
                 }),
@@ -2567,7 +2602,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 waitedMs,
                 criticalContinuationInFlight,
                 queueLength: criticalContinuationQueueLength(),
-                maxCriticalContinuationQueueWaitMs,
+                maxCriticalContinuationQueueWaitMs:
+                  queuedCriticalContinuation.maxWaitMs,
                 forwardingResult: "not_forwarded",
               });
             }
