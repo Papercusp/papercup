@@ -199,6 +199,25 @@ function ensureRef(
   };
 }
 
+function fingerprintRef(integration: string, ref: string): ShellResult {
+  const result = spawnSync(
+    'bash',
+    [SCRIPT, '--integration', integration, '--fingerprint-ref', ref],
+    { encoding: 'utf8', env: process.env },
+  );
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
+function publishedInputFingerprint(stdout: string): string {
+  const match = stdout.match(/\binput=([0-9a-f]{64})\b/);
+  if (!match) throw new Error(`missing dependency input fingerprint in: ${stdout}`);
+  return match[1];
+}
+
 function commitFixture(integration: string, message: string): string {
   if (!existsSync(join(integration, '.git'))) {
     execFileSync('git', ['init', '-q', '-b', 'staging'], { cwd: integration });
@@ -698,6 +717,36 @@ describe('immutable dependency generation', () => {
     expect(second.stderr).not.toContain('capturing live dependency manifest');
     expect(publishedIdentity(second.stdout)).toBe(publishedIdentity(first.stdout));
     expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
+  });
+
+  it('P-004: exposes the cheap immutable candidate/input key without reading mutable live lockfiles', () => {
+    const integration = makeIntegration();
+    const firstCandidate = commitFixture(integration, 'first dependency inputs');
+    const first = fingerprintRef(integration, firstCandidate);
+    expect(first.status, first.stderr).toBe(0);
+    expect(first.stdout).toMatch(
+      new RegExp(
+        `^DEPENDENCY_INPUT_FINGERPRINT schema=1 candidate=${firstCandidate} input=[0-9a-f]{64}\\n$`,
+      ),
+    );
+
+    // The producer keys the immutable candidate, never the churning worktree.
+    writeFileSync(
+      join(integration, 'package-lock.json'),
+      '{"name":"fixture","lockfileVersion":3,"packages":{"node_modules/live-drift":{}}}\n',
+    );
+    const stable = fingerprintRef(integration, firstCandidate);
+    expect(stable.status, stable.stderr).toBe(0);
+    expect(publishedInputFingerprint(stable.stdout)).toBe(
+      publishedInputFingerprint(first.stdout),
+    );
+
+    const secondCandidate = commitFixture(integration, 'second dependency inputs');
+    const second = fingerprintRef(integration, secondCandidate);
+    expect(second.status, second.stderr).toBe(0);
+    expect(publishedInputFingerprint(second.stdout)).not.toBe(
+      publishedInputFingerprint(first.stdout),
+    );
   });
 
   it('WI-313670: an unseen exact ref can bind a cache-hit generation without an unbound after-manifest', () => {
