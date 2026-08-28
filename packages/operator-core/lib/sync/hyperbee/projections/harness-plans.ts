@@ -438,11 +438,12 @@ async function deleteFromPg(
   // UNFORGEABLE source-log author OWNS the plan (or is privileged) — this is the core fix for "a
   // stranger-member can delete anyone's plan" in an open hive. Only cross-member REMOTE deletes are
   // gated; a local delete is the operator's own. In 'member' mode this is a no-op (today's behavior).
-  // WI-41277 class: never infer 'local' from an ABSENT context. This comparison is
-  // behaviourally identical to the old `(provenance?.origin ?? 'local') === 'remote'`
-  // (both `'local' === 'remote'` and `undefined === 'remote'` are false), but it drops
-  // the fail-open SHAPE the explicit-provenance contract forbids — absence is now
-  // "unknown origin, not authorizable", not "local, therefore trusted".
+  // WI-41277 class (residual: WI-471233): never infer a local origin from an ABSENT
+  // context. This is behaviourally identical to the previous form, which coalesced a
+  // missing origin to the local literal before comparing (that coalesced value and an
+  // undefined one both compare unequal to 'remote'), but it drops the fail-open SHAPE
+  // the explicit-provenance contract forbids: absence now reads as "unknown origin,
+  // therefore not authorizable", never as "local, therefore trusted".
   if (provenance?.origin === 'remote') {
     const sourceLogDevice = provenance?.authorPubkey
       ? (opts.resolveAuthorDevice?.(provenance.authorPubkey) ?? null)
