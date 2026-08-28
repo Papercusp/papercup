@@ -42,6 +42,7 @@ import {
   runGovernedTestProcess,
 } from '../../../../../scripts/lib/governed-test-process.mjs';
 
+import { collectChildOutput } from '../../child-output.js';
 import { ClaudeFileMemoryBackend, parseTopicFile } from '@papercusp/memory';
 import { generateSyntheticCorpus, seedCorpus, type CorpusEntry } from '@papercusp/memory/bench';
 
@@ -390,12 +391,18 @@ export async function runRealProjectorDryRun(
             env: childEnv,
             stdio: ['ignore', 'pipe', 'pipe'],
           });
-          let stdout = '';
-          let stderr = '';
-          child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
-          child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+          // `String(chunk)` per `data` event decodes each Buffer independently, so a
+          // multi-byte character split across two chunks becomes replacement chars with
+          // no error raised. This projector's OWN output is what gets regex-scanned for
+          // `always-loaded:` / `index size:` below, and the dry-run prints a `⚠` — so
+          // the corruption lands directly on the parse. collectChildOutput decodes with
+          // one boundary-safe StringDecoder per stream; `text()` is the TERMINAL read
+          // (close handler), which is where flushing the held-back bytes is correct.
+          const out = collectChildOutput(child);
           child.once('error', reject);
-          child.once('close', (code, signal) => resolve({ stdout, stderr, code, signal }));
+          child.once('close', (code, signal) =>
+            resolve({ stdout: out.stdout.text(), stderr: out.stderr.text(), code, signal }),
+          );
         },
       ),
   );
