@@ -2499,6 +2499,8 @@ impl App {
             crate::su_session::SuSessionEvent::Lifecycle {
                 state: lifecycle, ..
             } => {
+                let runtime_was_replaced =
+                    state.reconciliation == crate::su_session::SuSessionReconciliation::RuntimeReplaced;
                 state.lifecycle = lifecycle;
                 if let Some(descriptor) = state.descriptor.as_mut() {
                     descriptor.lifecycle = lifecycle;
@@ -2514,6 +2516,8 @@ impl App {
                     crate::su_session::SuSessionReconciliation::FailedOrphaned
                 } else if lifecycle == crate::su_session::SuSessionLifecycleState::Ended {
                     crate::su_session::SuSessionReconciliation::EndedArchived
+                } else if runtime_was_replaced {
+                    crate::su_session::SuSessionReconciliation::RuntimeReplaced
                 } else {
                     crate::su_session::SuSessionReconciliation::Attached
                 };
