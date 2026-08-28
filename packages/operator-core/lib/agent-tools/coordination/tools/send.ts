@@ -83,7 +83,13 @@ import { parseSlotSelector } from '../slot-selector';
 // into every consumer of this module (it broke three unit suites whose `../presence`
 // mock is deliberately partial). A diagnostic must not widen anyone else's imports.
 import type { FleetAudienceOmission } from '../audience';
-import { wakeRecipients, reportIdleRecipients, buildStagedWakeNote, type DormantScheduledInfo } from '../inbox-wake';
+import {
+  EMPTY_IDLE_REPORT,
+  wakeRecipients,
+  reportIdleRecipients,
+  buildStagedWakeNote,
+  type DormantScheduledInfo,
+} from '../inbox-wake';
 import { describeMissedRecipients, type MissedRecipientLiveness } from '../recipient-liveness';
 import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../federation-scope';
@@ -110,12 +116,23 @@ import {
 } from '../completion-claim-mismatch';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { withBoundedTimeout } from '../../../bounded-timeout';
 import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
  *  the wake doesn't race the abort and land woken:0. Env-tunable. */
 const ENDTURN_SETTLE_MS = Number(process.env.PAPERCUSP_ENDTURN_SETTLE_MS) || 1500;
+
+/**
+ * The inject-only idle-recipient probe is diagnostic enrichment after the message
+ * is durable. Keep it comfortably below the coord:send transport budget: a slow
+ * roster/await/oracle read must degrade the optional report, never make a
+ * successful send look like a transport timeout. This is intentionally tighter
+ * than the direct-wake target budget because no-wake sends do not need to wait for
+ * any delivery action.
+ */
+export const COORD_SEND_IDLE_REPORT_TIMEOUT_MS = 1_500;
 
 /**
  * Derive the coord message id for one idempotent coord:send item. MCP
@@ -1686,7 +1703,18 @@ async function sendOne(
   // send reports exactly the resolved recipients, never '*'.
   let notWoken: { idleRecipients: string[]; note: string } | undefined;
   if (!wakeMode) {
-    const report = await reportIdleRecipients(env.to, { workspaceId: identity.workspaceId ?? undefined });
+    // The message is already persisted, so this report is optional enrichment.
+    // Start the probe inside the bounded wrapper so even a stalled invocation is
+    // covered by the sub-transport deadline. A timeout/error returns the complete
+    // empty report and therefore cannot manufacture an idle/dead finding.
+    const { value: report } = await withBoundedTimeout(
+      () => reportIdleRecipients(env.to, { workspaceId: identity.workspaceId ?? undefined }),
+      {
+        fallback: EMPTY_IDLE_REPORT,
+        timeoutMs: COORD_SEND_IDLE_REPORT_TIMEOUT_MS,
+        label: 'coord:send:idle-report',
+      },
+    );
     if (report.idle.length > 0) {
       notWoken = {
         idleRecipients: report.idle,

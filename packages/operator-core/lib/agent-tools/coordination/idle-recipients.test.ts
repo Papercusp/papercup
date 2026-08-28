@@ -176,6 +176,37 @@ describe('reportIdleRecipients (host probe — report-only, fail-soft)', () => {
     expect(r.degraded).toBe(false);
   });
 
+  it('probes concrete recipients concurrently and preserves recipient order', async () => {
+    vi.mocked(listPresence).mockResolvedValue(presence('su-bee-1', 'su-bee-2'));
+    let active = 0;
+    let maxActive = 0;
+    const release = new Map<string, (value: unknown) => void>();
+    vi.mocked(listActiveAwaitsForKey).mockImplementation((async (key: string) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      return await new Promise<unknown>((resolve) => {
+        release.set(key, (value) => {
+          active -= 1;
+          resolve(value);
+        });
+      });
+    }) as never);
+
+    const pending = reportIdleRecipients(['su-bee-1', 'su-bee-2'], {});
+    // Let reportIdleRecipients finish its roster read and start both independent
+    // watcher probes before releasing either one.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(maxActive).toBe(2);
+
+    release.get(inboxWakeKey('su-bee-1'))?.(watchers(0));
+    release.get(inboxWakeKey('su-bee-2'))?.(watchers(1));
+    await expect(pending).resolves.toMatchObject({
+      idle: ['su-bee-1'],
+      live: ['su-bee-2'],
+      degraded: false,
+    });
+  });
+
   it('DEGRADES to an empty report (send still ok) when the ROSTER read throws (invariant c)', async () => {
     // The degrade path logs a single advisory warn — expected, so spy it out (the
     // repo fails tests on un-asserted console.warn).

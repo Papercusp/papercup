@@ -181,7 +181,9 @@ const resolvePresenceFleetM = vi.mocked(resolvePresenceFleet);
 const deriveFleetMembershipM = vi.mocked(deriveFleetMembership);
 const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
-const tool = (await import('./send')).default;
+const sendModule = await import('./send');
+const tool = sendModule.default;
+const { COORD_SEND_IDLE_REPORT_TIMEOUT_MS } = sendModule;
 
 /**
  * A COMPLETE `CoordEnvelope` fixture, derived from `getMessageById`'s OWN return type so a
@@ -250,6 +252,44 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, to: ['bee-1'], msg_id: 'm1' });
     expect(sendM).toHaveBeenCalledTimes(1);
+  });
+
+  it('inject-only idle reporting is fail-soft when the diagnostic probe rejects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    idleM.mockRejectedValueOnce(new Error('idle probe unavailable'));
+
+    try {
+      const b = await body({ to: ['bee-1'], summary: 'persist this message' });
+
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(b.results[0].notWoken).toBeUndefined();
+      expect(sendM).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coord:send:idle-report'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('inject-only idle reporting is bounded and degrades when the diagnostic probe hangs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    idleM.mockImplementationOnce(() => new Promise(() => {}));
+
+    try {
+      const pending = body({ to: ['bee-1'], summary: 'persist despite a stalled probe' });
+      // Let the handler reach the bounded probe before advancing its deadline.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(COORD_SEND_IDLE_REPORT_TIMEOUT_MS);
+      const b = await pending;
+
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(b.results[0].notWoken).toBeUndefined();
+      expect(sendM).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coord:send:idle-report'));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('WI-37972: reports sender-visible body clipping instead of a misleading clean delivery', async () => {
