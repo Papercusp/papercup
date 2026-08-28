@@ -24,6 +24,20 @@ function record(overrides: Partial<LiveFederationVerdictRecord> = {}): LiveFeder
     terminal_dirty_files: 0,
     certification_target_sha: TARGET,
     certification_expires_epoch: Math.floor(NOW / 1_000) + 3_600,
+    // WI-483569 — a certifying GREEN must show the federation legs it actually ran. Before this
+    // field existed here, the fixture modelled a GREEN with no leg outcomes at all, which is
+    // precisely the blind spot the production reader had: the suite could not have caught a green
+    // that skipped every federation leg, because it never described legs in the first place.
+    // local_matrix SKIPPED is deliberate and realistic — that leg is on a 144h cadence, so most
+    // windows are not due to run it, and requiring it here would be a rule ordinary deploys
+    // could not satisfy.
+    legs: {
+      content_matrix: 'PASS',
+      from_repo: 'PASS',
+      from_repo_witness: 'PASS',
+      local_matrix: 'SKIPPED',
+      build: 'OK',
+    },
     ...overrides,
   };
 }
@@ -66,6 +80,98 @@ describe('assessLiveReleaseCertification', () => {
     const verdict = assessLiveReleaseCertification(bank(record(overrides)), TARGET, NOW);
 
     expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+  });
+
+  describe('federation-leg coverage (WI-483569) — a GREEN is a claim about the run, not proof of coverage', () => {
+    /**
+     * THE BUG: acceptance branched on `verdict` and `certification_expires_epoch` only, so a GREEN
+     * that had exercised NO federation at all certified a release SHA exactly as strongly as a
+     * fully-exercised one. Measured 2026-08-28: all four GREENs in the retained 374-row bank were
+     * that shape — content_matrix SKIPPED, local_matrix SKIPPED, carried to a clean verdict by the
+     * from-repo leg alone, because no Package=papercusp-gui .deb existed to repack (WI-478707) and
+     * that one selector failure sets SKIP_MATRIX=1 + RUN_LOCAL_MATRIX=0 together.
+     */
+    it('THE BUG: refuses the exact false-green shape observed live (both matrix legs skipped)', () => {
+      const verdict = assessLiveReleaseCertification(
+        bank(
+          record({
+            legs: {
+              content_matrix: 'SKIPPED',
+              from_repo: 'PASS',
+              from_repo_witness: 'SKIPPED',
+              local_matrix: 'SKIPPED',
+              build: 'OK',
+            },
+          }),
+        ),
+        TARGET,
+        NOW,
+      );
+
+      expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+      // The reason must name the leg and its actual value — a reader who only sees "unqualified"
+      // will go looking for an expiry or a sha mismatch and find neither.
+      expect(verdict.reason).toMatch(/content-matrix/);
+      expect(verdict.reason).toMatch(/"SKIPPED"/);
+    });
+
+    it.each([
+      ['a leg that ran and FAILED', 'FAIL'],
+      ['the attestation-wall decline', 'SKIPPED-ATTESTATION-WALL'],
+      ['the never-ran marker', '?'],
+      ['an empty outcome', ''],
+    ])('refuses %s', (_label, contentMatrix) => {
+      const verdict = assessLiveReleaseCertification(
+        bank(record({ legs: { content_matrix: contentMatrix, from_repo: 'PASS', build: 'OK' } })),
+        TARGET,
+        NOW,
+      );
+      expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+    });
+
+    it('fails CLOSED on a record that cannot answer the question at all (no legs object)', () => {
+      // "not measured" and "measured green" must never collapse to the same answer — that
+      // collapse IS the defect. Older bank rows predate the field; they do not inherit trust.
+      const verdict = assessLiveReleaseCertification(
+        bank(record({ legs: undefined })),
+        TARGET,
+        NOW,
+      );
+      expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+      expect(verdict.reason).toMatch(/does not report which legs ran/);
+    });
+
+    it('POSITIVE CONTROL: accepts the WI-971 pass variant the gate actually emits', () => {
+      // Without this the rule could be "reject everything", which passes every case above while
+      // making certification unreachable. PASS-971 is a real token from the live bank.
+      const verdict = assessLiveReleaseCertification(
+        bank(record({ legs: { content_matrix: 'PASS-971', from_repo: 'PASS', build: 'OK' } })),
+        TARGET,
+        NOW,
+      );
+      expect(verdict).toMatchObject({ status: 'certified', certified: true });
+    });
+
+    it('a SKIPPED local_matrix still certifies — the heavy leg is on a 144h cadence by design', () => {
+      // Guards against over-tightening: demanding the weekly containerized matrix on every deploy
+      // would be a rule so expensive it gets routed around, which is worse than no rule.
+      const verdict = assessLiveReleaseCertification(
+        bank(record({ legs: { content_matrix: 'PASS', local_matrix: 'SKIPPED', build: 'OK' } })),
+        TARGET,
+        NOW,
+      );
+      expect(verdict).toMatchObject({ status: 'certified', certified: true });
+    });
+
+    it('does not read a SKIPPED-prefixed token as a pass', () => {
+      // The matcher is anchored and hyphen-delimited so no future SKIPPED-PASS* token slips through.
+      const verdict = assessLiveReleaseCertification(
+        bank(record({ legs: { content_matrix: 'SKIPPED-PASSTHROUGH', build: 'OK' } })),
+        TARGET,
+        NOW,
+      );
+      expect(verdict).toMatchObject({ status: 'unqualified', certified: false });
+    });
   });
 
   it('expires using the writer-owned expiry rather than a reader-side TTL guess', () => {

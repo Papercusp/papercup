@@ -32,6 +32,12 @@ export interface LiveFederationVerdictRecord {
   certification_target_sha?: string;
   certification_expires_epoch?: number;
   line?: string;
+  /**
+   * WI-483569 — per-leg outcomes as the gate writes them (live-federation-gate.sh §5). Previously
+   * this field reached here ONLY through the index signature below, which is exactly why nothing
+   * ever read it: a green was accepted on the strength of the word GREEN alone.
+   */
+  legs?: Record<string, unknown>;
   [key: string]: unknown;
 }
 
@@ -67,6 +73,70 @@ export function liveReleaseCertificationBankPath(): string {
     process.env[LIVE_RELEASE_CERTIFICATION_BANK_ENV]?.trim() ||
     path.join(homedir(), '.papercusp', 'live-fed-gate', 'verdicts.jsonl')
   );
+}
+
+/**
+ * A leg outcome that means "this leg ran and passed". The gate emits `PASS` and the WI-971
+ * variant `PASS-971`; every other token it can write is either a failure (`FAIL`), an
+ * un-run marker (`?`), or a SKIPPED*-shaped decline (`SKIPPED`, `SKIPPED-ATTESTATION-WALL`,
+ * `SKIPPED-CONTENT-RED`, `SKIPPED-STARVATION`). Anchored and hyphen-delimited so a future
+ * `SKIPPED-PASSTHROUGH`-style token cannot be read as a pass.
+ */
+const PASS_SHAPED_LEG = /^PASS(-|$)/i;
+
+/**
+ * WI-483569 — DOES THIS GREEN RECORD EVIDENCE THAT FEDERATION WAS ACTUALLY EXERCISED?
+ *
+ * A GREEN verdict is a claim about the RUN, not about coverage. The gate can reach GREEN with its
+ * federation legs disabled: when no `Package=papercusp-gui` .deb exists to repack, it sets
+ * SKIP_MATRIX=1 and RUN_LOCAL_MATRIX=0 at one site, and the surviving from-repo leg — which runs
+ * from SOURCE, not from the package — carries the run to a clean verdict. Measured 2026-08-28: all
+ * four GREENs in the retained 374-row bank were exactly that shape. WI-478707 stops the gate
+ * PRODUCING them; this stops the deploy path CONSUMING them, so neither a future false-green path
+ * nor the greens already banked can mint a certificate.
+ *
+ * THE BAR IS THE CHEAP PER-RUN LEG, DELIBERATELY NOT THE HEAVY ONE. `content_matrix` is the
+ * federation smoke every window is expected to run; `local_matrix` is the containerized
+ * multi-frame matrix on a 144h cadence (MATRIX_TTL_H) that a given window is usually not even due
+ * to run. Requiring local_matrix here would make ordinary deploys wait on a ~4h weekly job — a
+ * rule so expensive it would be routed around, which is worse than no rule. Requiring
+ * content_matrix costs a correctly-behaving pipeline nothing and kills the entire observed
+ * false-green class.
+ *
+ * Fails CLOSED on a record that cannot answer the question (no `legs`, no `content_matrix`), per
+ * this module's stated fail-closed contract: "not measured" and "measured green" must never
+ * collapse to the same answer — that collapse is the whole defect.
+ */
+export function assessFederationLegCoverage(record: LiveFederationVerdictRecord | null): {
+  ok: boolean;
+  reason: string;
+} {
+  const legs = record?.legs;
+  if (!legs || typeof legs !== 'object' || Array.isArray(legs)) {
+    return {
+      ok: false,
+      reason:
+        'the GREEN record does not report which legs ran (no `legs` object), so it cannot evidence that federation was exercised',
+    };
+  }
+  const raw = (legs as Record<string, unknown>).content_matrix;
+  const contentMatrix = typeof raw === 'string' ? raw.trim() : '';
+  if (!contentMatrix) {
+    return {
+      ok: false,
+      reason:
+        'the GREEN record reports no content-matrix leg outcome, so it cannot evidence that federation was exercised',
+    };
+  }
+  if (!PASS_SHAPED_LEG.test(contentMatrix)) {
+    return {
+      ok: false,
+      reason:
+        `the GREEN record's content-matrix federation leg is ${JSON.stringify(contentMatrix)}, not a PASS — ` +
+        'the run reached GREEN without exercising federation, so it certifies coverage nothing produced (WI-478707/WI-483569)',
+    };
+  }
+  return { ok: true, reason: '' };
 }
 
 /** The bank stores short SHAs. Prefix equality is therefore the exact relation. */
@@ -266,6 +336,14 @@ export function assessLiveReleaseCertification(
       invalidLines,
       bankPath,
     );
+  }
+
+  // WI-483569 — a GREEN is a claim about the run, not proof of federation coverage. Checked here,
+  // AFTER the verdict branches and BEFORE expiry, so an uncovered green is reported as the
+  // coverage gap it is rather than surviving to be judged on its expiry date.
+  const coverage = assessFederationLegCoverage(evidence);
+  if (!coverage.ok) {
+    return result('unqualified', normalizedTarget, coverage.reason, evidence, invalidLines, bankPath);
   }
 
   const expiresEpoch = evidence.certification_expires_epoch;
