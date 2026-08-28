@@ -55,9 +55,13 @@ const external: ExternalTriggerAdminSnapshot = {
 };
 
 vi.mock('@papercusp/sync', () => ({
-  useSyncQuery: ({ queryName, args }: { queryName: string; args: unknown }) => {
+  useSyncQuery: ({ queryName, args, enabled }: { queryName: string; args: unknown; enabled?: boolean }) => {
     H.queries.push({ queryName, args });
     const invalidate = vi.fn(() => H.invalidates.push(queryName));
+    // The real useSyncQuery does not run a disabled query. Honouring that here matters:
+    // without it the mock hands run history to a routine that has no plan, and the
+    // inspector's "no verified run cost" path can never be exercised.
+    if (enabled === false) return { data: [], loading: false, invalidate };
     if (H.emptyData) return { data: [], loading: false, invalidate };
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
@@ -111,6 +115,8 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import AdvWorkflowsTab from './AdvWorkflowsTab';
 
+const DIGEST = 'plan:papercusp:customer-digest';
+
 function renderTab(searchParams?: Record<string, string>) {
   return render(
     <NuqsTestingAdapter searchParams={searchParams}>
@@ -120,14 +126,11 @@ function renderTab(searchParams?: Record<string, string>) {
 }
 
 /**
- * The tab lands on the Workflows landing since D-018; the flow rows + inspector
- * are a secondary view. Tests that exercise the inspector SEED the view in the
- * URL rather than clicking through to it — nuqs batches its URL writes, so a
- * click-then-assert races the flush, and the landing's ledger carries the same
- * workflow names, which makes that race resolve to a false match.
+ * Selection is seeded through the URL rather than clicked, for the same reason the previous
+ * suite did it: nuqs batches its URL writes, so a click-then-assert races the flush.
  */
-function renderTabOnFlows() {
-  return renderTab({ wfView: 'flow' });
+function renderTabOnDigest() {
+  return renderTab({ wfSelId: DIGEST });
 }
 
 async function openAdvancedWorkflowSetup() {
@@ -161,20 +164,198 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-describe('<AdvWorkflowsTab>', () => {
-  it('lands on the Workflows landing Blend rather than the flow rows (D-018)', async () => {
+describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
+  it('renders a single frame: one masthead, the ledger and the inspector together', async () => {
     renderTab();
+    // ONE heading. The retired landing painted a second "Workflows" under this one.
     expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
-    // The Blend's regions: composer hero + the all-workflows ledger.
+    expect(screen.getAllByRole('heading', { name: 'Workflows' })).toHaveLength(1);
+
     expect(screen.getByRole('region', { name: 'Describe a workflow' })).toBeTruthy();
-    expect(screen.getByRole('region', { name: 'All workflows' })).toBeTruthy();
-    // Fires are not measurable from the bounded recentRuns feed, so the landing
-    // must say so rather than render a confident 0.
-    expect(screen.getByText('fires not counted')).toBeTruthy();
-    // The superseded flow-row landing must NOT be what renders by default.
+    expect(screen.getByLabelText('Workflow inspector')).toBeTruthy();
+    // Both populations are in ONE ledger — routines are no longer exiled to a Catalog view.
+    expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
+    expect(screen.getByTestId('wf-row:routine:git-sync:papercusp')).toBeTruthy();
+
+    // The five sub-views are gone.
+    for (const gone of ['Overview', 'Flows', 'Catalog', 'Sources']) {
+      expect(screen.queryByRole('tab', { name: gone })).toBeNull();
+    }
     expect(screen.queryByLabelText('Search trigger flows')).toBeNull();
   });
 
+  it('summarises the population and surfaces source health as a filter (D-003)', async () => {
+    renderTab();
+    expect(await screen.findByText('1 triggered · 1 system task')).toBeTruthy();
+
+    const sources = screen.getByRole('group', { name: 'Source health' });
+    const slack = within(sources).getByRole('button', { name: /^Slack: connected/ });
+    expect(within(sources).getByRole('button', { name: /^Schedule:/ })).toBeTruthy();
+
+    fireEvent.click(slack);
+    await waitFor(() => expect(slack.getAttribute('aria-pressed')).toBe('true'));
+    // Filtering to Slack keeps the slack-triggered plan and drops the internal routine.
+    expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
+    expect(screen.queryByTestId('wf-row:routine:git-sync:papercusp')).toBeNull();
+  });
+
+  it('renders NOTHING for the needs-you strip when nothing needs the operator (D-018/D-004)', async () => {
+    renderTab();
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    // The rule this preserves: no "all clear" card, no empty frame — absence IS the state.
+    expect(screen.queryByTestId('workflows-needs-you')).toBeNull();
+  });
+
+  it('filters by state and kind facets over one ledger instead of switching views', async () => {
+    renderTab();
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Running/ }));
+    await waitFor(() => expect(screen.queryByTestId(`wf-row:${DIGEST}`)).toBeNull());
+    expect(screen.getByTestId('wf-row:routine:git-sync:papercusp')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^All/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Triggered/ }));
+    await waitFor(() => expect(screen.queryByTestId('wf-row:routine:git-sync:papercusp')).toBeNull());
+    expect(screen.getByTestId(`wf-row:${DIGEST}`)).toBeTruthy();
+  });
+
+  it('says which kind of empty it is', async () => {
+    renderTab({ wfQ: 'nothing-matches-this' });
+    expect(await screen.findByText('No workflows match these filters.')).toBeTruthy();
+
+    cleanup();
+    H.emptyData = true;
+    renderTab();
+    expect(await screen.findByText(/No workflows are installed yet/)).toBeTruthy();
+  });
+
+  it('renders the ledger truthfully: a spend classification, never invented dollars (D-005)', async () => {
+    renderTab();
+    const row = await screen.findByTestId(`wf-row:${DIGEST}`);
+    // The verified dollars live in the inspector; the row carries the classification.
+    expect(within(row).getByText('per run')).toBeTruthy();
+    expect(within(row).queryByText(/^\$/)).toBeNull();
+    expect(within(screen.getByTestId('wf-row:routine:git-sync:papercusp')).getByText('$0')).toBeTruthy();
+  });
+});
+
+describe('<AdvWorkflowsTab> — the inspector is the detail surface (D-002)', () => {
+  it('inspects the selected workflow, with its triggers and verified run cost', async () => {
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    expect(within(inspector).getByRole('heading', { name: 'Customer feedback digest' })).toBeTruthy();
+    expect(within(inspector).getByText('Turns feedback into a prioritized brief')).toBeTruthy();
+    // Both installed triggers, each with its own arm control.
+    expect(within(inspector).getByText('FREQ=DAILY · BYHOUR=9')).toBeTruthy();
+    expect(within(inspector).getByText('ext:slack:message')).toBeTruthy();
+    // Measured here, so a dollar figure is honest here.
+    await waitFor(() => expect(within(inspector).getByText('$0.62 · 1 run')).toBeTruthy());
+  });
+
+  it('reports no verified run cost rather than formatting an absent number as $0.00', async () => {
+    renderTab({ wfSelId: 'routine:git-sync:papercusp' });
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    expect(within(inspector).getByText('$0 model spend')).toBeTruthy();
+    expect(within(inspector).queryByText('$0.00')).toBeNull();
+  });
+
+  it('fires Run manually through plans:run-now', async () => {
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    fireEvent.click(within(inspector).getByRole('button', { name: 'Run manually' }));
+    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('plans:run-now', { slug: 'customer-digest', harness: 'papercusp' }));
+  });
+
+  it('toggles one external binding through the audited trigger admin route', async () => {
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    fireEvent.click(within(inspector).getByRole('button', { name: 'Disarm ext:slack:message' }));
+    await waitFor(() => {
+      const fetchMock = vi.mocked(fetch);
+      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH'
+        && String(init.body).includes('11111111-1111-4111-8111-111111111111')
+        && String(init.body).includes('"armed":false'))).toBe(true);
+    });
+  });
+
+  it('expands into the topology + agent destination rather than opening a second detail view', async () => {
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    fireEvent.click(within(inspector).getByRole('button', { name: /^Expand Customer feedback digest/ }));
+    // The expansion replaces the frame — one destination, reached from the inspector.
+    expect(await screen.findByLabelText('Workflow detail')).toBeTruthy();
+    expect(screen.queryByLabelText('Workflow inspector')).toBeNull();
+  });
+
+  it('confirms and queues a distinct last-event run from the expanded view', async () => {
+    const runId = '33333333-3333-4333-8333-333333333333';
+    H.runTool.mockResolvedValueOnce({ ok: true, data: { ok: true, run: { id: runId } } });
+    renderTab({ wfId: DIGEST });
+    fireEvent.click(await screen.findByRole('button', { name: 'Test with last event' }));
+    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('triggers:run-with-last-event', {
+      bindingId: '11111111-1111-4111-8111-111111111111',
+      confirm: true,
+    }));
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Test run 33333333 queued from the last provider event',
+    );
+  });
+});
+
+describe('<AdvWorkflowsTab> — ledger controls and activity', () => {
+  it('pauses every automatic trigger from the row control when the workflow is armed', async () => {
+    renderTab();
+    const row = await screen.findByTestId(`wf-row:${DIGEST}`);
+    fireEvent.click(within(row).getByRole('button', { name: 'Disarm Customer feedback digest' }));
+    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('plans:disarm-schedule', { slug: 'customer-digest', harness: 'papercusp' }));
+    await waitFor(() => {
+      expect(vi.mocked(fetch).mock.calls.some(([, init]) => init?.method === 'PATCH' && String(init.body).includes('"armed":false'))).toBe(true);
+    });
+  });
+
+  it('pauses a controllable routine through routines:set', async () => {
+    renderTab();
+    const row = await screen.findByTestId('wf-row:routine:git-sync:papercusp');
+    fireEvent.click(within(row).getByRole('button', { name: 'Disarm git-sync' }));
+    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('routines:set', expect.objectContaining({
+      name: 'git-sync',
+      installSlug: 'papercusp',
+      active: false,
+    })));
+  });
+
+  it('shows Activity as a mode of the same frame, keeping the inspector', async () => {
+    renderTab({ wfMode: 'activity' });
+    expect(await screen.findByTestId('wf-activity:external-run:run-1')).toBeTruthy();
+    // Same frame: the inspector does not disappear when the mode changes.
+    expect(screen.getByLabelText('Workflow inspector')).toBeTruthy();
+    expect(screen.queryByTestId(`wf-row:${DIGEST}`)).toBeNull();
+  });
+
+  it('switches into Activity from the mode control', async () => {
+    renderTab();
+    // Radix activates a tab on mousedown, not on a bare click event.
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: 'Activity' }));
+    await waitFor(() => expect(screen.queryByTestId(`wf-row:${DIGEST}`)).toBeNull());
+    expect(screen.getByTestId('wf-activity:external-run:run-1')).toBeTruthy();
+  });
+
+  it('reads plans workspace-wide without fanning out the project registry', async () => {
+    renderTab();
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
+    expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
+  });
+
+  it('excludes a plan with no automatic trigger — manual launch is not a trigger', async () => {
+    renderTab();
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    expect(screen.queryByText('Rubric ratification')).toBeNull();
+  });
+});
+
+describe('<AdvWorkflowsTab> — composing and creating', () => {
   it('opens the canonical workflow-agent composer with intent and source context, never the manual form by default', async () => {
     renderTab();
     const input = await screen.findByLabelText(/What should happen automatically/);
@@ -199,83 +380,10 @@ describe('<AdvWorkflowsTab>', () => {
     expect(H.runTool).not.toHaveBeenCalled();
   });
 
-  it('keeps the causal trigger-flow view reachable and non-triggered routines in Catalog', async () => {
-    renderTabOnFlows();
-    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
-    expect(H.queries.some(({ queryName, args }) => queryName === 'plans.list' && JSON.stringify(args) === '{}')).toBe(true);
-    expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
-    expect(screen.getAllByText('Outcome / next').length).toBeGreaterThanOrEqual(2);
-    expect(screen.getByText('Trigger flows')).toBeTruthy();
-    const flowToolbar = screen.getByRole('group', { name: 'Filter trigger flows' }).parentElement;
-    expect(flowToolbar?.firstElementChild).toBe(screen.getByLabelText('Search trigger flows').closest('label'));
-    const planRow = screen.getByRole('button', { name: /Schedule \+ Slack starts Customer feedback digest/ });
-    expect(planRow).toBeTruthy();
-    expect(within(planRow).getByText('2 installed triggers')).toBeTruthy();
-    expect(screen.queryByText('Rubric ratification')).toBeNull();
-    fireEvent.click(planRow);
-    const details = screen.getByLabelText('Workflow details');
-    expect(within(details).getByText('Flow inspector')).toBeTruthy();
-    expect(within(details).getByText('Causal path')).toBeTruthy();
-    expect(within(details).getAllByText('Turns feedback into a prioritized brief').length).toBeGreaterThanOrEqual(2);
-    expect(within(details).getByText('schedule')).toBeTruthy();
-    expect(within(details).getByText('slack')).toBeTruthy();
-    const triggers = within(details).getByText('Automatic triggers').closest('section');
-    expect(triggers).toBeTruthy();
-    expect(within(triggers as HTMLElement).queryByText('manual')).toBeNull();
-    expect(within(details).getByRole('button', { name: 'Run manually' })).toBeTruthy();
-    await waitFor(() => expect(within(details).getByText(/2 required · ready/)).toBeTruthy());
-    expect(within(details).getByText('$0.62 · 1 runs')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
-    expect(screen.getAllByText('git-sync').length).toBeGreaterThan(0);
-  });
-
-  it('renders truthful empty states instead of synthesizing automations when every producer is empty', async () => {
-    H.emptyData = true;
-    renderTabOnFlows();
-    expect(await screen.findByRole('heading', { name: 'Workflows', level: 1 })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^Flows/ }).textContent).toContain('0');
-    expect(screen.getByText(/No triggered plans match this view/)).toBeTruthy();
-    expect(screen.queryByText('Customer feedback digest')).toBeNull();
-    expect(screen.queryByText('git-sync')).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /Catalog/ }));
-    expect(screen.getByText('No workflows match this filter.')).toBeTruthy();
-  });
-
-  it('fires Run manually through plans:run-now and keeps role spend inside Activity', async () => {
-    renderTabOnFlows();
-    fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
-    fireEvent.click(screen.getByRole('button', { name: /Run manually/ }));
-    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('plans:run-now', { slug: 'customer-digest', harness: 'papercusp' }));
-    fireEvent.click(screen.getByRole('button', { name: /Activity/ }));
-    expect(await screen.findByText('Workspace spend · 7 days')).toBeTruthy();
-    expect(screen.getByText('doc-steward')).toBeTruthy();
-    expect(screen.getByText('$2.40')).toBeTruthy();
-  });
-
-  it('confirms and queues a distinct last-event run from the workflow detail', async () => {
-    const runId = '33333333-3333-4333-8333-333333333333';
-    H.runTool.mockResolvedValueOnce({ ok: true, data: { ok: true, run: { id: runId } } });
-    renderTab({ wfId: 'plan:papercusp:customer-digest' });
-    fireEvent.click(await screen.findByRole('button', { name: 'Test with last event' }));
-    await waitFor(() => expect(H.runTool).toHaveBeenCalledWith('triggers:run-with-last-event', {
-      bindingId: '11111111-1111-4111-8111-111111111111',
-      confirm: true,
-    }));
-    expect((await screen.findByRole('status')).textContent).toContain(
-      'Test run 33333333 queued from the last provider event',
-    );
-  });
-
-  it('toggles an external binding through the audited trigger admin route', async () => {
-    renderTabOnFlows();
-    fireEvent.click(await screen.findByRole('button', { name: /Customer feedback digest/ }));
-    const details = await screen.findByLabelText('Workflow details');
-    const armed = within(details).getAllByRole('button', { name: 'Armed' });
-    fireEvent.click(armed[1]);
-    await waitFor(() => {
-      const fetchMock = vi.mocked(fetch);
-      expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'PATCH' && String(init.body).includes('11111111-1111-4111-8111-111111111111'))).toBe(true);
-    });
+  it('suggests only what a connected source could actually wire', async () => {
+    renderTab();
+    const chips = await screen.findByTestId('workflows-chips');
+    expect(within(chips).getByText('When someone mentions me in Slack…')).toBeTruthy();
   });
 
   it('creates and arms a schedule in place instead of redirecting to Plans', async () => {

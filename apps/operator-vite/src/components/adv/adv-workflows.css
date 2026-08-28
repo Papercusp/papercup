@@ -50,7 +50,10 @@
   border: 1px solid var(--wf-line);
   border-radius: 6px;
   color: var(--fg-dim, #b9d4e8);
-  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  /* A color-mix, not var(--bg-2): the raw rgba() token reads as an unsupported function to
+     the contrast lint, so a control declaring BOTH a colour and that background ships
+     contrast-UNCHECKED. A mix is composited and stays verifiable. */
+  background: var(--wf-panel-2);
   font-size: 13px;
   cursor: pointer;
 }
@@ -227,7 +230,7 @@
   padding: 9px 12px;
   border: 1px solid color-mix(in oklab, var(--warn, #fbbf24), transparent 62%);
   border-radius: 9px;
-  background: var(--warn-bg, rgba(251, 191, 36, 0.1));
+  background: color-mix(in oklab, var(--warn, #fbbf24), transparent 92%);
 }
 
 .pc-wf__needs-lead {
@@ -262,7 +265,8 @@
   border: 1px solid color-mix(in oklab, var(--warn, #fbbf24), transparent 55%);
   border-radius: 8px;
   color: var(--warn, #fbbf24);
-  background: var(--warn-bg, rgba(251, 191, 36, 0.1));
+  /* Same reason as .pc-wf__btn — a mix rather than the raw --warn-bg rgba token. */
+  background: color-mix(in oklab, var(--warn, #fbbf24), transparent 90%);
   font-size: 13px;
 }
 
@@ -591,7 +595,7 @@
   padding: 9px 11px;
   border: 1px solid color-mix(in oklab, var(--bad, #fb7185), transparent 55%);
   border-radius: 8px;
-  background: var(--bad-bg, rgba(251, 113, 133, 0.1));
+  background: color-mix(in oklab, var(--bad, #fb7185), transparent 90%);
 }
 
 .pc-wf__fail-copy {
