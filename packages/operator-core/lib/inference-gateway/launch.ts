@@ -30,6 +30,10 @@ import {
   readCodexConcurrencyOverride,
   type InferenceGateway,
 } from './gateway';
+import {
+  createDurableGatewayAdmissionGovernor,
+  type DurableGatewayAdmissionOptions,
+} from './durable-admission';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';
@@ -135,6 +139,12 @@ export interface GatewayServiceOptions {
    *  Default 30s — independent of poolReloadIntervalMs (local backends are cheaper to re-check and a
    *  dead local process should drop out of rotation fast). */
   localBackendReloadIntervalMs?: number;
+  /**
+   * Use the canonical durable work-item admission queue for gateway requests.
+   * Production's sidecar entrypoint enables this explicitly; direct/unit
+   * callers retain the in-memory compatibility queue unless opted in.
+   */
+  durableAdmission?: boolean | Omit<DurableGatewayAdmissionOptions, 'workspaceId'>;
 }
 
 export interface RunningGatewayService {
@@ -585,6 +595,13 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // that WANTS the local-backend pool passes `resolveLocalBackends` wired to local-backend-store's
   // listLocalBackends (see bin.ts) — mirrors defaultObservePool's lazy-import-only-when-used shape.
   const resolveLocalBackends = opts.resolveLocalBackends ?? (async () => []);
+  const durableAdmission =
+    opts.durableAdmission === false || opts.durableAdmission === undefined
+      ? undefined
+      : createDurableGatewayAdmissionGovernor({
+          workspaceId: opts.workspace,
+          ...(typeof opts.durableAdmission === 'object' ? opts.durableAdmission : {}),
+        });
   const localBackendPool: LocalBackendPool = createLocalBackendPool();
   // ⚠ lifecycle + unitName ARE PART OF THIS SIGNATURE ON PURPOSE (P-008/D-009). The signature is
   // what gates reload(), so a field missing here is a field the RUNNING gateway can never see
@@ -807,6 +824,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     codexPool,
     codexCliPool,
     codexOAuthProxy,
+    ...(durableAdmission ? { admissionGovernor: durableAdmission } : {}),
     // Getter (not a snapshot) so a reloadPool() that adds/removes a codex-cli account
     // applies to the very next /v1/responses request without a gateway restart.
     codexCliAccounts: () => cliAccountsOf(codexAccounts),
