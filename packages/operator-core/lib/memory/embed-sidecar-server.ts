@@ -82,7 +82,11 @@ import {
   scoreCrossEncoder,
   shutdownLocalReranker,
 } from '@papercusp/rerank';
-import { runGovernedOperation, type GovernedOperationInput } from '../resource-governor/execution';
+import {
+  admissionContextFromEnvironment,
+  runGovernedOperation,
+  type GovernedOperationInput,
+} from '../resource-governor/execution';
 import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
 import { activeWorkspaceId } from '../workspace-registry';
 
@@ -567,14 +571,12 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   };
 
   // Bounded-concurrency FIFO (P-004 memory-public-release-hardening): work
-  // units (one TEXT each — see WI-4196 below) START in arrival order, with at
-  // most `concurrency` in flight. The default 1 is the historical single-
-  // flight chain: strictly serial, fair, bounded memory. Raising it lets ONNX
-  // runs overlap inside ORT's own thread pool — the worker's async message
-  // handler never blocks its event loop, so no extra worker or model copy is
-  // needed — but effective CPU ≈ concurrency × intraOpNumThreads (WI-3792
-  // caps 4 per run): raise the unit env only with benchmarked host headroom.
-  // Rejections stay per-caller; a failed unit frees its slot via finally.
+  // units (one TEXT each — see WI-4196 below) START in arrival order when the
+  // explicit `concurrency` seam is supplied. That seam exists for deterministic
+  // unit tests only. Production has no local ceiling: every unit is admitted by
+  // the durable capless governor below, whose live feedback owns queueing and
+  // resource pressure decisions. Rejections stay per-caller; a failed unit
+  // frees its local test slot via finally.
   //
   // Fairness is per REQUEST, not merely per text. A handler can receive a
   // 256-text batch and enqueue all of its units synchronously; a flat FIFO
@@ -583,15 +585,49 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
   // one waiting unit from a request, then moves that request behind its peers.
   // Each request still gets its texts in input order, while a large batch
   // cannot monopolize the sidecar after its first unit has started.
-  const concurrency = Math.max(
-    1,
-    Math.floor(
-      opts.concurrency ??
-        (Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV]) > 0
-          ? Number(process.env[EMBED_SIDECAR_CONCURRENCY_ENV])
-          : 1),
-    ),
-  );
+  const localScheduler = opts.concurrency !== undefined;
+  const concurrency = localScheduler
+    ? Math.max(1, Math.floor(opts.concurrency as number))
+    : Number.POSITIVE_INFINITY;
+  const workspaceId = opts.workspaceId?.trim() || (localScheduler ? undefined : activeWorkspaceId());
+  const governed = opts.governedOperation ?? runGovernedOperation;
+  const parentAdmission = admissionContextFromEnvironment(process.env.PAPERCUSP_ADMISSION_CONTEXT);
+  const operationOwner = `embed-sidecar:${process.pid}`;
+
+  /**
+   * One sidecar resource unit. Production calls enter the canonical durable
+   * Governor with an attributable admission class and measured demand; tests
+   * opt into the local FIFO by supplying `concurrency`, so no database is
+   * needed for deterministic scheduler tests.
+   */
+  const runSidecarUnit = <T>(input: {
+    admissionClass: 'embedding' | 'inference';
+    operation: 'embed' | 'rerank' | 'warmup';
+    model: string;
+    kind?: GemmaEmbedKind;
+    textChars: number;
+    demand: ResourceDemand;
+    run: () => Promise<T>;
+  }): Promise<T> => {
+    if (localScheduler) return input.run();
+    const operationInput: GovernedOperationInput<T> = {
+      workspaceId: workspaceId!,
+      namespace: 'embed-sidecar',
+      owner: operationOwner,
+      admissionClass: input.admissionClass,
+      demand: input.demand,
+      payloadRef: `embed-sidecar:${input.operation}:${input.model}`,
+      ...(parentAdmission ? { parent: parentAdmission } : {}),
+      metadata: {
+        operation: input.operation,
+        model: input.model,
+        ...(input.kind ? { kind: input.kind } : {}),
+        textChars: input.textChars,
+        unit: 'single-text',
+      },
+    };
+    return governed(operationInput, () => input.run());
+  };
   let active = 0;
   interface QueueTask<T> {
     promise: Promise<T>;
@@ -797,10 +833,27 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     signal: AbortSignal,
     batch: QueueBatch,
   ): Promise<number[]> =>
-    computeCached(`${model}:${kind}\0${text}`, async () => {
-      const embed = await getEmbedder(model, kind);
-      return embed(text);
-    }, signal, batch);
+    computeCached(
+      `${model}:${kind}\0${text}`,
+      () =>
+        runSidecarUnit({
+          admissionClass: 'embedding',
+          operation: 'embed',
+          model,
+          kind,
+          textChars: text.length,
+          demand: {
+            cpuWeight: 1,
+            memoryBytes: Buffer.byteLength(text, 'utf8'),
+          },
+          run: async () => {
+            const embed = await getEmbedder(model, kind);
+            return embed(text);
+          },
+        }),
+      signal,
+      batch,
+    );
 
   // One PAIR per unit, matching /embed's one-text-per-unit choice. A cross-
   // encoder could score a whole batch in one forward pass, but per-pair units
@@ -817,14 +870,30 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     signal: AbortSignal,
     batch: QueueBatch,
   ): Promise<number> =>
-    computeCached(`${model}\0${query}\0${text}`, async () => {
-      const rerankFn = await getReranker(model);
-      const scores = await rerankFn(query, [text]);
-      if (scores.length !== 1 || typeof scores[0] !== 'number' || !Number.isFinite(scores[0])) {
-        throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
-      }
-      return [scores[0]];
-    }, signal, batch).then((boxed) => boxed[0]);
+    computeCached(
+      `${model}\0${query}\0${text}`,
+      () =>
+        runSidecarUnit({
+          admissionClass: 'inference',
+          operation: 'rerank',
+          model,
+          textChars: query.length + text.length,
+          demand: {
+            cpuWeight: 1,
+            memoryBytes: Buffer.byteLength(query, 'utf8') + Buffer.byteLength(text, 'utf8'),
+          },
+          run: async () => {
+            const rerankFn = await getReranker(model);
+            const scores = await rerankFn(query, [text]);
+            if (scores.length !== 1 || typeof scores[0] !== 'number' || !Number.isFinite(scores[0])) {
+              throw new Error(`reranker returned a bad score for one pair: ${JSON.stringify(scores)}`);
+            }
+            return [scores[0]];
+          },
+        }),
+      signal,
+      batch,
+    ).then((boxed) => boxed[0]);
 
   const handleEmbed = async (
     req: http.IncomingMessage,
@@ -958,7 +1027,14 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
           reranker: workerStates.reranker(),
         },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
-        concurrency,
+        // `null` means no local capacity ceiling: production units are admitted
+        // independently by the durable governor. A finite value is present
+        // only when a test explicitly supplied the local scheduler seam.
+        concurrency: Number.isFinite(concurrency) ? concurrency : null,
+        admission: {
+          mode: localScheduler ? 'local-test-scheduler' : 'durable-governor',
+          classes: ['embedding', 'inference'],
+        },
         // EI-21341585960652821. The FIFO's REAL backlog. Until this existed,
         // /healthz could not express "up but not keeping up", and on 2026-08-24
         // that cost the fleet hours: the sidecar sat 100% slot-saturated with
@@ -992,7 +1068,11 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
         //
         // `depth` is the queue no one could see; `saturated` is the predicate a
         // health check should actually alert on (up AND keeping up).
-        queue: { depth: queued, active, saturated: active >= concurrency },
+        queue: {
+          depth: queued,
+          active,
+          saturated: Number.isFinite(concurrency) && active >= concurrency,
+        },
       });
     },
     [EMBED_SIDECAR_CAP_EMBED]: withRequestCancellation(handleEmbed),
@@ -1027,8 +1107,18 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
     void listening.then(() => {
       for (const model of resolveWarmModels()) {
         for (const kind of ['document', 'query'] as const) {
-          getEmbedder(model, kind)
-            .then((embed) => embed('warm-up'))
+          runSidecarUnit({
+            admissionClass: 'embedding',
+            operation: 'warmup',
+            model,
+            kind,
+            textChars: 'warm-up'.length,
+            demand: { cpuWeight: 1, memoryBytes: Buffer.byteLength('warm-up', 'utf8') },
+            run: async () => {
+              const embed = await getEmbedder(model, kind);
+              return embed('warm-up');
+            },
+          })
             .then(() => log(`[embed-sidecar] ${model}:${kind} warm`))
             .catch((e) => log(`[embed-sidecar] ${model}:${kind} warm-up failed: ${e instanceof Error ? e.message : e}`));
         }
@@ -1036,9 +1126,18 @@ export function createEmbedSidecarServer(opts: EmbedSidecarOptions = {}): EmbedS
       // Rerankers are opt-in via the same env (default: none) — a host that
       // does not serve search should not pay a ~150M-param load.
       for (const model of resolveWarmRerankers()) {
-        getReranker(model)
-          .then((rerankFn) => rerankFn('warm-up', ['warm-up']))
-          .then(() => log(`[embed-sidecar] ${model} warm`))
+        runSidecarUnit({
+          admissionClass: 'inference',
+          operation: 'warmup',
+          model,
+          textChars: 'warm-up'.length * 2,
+          demand: { cpuWeight: 1, memoryBytes: Buffer.byteLength('warm-up', 'utf8') * 2 },
+          run: async () => {
+            const rerankFn = await getReranker(model);
+            return rerankFn('warm-up', ['warm-up']);
+          },
+        })
+            .then(() => log(`[embed-sidecar] ${model} warm`))
           .catch((e) => log(`[embed-sidecar] ${model} warm-up failed: ${e instanceof Error ? e.message : e}`));
       }
     });
