@@ -11,7 +11,8 @@ use crate::agent_chats::{
     AgentChatListOptions, AgentChatListResponse, AgentChatTaskMutation,
     AgentChatTaskMutationResponse, AgentChatTurnRequest, NewAgentChat, PendingAgentChatApproval,
 };
-use crate::http::HttpClient;
+use crate::event::MemoryLoadState;
+use crate::http::{HttpClient, HttpStatusError};
 use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models;
 use crate::models::{
@@ -2242,6 +2243,33 @@ impl OperatorClient {
         serde_json::from_str::<models::MemoriesPayload>(text).context("parse memory list payload")
     }
 
+    /// Load the Memory tab while preserving the distinction between a valid
+    /// disabled-backend envelope and request failures.  The latter are typed
+    /// for the reducer so the UI cannot misreport a 401/403 as unavailable.
+    pub async fn memory_list_state(&self, harness: Option<&str>) -> MemoryLoadState {
+        match self.memory_list(harness).await {
+            Ok(payload) if payload.ok => MemoryLoadState::Available {
+                results: payload.results,
+            },
+            Ok(payload) => MemoryLoadState::BackendUnavailable {
+                reason: payload.reason,
+            },
+            Err(error) => Self::memory_load_error(error),
+        }
+    }
+
+    fn memory_load_error(error: anyhow::Error) -> MemoryLoadState {
+        let status = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<HttpStatusError>().map(|e| e.status))
+            .or_else(|| status_from_error_text(&format!("{error:#}")));
+        let message = format!("{error:#}");
+        match status {
+            Some(401 | 403) => MemoryLoadState::AuthFailure { message },
+            _ => MemoryLoadState::TransportFailure { message },
+        }
+    }
+
     /// Semantic recall via the `memory:search` agent tool (same envelope).
     pub async fn memory_search(
         &self,
@@ -2442,6 +2470,16 @@ impl OperatorClient {
         )
         .await
     }
+}
+
+/// IPC wraps `sys:http` status failures in anyhow text rather than exposing
+/// the HTTP error type. Keep the same auth classification on that transport.
+fn status_from_error_text(message: &str) -> Option<u16> {
+    message.split(" -> ").find_map(|part| {
+        part.split(':')
+            .next()
+            .and_then(|code| code.trim().parse::<u16>().ok())
+    })
 }
 
 /// Fold outgoing typed `blocks` edges onto READY NOW rows. Missing/clipped detail
