@@ -54,7 +54,9 @@ import {
 import {
   goalHolderPolicyProblem,
   goalHolderPolicySchema,
+  renderGoalPortfolioBrief,
   resolveGoalLaunchForGoal,
+  type GoalPortfolioBrief,
 } from '../../goal-launch-settings';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { setMode } from '../../modes/store';
@@ -143,6 +145,8 @@ export function buildGoalKickoffBrief(opts: {
    * has.
    */
   budgetWindowSec?: number | null;
+  /** P-012: server-composed live portfolio projection; omitted for legacy/tests. */
+  portfolio?: GoalPortfolioBrief | null;
   /** Injectable for tests; defaults to the moment the brief is written. */
   writtenAt?: Date;
 }): string {
@@ -185,6 +189,7 @@ export function buildGoalKickoffBrief(opts: {
       ? `CEILING — ${ceiling} declared. Do not quietly exceed it.`
       : 'CEILING — none declared. Flag before any large spend.',
     spendVisibility,
+    ...(opts.portfolio ? ['', renderGoalPortfolioBrief(opts.portfolio)] : []),
     '',
     'Your mode contract governs how to run this, including the mandatory kickoff question.',
     'It arrives in your orient, under `modes[].contract`. If it is NOT there you are not',
@@ -688,6 +693,7 @@ export default defineTool({
         body: args.body ?? null,
         standing: args.standing ?? false,
         budgetWindowSec: args.budgetWindowSec ?? null,
+        portfolio: goalLaunch.goalBrief?.portfolio ?? null,
       }),
     };
     const label = `goal · ${args.title.slice(0, 40)}`;

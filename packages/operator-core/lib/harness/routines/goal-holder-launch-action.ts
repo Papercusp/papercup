@@ -11,7 +11,11 @@
  * to the goal only after the launch succeeds.
  */
 import { composeLaunchModelSpec } from '../../agent-config-constants';
-import { resolveGoalLaunchForGoal, type GoalLaunchResolution } from '../../goal-launch-settings';
+import {
+  renderGoalPortfolioBrief,
+  resolveGoalLaunchForGoal,
+  type GoalLaunchResolution,
+} from '../../goal-launch-settings';
 import { buildGoalKickoffBrief } from '../../agent-tools/goals/start';
 import { launchAgent, type LaunchAgentResult } from '../../launch-agent';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
@@ -93,8 +97,11 @@ export async function launchGoalHolderSession(
   // respawner and the on-demand system action) gets the same canonical brief as
   // goals:start/startGoalById without another DB read or another prompt copy.
   const explicitKickoff = input.kickoffPrompt?.trim();
+  const portfolioBlock = resolved.goalBrief?.portfolio ? renderGoalPortfolioBrief(resolved.goalBrief.portfolio) : null;
   const kickoffPrompt = explicitKickoff
-    ? input.kickoffPrompt!
+    ? portfolioBlock && !explicitKickoff.includes('GOAL PORTFOLIO SNAPSHOT —')
+      ? `${input.kickoffPrompt!}\n\n${portfolioBlock}`
+      : input.kickoffPrompt!
     : resolved.goalBrief
       ? buildGoalKickoffBrief({ goalId, ...resolved.goalBrief })
       : null;

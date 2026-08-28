@@ -307,6 +307,7 @@ export async function autoStartGoal(input: AutoStartGoalInput): Promise<AutoStar
       killCriterion: criterion,
       budgetCents: input.budgetCents,
       body: input.body ?? null,
+      portfolio: goalLaunch.goalBrief?.portfolio ?? null,
     }),
   };
   const logDir = join(papercuspPathForWorkspace(workspaceId), 'fleet-logs');
