@@ -5816,7 +5816,31 @@ function unsatisfiedBlockerSql(sql: OrgSql) {
     EXISTS (
       SELECT 1 FROM harness_shared.harness_features_consolidated bf
        WHERE bf.workspace_id = wi.workspace_id
-         AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
+         -- WI-521425 -- match by SPLITTING the dep-side scalar, never by CONCATENATING the
+         -- candidate side. The previous form, (bf.harness_slug || '#' || bf.feature_id) =
+         -- d.blocker_ref, is not indexable: EXPLAIN demoted this probe to an Index Scan using
+         -- hfc_workspace_idx whose ONLY Index Cond was workspace_id = wi.workspace_id
+         -- (~510k rows), with the real selectivity left as a post-scan Filter -- cost 40,840
+         -- and ~592ms PER PROBE. ORed with the issue-family EXISTS below it also defeated
+         -- PostgreSQL's hashed-subplan plan (a hashed Join Filter at total cost 172,851
+         -- degraded to EXISTS(SubPlan 1) OR EXISTS(SubPlan 2) at 6,462,357). That made this
+         -- ONE floor exceed the 15s statement cap on its own, and is what timed out
+         -- work_items:claimable in papercusp. Splitting the scalar instead lets the base
+         -- table's PRIMARY KEY (harness_slug, feature_id) serve the probe: the whole floor
+         -- went from TIMEOUT@15s to 582ms over the full 72,005-row population.
+         --
+         -- EQUIVALENT, and provably so rather than by sampling: the concatenation is
+         -- harness_slug + '#' + feature_id and no harness_slug contains '#' (measured: 0 of
+         -- 217 distinct slugs), so the FIRST '#' is always the separator and splitting on it
+         -- exactly inverts the concat -- including a blocker_ref carrying further '#'s, which
+         -- maps to the same (slug, rest) pair under both forms. The position() guard keeps
+         -- the no-'#' case matching nothing, exactly as the concat form did (its output
+         -- always contains a '#', so it could never equal a ref without one).
+         -- WARNING: a harness_slug containing '#' WOULD diverge these two forms; that
+         -- invariant is pinned by blocker-ref-join-indexable.test.ts.
+         AND position('#' in d.blocker_ref) > 0
+         AND bf.harness_slug = split_part(d.blocker_ref, '#', 1)
+         AND bf.feature_id = substring(d.blocker_ref from position('#' in d.blocker_ref) + 1)
          AND (
            (d.satisfaction = 'settled' AND bf.status NOT IN ('passed', 'deprecated', 'done', 'dropped'))
            OR (d.satisfaction = 'success' AND bf.status NOT IN ('passed', 'done'))
