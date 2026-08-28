@@ -278,7 +278,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
           409,
         );
       }
-      this.descriptorValue = jsonClone(event.descriptor);
+      this.descriptorValue = jsonClone(event.descriptor) as SuSessionDescriptor<B>;
     } else if (event.type === 'backend') {
       this.descriptorValue = {
         ...this.descriptorValue,
@@ -531,9 +531,7 @@ export function getRegisteredSuSessionHost(input: {
   return registry().get(key) ?? null;
 }
 
-export interface SuSessionSseEvents {
-  session_event: SuSessionEvent;
-}
+export type SuSessionSseEvents = Record<'session_event', SuSessionEvent> & Record<string, unknown>;
 
 /**
  * Bridge one host onto the existing SSE transport. Subscription is installed
