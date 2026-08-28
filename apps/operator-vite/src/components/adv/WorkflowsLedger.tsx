@@ -40,6 +40,15 @@ const KIND_CHIP: Record<LedgerRow['kind'], string | null> = {
 export const LEDGER_HEADER_STYLE = { fontSize: 12, color: 'var(--fg-dim)', opacity: 1 } as const;
 export const LEDGER_CELL_STYLE = { padding: '9px 10px' } as const;
 
+/** Apply the floors to every column, so a new column cannot quietly ship below them. */
+function withLegibleStyles<Row>(columns: TableColumn<Row>[]): TableColumn<Row>[] {
+  return columns.map((column) => ({
+    ...column,
+    headerStyle: { ...LEDGER_HEADER_STYLE, ...column.headerStyle },
+    cellStyle: { ...LEDGER_CELL_STYLE, ...column.cellStyle },
+  }));
+}
+
 export interface WorkflowsLedgerProps {
   rows: readonly LedgerRow[];
   selectedId: string | null;
@@ -124,7 +133,7 @@ export default function WorkflowsLedger({
     <div className="pc-wf__panel pc-wf__ledger">
       <Table
         className="pc-wf__table"
-        columns={columns}
+        columns={withLegibleStyles(columns)}
         rows={[...rows]}
         getRowKey={(row) => row.id}
         onRowClick={onSelect}
@@ -202,7 +211,7 @@ export function ActivityList({ activity, nowMs, onOpen }: ActivityListProps) {
     <div className="pc-wf__panel pc-wf__ledger">
       <Table
         className="pc-wf__table"
-        columns={columns}
+        columns={withLegibleStyles(columns)}
         rows={[...activity]}
         getRowKey={(row) => row.id}
         onRowClick={onOpen}

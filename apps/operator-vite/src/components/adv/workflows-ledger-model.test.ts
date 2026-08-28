@@ -183,7 +183,8 @@ describe('spendToken (D-005)', () => {
   it('renders the routine classification the producer actually asserts', () => {
     expect(spendToken(routineItem())).toBe('$0');
     expect(spendToken(routineItem({ routine: { spend: 'unknown' } as AutomationItem['routine'] }))).toBe('unknown');
-    expect(spendToken(routineItem({ routine: { spend: 'model' } as AutomationItem['routine'] }))).toBe('possible');
+    // 'llm' is the producer's own token for a routine that dispatches an agent.
+    expect(spendToken(routineItem({ routine: { spend: 'llm' } as AutomationItem['routine'] }))).toBe('possible');
   });
 });
 
