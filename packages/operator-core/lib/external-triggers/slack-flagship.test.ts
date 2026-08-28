@@ -46,6 +46,8 @@ describe('Slack flagship respond-in-thread binding', () => {
       planHarnessSlug: input.planHarnessSlug,
       planSlug: input.planSlug,
       goalId: null,
+      workItemHarnessSlug: null,
+      workItemKind: null,
       eventPattern: input.eventPattern,
       eventFilter: {},
       action: { type: 'launch-plan' },
