@@ -50,12 +50,17 @@ describe('hosted runtime composition', () => {
     });
 
     expect(plane.mounted.map((route) => `${route.method} ${route.path}`)).toEqual(HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS);
+    expect(plane.components.providerDelegationManager).toBeTypeOf('function');
     expect(bootOrder.slice(0, 2)).toEqual(['service-role', `secret:${configuration.hostedSessionCookieSecretRef}`]);
     expect(resolveSecret).toHaveBeenCalledTimes(1);
     expect(resolveSecret).toHaveBeenCalledWith(configuration.hostedSessionCookieSecretRef);
 
     expect((await plane.app.request('/api/health')).status).toBe(200);
     expect((await plane.app.request('/api/auth/login', { method: 'POST' })).status).toBe(404);
+    expect((await plane.app.request(
+      '/api/hosted/workspaces/customer-1/provider-delegations/onboard',
+      { method: 'POST' },
+    )).status).toBe(401);
 
     const webhook = await plane.app.request('/api/auth/workos/webhook', {
       method: 'POST',
