@@ -31,7 +31,7 @@ import type { GymScore } from '../judge';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
-const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql.DRAFT');
+const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql');
 
 let src: postgres.Sql;
 let dst: postgres.Sql;

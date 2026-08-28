@@ -10,7 +10,7 @@ import type { Sql } from 'postgres';
 import type { VariantOverlay } from './variant-overlay';
 import type { GymScore } from './judge';
 import { assertGymTaskNotContaminated } from './report-set-firewall';
-import { asGymTaskCorpus } from './task-corpus';
+import { asGymTaskCorpus, type GymTaskCorpus } from './task-corpus';
 import { trackDetached } from '../detached-imports';
 
 type Row = Record<string, unknown>;
@@ -42,6 +42,8 @@ export interface TaskRow {
   intent: string;
   plantedBug?: unknown;
   generatedBy?: string;
+  /** Provenance of the task substrate. Omitted remains fail-safe synthetic. */
+  corpus?: GymTaskCorpus;
   /**
    * The declared source set this task came from (e.g. 'gym-synthetic'). Vetted by the
    * gym↔report-set firewall (P-012): a report-on benchmark set is refused here so the gym
@@ -64,7 +66,7 @@ export async function insertTask(sql: Sql, t: TaskRow): Promise<void> {
     INSERT INTO harness_gym.gym_tasks (task_id, pool, repo_url, repo_commit, spec, intent, planted_bug, generated_by, corpus)
     VALUES (${t.taskId}, ${t.pool}, ${t.repoUrl}, ${t.repoCommit}, ${t.spec}, ${t.intent},
             ${t.plantedBug ? JSON.stringify(t.plantedBug) : null}::text::jsonb, ${t.generatedBy ?? null},
-            ${asGymTaskCorpus((t as { corpus?: unknown }).corpus)})
+            ${asGymTaskCorpus(t.corpus)})
     ON CONFLICT (task_id) DO NOTHING`;
 }
 
