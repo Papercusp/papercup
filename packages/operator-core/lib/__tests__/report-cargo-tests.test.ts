@@ -400,3 +400,182 @@ describe('bounded inactive artifact reclaim (EI-21150371868241728)', () => {
     expect(RIG_SOURCE).toContain('RIG_WORK/.papercusp-keep');
   });
 });
+
+/**
+ * P-001 (test-suite-recovery-2026-08-27).
+ *
+ * The reproduced host: a 1875 GiB volume at 96% used with 78 GiB free. Admission
+ * refused with reason `free-percent`, and the reclaim that is supposed to rescue
+ * exactly this case returned `scanned: 2, reclaimed: 0` while ~67 GiB of the
+ * suite's OWN stale Cargo output sat on the same mount.
+ *
+ * The cause was reach, not policy: `cargoArtifactCandidates` offered only
+ * `release/bundle` and `<triple>/release`, so the Cargo PROFILE directories --
+ * `debug/` above all, which is where `cargo test` builds -- were unreachable. A
+ * host starved by the native test suite could therefore never reclaim its way
+ * back in. These tests pin the corrected reach, and pin that it did not come at
+ * the cost of the guards or the absolute floor.
+ */
+describe('native-suite admission reclaim reaches its own producer output (P-001)', () => {
+  const stalePolicy = {
+    ...DEFAULT_CARGO_RECLAIM_POLICY,
+    cargoTtlMs: 1,
+    ephemeralTtlMs: 1,
+    minCargoArtifactBytes: 0,
+  };
+
+  function age(path: string, agoMs = 60_000) {
+    const old = (Date.now() - agoMs) / 1000;
+    utimesSync(path, old, old);
+  }
+
+  function seedProfile(target: string, profile: string) {
+    const dir = resolve(target, profile);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(resolve(dir, 'artifact'), 'x');
+    return dir;
+  }
+
+  it('reclaims the stale debug profile that `cargo test` fills, which the release-only candidate set could never offer', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-profile-'));
+    const target = resolve(root, '.cargo-target');
+
+    try {
+      const debug = seedProfile(target, 'debug');
+      const release = seedProfile(target, 'release');
+      age(debug);
+      age(release);
+      age(target);
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        now: Date.now(),
+        policy: stalePolicy,
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      // The whole point of the fix: `debug/` is now reachable at all.
+      expect(existsSync(debug)).toBe(false);
+      expect(existsSync(release)).toBe(false);
+      expect(result.reclaimed).toBeGreaterThanOrEqual(2);
+      expect(result.bytesReclaimed).toBeGreaterThan(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still protects a warm profile directory that is younger than the TTL', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-warm-'));
+    const target = resolve(root, '.cargo-target');
+
+    try {
+      const warm = seedProfile(target, 'debug');
+      const stale = seedProfile(target, 'release');
+      age(stale, 60_000);
+      age(target, 60_000);
+      // `warm` keeps its just-written mtime.
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        now: Date.now(),
+        policy: { ...stalePolicy, cargoTtlMs: 30_000 },
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+      });
+
+      expect(readFileSync(resolve(warm, 'artifact'), 'utf8')).toBe('x');
+      expect(existsSync(stale)).toBe(false);
+      expect(result.skipped.some((s: { path: string; reason: string }) =>
+        s.path === warm && s.reason === 'younger than ttl')).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('spends a peer target before the one this run is about to build into, and stops at the admission budget', () => {
+    const home = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-order-'));
+    const active = resolve(home, '.cargo-target');
+    const peer = resolve(home, '.cargo-target-dev1');
+    const realHome = process.env.HOME;
+
+    try {
+      for (const target of [active, peer]) {
+        seedProfile(target, 'debug');
+        age(resolve(target, 'debug'));
+        age(target);
+      }
+      process.env.HOME = home;
+
+      // A budget that is satisfied by the very first reclaim, exactly as the
+      // reporter's `stopWhen: () => readDiskAdmission().allowed` behaves once
+      // one artifact has freed enough space.
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: home,
+        configuredTargetDir: active,
+        now: Date.now(),
+        policy: stalePolicy,
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+        stopWhen: () => true,
+      });
+
+      expect(result.reclaimed).toBe(1);
+      expect(result.stoppedEarly).toBe(true);
+      // The peer's stale output is spent; this run's target survives untouched.
+      expect(existsSync(resolve(peer, 'debug'))).toBe(false);
+      expect(readFileSync(resolve(active, 'debug', 'artifact'), 'utf8')).toBe('x');
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to the exhaustive sweep when the budget predicate throws instead of stopping on a bad read', () => {
+    const root = mkdtempSync(resolve(tmpdir(), 'papercusp-cargo-budget-'));
+    const target = resolve(root, '.cargo-target');
+
+    try {
+      for (const profile of ['debug', 'release']) {
+        seedProfile(target, profile);
+        age(resolve(target, profile));
+      }
+      age(target);
+
+      const result = reclaimInactiveCargoArtifacts({
+        tmpDir: root,
+        cargoRoots: [target],
+        now: Date.now(),
+        policy: stalePolicy,
+        pathIsLive: () => false,
+        slotLockIsHeld: () => false,
+        stopWhen: () => { throw new Error('statfs unreadable'); },
+      });
+
+      expect(result.stoppedEarly).toBe(false);
+      expect(result.reclaimed).toBeGreaterThanOrEqual(2);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reaches producer output without lowering either admission floor', () => {
+    // The reproduced host shape, pinned as arithmetic rather than prose: the
+    // percentage leg is what refuses, and the absolute floor is untouched.
+    const reproduced = assessCargoDiskAdmission({ totalBytes: 1875 * GIB, freeBytes: 78 * GIB });
+    expect(reproduced).toMatchObject({ allowed: false, reasons: ['free-percent'], usedPct: 96 });
+
+    // Neither constant may be relaxed to make the reproduced host pass; the fix
+    // is the reclaim's reach, so these stay exactly where their own evidence put
+    // them (128 GiB is ~3-5x the measured 24-40 GiB native target footprint).
+    expect(CARGO_PERCENT_FLOOR_BYPASS_BYTES).toBe(128 * GIB);
+    expect(DEFAULT_CARGO_RECLAIM_POLICY.maxBytes).toBe(128 * GIB);
+    expect(cargoDiskPolicyFromEnv({})).toEqual({ freePctMin: 0.1, freeBytesMin: 5 * GIB });
+
+    // The reporter must spend the budget on the admission path, not sweep blindly.
+    expect(REPORTER_SOURCE).toContain('stopWhen: () => readDiskAdmission().allowed');
+  });
+});

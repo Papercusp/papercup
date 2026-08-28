@@ -35,18 +35,24 @@
  * Flag-gated (`FLAGS.EMBED_ADMISSION`, default ON) — OFF ⇒ a byte-identical passthrough.
  */
 
+import { randomUUID } from 'node:crypto';
+
 import { RateLimitGovernor } from '@papercusp/papercusp-shared/agent';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { maybeEscalateEmbedExhaustion } from './embed-exhaustion-alert';
+import type { AdmissionContext, ResourceDemand } from '../resource-governor/admission';
+import { beginGovernedExecution, governedExecutionRuntime, type GovernedExecution } from '../resource-governor/execution';
+import { activeWorkspaceId } from '../workspace-registry';
 
 export type EmbedLane = 'memory' | 'bench';
 
-// text-embedding-3-small org ceiling is 1,000,000 TPM. Govern AGGREGATE embed token-rate under
-// it so the high-volume bench path can't exhaust the org and starve production memory. All knobs
-// are env-tunable (launch/test config only — NOT a feature gate; the gate is the FLAG below).
-const EMBED_ITPM_FLOOR = Number(process.env.PAPERCUSP_EMBED_ITPM) || 600_000;
-const EMBED_MAX_CONCURRENT = Number(process.env.PAPERCUSP_EMBED_MAX_CONCURRENT) || 32;
+// Provider headers/429s remain useful feedback, but they are not a productive
+// capacity authority.  The old ITPM and maxConcurrent seeds made this process-local
+// governor a hidden cap; durable Governor admissions below now own the embedding
+// start/queue lifecycle.  Keep an unbounded local bucket only to pace against live
+// provider feedback while the canonical receipt carries the resource decision.
+const EMBED_PROVIDER_FEEDBACK_MAX_CONCURRENT = Number.POSITIVE_INFINITY;
 
 // ── Daily cumulative SPEND cap (cost-audit-2026-06-29) ────────────────────────────────────────
 // The itpm/maxConcurrent caps above bound the embed RATE, not the cumulative spend — a run that
@@ -151,6 +157,13 @@ export interface EmbedAdmissionDeps {
   dailyTokenCap?: number;
   /** Clock seam (default Date.now) so tests can drive the UTC-day rollover deterministically. */
   now?: () => number;
+  /** Canonical durable admission seam. Production supplies this; unit tests may omit it. */
+  beginExecution?: (input: {
+    idempotencyKey: string;
+    lane: EmbedLane;
+    tokens: number;
+    demand: ResourceDemand;
+  }) => Promise<Pick<GovernedExecution, 'finish' | 'cancel'>>;
 }
 
 export interface EmbedAdmission {
@@ -215,21 +228,52 @@ export function createEmbedAdmission(deps: EmbedAdmissionDeps): EmbedAdmission {
       }
       // Flag off → no rate-governing (byte-identical passthrough), but the embed STILL counts
       // toward the daily cap (charge + proceed).
+      let localRelease: (() => void) | undefined;
       if (!(await deps.isEnabled())) {
         dayTokens += tokens;
-        return PASSTHROUGH;
+      } else {
+        const release = await deps.governor.acquire({ inTok: tokens }, { maxWaitMs: waits[lane] });
+        if (release) {
+          dayTokens += tokens; // admitted → an embed will fire → charge the daily budget
+          // Continue to the canonical receipt below; provider feedback is advisory only.
+          localRelease = release;
+        } else if (lane === 'bench') {
+          // Denied within the lane budget: bench SHEDS (caller → BM25, no embed → no charge).
+          return null;
+        } else {
+          // Memory PROCEEDS (its existing 429 retry is the backstop), while still
+          // recording the estimated spend because an embed will fire.
+          dayTokens += tokens;
+        }
       }
-      const release = await deps.governor.acquire({ inTok: tokens }, { maxWaitMs: waits[lane] });
-      if (release) {
-        dayTokens += tokens; // admitted → an embed will fire → charge the daily budget
-        return { release };
+      // The process-local governor above is deliberately feedback-only. Every
+      // embedding start still gets a durable receipt and typed lineage when the
+      // production seam is installed, including flag-off passthroughs.
+      let execution: Pick<GovernedExecution, 'finish' | 'cancel'> | undefined;
+      if (deps.beginExecution) {
+        try {
+          execution = await deps.beginExecution({
+            idempotencyKey: `embedding:${lane}:${randomUUID()}`,
+            lane,
+            tokens,
+            demand: { providerRequests: 1, networkBytes: tokens },
+          });
+        } catch (error) {
+          localRelease?.();
+          if (lane === 'bench') return null;
+          throw error;
+        }
       }
-      // Denied within the lane budget: bench SHEDS (caller → BM25, no embed → no charge); memory
-      // PROCEEDS (passthrough, its P-001 retry is the 429 backstop → an embed fires → charge) so
-      // production recall never hard-fails on admission.
-      if (lane === 'bench') return null;
-      dayTokens += tokens;
-      return PASSTHROUGH;
+      if (!execution && !localRelease) return PASSTHROUGH;
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          localRelease?.();
+          void execution?.finish({ providerRequests: 1, networkBytes: tokens }).catch(() => undefined);
+        },
+      };
     },
     recordResponse(headers: Record<string, string | undefined>): void {
       deps.governor.recordResponse(headers);
@@ -267,10 +311,24 @@ async function embedAdmissionEnabled(): Promise<boolean> {
 export function embedAdmission(): EmbedAdmission {
   if (!_singleton) {
     const governor = new RateLimitGovernor({
-      maxConcurrent: EMBED_MAX_CONCURRENT,
-      itpm: EMBED_ITPM_FLOOR,
+      maxConcurrent: EMBED_PROVIDER_FEEDBACK_MAX_CONCURRENT,
     });
-    _singleton = createEmbedAdmission({ governor, isEnabled: embedAdmissionEnabled });
+    const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID?.trim() || activeWorkspaceId();
+    _singleton = createEmbedAdmission({
+      governor,
+      isEnabled: embedAdmissionEnabled,
+      beginExecution: async ({ idempotencyKey, lane, tokens, demand }) =>
+        beginGovernedExecution(
+          {
+            idempotencyKey,
+            admissionClass: 'embedding',
+            demand,
+            metadata: { lane, estimatedTokens: tokens },
+          },
+          { owner: `embed-admission:${process.pid}`, leaseTtlMs: 5 * 60_000 },
+          governedExecutionRuntime(workspaceId, 'embedding'),
+        ),
+    });
   }
   return _singleton;
 }

@@ -14,6 +14,7 @@
 import { configureDeployment } from '@papercusp/deployment-driver';
 import { makeLatitudeDriver } from './latitude/latitude-driver';
 import { makeHetznerDriver } from './hetzner/hetzner-driver';
+import { makeGcpDriver } from './gcp/gcp-driver';
 import { loggingHeadlessPeerAdmission, makeHeadlessJoinHook } from './headless-peer';
 
 /**
@@ -26,4 +27,6 @@ export const headlessAdmission = loggingHeadlessPeerAdmission((lvl, m) => consol
 /** Drivers admit an auto-provisioned frame as a headless peer on join (P-015). */
 const onJoin = makeHeadlessJoinHook(headlessAdmission);
 
-configureDeployment({ drivers: [makeLatitudeDriver({ onJoin }), makeHetznerDriver({ onJoin })] });
+configureDeployment({
+  drivers: [makeLatitudeDriver({ onJoin }), makeHetznerDriver({ onJoin }), makeGcpDriver({ onJoin })],
+});

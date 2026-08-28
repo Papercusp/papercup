@@ -111,6 +111,7 @@ describe('GCP IAP workspace-host initialization operations', () => {
   it('declares every typed step capability and performs no I/O until execute', async () => {
     const run = vi.fn<GcpIapWorkspaceHostInitializationCommandRunner['run']>().mockResolvedValue({
       exitCode: 0,
+      stderr: '',
       stdout: JSON.stringify({
         protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
         stepId: 'workspace',
@@ -165,6 +166,7 @@ describe('GCP IAP workspace-host initialization operations', () => {
       async run() {
         return {
           exitCode: 0,
+          stderr: '',
           stdout: JSON.stringify({
             protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
             stepId: 'workspace',
@@ -179,10 +181,67 @@ describe('GCP IAP workspace-host initialization operations', () => {
 
     const failed = new GcpIapWorkspaceHostInitializationOperations(PROFILE, {
       async run() {
-        return { exitCode: 23, stdout: 'private diagnostic must not escape' };
+        return { exitCode: 23, stdout: 'private diagnostic must not escape', stderr: '' };
       },
     });
     await expect(failed.execute(step())).rejects.toThrow('failed with exit code 23');
     await expect(failed.execute(step())).rejects.not.toThrow(/private diagnostic/);
+  });
+
+  it('pins IdentitiesOnly even with no identity file, so ambient agent keys cannot exhaust MaxAuthTries', () => {
+    // Live failure on p046-canary-02: the operator's ssh-agent held 7 keys, sshd's default
+    // MaxAuthTries is 6, so the connection was disconnected with "Too many authentication
+    // failures" before the correct credential was offered — surfacing only as exit 255.
+    // IdentitiesOnly must therefore NOT be conditional on identityFile being present.
+    const { identityFile: _omitted, ...withoutIdentity } = PROFILE;
+    const command = buildGcpIapWorkspaceHostInitializationCommand(withoutIdentity, step());
+    expect(command.args).toContain('IdentitiesOnly=yes');
+    expect(command.args).not.toContain('-i');
+
+    const withIdentity = buildGcpIapWorkspaceHostInitializationCommand(PROFILE, step());
+    expect(withIdentity.args).toContain('IdentitiesOnly=yes');
+    expect(withIdentity.args).toContain('-i');
+    expect(withIdentity.args).toContain('/var/lib/papercusp/controller/os-login');
+  });
+
+  it('surfaces the transport stderr tail on a non-zero exit so the failure is diagnosable', async () => {
+    const failed = new GcpIapWorkspaceHostInitializationOperations(PROFILE, {
+      async run() {
+        return {
+          exitCode: 255,
+          stdout: '',
+          stderr: 'ERROR: (gcloud.compute.start-iap-tunnel) Error while connecting [4033: not authorized].',
+        };
+      },
+    });
+    // The bare exit code spans auth, tunnel, firewall and IAP-permission failures.
+    // Without the stderr tail every one of them is indistinguishable.
+    await expect(failed.execute(step())).rejects.toThrow(/4033: not authorized/);
+    await expect(failed.execute(step())).rejects.toThrow(/failed with exit code 255/);
+  });
+
+  it('redacts secrets in the surfaced stderr tail', async () => {
+    const failed = new GcpIapWorkspaceHostInitializationOperations(PROFILE, {
+      async run() {
+        return {
+          exitCode: 1,
+          stdout: '',
+          stderr: 'curl failed: Authorization: Bearer ya29.super-secret-token (tunnel closed)',
+        };
+      },
+    });
+    await expect(failed.execute(step())).rejects.toThrow(/tunnel closed/);
+    await expect(failed.execute(step())).rejects.not.toThrow(/ya29\.super-secret-token/);
+  });
+
+  it('degrades to the bare exit code when the runner reports no stderr', async () => {
+    const failed = new GcpIapWorkspaceHostInitializationOperations(PROFILE, {
+      async run() {
+        // A runner that omits stderr must not make the formatter throw and replace
+        // the real failure with its own.
+        return { exitCode: 7, stdout: '' } as never;
+      },
+    });
+    await expect(failed.execute(step())).rejects.toThrow('failed with exit code 7');
   });
 });

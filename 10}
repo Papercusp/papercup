@@ -1,0 +1,4 @@
+  File "<string>", line 6
+    print(f{q[metric]:20}
+         ^
+SyntaxError: '(' was never closed

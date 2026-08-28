@@ -276,12 +276,12 @@ export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `group` to filter to one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
   capability: 'operator:read',
   guidance: {
-    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.',
+    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass installSlug (or harness as its compatibility alias) to scope one install, or rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
-    chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). routines:list { rollup:true } for group metadata + review-due status.',
+    chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status.',
     // P-002: response documentation lives HERE, not in `when`/`description` —
     // those are prompt-weight budgeted and this tool is already near the cap
     // (the budget guard refused the first attempt to put it in `when`).
@@ -306,6 +306,7 @@ export default defineTool({
   rolesQuota: { operator: { perRun: 60 } },
   args: z.object({
     installSlug: z.string().max(120).optional().describe('Filter to one install slug.'),
+    harness: z.string().max(120).optional().describe('Compatibility alias for installSlug; pass installSlug or harness, not both.'),
     name: z.string().max(200).optional().describe('Filter to one routine name.'),
     q: z
       .string()
@@ -320,7 +321,15 @@ export default defineTool({
     rollup: z
       .boolean()
       .optional()
-      .describe('Return a per-group aggregate (count, active/inactive, most-recent last-fire) instead of raw rows. Ignores installSlug/name/q; group still narrows to one group.'),
+      .describe('Return a per-group aggregate (count, active/inactive, most-recent last-fire) instead of raw rows. Ignores installSlug/harness/name/q; group still narrows to one group.'),
+  }).superRefine((args, issue) => {
+    if (args.installSlug && args.harness && args.installSlug !== args.harness) {
+      issue.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['harness'],
+        message: 'Pass installSlug (the canonical filter) OR harness (its compatibility alias), not conflicting values in both.',
+      });
+    }
   }),
   // context-trimming-tiers P-023: rows are already lean scalars, so the CAP=60 row
   // cap plus a loud notice row IS the size control (count keeps the true total);
@@ -495,7 +504,7 @@ export default defineTool({
       return { data: { count: rollup.length, rollup } };
     }
 
-    const slug = args.installSlug ?? null;
+    const slug = args.installSlug ?? args.harness ?? null;
     const name = args.name ?? null;
     const q = args.q ?? null;
     const qLike = q ? `%${q}%` : null;

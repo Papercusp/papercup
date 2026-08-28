@@ -127,13 +127,17 @@ function runCargoTest(manifestAbs, extraArgs) {
   // missed a run (EI-21150371868241728).
   if (diskAdmission.status === 'blocked') {
     try {
-      reclaim = reclaimInactiveCargoArtifacts();
+      // Stop at the first artifact that makes the mount admissible: the caps
+      // bound how much a sweep may take, but only this budget keeps it from
+      // taking more than the refusal actually costs.
+      reclaim = reclaimInactiveCargoArtifacts({ stopWhen: () => readDiskAdmission().allowed });
       if (reclaim.reclaimed > 0) diskAdmission = readDiskAdmission();
       if (reclaim.reclaimed > 0) {
         console.warn(
           `[report-cargo-tests] reclaimed ${reclaim.reclaimed} inactive artifact(s) ` +
           `(${Math.floor(reclaim.bytesReclaimed / 1024 ** 3)} GiB) before Cargo admission; ` +
-          `${reclaim.skipped.length} protected/skipped`,
+          `${reclaim.skipped.length} protected/skipped` +
+          `${reclaim.stoppedEarly ? '; stopped at the admission budget' : ''}`,
         );
       }
     } catch (err) {

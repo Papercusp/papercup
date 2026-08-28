@@ -121,6 +121,7 @@ describe('POST /workspace-hosts/:hostId/credential-lifecycle', () => {
       expect(request.step).not.toHaveProperty('channel');
       return {
         exitCode: 0,
+        stderr: '',
         stdout: JSON.stringify({
           protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
           stepId: step.id,

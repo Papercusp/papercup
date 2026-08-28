@@ -197,6 +197,30 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/endpoint-route/routes/harness/features.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'git worktree remove + branch delete — feature teardown releases filesystem/process coordination state and must remain runnable under saturation' },
   ],
+  // ── bounded benchmark/diagnostic work ───────────────────────────────────────
+  // These paths either inspect metadata or drain a finite, caller-owned fixture.
+  // They do not create resident service work and therefore do not need a second
+  // durable admission receipt; keep the exemption explicit and reviewable.
+  [
+    'packages/operator-core/lib/dbos/bootstrap.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git rev-parse used only to locate the canonical checkout before arming a watchdog; no resident work starts' },
+  ],
+  [
+    'packages/operator-core/lib/memory/audit-anchors.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'git ls-files builds a bounded read-only index of repository anchors; it starts no resident work' },
+  ],
+  [
+    'packages/operator-core/lib/memory/bench/wi-6512-known-item-replay-cli.ts::unbounded-resident-queue',
+    { disposition: 'semantic', reason: 'finite in-memory benchmark pair list is test workload enumeration, not a resident production queue; evidence required' },
+  ],
+  [
+    'packages/operator-core/lib/memory/op-deadline.ts::unbounded-resident-queue',
+    { disposition: 'semantic', reason: 'pending promise set tracks already-started memory operations until settlement; it is a lifecycle ledger, not queued work; evidence required' },
+  ],
+  [
+    'packages/operator-core/lib/inference-gateway/stall-waker.ts::unbounded-resident-queue',
+    { disposition: 'semantic', reason: 'pending map is a TTL-bounded stall observation set; it never queues resource starts; evidence required' },
+  ],
 ]);
 
 function registryKey(path, code) {
@@ -230,7 +254,7 @@ function inventory(
 const START =
   /(?:\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(|new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\()/;
 const GOVERNED =
-  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
+  /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
 const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;

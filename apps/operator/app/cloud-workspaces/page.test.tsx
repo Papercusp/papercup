@@ -742,8 +742,9 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
 
     /* Closed: focus returns to the trigger, NOT to <body>. */
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(screen.queryByRole("heading", { name: "Connect Google Cloud" })).
-      toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "Connect Google Cloud" }),
+    ).toBeNull();
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(
       screen.getByRole("button", { name: "Connect Google Cloud" }),
@@ -1081,6 +1082,54 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
         (item) => item.textContent,
       ),
     ).toEqual(["Repair", "Snapshot", "Destroy"]);
+  });
+
+  it("hands focus back to the overflow trigger when the menu closes", () => {
+    /* The menu is conditionally rendered, so every close path UNMOUNTS the
+       element holding focus. A keyboard user who has moved onto Repair and
+       presses Escape — or activates it — has their active element removed,
+       and the browser's fallback for that is <body>: silently dropped to the
+       start of the document (WCAG 2.4.3). The ARIA menu-button pattern owes
+       them the trigger back.
+
+       The calibration control in the Connect suite above ("removing a focused
+       element really does drop focus to <body> here") is what makes the
+       `not.toBe(document.body)` assertions below non-vacuous in this
+       environment; it covers this file. */
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    const trigger = screen.getByRole("button", {
+      name: "More actions for research-control",
+    }) as HTMLButtonElement;
+
+    /* Close path 1 — Escape while focus sits on a menu item. */
+    fireEvent.click(trigger);
+    const repair = screen.getByRole("menuitem", {
+      name: "Repair",
+    }) as HTMLButtonElement;
+    repair.focus();
+    expect(document.activeElement).toBe(repair);
+
+    fireEvent.keyDown(repair, { key: "Escape" });
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(trigger);
+
+    /* Close path 2 — activating an action. The action still fires; the point
+       is that focus lands somewhere rather than nowhere. Focus the item
+       first and park focus off the trigger, so passing means focus was
+       genuinely MOVED back rather than never having left. */
+    fireEvent.click(trigger);
+    const repairAgain = screen.getByRole("menuitem", {
+      name: "Repair",
+    }) as HTMLButtonElement;
+    repairAgain.focus();
+    expect(document.activeElement).toBe(repairAgain);
+    fireEvent.click(repairAgain);
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement).toBe(trigger);
   });
 
   it("expands the selected host in place with tabbed detail", () => {

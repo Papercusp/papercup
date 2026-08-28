@@ -95,9 +95,14 @@ export const OUTBOX_GC_AGE_MS = 24 * 60 * 60 * 1000;
  *  statement, so progress survives a restart. */
 export const OUTBOX_GC_BATCH = 5000;
 
-/** Max GC batches per drain pass — bounds GC time per pass (≤100k rows); the
- *  drain loop re-runs until the backlog clears. */
-export const OUTBOX_GC_MAX_BATCHES = 20;
+/**
+ * Inline-GC wall-time budget per drain pass. This is a liveness policy, not a
+ * productive-capacity ceiling: each DELETE remains a small committed batch and
+ * the next NOTIFY/poll pass resumes any remaining backlog. The former
+ * OUTBOX_GC_MAX_BATCHES bound silently left rows behind after an arbitrary
+ * 100k-row ceiling.
+ */
+export const OUTBOX_GC_BUDGET_MS = 30_000;
 
 /** Default poll-fallback cadence for `startOutboxDrain` (ms). */
 export const DEFAULT_POLL_MS = 5000;
@@ -429,9 +434,10 @@ export interface DrainOptions {
    *  test exercise the batched/bounded loop + early-break without seeding 100k+
    *  rows. Production omits it. */
   _gcBatch?: number;
-  /** Test seam: override the inline-GC max-batches bound (`OUTBOX_GC_MAX_BATCHES`).
-   *  Production omits it. */
-  _gcMaxBatches?: number;
+  /** Test seam: override the inline-GC wall-time budget. Production omits it. */
+  _gcBudgetMs?: number;
+  /** Test seam: monotonic clock for the GC budget. Production uses Date.now. */
+  _gcNowMs?: () => number;
   /**
    * WI-3896: row ids to unconditionally SKIP this pass — poison rows the
    * caller's consecutive-stage-timeout counter has quarantined. Checked BEFORE
@@ -499,9 +505,12 @@ export async function drainOutboxOnce(
   // re-runs until the backlog clears.
   // Best-effort: a GC failure must not block the drain, so swallow it.
   const gcBatch = opts._gcBatch ?? OUTBOX_GC_BATCH;
-  const gcMaxBatches = opts._gcMaxBatches ?? OUTBOX_GC_MAX_BATCHES;
+  const gcBudgetMs = opts._gcBudgetMs ?? OUTBOX_GC_BUDGET_MS;
+  const gcNowMs = opts._gcNowMs ?? Date.now;
+  const gcStartedAtMs = gcNowMs();
   try {
-    for (let i = 0; i < gcMaxBatches; i++) {
+    for (let i = 0; ; i++) {
+      if (gcNowMs() - gcStartedAtMs >= gcBudgetMs) break;
       const gc = await logIfStageStalls(
         scope,
         `gc-delete (batch ${i})`,

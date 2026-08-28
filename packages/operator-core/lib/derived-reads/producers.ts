@@ -530,7 +530,16 @@ registerDerivedRead({
   // reader that resolves `trc` through the legend would find neither and show an
   // empty tier reason in quick search — the exact silent-narrowing this encoding
   // was chosen to avoid. Bumping is what makes the change self-enforcing.
-  producerVersion: 4,
+  //
+  // v4 → v5 (WI-471938): the row gains `sourceOptions`, the CORPUS-wide set of
+  // "Filed by" values. The tab's source chips used to derive their options from the
+  // windowed rows, so a source whose rows all sat past the 500-row cap offered no chip
+  // and could not be selected (measured live 2026-08-28: `system`, 15 corpus rows, 0 in
+  // the window). A stored v4 row carries no such field, and the client falls back to the
+  // window when it is ABSENT — which is exactly the old, wrong behaviour. So without this
+  // bump the fix would ship inert on the very read it was filed against, for the third
+  // time on this producer. That is the whole reason this counter exists.
+  producerVersion: 5,
   scope: 'workspace',
   compute: async () => {
     const { computeLearningImprovementsSnapshot } = await import(
@@ -584,7 +593,12 @@ registerDerivedRead({
   ttlMs: 90_000,
   // v3 → v4 tracks the sibling's tierReason interning (WI-39773 / D-008), per the
   // note above: same compute, same wire shape, so the same stale-row hazard.
-  producerVersion: 4,
+  //
+  // v4 → v5 tracks the sibling's `sourceOptions` (WI-471938) for the same reason. The
+  // hive lens is NOT a view predicate, so this variant takes the same unfiltered branch
+  // and gains the same field — a stored v4 row here would leave the hive-scoped tab on
+  // the window-derived chip set the bump exists to retire.
+  producerVersion: 5,
   scope: 'harness',
   compute: async ({ harnessSlug }) => {
     const { computeLearningImprovementsSnapshot } = await import(

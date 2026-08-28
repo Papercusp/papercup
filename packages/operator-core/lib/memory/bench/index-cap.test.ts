@@ -180,7 +180,9 @@ describe.skipIf(!realScript)('simulation matches the real memory-compact.mjs', (
       await seedCorpus(backend, generateSyntheticCorpus(375, 99), { scope: 'bench', concurrency: 16 });
 
       const sim = simulateIndexProjection(collectProjectionEntries(dir));
-      const real = runRealProjectorDryRun(dir);
+      const real = await runRealProjectorDryRun(dir, undefined, {
+        governedProcess: async (_options, run) => run({}, process.env, { inherited: true }),
+      });
       expect(real).not.toBeNull();
       expect(sim.indexed).toBe(real!.indexed);
       // The script reports KB at one decimal; allow that rounding.

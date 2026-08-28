@@ -146,6 +146,10 @@ export async function runGatewaySidecarMain(): Promise<void> {
   const svc = await startGatewayService({
     port: Number(process.env.PAPERCUSP_GATEWAY_PORT) || DEFAULT_GATEWAY_PORT,
     workspace: process.env.PAPERCUSP_WORKSPACE || undefined,
+    // P-006: production gateway requests are durably admitted through the
+    // canonical work-item queue before provider execution. Unit/load callers
+    // that invoke startGatewayService directly retain the compatibility path.
+    durableAdmission: true,
     concurrency: Number(process.env.PAPERCUSP_GATEWAY_CONCURRENCY) || undefined,
     upstreamBase: process.env.ANTHROPIC_BASE_URL_UPSTREAM || undefined,
     // Local inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): the ONLY

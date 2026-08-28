@@ -324,9 +324,9 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     });
 
     const { handle } = makeFakeHandle();
-    // _gcBatch:3 exercises the multi-batch loop; _gcMaxBatches:20 leaves room so
-    // the early-break (not the bound) is what stops it.
-    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcMaxBatches: 20 });
+    // _gcBatch:3 exercises the multi-batch loop; the default time budget leaves
+    // room so the early-break (not an arbitrary batch ceiling) is what stops it.
+    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3 });
 
     // All 7 old rows GC'd across the batches; the fresh row kept.
     const remaining = (await db.sql<{ id: number; key: string }[]>`
@@ -335,11 +335,12 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     expect(Number(remaining[0].id)).toBe(freshId);
   });
 
-  it('A3: the max-batches bound stops the GC even with a backlog larger than gcBatch × gcMaxBatches (the rest waits for the next pass)', async () => {
+  it('A3: the liveness budget stops a long GC pass and the rest waits for the next pass', async () => {
     const now = Date.now();
     const oldDrainedAt = now - OUTBOX_GC_AGE_MS - 60_000;
-    // 10 old-drained rows; _gcBatch:2 × _gcMaxBatches:3 = at most 6 deleted this
-    // pass (every batch is FULL → never early-breaks → the bound is what stops it).
+    // 10 old-drained rows; a tiny deterministic budget allows exactly three
+    // committed batches (every batch is FULL, so the budget—not a row ceiling—
+    // is what stops this pass).
     for (let i = 0; i < 10; i++) {
       await seedOutbox(db.sql, {
         table_name: 'harness_features_consolidated', op: 'put', key: `F-OLD-${i}`,
@@ -348,15 +349,21 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     }
 
     const { handle } = makeFakeHandle();
-    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 2, _gcMaxBatches: 3 });
+    let clock = 0;
+    await drainOutboxOnce(handle, db.sql, {
+      now,
+      _gcBatch: 2,
+      _gcBudgetMs: 4,
+      _gcNowMs: () => clock++,
+    });
 
-    // Bounded: exactly 6 (= 2 × 3) deleted; 4 remain for a later pass.
+    // Exactly 6 (= 2 × 3) deleted; 4 remain for a later pass.
     let [{ remaining }] = await db.sql<{ remaining: number }[]>`
       SELECT count(*)::int AS remaining FROM harness_shared.substrate_outbox`;
     expect(remaining).toBe(4);
 
     // The next pass clears the rest (2 full batches of 2 → partial 0-batch breaks).
-    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 2, _gcMaxBatches: 3 });
+    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 2 });
     [{ remaining }] = await db.sql<{ remaining: number }[]>`
       SELECT count(*)::int AS remaining FROM harness_shared.substrate_outbox`;
     expect(remaining).toBe(0);
@@ -387,7 +394,7 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     try {
       const { handle } = makeFakeHandle();
       const drained = await Promise.race([
-        drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcMaxBatches: 1 }),
+        drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcBudgetMs: 30_000 }),
         new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('GC waited on a locked row')), 2_000);
         }),
@@ -405,7 +412,7 @@ describe('outbox-drain fan-out + coalescing + GC bound (substrate internals, rea
     }
 
     const { handle } = makeFakeHandle();
-    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcMaxBatches: 1 });
+    await drainOutboxOnce(handle, db.sql, { now, _gcBatch: 3, _gcBudgetMs: 30_000 });
     const [afterRelease] = await db.sql<{ present: boolean }[]>`
       SELECT EXISTS(
         SELECT 1 FROM harness_shared.substrate_outbox WHERE id = ${lockedId}

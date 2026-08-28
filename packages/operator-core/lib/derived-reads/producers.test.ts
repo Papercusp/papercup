@@ -513,7 +513,7 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     expect(producer?.producerVersion).toBe(4);
   });
 
-  it('learning.improvements is at producerVersion 4 — each wire-shape change needs a bump to take effect (WI-7275, WI-39773)', async () => {
+  it('learning.improvements is at producerVersion 5 — each wire-shape change needs a bump to take effect (WI-7275, WI-39773, WI-471938)', async () => {
     // WI-7279 narrowed the humanQueue wire shape (22 keys → 12) but left this at
     // v2, so every already-stored v2 snapshot kept passing the reader's version
     // check (registry.ts:204) and served the OLD FAT SHAPE. The fix was committed,
@@ -533,6 +533,11 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     // reader resolving `trc` through the legend finds neither and renders an empty
     // tier reason — the same silent-narrowing the v2 → v3 bump above was for.
     //
+    // v4 → v5 (WI-471938): the row gains `sourceOptions`, the corpus-wide set of
+    // "Filed by" values. The client falls back to its old window-derived chip set when
+    // that field is ABSENT, so a stored v4 row does not merely look stale — it silently
+    // restores the exact defect the change fixes.
+    //
     // Pinning the EXACT version is deliberate: this assertion is a TRIPWIRE, not
     // bookkeeping. Changing the wire shape without bumping fails HERE rather than
     // shipping inert against already-stored rows, so update it in the same change
@@ -544,7 +549,14 @@ describe('summarizePlanLintReport (plans.lint list projection)', () => {
     const producer = registry
       .listDerivedReadProducers()
       .find((p) => p.key === 'learning.improvements');
-    expect(producer?.producerVersion).toBe(4);
+    expect(producer?.producerVersion).toBe(5);
+    // The hive lens is the SAME compute behind a scope arg, so it takes the same wire
+    // shape and the same stale-row hazard; pinning it here keeps the pair from drifting
+    // apart, which is how one of them would ship inert while the other looked fixed.
+    const hiveProducer = registry
+      .listDerivedReadProducers()
+      .find((p) => p.key === 'learning.improvements.hive');
+    expect(hiveProducer?.producerVersion).toBe(5);
   });
 
   it('coord.history is at producerVersion 2 — the payload de-duplication needs it to take effect (WI-7295)', async () => {

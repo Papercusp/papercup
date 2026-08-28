@@ -206,6 +206,15 @@ describe('routines:list', () => {
     expect(b.routines[0]).toMatchObject({ name: 'git-sync', cron: '0 */10 * * * *', active: true, lastFiredAt: null });
   });
 
+  it('accepts harness as a compatibility alias for installSlug and rejects conflicting filters', async () => {
+    expect(listTool.args.safeParse({ harness: 'papercusp' }).success).toBe(true);
+    expect(listTool.args.safeParse({ installSlug: 'papercusp', harness: 'papercusp' }).success).toBe(true);
+    expect(listTool.args.safeParse({ installSlug: 'papercusp', harness: 'sidestage' }).success).toBe(false);
+
+    await listTool.handler({ harness: 'papercusp' } as never, { role: 'su' } as never);
+    expect(sqlMock.mock.calls.flat()).toContain('papercusp');
+  });
+
   /*
    * EI-19336000265007219 — a DELIBERATE PAUSE must be distinguishable from a STALL.
    *

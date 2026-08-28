@@ -135,6 +135,20 @@ export const DEFAULT_CARGO_RECLAIM_POLICY = Object.freeze({
 const EPHEMERAL_PREFIXES = Object.freeze(['verify-tauri-headless.', 'deb-hzfed.']);
 const CARGO_TARGET_NAME_RE = /^\.cargo-target(?:-dev\d+|-pid\d+)?$/;
 
+/**
+ * Cargo's own profile output directories. These are the artifacts Cargo itself
+ * declares disposable: it rebuilds either one from source on the next run.
+ *
+ * `debug` is load-bearing here. `cargo test` builds into it, so a host whose
+ * free space was consumed *by the native test suite* keeps its single largest
+ * reclaimable artifact there. While the candidate set offered only
+ * `release/bundle`, admission was unrecoverable in exactly that case: the one
+ * candidate on offer was routinely younger than the TTL, the reclaim returned
+ * `reclaimed: 0`, and the suite refused to spawn while tens of GiB of its own
+ * stale output sat unreachable one directory away.
+ */
+const CARGO_PROFILE_DIR_NAMES = Object.freeze(['debug', 'release']);
+
 function safeStat(path) {
   try { return statSync(path); } catch { return null; }
 }
@@ -241,7 +255,6 @@ function cargoSlotLockIsHeld(targetDir, homeDir) {
 
 function knownCargoRoots(homeDir, configuredTargetDir) {
   const roots = [];
-  if (configuredTargetDir) roots.push(resolve(process.cwd(), configuredTargetDir));
   try {
     for (const entry of readdirSync(homeDir, { withFileTypes: true })) {
       if (entry.isDirectory() && CARGO_TARGET_NAME_RE.test(entry.name)) {
@@ -249,7 +262,15 @@ function knownCargoRoots(homeDir, configuredTargetDir) {
       }
     }
   } catch { /* no home scan means no default roots */ }
-  return [...new Set(roots)];
+  if (!configuredTargetDir) return [...new Set(roots)];
+  // The target this run is about to build into is scanned LAST. Every guard
+  // below still decides whether it may be touched at all; this only settles the
+  // ORDER in which equally-eligible artifacts are offered up. A peer's stale
+  // target costs nothing to rebuild later, while this run's warm cache is the
+  // one WI-5080 deliberately keeps, so it is spent only after the alternatives
+  // are exhausted -- and, with a `stopWhen` budget, usually not at all.
+  const configured = resolve(process.cwd(), configuredTargetDir);
+  return [...new Set([...roots.filter((root) => root !== configured), configured])];
 }
 
 function cargoArtifactCandidates(root) {
@@ -259,15 +280,28 @@ function cargoArtifactCandidates(root) {
     // avoids re-evaluating a parent whose mtime changed after a child removal.
     return [root];
   }
+  // Broader candidates are listed before the narrower ones they contain. A
+  // TTL-eligible parent is then reclaimed in a single operation and its nested
+  // path is skipped as already-missing, while a parent held back by its own
+  // freshness still leaves the nested candidate its independent decision --
+  // which is how the pre-existing `release/bundle` behaviour is preserved
+  // rather than replaced.
   const candidates = [];
+  const pushProfileDirs = (base) => {
+    for (const profile of CARGO_PROFILE_DIR_NAMES) {
+      const dir = join(base, profile);
+      const stat = (() => { try { return lstatSync(dir); } catch { return null; } })();
+      if (stat?.isDirectory() && !stat.isSymbolicLink()) candidates.push(dir);
+    }
+  };
+  pushProfileDirs(root);
   const releaseBundle = join(root, 'release', 'bundle');
   if (safeStat(releaseBundle)?.isDirectory()) candidates.push(releaseBundle);
   let entries;
-  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return candidates; }
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return [...new Set(candidates)]; }
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[A-Za-z0-9_]+-[A-Za-z0-9_]+-/.test(entry.name)) continue;
-    const release = join(root, entry.name, 'release');
-    if (safeStat(release)?.isDirectory()) candidates.push(release);
+    pushProfileDirs(join(root, entry.name));
   }
   return [...new Set(candidates)];
 }
@@ -292,7 +326,22 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
   const homeDir = homedir();
   const pathIsLive = options.pathIsLive ?? defaultPathIsLive;
   const slotLockIsHeld = options.slotLockIsHeld ?? cargoSlotLockIsHeld;
-  const result = { scanned: 0, reclaimed: 0, bytesReclaimed: 0, skipped: [], dryRun };
+  const result = { scanned: 0, reclaimed: 0, bytesReclaimed: 0, skipped: [], dryRun, stoppedEarly: false };
+  // An optional sufficiency budget. Admission passes a predicate that re-reads
+  // the mount, so reclamation stops at the first artifact that makes the
+  // filesystem admissible instead of spending every eligible candidate up to
+  // the entry/byte caps. Deleting the minimum is what actually preserves peer
+  // and warm artifacts; the caps alone only bound the damage, they do not
+  // avoid it. A throwing or absent predicate degrades to the previous
+  // exhaustive behaviour rather than stopping early on a bad read.
+  const stopWhen = typeof options.stopWhen === 'function' ? options.stopWhen : null;
+  const sufficient = () => {
+    if (!stopWhen || result.reclaimed === 0) return false;
+    let done = false;
+    try { done = stopWhen(result) === true; } catch { return false; }
+    if (done) result.stoppedEarly = true;
+    return done;
+  };
   const reclaimed = (path, bytes) => {
     if (!dryRun) {
       try {
@@ -351,6 +400,7 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
       continue;
     }
     reclaimed(path, bytes);
+    if (sufficient()) return result;
     if (result.reclaimed >= policy.maxEntries) break;
   }
 
@@ -385,6 +435,7 @@ export function reclaimInactiveCargoArtifacts(options = {}) {
         continue;
       }
       reclaimed(path, bytes);
+      if (sufficient()) return result;
       if (result.reclaimed >= policy.maxEntries) return result;
     }
     if (result.reclaimed >= policy.maxEntries) break;

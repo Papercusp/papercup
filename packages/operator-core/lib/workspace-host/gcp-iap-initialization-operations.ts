@@ -13,6 +13,36 @@ import {
   type WorkspaceHostInitializationStep,
 } from '@papercusp/deployment-driver';
 import { quotePosixShellArg } from './local-connection-manager';
+import { redactWorkspaceHostText } from './observability-store';
+
+/**
+ * Bound on the stderr tail carried into a non-zero-exit error message.
+ *
+ * The transport's stderr is the ONLY evidence of WHY a remote initialization failed
+ * (exit 255 alone spans auth, tunnel, firewall, IAP permission and a missing remote
+ * initializer). It is captured, redacted and truncated rather than discarded.
+ */
+const MAX_DIAGNOSTIC_TAIL_CHARS = 2000;
+
+/**
+ * Redacted, bounded, single-block stderr tail for an operator-facing failure message.
+ *
+ * Deliberately accepts `unknown`: a runner that omits stderr must degrade to the bare
+ * exit-code message, never throw. A formatter that crashes here would replace the real
+ * failure with its own — the exact evidence-destroying class this tail exists to fix.
+ * NOTE: stdout is NEVER routed here. That channel carries the protocol response and may
+ * hold secret-shaped evidence; only stderr, the diagnostic channel, is surfaced.
+ */
+export function formatGcpIapDiagnosticTail(stderr: unknown): string {
+  if (typeof stderr !== 'string' || stderr.length === 0) return '';
+  const redacted = redactWorkspaceHostText(stderr).trim();
+  if (redacted.length === 0) return '';
+  const tail =
+    redacted.length > MAX_DIAGNOSTIC_TAIL_CHARS
+      ? `…${redacted.slice(-MAX_DIAGNOSTIC_TAIL_CHARS)}`
+      : redacted;
+  return `; stderr: ${tail}`;
+}
 
 /**
  * DERIVED, not restated. The remote initializer that answers this protocol owns the constant
@@ -52,6 +82,11 @@ export interface GcpIapWorkspaceHostInitializationCommand {
 export interface GcpIapWorkspaceHostInitializationProcessResult {
   exitCode: number;
   stdout: string;
+  /**
+   * Captured transport stderr, bounded by the runner's response limit. Redact before
+   * surfacing; a non-zero exit is undiagnosable without it.
+   */
+  stderr: string;
 }
 
 export interface GcpIapWorkspaceHostInitializationCommandRunner {
@@ -185,7 +220,16 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
       `UserKnownHostsFile=${knownHostsFile}`,
       '-o',
       `HostKeyAlias=${gcpIapHostKeyAlias(profile)}`,
-      ...(identityFile ? ['-o', 'IdentitiesOnly=yes', '-i', identityFile] : []),
+      // IdentitiesOnly is UNCONDITIONAL, not paired with -i. Without it, OpenSSH offers every
+      // key held by the ambient ssh-agent before any pinned identity. sshd's default
+      // MaxAuthTries is 6, so on a host whose agent carries more keys than that the connection
+      // is disconnected ("Too many authentication failures") BEFORE the correct credential is
+      // ever presented — observed live on p046-canary-02 with 7 agent keys, surfacing only as
+      // an opaque exit 255. Pinning this also keeps controller auth independent of whatever
+      // happens to be loaded in the operator's agent.
+      '-o',
+      'IdentitiesOnly=yes',
+      ...(identityFile ? ['-i', identityFile] : []),
       '-o',
       `ProxyCommand=${proxyCommand}`,
       '--',
@@ -220,6 +264,7 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
         shell: false,
       }) as ChildProcessWithoutNullStreams;
       const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let settled = false;
@@ -249,7 +294,9 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
         stderrBytes += chunk.byteLength;
         if (stderrBytes > this.maxResponseBytes) {
           fail('GCP IAP initialization diagnostic output exceeded the configured limit');
+          return;
         }
+        stderr.push(chunk);
       });
       child.once('error', () => fail('Failed to start GCP IAP initialization transport'));
       child.once('close', (code) => {
@@ -259,6 +306,7 @@ export class NodeGcpIapWorkspaceHostInitializationCommandRunner implements GcpIa
         resolve({
           exitCode: typeof code === 'number' ? code : 1,
           stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
         });
       });
       child.stdin.once('error', () => fail('Failed to write GCP IAP initialization request'));
@@ -329,7 +377,10 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
     const command = buildGcpIapWorkspaceHostInitializationCommand(this.profile, step);
     const result = await this.runner.run(command);
     if (result.exitCode !== 0) {
-      throw new Error(`GCP IAP initialization failed with exit code ${result.exitCode}`);
+      throw new Error(
+        `GCP IAP initialization failed with exit code ${result.exitCode}` +
+          formatGcpIapDiagnosticTail(result.stderr),
+      );
     }
     return parseResponse(result.stdout, step.id);
   }

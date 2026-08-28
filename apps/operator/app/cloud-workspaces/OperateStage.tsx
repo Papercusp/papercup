@@ -217,6 +217,7 @@ function HostRow({
 }) {
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
+  const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
   const tabButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const chip = hostStateChip(workspace);
   const plan = lifecycleActionPlan(workspace);
@@ -252,7 +253,17 @@ function HostRow({
       }
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOverflowOpen(false);
+      if (event.key !== "Escape") return;
+      /*
+       * Closing unmounts the menu, and with it whichever item holds focus —
+       * the browser's fallback for a removed active element is <body>, i.e. a
+       * keyboard user silently dropped to the start of the document (WCAG
+       * 2.4.3). The menu-button pattern owes them the trigger back. Pointer
+       * dismissal below deliberately does NOT restore, because there focus is
+       * already following the pointer somewhere the user chose.
+       */
+      setOverflowOpen(false);
+      overflowTriggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", onDocumentPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -330,6 +341,7 @@ function HostRow({
 
           <div className={styles.overflow} ref={overflowRef}>
             <Button
+              ref={overflowTriggerRef}
               variant="ghost"
               aria-label={`More actions for ${workspace.name}`}
               aria-expanded={overflowOpen}
@@ -358,7 +370,14 @@ function HostRow({
                       busyKeys.has(`${action.action}:${workspace.id}`)
                     }
                     onClick={() => {
+                      /*
+                       * Same unmount, same drop: activating an item removes
+                       * the button that was clicked. Restore first, then
+                       * dispatch — the destroy route opens a dialog, which is
+                       * free to take focus from the trigger afterwards.
+                       */
                       setOverflowOpen(false);
+                      overflowTriggerRef.current?.focus();
                       if (action.action === "destroy") {
                         onDestroy(workspace.id);
                         return;

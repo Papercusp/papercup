@@ -26,10 +26,16 @@ const readImprovementItems = vi.fn();
 // point of the pairing is that BOTH calls take the SAME filter — asserting that
 // needs the count's arguments, not just its result.
 const countImprovementItems = vi.fn();
+// WI-471938: the same pairing again, one dimension over — the compute reads the corpus
+// SOURCE VOCABULARY alongside the corpus total, so this explicit factory has to export it
+// too or the compute destructures `undefined` and every test here dies on a TypeError with
+// nothing to do with what it was asserting.
+const improvementSourceCounts = vi.fn();
 const projectImprovementItemsForBoundedRead = vi.fn();
 vi.mock('../harness/improvements/read-items', () => ({
   readImprovementItems: (...a: unknown[]) => readImprovementItems(...a),
   countImprovementItems: (...a: unknown[]) => countImprovementItems(...a),
+  improvementSourceCounts: (...a: unknown[]) => improvementSourceCounts(...a),
   projectImprovementItemsForBoundedRead: (...a: unknown[]) => projectImprovementItemsForBoundedRead(...a),
   IMPROVEMENT_TOPIC: 'papercusp-improvement',
 }));
@@ -119,6 +125,10 @@ beforeEach(() => {
   // pre-WI-39675 assertion in this file testing the contract it was written for;
   // the tests that care about the corpus total set a number explicitly.
   countImprovementItems.mockReset().mockResolvedValue(undefined);
+  // Same rationale as the count above: default to the DEGRADED reading so every
+  // pre-WI-471938 assertion keeps testing its own contract, and the tests that care
+  // about the source vocabulary set it explicitly.
+  improvementSourceCounts.mockReset().mockResolvedValue(undefined);
   projectImprovementItemsForBoundedRead.mockReset().mockImplementation(
     async (_opts: unknown, projection: { project: (items: unknown[]) => Promise<unknown[]> | unknown[] }) =>
       projection.project([]),
@@ -422,6 +432,11 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
       },
     ]);
     readWatchdogFlowTicks.mockResolvedValue([{ tickAtMs: Date.now() - 10 * 60_000, capturedCount: 2 }]);
+    // WI-471938: the sample has to carry the SUCCESSFUL corpus-vocabulary read, because
+    // that is the shape production serves. Leaving the suite-wide degraded default here
+    // would omit `sourceOptions` from the fingerprint and let the real shape drift past
+    // this pin — the exact silent-inert failure the version counter exists to stop.
+    improvementSourceCounts.mockResolvedValue({ Scout: 2, system: 1 });
     const rows = await computeLearningImprovementsSnapshot({});
 
     __clearDerivedReadRegistryForTest();
@@ -443,6 +458,12 @@ describe('learning.improvements — digest + flow row (P-041)', () => {
         // Those two deltas are the whole diff from v3 — captured from a real call,
         // not hand-typed.
         4: 'obj{autoEligible:arr<empty>,byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,title:string,trc:number}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},open:number,recurringSignatures:arr<empty>,returned:number,tierReasonLegend:arr<string>,total:number,windowed:boolean}',
+        // v5 (WI-471938): the ONE delta from v4 is a top-level
+        // `sourceOptions:arr<obj{count:number,value:string}>` — the corpus-wide "Filed by"
+        // vocabulary, which the chips previously derived from the windowed rows. The bump
+        // is not cosmetic: the client falls back to that window-derived set when the field
+        // is ABSENT, so a stored v4 row would keep serving the defect this change removes.
+        5: 'obj{autoEligible:arr<empty>,byKind:obj{bug:number},bySeverity:obj{},byState:obj{open:number},diagnosisClusters:obj{clusters:arr<empty>,considered:number,ritualExcluded:number,unshaped:number},flow:obj{captured7d:number,dispatch:obj{fireFailed:number,fired7d:number,firing:number,fixed7d:number,inProgress:number,lastDispatchAt:null,lastOutcomeAt:null,orphaned:number,overdue:number,resolved:obj{couldNotFix:number,fixed:number,needsHuman:number},total:number},medianOpenAgeDays:number,net7d:number,recurringSignatureCount:number,resolved7d:number,watchdog:obj{captured24h:number,lastTickAt:string,ticks24h:number}},generatedAt:string,headline:string,humanQueue:arr<obj{ageDays:number,id:string,ideaType:string,kind:string,scope:string,score:number,state:string,title:string,trc:number}>,likelyDuplicates:arr<empty>,likelyDuplicatesScope:obj{consideredCount:number,corpusTotal:number,nearDupConsidered:number,nearDupPass:string,windowed:boolean},open:number,recurringSignatures:arr<empty>,returned:number,sourceOptions:arr<obj{count:number,value:string}>,tierReasonLegend:arr<string>,total:number,windowed:boolean}',
       },
     });
   });
@@ -543,6 +564,78 @@ describe('learning.improvements — digest.total is the corpus, not the window (
     expect(rows).toHaveLength(1);
     expect(rows[0].total).toBe(2);
     expect(rows[0].windowed).toBe(false);
+  });
+
+  // ── WI-471938: the corpus SOURCE VOCABULARY, the same bug one dimension over ──
+  //
+  // `total` was the window size wearing the corpus's name; the tab's "Filed by" chips had
+  // the identical defect in the option set — they were derived from the projected rows, so
+  // a source living only past the window offered no chip at all. Measured live 2026-08-28:
+  // `system` had 15 corpus rows and 0 in the newest-500 window.
+
+  it('carries the CORPUS source vocabulary, not the sources present in the windowed rows', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    improvementSourceCounts.mockResolvedValue({ Scout: 1007, system: 15 });
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const row = (await computeLearningImprovementsSnapshot({}))[0];
+
+    // `system` is in the answer even though no returned row carries it — that IS the fix.
+    expect(row.sourceOptions).toEqual([
+      { value: 'Scout', count: 1007 },
+      { value: 'system', count: 15 },
+    ]);
+  });
+
+  it('reads the vocabulary over the SAME filter as the rows and the count', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    improvementSourceCounts.mockResolvedValue({ Scout: 3 });
+    countImprovementItems.mockResolvedValue(9);
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    await computeLearningImprovementsSnapshot({ state: 'open', limit: 500 });
+
+    // A vocabulary read over a WIDER population than the list would offer chips that
+    // yield nothing — the same lie as a total over the wrong population, pointed the
+    // other way.
+    expect(improvementSourceCounts).toHaveBeenCalledTimes(1);
+    expect(improvementSourceCounts.mock.calls[0][0]).toEqual(readImprovementItems.mock.calls[0][0]);
+    expect(improvementSourceCounts.mock.calls[0][0]).toMatchObject({ loopOutputOnly: true });
+  });
+
+  it('drops the unfiled bucket and sorts by value — a chip strip needs options, in a stable order', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    // The '' key is how the SQL layer reports rows with no sourceRole; it keeps that
+    // histogram totalling countIssues(), but "unfiled" is not a selectable chip.
+    improvementSourceCounts.mockResolvedValue({ system: 15, '': 1048, Scout: 1007 });
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const row = (await computeLearningImprovementsSnapshot({}))[0];
+
+    expect(row.sourceOptions?.map((o) => o.value)).toEqual(['Scout', 'system']);
+  });
+
+  it('degrades to ABSENT (not empty) when the vocabulary read fails — never sinks the tab', async () => {
+    // Absent and empty must stay distinguishable: the client treats `[]` as "no sources
+    // exist" and falls back to its window-derived set only when the field is missing.
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    improvementSourceCounts.mockRejectedValue(new Error('source aggregate timed out'));
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const rows = await computeLearningImprovementsSnapshot({});
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0].sourceOptions).toBeUndefined();
+  });
+
+  it('reports an empty vocabulary as [] when the corpus genuinely has no sourced rows', async () => {
+    readImprovementItems.mockResolvedValue([windowRow('EI-1')]);
+    improvementSourceCounts.mockResolvedValue({ '': 12 });
+    readWatchdogFlowTicks.mockResolvedValue([]);
+
+    const row = (await computeLearningImprovementsSnapshot({}))[0];
+
+    expect(row.sourceOptions).toEqual([]);
   });
 });
 

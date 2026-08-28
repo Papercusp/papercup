@@ -32,10 +32,15 @@
  * The probe seeds temp-dir stores through the seam (D-009 — the live `~/.claude`
  * store is never written).
  */
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+
+import {
+  classifyGovernedTestProcessOutcome,
+  runGovernedTestProcess,
+} from '../../../../../scripts/lib/governed-test-process.mjs';
 
 import { ClaudeFileMemoryBackend, parseTopicFile } from '@papercusp/memory';
 import { generateSyntheticCorpus, seedCorpus, type CorpusEntry } from '@papercusp/memory/bench';
@@ -333,20 +338,74 @@ export function simulateIndexProjection(
  * always-loaded count (tierForCap's keep). Returns null when the script is
  * missing or its output doesn't parse (CI boxes without ~/.claude).
  */
-export function runRealProjectorDryRun(
+export interface GovernedProjectorRunOptions {
+  /** Test seam; production uses the durable process governor. */
+  governedProcess?: typeof runGovernedTestProcess;
+  workspaceId?: string;
+  owner?: string;
+}
+
+/** Keep the canonical helper call explicit for source-level enforcement audits. */
+const defaultGovernedProjectorProcess: typeof runGovernedTestProcess = (...args) =>
+  runGovernedTestProcess(...args);
+
+/**
+ * Run the real projector behind one durable process receipt.  The old sync
+ * spawn made this benchmark invisible to the capless governor and could pile
+ * CPU/disk pressure on the host while a fleet was already probing memory.
+ * Keeping the receipt open until the child exits also makes cancellation and
+ * actual-demand settlement truthful.
+ */
+export async function runRealProjectorDryRun(
   memoryDir: string,
   scriptPath: string = DEFAULT_PROJECTOR_SCRIPT,
-): { indexed: number; indexKb: number } | null {
+  options: GovernedProjectorRunOptions = {},
+): Promise<{ indexed: number; indexKb: number } | null> {
   if (!fs.existsSync(scriptPath)) return null;
-  const r = spawnSync(process.execPath, [scriptPath, '--dry-run', '--memory-dir', memoryDir], {
-    encoding: 'utf8',
-    timeout: 120_000,
-    env: { ...process.env, MEMORY_SOFT_CAP_KB: '', MEMORY_STALE_DAYS: '', MEMORY_MAX_ENTRY_CHARS: '' },
+  const governedProcess = options.governedProcess ?? defaultGovernedProjectorProcess;
+  const r = await governedProcess(
+    {
+      workspaceId: options.workspaceId,
+      namespace: 'memory-index-projector',
+      owner: options.owner ?? 'memory-index-cap',
+      admissionClass: 'embedding',
+      demand: { cpuWeight: 1, memoryBytes: 64 * 1024 * 1024, diskBytes: 1 },
+      timeoutMs: 120_000,
+      env: {
+        ...process.env,
+        MEMORY_SOFT_CAP_KB: '',
+        MEMORY_STALE_DAYS: '',
+        MEMORY_MAX_ENTRY_CHARS: '',
+      },
+    },
+    async (_context, childEnv) =>
+      await new Promise<{ stdout: string; stderr: string; code: number | null; signal: NodeJS.Signals | null }>(
+        (resolve, reject) => {
+          const child = spawn(process.execPath, [scriptPath, '--dry-run', '--memory-dir', memoryDir], {
+            env: childEnv,
+            stdio: ['ignore', 'pipe', 'pipe'],
+          });
+          let stdout = '';
+          let stderr = '';
+          child.stdout?.on('data', (chunk) => { stdout += String(chunk); });
+          child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+          child.once('error', reject);
+          child.once('close', (code, signal) => resolve({ stdout, stderr, code, signal }));
+        },
+      ),
+  );
+  if (!r || typeof r !== 'object') return null;
+  const outcome = r as { stdout?: string; stderr?: string; code?: number | null; signal?: NodeJS.Signals | null; error?: unknown };
+  const settlement = classifyGovernedTestProcessOutcome({
+    output: `${outcome.stdout ?? ''}\n${outcome.stderr ?? ''}`,
+    code: outcome.code,
+    signal: outcome.signal,
+    error: outcome.error,
   });
-  if (r.error) return null;
+  if (settlement.kind === 'cancel') return null;
   // P-010 tiering report: `always-loaded: <keep> of <active>`.
-  const indexed = /always-loaded:\s*(\d+)\s+of\s+\d+/.exec(r.stderr ?? '');
-  const sizeKb = /index size:\s*([\d.]+) KB/.exec(r.stderr ?? '');
+  const indexed = /always-loaded:\s*(\d+)\s+of\s+\d+/.exec(outcome.stderr ?? '');
+  const sizeKb = /index size:\s*([\d.]+) KB/.exec(outcome.stderr ?? '');
   if (!indexed || !sizeKb) return null;
   return { indexed: Number(indexed[1]), indexKb: Number(sizeKb[1]) };
 }
@@ -406,7 +465,7 @@ export async function probeIndexCap(opts: IndexCapProbeOptions): Promise<IndexCa
       }
       log(`projecting @${target}…`);
       const sim = simulateIndexProjection(collectProjectionEntries(dir));
-      const real = scriptPath ? runRealProjectorDryRun(dir, scriptPath) : null;
+      const real = scriptPath ? await runRealProjectorDryRun(dir, scriptPath) : null;
       points.push({ size: target, ...sim, ...(real ? { realProjector: real } : {}) });
     }
   } finally {

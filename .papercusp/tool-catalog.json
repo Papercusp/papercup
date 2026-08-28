@@ -25596,7 +25596,7 @@
           "POST"
         ]
       },
-      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `group` to filter to one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).",
+      "description": "List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).",
       "capabilities": [
         "operator:read"
       ],
@@ -25614,9 +25614,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.",
+        "when": "See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass installSlug (or harness as its compatibility alias) to scope one install, or rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.",
         "notWhen": "To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).",
-        "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug). routines:list { rollup:true } for group metadata + review-due status."
+        "chaining": "routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status."
       }
     },
     {
@@ -28979,7 +28979,7 @@
           "POST"
         ]
       },
-      "description": "Queue a distinct audited test run for one plan binding using its latest settled provider event. This may perform the workflow's configured provider write (for example a Gmail draft or Slack thread reply).",
+      "description": "Queue a distinct audited test run for one binding using its latest settled provider event. This may perform the workflow's configured provider write (for example a Gmail draft or Slack thread reply).",
       "capabilities": [
         "plans:write"
       ],
@@ -28997,8 +28997,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "Testing an installed workflow against the last real event it received. Pass confirm:true after surfacing that the resulting plan may write back to the provider.",
-        "notWhen": "For a manual run with operator-supplied inputs use plans:run-now. This verb never re-ingests a provider event and is unavailable until the binding has settled event history.",
+        "when": "Proving an installed plan or create-work-item binding against a real event — including a new one, still disarmed, before you retire what it replaces.",
+        "notWhen": "For a manual run with operator-supplied inputs use plans:run-now. This verb never re-ingests a provider event and is unavailable until its source has a matching settled event.",
         "chaining": "triggers:status → triggers:run-with-last-event { bindingId, confirm:true } → triggers:status or plans:runs."
       }
     },
