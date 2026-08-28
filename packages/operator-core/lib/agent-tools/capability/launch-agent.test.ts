@@ -103,6 +103,7 @@ const spawnConsoleMock = vi.fn(
   async (_opts: unknown): Promise<SpawnConsoleResult> => ({
     status: 'ok',
     pid: 4242,
+    terminalPid: 4343,
     terminal: 'xterm',
     child: {} as never,
     display: ':1',
@@ -363,6 +364,7 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
 
     expect(isError(res)).toBe(false);
     expect(spawnConsoleMock).toHaveBeenCalledTimes(1);
+    expect(spawnConsoleMock.mock.calls[0][0]).toMatchObject({ captureTerminalPid: true });
     expect(spawnHeadlessMock).not.toHaveBeenCalled();
     // Scripted launch: no picker, account pinned (P-012), launcher provenance.
     expect(spawnedCommand()).toContain('psu --launched-by=su-caller --no-picker --account=default');
@@ -373,6 +375,30 @@ describe('ad-hoc launch (a brief, no plan, no fleet — D-002/D-003)', () => {
     expect(spawnedCommand()).not.toContain('--kickoff');
     expect(textOf(res)).toContain('(no fleet)');
     expect(textOf(res)).toContain('first turn');
+    expect(textOf(res)).toContain('launcher pid 4242; terminal pid 4343');
+    expect(dataOf(res)?.launch).toMatchObject({
+      tasks: [{ pid: 4242, terminalPid: 4343, headless: false }],
+    });
+  });
+
+  it('reports an unavailable terminal PID without falling back to the launcher PID', async () => {
+    spawnConsoleMock.mockResolvedValueOnce({
+      status: 'ok',
+      pid: 4242,
+      terminalPid: null,
+      terminal: 'xterm',
+      child: {} as never,
+      display: ':1',
+      desktopEnvResolvedVia: 'active-seat',
+    });
+
+    const res = await launchAgent.handler({ brief: 'audit the release script' }, ctx);
+
+    expect(textOf(res)).toContain('launcher pid 4242; terminal pid unavailable');
+    expect(textOf(res)).not.toContain('terminal pid 4242');
+    expect(dataOf(res)?.launch).toMatchObject({
+      tasks: [{ pid: 4242, terminalPid: null, headless: false }],
+    });
   });
 
   it('honors the internal fresh owner pin used to correlate concurrent respawns', async () => {
