@@ -639,14 +639,22 @@ mod tests {
             },
         ];
         let opts = model_options(&tiers, None);
-        assert_eq!(opts.len(), 3, "unsupported rows remain visible for explanation");
+        assert_eq!(
+            opts.len(),
+            3,
+            "unsupported rows remain visible for explanation"
+        );
         assert!(opts[1].disabled);
         assert!(opts[1]
             .hint
             .as_deref()
             .unwrap()
             .contains("unsupported loop provider \"openrouter\""));
-        assert!(opts[1].hint.as_deref().unwrap().contains("special OMP models"));
+        assert!(opts[1]
+            .hint
+            .as_deref()
+            .unwrap()
+            .contains("special OMP models"));
         assert!(!opts[2].disabled);
     }
 
@@ -660,7 +668,10 @@ mod tests {
             loop_capability: None,
         }];
         let opts = model_options(&tiers, None);
-        assert!(!opts[1].disabled, "old operators did not send capability metadata");
+        assert!(
+            !opts[1].disabled,
+            "old operators did not send capability metadata"
+        );
     }
 
     #[test]
