@@ -1,5 +1,6 @@
 /** Flagship Gmail inbound message → plan run → anchored draft reply binding (P-011). */
 import type postgres from 'postgres';
+import { parsePlan } from '@papercusp/plan-parser';
 import { hashPlanContent } from '@papercusp/plan-parser/content-hash';
 import { deriveIndexFromContent } from '../agent-tools/plans/source';
 import { writePlanIndexRows } from '../agent-tools/plans/plan-index-rows';
@@ -15,11 +16,13 @@ export const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
 export const GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS = 'papercusp';
 export const GMAIL_RESPOND_DRAFT_PLAN = 'gmail-respond-with-draft-2026-08-22';
 export const GMAIL_RESPOND_DRAFT_EVENT = 'ext:gmail:message.received';
+export const GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES = ['personal:gmail'] as const;
 
 export const GMAIL_RESPOND_DRAFT_PLAN_CONTENT = `---
 title: Gmail message — respond with a draft
 slug: ${GMAIL_RESPOND_DRAFT_PLAN}
 status: ready
+personalScopes: [personal:gmail]
 created: 2026-08-22
 updated: 2026-08-22
 ---
@@ -96,6 +99,42 @@ export const GMAIL_RESPOND_DRAFT_EVENT_FILTER = {
 export interface GmailFlagshipPlanEnsureResult {
   created: boolean;
   schemaAdded: boolean;
+  personalScopeAdded: boolean;
+}
+
+const PERSONAL_SCOPE_FRONTMATTER_KEYS = ['personalScopes', 'personal_scopes', 'personal-scopes'] as const;
+
+function normalizedPersonalScope(value: string): string {
+  const scope = value.trim().toLowerCase();
+  return scope.startsWith('personal:') ? scope : `personal:${scope}`;
+}
+
+/** Add the narrow Gmail grant declaration without replacing user-authored plan prose. */
+export function ensureGmailRespondDraftPersonalScope(content: string): string {
+  const parsed = parsePlan(content);
+  if (parsed.isLegacy) throw new Error('gmail_flagship_plan_frontmatter_required');
+  const key = PERSONAL_SCOPE_FRONTMATTER_KEYS.find((candidate) =>
+    Object.prototype.hasOwnProperty.call(parsed.frontmatter.raw, candidate),
+  );
+  const declared = key ? parsed.frontmatter.raw[key] : undefined;
+  const scopes = Array.isArray(declared) ? declared : typeof declared === 'string' ? [declared] : [];
+  if (scopes.some((scope) => normalizedPersonalScope(scope) === GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES[0])) {
+    return content;
+  }
+
+  const frontmatterEnd = content.indexOf('\n---', 3);
+  if (frontmatterEnd < 0) throw new Error('gmail_flagship_plan_frontmatter_required');
+  const frontmatter = content.slice(0, frontmatterEnd);
+  const suffix = content.slice(frontmatterEnd);
+  if (!key) {
+    return `${frontmatter}\npersonalScopes: [${GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES.join(', ')}]${suffix}`;
+  }
+
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const line = new RegExp(`^${escapedKey}\\s*:.*$`, 'm');
+  if (!line.test(frontmatter)) throw new Error('gmail_flagship_personal_scope_line_missing');
+  const nextScopes = [...scopes, ...GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES];
+  return `${frontmatter.replace(line, `${key}: [${nextScopes.join(', ')}]`)}${suffix}`;
 }
 
 export async function ensureGmailRespondDraftPlan(
@@ -109,24 +148,29 @@ export async function ensureGmailRespondDraftPlan(
   return sql.begin(async (tx) => {
     const lockKey = [workspaceId, GMAIL_RESPOND_DRAFT_HARNESS, GMAIL_RESPOND_DRAFT_PLAN].join(':');
     await tx`SELECT pg_advisory_xact_lock(hashtext('harness_plans'), hashtext(${lockKey}))`;
-    const existing = await tx<Array<{ inputSchema: unknown }>>`
-      SELECT input_schema AS "inputSchema"
+    const existing = await tx<Array<{ inputSchema: unknown; content: string }>>`
+      SELECT input_schema AS "inputSchema", content
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${workspaceId}
          AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
          AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
     if (existing[0]) {
-      if (existing[0].inputSchema == null) {
+      const schemaAdded = existing[0].inputSchema == null;
+      const content = ensureGmailRespondDraftPersonalScope(existing[0].content);
+      const personalScopeAdded = content !== existing[0].content;
+      if (schemaAdded || personalScopeAdded) {
         await tx`
           UPDATE harness_shared.harness_plans
-             SET input_schema = ${inputSchemaJson}::text::jsonb,
+             SET input_schema = COALESCE(input_schema, ${inputSchemaJson}::text::jsonb),
+                 content = ${content},
+                 content_hash = ${hashPlanContent(content)},
                  version = version + 1, updated_at = now()
            WHERE workspace_id = ${workspaceId}
              AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
              AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
-        return { created: false, schemaAdded: true };
+        return { created: false, schemaAdded, personalScopeAdded };
       }
-      return { created: false, schemaAdded: false };
+      return { created: false, schemaAdded: false, personalScopeAdded: false };
     }
     await tx`
       INSERT INTO harness_shared.harness_plans (
@@ -150,7 +194,7 @@ export async function ensureGmailRespondDraftPlan(
       },
       idx,
     );
-    return { created: true, schemaAdded: true };
+    return { created: true, schemaAdded: true, personalScopeAdded: true };
   });
 }
 
