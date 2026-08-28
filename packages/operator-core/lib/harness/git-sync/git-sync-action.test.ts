@@ -163,7 +163,7 @@ vi.mock('./run-git-sync', () => ({
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
 }));
 
-const runDependencyGenerationPrebuildMock = vi.fn(async () => 'ready');
+const runDependencyGenerationPrebuildMock = vi.fn(async (_request: Record<string, unknown>) => 'ready');
 vi.mock('../../release/dependency-generation-prebuild', () => ({
   runDependencyGenerationPrebuild: (request: Record<string, unknown>) => runDependencyGenerationPrebuildMock(request),
 }));
