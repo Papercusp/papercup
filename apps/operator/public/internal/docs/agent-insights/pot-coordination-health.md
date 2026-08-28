@@ -1,7 +1,7 @@
 # Rubric method: pot-coordination-health (the 15-criteria scorecard)
 URL: /internal/docs/agent-insights/pot-coordination-health
 
-The investigation method behind the `pot-coordination-health` rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 15 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's `method_ref`; the structured part (criteria keys, rating scale, drift markers) lives in the `rubrics` store.
+The investigation method behind the pot-coordination-health rubric — the model, how-to-investigate (live DB signals), and drift markers for each of the 15 per-characteristic criteria that Overwatch (and any agent) grades a structured observation against. This MDX is the rubric's method_ref; the structured part (criteria keys, rating scale, drift markers) lives in the rubrics store.
 
 ## What this is
 
@@ -20,7 +20,7 @@ criteria + cite evidence, in addition to its free-form observations.
 
 This page is the rubric's **`method_ref`** — the long-form METHOD. The structured part (the 15
 criteria `key`s, per-criterion `model`/`method`/`driftMarkers`, the default rating scale) lives
-in the `rubrics` store (`rubrics:get { rubric_id: 'pot-coordination-health' }`). Author this
+in the `rubrics` store (`rubrics:get { rubricRef: 'pot-coordination-health' }`). Author this
 prose; grade against the store.
 
 ## The shared rating scale
@@ -331,7 +331,7 @@ window, grade the MOST RECENT completed activity and state its age instead of ra
 
 * `rubric-driven-observations-2026-06-20` — the plan (D-001 model, D-002 scope + owner #1, D-003 the schema contract).
 * `hive-coordination-test-loop-2026-06-20` D-001 — the owner's original 13-question scorecard this rubric crystallizes.
-* `rubrics:get { rubric_id: 'pot-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
+* `rubrics:get { rubricRef: 'pot-coordination-health' }` — the structured rubric (criteria keys, rating scale, drift markers).
 
 ## Maintaining this pointer (for future rubric authors)
 

@@ -50,6 +50,25 @@ which surfaces each feature should appear on.
 
 ## 0. Tools
 
+Before the first CLI call, run this **same-shell PATH preflight**. Coding-agent launchers can expose Node/npm while omitting npm's global executable directory; that makes every otherwise-correct command fail with exit 127. Resolve the active npm prefix rather than hard-coding a Node major, then verify the command before booting a desktop or spending time on a bridge diagnosis.
+
+```sh
+if ! command -v tauri-agent-tools >/dev/null 2>&1; then
+  npm_prefix="$(npm prefix -g 2>/dev/null || true)"
+  if [ -n "$npm_prefix" ] && [ -x "$npm_prefix/bin/tauri-agent-tools" ]; then
+    export PATH="$npm_prefix/bin:$PATH"
+  fi
+fi
+
+command -v tauri-agent-tools >/dev/null 2>&1 || {
+  echo "FATAL: tauri-agent-tools is not on PATH; install it with npm i -g tauri-agent-tools or set VERIFY_TAURI_AGENT_TOOLS_BIN for the packaged verifier." >&2
+  exit 127
+}
+tauri-agent-tools --version
+```
+
+On managed installs, the prefix is version-scoped (for example, `~/.local/node25`), so do not copy today's absolute path into a runbook. The packaged `scripts/verify-tauri-headless.sh` performs the same resolution before it creates any display, desktop, or sidecar resources and exports `VERIFY_TAURI_AGENT_TOOLS_BIN`/its directory for assertion and `--boot-only` callers.
+
 Primary stack — drives the operator UI inside the Tauri shell:
 
 * **`tauri-agent-tools`** (`npm i -g tauri-agent-tools`, currently 0.7.0)

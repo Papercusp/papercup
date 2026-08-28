@@ -1,92 +1,51 @@
-# The dynamic tool surface — small seed + expand on demand
+# The dynamic tool surface — trimmed seed + full reachability
 URL: /internal/docs/agent-insights/dynamic-tool-surface
 
-How a seeded MCP session grows its tool list at runtime (tools:find → tools/list_changed → client re-fetch) instead of choosing between focus, token cost, and reachability. Plus tools:invoke, the universal reachability hatch. Retires the "static ?tools= trim strands the long tail" caveat.
+Canonical trimmed-only MCP launch contract: every client starts from a growable core seed; tools:find discovers the live long tail, tools:invoke guarantees dispatch, and legacy full inputs normalize to trimmed with deprecation metadata.
 
-## The problem — a trilemma
+## The problem — eager catalogs force a false trade-off
 
-The superuser MCP catalog is \~580 tools / \~140k tokens. Three costs compete, and
-every **static** approach can only buy two:
+The superuser MCP catalog is large enough that advertising every tool schema at launch wastes context, dilutes tool choice, and can exceed a client transport frame before the first useful call. A static small allowlist avoids that cost but strands the long tail. Papercusp therefore has one effective launch mode: a small, growable `trimmed` seed with full server-side reachability.
 
-1. **Reachability** — a client can only *call* a tool it received in `tools/list`
-   (OMP returns `toolNotFound`; a trimmed session's `search_tool_bm25` returns
-   only the received set).
-2. **Token cost** — sending all \~580 schemas is \~140k tokens every turn — billed
-   *and* attention-diluting — **even on a big-context model** (Codex).
-3. **Focus** — a weak model handed \~580 choices hallucinates tool names.
-
-Static `?tools=core` bought token+focus but stranded the \~530-tool tail. The full
-catalog bought reachability but paid token+focus. **The dynamic surface buys all
-three.**
+The old `full` launch mode is retired. Public launch schemas, saved-profile writers, UI controls, and generated argv expose only `trimmed`. Compatibility boundaries may still receive the historical spelling `full`; `normalizeSuContextSize` converts it to `trimmed` before signing, spawning, comparison, or persistence and reports a deprecation signal. It is an input alias, never an effective mode.
 
 ## The mechanism — a growable seed
 
-`?tools=<core spine>` on the MCP URL is no longer a hard cap; it's a **seed
-floor** that grows at runtime:
+1. **Seed.** SU launches advertise `CORE_MCP_TOOL_NAMES` plus the small SU-only extras through the MCP URL's `?tools=` parameter. Role launches advertise the shared core spine. `buildSuLaunchSpec` and `buildRoleLaunchSpec` set the seed for every backend and tier.
+2. **Track.** On the first `tools/list`, `getSessionSurface(uiClientId, seed)` creates a mutable per-session set. The stable session identity is the key, and the seed is re-added as an invariant floor on every later list.
+3. **Discover.** `tools:find { query }` searches the complete projected catalog and returns the exact tool name, description, and argument schema. Its handler also calls `ctx.activateTools` for the selected hits.
+4. **Grow.** `activateSessionTools` adds newly discovered names and emits `notifications/tools/list_changed`. Clients that honor the notification can re-fetch `tools/list` and receive native wrappers for the expanded set.
+5. **Invoke.** `tools:invoke { name, args }` dispatches any projected tool under the caller's existing role, profile, quota, and authorization gates. It is the universal path when a client does not materialize a wrapper after `list_changed`.
 
-1. **Seed.** `role-launch-spec` / `psu-launcher` bake `?tools=<CORE_MCP_TOOL_NAMES>`
-   into the session's MCP URL. The core spine includes `tools:find` (discover) and
-   `tools:invoke` (call-anything).
-2. **Track.** On the first `tools/list`, `getSessionSurface(uiClientId, seed)`
-   (`tool-allowlist.ts`) creates a **mutable per-session set**, keyed by the su
-   session identity (`uiClientId` = `x-papercusp-client` header / `client=` / the
-   transport session id). It's the floor for that connection.
-3. **Grow.** When the model calls `tools:find("<intent>")`, the handler calls
-   `ctx.activateTools(hits)` → `activateSessionTools` adds the matched names to the
-   session set **and** fires `notifications/tools/list_changed`.
-4. **Re-fetch.** A `listChanged`-capable client re-fetches `tools/list`,
-   `getSessionSurface` returns the grown set, and the surfaced tools are now
-   callable — natively, no indirection.
+`tools:invoke` is a router, not a privilege bypass: the target call runs through the same projected dispatch and policy checks as a direct call. The compact MCP initialize instructions provide a capability map so an agent can know what category to search without loading every schema.
 
-`MCP_SERVER_CAPABILITIES` declares `tools: { listChanged: true }` — the flag the
-client checks before it will act on the notification.
+## Per-client behavior
 
-### The universal hatch — `tools:invoke`
+| Client     | Launch surface                                                                                                                                                                                            | Long-tail path                                                                                                                                                     |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **OMP**    | The per-session config advertises the core seed directly and disables OMP's second discovery gate for that small set.                                                                                     | `tools:find` grows the server surface; OMP honors `list_changed` and can call surfaced wrappers. `tools:invoke` remains available.                                 |
+| **Codex**  | Always starts from the trimmed seed. There is no supported full-catalog opt-out: the old full surface exceeded the code-mode IPC frame limit.                                                             | Use `tools:find` for the live name/schema and `tools:invoke` for guaranteed dispatch. A refreshed native wrapper is an optimization, not an acceptance dependency. |
+| **Claude** | `PAPERCUSP_TOOLS` seeds the same trimmed spine. Native ToolSearch stays enabled to defer the seed's schemas, but Claude no longer receives the whole Papercusp catalog's names and descriptions up front. | Use Papercusp `tools:find` and `tools:invoke` for the long tail. Do not depend on Claude refreshing an existing wrapper after `list_changed`.                      |
 
-`tools:invoke { name, args }` dispatches to ANY projected tool server-side, under
-the caller's OWN context (via `ctx.dispatchTool` → `dispatchProjectedToolToMcp`),
-so it's gated **exactly** as a direct call — a router, not a privilege bypass. It
-reaches the whole catalog even on a client that never grows its own tool list, so
-`tools:find` (get the name+schema) → `tools:invoke` (call it) works regardless of
-`list_changed` support.
+This is deliberately heterogeneous at the client edge and uniform at the contract boundary: every launch is effectively trimmed, and every client can still reach the complete authorized catalog.
 
-## Per-client — heterogeneous by design
+## Legacy `full` compatibility
 
-| Client     | Mechanism                                          | Notes                                                                                                                                                                                                                                      |
-| ---------- | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **OMP**    | dynamic surface (`list_changed`)                   | **Verified live**: `refreshServerTools` re-fetches on the notification, rebuilds + installs the callable set. Seeds by default (its weak-model default; `psu-launcher`).                                                                   |
-| **Codex**  | seed + `tools:invoke` (+ dynamic if it re-fetches) | Seeds **by default on any tier** for the token-cost win (`role-launch-spec`, `input.agent==='codex'`). Recognizes `list_changed`; `tools:invoke` guarantees reachability regardless. `contextSize:'full'` opts back into the full catalog. |
-| **Claude** | native **ToolSearch** — untouched                  | NOT default-seeded. ToolSearch is the same defer-then-activate pattern client-side and better for Claude (no round-trip). It never gets a seed on frontier tiers, so no `list_changed` is fired at it.                                     |
+* CLI `--context-size=full`, old HTTP request bodies, `adv_sessions.launch_spec` / `launch_argv`, and historical fleet headcount config rows remain readable.
+* The shared normalizer returns effective `trimmed` plus `normalizedLegacyFull:true`; HTTP surfaces expose `{ requested:'full', effective:'trimmed', deprecated:true }` where callers need to show the migration.
+* Read paths do not mutate historical storage as a side effect. The next explicit mutation persists only `trimmed`.
+* Any value other than `trimmed` or the one legacy alias is rejected.
 
-The mechanism is **gated by seed-presence**: no `?tools=` ⇒ `getSessionSurface`
-returns `null` (full catalog, no surface tracked) ⇒ `activateSessionTools` no-ops
-⇒ no notification. That's why Claude-on-frontier is automatically untouched.
+The compatibility rule prevents old durable rows from becoming launch traps without keeping two behaviors alive.
 
-## Verified (2026-07-01, live against :3170)
+## Tool-schema freshness
 
-A full round-trip over the real streamable-HTTP transport:
+`list_changed` is a membership signal, not a schema-content invalidation signal. Editing the schema of a tool already visible in a connected session does not force that client to refresh its cached wrapper. Verify a changed schema from a fresh connection after promotion. For long-tail acceptance, a fresh trimmed session must discover the tool through `tools:find` and successfully call it through `tools:invoke`; an old session's cached direct wrapper is not evidence.
 
-* `capabilities.tools.listChanged === true`
-* seeded `tools/list` = exactly the 3-tool seed
-* `tools:find("set a feature flag")` → `activated:true`, surfaced `flags:set` + 4 more
-* **`notifications/tools/list_changed` delivered on `tools:find`'s response stream** (the #1 risk — notifications ride the per-request event-stream, same as `emit`/`progress`; SSE transport stays disabled)
-* re-fetched `tools/list` = 8 tools (3 seed + 5 surfaced)
-* a mid-session-surfaced tool dispatched server-side (reachability end-to-end)
+## Core invariants
 
-## Gotchas
-
-* **The notification rides the per-request stream**, not a persistent SSE
-  channel (`disableSse: true` — no Redis). It's fired via the same
-  `sendNotification` as `emit`/`progress`, but **not** gated on a `progressToken`
-  (it's session-level). The surfaced tool becomes callable on the *next* turn — a
-  1-turn latency that matches the natural find→call flow.
-* **Session key = `uiClientId`**, resolved identically in `tools/list`
-  (`spawnRes.ctx.uiClientId`) and the tool ctx (`spawn.uiClientId`). A session
-  without a stable id falls back to static behavior (the seed can't grow).
-* **The seed is an invariant floor** — every `tools/list` re-adds it, so a config
-  change that widens the seed only widens the floor; growth is preserved.
-* **Per-session state is ephemeral** (an in-memory Map, the per-connection
-  exception to the Postgres storage policy), swept on a lazy TTL + hard cap.
-* **`activateSessionTools` only grows an already-seeded session** — an un-seeded
-  (full-catalog / Claude) session has no entry, so activation and the notification
-  both no-op. This is the D-005 guarantee, enforced by construction.
+* `?tools=` is a seed floor, not an authorization cap.
+* Session growth is ephemeral connection state, bounded by TTL and a hard entry cap.
+* A session without a stable identity remains safely static; `tools:invoke` still preserves reachability.
+* Full-catalog eagerness must not be reintroduced as a public flag, saved profile, role default, or client-specific escape hatch.
+* Tests should cover both the trimmed public contract and legacy-full normalization at every durable boundary.

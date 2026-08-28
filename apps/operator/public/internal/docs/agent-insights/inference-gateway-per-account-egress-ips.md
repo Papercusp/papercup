@@ -3,13 +3,6 @@ URL: /internal/docs/agent-insights/inference-gateway-per-account-egress-ips
 
 Each Claude Max subscription can egress from its OWN outbound IP, so Anthropic's per-IP opus throttle becomes per-ACCOUNT — rotation actually works and aggregate RPM scales ~Nx with N accounts. The code is wired end-to-end (account-pool egress → resolver → gateway undici dispatcher); the owner provides the IPs/proxies. This is the step-by-step: provision N egress IPs (bound source IP or HTTP forward proxy), register each account's egress, restart the gateway, and verify per-account routing at three levels (unit test → socket → echo).
 
-## Why this is the highest-leverage capacity fix
-
-The pot inference gateway (`papercup-inference-gateway.service`, `127.0.0.1:8788`,
-`packages/operator-core/lib/inference-gateway/gateway.ts`) is the **sole egress** to
-`api.anthropic.com` for the cup fleet. By default every Max subscription's upstream
-request leaves the box from the **same outbound IP**.
-
 Anthropic enforces a meaningful slice of the opus rate limit **per source IP**. So when
 N subscriptions all share one egress IP, the per-IP throttle caps the *whole pool* — the
 extra accounts buy little headroom, and the "router is broken, accounts sit unused"
@@ -146,7 +139,8 @@ npx vitest run lib/inference-gateway/gateway.test.ts lib/inference-gateway/accou
 
 **Level 2 — transport (the live gateway is actually using the egress).**
 The route trace is already on (`PAPERCUSP_GATEWAY_ROUTE_LOG=1` in the unit) — it logs
-`gw-route: … want=<pin> routed=<account>` and every response carries
+`gw-route: … want=<pin> picked=<account>` at the route-decision point (not necessarily the account
+that ultimately served the response), and every response carries
 `x-papercusp-routed-account`. To see the **egress IP** in use:
 
 * Bound IP (A): inspect the gateway's upstream sockets — the local source address of

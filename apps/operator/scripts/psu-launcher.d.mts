@@ -694,6 +694,13 @@ export function installBootLogCapture(ownerId: string | null | undefined, { home
     path: string;
     uninstall: () => void;
 } | null;
+/** The durable identity recorded when this native session was born. */
+export function recoverSessionIdentity(nativeSessionId: any, { home }?: {
+    home?: string | undefined;
+}): {
+    ownerId: any;
+    advSessionId: number | null;
+} | null;
 /** The coordOwnerId this native session was born with, or null (no entry /
  *  unreadable / malformed — all degrade to the caller minting, never throw). */
 export function recoverSessionOwner(nativeSessionId: any, { home }?: {
@@ -709,6 +716,15 @@ export function recoverSessionOwner(nativeSessionId: any, { home }?: {
 export function recoverResumeSessionOwner(session: any, { home }?: {
     home?: string | undefined;
 }): any;
+/** Recover both durable identity halves for an out-of-window resume. The
+ * adv-keyed entry wins when the row id is known; otherwise the native-session
+ * entry supplies the id recorded at launch. */
+export function recoverResumeSessionIdentity(session: any, { home }?: {
+    home?: string | undefined;
+}): {
+    ownerId: any;
+    advSessionId: number | null;
+} | null;
 /**
  * The native session id a launch argv identifies AS THIS SESSION, or null.
  * Precedence matters because a fork's argv names TWO sessions:
@@ -2281,6 +2297,7 @@ export function spawnInherit(options: SpawnInheritOptions): void;
  * @property {string|null} [kickoffFile]
  * @property {any} [sessionPort]
  * @property {boolean} [preserveCwd]
+ * @property {any} [hostHandoff] already-consumed host handoff orders
  * @property {(...args:any[])=>any} [reportSessionEndedImpl]
  * @property {()=>any} [onSpawn]
  * @property {(()=>any)|null} [onSpawnFailure]
@@ -3310,6 +3327,10 @@ export type RunWrapperOptions = {
     kickoffFile?: string | null | undefined;
     sessionPort?: any;
     preserveCwd?: boolean | undefined;
+    /**
+     * already-consumed host handoff orders
+     */
+    hostHandoff?: any;
     reportSessionEndedImpl?: ((...args: any[]) => any) | undefined;
     onSpawn?: (() => any) | undefined;
     onSpawnFailure?: (() => any) | null | undefined;

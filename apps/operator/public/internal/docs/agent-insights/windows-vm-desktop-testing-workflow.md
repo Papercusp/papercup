@@ -285,6 +285,7 @@ every sharp edge that cost an hour:
     heredoc, pipe, or nested single-quote breaks at one of these boundaries
     with a confusing, boundary-specific error that never names the real
     cause:
+
     * heredoc content mis-split by cmd.exe before reaching bash: `cat: '#
       WI-3328...': No such file or directory`
     * a pipe meant for bash intercepted by cmd.exe instead: `'grep' is not
@@ -303,6 +304,22 @@ every sharp edge that cost an hour:
       papercup-runtime --exec bash /mnt/c/Users/User/<script>.sh` (or
       `node ... .mjs`) — note this is where §1's `--exec` (not `--`) still
       applies, one layer downstream of the fix this item is about.
+
+    **Copy-paste-safe example (no shell substitutions):** from a Linux/macOS
+    host, send a local script to the VM and run it in WSL with literal paths:
+
+    ```bash
+    scp -i ~/.ssh/papercup-vm-win -P 2223 ./check-runtime.sh user@127.0.0.1:C:/Users/user/check-runtime.sh
+    ssh -i ~/.ssh/papercup-vm-win -p 2223 user@127.0.0.1 wsl -d papercup-runtime --exec bash /mnt/c/Users/user/check-runtime.sh
+    ```
+
+    These commands contain no `$`, command substitutions, heredocs, or
+    nested quotes: the host shell passes literal arguments to Windows OpenSSH,
+    and `wsl.exe` receives `-d`, the distro name, `--exec`, the interpreter,
+    and the script as separate arguments. Save the script as a normal local file
+    first; keep the Windows account name consistent in the `scp` destination and
+    the WSL path. The explicit `bash` argument also avoids depending on
+    executable-bit translation on the shared mount.
 
 23. **`/S` is a false-silent flag post-Inno-cutover — the installer looks
     perfectly "hung" instead of erroring** (found live 2026-07-17, WI-5013
