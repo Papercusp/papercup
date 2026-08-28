@@ -42,6 +42,8 @@ import type { HostedIdentityProvider } from '../auth/hosted/provider';
 import type { RouteDefinition } from './define-route';
 import { createHostedControlPlane, type HostedControlPlane, type HostedRouteAllowlistEntry } from './hosted-profile';
 import type { HostedAuthFlowStore } from './routes/hosted-auth/flow';
+import { HostedWorkspaceConnectorGateway } from './hosted-workspace-connector';
+import { createHostedWorkspaceConnectorRoutes, HOSTED_WORKSPACE_CONNECTOR_ROUTES } from './routes/hosted-workspace-connector';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
 
@@ -77,6 +79,7 @@ export interface HostedControlPlaneConfig {
   readonly clock?: () => Date;
   /** Cryptographic entropy source. Production uses node:crypto; tests may fix it. */
   readonly randomBytes?: (size: number) => Uint8Array;
+  readonly connectorGateway?: HostedWorkspaceConnectorGateway;
   /** Audit hook for refused sign-ins. Never called on success. */
   readonly onSignInDenied?: (denial: {
     reason: HostedIdentityBindingDenialReason;
@@ -100,6 +103,7 @@ export interface AssembledHostedControlPlane extends HostedControlPlane {
     readonly sessionCookieCodec: HostedSessionCookieCodec;
     readonly membershipAuthority: HostedMembershipAuthorityReader;
     readonly identityDirectory: HostedIdentityDirectory;
+    readonly connectorGateway?: HostedWorkspaceConnectorGateway;
   };
 }
 
@@ -148,8 +152,12 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),
     },
     resolvePrincipal,
-    ...(config.routes ? { routes: config.routes } : {}),
-    ...(config.staticAllowlist ? { staticAllowlist: config.staticAllowlist } : {}),
+    ...(config.routes || config.connectorGateway
+      ? { routes: [...(config.routes ?? []), ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : [])] }
+      : {}),
+    ...(config.staticAllowlist || config.connectorGateway
+      ? { staticAllowlist: [...(config.staticAllowlist ?? []), ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : [])] }
+      : {}),
   });
 
   return {
@@ -159,6 +167,7 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       sessionCookieCodec,
       membershipAuthority,
       identityDirectory,
+      ...(config.connectorGateway ? { connectorGateway: config.connectorGateway } : {}),
     },
   };
 }

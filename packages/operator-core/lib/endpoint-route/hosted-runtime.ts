@@ -42,6 +42,7 @@ import {
 import { HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, type HostedRouteAllowlistEntry } from './hosted-profile';
 import { ALL_ROUTES } from './routes';
 import { createWorkOsWebhookRoute } from './routes/auth/workos-webhook';
+import { HostedWorkspaceConnectorGateway, PostgresHostedWorkspaceConnectorStore } from './hosted-workspace-connector';
 
 export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
 
@@ -55,6 +56,14 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'GET /health',
   'GET /health/ready',
   'POST /auth/workos/webhook',
+  'POST /hosted/workspaces/:workspaceId/connectors/enroll',
+  'POST /hosted/workspaces/:workspaceId/connectors/rotate',
+  'POST /hosted/workspaces/:workspaceId/connectors/revoke',
+  'POST /hosted/workspaces/:workspaceId/connectors/session-ticket',
+  'POST /hosted/connectors/register',
+  'POST /hosted/connectors/heartbeat',
+  'GET /hosted/connectors/events',
+  'GET /hosted/connectors/socket',
   'GET /hosted/auth/sign-in',
   'GET /hosted/auth/callback',
   'POST /hosted/auth/logout',
@@ -254,6 +263,7 @@ export async function createHostedRuntime(
     enqueue: (event, options) =>
       runService((sql) => new WorkOsWebhookReceiptStore(sql as never).enqueue(event, options)),
   };
+  const connectorGateway = new HostedWorkspaceConnectorGateway(new PostgresHostedWorkspaceConnectorStore(runService));
 
   const provider = createWorkOSHostedIdentityProvider({
     configuration: {
@@ -285,6 +295,7 @@ export async function createHostedRuntime(
     sessionStore,
     membershipAuthority,
     identityDirectory,
+    connectorGateway,
     routes: [...ALL_ROUTES, webhookRoute],
     staticAllowlist: [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY],
   });

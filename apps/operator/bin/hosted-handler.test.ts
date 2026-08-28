@@ -1,15 +1,21 @@
 import { Hono } from "hono";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
+import { serve } from "@hono/node-server";
+import { WebSocket } from "ws";
 import type { AssembledHostedControlPlane } from "@papercusp/operator-core/lib/endpoint-route/hosted-control-plane";
+import { HostedWorkspaceConnectorGateway } from "@papercusp/operator-core/lib/endpoint-route/hosted-workspace-connector";
 import { createHostedHandler } from "./hosted-handler";
 
-function fixture() {
+const servers: Array<ReturnType<typeof serve>> = [];
+afterEach(async () => { await Promise.all(servers.splice(0).map((server) => new Promise<void>((resolve) => server.close(() => resolve())))); });
+
+function fixture(connectorGateway?: HostedWorkspaceConnectorGateway) {
   const api = new Hono().basePath("/api");
   api.get("/health", () => Response.json({ ok: true }));
   const plane = {
     app: api,
     mounted: [],
-    components: {},
+    components: connectorGateway ? { connectorGateway } : {},
   } as unknown as AssembledHostedControlPlane;
   const spa = new Hono();
   spa.get(
@@ -62,5 +68,41 @@ describe("hosted handler", () => {
     );
     expect(response.status).toBe(404);
     expect(await response.text()).not.toContain("hosted-spa");
+  });
+
+  it("authenticates and binds a native WebSocket on the real HTTP upgrade transport", async () => {
+    const binding = {
+      controlPlaneWorkspaceId: "control",
+      organizationId: "org-1",
+      customerWorkspaceId: "workspace-1",
+      hostId: "host-1",
+      routeLabel: "alpha",
+      generation: 4,
+      transport: "websocket" as const,
+      state: "active" as const,
+    };
+    const gateway = new HostedWorkspaceConnectorGateway({
+      authenticate: async () => binding,
+    } as never);
+    const hosted = fixture(gateway);
+    const server = serve({ fetch: hosted.handler, port: 0, hostname: "127.0.0.1" });
+    servers.push(server);
+    server.on("upgrade", (request, socket, head) => {
+      void hosted.upgrade(request, socket, head).then((handled) => { if (!handled) socket.destroy(); });
+    });
+    await new Promise<void>((resolve) => server.once("listening", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind TCP");
+
+    const bearer = `hc_${"A".repeat(43)}`;
+    const websocket = new WebSocket(`ws://127.0.0.1:${address.port}/api/hosted/connectors/socket`, {
+      headers: { authorization: `Bearer ${bearer}`, host: "alpha.workspaces.papercusp.com" },
+    });
+    const message = await new Promise<string>((resolve, reject) => {
+      websocket.once("message", (value) => resolve(value.toString()));
+      websocket.once("error", reject);
+    });
+    expect(JSON.parse(message)).toEqual({ type: "bound", binding });
+    websocket.close();
   });
 });

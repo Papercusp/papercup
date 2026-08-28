@@ -1739,6 +1739,7 @@ async function main(): Promise<void> {
     const { serve } = await import("@hono/node-server");
     const hostedControlPlane = isHostedControlPlaneServeProfile();
     let requestHandler: (request: Request) => Promise<Response>;
+    let hostedUpgrade: import("./hosted-handler").HostedHandler["upgrade"] | undefined;
 
     if (hostedControlPlane) {
       // D-051: never import the local handler or runBootstrap graph here. The
@@ -1746,7 +1747,9 @@ async function main(): Promise<void> {
       // SPA, and its runtime constructor asserts mounted[] before returning.
       const { createHostedHandlerFromEnvironment } =
         await import("./hosted-handler");
-      requestHandler = (await createHostedHandlerFromEnvironment()).handler;
+      const hostedHandler = await createHostedHandlerFromEnvironment();
+      requestHandler = hostedHandler.handler;
+      hostedUpgrade = hostedHandler.upgrade;
     } else {
       const { runBootstrap } = await import("./host-bootstrap");
       const { handler } = await import("./host-handler");
@@ -1794,7 +1797,14 @@ async function main(): Promise<void> {
           await writeJsonAtomic(OPERATOR_PORT_MEMORY, {
             port: info.port,
             updatedAt: Date.now(),
-          });
+    });
+    if (hostedUpgrade) {
+      server.on("upgrade", (request, socket, head) => {
+        void hostedUpgrade?.(request, socket, head).then((handled) => {
+          if (!handled) socket.destroy();
+        }).catch(() => socket.destroy());
+      });
+    }
         } catch (e) {
           log(
             `could not persist port memory (${(e as Error).message}) — next restart re-picks`,
