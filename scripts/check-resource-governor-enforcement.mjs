@@ -112,9 +112,12 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
   inventory({
     id: "inference-embedding-provider-batching",
     migration: "P-015",
+    enforcement: "active",
     paths: [
       "packages/operator-core/lib/inference-",
-      "packages/operator-core/lib/memory/",
+      "packages/operator-core/lib/memory/embed-sidecar-server.ts",
+      "packages/operator-core/lib/memory/embed-admission.ts",
+      "packages/operator-core/lib/memory/bench/",
       "packages/operator-core/lib/llm-",
     ],
     resourceDimensions: ["cpu", "memory", "gpu", "network"],
@@ -125,11 +128,11 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     telemetry:
       "embedding queue depth and provider latency/ratelimit state, with unknown preserved when a provider does not report",
     contextAndRelease:
-      "embed-admission holds admission for the batch; the remaining llm-/inference-gateway writers still release implicitly and must move to exact actual-token release during P-015",
+      "embed-admission and the sidecar hold one durable admission per unit; provider responses remain live feedback and the gateway watchdog is observe-only, so no local cap is duplicated",
     currentCaps:
-      "inference-gateway/watchdog.mjs still carries a numeric ceiling; delete it once provider admission reports real headroom",
+      "none: inference-gateway/watchdog.mjs reads the live admission.maxConcurrent gauge only to detect a frozen queue; it does not configure or enforce capacity",
     writerEvidence:
-      "partially migrated: memory/embed-admission.ts and memory/bench/index-cap.ts are governed; the inference-gateway writers are not yet and are why this lane stays pending",
+      "governed writers: memory/embed-admission.ts, memory/bench/index-cap.ts, and memory/embed-sidecar-server.ts (embedding/inference per-unit runGovernedOperation); watchdog reads live provider state without admission",
     sites: [
       {
         path: "packages/operator-core/lib/memory/embed-admission.ts",
@@ -137,17 +140,19 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
       },
       {
         path: "packages/operator-core/lib/inference-gateway/watchdog.mjs",
-        start: "provider watchdog — UNGOVERNED, holds the cap to delete",
+        start: "provider watchdog — observe-only live admission state; no capacity setting",
       },
     ],
   }),
   inventory({
     id: "database-sidecar-checkpoint-dbos",
     migration: "P-015",
+    enforcement: "active",
     paths: [
-      "packages/operator-core/lib/db",
+      "packages/operator-core/lib/db/",
+      "packages/operator-core/lib/dbos/queue-concurrency.ts",
       "packages/operator-core/lib/derived-",
-      "packages/operator-core/lib/harness/routines/",
+      "packages/operator-core/lib/memory/embed-sidecar-",
     ],
     resourceDimensions: ["cpu", "memory", "database", "process"],
     fanOut:
@@ -157,19 +162,19 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     telemetry:
       "connection-pool saturation and per-routine fire/skip counts; pool exhaustion must read as pressure, not as an error",
     contextAndRelease:
-      "not yet wired: no writer in this lane calls beginGovernedExecution today, so neither context lineage nor exact release exists — the concrete gap P-015 closes",
+      "sidecar process units carry durable Governor receipts and inherited AdmissionContext; DBOS queues have no local concurrency cap and rely on durable workflow state plus physical database feedback",
     currentCaps:
       "no numeric ceiling in-lane; the effective limit is the Postgres connection pool, a physical upstream constraint to observe rather than duplicate",
     writerEvidence:
-      "none yet — this lane has zero governed writers, which is precisely why it must not be flipped active before P-015 migrates it",
+      "packages/operator-core/lib/memory/embed-sidecar-server.ts is governed per sidecar unit; packages/operator-core/lib/dbos/queue-concurrency.ts removes the former profile-derived DBOS cap while workflow/routine rows remain durable execution state",
     sites: [
       {
         path: "packages/operator-core/lib/dbos/bootstrap.ts",
-        start: "DBOS workflow host — UNGOVERNED, to migrate in P-015",
+        start: "DBOS workflow host — durable workflow state; queue capacity is delegated to governor/DB feedback",
       },
       {
-        path: "packages/operator-core/lib/harness/routines/gc-verify-instances.ts",
-        start: "routine sweep subprocess — UNGOVERNED",
+        path: "packages/operator-core/lib/memory/embed-sidecar-server.ts",
+        start: "sidecar inference units — durable embedding/inference admission per text",
       },
     ],
   }),
@@ -388,6 +393,50 @@ export const BYPASS_REGISTRY = new Map([
     'packages/operator-core/lib/agent-tools/capability/bash-jobs.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'systemctl --user kill — cancellation/release of an already-admitted job; gating release on admission deadlocks recovery under saturation' },
   ],
+  // ── P-015 sidecar/provider control and upstream-admitted starts ─────────────
+  [
+    'packages/operator-core/lib/dbos/orchestrator-runner.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason:
+        'spawnInvokeOnce is the DBOS pipeline agent-process chokepoint: its durable workflow supplies the receipt and its governorForBackend acquire supplies provider pacing; this direct child start is not a second resident queue, and re-admitting it would double-count the same agent turn',
+    },
+  ],
+  [
+    'packages/operator-core/lib/inference-gateway/credential-store.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason: 'security/keychain credential lookup via awaited spawnSync; bounded metadata read that exits immediately and creates no resident provider work',
+    },
+  ],
+  [
+    'packages/operator-core/lib/inference-gateway/gateway-sidecar-spawn.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason: 'systemd/loopback gateway sidecar supervision and crash-respawn control; the child gateway owns provider admission, while this control path must remain runnable during gateway pressure',
+    },
+  ],
+  [
+    'packages/operator-core/lib/inference-gateway/watchdog.mjs::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason: 'watchdog systemctl restart is release/recovery control for an external gateway process; gating it on the failed gateway would deadlock recovery',
+    },
+  ],
+  [
+    'packages/operator-core/lib/inference-gateway/watchdog.mjs::hidden-or-static-capacity',
+    {
+      disposition: 'semantic',
+      reason: 'admission.maxConcurrent is a live provider-gateway health gauge used only to detect a frozen queue; it is not configured or enforced by this watchdog, so no capacity ceiling is duplicated',
+    },
+  ],
+  [
+    'packages/operator-core/lib/memory/embed-sidecar-spawn.ts::resource-start-outside-admission',
+    {
+      disposition: 'bypass',
+      reason: 'supervised sidecar child lifecycle (startup/respawn/release control); each sidecar request unit is admitted by embed-sidecar-server.ts and re-admitting the supervisor would double-count the process',
+    },
+  ],
   [
     'packages/operator-core/lib/agent-tools/dev/restart.ts::resource-start-outside-admission',
     { disposition: 'bypass', reason: 'delayed systemd restart — control/recovery path that releases the current operator and must remain runnable under saturation' },
@@ -490,6 +539,58 @@ export const BYPASS_REGISTRY = new Map([
         'killOwnedScope (:62) execFileSync systemctl --user kill of the sidecar\'s OWN managed scope — a RELEASE/control call that frees residency. Synchronous on purpose: its call sites are a process-exit hook and a timer callback, neither of which has an async turn left. Gating release on admission deadlocks recovery under saturation, exactly as the registered bash-jobs.ts row states; evidence required',
     },
   ],
+  // ── binding-aware detector dispositions (EI-21714833795753624) ─────────────
+  // These aliases are now detected by hasCalledResourceStartAlias. Each is a
+  // bounded probe, metadata read, setup write, or user-requested git operation;
+  // none creates a resident worker or an in-memory queue of work.
+  [
+    'packages/operator-core/lib/agent-tools/capability/bash_output.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'scopeExecFile is promisify(execFile) used for bounded systemd/cgroup liveness metadata; it probes an already-recorded task and starts no resident work.' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/deploys/vintage.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'pexec is promisify(execFile) used for bounded git ref/vintage reads; the command is awaited and creates no resident queue.' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/dev/systemd-service-probe.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'run is promisify(execFile) for bounded systemd/ps start-time diagnostics; it reads service metadata and starts no resident work.' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/git_sync/run.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'execFileP is promisify(execFile) for a bounded git rev-parse preflight around the durable git-sync routine; no independent resident worker starts.' },
+  ],
+  [
+    'packages/operator-core/lib/agent-tools/setup/set_git_identity.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'exec is promisify(execFile) for two awaited user-requested git-config writes; setup metadata is finite and does not create resident work.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/desktop/git-identity.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'exec is promisify(execFile) for bounded git-config reads/writes in the user-facing setup endpoint; each command is awaited and finite.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/desktop/preflight.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'exec is promisify(execFile) for bounded binary --version and bundled-path probes in preflight; it starts no resident work.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/desktop/setup-status.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'exec is promisify(execFile) for bounded git identity metadata probes in setup-status; failures degrade to status and no queue is retained.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/harness/feature-views.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'execFileP is promisify(execFile) for bounded, user-requested git diff/stat reads with maxBuffer limits; output is returned, not queued as resident work.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/harness/notes-diff.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'execFileP is promisify(execFile) for bounded git diff/status reads with maxBuffer limits in a user-facing endpoint; no resident worker remains.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/harness/prs.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'execFileP is promisify(execFile) for a bounded git-origin metadata read used to render PR context; the command is awaited and finite.' },
+  ],
+  [
+    'packages/operator-core/lib/endpoint-route/routes/harness/sync.ts::resource-start-outside-admission',
+    { disposition: 'bypass', reason: 'execFileAsync is promisify(execFile) for bounded, user-requested git fetch/rebase/status operations in a durable user worktree; git owns recovery state and no in-memory resident queue is created.' },
+  ],
 ]);
 
 function registryKey(path, code) {
@@ -519,6 +620,27 @@ function inventory(row) {
 
 const START =
   /(?:\b(?:spawn|spawnSync|fork|execFile|execFileSync)\s*\(|new\s+(?:Worker|Piscina)\s*\(|\.admit\s*\()/;
+// Direct-call matching misses dependency-injected aliases such as
+// `const spawnImpl = spawn` / `spawnImpl(...)` and
+// `const exec = promisify(execFile)` / `exec(...)`. Match only identifiers
+// syntactically bound to one of the real child-process starts, then require a
+// call to that same identifier. Widening by name (`spawn[A-Z]...`) is unsafe:
+// it turns ordinary domain words such as `spawnRowKind` into false starts.
+const ALIAS_BIND =
+  /\b([A-Za-z_$][\w$]*)\s*[=:]\s*(?:promisify\s*\(\s*)?(?:spawn|spawnSync|fork|execFile|execFileSync)\s*[,\)\s;}]/g;
+function hasCalledResourceStartAlias(code) {
+  const aliases = new Set();
+  for (const match of code.matchAll(ALIAS_BIND)) {
+    const name = match[1];
+    if (/^(?:spawn|spawnSync|fork|execFile|execFileSync)$/.test(name)) continue;
+    aliases.add(name);
+  }
+  for (const name of aliases) {
+    const escaped = name.replace(/\$/g, '\\$');
+    if (new RegExp(`\\b${escaped}\\s*\\(`).test(code)) return true;
+  }
+  return false;
+}
 const GOVERNED =
   /\bGovernor\.admit\b|\bgovernor\.admit\s*\(|\bbeginGovernedExecution\s*\(|\bwithGovernedExecution\s*\(|\brunGovernedOperation\s*\(|\brunGovernedTestProcess\s*\(|\bAdmissionContext\b|\bvalid(?:ated)?\s+local\s+lease\b/i;
 const RELEASE = /\.release\s*\(|\bAdmissionRelease\b/;
@@ -543,7 +665,7 @@ const DISHONEST_METRIC =
 export function inspectGovernorSource(source) {
   const code = stripCommentsAndStrings(source, "fixture.ts");
   const findings = [];
-  if (START.test(code) && !GOVERNED.test(code))
+  if ((START.test(code) || hasCalledResourceStartAlias(code)) && !GOVERNED.test(code))
     findings.push("resource-start-outside-admission");
   if (
     (STATIC_CAP.test(code) || HIDDEN_SEMAPHORE.test(code)) &&
