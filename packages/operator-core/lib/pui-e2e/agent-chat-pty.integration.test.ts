@@ -12,11 +12,11 @@
  * third-party service. The loop, capability projection/dispatch, PG approval
  * store, chat/session persistence, HTTP/SSE transport and Ratatui UI are real.
  */
-import { createAdaptorServer } from '@hono/node-server';
+import { createAdaptorServer, type ServerType } from '@hono/node-server';
 import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
 import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { createServer, type Server } from 'node:http';
+import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -254,7 +254,7 @@ async function waitForNoChildren(parent: number): Promise<void> {
   expect(childPids(parent), `processes leaked below pui pid ${parent}`).toEqual([]);
 }
 
-async function listen(server: Server): Promise<number> {
+async function listen(server: ServerType): Promise<number> {
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -262,7 +262,7 @@ async function listen(server: Server): Promise<number> {
   return (server.address() as AddressInfo).port;
 }
 
-async function close(server: Server | undefined): Promise<void> {
+async function close(server: ServerType | undefined): Promise<void> {
   if (!server) return;
   server.closeAllConnections?.();
   await Promise.race([
@@ -310,7 +310,7 @@ async function waitForPersistedChat(
 let db: OrgTestDb;
 let bin: string;
 let home: string;
-let operatorServer: Server;
+let operatorServer: ServerType;
 let operatorPort: number;
 let previousEnv: Record<string, string | undefined>;
 
