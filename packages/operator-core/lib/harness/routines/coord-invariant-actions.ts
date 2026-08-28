@@ -81,7 +81,11 @@ import { getOrgPg } from '@papercusp/db-org';
 import { registerSystemAction, type SystemActionCtx } from './system-actions';
 // Reuse the per-handle drain GC's retention window + batch bounds so the global
 // sweep below (EI-436) stays consistent with the inline GC it backstops.
-import { OUTBOX_GC_AGE_MS, OUTBOX_GC_BATCH, OUTBOX_GC_MAX_BATCHES } from '../../sync/hyperbee/outbox-drain';
+import {
+  OUTBOX_GC_AGE_MS,
+  OUTBOX_GC_BATCH,
+  OUTBOX_GC_BUDGET_MS,
+} from '../../sync/hyperbee/outbox-drain';
 // EI-21096375006041139: whether this process currently holds a booted
 // substrate handle for a scope — see the `residentInProcess` opt threaded into
 // runSharedHiveMonitorPass/scanOutboxHealth below for why this matters.
@@ -2047,19 +2051,35 @@ registerSystemAction('claim-integrity-sweep', async (ctx: SystemActionCtx) => {
  * the retention window, across EVERY harness_slug in the workspace (incl. dormant
  * ones the per-handle drain can't reach). Same predicate as the inline GC; only
  * the holder of this routine (one authority, hourly) ever runs it, so it is never
- * the unscoped concurrent DELETE storm of EI-125. Returns total rows deleted.
+ * the unscoped concurrent DELETE storm of EI-125. The production bound is the
+ * same wall-time budget as the per-handle GC, rather than an arbitrary row-count
+ * ceiling that can strand a large backlog. Returns total rows deleted.
  */
 export async function sweepDrainedOutbox(
   sql: postgres.Sql,
   workspaceId: string,
   nowMs: number,
-  opts: { batch?: number; maxBatches?: number; ageMs?: number } = {},
+  opts: {
+    batch?: number;
+    /** Legacy test seam; production leaves this unset and uses budgetMs. */
+    maxBatches?: number;
+    budgetMs?: number;
+    /** Monotonic-clock seam for budget tests; production uses Date.now. */
+    now?: () => number;
+    ageMs?: number;
+  } = {},
 ): Promise<number> {
   const batch = opts.batch ?? OUTBOX_GC_BATCH;
-  const maxBatches = opts.maxBatches ?? OUTBOX_GC_MAX_BATCHES;
+  const budgetMs = opts.budgetMs ?? OUTBOX_GC_BUDGET_MS;
+  const clock = opts.now ?? Date.now;
+  const startedAtMs = clock();
   const cutoff = nowMs - (opts.ageMs ?? OUTBOX_GC_AGE_MS);
   let total = 0;
-  for (let i = 0; i < maxBatches; i++) {
+  for (let i = 0; ; i++) {
+    // Keep the old maxBatches option as a bounded test/compatibility seam, but
+    // never apply an arbitrary row-count ceiling to the production sweep.
+    if (opts.maxBatches !== undefined && i >= opts.maxBatches) break;
+    if (clock() - startedAtMs >= budgetMs) break;
     // Each batch is its own committed statement — progress survives a host recycle,
     // and the LIMIT keeps any single DELETE bounded (never the unbounded EI-125 one).
     const del = await sql`

@@ -500,6 +500,80 @@ export function duplicateNumberGroups(filenames, enforcedFrom = ENFORCED_FROM) {
  */
 export const INDEX_SWAP_ENFORCED_FROM = 691;
 
+/**
+ * ACCESS EXCLUSIVE acknowledgment boundary (EI-21698566084995732).
+ *
+ * Its OWN boundary, above every migration on disk when the guard landed, for the
+ * usual reason: 17 historical files carry `DISABLE TRIGGER` (295, 325, 360, 361,
+ * 374, 382, 391, 638, 649, 656, 864, 865, 867, 868, 870, 950), they are applied
+ * and ledgered, and the runner verifies each by sha256 — editing one now would
+ * break its recorded checksum. This stops a NEW migration from copying the shape
+ * unexamined.
+ */
+export const EXCLUSIVE_LOCK_ENFORCED_FROM = 1022;
+
+/**
+ * The acknowledgment token. Same shape and same contract as
+ * check-migration-forward-compat's ACK_MARKER: it matches ANY non-whitespace
+ * after the colon, so it is satisfied by a placeholder. That is deliberate — the
+ * guard's job is to force the author to ANSWER the question at authoring time,
+ * not to grade the answer. For the same reason scripts/next-migration.mjs must
+ * never seed a line matching this, or every migration is rubber-stamped.
+ */
+export const EXCLUSIVE_LOCK_ACK = /^[ \t]*--[ \t]*EXCLUSIVE-LOCK:[ \t]*\S/im;
+
+/**
+ * Tables whose ACCESS EXCLUSIVE stall is fleet-wide rather than local. Used ONLY
+ * to escalate the message — the guard fires on every table regardless, so this
+ * list going stale can never open a hole (it can only under-dramatize one).
+ */
+const EXCLUSIVE_LOCK_HOT_TABLES = new Set([
+  "work_items",
+  "plan_items",
+  "coord_messages",
+  "harness_plans",
+  "tool_invocations",
+]);
+
+/**
+ * `ALTER TABLE … DISABLE/ENABLE TRIGGER` acquires an ACCESS EXCLUSIVE lock on the
+ * target table. On a hot table that is not merely slow: a PENDING exclusive
+ * request queues every subsequent READER behind it, so an attempt that only
+ * waits still stalls the fleet. Migrations auto-apply at boot, so an armed file
+ * carrying this can fail — or stall — during startup, precisely when the box is
+ * busiest. Measured on 1020 under live fleet load: five attempts, all
+ * `canceling statement due to lock timeout`.
+ *
+ * Comments AND string literals are masked (`maskLiveBodies`) while `$$` body CODE
+ * stays live: a DISABLE TRIGGER inside a DO block really executes, whereas
+ * 1020's `-- NOTE: deliberately NO ALTER TABLE ... DISABLE TRIGGER USER` prose
+ * must read clean. Both directions are pinned in
+ * migration-exclusive-lock-guard.test.ts.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ table: string, action: string, target: string, hot: boolean }[]}
+ */
+export function findUnacknowledgedExclusiveLock(sqlText) {
+  // The ack is a COMMENT, so it is tested against the RAW text — masking would
+  // erase the very line being looked for.
+  if (EXCLUSIVE_LOCK_ACK.test(sqlText)) return [];
+  const stripped = maskLiveBodies(sqlText);
+  const re =
+    /\bALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?(?:ONLY\s+)?([\w".]+)\s+(DISABLE|ENABLE)\s+(?:ALWAYS\s+|REPLICA\s+)?TRIGGER\s+([\w".]+)/gi;
+  const hits = [];
+  let m;
+  while ((m = re.exec(stripped)) !== null) {
+    const table = m[1];
+    hits.push({
+      table,
+      action: m[2].toUpperCase(),
+      target: m[3].toUpperCase(),
+      hot: EXCLUSIVE_LOCK_HOT_TABLES.has(bareName(table)),
+    });
+  }
+  return hits;
+}
+
 /** Bare relation/index name: drop quotes and any schema qualifier. */
 function bareName(ident) {
   const s = String(ident).replace(/"/g, "");
@@ -887,6 +961,33 @@ async function main() {
         .join(
           ", ",
         )}) — FROZEN (already applied; the immutability guard refuses the in-file allow-index-swap pragma). See FROZEN_INDEX_SWAP_EXEMPTIONS.`,
+    );
+  }
+
+  // 6b. unacknowledged ACCESS EXCLUSIVE lock (the 868/1020 class)
+  //
+  // Its own boundary (EXCLUSIVE_LOCK_ENFORCED_FROM), not ENFORCED_FROM: 17 files
+  // below it already carry DISABLE TRIGGER and are applied+ledgered, grandfathered
+  // exactly like the other checks' legacy files.
+  for (const f of files) {
+    const num = Number.parseInt(/^(\d+)-/.exec(f)?.[1] ?? "0", 10);
+    if (num < EXCLUSIVE_LOCK_ENFORCED_FROM) continue;
+    const hits = findUnacknowledgedExclusiveLock(
+      readFileSync(join(SQL_DIR, f), "utf8"),
+    );
+    if (!hits.length) continue;
+    failed = true;
+    const hot = hits.filter((h) => h.hot);
+    console.error(
+      `✗ ${f}: ${hits
+        .map((h) => `ALTER TABLE ${h.table} ${h.action} TRIGGER ${h.target}`)
+        .join(" · ")} takes an ACCESS EXCLUSIVE lock with no -- EXCLUSIVE-LOCK: acknowledgment${
+        hot.length
+          ? ` — and ${hot
+              .map((h) => h.table)
+              .join(", ")} is one of the hottest tables in the system`
+          : ""
+      }. A PENDING exclusive request queues every subsequent READER behind it, so an attempt that merely WAITS still stalls reads fleet-wide; and because migrations auto-apply at boot, an armed file carrying this can fail — or stall — during startup, precisely when the box is busiest. Measured on 1020 under live fleet load: five attempts, all "canceling statement due to lock timeout" (EI-21698566084995732). Usually you do not need it at all: 868/870/950 disabled triggers because they rewrote \`status\` and wanted the state-change stamping silent, but a payload-only UPDATE wants those triggers LIVE — emit_change_notify_trg is the sync invalidation that makes the repair show up in the UI. Delete the DISABLE/ENABLE pair if the triggers are wanted (1020 did, and its guard re-passed with all 24 user triggers live). If the lock is genuinely required, say why with "-- EXCLUSIVE-LOCK: <why this table can take ACCESS EXCLUSIVE at apply time>".`,
     );
   }
 

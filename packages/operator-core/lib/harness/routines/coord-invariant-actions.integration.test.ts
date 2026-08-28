@@ -10,7 +10,8 @@
  *    workspace (incl. dormant ones), in batches, returning the total deleted;
  *  - NEVER touches recently-drained rows, pending (drained_at IS NULL) rows, or
  *    another workspace's rows;
- *  - batches a large backlog (loops until cleared) and honours the maxBatches cap.
+ *  - batches a large backlog (loops until cleared), stops at the wall-time budget,
+ *    and retains the explicit maxBatches test seam for compatibility.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
@@ -112,6 +113,23 @@ describe('sweepDrainedOutbox (EI-436, real PG)', () => {
     const deleted = await sweepDrainedOutbox(db.sql, WS, now, { batch: 5, maxBatches: 1 });
     expect(deleted).toBe(5); // one batch only
     const [{ n }] = await db.sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_shared.substrate_outbox`;
+    expect(n).toBe(7);
+  });
+
+  it('honours the wall-time budget without imposing a production row-count ceiling', async () => {
+    const now = Date.now();
+    for (let i = 0; i < 12; i++) {
+      await seed(db.sql, { harness_slug: 'dormant-budget', drained_at: now - 30 * HOUR });
+    }
+    let clockCalls = 0;
+    const deleted = await sweepDrainedOutbox(db.sql, WS, now, {
+      batch: 5,
+      budgetMs: 1,
+      now: () => (clockCalls++ < 2 ? now : now + 2),
+    });
+    expect(deleted).toBe(5);
+    const [{ n }] = await db.sql<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM harness_shared.substrate_outbox`;
     expect(n).toBe(7);
   });
 });
