@@ -401,8 +401,56 @@ ${df_line}"
 tmpdir_top_shapes() { # <dir> — echoes up to 5 "<count> <shape>" lines; never fails.
   # Collapse the random suffix mktemp/mkdtemp appends so N unique names become ONE shape.
   # This is what turns an unreadable wall of names into a single actionable line.
+  #
+  # WI-519487: this pass used to be `s/[A-Za-z0-9]{6,}$/<rand>/` — anchored to the END
+  # of the name, so it only ever caught a random run that WAS the final path component.
+  # A random run followed by a literal extension — e.g. mktemp's own
+  # "pc-heavy-self.XXXXXX.sh" template (_pc_heavy_scratch_mktemp in pc-heavy.sh) — sits
+  # in the MIDDLE of the name and never matched, so 21,504 distinct pc-heavy-self.<rand>.sh
+  # entries (the #1 leaker at the time) never collapsed into one line and the histogram's
+  # top line under-reported the true leader 5x, steering every responder at the wrong shape.
+  #
+  # Fixed by scanning every '-'/'.'-delimited alnum run in the name (not just the last
+  # one) and collapsing the runs that LOOK random: >=6 chars AND (contains a digit OR
+  # mixes upper+lower case). Real path components in this codebase (self, start, sidecar,
+  # snapshot, affected, tests, papercusp, hermetic, ...) are plain lowercase words with no
+  # digits, so they are never mistaken for the random part — only mktemp's actual
+  # [A-Za-z0-9] output (which draws from both cases and digits, so a run matching neither
+  # condition is a ~1-in-90 fluke) gets folded away. A run this pass leaves alone (pure
+  # digits, or pure lowercase a-f with no digit) still reaches the <hex>/<n> rules below
+  # exactly as before — this only WIDENS where a random-looking run is looked for; it does
+  # not touch the existing hex/numeric handling.
   ls -U "$1" 2>/dev/null \
-    | sed -E 's/[A-Za-z0-9]{6,}$/<rand>/; s/[0-9a-f]{8,}/<hex>/g; s/[0-9]{3,}/<n>/g' \
+    | awk '
+        function looks_random(tok,    i, c, hasDigit, hasUpper, hasLower, hasLetter, allHexChars) {
+          if (length(tok) < 6) return 0
+          hasDigit = 0; hasUpper = 0; hasLower = 0; hasLetter = 0; allHexChars = 1
+          for (i = 1; i <= length(tok); i++) {
+            c = substr(tok, i, 1)
+            if (c ~ /[0-9]/) hasDigit = 1
+            else if (c ~ /[A-Z]/) { hasUpper = 1; hasLetter = 1; allHexChars = 0 }
+            else { hasLower = 1; hasLetter = 1; if (c !~ /[a-f]/) allHexChars = 0 }
+          }
+          # A pure lowercase-hex-alphabet run of >=8 chars is exactly what the <hex>
+          # rule below already exists to label consistently — defer to it instead of
+          # splitting one shape into <rand>/<hex> depending on incidental digit
+          # presence within the hex run (e.g. "abcdef12" vs "deadbeef" are the SAME
+          # shape either way; only this pass can tell they came from the same field).
+          if (allHexChars && length(tok) >= 8) return 0
+          return hasLetter && (hasDigit || (hasUpper && hasLower))
+        }
+        {
+          out = ""; rest = $0
+          while (match(rest, /[A-Za-z0-9]+/)) {
+            out = out substr(rest, 1, RSTART - 1)
+            tok = substr(rest, RSTART, RLENGTH)
+            out = out (looks_random(tok) ? "<rand>" : tok)
+            rest = substr(rest, RSTART + RLENGTH)
+          }
+          print out rest
+        }
+      ' \
+    | sed -E 's/[0-9a-f]{8,}/<hex>/g; s/[0-9]{3,}/<n>/g' \
     | sort | uniq -c | sort -rn | head -n 5 || true
 }
 
@@ -898,6 +946,52 @@ $(trend_seed 7200 10485760)" \
   # 22. A non-numeric threshold must SKIP, never crash the whole health check.
   check_entries "invalid threshold: skips cleanly, no marker" 12 abc no 0 BACKUP_ALERT_FORCE=1
   printf '  ---- %d passed, %d failed (post tmpdir-entries block)\n' "$p" "$f"
+
+  # ── WI-519487 recurrence guard: tmpdir_top_shapes collapses a random token
+  # ANYWHERE in the name, not only a trailing suffix ─────────────────────────
+  # tmpdir_top_shapes is a pure function already in scope in this process (defined
+  # above, before this --self-test branch runs), so call it directly against a
+  # throwaway fixture dir instead of spawning a nested `bash "$self"` per case.
+  check_shape() { # <name> <fixture-dir> <want-line-regex> <file...>
+    local name="$1" dir="$2" want_re="$3"; shift 3
+    rm -rf "${t:?}/shapes"; mkdir -p "$dir"
+    local f_name got
+    for f_name in "$@"; do : > "$dir/$f_name"; done
+    got="$(tmpdir_top_shapes "$dir")"
+    if printf '%s\n' "$got" | grep -qE "$want_re"; then
+      printf '  ok    %s\n' "$name"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted /%s/, got: %s\n' "$name" "$want_re" "$got"; f=$((f+1))
+    fi
+  }
+  # 23. THE REPORTED BUG: mktemp's own "<literal>.XXXXXX.sh" template (the #1 leaker,
+  #     _pc_heavy_scratch_mktemp in pc-heavy.sh) puts the random run BEFORE a literal
+  #     extension, not at the end of the name — the old $-anchored regex never matched
+  #     this shape at all, so three distinct random self-copies used to render as three
+  #     distinct, un-actionable lines instead of one dominant "N pc-heavy-self.<rand>.sh".
+  check_shape "random run before a literal extension collapses (the reported bug)" \
+        "$t/shapes" '3 pc-heavy-self\.<rand>\.sh' \
+        pc-heavy-self.tok1a3.sh pc-heavy-self.xY9zK2.sh pc-heavy-self.qR7bN4.sh
+  # 24. A real lowercase word ("sidecar") sitting next to the random part must survive —
+  #     collapsing must not mistake a literal path component for the random one just
+  #     because it is also >=6 characters. Loses "NAMING THE CULPRIT" if this regresses.
+  check_shape "a literal word beside the random part is preserved, not collapsed" \
+        "$t/shapes" '2 prov-sidecar-<rand>$' \
+        prov-sidecar-a1b2c3 prov-sidecar-x9y8z7
+  # 25. The ALREADY-WORKING case (random run truly at the end) must keep working —
+  #     this pass widens where a random run is looked for, it must not narrow it.
+  check_shape "a trailing random run (the pre-existing working case) still collapses" \
+        "$t/shapes" '2 live-fed-gate-snapshot\.<rand>$' \
+        live-fed-gate-snapshot.aB3xY9 live-fed-gate-snapshot.qR7zK2
+  # 26. A pure lowercase hex-alphabet run of >=8 chars must collapse to the SAME <hex>
+  #     shape whether or not it happens to contain a digit — "abcdef12" and "deadbeef"
+  #     are the same field, and splitting them into <rand> vs <hex> by digit-luck would
+  #     fragment the one dominant "papercusp-affected-tests-<n>-<hex>.log" shape
+  #     (1942 entries, WI-75008) into two, defeating the point of collapsing at all.
+  check_shape "a >=8-char hex-alphabet run stays <hex> regardless of digit presence" \
+        "$t/shapes" '2 papercusp-affected-tests-<n>-<hex>\.log$' \
+        papercusp-affected-tests-123-abcdef12.log papercusp-affected-tests-456-deadbeef.log
+  printf '  ---- %d passed, %d failed (post tmpdir-shapes block)\n' "$p" "$f"
 
   [ "$f" -eq 0 ] || exit 1
   exit 0
