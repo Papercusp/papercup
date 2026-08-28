@@ -3849,54 +3849,8 @@ export default defineTool({
       extraArgs: args.extraArgs,
     };
     const memberSpecs: (MemberSpec | undefined)[] = args.members ?? [];
-    // D-008 / WI-41145: a brand-new homogeneous plan fleet must immediately own
-    // the same durable recipe that later top-ups and the headcount governor use.
-    // Per-member declarations and paired fleets are intentionally excluded: one
-    // FleetHeadcountConfig cannot represent their heterogeneous boot settings.
-    if (
-      freshFleetCreated &&
-      Boolean(planSlug) &&
-      launchFleetType !== 'paired' &&
-      memberSpecs.length === 0 &&
-      !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
-    ) {
-      const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
-      const split = splitModelSpec(modelSpec);
-      const config: FleetHeadcountConfig = {
-        plan: planSlug!,
-        harness,
-        agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
-        ...(split.model ? { model: split.model } : {}),
-        ...(split.effort ? { effort: split.effort } : {}),
-        ...(fleetDefaults.account ?? effAccount ? { account: fleetDefaults.account ?? effAccount } : {}),
-        headless: args.headless ?? true,
-        ...(args.role?.trim() ? { role: args.role.trim() } : {}),
-        ...(args.brief?.trim() ? { brief: args.brief.trim() } : {}),
-        ...(args.launchContext?.trim() ? { launchContext: args.launchContext.trim() } : {}),
-        ...(args.contextSize ? { contextSize: args.contextSize } : {}),
-        ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
-        carry: args.carry ?? 'warm',
-        ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
-      };
-      try {
-        await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
-        persistedHeadcountProfile = { target: count, config };
-      } catch (error) {
-        try {
-          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
-        } catch {
-          /* the launch guard self-heals when its window elapses */
-        }
-        return err(
-          `Could not persist the fresh fleet launch profile for \`${fleetSlug}\`: ${
-            error instanceof Error ? error.message : String(error)
-          }. No members were opened.`,
-        );
-      }
-    }
     /** The folded, fully-resolved config for member `i` (0-indexed). */
     const resolvedMemberConfig = (i: number): FleetMemberDefaults => foldMemberSpec(fleetDefaults, memberSpecs[i]);
-    const launchRequestedAt = Date.now();
     const requestedMemberIds = resumeOwnerIds ?? Array.from({ length: openCount }, () => `su-${randomUUID()}`);
     // A partial replay opens only the unresolved identities in `requestedMemberIds`, but
     // its durable transaction must retain the original cohort/history. Replacing the
@@ -3947,22 +3901,91 @@ export default defineTool({
     }
     const resumedLaunchTransaction = resumeOwnerIds && priorLaunchTransaction ? priorLaunchTransaction : null;
     const transactionRequestedMemberIds = resumedLaunchTransaction?.requestedMemberIds ?? requestedMemberIds;
-    const memberCommands = Array.from({ length: openCount }, (_v, i) => {
-      const folded = resolvedMemberConfig(memberSpecIndex(i));
-      const rawCommand = memberLaunchCommand({
-        ...folded,
-        fleetSlug,
-        harness,
-        plan: planSlug ?? undefined,
-        ownerId: requestedMemberIds[i],
-        // The member's own brief file wins over the shared/per-member-path fallback.
-        // Carry behavior comes from that baseline, while the psu flag is its durable
-        // attestation token in adv_sessions.launch_argv.
-        carry: folded.carry ?? 'warm',
-        launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
+    let memberCommands: string[];
+    try {
+      memberCommands = Array.from({ length: openCount }, (_v, i) => {
+        const folded = resolvedMemberConfig(memberSpecIndex(i));
+        const rawCommand = memberLaunchCommand({
+          ...folded,
+          fleetSlug,
+          harness,
+          plan: planSlug ?? undefined,
+          ownerId: requestedMemberIds[i],
+          // The member's own brief file wins over the shared/per-member-path fallback.
+          // Carry behavior comes from that baseline, while the psu flag is its durable
+          // attestation token in adv_sessions.launch_argv.
+          carry: folded.carry ?? 'warm',
+          launchContext: folded.launchContext ?? memberLaunchContextPathForIndex(i),
+        });
+        return injectLaunchedByArg(rawCommand, ownerId).command;
       });
-      return injectLaunchedByArg(rawCommand, ownerId).command;
-    });
+    } catch (error) {
+      // Command composition is still pre-spawn validation. A malformed effective
+      // model/effort pair used to escape the handler here, after the launch slot and
+      // headcount recipe had been persisted. That left the next retry reading the
+      // requested count as if those terminals had opened and suppressing the real
+      // launch. Roll back the slot and report the composition failure explicitly.
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+      } catch {
+        /* the launch guard self-heals when its window elapses */
+      }
+      return err(
+        `Could not compose fleet member launch command for \`${fleetSlug}\`: ${
+          error instanceof Error ? error.message : String(error)
+        }. No members were opened.`,
+      );
+    }
+
+    // D-008 / WI-41145: a brand-new homogeneous plan fleet must immediately own
+    // the same durable recipe that later top-ups and the headcount governor use.
+    // Per-member declarations and paired fleets are intentionally excluded: one
+    // FleetHeadcountConfig cannot represent their heterogeneous boot settings.
+    // Keep this write AFTER command composition: an invalid effective model/effort
+    // pair must not leave a governor recipe for a launch that never reached spawn.
+    if (
+      freshFleetCreated &&
+      Boolean(planSlug) &&
+      launchFleetType !== 'paired' &&
+      memberSpecs.length === 0 &&
+      !(args.perMemberLaunchContext && args.perMemberLaunchContext.length > 0)
+    ) {
+      const modelSpec = composeModelSpec(fleetDefaults.model, fleetDefaults.effort) ?? null;
+      const split = splitModelSpec(modelSpec);
+      const config: FleetHeadcountConfig = {
+        plan: planSlug!,
+        harness,
+        agent: (fleetDefaults.agent ?? effAgent) as FleetHeadcountConfig['agent'],
+        ...(split.model ? { model: split.model } : {}),
+        ...(split.effort ? { effort: split.effort } : {}),
+        ...(fleetDefaults.account ?? effAccount ? { account: fleetDefaults.account ?? effAccount } : {}),
+        headless: args.headless ?? true,
+        ...(args.role?.trim() ? { role: args.role.trim() } : {}),
+        ...(args.brief?.trim() ? { brief: args.brief.trim() } : {}),
+        ...(args.launchContext?.trim() ? { launchContext: args.launchContext.trim() } : {}),
+        ...(args.contextSize ? { contextSize: args.contextSize } : {}),
+        ...(args.compactionLimit != null ? { compactionLimit: args.compactionLimit } : {}),
+        carry: args.carry ?? 'warm',
+        ...(args.extraArgs ? { extraArgs: [...args.extraArgs] } : {}),
+      };
+      try {
+        await setFleetHeadcountTarget({ workspaceId, fleetSlug, target: count, config });
+        persistedHeadcountProfile = { target: count, config };
+      } catch (error) {
+        try {
+          await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+        } catch {
+          /* the launch guard self-heals when its window elapses */
+        }
+        return err(
+          `Could not persist the fresh fleet launch profile for \`${fleetSlug}\`: ${
+            error instanceof Error ? error.message : String(error)
+          }. No members were opened.`,
+        );
+      }
+    }
+
+    const launchRequestedAt = Date.now();
     const expectedAttestations: FreshLaunchExpectedAttestation[] = Array.from({ length: openCount }, (_v, i) => {
       const folded = resolvedMemberConfig(memberSpecIndex(i));
       const modelSpec = composeModelSpec(folded.model, folded.effort) ?? null;

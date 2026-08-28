@@ -901,6 +901,40 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
+  it('cleans up a pre-spawn command-composition failure instead of leaving a false launch count', async () => {
+    const { releaseFleetLaunchSlot } = await import('../../../agent-fleets-store');
+    const releaseSlot = releaseFleetLaunchSlot as ReturnType<typeof vi.fn>;
+    releaseSlot.mockClear();
+    releaseSlot.mockResolvedValue(undefined);
+
+    const res = await invokeLaunchHandler(
+      {
+        name: 'Invalid Effort Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 2,
+        headless: true,
+        // The effective launch config has an effort but no model. The shared
+        // command composer must reject this before any member can spawn.
+        effort: 'xhigh',
+      } as never,
+      {} as never,
+    );
+    const text = (res as { content: { text: string }[] }).content[0].text;
+
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(text).toContain('Could not compose fleet member launch command');
+    expect(text).toContain('effort "xhigh" needs a model');
+    expect(setFleetHeadcountTargetMock).not.toHaveBeenCalled();
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+    expect(releaseSlot).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      fleetSlug: 'invalid-effort-fleet',
+      at: 1,
+    });
+  });
+
   it('exposes only trimmed context at both fleet-wide and per-member public schema boundaries', async () => {
     const fleetWide = await standardValidate(tool.args, {
       name: 'Retired Context Fleet',
