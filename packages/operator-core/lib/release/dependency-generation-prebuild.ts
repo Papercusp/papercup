@@ -167,7 +167,7 @@ function positiveInt(value: unknown): number | null {
 function absolutePath(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
-  if (!trimmed || trimmed.includes('\0') || !isAbsolute(trimmed)) return null;
+  if (!trimmed || /[\0\r\n\t]/.test(trimmed) || !isAbsolute(trimmed)) return null;
   return trimmed;
 }
 
@@ -300,10 +300,7 @@ export async function readDependencyPrebuildState(
  * for the same candidate. It deliberately extends the existing routine-row
  * metadata instead of introducing another queue or cache.
  */
-export async function enqueueDependencyPrebuild(
-  request: DependencyPrebuildRequest,
-  sql?: Sql,
-): Promise<boolean> {
+export async function enqueueDependencyPrebuild(request: DependencyPrebuildRequest, sql?: Sql): Promise<boolean> {
   const candidate = request.candidate.trim().toLowerCase();
   if (!FULL_COMMIT_RE.test(candidate)) {
     throw new Error(`dependency prebuild candidate is not a full commit: ${request.candidate}`);
@@ -338,16 +335,21 @@ export async function enqueueDependencyPrebuild(
        AND (
          metadata->'dependency_prebuild' IS NULL
          OR (
-           metadata->'dependency_prebuild'->>'candidate' IS DISTINCT FROM ${candidate}
-           AND CASE
-                 WHEN COALESCE(metadata->'dependency_prebuild'->>'queuedAtMs', '') ~ '^[0-9]+$'
-                   THEN (metadata->'dependency_prebuild'->>'queuedAtMs')::bigint
-                 WHEN COALESCE(metadata->'dependency_prebuild'->>'startedAtMs', '') ~ '^[0-9]+$'
-                   THEN (metadata->'dependency_prebuild'->>'startedAtMs')::bigint
-                 WHEN COALESCE(metadata->'dependency_prebuild'->>'completedAtMs', '') ~ '^[0-9]+$'
-                   THEN (metadata->'dependency_prebuild'->>'completedAtMs')::bigint
-                 ELSE 0
-               END <= ${queuedAtMs}
+           CASE
+             WHEN COALESCE(metadata->'dependency_prebuild'->>'queuedAtMs', '') ~ '^[0-9]+$'
+               THEN (metadata->'dependency_prebuild'->>'queuedAtMs')::bigint
+             WHEN COALESCE(metadata->'dependency_prebuild'->>'startedAtMs', '') ~ '^[0-9]+$'
+               THEN (metadata->'dependency_prebuild'->>'startedAtMs')::bigint
+             WHEN COALESCE(metadata->'dependency_prebuild'->>'completedAtMs', '') ~ '^[0-9]+$'
+               THEN (metadata->'dependency_prebuild'->>'completedAtMs')::bigint
+             ELSE 0
+           END <= ${queuedAtMs}
+           AND (
+             metadata->'dependency_prebuild'->>'candidate' IS DISTINCT FROM ${candidate}
+             OR metadata->'dependency_prebuild'->>'schema' IS DISTINCT FROM '1'
+             OR COALESCE(metadata->'dependency_prebuild'->>'status', '') NOT IN
+               ('queued', 'building', 'ready', 'failed')
+           )
          )
        )
     RETURNING true AS queued

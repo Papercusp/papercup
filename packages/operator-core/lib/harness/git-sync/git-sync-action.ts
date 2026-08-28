@@ -2506,7 +2506,10 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   // marker that outlives that process is picked up by the next tick's recovery.
   if (dependencyPrebuildRequest && dependencyPrebuildQueued) {
     fireDependencyPrebuild(dependencyPrebuildRequest, 'published');
-  } else if (!dependencyPrebuildRequest) {
+  } else {
+    // A false enqueue result can mean an equal candidate was already queued by
+    // a process that then exited. Re-read through the recovery helper; it is a
+    // no-op for ready/building/failed markers and safely claims a queued one.
     fireQueuedDependencyPrebuildRecovery(workspaceId, slug);
   }
 
