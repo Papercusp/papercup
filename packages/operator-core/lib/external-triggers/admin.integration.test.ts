@@ -291,6 +291,132 @@ describe('external-trigger admin shared seam', () => {
     })).toMatchObject({ ok: false, error: 'binding_not_found', bindingId });
   });
 
+  /**
+   * WI-474131. A binding that has never fired owns no trigger_runs, so a
+   * binding-scoped lookup could never bootstrap it — which made a freshly
+   * installed replacement binding (still disarmed, waiting to be proven before
+   * the legacy one is retired) the single binding that could never be tested.
+   * These three cases pin the fallback: it engages, it respects the binding's
+   * own filter, and it covers the direct work-item dispatch shape too.
+   */
+  async function seedDeliveryOnly(
+    payload: Record<string, unknown>,
+    dedupeKey: string,
+  ): Promise<string> {
+    const rows = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_deliveries
+        (workspace_id, source_id, dedupe_key, datatype_id, event_key, payload,
+         sink_kind, sink_ref, outcome, attempts, completed_at)
+      VALUES (${WS}, ${sourceId}, ${dedupeKey}, 'email-message',
+              'ext:gmail:message.received', ${JSON.stringify(payload)}::text::jsonb,
+              'event-bus', 'workspace', 'delivered', 1, now())
+      RETURNING id::text`;
+    return rows[0].id;
+  }
+
+  it('bootstraps a never-fired binding from its source last matching delivery', async () => {
+    const deliveryId = await seedDeliveryOnly(
+      { messageId: 'm-boot', subject: 'Support request', label: 'support', id: 'm-boot', occurredAt: '2026-08-24T12:00:00.000Z' },
+      'gmail:bootstrap-1',
+    );
+    const queued = await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId,
+      requestedBy: 'owner:test',
+    });
+    expect(queued).toMatchObject({
+      ok: true,
+      run: {
+        bindingId,
+        sourceTriggerRunId: null,
+        sourceDeliveryId: deliveryId,
+        providerDedupeKey: 'gmail:bootstrap-1',
+        eventSource: 'source-delivery',
+        status: 'pending',
+      },
+    });
+    if (!queued.ok) throw new Error('expected a queued bootstrap test run');
+    const rows = await sql<
+      Array<{
+        dedupeKey: string;
+        args: { trigger: { key: string; source: string; event: string; dedupeKey: string; externalId: string | null; payload: Record<string, unknown> } };
+        outcome: { runWithLastEvent: { eventSource: string; sourceTriggerRunId: string | null } };
+      }>
+    >`
+      SELECT dedupe_key AS "dedupeKey", args, outcome
+        FROM harness_shared.trigger_runs
+       WHERE workspace_id = ${WS} AND id = ${queued.run.id}::uuid`;
+    // The rebuilt envelope must be the same canonical shape the live enqueue
+    // path writes, or the replay would exercise a different contract.
+    expect(rows[0].args.trigger).toMatchObject({
+      key: 'ext:gmail:message.received',
+      source: 'gmail',
+      event: 'message.received',
+      dedupeKey: 'gmail:bootstrap-1',
+      externalId: 'm-boot',
+    });
+    expect(rows[0].dedupeKey).toMatch(/^test:delivery:/);
+    expect(rows[0].outcome.runWithLastEvent).toMatchObject({
+      eventSource: 'source-delivery',
+      sourceTriggerRunId: null,
+    });
+  });
+
+  it('does not bootstrap from a source event the binding filter rejects', async () => {
+    // Same source, but no `label:"support"` — the live enqueue path would never
+    // have matched this binding, so neither may the replay.
+    await seedDeliveryOnly({ messageId: 'm-other', subject: 'Billing', id: 'm-other' }, 'gmail:bootstrap-2');
+    expect(await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId,
+      requestedBy: 'owner:test',
+    })).toMatchObject({ ok: false, error: 'no_last_event', bindingId });
+  });
+
+  it('replays a create-work-item binding instead of refusing it as non-plan', async () => {
+    const directBindings = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, work_item_harness_slug, work_item_kind, event_pattern,
+         event_filter, action, armed, storm_policy, created_by)
+      VALUES (${WS}, ${sourceId}, 'email', 'email-draft-proposal', 'ext:gmail:message.*',
+              '{"label":"support"}'::jsonb, '{"type":"create-work-item"}'::jsonb,
+              FALSE, '{"maxRuns":2,"windowSeconds":60}'::jsonb, 'owner-fixture')
+      RETURNING id`;
+    const directBindingId = directBindings[0].id;
+    await seedDeliveryOnly(
+      { messageId: 'm-direct', subject: 'Support request', label: 'support', id: 'm-direct' },
+      'gmail:bootstrap-3',
+    );
+    expect(await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId: directBindingId,
+      requestedBy: 'owner:test',
+    })).toMatchObject({
+      ok: true,
+      run: { bindingId: directBindingId, eventSource: 'source-delivery', status: 'pending' },
+    });
+  });
+
+  it('still refuses a binding whose action is neither dispatch shape', async () => {
+    // A target-less binding is unreachable — `trigger_bindings_exactly_one_target`
+    // rejects it in the DB — so the reachable failure is a binding that HAS a
+    // valid target but declares an action neither dispatcher handles. Replaying
+    // it would queue a trigger_run that dispatchPendingTriggerRuns can only fail.
+    const brokenBindings = await sql<Array<{ id: string }>>`
+      INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, event_pattern,
+         event_filter, action, armed, storm_policy, created_by)
+      VALUES (${WS}, ${sourceId}, ${HARNESS}, ${PLAN}, 'ext:gmail:message.*',
+              '{"label":"support"}'::jsonb, '{"type":"send-webhook"}'::jsonb, FALSE,
+              '{"maxRuns":2,"windowSeconds":60}'::jsonb, 'owner-fixture')
+      RETURNING id`;
+    await seedDeliveryOnly(
+      { messageId: 'm-broken', subject: 'Support request', label: 'support', id: 'm-broken' },
+      'gmail:bootstrap-4',
+    );
+    expect(await queueExternalTriggerLastEventTestRun(sql, WS, {
+      bindingId: brokenBindings[0].id,
+      requestedBy: 'owner:test',
+    })).toMatchObject({ ok: false, error: 'unsupported_binding_action' });
+  });
+
   it('reads schedule fire state and the manual source for one plan', async () => {
     expect(await loadExternalTriggerPlanAdminSnapshot(sql, WS, HARNESS, PLAN)).toMatchObject({
       harnessSlug: HARNESS,

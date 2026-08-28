@@ -7,12 +7,12 @@ export default defineTool({
   name: 'triggers:run-with-last-event',
   profile: 'engineer',
   description:
-    'Queue a distinct audited test run for one plan binding using its latest settled provider event. This may perform the workflow\'s configured provider write (for example a Gmail draft or Slack thread reply).',
+    'Queue a distinct audited test run for one binding using its latest settled provider event. This may perform the workflow\'s configured provider write (for example a Gmail draft or Slack thread reply).',
   guidance: {
     when:
-      'Testing an installed workflow against the last real event it received. Pass confirm:true after surfacing that the resulting plan may write back to the provider.',
+      'Proving an installed plan or create-work-item binding against a real event — including a new one, still disarmed, before you retire what it replaces.',
     notWhen:
-      'For a manual run with operator-supplied inputs use plans:run-now. This verb never re-ingests a provider event and is unavailable until the binding has settled event history.',
+      'For a manual run with operator-supplied inputs use plans:run-now. This verb never re-ingests a provider event and is unavailable until its source has a matching settled event.',
     chaining:
       'triggers:status → triggers:run-with-last-event { bindingId, confirm:true } → triggers:status or plans:runs.',
     seeAlso: ['triggers:status (inspect source and run history)', 'plans:runs (inspect the minted plan run)'],

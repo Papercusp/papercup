@@ -13,6 +13,7 @@ import {
   EMAIL_DRAFT_PROPOSAL_KIND,
   parseStormPolicy,
 } from './binding-engine';
+import { keyMatchesPattern, payloadMatchesFilter } from '../events/await/pattern';
 import { getDatatype } from '../datatype-registry-store';
 import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
 import { getSocialPlatform, isSocialPlatformVerified } from './social/platform-registry';
@@ -297,9 +298,22 @@ export interface ExternalTriggerPlanAdminSnapshot {
 export interface ExternalTriggerLastEventTestRun {
   id: string;
   bindingId: string;
-  sourceTriggerRunId: string;
+  /**
+   * The prior trigger-run this replay copied its envelope from, or `null` when
+   * the binding had no settled run of its own and the envelope was rebuilt from
+   * the source's last matching delivery (`eventSource: 'source-delivery'`).
+   */
+  sourceTriggerRunId: string | null;
   sourceDeliveryId: string;
   providerDedupeKey: string;
+  /**
+   * Which ledger row supplied the replayed event. `binding-run` copies an
+   * already-validated `args.trigger` from this binding's own history;
+   * `source-delivery` rebuilds it from the newest delivered event on the
+   * binding's source that matches its pattern and filter, which is what lets a
+   * freshly installed replacement binding be proven before it is armed.
+   */
+  eventSource: 'binding-run' | 'source-delivery';
   status: 'pending';
   triggeredAt: string;
   requestedBy: string;
@@ -315,7 +329,7 @@ export type QueueExternalTriggerLastEventTestResult =
   | { ok: true; run: ExternalTriggerLastEventTestRun }
   | {
       ok: false;
-      error: 'binding_not_found' | 'not_plan_binding' | 'no_last_event';
+      error: 'binding_not_found' | 'unsupported_binding_action' | 'no_last_event';
       bindingId: string;
       detail: string;
     };
@@ -1288,12 +1302,22 @@ export async function queueExternalTriggerLastEventTestRun(
         id: string;
         planHarnessSlug: string | null;
         planSlug: string | null;
+        workItemHarnessSlug: string | null;
+        workItemKind: string | null;
+        sourceId: string;
+        eventPattern: string;
+        eventFilter: Record<string, unknown> | null;
         action: Record<string, unknown>;
       }>
     >`
       SELECT id::text,
              plan_harness_slug AS "planHarnessSlug",
              plan_slug AS "planSlug",
+             work_item_harness_slug AS "workItemHarnessSlug",
+             work_item_kind AS "workItemKind",
+             source_id::text AS "sourceId",
+             event_pattern AS "eventPattern",
+             event_filter AS "eventFilter",
              action
         FROM harness_shared.trigger_bindings
        WHERE workspace_id = ${ws}
@@ -1310,12 +1334,22 @@ export async function queueExternalTriggerLastEventTestRun(
       };
     }
     const action = typeof binding.action.type === 'string' ? binding.action.type.trim() : 'launch-plan';
-    if (action !== 'launch-plan' || !binding.planHarnessSlug || !binding.planSlug) {
+    // Both canonical dispatch shapes are replayable: `launch-plan` mints a plan
+    // run, and `create-work-item` (P-018/D-014) mints one bounded direct work
+    // item. `dispatchPendingTriggerRuns` already handles both, so refusing the
+    // direct shape here left Email's canonical ingress with no audited test
+    // route at all.
+    const isPlanBinding = action === 'launch-plan' && !!binding.planHarnessSlug && !!binding.planSlug;
+    const isDirectWorkItemBinding =
+      action === 'create-work-item' && !!binding.workItemHarnessSlug && !!binding.workItemKind;
+    if (!isPlanBinding && !isDirectWorkItemBinding) {
       return {
         ok: false,
-        error: 'not_plan_binding',
+        error: 'unsupported_binding_action',
         bindingId,
-        detail: 'Run with last event is available only for bindings that launch a plan.',
+        detail:
+          `Run with last event supports launch-plan and create-work-item bindings with a complete target; ` +
+          `this binding declares action '${action}' with no complete plan or work-item target.`,
       };
     }
 
@@ -1345,24 +1379,120 @@ export async function queueExternalTriggerLastEventTestRun(
        ORDER BY d.received_at DESC, tr.triggered_at DESC, tr.id DESC
        LIMIT 1
        FOR SHARE OF tr, d`;
-    const source = sourceRuns[0];
-    if (!source) {
+
+    let resolved: {
+      triggerRunId: string | null;
+      deliveryId: string;
+      providerDedupeKey: string;
+      args: Record<string, unknown>;
+      eventSource: 'binding-run' | 'source-delivery';
+    } | null = sourceRuns[0]
+      ? {
+          triggerRunId: sourceRuns[0].id,
+          deliveryId: sourceRuns[0].deliveryId,
+          providerDedupeKey: sourceRuns[0].providerDedupeKey,
+          args: sourceRuns[0].args,
+          eventSource: 'binding-run',
+        }
+      : null;
+
+    if (!resolved) {
+      // A binding that has never fired has no trigger_runs of its own, so the
+      // binding-scoped lookup above cannot bootstrap it — which made the
+      // binding you most need to prove (a freshly installed replacement, still
+      // disarmed) the one binding that could never be tested. Fall back to the
+      // newest delivered event on this binding's SOURCE that its own pattern
+      // and filter accept, and rebuild the canonical `args.trigger` envelope
+      // from that delivery. Matching is done with the same two predicates the
+      // live enqueue path uses, so a replay can never reach a binding that the
+      // real event would not have reached.
+      const deliveries = await tx<
+        Array<{
+          id: string;
+          dedupeKey: string;
+          datatypeId: string | null;
+          eventKey: string;
+          payload: Record<string, unknown> | null;
+          sourceId: string;
+          sourceKind: string;
+        }>
+      >`
+        SELECT d.id::text,
+               d.dedupe_key AS "dedupeKey",
+               d.datatype_id AS "datatypeId",
+               d.event_key AS "eventKey",
+               d.payload,
+               d.source_id::text AS "sourceId",
+               s.kind AS "sourceKind"
+          FROM harness_shared.trigger_deliveries d
+          JOIN harness_shared.trigger_sources s
+            ON s.workspace_id = d.workspace_id AND s.id = d.source_id
+         WHERE d.workspace_id = ${ws}
+           AND d.source_id = ${binding.sourceId}::uuid
+           AND d.sink_kind = 'event-bus'
+           AND d.sink_ref = 'workspace'
+           AND d.outcome = 'delivered'
+         ORDER BY d.received_at DESC, d.id DESC
+         LIMIT 200
+         FOR SHARE OF d`;
+      const match = deliveries.find(
+        (row) =>
+          keyMatchesPattern(binding.eventPattern, row.eventKey)
+          && payloadMatchesFilter(binding.eventFilter, row.payload ?? {}),
+      );
+      if (match) {
+        const payload = (match.payload ?? {}) as Record<string, unknown>;
+        const prefix = `ext:${match.sourceKind}:`;
+        const eventName = match.eventKey.startsWith(prefix)
+          ? match.eventKey.slice(prefix.length)
+          : match.eventKey.split(':').slice(2).join(':');
+        resolved = {
+          triggerRunId: null,
+          deliveryId: match.id,
+          providerDedupeKey: match.dedupeKey,
+          args: {
+            trigger: {
+              key: match.eventKey,
+              source: match.sourceKind,
+              event: eventName,
+              sourceId: match.sourceId,
+              externalId: typeof payload.id === 'string' ? payload.id : null,
+              occurredAt: typeof payload.occurredAt === 'string' ? payload.occurredAt : null,
+              datatypeId: match.datatypeId,
+              dedupeKey: match.dedupeKey,
+              payload,
+            },
+          },
+          eventSource: 'source-delivery',
+        };
+      }
+    }
+
+    if (!resolved) {
       return {
         ok: false,
         error: 'no_last_event',
         bindingId,
-        detail: 'No settled provider event is available for this binding yet.',
+        detail:
+          'No settled provider event is available for this binding yet: it has no settled run of its own, '
+          + "and no delivered event on its source matches this binding's event pattern and filter.",
       };
     }
+    const source = resolved;
 
     const runId = randomUUID();
     const requestedAt = new Date().toISOString();
-    const testDedupeKey = `test:${source.id}:${runId}`;
+    // The dedupe key stays test-scoped and unique per replay. When the envelope
+    // was rebuilt from a source delivery there is no originating trigger-run to
+    // name, so anchor it on that delivery instead — never on a fixed literal,
+    // which would collide across replays of different events.
+    const testDedupeKey = `test:${source.triggerRunId ?? `delivery:${source.deliveryId}`}:${runId}`;
     const audit = {
       runWithLastEvent: {
-        sourceTriggerRunId: source.id,
+        sourceTriggerRunId: source.triggerRunId,
         sourceDeliveryId: source.deliveryId,
         providerDedupeKey: source.providerDedupeKey,
+        eventSource: source.eventSource,
         requestedBy,
         requestedAt,
       },
@@ -1382,9 +1512,10 @@ export async function queueExternalTriggerLastEventTestRun(
       run: {
         id: inserted[0].id,
         bindingId,
-        sourceTriggerRunId: source.id,
+        sourceTriggerRunId: source.triggerRunId,
         sourceDeliveryId: source.deliveryId,
         providerDedupeKey: source.providerDedupeKey,
+        eventSource: source.eventSource,
         status: 'pending',
         triggeredAt: iso(inserted[0].triggeredAt) as string,
         requestedBy,
