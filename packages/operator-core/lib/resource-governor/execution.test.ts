@@ -1,11 +1,16 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
 import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
 import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
+  governedExecutionLeaseTtlForTimeout,
   withGovernedExecution,
 } from './execution';
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function deps() {
   let record: any = null;
@@ -60,6 +65,12 @@ function deps() {
 }
 
 describe('governed execution lifecycle', () => {
+  it('derives a bounded short lease from a process timeout', () => {
+    expect(governedExecutionLeaseTtlForTimeout(undefined)).toBe(5 * 60_000);
+    expect(governedExecutionLeaseTtlForTimeout(1_000)).toBe(6_000);
+    expect(governedExecutionLeaseTtlForTimeout(60 * 60_000)).toBe(30 * 60_000);
+  });
+
   it('round-trips a propagated parent context and rejects malformed env input', async () => {
     const d = deps();
     const execution = await beginGovernedExecution(
@@ -125,6 +136,102 @@ describe('governed execution lifecycle', () => {
       state: 'cancelled',
       cancellationReason: 'governed execution failed: spawn exploded',
     });
+  });
+
+  it('cancels and cleans up a queued receipt when targeted lease acquisition fails', async () => {
+    const d = deps();
+    vi.spyOn(d.driver, 'leaseReceipt').mockResolvedValue(null);
+
+    await expect(
+      beginGovernedExecution(
+        { idempotencyKey: 'lease-miss', admissionClass: 'process' },
+        { owner: 'bounded-runner', leaseTtlMs: 6_000 },
+        d,
+      ),
+    ).rejects.toThrow("'WI-R1' is not leaseable");
+    expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('cancels a queued receipt even when the lease driver throws', async () => {
+    const d = deps();
+    vi.spyOn(d.driver, 'leaseReceipt').mockRejectedValue(new Error('lease store unavailable'));
+
+    await expect(
+      beginGovernedExecution(
+        { idempotencyKey: 'lease-throw', admissionClass: 'process' },
+        { owner: 'bounded-runner', leaseTtlMs: 6_000 },
+        d,
+      ),
+    ).rejects.toThrow('lease store unavailable');
+    expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: expect.stringContaining('lease acquisition') });
+  });
+
+  it('releases a partial lease and cancels when mark-running fails', async () => {
+    const d = deps();
+    vi.spyOn(d.driver, 'markRunning').mockResolvedValue(null);
+    const releaseLease = vi.spyOn(d.driver, 'releaseLease');
+
+    await expect(
+      beginGovernedExecution(
+        { idempotencyKey: 'mark-miss', admissionClass: 'process' },
+        { owner: 'bounded-runner', leaseTtlMs: 6_000 },
+        d,
+      ),
+    ).rejects.toThrow("'WI-R1' could not enter running state");
+    expect(releaseLease).toHaveBeenCalledWith('WI-R1', 'lease-1');
+    expect(d.current()).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('serializes concurrent terminal callbacks and accepts measured demand', async () => {
+    const d = deps();
+    let unblock!: () => void;
+    const gate = new Promise<void>((resolve) => { unblock = resolve; });
+    const release = vi.spyOn(d.governor, 'release').mockImplementation(async (_context, actualDemand) => {
+      await gate;
+      return { requestId: 'request-1', released: actualDemand?.memoryBytes === 42 };
+    });
+    const cancel = vi.spyOn(d.governor, 'cancel');
+    const execution = await beginGovernedExecution(
+      { idempotencyKey: 'serialized', admissionClass: 'process' },
+      { owner: 'bounded-runner' },
+      d,
+    );
+
+    const first = execution.finish({ cpuWeight: 0.5, memoryBytes: 42 });
+    const second = execution.cancel('late abort');
+    expect(release).toHaveBeenCalledOnce();
+    await expect(second).resolves.toBe(false);
+    unblock();
+    await expect(first).resolves.toBe(true);
+    expect(cancel).not.toHaveBeenCalled();
+    await expect(execution.finish()).resolves.toBe(false);
+  });
+
+  it('uses a settlement policy to cancel undetermined outcomes and release measured outcomes', async () => {
+    const d = deps();
+    const cancelled = await withGovernedExecution(
+      { idempotencyKey: 'policy-cancel', admissionClass: 'process' },
+      {
+        owner: 'bounded-runner',
+        settle: () => ({ kind: 'cancel' as const, reason: 'timeout' }),
+      },
+      d,
+      async () => 'undetermined',
+    );
+    expect(cancelled).toBe('undetermined');
+    expect(d.current()).toMatchObject({ state: 'cancelled', cancellationReason: 'timeout' });
+
+    const released = await withGovernedExecution(
+      { idempotencyKey: 'policy-release', admissionClass: 'process' },
+      {
+        owner: 'bounded-runner',
+        measureActualDemand: () => ({ cpuWeight: 0.25, diskBytes: 99 }),
+      },
+      d,
+      async () => 'passed',
+    );
+    expect(released).toBe('passed');
+    expect(d.current()).toMatchObject({ state: 'completed', actualDemand: { cpuWeight: 0.25, diskBytes: 99 } });
   });
 
   it('fails closed when a driver returns non-durable compatibility admission', async () => {
