@@ -146,6 +146,13 @@ describe('locks:acquire — outcome branches', () => {
     expect(tool.guidance?.chaining).toMatch(/actually published a lowercase 40–64-character hexadecimal commit SHA/);
   });
 
+  it('releases explicit edit locks before git-sync so protected paths remain committable', () => {
+    const guidance = `${tool.guidance?.when ?? ''}\n${tool.guidance?.chaining ?? ''}`;
+    expect(guidance).toMatch(/release after the edits so git-sync can commit them/);
+    expect(guidance).toMatch(/git-sync excludes live-locked paths/);
+    expect(guidance).not.toMatch(/held across several edits AND the commit|release after committing|edit → commit → locks:release/);
+  });
+
   it('publishes coordination_domain as an absolute canonical checkout root, not a workspace slug', () => {
     const description = tool.args.shape.coordination_domain.description ?? '';
     expect(description).toMatch(/absolute canonical repository checkout root/i);
