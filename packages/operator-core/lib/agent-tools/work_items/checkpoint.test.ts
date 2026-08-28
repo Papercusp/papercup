@@ -215,6 +215,35 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
     });
   });
 
+  it('publishes the documented structured checkpoint shape in both shorthand schemas', () => {
+    const json = z.toJSONSchema(checkpoint.args as never) as {
+      properties?: {
+        checkpoint?: unknown;
+        items?: { items?: unknown };
+      };
+    };
+    const hasStructuredCheckpoint = (value: unknown): boolean => {
+      if (!value || typeof value !== 'object') return false;
+      const record = value as Record<string, unknown>;
+      const properties = record.properties;
+      if (
+        record.type === 'object' &&
+        properties &&
+        typeof properties === 'object' &&
+        'did' in properties &&
+        'left' in properties &&
+        'insight' in properties &&
+        'next' in properties
+      ) {
+        return true;
+      }
+      return Object.values(record).some(hasStructuredCheckpoint);
+    };
+
+    expect(hasStructuredCheckpoint(json.properties?.checkpoint)).toBe(true);
+    expect(hasStructuredCheckpoint(json.properties?.items?.items)).toBe(true);
+  });
+
   it('accepts loop checkpoint aliases while canonical fields win, and rejects unrelated object keys', () => {
     const parsed = parse({
       id: 'WI-7',
