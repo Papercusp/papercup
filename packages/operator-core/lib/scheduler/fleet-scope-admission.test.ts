@@ -93,6 +93,7 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 import {
   admitSubjectForFleetTarget,
   admitWorkItemForFleetTarget,
+  admitWorkItemForLoopTarget,
   leaderDispatchedAdmission,
   selfFiledFalloutAdmission,
   diagnoseFleetScopeCooldownMiss,
@@ -345,6 +346,76 @@ describe('fleet scope assignment admission (P-016)', () => {
     expect(miss).toMatchObject({ windDown: true, quarantinedIds: ['WI-out'], fleetScope: { fleet: 'bugs' } });
     expect(miss.error).toMatch(/NOT allowed to fall through to the generic backlog/);
     expect(miss.advice).toMatch(/loop:end \{ acknowledgeOpenDirectives: true, acknowledgeWakeLessAutonomy: true \}/);
+  });
+
+  it('EI-21659493450381888: loop admission refuses a per-cup scheduler-spec mismatch even without fleet membership', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue(null);
+    admissionMocks.listFleetAssignments.mockResolvedValue([]);
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({
+      source: 'cup',
+      spec: {
+        specVersion: '1.0',
+        specId: 'only-pui-su-session-runtime-correction',
+        revision: 3,
+        view: { filter: { field: 'plan', op: '=', value: 'pui-su-session-runtime-correction-2026-08-27' } },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      revision: 3,
+      updatedBy: 'su-member',
+      updatedAt: 'now',
+    });
+    const item: WorkItem = {
+      id: 'WI-1774',
+      kind: 'bug',
+      family: 'issue',
+      harness: 'papercusp',
+      title: 'out-of-lane item',
+      summary: 'item from a different plan',
+      state: 'open',
+      assignee: null,
+      takenAt: null,
+      lastProgressAt: null,
+      assignedBy: null,
+      createdBy: null,
+      severity: 'major',
+      parent: null,
+      payload: {},
+      sourcePlanSlug: 'backend-reliability-100pct-2026-07-03',
+      sourcePlanItemIds: null,
+      goalId: null,
+      origin: 'local',
+      auditVerdict: null,
+      verifiedAuthorGithubUserId: null,
+      rank: null,
+      rankWriter: null,
+      rankUpdatedAt: null,
+      priority: null,
+      terminalOwner: null,
+      terminalCompletionRef: null,
+      terminalCompletionEvidence: null,
+      completionAuthority: null,
+      createdAt: '2026-08-28T00:00:00.000Z',
+      updatedAt: '2026-08-28T00:00:00.000Z',
+      closedAt: null,
+    };
+    admissionMocks.getWorkItem.mockResolvedValue(item);
+
+    const admission = await admitWorkItemForLoopTarget({
+      target: 'su-member',
+      workItemId: item.id,
+      harness: 'papercusp',
+      workspaceId: 'papercusp-workspace',
+      enforceSchedulerSpec: true,
+    });
+
+    expect(admission).toMatchObject({
+      allowed: false,
+      scoped: false,
+      code: 'scheduler_spec_violation',
+      specId: 'only-pui-su-session-runtime-correction',
+      revision: 3,
+    });
+    expect((admission as { reason: string }).reason).toMatch(/does not match active scheduler spec/);
   });
 
   it('releases every incompatible pre-existing claim in one reconciliation sweep and alerts once', async () => {

@@ -26,6 +26,7 @@ vi.mock('@papercusp/flags', () => ({
   FLAGS: {
     LOOPS: 'papercusp-loops',
     SCOPED_SUPERUSER_CLAMP: 'papercusp-scoped-superuser-clamp',
+    SCHEDULER_SPEC_CLAIM: 'papercusp-scheduler-spec-claim',
   },
 }));
 // EI-19966210024116714: arm.ts reaches harness-core ONLY via a dynamic import inside the
@@ -74,6 +75,7 @@ vi.mock('../../work-items', () => ({
 // work_items:claim. Keep the arm tests DB-free while pinning the ordering contract.
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitWorkItemForFleetTarget: vi.fn(async () => ({ allowed: true, scoped: false })),
+  admitWorkItemForLoopTarget: vi.fn(async () => ({ allowed: true, scoped: false })),
 }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async () => undefined) }));
 // EI-19447204017443244: the arm-time live-wake-await lookup behind the cap message.
@@ -114,7 +116,7 @@ import {
   readActiveLoopFacts,
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
-import { admitWorkItemForFleetTarget } from '../../scheduler/fleet-scope-admission';
+import { admitWorkItemForFleetTarget, admitWorkItemForLoopTarget } from '../../scheduler/fleet-scope-admission';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { resolveHomePotSlug } from '../pot/_resolve';
@@ -135,6 +137,7 @@ const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getWiM = vi.mocked(getWorkItem);
 const admitM = vi.mocked(admitWorkItemForFleetTarget);
+const admitLoopM = vi.mocked(admitWorkItemForLoopTarget);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const homePotM = vi.mocked(resolveHomePotSlug);
@@ -185,6 +188,7 @@ beforeEach(() => {
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
   mockResolvedTyped(admitM, { allowed: true, scoped: false });
+  mockResolvedTyped(admitLoopM, { allowed: true, scoped: false });
   exactAwaitM.mockResolvedValue(false);
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
@@ -485,7 +489,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   });
 
   it('EI-20123870155538062: refuses an out-of-spec auto-claim before mutation, but still arms the loop', async () => {
-    mockResolvedTyped(admitM, {
+    mockResolvedTyped(admitLoopM, {
       allowed: false,
       scoped: true,
       code: 'fleet_scope_violation',
@@ -514,11 +518,12 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
 
     const b = body(await call({ workItem: 'WI-OUT' }));
 
-    expect(admitM).toHaveBeenCalledWith({
+    expect(admitLoopM).toHaveBeenCalledWith({
       target: 'su-caller-own-id',
       workItemId: 'WI-OUT',
       harness: 'papercusp',
       workspaceId: 'ws-1',
+      enforceSchedulerSpec: false,
     });
     expect(claimM).not.toHaveBeenCalled();
     expect(b).toMatchObject({
@@ -532,6 +537,40 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       },
     });
     expect(b.note).toContain('fleet admission gate refused');
+  });
+
+  it('EI-21659493450381888: refuses a cold goal candidate excluded by a solo scheduler spec before mutation', async () => {
+    detectM.mockReturnValue('WI-1774');
+    mockResolvedTyped(admitLoopM, {
+      allowed: false,
+      scoped: false,
+      code: 'scheduler_spec_violation',
+      specId: 'only-pui-su-session-runtime-correction',
+      revision: 3,
+      reason:
+        'work-item WI-1774 does not match active scheduler spec only-pui-su-session-runtime-correction@3 for su-caller-own-id; the loop auto-claim was refused before mutation',
+    });
+
+    const b = body(await call({ carry: 'cold', goal: 'continue the scoped plan; ignore WI-1774' }));
+
+    expect(admitLoopM).toHaveBeenCalledWith({
+      target: 'su-caller-own-id',
+      workItemId: 'WI-1774',
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+      enforceSchedulerSpec: true,
+    });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: {
+        id: 'WI-1774',
+        claimed: false,
+        reason: 'scheduler_spec_violation',
+      },
+    });
+    expect(b.note).toContain('scheduler_spec_violation');
   });
 
   it('claims an EXPLICIT workItem for the loop owner (any carry) and names it in the wake prompt', async () => {

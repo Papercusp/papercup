@@ -518,6 +518,72 @@ export async function admitWorkItemForFleetTarget(args: {
   };
 }
 
+/**
+ * EI-21659493450381888: the loop's optional auto-claim must honor an authored
+ * scheduler spec even when the caller is not a named fleet member. The existing
+ * fleet admission seam intentionally returns `scoped:false` for a solo caller,
+ * which is correct for the deliberate `work_items:claim` by-id override but was
+ * too wide for a cold loop's goal-detected candidate: a per-cup plan-only spec
+ * could exclude the candidate while loop:arm still claimed it directly.
+ *
+ * `enforceSchedulerSpec` is supplied only for an AUTO-DETECTED candidate. An
+ * explicit loop `workItem` remains the deliberate by-id override for solo callers;
+ * named-fleet members still pass through the existing fleet admission regardless.
+ */
+export type LoopWorkItemAdmission =
+  | FleetScopeAdmission
+  | {
+      allowed: false;
+      scoped: false;
+      code: 'scheduler_spec_violation';
+      reason: string;
+      specId: string;
+      revision: number | null;
+    };
+
+export async function admitWorkItemForLoopTarget(args: {
+  target: string;
+  workItemId: string;
+  harness?: string;
+  workspaceId?: string | null;
+  enforceSchedulerSpec: boolean;
+}): Promise<LoopWorkItemAdmission> {
+  const fleetAdmission = await admitWorkItemForFleetTarget(args);
+  // Named fleet membership is already evaluated against the effective bee/fleet
+  // spec above. A refusal must remain authoritative, and an explicit solo pin is
+  // intentionally not narrowed by the scheduler's self-select spec.
+  if (!fleetAdmission.allowed || fleetAdmission.scoped || !args.enforceSchedulerSpec) return fleetAdmission;
+
+  const workspaceId = resolveClaimSpecWorkspace(args.workspaceId);
+  // An unscoped caller has no safe partition in which to read a per-cup spec. Keep
+  // the pre-existing best-effort behavior rather than guessing a workspace here;
+  // concrete scoped sessions take the guarded path below.
+  if (!workspaceId) return fleetAdmission;
+
+  const { getClaimSpecRecord } = await import('./claim-spec-store');
+  const record = await getClaimSpecRecord({ cupId: args.target, workspaceId });
+  // No authored per-cup/fleet spec means there is no narrower scheduler lane to
+  // enforce. The scheduler's default ordering remains a valid solo override.
+  if (record.source === 'default') return fleetAdmission;
+
+  const { getWorkItem } = await import('../work-items');
+  const item = await getWorkItem(args.workItemId, args.harness);
+  // Preserve the existing not-found handling in claimWorkItem; this guard only
+  // rejects a candidate whose current row proves it is outside the active spec.
+  if (!item || (await itemMatchesRawClaimSpec(item, record.spec, workspaceId))) return fleetAdmission;
+
+  return {
+    allowed: false,
+    scoped: false,
+    code: 'scheduler_spec_violation',
+    specId: record.spec.specId,
+    revision: record.revision,
+    reason:
+      `work-item ${item.id} does not match active scheduler spec ${formatSpecRef(record.spec.specId, record.spec.revision)} ` +
+      `for ${args.target}; the loop auto-claim was refused before mutation`,
+  };
+}
+
 export async function admitSubjectForFleetTarget(args: {
   target: string;
   subject: ClaimSpecSubject;
