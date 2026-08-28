@@ -1562,6 +1562,20 @@ describe('computeBenchSuggestion — LANELESS-IDLE (EI-13846)', () => {
     ).toBeUndefined();
   });
 
+  it('suppresses an explicitly loopless member — dormant owns the no-self-wake signal', () => {
+    expect(
+      computeBenchSuggestion({
+        stalled: false,
+        verdict: 'first-turn-done',
+        loopMode: null,
+        parkedOn: [],
+        doing: null,
+        load: 0,
+        queued: [],
+      }),
+    ).toBeUndefined();
+  });
+
   it('projectMember surfaces the laneless-idle suggestion end-to-end', () => {
     const m = projectMember(baseAgent({ verdict: 'waiting', monitorState: 'waiting' }), NOW);
     expect(m.benchSuggestion).toBeDefined();
@@ -1665,11 +1679,11 @@ describe('computeDormantAlert (EI-18730414627683753)', () => {
   });
 
   it('projectMember surfaces `dormant:true` end-to-end, distinct from benchSuggestion', () => {
-    const m = projectMember(baseAgent({ verdict: 'first-turn-done' }), NOW);
+    const m = projectMember(baseAgent({ verdict: 'first-turn-done', loopMode: null }), NOW);
     expect(m.dormant).toBe(true);
-    // Same idle shape also trips the (unchanged) laneless-idle benchSuggestion —
-    // dormant is an ADDITIONAL, more urgent signal, not a replacement.
-    expect(m.benchSuggestion?.kind).toBe('laneless-idle');
+    // An explicit loopless oracle makes this a dormant member, not a laneless-idle
+    // loop-armed member; do not prescribe fleet:bench for a member with no wake source.
+    expect(m.benchSuggestion).toBeUndefined();
   });
 
   it('projectMember does NOT set `dormant` for a healthy loop-armed idle member', () => {
