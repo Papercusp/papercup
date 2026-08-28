@@ -9,6 +9,8 @@ import {
   type WorkspaceHostResourceCheckpoint,
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
+import type { GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
+import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS } from './gcp-safety';
 import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
@@ -175,7 +177,7 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
   return { provider, apply, inventoryManagedResources };
 }
 
-function storeHarness() {
+function storeHarness(targetDesired: WorkspaceHostDesiredSpec = desired) {
   let checkpoints: WorkspaceHostResourceCheckpoint[] = [];
   const updateHostState = vi.fn<WorkspaceHostDestroyStore['updateHostState']>();
   const updateOperation = vi.fn<WorkspaceHostDestroyStore['updateOperation']>();
@@ -186,7 +188,7 @@ function storeHarness() {
       connectionId: 'connection-1',
       target: 'gcp',
       observedState: 'running',
-      desired,
+      desired: targetDesired,
       resources: resources.map((resource) => ({ resource, registeredAt: NOW })),
     })),
     beginOperation: vi.fn(async () => {}),
@@ -200,6 +202,63 @@ function storeHarness() {
     updateHostState,
   };
   return { store, checkpoints: () => checkpoints, updateHostState, updateOperation };
+}
+
+function legacyInventorySnapshot(
+  observed: readonly GcpWorkspaceHostInventorySnapshot['observed'][number][] = resources.map((resource) => ({
+    resource,
+    labels: ['vm', 'disk'].includes(resource.kind)
+      ? {
+          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-1',
+          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: WORKSPACE_ID,
+          purpose: 'legacy-canary',
+        }
+      : {},
+    observedAt: NOW,
+  })),
+): GcpWorkspaceHostInventorySnapshot {
+  const names = (kind: string) =>
+    resources.filter((resource) => resource.kind === kind).map((resource) => resource.providerId);
+  return {
+    complete: true,
+    observed,
+    inventoryEvidence: [
+      { kind: 'vm', strategy: 'managed-labels', providerEvidenceRef: 'gcp://inventory/vm' },
+      { kind: 'disk', strategy: 'managed-labels', providerEvidenceRef: 'gcp://inventory/disk' },
+      {
+        kind: 'firewall',
+        strategy: 'deterministic-name',
+        providerEvidenceRef: 'gcp://inventory/firewall',
+        deterministicNames: names('firewall'),
+      },
+      {
+        kind: 'subnetwork',
+        strategy: 'deterministic-name',
+        providerEvidenceRef: 'gcp://inventory/subnetwork',
+        deterministicNames: names('subnetwork'),
+      },
+      {
+        kind: 'network',
+        strategy: 'deterministic-name',
+        providerEvidenceRef: 'gcp://inventory/network',
+        deterministicNames: names('network'),
+      },
+      { kind: 'snapshot', strategy: 'managed-labels', providerEvidenceRef: 'gcp://inventory/snapshot' },
+      {
+        kind: 'router',
+        strategy: 'deterministic-name',
+        providerEvidenceRef: 'gcp://inventory/router',
+        deterministicNames: names('router'),
+      },
+      {
+        kind: 'nat',
+        strategy: 'deterministic-name',
+        providerEvidenceRef: 'gcp://inventory/nat',
+        deterministicNames: names('nat'),
+      },
+    ],
+  };
 }
 
 function runInput(provider: WorkspaceHostProvider, store: WorkspaceHostDestroyStore): RunWorkspaceHostDestroyInput {
@@ -300,6 +359,61 @@ describe('runWorkspaceHostDestroy', () => {
     };
 
     await expect(runWorkspaceHostDestroy(input)).rejects.toBeInstanceOf(WorkspaceHostProvisioningRequestError);
+    expect(provider.plan).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('permits explicitly audited cleanup of a pre-tagging canary only after an exact pre-delete census', async () => {
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    let inventoryCalls = 0;
+    inventoryManagedResources.mockImplementation(async () => {
+      inventoryCalls += 1;
+      return inventoryCalls === 1 ? legacyInventorySnapshot() : legacyInventorySnapshot([]);
+    });
+    const legacyDesired: WorkspaceHostDesiredSpec = {
+      ...desired,
+      labels: { purpose: 'legacy-canary' },
+    };
+    const { store } = storeHarness(legacyDesired);
+
+    const result = await runWorkspaceHostDestroy(runInput(provider, store));
+
+    expect(result.status).toBe('succeeded');
+    expect(inventoryManagedResources).toHaveBeenCalledTimes(2);
+    expect(store.beginOperation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        request: expect.objectContaining({
+          labelAdmission: {
+            mode: 'legacy-manual-purpose',
+            purpose: 'legacy-canary',
+            preDeleteCensus: 'controller-independent-exact-population',
+          },
+        }),
+      }),
+    );
+    expect(apply).toHaveBeenCalledTimes(resources.length);
+  });
+
+  it('fails closed before planning when a legacy canary census finds an extra managed resource', async () => {
+    const { provider, apply, inventoryManagedResources } = providerHarness();
+    const extra = {
+      resource: { ...resources[0]!, providerId: 'foreign-vm' },
+      labels: {
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-1',
+        [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: WORKSPACE_ID,
+        purpose: 'legacy-canary',
+      },
+      observedAt: NOW,
+    } satisfies GcpWorkspaceHostInventorySnapshot['observed'][number];
+    inventoryManagedResources.mockResolvedValue(
+      legacyInventorySnapshot([...legacyInventorySnapshot().observed, extra]),
+    );
+    const { store } = storeHarness({ ...desired, labels: { purpose: 'legacy-canary' } });
+
+    await expect(runWorkspaceHostDestroy(runInput(provider, store))).rejects.toMatchObject({
+      problems: [expect.stringContaining('clean pre-delete provider identity census')],
+    });
     expect(provider.plan).not.toHaveBeenCalled();
     expect(apply).not.toHaveBeenCalled();
   });

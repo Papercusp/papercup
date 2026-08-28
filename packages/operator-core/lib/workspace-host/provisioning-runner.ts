@@ -33,7 +33,11 @@ import {
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventoryRequest, GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
-import { censusGcpWorkspaceHostResources, type GcpWorkspaceHostResourceCensus } from './gcp-safety';
+import {
+  censusGcpWorkspaceHostResources,
+  gcpWorkspaceHostLabelValue,
+  type GcpWorkspaceHostResourceCensus,
+} from './gcp-safety';
 import {
   appendWorkspaceHostEvent,
   beginWorkspaceHostOperation,
@@ -255,29 +259,102 @@ function validateDestroyCanaryEvidence(evidence: WorkspaceHostDestroyCanaryEvide
   assertWorkspaceHostSecretIsolation(evidence, 'workspaceHost.destroy.canary');
 }
 
-function assertDestroyCanaryLabels(
+interface DestroyCanaryLabelBinding {
+  readonly tags: Readonly<Record<string, string>>;
+  /** A pre-tagging host may use this only through the explicit manual-cleanup path. */
+  readonly legacyPurpose?: string;
+}
+
+/**
+ * Resolve the tag set used to rehydrate the canary ledger.
+ *
+ * Normal destroys remain strict: all three immutable canary labels must be present in the
+ * persisted desired spec and must match the supplied run.  A host provisioned before the canary
+ * tag contract existed can be cleaned up only through the explicitly audited manual path, and
+ * only when it carries a human-readable canary purpose marker.  That narrow escape is paired
+ * with a controller-independent pre-delete census below; it never treats a missing tag as proof
+ * by itself and never permits a mismatched tag to be overwritten.
+ */
+function resolveDestroyCanaryLabels(
   desired: WorkspaceHostDesiredSpec,
   evidence: WorkspaceHostDestroyCanaryEvidence,
-): Readonly<Record<string, string>> {
+): DestroyCanaryLabelBinding {
   const labels = desired.labels ?? {};
   const required = {
     [WORKSPACE_HOST_CANARY_TAG_KEYS.canary]: 'true',
     [WORKSPACE_HOST_CANARY_TAG_KEYS.runId]: evidence.runId,
     [WORKSPACE_HOST_CANARY_TAG_KEYS.workspaceId]: evidence.workspaceId,
   } as const;
-  const problems = Object.entries(required)
-    .filter(([key, value]) => labels[key] !== value)
+  const mismatches = Object.entries(required)
+    .filter(([key, value]) => labels[key] !== undefined && labels[key] !== value)
     .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
-  if (problems.length > 0) throw new WorkspaceHostProvisioningRequestError(problems);
-  return required;
+  if (mismatches.length > 0) throw new WorkspaceHostProvisioningRequestError(mismatches);
+
+  const missing = Object.entries(required)
+    .filter(([key]) => labels[key] === undefined)
+    .map(([key, value]) => `stored desired.labels must contain '${key}=${value}'`);
+  if (missing.length === 0) return { tags: required };
+
+  const manual = evidence.emergencyManualDestroy;
+  const purpose = labels.purpose;
+  if (!manual || typeof purpose !== 'string' || !purpose.trim() || !/canary/i.test(purpose)) {
+    throw new WorkspaceHostProvisioningRequestError(missing);
+  }
+  // Validate the manual context before any provider read or mutation. The receipt constructor
+  // checks these again after deletion, but failing at admission keeps malformed requests out of
+  // the inventory path and makes the legacy exception auditable up front.
+  nonEmpty(manual.actorId, 'canary.emergencyManualDestroy.actorId');
+  nonEmpty(manual.reason, 'canary.emergencyManualDestroy.reason');
+  nonEmpty(manual.procedureRef, 'canary.emergencyManualDestroy.procedureRef');
+  return { tags: required, legacyPurpose: purpose.trim() };
 }
 
-function preflightDestroyCanaryLedger(
+async function verifyLegacyDestroyPopulation(
   input: RunWorkspaceHostDestroyInput,
   target: StoredWorkspaceHostDestroyTarget,
-): void {
+  purpose: string,
+): Promise<void> {
+  const inventory = await inventoryProvider(input.provider).inventoryManagedResources(
+    deterministicInventoryRequest(
+      input,
+      target,
+      target.resources.map((entry) => entry.resource),
+    ),
+  );
+  if (!inventory.complete) throw new Error('legacy canary destroy requires a complete pre-delete provider inventory');
+
+  // Reuse the same all-kind census oracle used after deletion. This proves that every resource
+  // we are about to mutate is both present in the durable graph and uniquely identified by the
+  // provider read; extra managed resources, missing rows, and mislabeled VM/disk resources all
+  // fail closed before the first delete call.
+  const census = censusGcpWorkspaceHostResources({
+    hostId: input.hostId,
+    workspaceId: input.workspaceId,
+    expected: target.resources.map((entry) => entry.resource),
+    observed: inventory.observed,
+    inventoryEvidence: inventory.inventoryEvidence,
+    evaluatedAt: new Date().toISOString(),
+    orphanGraceMs: 60_000,
+  });
+  if (!census.clean) {
+    throw new Error('legacy canary destroy requires a clean pre-delete provider identity census');
+  }
+
+  const expectedPurpose = gcpWorkspaceHostLabelValue(purpose);
+  const labelEnumerated = inventory.observed.filter((entry) =>
+    ['vm', 'disk', 'snapshot'].includes(entry.resource.kind),
+  );
+  if (labelEnumerated.length === 0 || labelEnumerated.some((entry) => entry.labels.purpose !== expectedPurpose)) {
+    throw new Error('legacy canary destroy requires the canary purpose marker on every label-enumerated resource');
+  }
+}
+
+async function preflightDestroyCanaryLedger(
+  input: RunWorkspaceHostDestroyInput,
+  target: StoredWorkspaceHostDestroyTarget,
+): Promise<DestroyCanaryLabelBinding> {
   try {
-    assertDestroyCanaryLabels(target.desired, input.canary);
+    const binding = resolveDestroyCanaryLabels(target.desired, input.canary);
     const baselineAt = Date.parse(input.canary.preRunZeroBaseline.observedAt);
     const firstRegisteredAt = Math.min(
       ...target.resources.map((entry) => Date.parse(entry.registeredAt)).filter(Number.isFinite),
@@ -306,6 +383,10 @@ function preflightDestroyCanaryLedger(
     if (!Number.isSafeInteger(cumulativeCents) || cumulativeCents > ledger.maxSpendCents) {
       throw new Error('cumulative canary spend exceeds the hard spend ceiling');
     }
+    if (binding.legacyPurpose) {
+      await verifyLegacyDestroyPopulation(input, target, binding.legacyPurpose);
+    }
+    return binding;
   } catch (error) {
     if (error instanceof WorkspaceHostProvisioningRequestError) throw error;
     throw new WorkspaceHostProvisioningRequestError([message(error)]);
@@ -880,8 +961,8 @@ function restoreCanaryLedger(
   input: RunWorkspaceHostDestroyInput,
   target: StoredWorkspaceHostDestroyTarget,
   destroyTargets: readonly WorkspaceHostResourceRef[],
+  tags: Readonly<Record<string, string>>,
 ): WorkspaceHostLiveCanaryHarness {
-  const tags = assertDestroyCanaryLabels(target.desired, input.canary);
   const ledger = new WorkspaceHostLiveCanaryHarness({
     runId: input.canary.runId,
     workspaceId: input.canary.workspaceId,
@@ -918,6 +999,7 @@ async function finalizeDestroyEvidence(
   target: StoredWorkspaceHostDestroyTarget,
   workflow: WorkspaceHostDurableWorkflowSpec,
   checkpoints: readonly WorkspaceHostResourceCheckpoint[],
+  tags: Readonly<Record<string, string>>,
 ): Promise<WorkspaceHostDestroyEvidenceResult> {
   const destroyTargets = workflow.resources.map((resource) =>
     destroyResourceForStep(
@@ -930,7 +1012,7 @@ async function finalizeDestroyEvidence(
       'destroy evidence cannot be produced over an empty resource population',
     ]);
   }
-  const ledger = restoreCanaryLedger(input, target, destroyTargets);
+  const ledger = restoreCanaryLedger(input, target, destroyTargets, tags);
   const manualDestroyReceipts: WorkspaceHostManualDestroyReceipt[] = [];
   for (const checkpoint of checkpoints) {
     const confirmation = checkpoint.deletionConfirmation;
@@ -1051,7 +1133,6 @@ export async function runWorkspaceHostDestroy(
   if (input.connection.target !== target.target) {
     throw new WorkspaceHostProvisioningRequestError(['workspace-host connection target does not match stored host']);
   }
-  preflightDestroyCanaryLedger(input, target);
 
   const context: WorkspaceHostProviderContext = {
     workspaceId,
@@ -1071,6 +1152,10 @@ export async function runWorkspaceHostDestroy(
       validation.errors.length > 0 ? validation.errors : ['provider connection is not usable'],
     );
   }
+  // Validate the canary ledger immediately before planning. For a pre-tagging legacy host this
+  // also performs the controller-independent exact-population census, while canonical hosts take
+  // the cheaper label-only path.
+  const destroyLabelBinding = await preflightDestroyCanaryLedger(input, target);
 
   const host = {
     hostId,
@@ -1115,6 +1200,15 @@ export async function runWorkspaceHostDestroy(
       disposition: 'discard',
       confirmation: input.confirmation,
       canary: input.canary,
+      ...(destroyLabelBinding.legacyPurpose
+        ? {
+            labelAdmission: {
+              mode: 'legacy-manual-purpose',
+              purpose: destroyLabelBinding.legacyPurpose,
+              preDeleteCensus: 'controller-independent-exact-population',
+            },
+          }
+        : {}),
     },
   });
 
@@ -1250,7 +1344,14 @@ export async function runWorkspaceHostDestroy(
 
     if (action.kind === 'complete' && action.status === 'succeeded') {
       try {
-        const evidence = await finalizeDestroyEvidence(input, store, target, workflow, checkpoints);
+        const evidence = await finalizeDestroyEvidence(
+          input,
+          store,
+          target,
+          workflow,
+          checkpoints,
+          destroyLabelBinding.tags,
+        );
         const completedAt = evidence.completionReceipt.completedAt;
         await store.appendEvent({
           workspaceId,
