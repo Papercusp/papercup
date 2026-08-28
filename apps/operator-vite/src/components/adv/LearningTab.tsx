@@ -3039,6 +3039,19 @@ function ImproveGrid({
         // would pin the scroll target forever and the open trace could never
         // claim it.
         scrollToRowKey={selectedRowKey ?? expandedRowKey}
+        // WI-554962. 'auto', NOT VirtualGrid's 'center' default — and this is
+        // load-bearing, not a preference. `expandedRowKey` is CLICK-driven, so
+        // it feeds this scroll on every trace open; in @tanstack/virtual-core's
+        // `getOffsetForIndex`, ONLY 'auto' short-circuits (`return [scrollOffset,
+        // align]`) when the row is already fully visible. 'center'/'start'/'end'
+        // all fall through and reposition unconditionally, which centred — and so
+        // visibly yanked — the row the reader had just clicked.
+        //
+        // 'auto' is what makes the comment above TRUE rather than merely intended:
+        // a click on an already-visible row now really does "need no scroll", while
+        // an off-window `?itrace=` / `?lsel=` deep link still scrolls into view, so
+        // the WI-523949 landing is preserved exactly.
+        scrollToRowAlign="auto"
         renderExpandedRow={(r) =>
           r.idea ? (
             <div className="pc-learning__gridtrace">
