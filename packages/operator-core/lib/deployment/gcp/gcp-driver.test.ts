@@ -20,7 +20,11 @@ import { GcpApiError, toGcpInstanceName, lastSegment } from './gcp-compute-api';
 import type { GcpComputeApiClient, GcpInstance } from './gcp-compute-api';
 import type { DeploymentConfig, DeploymentContext } from '@papercusp/deployment-driver';
 
-const ctx = (): DeploymentContext => ({ harnessSlug: 'bench-rig', log: () => {} }) as DeploymentContext;
+const ctx = (): DeploymentContext => ({
+  harnessSlug: 'bench-rig',
+  workspaceId: 'papercusp-workspace',
+  log: () => {},
+});
 
 const baseConfig = (over: Partial<DeploymentConfig> = {}): DeploymentConfig => ({
   target: 'gcp',
@@ -118,7 +122,7 @@ describe('GcpDriver.provision', () => {
   it('returns a frame carrying host, zone and the sshUser that sshTargetForFrame needs', async () => {
     const client = fakeClient({ ip: '203.0.113.9' });
     const driver = makeGcpDriver({ client, sleep: noSleep });
-    const frame = await driver.provision!(baseConfig(), ctx());
+    const frame = await driver.provision(baseConfig(), ctx());
     expect(frame.host).toBe('203.0.113.9');
     expect(frame.target).toBe('gcp');
     expect(frame.placement).toBe('remote');
@@ -133,7 +137,7 @@ describe('GcpDriver.provision', () => {
   it('polls until RUNNING with an external IP instead of returning a half-ready frame', async () => {
     const client = fakeClient({ statuses: ['PROVISIONING', 'STAGING', 'RUNNING'], ip: '203.0.113.11' });
     const driver = makeGcpDriver({ client, sleep: noSleep, pollIntervalMs: 0 });
-    const frame = await driver.provision!(baseConfig(), ctx());
+    const frame = await driver.provision(baseConfig(), ctx());
     expect(frame.host).toBe('203.0.113.11');
     expect(client.getCalls).toBeGreaterThan(1);
   });
@@ -143,7 +147,7 @@ describe('GcpDriver.provision', () => {
     const client = { ...fakeClient({}), createInstance } as unknown as GcpComputeApiClient;
     const driver = makeGcpDriver({ client, sleep: noSleep });
     await expect(
-      driver.provision!(baseConfig({ provider: { projectId: 'p' } }), ctx()),
+      driver.provision(baseConfig({ provider: { projectId: 'p' } }), ctx()),
     ).rejects.toThrow(/sshPublicKey/);
     // The point of the guard: a keyless instance would boot, bill, and be unreachable.
     expect(createInstance).not.toHaveBeenCalled();
@@ -152,7 +156,7 @@ describe('GcpDriver.provision', () => {
   it('fails fast on a terminal status rather than burning the whole poll timeout', async () => {
     const client = fakeClient({ statuses: ['TERMINATED'] });
     const driver = makeGcpDriver({ client, sleep: noSleep });
-    await expect(driver.provision!(baseConfig(), ctx())).rejects.toThrow(/TERMINATED/);
+    await expect(driver.provision(baseConfig(), ctx())).rejects.toThrow(/TERMINATED/);
   });
 });
 
@@ -161,8 +165,8 @@ describe('GcpDriver.teardown — destroy-not-stuck', () => {
     // Instance lingers for two confirmation rounds after the first accepted DELETE.
     const client = fakeClient({ lingerAfterDelete: 2 });
     const driver = makeGcpDriver({ client, sleep: noSleep, pollIntervalMs: 0 });
-    const frame = await driver.provision!(baseConfig(), ctx());
-    await driver.teardown!(frame, baseConfig(), ctx());
+    const frame = await driver.provision(baseConfig(), ctx());
+    await driver.teardown(frame, baseConfig(), ctx());
     expect(client.deleteCalls).toBeGreaterThan(1);
   });
 
@@ -186,14 +190,14 @@ describe('GcpDriver.teardown — destroy-not-stuck', () => {
       region: 'us-east1-b',
       meta: { zone: 'us-east1-b' },
     };
-    await expect(driver.teardown!(frame, baseConfig(), ctx())).resolves.toBeUndefined();
+    await expect(driver.teardown(frame, baseConfig(), ctx())).resolves.toBeUndefined();
   });
 
   it('LOUDLY refuses a frame with no zone rather than silently leaving it billing', async () => {
     const client = fakeClient({});
     const driver = makeGcpDriver({ client, sleep: noSleep });
     const frame = { id: 'orphan', target: 'gcp', placement: 'remote' as const };
-    await expect(driver.teardown!(frame, baseConfig(), ctx())).rejects.toThrow(/BILLING/);
+    await expect(driver.teardown(frame, baseConfig(), ctx())).rejects.toThrow(/BILLING/);
     expect(client.deleteCalls).toBe(0);
   });
 
@@ -210,7 +214,7 @@ describe('GcpDriver.teardown — destroy-not-stuck', () => {
     } as GcpComputeApiClient;
     const driver = makeGcpDriver({ client, sleep: noSleep, teardownTimeoutMs: 0, pollIntervalMs: 0 });
     const frame = { id: 'stuck', target: 'gcp', placement: 'remote' as const, meta: { zone: 'us-east1-b' } };
-    await expect(driver.teardown!(frame, baseConfig(), ctx())).rejects.toThrow(/BILLING/);
+    await expect(driver.teardown(frame, baseConfig(), ctx())).rejects.toThrow(/BILLING/);
   });
 });
 
