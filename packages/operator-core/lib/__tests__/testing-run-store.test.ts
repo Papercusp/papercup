@@ -8,12 +8,14 @@
  * Uses the live store (no DB needed — store is in-memory).
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   startRun,
   getRun,
+  getRunAsync,
   cancelRun,
   listRuns,
+  persistRunSnapshot,
   distillVitestRun,
   parseFailureDetailsSidecar,
   COLLECTION_FAILURE_TEST,
@@ -131,6 +133,79 @@ describe('listRuns', () => {
     const all = listRuns();
     const ids = all.map((s) => s.runId);
     expect(ids.indexOf(b.runId)).toBeLessThan(ids.indexOf(a.runId));
+  });
+});
+
+describe('durable detached snapshots', () => {
+  type Sql = Parameters<typeof persistRunSnapshot>[1];
+
+  it('reads a snapshot from the shared ledger when the local worker has no run', async () => {
+    const remote = {
+      run_id: 'remote-run',
+      kind: 'vitest',
+      label: 'remote test',
+      file_path: 'packages/example.test.ts',
+      command: JSON.stringify(['node', 'scripts/test-files.mjs']),
+      status: 'running',
+      exit_code: null,
+      started_at: new Date(1_700_000_000_000),
+      finished_at: null,
+      output: 'still running',
+      truncated: false,
+    };
+    const sql = vi.fn(async () => [remote]) as unknown as Sql;
+
+    await expect(getRunAsync(remote.run_id, sql)).resolves.toEqual({
+      runId: remote.run_id,
+      kind: remote.kind,
+      label: remote.label,
+      filePath: remote.file_path,
+      command: ['node', 'scripts/test-files.mjs'],
+      status: remote.status,
+      exitCode: null,
+      startedAt: 1_700_000_000_000,
+      finishedAt: null,
+      output: remote.output,
+      truncated: false,
+    });
+    expect(sql).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefers the local process-control snapshot without querying shared storage', async () => {
+    const local = startRun({ kind: 'vitest', label: 'local', command: 'node', args: ['-e', ''] });
+    const sql = vi.fn(async () => []) as unknown as Sql;
+
+    await expect(getRunAsync(local.runId, sql)).resolves.toMatchObject({ runId: local.runId, status: 'running' });
+    expect(sql).not.toHaveBeenCalled();
+  });
+
+  it('persists snapshots fail-soft and serializes command argv as JSON', async () => {
+    const sql = vi.fn(async () => []) as unknown as Sql;
+    const snapshot = {
+      runId: 'persisted-run',
+      kind: 'shell' as const,
+      label: 'persist me',
+      command: ['bash', '-c', 'true'],
+      status: 'pass' as const,
+      exitCode: 0,
+      startedAt: 1_700_000_000_000,
+      finishedAt: 1_700_000_001_000,
+      output: 'ok',
+      truncated: false,
+    };
+
+    await expect(persistRunSnapshot(snapshot, sql)).resolves.toBe(true);
+    expect(sql).toHaveBeenCalledTimes(1);
+    const values = (sql as unknown as ReturnType<typeof vi.fn>).mock.calls[0].slice(1);
+    expect(values).toContain(JSON.stringify(snapshot.command));
+  });
+
+  it('does not let a failed snapshot query escape the status reader', async () => {
+    const sql = vi.fn(async () => {
+      throw new Error('db unavailable');
+    }) as unknown as Sql;
+
+    await expect(getRunAsync('unavailable-run', sql)).resolves.toBeNull();
   });
 });
 
