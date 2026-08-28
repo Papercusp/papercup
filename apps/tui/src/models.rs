@@ -1219,23 +1219,16 @@ impl CupboardListing {
     pub fn action_label(&self) -> Option<&'static str> {
         match self.normalized_kind() {
             "harness" => self.join_link().as_deref().map(|_| "join"),
-            "blueprint"
-            | "plugin"
-            | "pack"
-            | "knowledge-pack"
-            | "template"
-            | "rubric"
-            | "plan"
-            | "recipe"
-            | "goal" => Some("install"),
+            "blueprint" | "plugin" | "pack" | "template" => Some("install"),
+            // This route only stages the pack in the local store. Installing it
+            // into a Hive remains the normal reviewed Learnings flow.
+            "knowledge-pack" => Some("stage"),
             "app" => match self.delivery_type.as_deref() {
                 Some("bundle") => Some("install"),
-                Some("standalone") | None => self
-                    .latest_json_url
-                    .as_deref()
-                    .filter(|url| !url.is_empty())
-                    .map(|_| "download"),
-                Some(_) => None,
+                // Standalone apps are a release-link handoff. PUI shows the
+                // manifest URL but does not pretend it can safely install or
+                // launch the external artifact.
+                _ => None,
             },
             _ => None,
         }
@@ -3423,7 +3416,8 @@ mod tests {
                 "importance":"low","needsHuman":false}
              ]}
         ]}"#;
-        let r: AttentionResponse = serde_json::from_str(j).expect("live attention response must decode");
+        let r: AttentionResponse =
+            serde_json::from_str(j).expect("live attention response must decode");
         assert_eq!(r.groups.len(), 2);
         assert_eq!(r.groups[0].items.len(), 3);
         let first = &r.groups[0].items[0];
@@ -4178,16 +4172,18 @@ mod tests {
         assert_eq!(template.normalized_kind(), "template");
         assert_eq!(template.action_label(), Some("install"));
 
-        let legacy_pack: CupboardListing = serde_json::from_str(
-            r#"{"id":"pack-1","listing_kind":"tool-pack"}"#,
-        )
+        let knowledge_pack: CupboardListing =
+            serde_json::from_str(r#"{"id":"knowledge-1","listing_kind":"knowledge-pack"}"#)
         .unwrap();
+        assert_eq!(knowledge_pack.action_label(), Some("stage"));
+
+        let legacy_pack: CupboardListing =
+            serde_json::from_str(r#"{"id":"pack-1","listing_kind":"tool-pack"}"#).unwrap();
         assert_eq!(legacy_pack.normalized_kind(), "pack");
         assert_eq!(legacy_pack.action_label(), Some("install"));
 
-        let bundle: CupboardListing = serde_json::from_str(
-            r#"{"id":"app-1","listing_kind":"app","delivery_type":"bundle"}"#,
-        )
+        let bundle: CupboardListing =
+            serde_json::from_str(r#"{"id":"app-1","listing_kind":"app","delivery_type":"bundle"}"#)
         .unwrap();
         assert_eq!(bundle.action_label(), Some("install"));
 
@@ -4197,10 +4193,18 @@ mod tests {
         .unwrap();
         assert_eq!(standalone_without_release.action_label(), None);
 
-        let unknown: CupboardListing = serde_json::from_str(
-            r#"{"id":"future-1","listing_kind":"future-kind"}"#,
+        let standalone_with_release: CupboardListing = serde_json::from_str(
+            r#"{"id":"app-3","listing_kind":"app","delivery_type":"standalone","latest_json_url":"https://example.test/latest.json"}"#,
         )
         .unwrap();
+        assert_eq!(standalone_with_release.action_label(), None);
+
+        let plan: CupboardListing =
+            serde_json::from_str(r#"{"id":"plan-1","listing_kind":"plan"}"#).unwrap();
+        assert_eq!(plan.action_label(), None);
+
+        let unknown: CupboardListing =
+            serde_json::from_str(r#"{"id":"future-1","listing_kind":"future-kind"}"#).unwrap();
         assert_eq!(unknown.action_label(), None);
     }
 
