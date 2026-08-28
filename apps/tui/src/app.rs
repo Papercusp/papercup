@@ -183,6 +183,24 @@ pub enum Action {
     /// is the message text (the reducer has already appended it + a streaming
     /// assistant bubble before returning this).
     SendChat(String),
+    /// Open the canonical shared SU-session for a newly selected backend. The
+    /// run loop creates the existing agent-chat row, calls launch-su once, then
+    /// attaches the typed session stream; no provider terminal is embedded.
+    OpenSuSession {
+        harness: String,
+        role: String,
+        backend: crate::su_session::SuSessionBackend,
+        carry: String,
+    },
+    /// Deliver one owner turn through the already-bound SU-session host.
+    SendSuSessionTurn(String),
+    /// Reattach a previously created SU session by its stable advSessionId.
+    AttachSuSession {
+        harness: String,
+        chat_id: String,
+        adv_session_id: i64,
+        backend: crate::su_session::SuSessionBackend,
+    },
     /// Load one explicitly selected native agent-chat session.
     LoadAgentChat {
         harness: String,
@@ -1892,6 +1910,12 @@ pub struct App {
     /// turn is STALLED waiting on a decision only this pane can supply — the
     /// composer swaps to the approve/deny prompt while any entry stands.
     pub pending_approvals: Vec<crate::models::PendingApproval>,
+    /// Explicit backend selected for the corrected PUI SU-session path. `None`
+    /// preserves the legacy native-chat path until the owner chooses a backend
+    /// from the session picker; once set, new turns use the shared host.
+    pub su_backend: Option<crate::su_session::SuSessionBackend>,
+    /// Durable SU-session binding + canonical lifecycle/sequence read-model.
+    pub su_session: Option<crate::su_session::SuSessionState>,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
     /// (`GET …/turns?beforeSeq=<this>`). `None` when the transcript is empty.
@@ -2191,6 +2215,8 @@ impl App {
             agent_chat_role: "operator".to_string(),
             agent_chat_summaries: Vec::new(),
             pending_approvals: Vec::new(),
+            su_backend: None,
+            su_session: None,
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
@@ -2326,12 +2352,190 @@ impl App {
 
     pub fn reset_agent_chat_binding(&mut self) {
         self.agent_chat_id = None;
+        self.su_session = None;
         self.chat_messages.clear();
         self.pending_approvals.clear();
         self.chat_streaming = false;
         self.chat_retry_after_cancel = false;
         self.chat_step = None;
         self.chat_scroll = 0;
+    }
+
+    /// Install a create/attach result and keep the canonical identity visible
+    /// before the first stream event arrives.  A binding is not a transcript;
+    /// the host snapshot/stream remains authoritative for lifecycle state.
+    pub fn set_su_session_binding(&mut self, binding: crate::su_session::SuSessionBinding) {
+        self.agent_chat_id = binding
+            .native_session
+            .as_ref()
+            .and_then(|_| None)
+            .or_else(|| self.agent_chat_id.clone());
+        self.su_backend = Some(binding.backend);
+        self.su_session = Some(crate::su_session::SuSessionState::from_binding(binding));
+    }
+
+    /// Apply the canonical startup snapshot. Snapshot identity must match the
+    /// launch binding; otherwise a delayed response from another session is
+    /// rejected rather than repainting the wrong conversation pane.
+    pub fn apply_su_session_snapshot(&mut self, snapshot: crate::su_session::SuSessionSnapshot) {
+        let Some(state) = self.su_session.as_mut() else {
+            return;
+        };
+        let expected = &state.binding;
+        if snapshot.descriptor.identity.adv_session_id != expected.adv_session_id
+            || snapshot.descriptor.identity.backend != expected.backend
+        {
+            state.error = Some("SU-session snapshot identity mismatch".into());
+            state.stale = true;
+            return;
+        }
+        state.identity = Some(snapshot.descriptor.identity.clone());
+        state.lifecycle = snapshot.descriptor.lifecycle;
+        state.descriptor = Some(snapshot.descriptor);
+        state.last_sequence = snapshot.last_sequence;
+        state.stale = false;
+        state.error = None;
+        self.agent_chat_id = state.identity.as_ref().map(|i| i.agent_chat_id.clone());
+    }
+
+    /// Reduce one typed SU-session event into the existing transcript/tool
+    /// renderer. Sequence and durable identity checks happen before any visual
+    /// mutation, so stale reconnect events cannot leak into another session.
+    pub fn apply_su_session_event(&mut self, event: crate::su_session::SuSessionEvent) -> Action {
+        let Some(state) = self.su_session.as_mut() else {
+            return Action::None;
+        };
+        let envelope = event.envelope();
+        if envelope.session.adv_session_id != state.binding.adv_session_id
+            || envelope.session.backend != state.binding.backend
+        {
+            state.error = Some("SU-session event identity mismatch".into());
+            state.stale = true;
+            return Action::Render;
+        }
+        if envelope.sequence <= state.last_sequence {
+            return Action::None; // replay duplicate
+        }
+        if envelope.sequence > state.last_sequence.saturating_add(1) {
+            // Keep rendering the newest event, but make the missing range
+            // visible to the operator; the next reconnect starts from the
+            // transport's Last-Event-ID and can repair the gap.
+            state.stale = true;
+        }
+        state.last_sequence = envelope.sequence;
+        state.identity = Some(envelope.session.clone());
+        self.agent_chat_id = Some(envelope.session.agent_chat_id.clone());
+
+        match event {
+            crate::su_session::SuSessionEvent::Session { descriptor, .. } => {
+                state.lifecycle = descriptor.lifecycle;
+                state.descriptor = Some(descriptor);
+            }
+            crate::su_session::SuSessionEvent::Lifecycle { state: lifecycle, .. } => {
+                state.lifecycle = lifecycle;
+                if let Some(descriptor) = state.descriptor.as_mut() {
+                    descriptor.lifecycle = lifecycle;
+                }
+                if matches!(lifecycle, crate::su_session::SuSessionLifecycleState::Ended
+                    | crate::su_session::SuSessionLifecycleState::Failed)
+                {
+                    self.chat_streaming = false;
+                }
+            }
+            crate::su_session::SuSessionEvent::Transcript {
+                phase,
+                role,
+                channel,
+                content,
+                ..
+            } => {
+                if phase == "started" && role == "assistant" {
+                    if !self.chat_messages.iter().any(|message| message.streaming) {
+                        self.chat_messages.push(ChatMessage::streaming_assistant());
+                    }
+                    self.chat_streaming = true;
+                }
+                if let Some(text) = content.filter(|text| !text.is_empty()) {
+                    if role == "owner" && phase == "completed" {
+                        self.chat_messages.push(ChatMessage::user(&text));
+                    } else if role == "assistant" && channel == "reasoning" {
+                        self.push_chat_reasoning(&text);
+                    } else if role == "assistant" {
+                        self.push_chat_delta(&text);
+                    }
+                }
+                if phase == "completed" && role == "assistant" {
+                    self.finish_chat_turn();
+                }
+            }
+            crate::su_session::SuSessionEvent::Tool {
+                phase,
+                call_id,
+                name,
+                input,
+                output,
+                is_error,
+                ..
+            } => {
+                if phase == "started" {
+                    self.push_chat_tool(ChatToolCall {
+                        name,
+                        id: Some(call_id),
+                        needs_approval: false,
+                        input,
+                        diff: None,
+                        result: None,
+                        outcome: ToolOutcome::Pending,
+                    });
+                } else if phase == "completed" {
+                    for message in self.chat_messages.iter_mut().rev() {
+                        if let Some(tool) = message.tools.iter_mut().find(|tool| tool.id.as_deref() == Some(call_id.as_str())) {
+                            tool.result = output;
+                            tool.outcome = if is_error {
+                                ToolOutcome::Failed("SU-session tool failed".into())
+                            } else {
+                                ToolOutcome::Ok
+                            };
+                            break;
+                        }
+                    }
+                }
+            }
+            crate::su_session::SuSessionEvent::CommandResult { status, refusal, .. } => {
+                if status == "refused" {
+                    let message = refusal
+                        .map(|r| format!("{}: {}", r.code, r.message))
+                        .unwrap_or_else(|| "SU-session command refused".into());
+                    state.error = Some(message.clone());
+                    self.last_error = Some(message);
+                }
+            }
+            crate::su_session::SuSessionEvent::Backend { extension, .. } => {
+                if let Some(descriptor) = state.descriptor.as_mut() {
+                    descriptor.backend_extension = extension;
+                }
+            }
+            crate::su_session::SuSessionEvent::Error { message, .. } => {
+                state.error = Some(message.clone());
+                self.last_error = Some(format!("SU-session: {message}"));
+            }
+            crate::su_session::SuSessionEvent::Card { .. } => {
+                // Card payloads are intentionally retained by the shared card
+                // state channel; this stream event still advances identity and
+                // sequence so a reconnect cannot replay it as fresh.
+            }
+        }
+        Action::Render
+    }
+
+    pub fn su_session_selection_label(&self) -> Option<String> {
+        self.su_session.as_ref().map(|state| {
+            let mut label = state.selection_label();
+            if state.stale {
+                label.push_str(" · stream gap; reconnecting");
+            }
+            label
+        })
     }
 
     /// Clear a decided HITL request: drop it from the pending set and stop its
@@ -3286,6 +3490,9 @@ impl App {
 
     /// Concrete execution identity rendered next to the composer.
     pub fn agent_chat_selection_label(&self) -> String {
+        if let Some(label) = self.su_session_selection_label() {
+            return format!("{} · pot {} · role {}", label, self.harness, self.agent_chat_role);
+        }
         let session = self
             .agent_chat_id
             .as_deref()
