@@ -143,6 +143,7 @@ import {
 import { SPEC_EVIDENCE_KINDS } from '../plans/spec-evidence-store';
 import { PLAN_CLASS_RUBRIC_REFS } from '../plans/spec-test-adequacy';
 import { specTestAdequacyCompletionGate } from './spec-test-adequacy-gate';
+import { dispatchPendingGradingAudits } from '../../grading-integrity';
 import {
   designEvidenceCompletionGate,
   designFeatureCandidates,
@@ -2082,6 +2083,21 @@ async function completeOne(
         attestation: it.specAdequacy,
       });
       if (!gate.ok) {
+        const pendingGradingAuditTargetIds = gate.pendingGradingAuditTargetIds;
+        const gradingAuditDispatch = pendingGradingAuditTargetIds?.length
+          ? await dispatchPendingGradingAudits({
+              targetIds: pendingGradingAuditTargetIds,
+              ctx,
+              harness: existing.harness,
+            }).catch((error) => ({
+              requestedTargetIds: [...pendingGradingAuditTargetIds],
+              receipts: pendingGradingAuditTargetIds.map((issueId) => ({
+                issueId,
+                state: 'failed' as const,
+                reason: error instanceof Error ? error.message : String(error),
+              })),
+            }))
+          : undefined;
         return {
           ok: false,
           id: it.id,
@@ -2093,6 +2109,7 @@ async function completeOne(
             retryable: true,
             checked: gate.checked,
             ...(gate.impactReport ? { impactReport: gate.impactReport } : {}),
+            ...(gradingAuditDispatch ? { gradingAuditDispatch } : {}),
           },
         };
       }

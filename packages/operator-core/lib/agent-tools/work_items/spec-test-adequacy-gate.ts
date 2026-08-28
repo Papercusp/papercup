@@ -41,7 +41,15 @@ export interface SpecAdequacyCompletionAttestation {
 export type SpecAdequacyCompletionGateResult =
   | { ok: true; applicable: false; checked: []; impactReport?: string }
   | { ok: true; applicable: true; checked: string[]; impactReport?: string }
-  | { ok: false; applicable: true; retryable: true; reason: string; checked: string[]; impactReport?: string };
+  | {
+      ok: false;
+      applicable: true;
+      retryable: true;
+      reason: string;
+      checked: string[];
+      impactReport?: string;
+      pendingGradingAuditTargetIds?: string[];
+    };
 
 /**
  * P-016: `planStampOf` moved to the universal contract resolver, which is the more
@@ -285,6 +293,7 @@ export async function specTestAdequacyCompletionGate(
 
   const checked: string[] = [];
   const failures: string[] = [];
+  const pendingGradingAuditTargetIds = new Set<string>();
   for (const clause of relevant) {
     const result = evaluateSpecTestAdequacy({
       clause,
@@ -303,6 +312,16 @@ export async function specTestAdequacyCompletionGate(
       limit: 20,
     });
     if (!cards.some((card) => scorecardMatches(card, result))) {
+      for (const card of cards) {
+        if (
+          card.gradingAudit?.state === 'pending' &&
+          !card.supersededBy &&
+          !card.retracted &&
+          card.issueId
+        ) {
+          pendingGradingAuditTargetIds.add(card.issueId);
+        }
+      }
       failures.push(`${label}: no current terminal complete scorecard matches the exact evaluator verdicts`);
       continue;
     }
@@ -315,6 +334,9 @@ export async function specTestAdequacyCompletionGate(
       retryable: true,
       checked,
       reason: failures.join('; '),
+      ...(pendingGradingAuditTargetIds.size
+        ? { pendingGradingAuditTargetIds: [...pendingGradingAuditTargetIds] }
+        : {}),
     });
   }
   return withReport({ ok: true, applicable: true, checked });
