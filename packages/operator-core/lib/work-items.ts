@@ -1705,7 +1705,11 @@ async function resolveWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): P
   return await resolve();
 }
 
-function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<void> {
+function startWorkItemQueryEmbedderWarmup(resolver?: QueryEmbedderResolver): Promise<void> {
+  // A successful warm is process-local and remains valid for the lifetime of
+  // this module. Keeping the exported boot hook idempotent matters because a
+  // host can observe more than one listening callback during a bind retry.
+  if (warmWorkItemEmbedder) return Promise.resolve();
   if (workItemEmbedderWarmupInFlight) return workItemEmbedderWarmupInFlight;
 
   const generation = workItemEmbedderWarmupGeneration;
@@ -1749,6 +1753,22 @@ function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<vo
   })();
   workItemEmbedderWarmupInFlight = started;
   return started;
+}
+
+/**
+ * Pre-warm the exact query embedder state used by `searchWorkItems`.
+ *
+ * The generic transcript-search warmup also exercises `buildQueryEmbedder`,
+ * but `searchWorkItems` has a separate single-flight latch so it can report a
+ * truthful retry receipt while a cold model loads. Boot must warm that latch,
+ * not merely the shared model, or the first dedup search still degrades.
+ * Returns whether a usable, dimension-compatible embedder was published;
+ * failures remain fail-open and are reported by the next search as before.
+ * The resolver seam keeps this callable without a model in unit tests.
+ */
+export async function warmWorkItemQueryEmbedder(resolver?: QueryEmbedderResolver): Promise<boolean> {
+  await startWorkItemQueryEmbedderWarmup(resolver);
+  return warmWorkItemEmbedder !== null;
 }
 
 /** Test seam: clear process-local warm state between search-work-item cases. */
@@ -2086,7 +2106,7 @@ export async function searchWorkItems(
       // Cold acquisition and the first model embed run behind this request.
       // Every concurrent cold caller shares the same promise and returns its
       // lexical result without awaiting it.
-      void warmWorkItemQueryEmbedder(opts.embedderResolver);
+      void startWorkItemQueryEmbedderWarmup(opts.embedderResolver);
       // A previously SETTLED warm-up failure is reported as-is: a persistent
       // substrate outage (sidecar saturated / unavailable) must not be
       // re-masked as an endless "cold start" whose retry-after-1s advice has
