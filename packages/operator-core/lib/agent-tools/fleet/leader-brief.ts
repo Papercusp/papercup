@@ -300,7 +300,10 @@ export async function readLeaderMonitoringBlindAdvisory(
     // A timeout/error means the awaiter count is UNKNOWN. Do not turn that
     // into zero and emit a false "monitoring blind" alarm.
     if (results.some((result) => result.degraded || result.value == null)) return undefined;
-    const counts = results.map((result, index) => [eventKeys[index], result.value.length] as const);
+    const counts = results.map((result, index) => {
+      if (result.value == null) throw new Error('leader-brief:monitoring-blind-awaiters missing value');
+      return [eventKeys[index], result.value.length] as const;
+    });
     return computeLeaderMonitoringBlindAdvisory({
       fleetSlug,
       eventKeys,
@@ -3101,9 +3104,9 @@ export async function buildLeaderBrief(
     ? await boundedLeaderBriefRead(
         'presence-fleet',
         () => resolvePresenceFleet(ownerId, deriveFleetMembership()),
-        { fleetSlug: null as string | null },
+        { fleetSlug: null as string | null, fleetRole: null },
       )
-    : { fleetSlug: null as string | null };
+    : { fleetSlug: null as string | null, fleetRole: null };
   const fleet = args.fleet ?? membership.fleetSlug;
   if (!fleet) {
     return {
@@ -3183,7 +3186,7 @@ export async function buildLeaderBrief(
   let fleetCreatedAtMs: number | null = null;
   let launchWorkerAttestation: LeaderBriefLaunchWorkerAttestation | undefined;
   try {
-    const fleetRecord = await getFleet(workspaceId, fleet);
+    const fleetRecord = await boundedLeaderBriefRead('fleet-record', () => getFleet(workspaceId, fleet), null);
     fleetCreatedAtMs = fleetRecord?.createdAt ?? null;
     launchWorkerAttestation = compactLaunchWorkerAttestation(fleetRecord?.lastLaunchTransaction);
     const registeredLeader = fleetRecord?.leaderOwnerId ?? null;
@@ -3208,20 +3211,27 @@ export async function buildLeaderBrief(
       ownerId &&
       shouldMaintainFleetLeaderControl(fleetRecord.controlState)
     ) {
-      const out = await takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
-        harnessSlug: args.harness,
-      });
-      leaderControl = out.control;
-      leadershipClaimed = {
-        claimed: true,
-        reason: disposition.reason,
-        previousLeader: out.previousLeader,
-        notified: out.notified,
-        note:
-          disposition.reason === 'no-registered-leader'
-            ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
-            : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
-      };
+      const out = await boundedLeaderBriefRead(
+        'take-fleet-leadership',
+        () =>
+          takeFleetLeadership(workspaceId, fleetRecord, agentIdentity, ownerId, {
+            harnessSlug: args.harness,
+          }),
+        null,
+      );
+      if (out) {
+        leaderControl = out.control;
+        leadershipClaimed = {
+          claimed: true,
+          reason: disposition.reason,
+          previousLeader: out.previousLeader,
+          notified: out.notified,
+          note:
+            disposition.reason === 'no-registered-leader'
+              ? `'${fleet}' had NO registered leader; you are now installed as its leader. A fleet nobody leads is how a whole fleet dies unnoticed — you now own monitoring it.`
+              : `The registered leader of '${fleet}' (${out.previousLeader}) is gone, so leadership passed to you. Nothing live was displaced.`,
+        };
+      }
     } else if (
       shouldRefreshLeaderControlForBrief({
         disposition,
@@ -3241,12 +3251,17 @@ export async function buildLeaderBrief(
       // Also a WRITE (it refreshes the leader's control row), so it is gated
       // too — a viewer reading a leader's brief must not touch that leader's
       // control state.
-      leaderControl = await ensureFleetLeaderControl({
-        workspaceId,
-        ownerId,
-        fleetSlug: fleet,
-        harnessSlug: args.harness,
-      });
+      leaderControl = await boundedLeaderBriefRead(
+        'ensure-leader-control',
+        () =>
+          ensureFleetLeaderControl({
+            workspaceId,
+            ownerId,
+            fleetSlug: fleet,
+            harnessSlug: args.harness,
+          }),
+        undefined,
+      );
     }
   } catch {
     /* best-effort: leadership bookkeeping must NEVER fail the health brief */
@@ -3254,29 +3269,33 @@ export async function buildLeaderBrief(
   // P-015 / D-005: one profile-derived discovery advisory, read from the
   // existing event-await store after leader-control has had a chance to repair
   // the standing watches. No fleet metrics or populations are copied here.
-  const monitoringBlindAdvisory = await readLeaderMonitoringBlindAdvisory(fleet);
+  const monitoringBlindAdvisory = await boundedLeaderBriefRead(
+    'monitoring-blind-advisory',
+    () => readLeaderMonitoringBlindAdvisory(fleet),
+    undefined,
+  );
   // Reconcile liveness BEFORE selecting the population. A stale directed
   // wake can make a dead owner look `live` through recent agent_activity;
   // selecting first would bake that ghost into the census even after the
   // authoritative psu-host check marks the row ended.
-  await reconcileWakeability(rosterEntries).catch(() => {});
+  await boundedLeaderBriefRead('reconcile-wakeability', () => reconcileWakeability(rosterEntries), rosterEntries);
   // Missing host is a liveness signal only for known visible members. Keep
   // this best-effort so absent roles never reinterpret bootstrapping/remote
   // rows as desktop deaths.
-  try {
-    const presence = await listPresence({ workspaceId });
-    reconcilePsuHostLiveness(rosterEntries, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
-  } catch {
-    /* host reconciliation never blocks the health brief */
-  }
+  const presence = await boundedLeaderBriefRead<Awaited<ReturnType<typeof listPresence>>>(
+    'presence-liveness',
+    () => listPresence({ workspaceId }),
+    [],
+  );
+  reconcilePsuHostLiveness(rosterEntries, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
   const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(rosterEntries, fleet, args.include_stale);
-  await decorateParkedOn(grouped).catch(() => {});
+  await boundedLeaderBriefRead('decorate-parked-on', () => decorateParkedOn(grouped), grouped);
   // Keep the parked-on → loop → member-verdict dependency chain intact. The
   // remaining decorations are independent read-only overlays and are batched
   // below rather than paying their database latency serially.
-  await decorateLoopMonitorStates(grouped).catch(() => {});
-  await decorateMemberVerdicts(grouped).catch(() => {});
-  await runLeaderBriefReads(
+  await boundedLeaderBriefRead('decorate-loop-monitor-states', () => decorateLoopMonitorStates(grouped), grouped);
+  await boundedLeaderBriefRead('decorate-member-verdicts', () => decorateMemberVerdicts(grouped), grouped);
+  await runBoundedLeaderBriefReads(
     [
       // EI-18732218464905145: collapse a composed-await park (root + leaf
       // sentinels) into ONE structured entry before projection — best-effort,
@@ -3293,6 +3312,8 @@ export async function buildLeaderBrief(
       () => decorateDirectiveActuation(grouped, ownerId).catch(() => grouped),
       () => decorateCoordDeafness(grouped).catch(() => grouped),
     ] as const,
+    [grouped, grouped, grouped, grouped, grouped, grouped] as const,
+    'decorations',
   );
   // P-005: a fired one-shot wait disappears from parkedOn, but its
   // authoritative stalled/absent verdict is durable. Surface that evidence
@@ -3306,7 +3327,7 @@ export async function buildLeaderBrief(
     fleetPause,
     concurrencyByOwner,
     poolCapacity,
-  ] = await runLeaderBriefReads(
+  ] = await runBoundedLeaderBriefReads(
     [
       () => listVerifiedWaitTakeoversForSubscribers(grouped.map((a) => a.agentId)).catch(() => []),
       // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
@@ -3397,6 +3418,17 @@ export async function buildLeaderBrief(
           }
         })(),
     ] as const,
+    [
+      [] as VerifiedWaitTakeoverAlert[],
+      [] as UnownedCriticalCandidate[],
+      [] as FleetAdmissionBlock[],
+      [] as OrphanedInFlightCandidate[],
+      null,
+      { paused: false, reason: null },
+      new Map<string, { blocked: boolean; activeClaims: number; heldIds: string[] }>(),
+      null,
+    ] as const,
+    'optional-fleet-reads',
   );
   const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
   for (const alert of verifiedWaitTakeovers) {
@@ -3654,7 +3686,7 @@ export async function buildLeaderBrief(
   let specUpdatedBy: string | null | undefined;
   let specUpdatedAt: string | null | undefined;
   let specAuthorshipAlert: { reason: string; falsifier: AlertFalsifier } | undefined;
-  let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert>;
+  let declaredPlanSpecDivergenceAlert: ReturnType<typeof computeDeclaredPlanSpecDivergenceAlert> | undefined;
   let fleetHeadcountVsExecutableFrontierAlert: FleetHeadcountVsExecutableFrontierEvaluation | undefined;
   let leaderPlanSlug: string | null = null;
   // P-006: always in-band. A missing/exploded dependency read is UNKNOWN,
@@ -3664,8 +3696,18 @@ export async function buildLeaderBrief(
     reason: 'claim-spec-unread',
   };
   try {
-    const { getClaimSpecRecord, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
-    const rec = await getClaimSpecRecord({ cupId: fleetSpecBeeKey(fleet), workspaceId });
+    const claimSpecStore = await boundedLeaderBriefRead(
+      'claim-spec-store',
+      () => import('../../scheduler/claim-spec-store'),
+      null,
+    );
+    if (!claimSpecStore) throw new Error('claim-spec-store unavailable');
+    const rec = await boundedLeaderBriefRead(
+      'claim-spec-record',
+      () => claimSpecStore.getClaimSpecRecord({ cupId: claimSpecStore.fleetSpecBeeKey(fleet), workspaceId }),
+      null,
+    );
+    if (!rec) throw new Error('claim-spec record unavailable');
     if (rec.source !== 'default') {
       specFilter = rec.spec.view?.filter ?? null;
       specRevision = rec.revision ?? undefined;
@@ -3684,9 +3726,15 @@ export async function buildLeaderBrief(
         harness: args.harness ?? null,
         fleet,
       });
-      try {
-        const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
-        const effect = await previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
+      const effect = await boundedLeaderBriefRead(
+        'spec-pool-effect',
+        async () => {
+          const { previewSpecPoolEffect } = await import('../../scheduler/spec-pool-preview');
+          return previewSpecPoolEffect(rec.spec, { workspaceId, harness: args.harness ?? null });
+        },
+        null,
+      );
+      if (effect) {
         specStarvedAlert = computeSpecStarvedFleetAlert({
           totalLoad,
           specMatched: effect.matched,
@@ -3696,8 +3744,6 @@ export async function buildLeaderBrief(
         });
         harnessWidePool = effect.pool;
         specMatched = effect.matched;
-      } catch {
-        /* best-effort — a pool-effect failure must not cost the authorship read above */
       }
     }
     declaredPlanSpecDivergenceAlert = computeDeclaredPlanSpecDivergenceAlert({
@@ -3720,16 +3766,31 @@ export async function buildLeaderBrief(
         planSlug: exactPlanSlug,
       };
     } else {
-      try {
-        const measured = await readDependencyBottlenecks({
-          workspaceId,
-          harnessSlug: planHarness,
-          planSlug: exactPlanSlug,
-          limit: 8,
-          includeGraph: args.include_mermaid === true,
-        });
+      const [measured, readyWidth] = await runBoundedLeaderBriefReads(
+        [
+          () =>
+            readDependencyBottlenecks({
+              workspaceId,
+              harnessSlug: planHarness,
+              planSlug: exactPlanSlug,
+              limit: 8,
+              includeGraph: args.include_mermaid === true,
+            }),
+          async () => {
+            const [{ getPlanRow, planItemsForRow }, { analyzePlanDagParallelism }] = await Promise.all([
+              import('../plans/source'),
+              import('../plans/plan-dag-parallelism'),
+            ]);
+            const planRow = await getPlanRow(exactPlanSlug, { workspaceId, harnessSlug: planHarness });
+            return planRow ? analyzePlanDagParallelism(planItemsForRow(planRow)).readyWidth : null;
+          },
+        ] as const,
+        [null, null] as const,
+        'plan-diagnostics',
+      );
+      if (measured) {
         dependencyBottlenecks = buildLeaderDependencyBottleneckView(measured, grouped);
-      } catch {
+      } else {
         dependencyBottlenecks = {
           status: 'unknown',
           reason: 'read-failed',
@@ -3737,14 +3798,7 @@ export async function buildLeaderBrief(
           harnessSlug: planHarness,
         };
       }
-      try {
-        const [{ getPlanRow, planItemsForRow }, { analyzePlanDagParallelism }] = await Promise.all([
-          import('../plans/source'),
-          import('../plans/plan-dag-parallelism'),
-        ]);
-        const planRow = await getPlanRow(exactPlanSlug, { workspaceId, harnessSlug: planHarness });
-        if (planRow) {
-          const readyWidth = analyzePlanDagParallelism(planItemsForRow(planRow)).readyWidth;
+      if (readyWidth != null) {
           const liveNonLeaderWorkers = grouped.filter(
             (member) => member.fleetRole !== 'leader' && member.alive !== false && member.verdict !== 'dead',
           ).length;
@@ -3757,19 +3811,21 @@ export async function buildLeaderBrief(
             harness: planHarness,
             fleet,
           });
-        }
-      } catch {
-        /* unread plan/frontier suppresses the detector, never fabricates false */
       }
     }
   } catch {
     /* best-effort — never block the brief on a spec-effect preview failure */
   }
-  const announcedGates = await readLeaderAnnouncedGates({
-    fleetSlug: fleet,
-    planSlug: leaderPlanSlug,
-    harnessSlug: args.harness ?? null,
-  });
+  const announcedGates = await boundedLeaderBriefRead(
+    'announced-gates',
+    () =>
+      readLeaderAnnouncedGates({
+        fleetSlug: fleet,
+        planSlug: leaderPlanSlug,
+        harnessSlug: args.harness ?? null,
+      }),
+    undefined,
+  );
   // P-009: detector-only projection over P-006's existing graph/liveness/
   // progress rows. Do not re-read any of those sources here: one measured view
   // feeds both the ranked table and this tri-state alarm.
@@ -3782,9 +3838,19 @@ export async function buildLeaderBrief(
   // itself as errored rather than costing the leader the rest of the brief.
   let customInvariants: InvariantEvaluation[] | undefined;
   let customInvariantAlert: { reason: string } | undefined;
-  const { readFleetInvariantEvaluations, computeCustomInvariantAlert } = await import('./invariants');
-  customInvariants = await readFleetInvariantEvaluations({ workspaceId, fleetSlug: fleet });
-  if (customInvariants) customInvariantAlert = computeCustomInvariantAlert(customInvariants);
+  const invariantRead = await boundedLeaderBriefRead<InvariantEvaluation[] | undefined>(
+    'custom-invariants',
+    async () => {
+      const { readFleetInvariantEvaluations } = await import('./invariants');
+      return readFleetInvariantEvaluations({ workspaceId, fleetSlug: fleet });
+    },
+    undefined,
+  );
+  customInvariants = invariantRead;
+  if (customInvariants) {
+    const { computeCustomInvariantAlert } = await import('./invariants');
+    customInvariantAlert = computeCustomInvariantAlert(customInvariants);
+  }
   // P-023: the PER-MEMBER "why is this idle" verdict, computed AFTER `blockedAt` because it
   // is deliberately subordinate to it. Attributing idleness to a member while the pool is at
   // factor 0 is exactly the inversion P-002 measured; deriving a per-member answer
@@ -3845,37 +3911,40 @@ export async function buildLeaderBrief(
   let delta: FleetBriefDelta | undefined;
   let deltaSummary: string | undefined;
   if (ownerId) {
-    try {
-      const { resolveFleetBriefDelta } = await import('../../fleet-brief-delta-store');
-      const resolved = await resolveFleetBriefDelta({
-        key: { workspaceId, fleetSlug: fleet, ownerId },
-        harnessSlug: args.harness ?? null,
-        observation: {
-          at: new Date().toISOString(),
-          // The ROSTER, not the shown list: a member going stale-idle drops out of
-          // `members` but has not left the fleet, and reading that as a departure is
-          // precisely the visibility-for-membership confusion P-010 documented.
-          rosterSize: memberCensus.candidates ?? null,
-          countedMembers: members.length,
-          specRevision: specRevision ?? null,
-          poolFactor: poolCapacity?.factor ?? null,
-        },
-        fireCount: await (async () => {
-          try {
+    const resolved = await boundedLeaderBriefRead(
+      'fleet-brief-delta',
+      async () => {
+        const { resolveFleetBriefDelta } = await import('../../fleet-brief-delta-store');
+        const fireCount = await boundedLeaderBriefRead(
+          'fleet-brief-delta-fire-count',
+          async () => {
             const { getLoopStatus } = await import('../../harness/routines/loop');
             return (await getLoopStatus(ownerId))?.fireCount ?? null;
-          } catch {
-            return null;
-          }
-        })(),
-        since: args.since ?? null,
-      });
-      if (resolved) {
-        delta = resolved.delta;
-        deltaSummary = resolved.summary;
-      }
-    } catch {
-      /* best-effort — an absent delta block reads as absent, never as a set of zeroes */
+          },
+          null,
+        );
+        return resolveFleetBriefDelta({
+          key: { workspaceId, fleetSlug: fleet, ownerId },
+          harnessSlug: args.harness ?? null,
+          observation: {
+            at: new Date().toISOString(),
+            // The ROSTER, not the shown list: a member going stale-idle drops out of
+            // `members` but has not left the fleet, and reading that as a departure is
+            // precisely the visibility-for-membership confusion P-010 documented.
+            rosterSize: memberCensus.candidates ?? null,
+            countedMembers: members.length,
+            specRevision: specRevision ?? null,
+            poolFactor: poolCapacity?.factor ?? null,
+          },
+          fireCount,
+          since: args.since ?? null,
+        });
+      },
+      null,
+    );
+    if (resolved) {
+      delta = resolved.delta;
+      deltaSummary = resolved.summary;
     }
   }
   // P-007: cross-epoch campaign measurements are derived live from authoritative
@@ -3886,18 +3955,21 @@ export async function buildLeaderBrief(
   // unavailable-not-zero verdicts.
   let campaign: FleetCampaign | undefined;
   if (fleetCreatedAtMs != null) {
-    try {
-      const { readFleetCampaign } = await import('./fleet-campaign');
-      campaign = await readFleetCampaign({
-        workspaceId,
-        fleetSlug: fleet,
-        fleetCreatedAtMs,
-        since: args.since ?? null,
-        harnessSlug: args.harness ?? null,
-      });
-    } catch {
-      /* best-effort — absence is not a fabricated empty campaign */
-    }
+    const campaignRead = await boundedLeaderBriefRead(
+      'fleet-campaign',
+      async () => {
+        const { readFleetCampaign } = await import('./fleet-campaign');
+        return readFleetCampaign({
+          workspaceId,
+          fleetSlug: fleet,
+          fleetCreatedAtMs,
+          since: args.since ?? null,
+          harnessSlug: args.harness ?? null,
+        });
+      },
+      undefined,
+    );
+    if (campaignRead) campaign = campaignRead;
   }
   return {
     data: {
