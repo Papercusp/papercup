@@ -252,6 +252,36 @@ function selectGeneration(
   };
 }
 
+function deepAuditGeneration(generation: string): ShellResult {
+  const wrapper = [
+    'set -euo pipefail',
+    'source "$SCRIPT"',
+    'dependency_generation_deep_audit "$GENERATION"',
+    'printf "DEEP_AUDIT_OK\\n"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-c', wrapper], {
+    encoding: 'utf8',
+    env: { ...process.env, SCRIPT, GENERATION: generation },
+  });
+  return {
+    status: result.status,
+    stdout: String(result.stdout ?? ''),
+    stderr: String(result.stderr ?? ''),
+  };
+}
+
+function invalidatePublicationToken(generation: string): void {
+  const marker = join(generation, '.papercusp-dependency-generation');
+  chmodSync(marker, 0o644);
+  writeFileSync(
+    marker,
+    readFileSync(marker, 'utf8').replace(
+      /^publication_token=.*$/m,
+      `publication_token=v2:${'0'.repeat(64)}`,
+    ),
+  );
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -458,12 +488,14 @@ describe('immutable dependency generation', () => {
     const marker = join(generation, '.papercusp-dependency-generation');
     const manifest = join(generation, '.tree-manifest');
 
+    chmodSync(manifest, 0o644);
     writeFileSync(manifest, `${readFileSync(manifest, 'utf8')}corrupt\tmetadata\n`);
     const corrupt = selectGeneration(generationRoot, identity);
     expect(corrupt.status).toBe(74);
     expect(corrupt.stderr).toContain('is missing or invalid');
 
     rmSync(manifest);
+    chmodSync(marker, 0o644);
     writeFileSync(
       marker,
       readFileSync(marker, 'utf8')
@@ -471,6 +503,8 @@ describe('immutable dependency generation', () => {
         .filter(
           (line) =>
             !line.startsWith('tree_manifest_') &&
+            !line.startsWith('publication_schema=') &&
+            !line.startsWith('publication_token=') &&
             !line.startsWith('predecessor=') &&
             !line.startsWith('trees_'),
         )
@@ -521,6 +555,105 @@ describe('immutable dependency generation', () => {
     expect(existsSync(validationTrace)).toBe(false);
   });
 
+  it('P-003: validates an ordinary cache hit from the v2 publication token without a generation walk', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    expect(publishedToken(first.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    const generation = publishedPath(first.stdout);
+    const marker = readFileSync(
+      join(generation, '.papercusp-dependency-generation'),
+      'utf8',
+    );
+    expect(marker).toContain('publication_schema=2\n');
+    expect(marker).toContain(`publication_token=${publishedToken(first.stdout)}\n`);
+    const validationTrace = join(integration, 'hot-validation.trace');
+
+    const second = publish(integration, {
+      DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
+    });
+
+    expect(second.status, second.stderr).toBe(0);
+    expect(second.stdout).toContain('reused=true');
+    expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
+    expect(existsSync(validationTrace)).toBe(false);
+    expect(
+      telemetryRecords(second.stderr, 'PHASE').find(
+        ({ phase }) => phase === 'cache-validation',
+      ),
+    ).toMatchObject({ outcome: 'hot-hit' });
+  });
+
+  it('P-003: deep-audits but rebuilds a content-valid generation whose publication token was tampered', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    invalidatePublicationToken(generation);
+
+    const deepAudit = deepAuditGeneration(generation);
+    expect(deepAudit.status, deepAudit.stderr).toBe(0);
+    expect(deepAudit.stdout).toContain('DEEP_AUDIT_OK');
+    const unsafeSelection = selectGeneration(
+      join(integration, '.papercusp/dependency-generations'),
+      publishedIdentity(first.stdout),
+    );
+    expect(unsafeSelection.status).toBe(74);
+
+    const repaired = publish(integration, {
+      DEPENDENCY_GENERATION_WALK_JOBS: '1',
+    });
+    expect(repaired.status, repaired.stderr).toBe(0);
+    expect(repaired.stdout).toContain('reused=false');
+    expect(repaired.stderr).toContain(
+      'publication token invalid for content-valid generation',
+    );
+    expect(lastSummary(repaired)).toMatchObject({
+      result: 'published',
+      trees_total: '3',
+      trees_reused: '0',
+      trees_copied: '3',
+      trees_removed: '0',
+    });
+    expect(publishedToken(repaired.stdout)).toMatch(/^v2:[0-9a-f]{64}$/);
+    expect(publishedToken(repaired.stdout)).not.toBe(`v2:${'0'.repeat(64)}`);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
+  it('P-003: reads a pre-token generation through the legacy deep-validation fallback', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const marker = join(generation, '.papercusp-dependency-generation');
+    chmodSync(marker, 0o644);
+    writeFileSync(
+      marker,
+      readFileSync(marker, 'utf8')
+        .split('\n')
+        .filter(
+          (line) =>
+            !line.startsWith('publication_schema=') &&
+            !line.startsWith('publication_token='),
+        )
+        .join('\n'),
+    );
+    const validationTrace = join(integration, 'legacy-validation.trace');
+
+    const legacyHit = publish(integration, {
+      DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
+    });
+
+    expect(legacyHit.status, legacyHit.stderr).toBe(0);
+    expect(legacyHit.stdout).toContain('reused=true');
+    expect(readFileSync(validationTrace, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(
+      telemetryRecords(legacyHit.stderr, 'PHASE').find(
+        ({ phase }) => phase === 'cache-validation',
+      ),
+    ).toMatchObject({ outcome: 'legacy-deep-hit' });
+    expect(publishedToken(legacyHit.stdout)).not.toMatch(/^v2:/);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('WI-41491: invalidates the selector when dependency inputs change and rewarms the new key', () => {
     const integration = makeIntegration();
     const first = publish(integration);
@@ -567,6 +700,36 @@ describe('immutable dependency generation', () => {
     expect(publishedToken(second.stdout)).toBe(publishedToken(first.stdout));
   });
 
+  it('WI-313670: an unseen exact ref can bind a cache-hit generation without an unbound after-manifest', () => {
+    const integration = makeIntegration();
+    const candidate = commitFixture(integration, 'cache-hit candidate');
+    const prewarmed = publish(integration);
+    expect(prewarmed.status, prewarmed.stderr).toBe(0);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    // Force only the cheap candidate-input selector to miss; the immutable
+    // dependency generation itself remains a valid cache hit. This is the exact
+    // main-path branch that the audited desktop build reached before set -u
+    // exposed an uninitialized after_manifest.
+    rmSync(join(generationRoot, '.inputs'), { recursive: true, force: true });
+
+    const rebound = ensureRef(integration, candidate);
+
+    expect(rebound.status, rebound.stderr).toBe(0);
+    expect(rebound.stdout).toContain('reused=true');
+    expect(publishedIdentity(rebound.stdout)).toBe(
+      publishedIdentity(prewarmed.stdout),
+    );
+    expect(publishedToken(rebound.stdout)).toBe(publishedToken(prewarmed.stdout));
+    expect(rebound.stderr).toContain('has unseen dependency inputs');
+    expect(rebound.stderr).toContain(
+      'capturing live dependency manifest (after existing-generation validation)',
+    );
+    expect(rebound.stderr).not.toContain('building v1-');
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('D-081: exact-ref ensure fails closed when live dependency inputs no longer match the candidate', () => {
     const integration = makeIntegration();
     const candidate = commitFixture(integration, 'candidate');
@@ -586,6 +749,7 @@ describe('immutable dependency generation', () => {
     expect(published.status, published.stderr).toBe(0);
     const generation = publishedPath(published.stdout);
     const marker = join(generation, '.papercusp-dependency-generation');
+    chmodSync(marker, 0o644);
     writeFileSync(marker, `${readFileSync(marker, 'utf8')}tampered=1\n`);
 
     const selected = selectPrewarmed(
@@ -593,7 +757,7 @@ describe('immutable dependency generation', () => {
       integration,
     );
     expect(selected.status).toBe(74);
-    expect(selected.stderr).toContain('was replaced after validation');
+    expect(selected.stderr).toContain('has an invalid publication token');
   });
 
   it('P-007: publishes only root plus the selected workspace closure and binds it into identity', () => {
@@ -697,12 +861,14 @@ describe('immutable dependency generation', () => {
     const publishedFile = join(generation, 'tree/node_modules/pkg/index.js');
     const validationTrace = join(integration, 'validation.trace');
 
-    // Preserve the identity/snapshot marker while corrupting the tree. The next
-    // publisher's initial full validation fails, it builds a valid replacement,
-    // then reaches the publish-lock race where a marker-only check used to
-    // discard that replacement as "reused" and leave this corruption in place.
+    // A nested file edit is intentionally outside the O(1) publication-token
+    // threat model, but the explicit deep audit must catch it. Once an audit (or
+    // any immutable-object watcher) invalidates the token, the next publisher
+    // rebuilds rather than trusting the still-matching identity/snapshot fields.
     chmodSync(publishedFile, 0o644);
     writeFileSync(publishedFile, 'corrupt\n');
+    expect(deepAuditGeneration(generation).status).not.toBe(0);
+    invalidatePublicationToken(generation);
 
     const repaired = publish(integration, {
       DEPENDENCY_GENERATION_VALIDATION_TRACE: validationTrace,
@@ -752,6 +918,8 @@ describe('immutable dependency generation', () => {
     const winner = publishedPath(concurrent.stdout);
     chmodSync(corruptedFile, 0o644);
     writeFileSync(corruptedFile, 'corrupt\n');
+    expect(deepAuditGeneration(generation).status).not.toBe(0);
+    invalidatePublicationToken(generation);
 
     const replacement = join(generationRoot, '.concurrent-winner');
     const validationTrace = join(integration, 'validation.trace');

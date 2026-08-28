@@ -455,9 +455,11 @@ dependency_generation_manifest_lookup() {
 
 dependency_generation_is_valid() {
   local generation="$1" expected_identity="${2:-}" expected_closure="${3:-}"
+  local validate_publication="${4:-true}"
   local marker="$generation/.papercusp-dependency-generation"
   local identity source closure scope expected_snapshot actual_snapshot
   local tree_manifest_schema tree_manifest_sha256 tree_manifest
+  local publication_schema publication_token
   # Test-only tracing proves that the publish-lock fast path does not silently
   # reintroduce the full tree walk. It is deliberately fail-open and has no
   # effect unless a test supplies the opt-in path.
@@ -481,10 +483,21 @@ dependency_generation_is_valid() {
   if [ -e "$tree_manifest" ] || [ -n "$tree_manifest_schema" ] || [ -n "$tree_manifest_sha256" ]; then
     dependency_generation_reuse_manifest_is_valid "$generation" || return 1
   fi
+  publication_schema="$(dependency_generation_read_field "$marker" publication_schema)"
+  publication_token="$(dependency_generation_read_field "$marker" publication_token)"
+  if [ "$validate_publication" = 'true' ] \
+    && { [ -n "$publication_schema" ] || [ -n "$publication_token" ]; }; then
+    dependency_generation_publication_is_valid \
+      "$generation" "$expected_identity" "$expected_closure" || return 1
+  fi
   expected_snapshot="$(dependency_generation_read_field "$marker" snapshot)"
   [ -n "$expected_snapshot" ] || return 1
   actual_snapshot="$(dependency_generation_set_fingerprint "$generation/tree" 2>/dev/null || true)"
   [ -n "$actual_snapshot" ] && [ "$actual_snapshot" = "$expected_snapshot" ]
+}
+
+dependency_generation_deep_audit() {
+  dependency_generation_is_valid "$1" "${2:-}" "${3:-}" false
 }
 
 # Return a cheap identity for a published generation. The generation directory
@@ -500,6 +513,88 @@ dependency_generation_stat_token() {
   stat -f '%d:%i:%m:%z' "$path"
 }
 
+dependency_generation_inode_token() {
+  local path="$1"
+  if stat -c '%d:%i' "$path" 2>/dev/null; then
+    return 0
+  fi
+  stat -f '%d:%i' "$path"
+}
+
+# Digest the immutable marker payload without its own publication_token field,
+# avoiding a self-referential hash while still binding every structural field,
+# the snapshot claim, closure/scope, predecessor lineage, and tree counters.
+dependency_generation_marker_payload_digest() {
+  local marker="$1"
+  sed '/^publication_token=/d' "$marker" | dependency_generation_sha256
+}
+
+# V2 is constant in the dependency-tree size: it reads the small marker and
+# per-tree manifest, plus stat identities for the four immutable objects. The
+# 13-GiB tree is never walked here. Deep content verification remains available
+# through dependency_generation_deep_audit and is used for legacy/recovery.
+dependency_generation_publication_token() {
+  local generation="$1" marker manifest tree
+  local generation_inode tree_token marker_inode manifest_token
+  local marker_digest manifest_digest recorded_manifest_digest digest
+  marker="$generation/.papercusp-dependency-generation"
+  manifest="$generation/.tree-manifest"
+  tree="$generation/tree"
+  [ -d "$generation" ] && [ -d "$tree" ] && [ -f "$marker" ] && [ -f "$manifest" ] \
+    || return 1
+  generation_inode="$(dependency_generation_inode_token "$generation")" || return 1
+  tree_token="$(dependency_generation_stat_token "$tree")" || return 1
+  marker_inode="$(dependency_generation_inode_token "$marker")" || return 1
+  manifest_token="$(dependency_generation_stat_token "$manifest")" || return 1
+  marker_digest="$(dependency_generation_marker_payload_digest "$marker")" || return 1
+  manifest_digest="$(dependency_generation_manifest_fingerprint "$manifest")" || return 1
+  recorded_manifest_digest="$(dependency_generation_read_field "$marker" tree_manifest_sha256)"
+  [ "$manifest_digest" = "$recorded_manifest_digest" ] || return 1
+  digest="$({
+    printf 'schema\t2\n'
+    printf 'generation\t%s\n' "$generation_inode"
+    printf 'tree\t%s\n' "$tree_token"
+    printf 'marker\t%s\t%s\n' "$marker_inode" "$marker_digest"
+    printf 'manifest\t%s\t%s\n' "$manifest_token" "$manifest_digest"
+  } | dependency_generation_sha256)" || return 1
+  printf 'v2:%s\n' "$digest"
+}
+
+dependency_generation_has_publication_contract() {
+  local generation="$1" marker
+  marker="$generation/.papercusp-dependency-generation"
+  [ -f "$marker" ] || return 1
+  [ -n "$(dependency_generation_read_field "$marker" publication_schema)" ] \
+    || [ -n "$(dependency_generation_read_field "$marker" publication_token)" ]
+}
+
+dependency_generation_publication_is_valid() {
+  local generation="$1" expected_identity="${2:-}" expected_closure="${3:-}"
+  local expected_scope="${4:-}" marker identity source closure scope snapshot
+  local schema recorded_token current_token token_count
+  marker="$generation/.papercusp-dependency-generation"
+  [ -d "$generation/tree" ] && [ -f "$marker" ] || return 1
+  identity="$(dependency_generation_read_field "$marker" identity)"
+  source="$(dependency_generation_read_field "$marker" source)"
+  closure="$(dependency_generation_read_field "$marker" closure)"
+  scope="$(dependency_generation_read_field "$marker" scope)"
+  snapshot="$(dependency_generation_read_field "$marker" snapshot)"
+  [ -n "$identity" ] && [ "$identity" = "v1-$source" ] && [ -n "$closure" ] \
+    && [ -n "$snapshot" ] || return 1
+  [ -z "$expected_identity" ] || [ "$identity" = "$expected_identity" ] || return 1
+  [ -z "$expected_closure" ] || [ "$closure" = "$expected_closure" ] || return 1
+  [ -z "$expected_scope" ] || [ "$scope" = "$expected_scope" ] || return 1
+  case "$scope" in full|selected) ;; *) return 1 ;; esac
+  schema="$(dependency_generation_read_field "$marker" publication_schema)"
+  recorded_token="$(dependency_generation_read_field "$marker" publication_token)"
+  token_count="$(grep -c '^publication_token=' "$marker" 2>/dev/null || true)"
+  [ "$schema" = '2' ] && [ "$token_count" = '1' ] \
+    && [[ "$recorded_token" =~ ^v2:[0-9a-f]{64}$ ]] || return 1
+  dependency_generation_reuse_manifest_is_valid "$generation" || return 1
+  current_token="$(dependency_generation_publication_token "$generation" 2>/dev/null || true)"
+  [ -n "$current_token" ] && [ "$current_token" = "$recorded_token" ]
+}
+
 dependency_generation_generation_token() {
   local generation="$1" marker generation_token marker_token
   [ -d "$generation" ] || return 1
@@ -511,6 +606,15 @@ dependency_generation_generation_token() {
     marker_token='missing'
   fi
   printf '%s|%s\n' "$generation_token" "$marker_token"
+}
+
+dependency_generation_selector_token() {
+  local generation="$1"
+  if dependency_generation_has_publication_contract "$generation"; then
+    dependency_generation_publication_token "$generation"
+  else
+    dependency_generation_generation_token "$generation"
+  fi
 }
 
 # Select a generation that was fully validated by its publisher. The selector
@@ -530,7 +634,20 @@ dependency_generation_select_prevalidated() {
     return 74
   }
   generation="$generation_root/$identity"
-  current_token="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+  case "$expected_token" in
+    v2:*)
+      if ! dependency_generation_publication_is_valid "$generation" "$identity" '' 'full'; then
+        dependency_generation_log \
+          "FATAL: prewarmed dependency generation $identity has an invalid publication token"
+        return 74
+      fi
+      current_token="$(dependency_generation_read_field \
+        "$generation/.papercusp-dependency-generation" publication_token)"
+      ;;
+    *)
+      current_token="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+      ;;
+  esac
   if [ -z "$current_token" ] || [ "$current_token" != "$expected_token" ]; then
     dependency_generation_log "FATAL: prewarmed dependency generation $identity was replaced after validation"
     return 74
@@ -557,17 +674,28 @@ dependency_generation_publish_input_selector() {
   local generation_root="$1" input_fingerprint="$2"
   local selector_dir selector tmp token rc=0
   [ "${DEPENDENCY_GENERATION_SCOPE_MODE:-full}" = 'full' ] || return 0
-  token="$(dependency_generation_generation_token "$DEPENDENCY_GENERATION_PATH")" || return 1
   selector_dir="$generation_root/.inputs"
   selector="$selector_dir/$input_fingerprint"
   tmp="$selector_dir/.${input_fingerprint}.tmp.$$"
   mkdir -p "$selector_dir"
   dependency_generation_acquire_publish_lock "$generation_root" || return $?
-  if ! dependency_generation_marker_matches \
+  if dependency_generation_has_publication_contract "$DEPENDENCY_GENERATION_PATH"; then
+    if ! dependency_generation_publication_is_valid \
+      "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_ID" \
+      "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" 'full'; then
+      dependency_generation_log \
+        "FATAL: refusing to index invalid dependency publication $DEPENDENCY_GENERATION_ID"
+      rc=74
+    fi
+  elif ! dependency_generation_marker_matches \
     "$DEPENDENCY_GENERATION_PATH" "$DEPENDENCY_GENERATION_ID"; then
     dependency_generation_log "FATAL: refusing to index invalid dependency generation $DEPENDENCY_GENERATION_ID"
     rc=74
-  else
+  fi
+  if [ "$rc" -eq 0 ]; then
+    token="$(dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH")" || rc=$?
+  fi
+  if [ "$rc" -eq 0 ]; then
     printf 'schema=1\ninput=%s\nidentity=%s\ntoken=%s\ncreated=%s\n' \
       "$input_fingerprint" "$DEPENDENCY_GENERATION_ID" "$token" "$(date +%s)" > "$tmp" \
       && mv "$tmp" "$selector" || rc=$?
@@ -1115,13 +1243,15 @@ dependency_generation_remove_build() {
 dependency_generation_ensure() {
   local integration_root="$1"
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
-  local source_before source_after identity generation build tree nm rel snapshot marker
-  local quarantine before_manifest after_manifest tree_manifest tree_manifest_digest=''
+  local source_before='' source_after='' identity generation build tree nm rel snapshot marker
+  local quarantine before_manifest='' after_manifest='' tree_manifest='' tree_manifest_digest=''
+  local publication_token=''
   local incumbent_token_before incumbent_token_after incumbent_token
   local current_incumbent_token publish_replacement publish_rc
   local total_started_ms phase_started_ms tree_total=0 tree_reused=0 tree_copied=0 tree_removed=0
   local predecessor_identity='none'
   local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
+  local existing_generation_valid='false' cache_validation_outcome='miss'
   total_started_ms="$(dependency_generation_now_ms)"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
@@ -1161,9 +1291,30 @@ dependency_generation_ensure() {
   incumbent_token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
   dependency_generation_log "validating existing generation $identity"
   phase_started_ms="$(dependency_generation_now_ms)"
-  if dependency_generation_is_valid \
+  if dependency_generation_has_publication_contract "$generation"; then
+    if dependency_generation_publication_is_valid \
+      "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
+      "$DEPENDENCY_GENERATION_SCOPE_MODE"; then
+      existing_generation_valid='true'
+      cache_validation_outcome='hot-hit'
+    elif dependency_generation_deep_audit \
+      "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
+      cache_validation_outcome='token-invalid-deep-valid'
+      dependency_generation_log \
+        "publication token invalid for content-valid generation $identity; rebuilding immutable metadata"
+    else
+      cache_validation_outcome='token-invalid-deep-invalid'
+      dependency_generation_log \
+        "publication token and deep audit invalid for generation $identity"
+    fi
+  elif dependency_generation_deep_audit \
     "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
-    dependency_generation_emit_phase cache-validation "$phase_started_ms" hit
+    existing_generation_valid='true'
+    cache_validation_outcome='legacy-deep-hit'
+  fi
+  dependency_generation_emit_phase \
+    cache-validation "$phase_started_ms" "$cache_validation_outcome"
+  if [ "$existing_generation_valid" = 'true' ]; then
     dependency_generation_log "validated existing generation $identity; confirming live source stability"
     dependency_generation_log 'capturing live dependency manifest (after existing-generation validation)'
     phase_started_ms="$(dependency_generation_now_ms)"
@@ -1200,7 +1351,6 @@ dependency_generation_ensure() {
       "$predecessor_identity" "$tree_total" "$tree_reused" 0 0
     return 0
   fi
-  dependency_generation_emit_phase cache-validation "$phase_started_ms" miss
   # Keep the token only when the same directory was the object that failed the
   # initial validation. If a concurrent publisher replaced it during that walk,
   # force the serialized path below to perform its full validation instead.
@@ -1340,12 +1490,25 @@ dependency_generation_ensure() {
       "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
       "$snapshot" "$(date +%s)"
     if [ -n "$tree_manifest_digest" ]; then
-      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
+      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npublication_schema=2\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
         "$tree_manifest_digest" "$predecessor_identity" \
         "$tree_reused" "$tree_copied" "$tree_removed"
     fi
     printf '%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD"
   } > "$marker"
+  if [ -n "$tree_manifest_digest" ]; then
+    publication_token="$(dependency_generation_publication_token "$build")" || {
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+    printf 'publication_token=%s\n' "$publication_token" >> "$marker"
+    chmod a-w "$marker" "$tree_manifest"
+    [ "$(dependency_generation_publication_token "$build")" = "$publication_token" ] || {
+      dependency_generation_log 'FATAL: dependency publication token was not self-stable'
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+  fi
 
   phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_acquire_publish_lock "$generation_root" || {
@@ -1495,7 +1658,7 @@ dependency_generation_main() {
       "$generation_root" "$input_after" || return $?
   else
     DEPENDENCY_GENERATION_TOKEN="$(
-      dependency_generation_generation_token "$DEPENDENCY_GENERATION_PATH"
+      dependency_generation_selector_token "$DEPENDENCY_GENERATION_PATH"
     )" || return 1
     DEPENDENCY_GENERATION_INPUT_FINGERPRINT='unindexed'
   fi
