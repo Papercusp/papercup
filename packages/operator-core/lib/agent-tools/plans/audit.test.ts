@@ -244,7 +244,7 @@ describe('plans:audit D-008 writer contract', () => {
       },
     };
     mockContext.mockImplementation(async (_harness, citations) => {
-      if (citations.some((citation) => citation.path === 'src/missing.ts')) {
+      if ((citations ?? []).some((citation) => citation.path === 'src/missing.ts')) {
         return {
           kind: 'citation_unresolvable',
           citations: [{ path: 'src/missing.ts', reason: 'file_not_found' }],
@@ -270,7 +270,7 @@ describe('plans:audit D-008 writer contract', () => {
     expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
       items: [expect.objectContaining({ itemId: 'P-001' })],
     }));
-    expect(mockRecord.mock.calls[0]![0].items).not.toEqual(
+    expect((mockRecord.mock.calls[0]![0] as { items?: unknown[] }).items).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ itemId: 'P-002' })]),
     );
   });
