@@ -2070,20 +2070,9 @@ function ImprovementsView({
               ? "good"
               : "accent"
         }
-        action={
-          <button
-            type="button"
-            className="pc-learning__refresh"
-            aria-label="Reload the improve feed"
-            disabled={sync.fetching || scoutSync.fetching}
-            onClick={() => {
-              sync.invalidate();
-              scoutSync.invalidate();
-            }}
-          >
-            <RefreshCw size={13} aria-hidden />
-          </button>
-        }
+        /* P-003: the reload moved onto the table's own toolbar below, where
+           Retain keeps it. Two refresh buttons for one feed would have been the
+           cost of adding it there and leaving this one. */
       />
 
       {/* ONE plain-language glance line, absorbed from the Ideas view: what the
@@ -2120,58 +2109,137 @@ function ImprovementsView({
         ) : null}
       </p>
 
-      {/* ── The scope bar. THE control that makes this list honest.
+      {/* ── The facet strip: triage lane, then provenance, in ONE segmented row
+          (P-003, owner 2026-08-28 — "lets just adopt that look for the improve
+          tab as well"). It is the same pc-learning__seg chrome the Retained
+          ledger's type strip uses; what changed here is only that Improve's two
+          axes previously sat in two unrelated bars — a pill row up here and a
+          tab group buried in the toolbar — so the reader had to discover that
+          they compose.
+
+          The scope axis is still THE control that makes this list honest.
           Measured 2026-07-27: 8,202 rows — 99.93% of the old Backlog — were
           also on the Work tab, because this read applied no provenance filter
           at all. Scoping to the loop's own output is the default; everything
           else is one click away, and the way OUT is stated rather than left
           for the reader to wonder about. */}
-      <div
-        className="pc-learning__idea-filters"
-        aria-label="Where these came from"
-      >
-        <Tooltip label="Only what the learning loop produced: ideas, and the work items they became.">
-          <button
-            type="button"
-            aria-pressed={scope === "loop"}
-            onClick={() => void setScope("loop")}
+      <div className="pc-learning__segrow">
+        {showDashboard ? (
+          <div
+            className="pc-learning__seg"
+            role="tablist"
+            aria-label="Triage lane"
           >
-            <Radar size={11} aria-hidden />
-            From the loop{" "}
-            {digest && scope === "loop" ? (
-              <strong>{digest.total}</strong>
-            ) : null}
-          </button>
-        </Tooltip>
-        {sources.map((s) => {
-          // Display-map ONLY (P-009): 'Queen' is retired display vocabulary but
-          // survives in stored payload sourceRole values — the FILTER must keep
-          // matching the raw stored value, so only the label maps.
-          const label = s === "Queen" ? t("brain") : s;
-          return (
-            <Tooltip key={s} label={`Filed by ${label}`}>
-              <button
-                type="button"
-                aria-pressed={src === s}
-                onClick={() => void setSrc(src === s ? null : s)}
-              >
-                {label}
-              </button>
-            </Tooltip>
-          );
-        })}
-        <Tooltip label="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists.">
-          <button
-            type="button"
-            aria-pressed={scope === "all"}
-            onClick={() => void setScope("all")}
-          >
-            Every capture
-          </button>
-        </Tooltip>
+            {LANES.filter(
+              (l) =>
+                l === "all" ||
+                (l === "auto"
+                  ? (digest?.autoEligible.length ?? 0) > 0
+                  : (digest?.humanQueue.length ?? 0) > 0),
+            ).map((l) => {
+              // The badge is the lane's own population, so a lane never
+              // advertises a number the click will not deliver.
+              const badge =
+                l === "all"
+                  ? (digest?.total ?? null)
+                  : l === "auto"
+                    ? (digest?.autoEligible.length ?? null)
+                    : (digest?.humanQueue.length ?? null);
+              return (
+                <Tooltip
+                  key={l}
+                  label={
+                    l === "auto"
+                      ? "Bugs agents may fix on their own"
+                      : l === "human"
+                        ? "Items waiting on your judgment"
+                        : null
+                  }
+                >
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={lane === l}
+                    className={`pc-learning__segtab${lane === l ? " is-on" : ""}`}
+                    onClick={() => void setLane(l)}
+                  >
+                    {l === "all"
+                      ? "All"
+                      : l === "auto"
+                        ? "Auto-fixable"
+                        : "Needs review"}
+                    {badge !== null ? <em>{badge}</em> : null}
+                  </button>
+                </Tooltip>
+              );
+            })}
+          </div>
+        ) : null}
+        {showDashboard ? <span className="pc-learning__segdiv" /> : null}
+        <div
+          className="pc-learning__seg"
+          role="tablist"
+          aria-label="Where these came from"
+        >
+          <Tooltip label="Only what the learning loop produced: ideas, and the work items they became.">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scope === "loop"}
+              className={`pc-learning__segtab${scope === "loop" ? " is-on" : ""}`}
+              onClick={() => void setScope("loop")}
+            >
+              <Radar size={11} aria-hidden />
+              From the loop
+              {digest && scope === "loop" ? <em>{digest.total}</em> : null}
+            </button>
+          </Tooltip>
+          <Tooltip label="Every capture in this workspace, including work that never came from the loop — the same population the Work tab lists.">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={scope === "all"}
+              className={`pc-learning__segtab${scope === "all" ? " is-on" : ""}`}
+              onClick={() => void setScope("all")}
+            >
+              Every capture
+            </button>
+          </Tooltip>
+        </div>
+        {sources.length > 0 ? (
+          <>
+            <span className="pc-learning__segdiv" />
+            <div
+              className="pc-learning__seg"
+              role="tablist"
+              aria-label="Filed by"
+            >
+              {sources.map((s) => {
+                // Display-map ONLY (P-009): 'Queen' is retired display
+                // vocabulary but survives in stored payload sourceRole values —
+                // the FILTER must keep matching the raw stored value, so only
+                // the label maps.
+                const label = s === "Queen" ? t("brain") : s;
+                return (
+                  <Tooltip key={s} label={`Filed by ${label}`}>
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={src === s}
+                      className={`pc-learning__segtab${src === s ? " is-on" : ""}`}
+                      onClick={() => void setSrc(src === s ? null : s)}
+                    >
+                      {label}
+                    </button>
+                  </Tooltip>
+                );
+              })}
+            </div>
+          </>
+        ) : null}
         {scope === "loop" ? (
           <span
-            className="pc-learning__matchcount"
+            className="pc-learning__segnote"
             title="Captures that did not come from the learning loop are work, not learning — they live on the Work tab."
           >
             work not from the loop lives in Work →
@@ -2259,85 +2327,73 @@ function ImprovementsView({
       ) : null}
 
       {showDashboard ? (
-        <div className="pc-learning__sectionhead pc-learning__sectionhead--tools">
-          <div className="pc-learning__inlinetools">
-            <label className="pc-learning__search">
-              <Search size={12} aria-hidden />
-              <input
-                type="text"
-                value={search ?? ""}
-                onChange={(e) => void setSearch(e.target.value)}
-                placeholder="Search ideas and work…"
-                aria-label="Search ideas and work"
+        // P-003: the same pc-advpanel__bar the Retained ledger sits under —
+        // search, column filters, the live count, then reload. The lane tabs
+        // that used to be buried at the end of this row now lead the segmented
+        // strip above, with the scope axis they compose with.
+        <div className="pc-advpanel__bar">
+          <input
+            type="text"
+            className="pc-advpanel__input"
+            value={search ?? ""}
+            onChange={(e) => void setSearch(e.target.value)}
+            placeholder="Search ideas and work…"
+            aria-label="Search ideas and work"
+          />
+          <ColumnFilterBar
+            controller={cf.controller}
+            activeChips={cf.activeChips}
+            hasActive={cf.hasActive}
+            clearAll={cf.clearAll}
+          />
+          <span
+            className="pc-advpanel__count"
+            aria-live="polite"
+            style={{
+              marginLeft: "auto",
+              fontSize: 11,
+              color: "var(--fg-mute)",
+              whiteSpace: "nowrap",
+              fontVariantNumeric: "tabular-nums",
+            }}
+            title={
+              isFiltered && improveSummary
+                ? `Exact server-authored match count over ${improveSummary.total} merged Improve rows; at most 500 rows cross the sync wire.`
+                : isFiltered
+                  ? "The paired exact summary is updating; no page-local denominator is substituted."
+                  : digest?.windowed
+                    ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
+                    : "Rows in scope — ideas and the work they became."
+            }
+          >
+            {isFiltered
+              ? improveSummary && !summarySync.loading
+                ? `${visibleRows.length} of ${improveSummary.matched}`
+                : "updating"
+              : `${rows.length}${digest?.windowed ? " loaded" : " items"}`}
+          </span>
+          <Tooltip label="Reload the improve feed">
+            <button
+              type="button"
+              className="pc-advpanel__iconbtn"
+              aria-label="Reload the improve feed"
+              disabled={sync.fetching || scoutSync.fetching}
+              onClick={() => {
+                sync.invalidate();
+                scoutSync.invalidate();
+              }}
+            >
+              <RefreshCw
+                size={13}
+                aria-hidden
+                className={
+                  sync.fetching || scoutSync.fetching
+                    ? "pc-advpanel__spin"
+                    : undefined
+                }
               />
-            </label>
-            <ColumnFilterBar
-              controller={cf.controller}
-              activeChips={cf.activeChips}
-              hasActive={cf.hasActive}
-              clearAll={cf.clearAll}
-            />
-            <span
-              className="pc-learning__matchcount"
-              aria-live="polite"
-              title={
-                isFiltered && improveSummary
-                  ? `Exact server-authored match count over ${improveSummary.total} merged Improve rows; at most 500 rows cross the sync wire.`
-                  : isFiltered
-                    ? "The paired exact summary is updating; no page-local denominator is substituted."
-                    : digest?.windowed
-                      ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
-                      : "Rows in scope — ideas and the work they became."
-              }
-            >
-              {isFiltered
-                ? improveSummary && !summarySync.loading
-                  ? `${visibleRows.length} of ${improveSummary.matched}`
-                  : "updating"
-                : `${rows.length}${digest?.windowed ? " loaded" : " items"}`}
-            </span>
-            {/* The "who filed it" facet is now a chip in the scope bar above —
-                provenance is the headline question on this surface, not a
-                dropdown to open. */}
-            <div
-              className="pc-learning__lanes"
-              role="tablist"
-              aria-label="Triage lane"
-            >
-              {LANES.filter(
-                (l) =>
-                  l === "all" ||
-                  (l === "auto"
-                    ? (digest?.autoEligible.length ?? 0) > 0
-                    : (digest?.humanQueue.length ?? 0) > 0),
-              ).map((l) => (
-                <Tooltip
-                  key={l}
-                  label={
-                    l === "auto"
-                      ? "Bugs agents may fix on their own"
-                      : l === "human"
-                        ? "Items waiting on your judgment"
-                        : null
-                  }
-                >
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={lane === l}
-                    className={`pc-learning__lane${lane === l ? " is-active" : ""}`}
-                    onClick={() => void setLane(l)}
-                  >
-                    {l === "all"
-                      ? "All"
-                      : l === "auto"
-                        ? "Auto-fixable"
-                        : "Needs review"}
-                  </button>
-                </Tooltip>
-              ))}
-            </div>
-          </div>
+            </button>
+          </Tooltip>
         </div>
       ) : null}
 
@@ -2754,37 +2810,46 @@ function ImproveGrid({
     : null;
 
   return (
-    <VirtualGrid<LoopRow>
-      columns={columns}
-      rows={rows}
-      getRowId={(r) => r.key}
-      rowMinHeight={34}
-      headerHeight={30}
-      scrollStyle={{ maxHeight: "min(58vh, 640px)" }}
-      onRowClick={(r) => {
-        // Parity with the card: a selected (?lsel) row dismisses on click; an
-        // idea-bearing row toggles its trace.
-        if (isSelectedRow(r, lsel)) {
-          ctx.onDismissSelect();
-          return;
+    // P-003: the bordered rounded frame the Retained ledger's grid sits in, so
+    // the two tables read as one component rather than two house styles.
+    <div className="pc-learning__gridframe">
+      <VirtualGrid<LoopRow>
+        columns={columns}
+        rows={rows}
+        resizableColumns
+        columnWidths={colWidths}
+        onColumnWidthsChange={setColWidths}
+        getRowId={(r) => r.key}
+        rowMinHeight={34}
+        headerHeight={30}
+        scrollStyle={{ maxHeight: "min(58vh, 640px)" }}
+        onRowClick={(r) => {
+          // Parity with the card: a selected (?lsel) row dismisses on click; an
+          // idea-bearing row toggles its trace.
+          if (isSelectedRow(r, lsel)) {
+            ctx.onDismissSelect();
+            return;
+          }
+          if (r.idea)
+            ctx.onToggleTrace(
+              traceOpen === r.idea.ideaId ? null : r.idea.ideaId,
+            );
+        }}
+        getRowBg={(r) =>
+          isSelectedRow(r, lsel)
+            ? "color-mix(in oklab, var(--accent), transparent 80%)"
+            : undefined
         }
-        if (r.idea)
-          ctx.onToggleTrace(traceOpen === r.idea.ideaId ? null : r.idea.ideaId);
-      }}
-      getRowBg={(r) =>
-        isSelectedRow(r, lsel)
-          ? "color-mix(in oklab, var(--accent), transparent 80%)"
-          : undefined
-      }
-      expandedRowKey={expandedRowKey}
-      renderExpandedRow={(r) =>
-        r.idea ? (
-          <div className="pc-learning__gridtrace">
-            <IdeaTrace idea={r.idea} ctx={ctx} />
-          </div>
-        ) : null
-      }
-    />
+        expandedRowKey={expandedRowKey}
+        renderExpandedRow={(r) =>
+          r.idea ? (
+            <div className="pc-learning__gridtrace">
+              <IdeaTrace idea={r.idea} ctx={ctx} />
+            </div>
+          ) : null
+        }
+      />
+    </div>
   );
 }
 
@@ -6722,7 +6787,7 @@ function RetainedLedgerCard({
     <section className="pc-learning__retained" aria-label="Retained ledger">
       <div className="pc-learning__retainedhead">
         <div
-          className="pc-learning__retainedseg"
+          className="pc-learning__seg"
           role="tablist"
           aria-label="Retained type"
         >
@@ -6735,7 +6800,7 @@ function RetainedLedgerCard({
                 type="button"
                 role="tab"
                 aria-selected={rtab === tab}
-                className={`pc-learning__retainedtab${rtab === tab ? " is-on" : ""}`}
+                className={`pc-learning__segtab${rtab === tab ? " is-on" : ""}`}
                 onClick={() => void setRtab(tab)}
               >
                 {RETAIN_TAB_LABELS[tab]}
@@ -7169,24 +7234,34 @@ export function LearningStyles() {
         display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
         padding: 7px 10px; border-bottom: 1px solid var(--border, rgba(125, 211, 252, 0.12));
       }
-      .pc-learning__retainedseg {
+      /* P-003: the segmented strip is SHARED chrome, not Retain's own — Improve
+         renders its lane + scope axes through these same classes, which is why
+         the names are neutral. Restyle here and both tables move together.
+         (The --filters modifier and the .is-inert outcome-filter states went
+         with the Shipped / In-flight segment itself, D-001.) */
+      .pc-learning__seg {
         display: inline-flex; align-items: center; gap: 2px; padding: 2px;
         border: 1px solid var(--border, rgba(125, 211, 252, 0.16));
         border-radius: 8px; background: rgba(255, 255, 255, 0.02);
       }
-      .pc-learning__retainedseg--filters { margin-left: auto; }
-      .pc-learning__retainedtab {
+      .pc-learning__segtab {
         display: inline-flex; align-items: center; gap: 5px; border: 0;
         background: transparent; color: var(--fg-mute, #7f9bb4);
         font-size: 11px; font-weight: 620; padding: 3px 9px; border-radius: 6px; cursor: pointer;
       }
-      .pc-learning__retainedtab:hover { color: var(--fg-dim, #b9d4e8); }
-      .pc-learning__retainedtab.is-on { background: rgba(125, 211, 252, 0.14); color: var(--fg, #e7eef5); }
-      .pc-learning__retainedtab em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
-      /* An outcome filter the current tab cannot honour (WI-39900): visibly
-         unavailable rather than clickable-into-an-empty-ledger. */
-      .pc-learning__retainedtab.is-inert { opacity: 0.38; cursor: not-allowed; }
-      .pc-learning__retainedtab.is-inert:hover { color: var(--fg-mute, #7f9bb4); }
+      .pc-learning__segtab:hover { color: var(--fg-dim, #b9d4e8); }
+      .pc-learning__segtab.is-on { background: rgba(125, 211, 252, 0.14); color: var(--fg, #e7eef5); }
+      .pc-learning__segtab em { font-style: normal; font-size: 9.5px; color: var(--fg-mute, #7f9bb4); font-variant-numeric: tabular-nums; }
+      /* Improve's strip carries two axes (lane, then provenance) in one row;
+         the rule says "these are different questions" without a second border. */
+      .pc-learning__segdiv { width: 1px; height: 16px; background: var(--border, rgba(125, 211, 252, 0.15)); margin: 0 6px; flex: none; }
+      .pc-learning__segrow { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+      .pc-learning__segnote { margin-left: auto; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
+      /* The bordered frame both grids sit in. */
+      .pc-learning__gridframe {
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
+        border-radius: 8px; overflow: hidden; min-width: 0;
+      }
       .pc-learning__retainedfilternote { margin: 4px 0 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell svg { flex-shrink: 0; }
@@ -7352,7 +7427,6 @@ export function LearningStyles() {
 
       .pc-learning__section { display: flex; flex-direction: column; gap: 7px; }
       .pc-learning__sectionhead { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-      .pc-learning__sectionhead--tools { justify-content: flex-start; min-height: 28px; }
       /* Pin the runs header inside the scrolling view-pane so the newest-run
          recency stays on screen while the user scrolls down to the judge cards
          (owner escalation 2026-07-26: scrolling hid every recent run and the
@@ -7401,33 +7475,10 @@ export function LearningStyles() {
         padding: 1px 8px; white-space: nowrap;
       }
       .pc-learning__sectionhead h2 { margin: 0; font-size: 13px; font-weight: 740; text-transform: uppercase; letter-spacing: 0; color: var(--fg, #e7eef5); }
-      .pc-learning__inlinetools { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-      /* Work-Queue-parity search + filter affordances (owner ask 2026-07-19). */
-      .pc-learning__search {
-        display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.18)); border-radius: 999px;
-        background: var(--bg-2, rgba(255, 255, 255, 0.03)); color: var(--fg-mute, #7f9bb4);
-      }
-      .pc-learning__search:focus-within {
-        border-color: color-mix(in srgb, var(--accent, #7dd3fc) 48%, var(--border));
-        color: var(--fg, #e7eef5);
-      }
-      .pc-learning__search input {
-        border: 0; background: none; outline: none; color: var(--fg, #e7eef5);
-        font: inherit; font-size: 11px; width: 150px;
-      }
-      .pc-learning__search input::placeholder { color: var(--fg-mute, #7f9bb4); }
-      .pc-learning__matchcount {
-        font-size: 11px; color: var(--fg-mute, #7f9bb4);
-        font-variant-numeric: tabular-nums; white-space: nowrap;
-      }
-      .pc-learning__lanes { display: inline-flex; gap: 4px; }
-      .pc-learning__lane {
-        padding: 4px 10px; font-size: 11px; font-weight: 650; border-radius: 999px; cursor: pointer;
-        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
-        background: transparent; color: var(--fg-mute, #7f9bb4);
-      }
-      .pc-learning__lane.is-active { color: var(--fg, #e7f7ff); border-color: rgba(var(--accent-strong-rgb, 125, 211, 252), 0.5); background: rgba(var(--accent-strong-rgb, 125, 211, 252), 0.12); }
+      /* P-003 removed the bespoke Improve toolbar these dressed — the search
+         pill, its match count, the inline-tools row and the rounded lane pills.
+         Improve now renders that row as pc-advpanel__bar and its lane axis as a
+         pc-learning__seg segment, so nothing referenced them any more. */
       .pc-learning__refresh {
         display: inline-flex; align-items: center; justify-content: center;
         width: 30px; height: 30px; flex-shrink: 0;
