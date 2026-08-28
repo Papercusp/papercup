@@ -28241,7 +28241,7 @@
           "POST"
         ]
       },
-      "description": "Read the in-memory snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.",
+      "description": "Read the local-first durable snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.",
       "capabilities": [
         "operator:read"
       ],
