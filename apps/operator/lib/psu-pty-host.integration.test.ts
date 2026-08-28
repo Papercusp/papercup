@@ -725,12 +725,16 @@ describe('RECYCLE / backend-aware RESET — kill + respawn the child in the same
         env: {
           ...process.env,
           PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_ADV_SESSION_ID: '42',
+          CODEX_HOME: '/tmp/codex-home-for-handoff',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '100',
           PAPERCUSP_PSU_PTY_RECYCLE_KILL_MS: '250',
           PAPERCUSP_PSU_PTY_RECYCLE_FORCE_KILL_WAIT_MS: '500',
         },
         ownerId,
+        advSessionId: 42,
         io,
         bridgeTty: false,
       });
@@ -1302,8 +1306,17 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
         fromPid: process.pid,
         launchContextPath: carryFile,
         nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
+        advSessionId: 42,
+        codexHome: '/tmp/codex-home-for-handoff',
         // P-022: a carry successor must not keep Claude's native compactors.
-        childEnv: { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' },
+        childEnv: {
+          PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_ADV_SESSION_ID: '42',
+          CODEX_HOME: '/tmp/codex-home-for-handoff',
+          DISABLE_AUTO_COMPACT: '1',
+          DISABLE_COMPACT: '1',
+        },
       });
       expect(orders.args).toContain('--append-system-prompt-file');
       expect(orders.args).toContain(carryFile);
