@@ -6522,7 +6522,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, stats());
       return;
     }
-    if (req.method === 'GET' && (url === '/admin/stalls' || url.startsWith('/admin/stalls?'))) {
+    if (req.method === 'GET' && requestPath === '/admin/stalls') {
       // P-002: recent rate-limit stall candidates for the stall-waker (gateway-rate-limit-stall-autowake).
       // `?since=<epochMs>` returns only events after that watermark (the waker passes its last-seen `now`).
       // WI-4994: also drop anything past STALL_MAX_AGE_MS regardless of `since` — a `since=0` read
@@ -6538,7 +6538,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if (req.method === 'GET' && url.startsWith('/admin/route')) {
+    if (req.method === 'GET' && requestPath === '/admin/route') {
       // routed-account-visibility (2026-06-22): the account that served `?owner=<id>`'s most-recent turn, so a
       // session's statusline can show "my turn → <account>". `{account:null}` when that owner hasn't been seen.
       const owner = decodeURIComponent(url.match(/[?&]owner=([^&]+)/)?.[1] ?? '');
@@ -6553,7 +6553,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if (req.method === 'GET' && url.startsWith('/admin/owner-report')) {
+    if (req.method === 'GET' && requestPath === '/admin/owner-report') {
       // P-008 (gateway-rayobyte-hardening): the per-owner outcome ledger. `?owner=<id>` → that owner's
       // counters + recent events + last-routed account + live pin; no owner → the TOP erroring owners
       // (by non-ok outcomes) so "who is having a bad time right now" is one call.
@@ -6616,7 +6616,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if (req.method === 'POST' && url.startsWith('/admin/readmit')) {
+    if (req.method === 'POST' && requestPath === '/admin/readmit') {
       // EI-8797 residual: accounts:reset-rate clears the PERSISTED account-pool store, but this
       // process's failover pool keeps its own in-memory pause map (exhaustedUntil) — a split-brain
       // that left /stats reporting healthyAccounts=0 after a confirmed reset. This endpoint is the
@@ -6651,7 +6651,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
       return;
     }
-    if (req.method === 'POST' && url.startsWith('/admin/clamp-mode')) {
+    if (req.method === 'POST' && requestPath === '/admin/clamp-mode') {
       // ADVISORY CLAMP OVERRIDE (owner directive 2026-07-09): "when the inference gateway clamps it should
       // just be a recommendation, agents should be able to override". `?mode=off` admits at the AIMD
       // effective while still COMPUTING + reporting the serviceable recommendation; `?mode=auto` restores
@@ -6759,7 +6759,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       });
       return;
     }
-    if ((req.method === 'POST' || req.method === 'GET') && url.startsWith('/admin/egress-mode')) {
+    if ((req.method === 'POST' || req.method === 'GET') && requestPath === '/admin/egress-mode') {
       // Dynamic egress kill-switch (egress-proxy-toggle-2026-06-30): `?proxy=off` ⇒ box-IP-only (drop the
       // datacenter proxy egress, route all upstream through the box's own IP); `?proxy=on` ⇒ restore each
       // account's proxy pool; no arg ⇒ just read the current mode. LIVE — no restart. The BOOT default is
@@ -6772,7 +6772,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 200, { ok: true, proxyEgressDisabled, mode: proxyEgressDisabled ? 'box-ip-only' : 'proxy-pool' });
       return;
     }
-    if (req.method === 'POST' && url === '/admin/owner-pin') {
+    if (req.method === 'POST' && requestPath === '/admin/owner-pin') {
       // DYNAMIC OWNER PIN set/clear (accounts:pin / accounts:unpin). Body: {ownerId, account, hard?, clear?}.
       // Sets the in-memory owner→account pin the routing above honors per-request (overriding the static
       // x-papercusp-account header). NOT persisted — re-applied by the caller if the gateway restarts.
@@ -6835,7 +6835,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (
       req.method === 'POST' &&
-      (url === MAINTENANCE_SUMMARIZE_PATH || url.startsWith(`${MAINTENANCE_SUMMARIZE_PATH}?`))
+      requestPath === MAINTENANCE_SUMMARIZE_PATH
     ) {
       // MAINTENANCE SUMMARIZE (deterministic-context-carry P-002, ornith-overflow brief fixes 2–3).
       // Speaks omp's remote-compaction wire: POST {systemPrompt?, prompt} → {summary}. The summary is
@@ -6996,7 +6996,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     if (
       req.method === 'GET' &&
-      (url === MAINTENANCE_BACKEND_CONTEXT_PATH || url.startsWith(`${MAINTENANCE_BACKEND_CONTEXT_PATH}?`))
+      requestPath === MAINTENANCE_BACKEND_CONTEXT_PATH
     ) {
       // BACKEND CONTEXT PROBE (deterministic-context-carry P-005): report the LIVE per-slot
       // context window of the local backend serving `model`, from the backend's own /props —
@@ -7134,7 +7134,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // make healthy Codex agents fail before their first token.
     if (
       req.method === 'GET' &&
-      url.startsWith('/v1/models') &&
+      requestPath === '/v1/models' &&
       providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id === 'codex'
     ) {
       void executeLegacyLaneTask({
