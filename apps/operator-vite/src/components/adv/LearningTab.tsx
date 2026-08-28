@@ -2511,6 +2511,11 @@ function ImproveGrid({
   traceOpen: string | null;
   ctx: LoopRowContext;
 }) {
+  // P-003: the same persisted, resizable widths the Retained ledger has, under
+  // its own key — a reader who widens Title here is not re-widening it there.
+  const [colWidths, setColWidths] = usePersistedColumnWidths(
+    "pc-colw:learning:improve",
+  );
   // Rebuilt per render on purpose: the defs close over `ctx`, itself a
   // per-render object (see the rowCtx note above) — memoizing on it would
   // change nothing.
