@@ -438,6 +438,51 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('adds the work-items assignee-to-taken_by redirect alongside knownColumns', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "assignee" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.work_items',
+        columns: ['feature_id: text', 'taken_by: text', 'workspace_id: text', 'harness_slug: text'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT assignee FROM harness_shared.work_items WHERE workspace_id = 'ws' AND harness_slug = 'h'",
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      knownColumns: {
+        'harness_shared.work_items': expect.arrayContaining(['taken_by: text']),
+      },
+      schemaColumn: expect.stringContaining('taken_by'),
+    });
+    expect(String(payloadOf(res as never).schemaColumn)).toContain('BOTH');
+  });
+
+  it('adds the feature-view assignee-to-taken_by redirect', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "assignee" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.harness_features_consolidated',
+        columns: ['feature_id: text', 'taken_by: text', 'workspace_id: text', 'harness_slug: text'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT assignee FROM harness_shared.harness_features_consolidated WHERE workspace_id = 'ws' AND harness_slug = 'h'",
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never).schemaColumn).toEqual(expect.stringContaining('taken_by'));
+  });
+
   it('adds the substrate_outbox table_name redirect alongside knownColumns', async () => {
     pgReadQueryMock.mockRejectedValue(
       Object.assign(new Error('column "table_tag" does not exist'), { code: '42703' }),

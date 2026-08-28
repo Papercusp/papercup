@@ -29,6 +29,10 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('client-private binaries may not be inherited');
     expect(guidance).toContain('prefer ripgrep (`rg`)');
     expect(guidance).toContain('`grep`/`grep -E`');
+    // EI-21721580537629688: ripgrep's uppercase -E is --encoding, not the
+    // regexp flag. Keep the distinction in the agent-facing shared guidance.
+    expect(guidance).toContain('In `rg`, use lowercase `-e`/`--regexp`');
+    expect(guidance).toContain('uppercase `-E` means `--encoding`');
     expect(guidance).toContain('else `grep -F`');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');

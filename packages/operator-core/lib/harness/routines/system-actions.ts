@@ -67,6 +67,16 @@ export interface SystemActionOptions {
    */
   ownSteps?: boolean;
   /**
+   * Optional workflow deadline for the routine fire that runs this action.
+   *
+   * Most actions use the routine engine's short dead-executor release valve.
+   * A genuinely long, bounded action may opt into a larger deadline here so
+   * the outer DBOS workflow does not cancel healthy work before the action's
+   * own progress/termination guards can run. The scheduler validates the
+   * value and falls back to its default when it is absent or invalid.
+   */
+  routineTimeoutMs?: number;
+  /**
    * EI-18752496371939475 — how this action's routine ROW is expected to come into
    * existence. This is the third direction of the handler/registration cross-check:
    * a handler can be perfectly registered and still be dead code because no
@@ -100,6 +110,7 @@ export interface SystemActionEntry {
   fn: SystemAction;
   ownSteps: boolean;
   scheduling: SystemActionScheduling;
+  routineTimeoutMs?: number;
 }
 
 /** The reserved `target_role` prefix that routes a routine to a system action. */
@@ -109,14 +120,16 @@ const REGISTRY = new Map<string, SystemActionEntry>();
 
 /** Register a `system:<name>` action handler. Idempotent (last registration wins). */
 export function registerSystemAction(name: string, fn: SystemAction, opts: SystemActionOptions = {}): void {
-  REGISTRY.set(name, {
+  const entry: SystemActionEntry = {
     fn,
     ownSteps: opts.ownSteps === true,
     // Default 'standing' — see SystemActionOptions.scheduling. An action registered with no
     // opinion about scheduling is treated as one that SHOULD have a routine row, so a missing
     // row is reported rather than silently accepted.
     scheduling: opts.scheduling === 'on-demand' ? 'on-demand' : 'standing',
-  });
+  };
+  if (opts.routineTimeoutMs !== undefined) entry.routineTimeoutMs = opts.routineTimeoutMs;
+  REGISTRY.set(name, entry);
 }
 
 /** Look up a registered system action by name (the part after `system:`). */

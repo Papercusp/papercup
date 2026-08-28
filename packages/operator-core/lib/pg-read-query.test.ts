@@ -1627,6 +1627,38 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.work_items');
   });
 
+  it('redirects work-item assignee to taken_by and preserves both tenant predicates', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT assignee FROM harness_shared.work_items WHERE workspace_id = 'ws' AND harness_slug = 'h'",
+      'column "assignee" does not exist',
+    );
+    expect(out).toContain('taken_by');
+    expect(out).toContain('BOTH');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_slug');
+    expect(out).toContain('harness_shared.work_items');
+  });
+
+  it('redirects the feature-compatible view assignee to taken_by', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT assignee FROM harness_shared.harness_features_consolidated WHERE workspace_id = 'ws' AND harness_slug = 'h'",
+      'column "assignee" does not exist',
+    );
+    expect(out).toContain('taken_by');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_slug');
+    expect(out).toContain('harness_shared.harness_features_consolidated');
+  });
+
+  it('does not redirect the issue-view assignee alias', () => {
+    expect(
+      buildSchemaColumnRedirect(
+        "SELECT assignee FROM harness_shared.engineer_issues WHERE workspace_id = 'ws'",
+        'column "assignee" does not exist',
+      ),
+    ).toBeNull();
+  });
+
   it('redirects substrate_outbox table_tag to the physical table_name column', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT table_tag FROM harness_shared.substrate_outbox WHERE workspace_id = 'ws'",

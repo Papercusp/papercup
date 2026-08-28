@@ -89,11 +89,16 @@ describe('runDbosWorkflowGcOnce', () => {
     const deps: DbosGcDeps = {
       selectTerminalVictims: async () => {
         call += 1;
-        clock += 10;
         return ['a'];
       },
       deleteOutputs: async (ids) => ids.length,
-      deleteWorkflows: async (ids) => ids.length,
+      deleteWorkflows: async (ids) => {
+        // Model the elapsed time of each committed delete batch. The second
+        // batch crosses the 25ms liveness budget, so no third SELECT should
+        // be issued.
+        clock += 13;
+        return ids.length;
+      },
     };
     const r = await runDbosWorkflowGcOnce({
       enabled: true,

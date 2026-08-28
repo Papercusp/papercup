@@ -101,9 +101,17 @@ export const accountsPinTool = defineTool({
     try {
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
-        .catch(() => ({}))) as { accounts?: string[] };
-      if (!autoRoute && Array.isArray(cfg.accounts) && !cfg.accounts.includes(routedAccount)) {
-        return fail({ error: `account '${routedAccount}' is not in the gateway pool`, accounts: cfg.accounts });
+        .catch(() => ({}))) as { accounts?: string[]; codexAccounts?: string[] };
+      // The gateway serves separate Claude and Codex pools. Validate a named pin against
+      // the union; checking only `accounts` rejects valid Codex owners even though the live
+      // gateway advertises them under `codexAccounts` (EI-21719545129987944).
+      const configuredAccounts = [
+        ...(Array.isArray(cfg.accounts) ? cfg.accounts : []),
+        ...(Array.isArray(cfg.codexAccounts) ? cfg.codexAccounts : []),
+      ];
+      const hasConfiguredPool = Array.isArray(cfg.accounts) || Array.isArray(cfg.codexAccounts);
+      if (!autoRoute && hasConfiguredPool && !configuredAccounts.includes(routedAccount)) {
+        return fail({ error: `account '${routedAccount}' is not in the gateway pool`, accounts: configuredAccounts });
       }
       // DURABLE write FIRST (the DB store is the source of truth — survives a gateway restart), THEN push to
       // the running gateway for IMMEDIATE effect. If the live push fails, the pin is still durable and loads

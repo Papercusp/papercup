@@ -76,7 +76,13 @@ vi.mock('../harness/routines/register-system-actions', () => ({}));
 vi.mock('../harness/routines/configure-per-workspace', () => ({}));
 
 import { fireLoopWake } from '../harness/routines/loop-fire';
-import { ROUTINE_FIRE_QUEUES, routineFireWorkflow } from './routines-workflow';
+import { registerSystemAction } from '../harness/routines/system-actions';
+import {
+  ROUTINE_FIRE_QUEUES,
+  ROUTINE_FIRE_TIMEOUT_MS,
+  routineFireTimeoutMs,
+  routineFireWorkflow,
+} from './routines-workflow';
 import {
   LOOP_WAKE_TARGET_ROLE,
   CRITICAL_ROUTINE_ACTIONS,
@@ -121,9 +127,7 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     for (const target of routableTargets) {
       expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine(target));
     }
-    expect(ROUTINE_FIRE_QUEUES).toContain(
-      queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()),
-    );
+    expect(ROUTINE_FIRE_QUEUES).toContain(queueForRoutine('system:green-checkpoint', operatorHomeHarnessSlug()));
   });
 
   it('checkpoints and returns the complete LoopFireResult from the DBOS step', async () => {
@@ -167,5 +171,28 @@ describe('routineFireWorkflow — durable loop:wake output', () => {
     ]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('fire WITHHELD (await-blocking'));
     warn.mockRestore();
+  });
+});
+
+describe('routineFireTimeoutMs — per-action deadline seam', () => {
+  it('uses a registered long-action deadline while retaining the two-hour default elsewhere', () => {
+    const longTimeout = 24 * 60 * 60_000;
+    registerSystemAction('test-long-running-routine', async () => {}, { routineTimeoutMs: longTimeout });
+
+    expect(routineFireTimeoutMs('system:test-long-running-routine')).toBe(longTimeout);
+    expect(routineFireTimeoutMs('system:unknown-action')).toBe(ROUTINE_FIRE_TIMEOUT_MS);
+    expect(routineFireTimeoutMs('agent-role')).toBe(ROUTINE_FIRE_TIMEOUT_MS);
+  });
+
+  it('fails closed on an absent, non-positive, fractional, or unsafe configured value', () => {
+    registerSystemAction('test-invalid-routine-timeout', async () => {}, { routineTimeoutMs: 0 });
+    registerSystemAction('test-fractional-routine-timeout', async () => {}, { routineTimeoutMs: 1.5 });
+    registerSystemAction('test-unsafe-routine-timeout', async () => {}, {
+      routineTimeoutMs: Number.MAX_SAFE_INTEGER + 1,
+    });
+
+    expect(routineFireTimeoutMs('system:test-invalid-routine-timeout')).toBe(ROUTINE_FIRE_TIMEOUT_MS);
+    expect(routineFireTimeoutMs('system:test-fractional-routine-timeout')).toBe(ROUTINE_FIRE_TIMEOUT_MS);
+    expect(routineFireTimeoutMs('system:test-unsafe-routine-timeout')).toBe(ROUTINE_FIRE_TIMEOUT_MS);
   });
 });

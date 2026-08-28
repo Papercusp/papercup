@@ -149,11 +149,27 @@ export async function runDbosWorkflowGcOnce(
       break;
     }
     const ids = await deps.selectTerminalVictims(cutoffMs, batchLimit);
+    // A victim query itself can consume the remaining budget. Do not start a
+    // DELETE once that happens: leave the selected ids for the next routine
+    // tick rather than claiming a third batch after the liveness window.
+    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+      budgetExhausted = true;
+      break;
+    }
     if (ids.length === 0) break;
     batches += 1;
     // operation_outputs first (FK order), then the workflow rows.
     deletedOutputs += await deps.deleteOutputs(ids);
     deletedWorkflows += await deps.deleteWorkflows(ids);
+    // Check again after the committed batch. A query/delete can consume the
+    // entire liveness budget; checking only at the top of the loop would start
+    // one extra batch after the budget has already elapsed (and make the
+    // budget a soft throughput ceiling rather than an honest per-invocation
+    // liveness bound).
+    if (nowClockMs() - startedAtMs >= timeBudgetMs) {
+      budgetExhausted = true;
+      break;
+    }
     if (ids.length < batchLimit) break;
   }
   return { skipped: false, deletedWorkflows, deletedOutputs, cutoffMs, batches, budgetExhausted };

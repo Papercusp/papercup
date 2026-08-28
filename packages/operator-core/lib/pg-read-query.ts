@@ -762,6 +762,18 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'the canonical work-item lifecycle column is `status`; `state` belongs to the compatibility `engineer_issues` projection. Retry with `status` and include `workspace_id` in the predicate',
   },
   {
+    relation: 'work_items',
+    missing: 'assignee',
+    message:
+      'the unified work-items table stores claim ownership in `taken_by`, not `assignee`; retry with `taken_by` and include BOTH `workspace_id` and `harness_slug` in the predicate',
+  },
+  {
+    relation: 'harness_features_consolidated',
+    missing: 'assignee',
+    message:
+      'the feature-compatible work-items view exposes claim ownership as `taken_by`, not `assignee`; retry with `taken_by` and include BOTH `workspace_id` and `harness_slug` in the predicate',
+  },
+  {
     relation: 'substrate_outbox',
     missing: 'table_tag',
     message:

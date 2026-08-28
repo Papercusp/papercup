@@ -123,6 +123,25 @@ export const ROUTINE_FIRE_QUEUES = [
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
 
+/**
+ * Resolve the DBOS deadline for a routine fire from the registered action.
+ *
+ * The two-hour default is deliberately retained for every unannotated action:
+ * it is the dead-executor dedup release valve. Long-running system actions can
+ * declare a larger, still-bounded deadline in `SystemActionOptions` without
+ * widening the timeout for unrelated routines. Non-system targets and unknown
+ * actions fail closed to the default.
+ */
+export function routineFireTimeoutMs(targetRole: string): number {
+  if (!targetRole.startsWith(SYSTEM_TARGET_PREFIX)) return ROUTINE_FIRE_TIMEOUT_MS;
+  const action = targetRole.slice(SYSTEM_TARGET_PREFIX.length);
+  const configured = getSystemActionEntry(action)?.routineTimeoutMs;
+  if (typeof configured !== 'number' || !Number.isSafeInteger(configured) || configured <= 0) {
+    return ROUTINE_FIRE_TIMEOUT_MS;
+  }
+  return configured;
+}
+
 type BlenderSweepCoverageResult = {
   workspaceId: string;
   evaluatedWorkspaceCount: number;
@@ -541,7 +560,7 @@ async function routinesTickImpl(): Promise<void> {
         // 2026-06-12). The timeout is the release valve: DBOS cancels the
         // workflow at the deadline, freeing the dedup. Ceiling sized above the
         // longest legitimate in-process action (a real gym cycle, ≲90 min).
-        timeoutMS: ROUTINE_FIRE_TIMEOUT_MS,
+        timeoutMS: routineFireTimeoutMs(r.targetRole),
       })(
         r.id,
         r.workspaceId,
@@ -1239,9 +1258,8 @@ async function routinesTickImpl(): Promise<void> {
   await DBOS.runStep(
     async () => {
       try {
-        const { planeMeasurementSweep, formatMeasurementLog, formatCellTenureLog } = await import(
-          '../agent-plane-measurement-sweep'
-        );
+        const { planeMeasurementSweep, formatMeasurementLog, formatCellTenureLog } =
+          await import('../agent-plane-measurement-sweep');
         const out = await planeMeasurementSweep({ divergence: divergenceReport ?? null });
         if (out.outcome === 'error') console.warn(`[plane-measurement] ${out.reason}`);
         // Logged in full: the line leads with how much is MEASURABLE and names the
