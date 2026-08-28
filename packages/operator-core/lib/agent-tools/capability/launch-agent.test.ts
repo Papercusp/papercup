@@ -174,14 +174,20 @@ vi.mock('../../carry-brief', async (orig) => ({
   renderCarryBriefText: (...args: unknown[]) => renderCarryBriefTextMock(...args),
 }));
 
-vi.mock('../coordination/identity', () => ({
-  resolveAgentIdentity: () => ({
-    ownerId: 'su-caller',
+// Mutable so a test can model an UNATTRIBUTED caller (no owner id), which is what
+// gates the fresh/fork launch verifier — see the EI-21725123573114023 case below.
+const callerIdentity = vi.hoisted(() => ({
+  current: {
+    ownerId: 'su-caller' as string | null,
     ownerLabel: 'su',
     source: 'psu',
     workspaceId: 'ws-test',
     userId: null,
-  }),
+  },
+}));
+
+vi.mock('../coordination/identity', () => ({
+  resolveAgentIdentity: () => callerIdentity.current,
 }));
 
 // The shared core: the resolver + idempotency ledger hit PG, so they are stubbed;
@@ -255,6 +261,7 @@ beforeEach(() => {
     priorLaunchedAt: null,
     priorLaunchedBy: null,
   });
+  callerIdentity.current.ownerId = 'su-caller';
   releaseAgentLaunchClaimMock.mockResolvedValue(true);
   fetchPresenceFleetMock.mockResolvedValue(new Map());
   latestFleetMembershipMock.mockResolvedValue(null);
@@ -881,6 +888,51 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnedCommand()).toContain('--resume=sid-dead');
     expect(spawnedCommand()).not.toContain('--fork');
     expect(textOf(res)).toContain('re-attaches its ORIGINAL identity su-a1a71');
+  });
+
+  it('EI-21725123573114023: refuses an in-place resume whose target records no coord owner id, instead of reporting an unverifiable "Launched"', async () => {
+    // Both downstream rails are keyed on the owner id, so without it the verifier
+    // is skipped AND `live` is forced false — the tool used to spawn and report
+    // success having checked nothing.
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, ownerId: null });
+
+    const res = await launchAgent.handler({ resume: { sessionId: 'sid-dead' }, brief: 'continue the recovery' }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('records no coord owner id');
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+    expect(verifyResumeStartedMock).not.toHaveBeenCalled();
+  });
+
+  it('EI-21725123573114023: a FRESH launch whose verifier could not run for want of a caller id says so, instead of reporting a bare "Launched"', async () => {
+    callerIdentity.current.ownerId = null;
+
+    const res = await launchAgent.handler({ brief: 'fresh work' }, ctx);
+
+    expect(spawnConsoleMock).toHaveBeenCalled();
+    expect(verifyFreshLaunchStartedMock).not.toHaveBeenCalled();
+    expect(textOf(res)).toContain('launch verification DID NOT RUN');
+  });
+
+  it('EI-21725123573114023: an attributed fresh launch still runs the verifier and reports its verdict — the skip note is not blanket', async () => {
+    const res = await launchAgent.handler({ brief: 'fresh work' }, ctx);
+
+    expect(verifyFreshLaunchStartedMock).toHaveBeenCalled();
+    expect(textOf(res)).toContain('test launch verification stub');
+    expect(textOf(res)).not.toContain('launch verification DID NOT RUN');
+  });
+
+  it('EI-21725123573114023: the owner-id guard is scoped to in-place resumes — an EXPLICIT fork of the same target still launches', async () => {
+    resolveResumeTargetMock.mockResolvedValue({ ...dead, ownerId: null });
+
+    const res = await launchAgent.handler(
+      { resume: { sessionId: 'sid-dead' }, fork: true, brief: 'branch off the recovery' },
+      ctx,
+    );
+
+    expect(isError(res)).toBe(false);
+    expect(spawnConsoleMock).toHaveBeenCalled();
+    expect(spawnedCommand()).toContain('--fork');
   });
 
   it("preserves the resumed target's durable fleet instead of inheriting the caller's fleet", async () => {

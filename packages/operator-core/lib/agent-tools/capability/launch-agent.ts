@@ -564,6 +564,27 @@ export default defineTool({
       resumeSessionId = target.sessionId;
       resumeOwnerId = target.ownerId;
       resumeAgent = target.agent;
+      // EI-21725123573114023: an IN-PLACE resume whose resolved target carries no
+      // coord owner id is structurally unverifiable, and BOTH safety rails below
+      // are keyed on that id — so they disengage silently rather than failing:
+      //   1. the three-state resume verifier is gated on `resumeOwnerId`, so it is
+      //      skipped outright and `resumeVerified` stays undefined; the tool then
+      //      reports a plain "Launched" that attests nothing.
+      //   2. `resolveResumeTarget` can only call findLiveHost() with an owner id,
+      //      so `live` is ALWAYS false here — a still-live source is never
+      //      auto-forked and two CLIs collide on one transcript (WI-3882).
+      // Reporting success we cannot falsify is the exact failure this tool already
+      // refuses everywhere else, so fail closed before anything spawns — the same
+      // stance the successor path below takes on the same missing id. An EXPLICIT
+      // fork is unaffected: it mints a fresh identity and its own transcript, and
+      // is documented as unverifiable-by-design.
+      if (!isSuccessor && !fork && !target.ownerId) {
+        return err(
+          `Cannot resume ${target.sessionId}: adv session #${target.advSessionId} records no coord owner id, so the ` +
+            'resume cannot be verified and a still-LIVE source cannot be detected and auto-forked. No process was ' +
+            'opened. Pass `fork: true` to branch onto a fresh identity, or launch a fresh agent instead.',
+        );
+      }
       let sourceStillLive = target.live;
       const prepareSuccessor = async (sourceKind: 'ended' | 'critical-dormant'): Promise<string | null> => {
         if (!target.ownerId) {
@@ -1539,6 +1560,18 @@ export default defineTool({
             `fine; this says nothing either way. Confirm with coord:presence.`,
         );
       }
+    } else if ((!isResume || fork) && opened.length > 0 && !callerOwnerId) {
+      // EI-21725123573114023: the verifier above is gated on the CALLER's owner id
+      // (its correlation key), so an unattributed caller silently skipped it and
+      // fell through to a bare "Launched N agents" — success asserted with nothing
+      // observed. That is the same masquerade the catch branch above refuses to
+      // allow for a broken probe; absence of the instrument deserves the same
+      // honesty as a fault in it.
+      notes.push(
+        '⏳ launch verification DID NOT RUN — this call has no caller owner id to correlate new sessions ' +
+          'against, so nothing here attests that an agent actually started. The spawn succeeded; that is all ' +
+          'this result claims. Confirm with coord:presence before treating the brief as delivered.',
+      );
     }
 
     const lines: string[] = [];
