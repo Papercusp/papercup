@@ -2304,32 +2304,54 @@ function ImprovementsView({
           filters (owner ask 2026-07-19). */}
       {snap && rails.length > 0 ? (
         <div className="pc-learning__idea-filters" aria-label="Idea routing">
-          <button
-            type="button"
-            aria-pressed={!railFilter}
-            onClick={() => void setRailFilter(null)}
+          {/* WI-469537. This number describes the CURRENT read, not the one
+              clicking produces: clearing the rail drops `rails` from the server
+              predicate and re-reads, so the result is the unfiltered window and
+              not the rail-scoped set counted here. It is a live description of
+              the list, never a promise about the click — so the promise goes in
+              the title, where it can say what selecting this will actually do. */}
+          <Tooltip
+            label={
+              railFilter
+                ? `${railScopedRows.length} rows listed under the current rail; clearing it re-reads without the rail filter, so the list will grow.`
+                : "Rows listed across every rail."
+            }
           >
-            <Radar size={11} aria-hidden />
-            {/* Clearing the rail filter yields the whole rail-scoped set — so
-                that, not the snapshot's corpus-wide `totalRouted`, is what this
-                control promises. */}
-            All rails <strong>{railScopedRows.length}</strong>
-          </button>
+            <button
+              type="button"
+              aria-pressed={!railFilter}
+              onClick={() => void setRailFilter(null)}
+            >
+              <Radar size={11} aria-hidden />
+              All rails <strong>{railScopedRows.length}</strong>
+            </button>
+          </Tooltip>
           {rails.map((rail) => {
             const meta = RAIL_META[rail.rail];
-            // D-003: what clicking this chip actually leaves behind. Rails the
-            // loaded list cannot show read 0 rather than advertising a corpus
-            // number they will not deliver — the same "explicit options keep a
-            // live count, zero included" rule `deriveEnumOptions` applies.
+            // WI-469537 — the mirror of D-003, and the correction of a comment
+            // that used to stand here claiming `shown` is "what clicking this
+            // chip actually leaves behind". It is not. `shown` counts the rows
+            // ALREADY LOADED (railCounts falls back to railScopedRows whenever
+            // no server facet exists, which is exactly the default landing
+            // view, since summarySync is gated on serverPredicateActive).
+            // Clicking enters `rails:[rail]` into the server predicate, and
+            // projectLearningImproveRows filters the WHOLE corpus and only THEN
+            // windows (learning-improve-view-query.ts:278-283) — so the click
+            // yields min(corpus matches, limit), independent of what this
+            // window held. D-003's original bug OVER-promised (992 -> 17 of
+            // 503); pinning the number to the loaded rows fixed that and left
+            // the UNDER-promise. So `shown` stays as the live description of
+            // the list, and the title carries what selecting it will actually
+            // do.
             const shown = railCounts.get(rail.rail) ?? 0;
             return (
               <Tooltip
                 key={rail.rail}
-                label={
-                  shown === rail.count
-                    ? meta?.desc
-                    : `${meta?.desc ?? meta?.label ?? rail.rail} — ${shown} in the loaded list; ${rail.count} routed to this rail in all.`
-                }
+                label={railChipPromise(
+                  meta?.desc ?? meta?.label ?? rail.rail,
+                  shown,
+                  rail.count,
+                )}
               >
                 <button
                   type="button"
@@ -5065,6 +5087,32 @@ function BakeoffTrendView({
 }
 
 // ─── Scout view (idea radar — routed ideas + tick health) ────────────────────
+
+/**
+ * WI-469537 — the text a rail chip shows when its visible count and the corpus
+ * disagree.
+ *
+ * Extracted from the JSX purely so it is TESTABLE: the chip's tooltip is a Radix
+ * `asChild` trigger whose content is portaled and rendered only on hover, so the
+ * wording cannot be asserted from a render without driving pointer events. This
+ * is the sentence that carries the chip's PROMISE, and the whole work-item is
+ * about a promise that drifted from the code, so it needs to be pinned.
+ *
+ * `shown` describes the rows loaded right now; `routedTotal` is the corpus tally.
+ * Selecting the rail re-reads the corpus (`rails:[…]` enters the server predicate
+ * and `projectLearningImproveRows` filters the whole corpus BEFORE windowing), so
+ * the click yields up to `routedTotal` — not `shown`. The sentence must say that:
+ * framing `routedTotal` as mere background context is what made the chip
+ * under-promise.
+ */
+export function railChipPromise(
+  desc: string,
+  shown: number,
+  routedTotal: number,
+): string {
+  if (shown === routedTotal) return desc;
+  return `${desc} — ${shown} of the rows loaded here; selecting it re-reads the corpus and lists up to ${routedTotal}.`;
+}
 
 /** Rail → human label + accent for the routed-ideas rows. The canonical set is
     RoutedRail ('plan' | 'gym' | 'improvement' | 'instance') — open set, render

@@ -730,7 +730,11 @@ const setTestingFlag = (on: boolean) =>
     evaluatedAt: Date.now(),
     source: "override",
   });
-import LearningTab, { ARMING_WORKFLOWS_KIND, ARMING_WORKFLOWS_TAB } from "./LearningTab";
+import LearningTab, {
+  ARMING_WORKFLOWS_KIND,
+  ARMING_WORKFLOWS_TAB,
+  railChipPromise,
+} from "./LearningTab";
 
 beforeEach(() => {
   // Flags are a MODULE-level store, so an armed flag would leak into every later
@@ -2739,6 +2743,31 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     // Clicking the pressed facet clears it — a filter you cannot leave is a trap.
     fireEvent.click(facetNamed("plan draft"));
     expect(nuqsState.irail).toBeNull();
+  });
+
+  // WI-469537. The test above pins the chip's visible NUMBER (the loaded rows,
+  // per D-003). This one pins its PROMISE, which is a separate claim and was the
+  // one that had drifted: `shown` describes the current window, but selecting the
+  // rail puts `rails:[…]` into the server predicate and
+  // projectLearningImproveRows filters the WHOLE corpus before windowing
+  // (learning-improve-view-query.ts:278-283) — so the click yields up to the
+  // corpus tally, not `shown`. D-003's original bug OVER-promised; pinning the
+  // number to the loaded rows fixed that and left the mirror-image UNDER-promise.
+  //
+  // Asserted on the pure helper rather than through a render because the chip's
+  // tooltip is a Radix `asChild` trigger whose content is portaled and appears
+  // only on hover.
+  it("7. a rail chip promises what SELECTING it yields, not what the window happens to hold", () => {
+    const promise = railChipPromise("Routed to a plan", 1, 312);
+    // The corpus figure must be stated as the RESULT of the click...
+    expect(promise).toContain("selecting it re-reads the corpus and lists up to 312");
+    // ...and the loaded count must be scoped to the list as it stands.
+    expect(promise).toContain("1 of the rows loaded here");
+    // The superseded framing presented the corpus number as background context,
+    // which is precisely what let the chip under-promise. It must not return.
+    expect(promise).not.toContain("routed to this rail in all");
+    // No divergence ⇒ no promise to make, so the chip says only what it is.
+    expect(railChipPromise("Routed to a plan", 4, 4)).toBe("Routed to a plan");
   });
 });
 
