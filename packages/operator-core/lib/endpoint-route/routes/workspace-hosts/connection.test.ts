@@ -113,6 +113,29 @@ describe('POST /workspace-hosts/connection', () => {
     );
   });
 
+  it('admits the default Compute service-account identity used by GCP projects', async () => {
+    const { dependencies, inspectConnection } = harness();
+    const response = await post(dependencies, {
+      action: 'connect',
+      target: 'gcp',
+      label: 'BYOC Canary GCP',
+      credentialRef: 'gcloud://active-user',
+      projectId: 'active-alcove-504205-q3',
+      serviceAccountEmail: '243118361453-compute@developer.gserviceaccount.com',
+    });
+
+    expect(response.status).toBe(200);
+    expect(inspectConnection).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection: expect.objectContaining({
+          provider: expect.objectContaining({
+            serviceAccountEmail: '243118361453-compute@developer.gserviceaccount.com',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('refreshes an existing connection from its stored raw reference instead of the masked UI row', async () => {
     const { dependencies, readConnection, inspectConnection, upsertConnection } = harness();
     readConnection.mockResolvedValueOnce({

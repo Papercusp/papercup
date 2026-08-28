@@ -19,7 +19,7 @@ import {
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;
 const GCP_PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
-const GCP_SERVICE_ACCOUNT = /^[^@\s]+@[^@\s]+\.(?:iam|developer)\.gserviceaccount\.com$/i;
+const GCP_SERVICE_ACCOUNT = /^[^@\s]+@(?:developer|[^@\s]+\.(?:iam|developer))\.gserviceaccount\.com$/i;
 
 interface ConnectionBody {
   action?: unknown;
