@@ -67,6 +67,14 @@ describe('resource governor enforcement lint', () => {
     expect(inspectGovernorSource(source)).toContain(expected);
   });
 
+  it('does not treat pending diagnostic IDs as a resident queue', () => {
+    expect(
+      inspectGovernorSource(
+        `const pendingGradingAuditTargetIds = new Set<string>(); pendingGradingAuditTargetIds.add(issueId);`,
+      ),
+    ).not.toContain('unbounded-resident-queue');
+  });
+
   it('allows physical upstream constraints only when the writer carries explicit evidence', () => {
     // Annotated so `disposition` keeps its literal type: an un-annotated array literal
     // widens it to `string`, which stopped satisfying ResourceGovernorInventoryRow once
