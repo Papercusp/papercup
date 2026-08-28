@@ -1,0 +1,410 @@
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { describe, expect, it, vi } from 'vitest';
+
+import {
+  WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+  WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+  WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+  WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+  WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  buildWorkspaceHostBuildManifest,
+  buildWorkspaceHostCleanRoomInstallFixture,
+  deriveWorkspaceHostCanonicalArtifactUrls,
+  workspaceHostCleanRoomFixtureAttestation,
+  type WorkspaceHostCleanRoomAcceptanceReport,
+  type WorkspaceHostImageArtifact,
+} from '@papercusp/deployment-driver';
+
+import {
+  GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+  GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
+  type GcpImageFamilyReleaseContext,
+} from './gcp-image-family';
+import {
+  GoogleComputeGcpImageFamilyReleaseAdapter,
+  parseGcpImageFamilyPackerOutput,
+  parseGcpImageFamilyProvenance,
+  type GcpImageFamilyCleanRoomRunInput,
+  type GcpImageFamilyCommandResult,
+  type GcpImageFamilyComputeApi,
+  type GcpImageFamilyComputeImage,
+  type GcpImageFamilyReleaseAdapterOptions,
+  type GcpImageFamilyScanRunner,
+} from './gcp-image-family-adapter';
+
+const PROJECT = 'papercusp-images-123';
+const FAMILY = 'papercusp-workspace-host';
+const VERSION = '2026.8.28-1';
+const RELEASE_SHA = 'a'.repeat(64);
+const BASE_SHA = 'b'.repeat(64);
+const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp test key\nRWQtestkey';
+const SIGNING_KEY_SHA = createHash('sha256').update(SIGNING_PUBLIC_KEY).digest('hex');
+const PUBLISHED_AT = '2026-08-28T00:00:00.000Z';
+const CANDIDATE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}-candidate`;
+const CANDIDATE_ID = `projects/${PROJECT}/global/images/${CANDIDATE_NAME}`;
+const IMAGE_NAME = `papercusp-workspace-host-${VERSION.replaceAll('.', '-')}`;
+const IMAGE_ID = `projects/${PROJECT}/global/images/${IMAGE_NAME}`;
+
+function artifact(templateSha256: string): WorkspaceHostImageArtifact {
+  const manifest = buildWorkspaceHostBuildManifest({
+    contractVersion: WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
+    distributionProfile: 'vm-release',
+    source: { repository: 'https://github.com/Papercusp/papercusp.git', revision: '1'.repeat(40) },
+    releaseArtifact: {
+      name: `papercusp-server-${VERSION}.tgz`,
+      version: VERSION,
+      sha256: RELEASE_SHA,
+      sizeBytes: 42_000,
+    },
+    baseImage: { reference: `projects/${PROJECT}/global/images/ubuntu-base`, architecture: 'x86_64', sha256: BASE_SHA },
+    builder: {
+      strategy: 'shared',
+      kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
+      version: '1.14.2',
+      templatePath: 'infra/images/workspace-host.pkr.hcl',
+      templateSha256,
+    },
+    materials: [
+      { path: 'dist/papercusp-server.tgz', sha256: RELEASE_SHA, sizeBytes: 42_000 },
+      {
+        path: WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
+        sha256: 'c'.repeat(64),
+        sizeBytes: 2_048,
+        executable: true,
+      },
+    ],
+    parameters: [{ name: 'distribution_profile', value: 'vm-release' }],
+    targets: [{ provider: 'gcp', locations: [PROJECT] }],
+  });
+  const urls = deriveWorkspaceHostCanonicalArtifactUrls(RELEASE_SHA);
+  return {
+    contractVersion: WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+    image: { id: IMAGE_ID, version: VERSION },
+    buildManifest: manifest,
+    release: {
+      version: VERSION,
+      bundleUrl: urls.bundleUrl,
+      bundleSha256: RELEASE_SHA,
+      signatureUrl: urls.signatureUrl,
+      signingPublicKey: SIGNING_PUBLIC_KEY,
+      signingKeySha256: SIGNING_KEY_SHA,
+    },
+    lifecycle: { state: 'active', publishedAt: PUBLISHED_AT },
+    compatibility: [
+      {
+        provider: 'gcp',
+        architecture: 'x86_64',
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        bootstrapContractVersion: WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
+        actions: ['install', 'upgrade', 'rollback'],
+        maximumArtifactAgeDays: 30,
+      },
+    ],
+  };
+}
+
+function provenance(sourceCandidateImageId?: string): string {
+  return JSON.stringify({
+    contractVersion: GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
+    buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+    releaseVersion: VERSION,
+    releaseSha256: RELEASE_SHA,
+    architecture: 'x86_64',
+    guestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => ({ name, version: '1.0' })),
+    ...(sourceCandidateImageId ? { sourceCandidateImageId } : {}),
+  });
+}
+
+const TEMPLATE_SHA = '0'.repeat(64);
+const CONTEXT_ARTIFACT = artifact(TEMPLATE_SHA);
+const CONTEXT_FIXTURE = buildWorkspaceHostCleanRoomInstallFixture(CONTEXT_ARTIFACT, {
+  fixtureId: 'adapter-test-fixture',
+  action: 'install',
+  provider: 'gcp',
+  architecture: 'x86_64',
+  observedAt: PUBLISHED_AT,
+  hostId: 'adapter-test-host',
+  migrationId: 'migration-1',
+  minimumNodeMajor: 22,
+  service: { name: 'papercusp-workspace', port: 3070 },
+});
+const CONTEXT_ATTESTATION = workspaceHostCleanRoomFixtureAttestation(CONTEXT_FIXTURE, '2026-08-28T00:01:00.000Z');
+const CONTEXT: GcpImageFamilyReleaseContext = {
+  artifact: CONTEXT_ARTIFACT,
+  request: {
+    releaseGate: {
+      artifact: CONTEXT_ARTIFACT,
+      trustReport: {} as never,
+      compatibilityRequest: {
+        action: 'install',
+        provider: 'gcp',
+        architecture: 'x86_64',
+        ubuntuVersion: WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
+        observedAt: PUBLISHED_AT,
+      },
+      cleanRoomReport: {
+        contractVersion: WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+        fixtureId: CONTEXT_FIXTURE.fixtureId,
+        image: CONTEXT_ARTIFACT.image,
+        passed: true,
+        checks: [
+          'artifact-identity',
+          'compatibility-matrix',
+          'deterministic-bootstrap-fixture',
+          'exact-bootstrap-attestation',
+        ],
+        issues: [],
+        bootstrapScriptSha256: CONTEXT_FIXTURE.bootstrapScriptSha256,
+        attestation: CONTEXT_ATTESTATION,
+      } satisfies WorkspaceHostCleanRoomAcceptanceReport,
+    },
+    projectId: PROJECT,
+    family: FAMILY,
+    publishedAt: PUBLISHED_AT,
+    cleanRoom: {
+      zone: 'us-central1-a',
+      serviceAccountEmail: `workspace-host@${PROJECT}.iam.gserviceaccount.com`,
+      subnetwork: `projects/${PROJECT}/regions/us-central1/subnetworks/clean-room`,
+    },
+  },
+};
+
+class ComputeFake implements GcpImageFamilyComputeApi {
+  readonly images = new Map<string, GcpImageFamilyComputeImage>();
+  readonly inserts: Array<{
+    projectId: string;
+    input: Parameters<NonNullable<GcpImageFamilyComputeApi['insertImage']>>[1];
+  }> = [];
+  readonly deprecations: unknown[] = [];
+  familyImage?: GcpImageFamilyComputeImage;
+
+  async getImage(_projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.images.get(imageName);
+  }
+
+  async getFamilyImage(): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.familyImage;
+  }
+
+  async insertImage(projectId: string, input: Parameters<NonNullable<GcpImageFamilyComputeApi['insertImage']>>[1]) {
+    this.inserts.push({ projectId, input });
+    const image: GcpImageFamilyComputeImage = {
+      name: input.name,
+      family: input.family,
+      description: input.description,
+      labels: input.labels,
+      architecture: 'X86_64',
+      state: 'ACTIVE',
+    };
+    this.images.set(input.name, image);
+    this.familyImage = image;
+    return image;
+  }
+
+  async deprecateImage(input: unknown): Promise<void> {
+    this.deprecations.push(input);
+  }
+}
+
+function baseOptions(
+  compute: ComputeFake,
+  overrides: Partial<GcpImageFamilyReleaseAdapterOptions> = {},
+): GcpImageFamilyReleaseAdapterOptions {
+  return {
+    compute,
+    guestToolVersions: Object.fromEntries(GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, '1.0'])),
+    ...overrides,
+  };
+}
+
+describe('GCP image-family production adapter', () => {
+  it('parses machine-readable Packer output and rejects malformed provenance', () => {
+    expect(
+      parseGcpImageFamilyPackerOutput(`artifact,0,id,gce,${PROJECT}/${CANDIDATE_NAME}\n`, PROJECT, CANDIDATE_NAME),
+    ).toBe(CANDIDATE_ID);
+    expect(parseGcpImageFamilyProvenance(provenance())).toMatchObject({
+      contractVersion: GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
+      releaseVersion: VERSION,
+    });
+    expect(() => parseGcpImageFamilyProvenance('{}')).toThrow('contract');
+  });
+
+  it('pins the template, runs Packer without a shell, scans real evidence, and inspects the candidate', async () => {
+    const template = await readFile('infra/images/workspace-host.pkr.hcl');
+    const templateHash = createHash('sha256').update(template).digest('hex');
+    const candidateArtifact = artifact(templateHash);
+    const context = {
+      ...CONTEXT,
+      artifact: candidateArtifact,
+      request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
+    };
+    const compute = new ComputeFake();
+    compute.images.set(CANDIDATE_NAME, {
+      name: CANDIDATE_NAME,
+      description: provenance(),
+      architecture: 'X86_64',
+      state: 'ACTIVE',
+    });
+    const calls: Array<{ command: string; args: readonly string[]; options?: unknown }> = [];
+    const commandRunner = {
+      run: vi.fn(
+        async (command: string, args: readonly string[], options?: unknown): Promise<GcpImageFamilyCommandResult> => {
+          calls.push({ command, args, options });
+          return {
+            exitCode: 0,
+            stdout: args[0] === 'build' ? `artifact,0,id,gce,${PROJECT}/${CANDIDATE_NAME}` : '',
+            stderr: '',
+          };
+        },
+      ),
+    };
+    const scanRunner: GcpImageFamilyScanRunner = {
+      run: async (input) => ({
+        imageId: input.imageId,
+        buildManifestIdentity: input.buildManifestIdentity,
+        releaseSha256: input.releaseSha256,
+        trusted: true,
+        sbomSha256: 'd'.repeat(64),
+        vulnerabilityFindings: 0,
+        secretFindings: 0,
+        evidenceRef: 'gcp://scan/evidence-1',
+      }),
+    };
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(compute, {
+        repositoryRoot: process.cwd(),
+        commandRunner,
+        scanRunner,
+      }),
+    );
+    await adapter.bindReleaseContext(context);
+    const built = await adapter.buildCandidate({
+      projectId: PROJECT,
+      candidateImageName: CANDIDATE_NAME,
+      templatePath: 'infra/images/workspace-host.pkr.hcl',
+      buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+      releaseVersion: VERSION,
+      releaseSha256: RELEASE_SHA,
+      architecture: 'x86_64',
+      requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+    });
+    expect(built.imageId).toBe(CANDIDATE_ID);
+    expect(calls.map((call) => call.args[0])).toEqual(['init', 'build']);
+    expect(calls[1]?.args).not.toContain('--shell');
+    const scan = await adapter.scanImage({
+      projectId: PROJECT,
+      imageId: CANDIDATE_ID,
+      buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+      releaseSha256: RELEASE_SHA,
+    });
+    expect(scan.trusted).toBe(true);
+    expect(await adapter.inspectImage(PROJECT, CANDIDATE_ID)).toMatchObject({
+      imageId: CANDIDATE_ID,
+      state: 'ACTIVE',
+      architecture: 'x86_64',
+    });
+  });
+
+  it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
+    const compute = new ComputeFake();
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(compute, {
+        commandRunner: { run: async () => ({ exitCode: 127, stdout: '', stderr: 'scanner missing' }) },
+      }),
+    );
+    await adapter.bindReleaseContext(CONTEXT);
+    await expect(
+      adapter.scanImage({
+        projectId: PROJECT,
+        imageId: CANDIDATE_ID,
+        buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+        releaseSha256: RELEASE_SHA,
+      }),
+    ).rejects.toThrow('scanner failed');
+    const cleanRunner = {
+      run: async (input: GcpImageFamilyCleanRoomRunInput) => ({
+        evidenceRef: 'gcp://clean-room/evidence-1',
+        projectId: input.projectId,
+        zone: input.zone,
+        imageId: input.imageId,
+        buildManifestIdentity: input.buildManifestIdentity,
+        computeRunning: true,
+        osLoginReady: true,
+        publicIpv4Assigned: false,
+        attestation: workspaceHostCleanRoomFixtureAttestation(input.fixture, '2026-08-28T00:02:00.000Z'),
+        terminated: true,
+        residualResourceIds: [],
+        observedAt: '2026-08-28T00:02:00.000Z',
+        fixtureId: input.fixture.fixtureId,
+        bootstrapScriptSha256: input.fixture.bootstrapScriptSha256,
+      }),
+    };
+    const cleanAdapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(compute, { cleanRoomRunner: cleanRunner }),
+    );
+    await cleanAdapter.bindReleaseContext(CONTEXT);
+    const proof = await cleanAdapter.launchCleanRoomCanary({
+      projectId: PROJECT,
+      zone: 'us-central1-a',
+      serviceAccountEmail: CONTEXT.request.cleanRoom.serviceAccountEmail,
+      subnetwork: CONTEXT.request.cleanRoom.subnetwork,
+      imageId: CANDIDATE_ID,
+      buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+      releaseVersion: VERSION,
+      releaseSha256: RELEASE_SHA,
+    });
+    expect(proof.terminated).toBe(true);
+    const badRunner = {
+      run: async (input: GcpImageFamilyCleanRoomRunInput) => ({ ...(await cleanRunner.run(input)), imageId: IMAGE_ID }),
+    };
+    const badAdapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(compute, { cleanRoomRunner: badRunner }),
+    );
+    await badAdapter.bindReleaseContext(CONTEXT);
+    await expect(
+      badAdapter.launchCleanRoomCanary({
+        projectId: PROJECT,
+        zone: 'us-central1-a',
+        serviceAccountEmail: CONTEXT.request.cleanRoom.serviceAccountEmail,
+        subnetwork: CONTEXT.request.cleanRoom.subnetwork,
+        imageId: CANDIDATE_ID,
+        buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: RELEASE_SHA,
+      }),
+    ).rejects.toThrow('not bound');
+  });
+
+  it('publishes an exact family member, resolves it, and deprecates by immutable replacement', async () => {
+    const compute = new ComputeFake();
+    const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(baseOptions(compute));
+    await adapter.bindReleaseContext(CONTEXT);
+    const published = await adapter.publishFamilyVersion({
+      projectId: PROJECT,
+      family: FAMILY,
+      imageName: IMAGE_NAME,
+      sourceCandidateImageId: CANDIDATE_ID,
+      buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+      releaseVersion: VERSION,
+      releaseSha256: RELEASE_SHA,
+    });
+    expect(published).toEqual({
+      projectId: PROJECT,
+      family: FAMILY,
+      imageId: IMAGE_ID,
+      version: VERSION,
+      sourceCandidateImageId: CANDIDATE_ID,
+    });
+    expect((await adapter.resolveFamily(PROJECT, FAMILY)).imageId).toBe(IMAGE_ID);
+    await adapter.deprecateImage({
+      projectId: PROJECT,
+      imageId: IMAGE_ID,
+      replacementImageId: CANDIDATE_ID,
+      state: 'DEPRECATED',
+    });
+    expect(compute.deprecations).toHaveLength(1);
+    expect(compute.inserts[0]?.input.sourceImage).toBe(CANDIDATE_ID);
+  });
+});
