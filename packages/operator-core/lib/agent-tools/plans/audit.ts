@@ -430,10 +430,35 @@ export default defineTool({
     }
     const known = new Set(planItems.map((i) => i.itemId));
 
-    const citationContext = await repoCitationContextForHarness(
+    const submittedCitations = (args.items ?? []).flatMap((item) => item.citations ?? []) as AuditCitation[];
+    // Root selection is deliberately still a WHOLE-PLAN decision: mixing evidence from
+    // two equally-valid Hive checkouts would make the audit impossible to revalidate at
+    // ship time. But a single bad citation must not discard every other item in the same
+    // call. When the all-citations selection reports paths absent everywhere, retry root
+    // selection after removing only those known-global misses; the per-item resolver below
+    // then records the good entries and returns the bad ones as a partial result.
+    let citationContext = await repoCitationContextForHarness(
       harnessSlug,
-      (args.items ?? []).flatMap((item) => item.citations ?? []) as AuditCitation[],
+      submittedCitations,
     );
+    const initialCitationFailure = isCitationContextFailure(citationContext) ? citationContext : null;
+    if (initialCitationFailure) {
+      const globallyUnresolvable = initialCitationFailure.citations;
+      const mayResolve = submittedCitations.filter(
+        (citation) =>
+          !globallyUnresolvable.some(
+            (failure) =>
+              failure.path === citation.path &&
+              failure.line === citation.line &&
+              failure.symbol === citation.symbol,
+          ),
+      );
+      const partialContext = await repoCitationContextForHarness(harnessSlug, mayResolve);
+      // A null/failed retry means this was not a simple item-local citation miss (for
+      // example, the available roots are ambiguous). Keep the original fail-closed
+      // response rather than guessing a tree.
+      if (partialContext && !isCitationContextFailure(partialContext)) citationContext = partialContext;
+    }
     if (isCitationContextFailure(citationContext)) {
       const rendered = citationContext.citations
         .map((citation) =>
@@ -471,6 +496,7 @@ export default defineTool({
     let citationsChecked = 0;
 
     for (const it of args.items ?? []) {
+      const itemProblemStart = problems.length;
       if (seenItems.has(it.itemId)) {
         problems.push({
           itemId: it.itemId,
@@ -562,12 +588,16 @@ export default defineTool({
         }
       }
 
-      entries.push({
-        itemId: it.itemId,
-        verdict: it.verdict,
-        citations: storedCitations,
-        ...(it.note ? { note: it.note } : {}),
-      });
+      // An item with any problem is not an auditable entry. Keep it out of the
+      // persisted pass so a partial result can never look like that item passed.
+      if (problems.length === itemProblemStart) {
+        entries.push({
+          itemId: it.itemId,
+          verdict: it.verdict,
+          citations: storedCitations,
+          ...(it.note ? { note: it.note } : {}),
+        });
+      }
     }
 
     for (const f of args.findings ?? []) {
@@ -579,7 +609,38 @@ export default defineTool({
       }
     }
 
-    if (problems.length > 0) {
+    // A mixed batch is useful when its valid items can be committed independently:
+    // persist those entries, surface the item-scoped problems, and let the caller retry
+    // only the rejected items. Batch-wide problems (for example an invalid finding)
+    // remain atomic because they are not attributable to one persisted item.
+    const canRecordPartial =
+      entries.length > 0 &&
+      problems.length > 0 &&
+      problems.every((problem) => problem.itemId !== undefined);
+    if (problems.length > 0 && !canRecordPartial) {
+      // Preserve the original, more actionable error for an all-invalid batch. A
+      // retry against an empty citation subset is useful for mixed batches, but if
+      // it produced no valid entry there is still no audit to record.
+      if (
+        initialCitationFailure &&
+        entries.length === 0 &&
+        problems.every((problem) => problem.code.startsWith('citation_'))
+      ) {
+        const rendered = initialCitationFailure.citations
+          .map((citation) =>
+            `${citation.path ?? '(missing path)'}${citation.symbol ? `#${citation.symbol}` : ''} (${citation.reason})`,
+          )
+          .join('; ');
+        return { data: {
+          ok: false as const,
+          slug: args.slug,
+          error: 'citation_unresolvable',
+          citations: initialCitationFailure.citations,
+          message:
+            `One or more code/test citations could not be resolved in any available checkout: ${rendered}. ` +
+            `Fix the cited path, line, or symbol; the harness source root is not the cause.`,
+        } };
+      }
       return { data: {
         ok: false as const,
         slug: args.slug,
@@ -637,6 +698,17 @@ export default defineTool({
       after: `${coverage.auditedItems} item(s), ${citationsChecked} citation(s) resolved`,
     });
 
+    const rejectedItemIds = [...new Set(problems.flatMap((problem) => (problem.itemId ? [problem.itemId] : [])))];
+    const partialNote = problems.length > 0
+      ? `Recorded ${entries.length} valid item(s); ${rejectedItemIds.length} item(s) were not recorded. ` +
+        `Retry only the rejected item ids after fixing their listed problems.`
+      : null;
+    const uncoveredNote = uncoveredItems.length > 0
+      ? `${uncoveredItems.length} non-dropped item(s) have no audit entry. Audit ONLY those listed ` +
+        `items (or drop them with a reason); every other unlisted item already carried forward with ` +
+        `its original provenance.`
+      : null;
+    const resultNote = [partialNote, uncoveredNote].filter((note): note is string => Boolean(note)).join(' ');
     return { data: {
       ok: true as const,
       slug: args.slug,
@@ -654,14 +726,14 @@ export default defineTool({
       carriedItemIds,
       coverage,
       uncoveredItems,
-      ...(uncoveredItems.length > 0
+      ...(problems.length > 0
         ? {
-            note:
-              `${uncoveredItems.length} non-dropped item(s) have no audit entry. Audit ONLY those listed ` +
-              `items (or drop them with a reason); every other unlisted item already carried forward with ` +
-              `its original provenance.`,
+            partial: true as const,
+            problems,
+            rejectedItemIds,
           }
         : {}),
+      ...(resultNote ? { note: resultNote } : {}),
     } };
   },
 });

@@ -228,6 +228,52 @@ describe('plans:audit D-008 writer contract', () => {
     expect(result.message).toContain('the harness source root is not the cause');
     expect(mockRecord).not.toHaveBeenCalled();
   });
+
+  it('records valid items from a mixed batch and returns only the rejected item problems', async () => {
+    mockItems.mockResolvedValue([
+      { itemId: 'P-001', status: 'done', itemText: 'ship the audit gate' },
+      { itemId: 'P-002', status: 'done', itemText: 'ship the second gate' },
+    ]);
+    const resolvingContext = {
+      repoRoot: '/repo',
+      rootSource: 'canonical-repo' as const,
+      deps: {
+        statFile: (path: string) => (path === 'src/gate.ts' ? { isFile: true } : null),
+        readFile: (path: string) => (path === 'src/gate.ts' ? 'export const gate = true;\n' : null),
+        blobSha: (path: string) => (path === 'src/gate.ts' ? '0123456789012345678901234567890123456789' : null),
+      },
+    };
+    mockContext.mockImplementation(async (_harness, citations) => {
+      if (citations.some((citation) => citation.path === 'src/missing.ts')) {
+        return {
+          kind: 'citation_unresolvable',
+          citations: [{ path: 'src/missing.ts', reason: 'file_not_found' }],
+        };
+      }
+      return resolvingContext;
+    });
+
+    const result = await body([
+      { itemId: 'P-001', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/gate.ts', symbol: 'gate' }] },
+      { itemId: 'P-002', verdict: 'implemented', citations: [{ kind: 'code', path: 'src/missing.ts' }] },
+    ]);
+
+    expect(result).toMatchObject({
+      ok: true,
+      partial: true,
+      itemsAuditedThisPass: 1,
+      rejectedItemIds: ['P-002'],
+    });
+    expect(result.problems).toEqual([
+      expect.objectContaining({ itemId: 'P-002', code: 'citation_file_not_found' }),
+    ]);
+    expect(mockRecord).toHaveBeenCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ itemId: 'P-001' })],
+    }));
+    expect(mockRecord.mock.calls[0]![0].items).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ itemId: 'P-002' })]),
+    );
+  });
 });
 
 describe('plans:audit phase:activation', () => {
