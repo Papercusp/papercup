@@ -31,6 +31,7 @@ import type { GymScore } from '../judge';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATION_650 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/650-harness-gym-durable-run-analytics.sql');
+const MIGRATION_1012 = join(__dirname, '../../../../../libs/papercusp/libs/db/sql/1012-gym-durable-active-task-generation.sql.DRAFT');
 
 let src: postgres.Sql;
 let dst: postgres.Sql;
@@ -109,6 +110,7 @@ beforeAll(async () => {
         END IF;
       END $$;
     `);
+    await mig.unsafe(readFileSync(MIGRATION_1012, 'utf8')).simple();
   } finally { await mig.end({ timeout: 5 }); }
 });
 
@@ -176,5 +178,24 @@ describe('durable run-analytics copy (migration 650)', () => {
     // The frontier for h1 is unaffected by h2's identical rows.
     const frontier = await durableFrontierView(dst, { workspaceId: 'ws1', harnessSlug: 'h1' }, RH);
     expect(frontier).toContain('cand-c0');
+  });
+
+  it('keeps old task history but activates only the newest copied corpus', async () => {
+    await dst`
+      INSERT INTO harness_gym_durable.gym_tasks
+        (workspace_id, harness_slug, task_id, pool, corpus, active)
+      VALUES ('ws1', 'h3', 'legacy-synthetic', 'train', 'synthetic', true)`;
+
+    await copyRunAnalyticsToDurable(src, dst, { workspaceId: 'ws1', harnessSlug: 'h3' });
+
+    const rows = await dst<{ task_id: string; corpus: string; active: boolean }[]>`
+      SELECT task_id, corpus, active
+        FROM harness_gym_durable.gym_tasks
+       WHERE workspace_id = 'ws1' AND harness_slug = 'h3'
+       ORDER BY task_id`;
+    expect(rows).toEqual([
+      { task_id: 'gym-train', corpus: 'synthetic', active: true },
+      { task_id: 'legacy-synthetic', corpus: 'synthetic', active: false },
+    ]);
   });
 });

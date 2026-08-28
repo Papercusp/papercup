@@ -908,11 +908,13 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
         ? sql`SELECT corpus, count(*)::int AS n
                 FROM harness_gym_durable.gym_tasks
                WHERE harness_slug = ${harnessSlug}
+                 AND active = true
                  ${opts.workspaceId ? sql`AND workspace_id = ${opts.workspaceId}` : sql``}
                GROUP BY corpus`
         : sql`SELECT corpus, count(*)::int AS n
                 FROM harness_gym_durable.gym_tasks
-               ${opts.workspaceId ? sql`WHERE workspace_id = ${opts.workspaceId}` : sql``}
+               WHERE active = true
+                 ${opts.workspaceId ? sql`AND workspace_id = ${opts.workspaceId}` : sql``}
                GROUP BY corpus`)) as Array<{ corpus: string; n: number }>;
       if (rows.length === 0) return undefined;
       let realCount = 0;
@@ -934,6 +936,7 @@ export async function buildProgramSuccessReport(opts: BuildProgramSuccessOptions
             JOIN harness_gym_durable.gym_tasks t
               ON t.workspace_id = r.workspace_id AND t.harness_slug = r.harness_slug AND t.task_id = r.task_id
            WHERE t.corpus = 'real'
+             AND t.active = true
              ${harnessSlug ? sql`AND s.harness_slug = ${harnessSlug}` : sql``}
              ${opts.workspaceId ? sql`AND s.workspace_id = ${opts.workspaceId}` : sql``}
         `) as Array<{ n: number }>;

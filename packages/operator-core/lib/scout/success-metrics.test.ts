@@ -743,6 +743,10 @@ describe('evaluateProgramSuccess — verdict roll-up', () => {
     expect(bar(mixed, 'fitness-signal-is-real').status).toBe('fail');
     expect(mixed.verdict).toBe('fail');
 
+    // The loader supplies only the active durable generation. Historical task
+    // rows remain queryable for old run/score joins but are excluded before this
+    // pure evaluator receives its counts.
+
     // An UNREAD corpus is unknown, never a silent pass.
     const unread = evaluateProgramSuccess(green());
     expect(bar(unread, 'fitness-signal-is-real').status).toBe('unknown');

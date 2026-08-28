@@ -204,14 +204,27 @@ export async function copyRunAnalyticsToDurable(
   ]);
 
   await dst.begin(async (tx) => {
+    // A durable task row is history; `active` identifies the corpus from the
+    // newest copy for this workspace+harness.  Deactivate first inside the same
+    // transaction so readers see either the old complete generation or the new
+    // complete generation, never a mixed corpus.  Historical task rows remain
+    // available for old run/score joins.
+    await tx`
+      UPDATE harness_gym_durable.gym_tasks
+         SET active = false
+       WHERE workspace_id = ${ws} AND harness_slug = ${hs} AND active = true`;
+
     for (const r of tasks) {
       await tx`
-        INSERT INTO harness_gym_durable.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, corpus, created_at)
+        INSERT INTO harness_gym_durable.gym_tasks (workspace_id, harness_slug, task_id, pool, spec, intent, repo_url, repo_commit, generated_by, corpus, active, created_at)
         VALUES (${ws}, ${hs}, ${r.task_id as string}, ${r.pool as string}, ${(r.spec ?? null) as string | null}, ${(r.intent ?? null) as string | null},
                 ${(r.repo_url ?? null) as string | null}, ${(r.repo_commit ?? null) as string | null}, ${(r.generated_by ?? null) as string | null},
-                ${asGymTaskCorpus(r.corpus)}, ${(r.created_at ?? new Date()) as Date})
+                ${asGymTaskCorpus(r.corpus)}, true, ${(r.created_at ?? new Date()) as Date})
         ON CONFLICT (workspace_id, harness_slug, task_id) DO UPDATE
-          SET pool = EXCLUDED.pool, spec = EXCLUDED.spec, intent = EXCLUDED.intent, corpus = EXCLUDED.corpus`;
+          SET pool = EXCLUDED.pool, spec = EXCLUDED.spec, intent = EXCLUDED.intent,
+              repo_url = EXCLUDED.repo_url, repo_commit = EXCLUDED.repo_commit,
+              generated_by = EXCLUDED.generated_by, corpus = EXCLUDED.corpus,
+              active = true`;
     }
     for (const r of variants) {
       await tx`
