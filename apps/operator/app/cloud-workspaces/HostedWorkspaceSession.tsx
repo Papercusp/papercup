@@ -486,11 +486,15 @@ export function HostedWorkspaceSession({
       setNotice("Enter a file path before downloading.");
       return;
     }
-    send({
-      type: "file.download",
-      requestId: requestId("download"),
-      path,
-    });
+    if (
+      !send({
+        type: "file.download",
+        requestId: requestId("download"),
+        path,
+      })
+    ) {
+      setNotice("Workspace relay unavailable; reconnect before downloading.");
+    }
   }, [path, send]);
 
   const upload = useCallback(
@@ -499,13 +503,18 @@ export function HostedWorkspaceSession({
       const target = joinPath(path === "." ? "" : path, file.name);
       try {
         const data = bytesToBase64(new Uint8Array(await file.arrayBuffer()));
-        send({
-          type: "file.upload",
-          requestId: requestId("upload"),
-          path: target,
-          encoding: "base64",
-          data,
-        });
+        if (
+          !send({
+            type: "file.upload",
+            requestId: requestId("upload"),
+            path: target,
+            encoding: "base64",
+            data,
+          })
+        ) {
+          setNotice("Workspace relay unavailable; reconnect before uploading.");
+          return;
+        }
         setNotice(`Uploading ${target}…`);
       } catch (cause) {
         setNotice(

@@ -114,6 +114,61 @@ afterEach(() => {
 });
 
 describe("HostedWorkspaceSession", () => {
+  it("surfaces relay send failures instead of claiming downloads or uploads started", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+      }),
+    });
+    await waitFor(() => {
+      const status = screen.getByText("live", { exact: true }).parentElement;
+      expect(status?.textContent).toContain("controller");
+    });
+
+    fireEvent.change(screen.getByLabelText("Workspace file path"), {
+      target: { value: "offline.txt" },
+    });
+    socket.send.mockClear();
+    socket.readyState = M.FakeSocket.CLOSED;
+
+    fireEvent.click(screen.getByRole("button", { name: /Download/ }));
+    expect(
+      screen.getByText(
+        "Workspace relay unavailable; reconnect before downloading.",
+      ),
+    ).toBeTruthy();
+    expect(socket.send).not.toHaveBeenCalled();
+
+    const upload = new File([], "offline-upload.txt", { type: "text/plain" });
+    fireEvent.change(screen.getByLabelText("Upload workspace file"), {
+      target: { files: [upload] },
+    });
+    await waitFor(() =>
+      expect(
+        screen.getByText(
+          "Workspace relay unavailable; reconnect before uploading.",
+        ),
+      ).toBeTruthy(),
+    );
+    expect(socket.send).not.toHaveBeenCalled();
+    expect(
+      screen.queryByText("Uploading offline.txt/offline-upload.txt…"),
+    ).toBeNull();
+  });
+
   it("round-trips zero-byte read, download, and upload payloads", async () => {
     const originalCreateObjectURL = URL.createObjectURL;
     const originalRevokeObjectURL = URL.revokeObjectURL;
