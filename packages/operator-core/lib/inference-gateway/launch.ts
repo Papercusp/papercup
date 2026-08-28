@@ -34,6 +34,11 @@ import {
   createDurableGatewayAdmissionGovernor,
   type DurableGatewayAdmissionOptions,
 } from './durable-admission';
+import {
+  createGatewayPayloadSpool,
+  type GatewayPayloadSpoolOptions,
+  type PgGatewayPayloadStoreOptions,
+} from './payload-spool';
 import type { AccountPool, ActiveAccount } from './provider-contracts';
 import { createLocalBackendPool, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
 import type { LocalBackendRecord } from './local-backend-store';

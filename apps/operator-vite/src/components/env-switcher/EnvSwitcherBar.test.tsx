@@ -192,6 +192,19 @@ describe('EnvSwitcherBar', () => {
     }
   });
 
+  it('uses the on-accent ink token for the active environment button', async () => {
+    mockFetch([
+      op({ id: 'staging', port: 3170, reachable: true, isSelf: true }),
+      op({ id: 'dev', port: 3270, reachable: true }),
+    ]);
+    render(<EnvSwitcherBar />);
+    await screen.findByTestId('env-switcher-bar');
+
+    // --accent is a light sky-blue in the shipped frost theme; white text is
+    // below WCAG AA. The explicit token keeps this readable across themes.
+    expect(screen.getByTestId('env-btn-staging').style.color).toBe('var(--accent-ink, #051827)');
+  });
+
   it('switching to a reachable env navigates the webview to its origin, carrying the route', async () => {
     mockFetch([
       op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),

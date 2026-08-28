@@ -781,10 +781,13 @@ export default function LearningTab() {
     );
   }, []);
   useEffect(() => {
-    const list = viewListRef.current;
-    // activeStage in the deps: the strip's tab set (and whether the strip is
-    // rendered at all) changes per stage, which changes scrollWidth without a
-    // resize the ResizeObserver would see.
+    // `viewList` (state, not the ref) is what makes this effect fire on the
+    // mount itself. activeStage and viewTabCount cover the two ways the tab SET
+    // changes while the same node stays mounted — a stage switch React reuses
+    // the node for, and a flag flip that adds/removes a view within one stage.
+    // Both change scrollWidth without resizing the element, which is precisely
+    // what a ResizeObserver cannot see.
+    const list = viewList;
     updateViewOverflow();
     if (!list) return;
     list.addEventListener("scroll", updateViewOverflow, { passive: true });

@@ -1737,7 +1737,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     return result.payloadRef ?? undefined;
   }
-  const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
+  // D-003: "capacity pressure never returns QueueFullError/load-shed when persistence works."
+  //
+  // With the payload spool active, capacity pressure has to become a durable receipt rather than a
+  // 429, so the in-memory BACKLOG CAP is switched off — 0 is PriorityAdmissionQueue's uncapped
+  // sentinel (its shed test is `maxQueued > 0 && …`). maxConcurrent is untouched: concurrency
+  // limiting is still this queue's job, and only the *rejection* is being retired.
+  //
+  // This does not reinstate the unbounded-backlog wedge the cap was added for. That cap existed
+  // because every waiter pinned a request — and its body — in resident memory; the spool is
+  // precisely what removes that, since a waiting request now holds a 64-char ref while its bytes
+  // sit in Postgres. An explicit deps.maxQueued still wins, so a caller can restore the cap.
+  const maxQueued = deps.maxQueued ?? (payloadSpool ? 0 : DEFAULT_MAX_QUEUED);
   const maintenanceModel = deps.maintenanceModel ?? DEFAULT_MAINTENANCE_MODEL;
   const maintenanceMaxTokens = deps.maintenanceMaxTokens ?? DEFAULT_MAINTENANCE_MAX_TOKENS;
   const maintenanceTimeoutMs = deps.maintenanceTimeoutMs ?? DEFAULT_MAINTENANCE_TIMEOUT_MS;
@@ -6493,9 +6504,15 @@ export function createInferenceGateway(deps: GatewayDeps) {
       payloadRef: spooledPayloadRef,
       parent: gatewayAdmissionParent,
     });
-    // The payload is pinned for exactly as long as the receipt could still need it. `release` is
-    // NOT a delete (the spool sweeps lazily), so a retry landing between settle and sweep still
-    // resolves — which is what keeps the dedupe path from racing its own GC.
+    // Pin the payload across the admission + execution window. `release` is NOT a delete (the spool
+    // sweeps lazily on a TTL), so a retry landing between settle and sweep still resolves — that is
+    // what stops the dedupe path racing its own GC.
+    //
+    // SCOPE LIMIT, deliberate: execution is still synchronous inside this request, so the pin's
+    // lifetime is this request's. When a receipt is allowed to outlive its connection (the async
+    // detach in the later plan items), this retain/release must MOVE onto the receipt lifecycle —
+    // releasing here would then unpin a payload whose execution has not started. The TTL backstop
+    // in migration 1022 bounds the damage in the interim; it is not a substitute for that move.
     if (spooledPayloadRef && spooledPayloadRef !== clientPayloadRef) {
       await payloadSpool?.retain(spooledPayloadRef).catch(() => undefined);
     }

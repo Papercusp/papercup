@@ -365,7 +365,10 @@ export function EnvSwitcherBar() {
           }`,
           background: active ? 'var(--accent, #6366f1)' : 'transparent',
           color: active
-            ? '#fff'
+            // The frost accent is a light sky-blue (#38bdf8). Use the theme's
+            // on-accent ink token rather than white, which measured only
+            // 2.14:1 in the live settings-page axe sweep (P-005).
+            ? 'var(--accent-ink, #051827)'
             : op.reachable
               ? release
                 ? 'var(--good, #22c55e)'
