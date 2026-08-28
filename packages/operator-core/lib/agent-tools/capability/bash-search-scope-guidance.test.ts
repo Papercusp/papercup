@@ -10,8 +10,10 @@
 import { describe, expect, it } from 'vitest';
 import bashTool from './bash';
 import { RIPGREP_SCOPE_GUIDANCE } from '../../code-intelligence/contracts.ts';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 type GuidanceTool = {
+  description?: string;
   guidance?: {
     when?: string;
   };
@@ -28,7 +30,6 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('prefer ripgrep (`rg`)');
     expect(guidance).toContain('`grep`/`grep -E`');
     expect(guidance).toContain('else `grep -F`');
-    expect(guidance).toContain('compile first with `jq -n` against no input before reading exports');
     expect(guidance).toContain('apps/operator/lib');
     expect(guidance).toContain('packages/operator-core/lib');
     expect(guidance).toContain('.papercusp');
@@ -36,5 +37,9 @@ describe('capability:bash — repository search scope guidance', () => {
     expect(guidance).toContain('Do not run an unbounded search from the repository root');
     expect(guidance).toContain('--max-columns 256 --max-columns-preview');
     expect(guidance).toContain('head` limits rows, not bytes');
+
+    // EI-21603394979563992: the optional jq tip is intentionally kept out of the
+    // prompt (see bash.ts) so this guidance stays within the shared soft budget.
+    expect(promptWeight(bashTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 });
