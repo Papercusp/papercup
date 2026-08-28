@@ -159,12 +159,20 @@ export function gitSyncSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boo
   return gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env);
 }
 
+export interface GitRunExecutionOptions {
+  /** Called whenever the local git child emits output or the command settles. */
+  onProgress?: () => void;
+  /** Abort a git child when its owning git-sync fire is declared stalled. */
+  signal?: AbortSignal;
+}
+
 const runGitLocalBounded = (
   args: string[],
   cwd: string,
   idleTimeoutMs: number,
   hardTimeoutMs: number,
   progressAware: boolean,
+  options: GitRunExecutionOptions = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
     // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
@@ -194,6 +202,14 @@ const runGitLocalBounded = (
     let terminating = false;
     let idleTimer: ReturnType<typeof setTimeout> | null = null;
     let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let removeAbortListener = (): void => {};
+    const reportProgress = (): void => {
+      try {
+        options.onProgress?.();
+      } catch {
+        // Progress accounting is diagnostic-only and must never break git.
+      }
+    };
     const clearTimers = (): void => {
       if (idleTimer) clearTimeout(idleTimer);
       if (hardTimer) clearTimeout(hardTimer);
@@ -202,6 +218,8 @@ const runGitLocalBounded = (
       if (settled) return;
       settled = true;
       clearTimers();
+      removeAbortListener();
+      reportProgress();
       resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
     const terminate = (reason: string): void => {
@@ -227,8 +245,12 @@ const runGitLocalBounded = (
     if (progressAware) {
       // `collectChildOutput` owns decoding; these listeners only observe byte
       // arrival and therefore cannot split/corrupt a multi-byte character.
-      child.stdout?.on('data', armIdleTimer);
-      child.stderr?.on('data', armIdleTimer);
+      const onOutput = (): void => {
+        reportProgress();
+        armIdleTimer();
+      };
+      child.stdout?.on('data', onOutput);
+      child.stderr?.on('data', onOutput);
       armIdleTimer();
       hardTimer = setTimeout(
         () => terminate(`exceeded the ${hardTimeoutMs}ms hard ceiling despite output progress`),
@@ -238,6 +260,12 @@ const runGitLocalBounded = (
     } else {
       hardTimer = setTimeout(() => terminate(`timed out after ${hardTimeoutMs}ms`), hardTimeoutMs);
       hardTimer.unref?.();
+    }
+    if (options.signal) {
+      const onAbort = (): void => terminate('aborted by the git-sync stall guard');
+      removeAbortListener = () => options.signal?.removeEventListener('abort', onAbort);
+      if (options.signal.aborted) onAbort();
+      else options.signal.addEventListener('abort', onAbort, { once: true });
     }
     child.on('error', (e) => {
       out.stderr.append(String(e));
@@ -250,6 +278,7 @@ export const runGitBounded = async (
   args: string[],
   cwd: string,
   timeoutMs: number,
+  options: GitRunExecutionOptions = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> => {
   // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
   // output (push-rejection markers like "[rejected]" / "non-fast-forward", merge text)
@@ -276,11 +305,18 @@ export const runGitBounded = async (
     PAPERCUSP_GIT_SYNC_PUSH: '1',
     GIT_TERMINAL_PROMPT: '0',
   };
-  if (gitSyncSidecarEnabled()) {
+  // A live action-level abort must be able to terminate the actual git child.
+  // The sidecar RPC has no cancellation channel, so route signal-bearing runs
+  // through the local bounded spawner; otherwise an expired fire could release
+  // its locks while a sidecar child continued mutating the checkout.
+  if (gitSyncSidecarEnabled() && !options.signal) {
     try {
-      return await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs, env, {
+      options.onProgress?.();
+      const result = await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs, env, {
         idleTimeoutMs: network ? timeoutMs : undefined,
       });
+      options.onProgress?.();
+      return result;
     } catch (e) {
       // Was a console.warn PER CALL — the opposite failure from warn-once, and
       // just as unhelpful: a sustained outage buries the log without ever
@@ -289,7 +325,7 @@ export const runGitBounded = async (
       noteSidecarFallback('git-sync', e);
     }
   }
-  return runGitLocalBounded(effectiveArgs, cwd, timeoutMs, hardTimeoutMs, network);
+  return runGitLocalBounded(effectiveArgs, cwd, timeoutMs, hardTimeoutMs, network, options);
 };
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */
@@ -1134,6 +1170,10 @@ export interface RunGitSyncOpts {
   repoPath?: string | null;
   /** Inject the git runner (tests). */
   runGit?: RunGit;
+  /** Called whenever the default git runner observes command progress. */
+  onProgress?: () => void;
+  /** Abort a default git child when the owning fire is declared stalled. */
+  signal?: AbortSignal;
   /** WI-1416: run each pipeline phase as a checkpointed durable step (see
    *  GitSyncStepRunner). Default: plain passthrough execution. */
   step?: GitSyncStepRunner;
@@ -3312,7 +3352,41 @@ async function syncOneRepo(
  * unreconciled submodule defers the superproject push to a later (clean) tick.
  */
 export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promise<GitSyncOutcome> {
-  const runGit = opts.runGit ?? defaultRunGit;
+  /**
+   * An action-level stall guard can abort the owning fire while a git child is
+   * still draining its SIGTERM/SIGKILL grace period.  Check the signal at the
+   * command seam as well as in the child runner: otherwise a late child result
+   * could let this pipeline start the next git phase after its locks were
+   * already released.
+   */
+  const throwIfAborted = (): void => {
+    if (!opts.signal?.aborted) return;
+    const reason = opts.signal.reason;
+    if (reason instanceof Error) throw reason;
+    throw new Error('git-sync action aborted by its liveness guard');
+  };
+  const reportProgress = (): void => {
+    try {
+      opts.onProgress?.();
+    } catch {
+      // Progress accounting is diagnostic-only and must never break git-sync.
+    }
+  };
+  const baseRunGit: RunGit =
+    opts.runGit ??
+    ((args, cwd) =>
+      runGitBounded(args, cwd, gitTimeoutMsFor(args), {
+        onProgress: reportProgress,
+        signal: opts.signal,
+      }));
+  const runGit: RunGit = async (args, cwd) => {
+    throwIfAborted();
+    reportProgress();
+    const result = await baseRunGit(args, cwd);
+    reportProgress();
+    throwIfAborted();
+    return result;
+  };
   const cfg = opts.config ?? {};
   const remote = cfg.remote ?? 'origin';
   const branch = cfg.branch ?? 'main';

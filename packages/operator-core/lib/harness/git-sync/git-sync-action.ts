@@ -208,6 +208,198 @@ const FULL_COMMIT_SHA = /^[0-9a-f]{40}$/i;
 const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
 
 /**
+ * Bound the period for which one fire may hold the git-sync resources without
+ * making observable progress.  The idle deadline is deliberately one lease
+ * lifetime: a stuck setup await therefore cannot keep the heartbeat renewing a
+ * self-held lease forever.  Progress from the git runner re-arms this deadline;
+ * the independent hard ceiling still bounds a chatty or otherwise misbehaving
+ * action.  Both are environment-tunable for operators and deterministic tests.
+ */
+const DEFAULT_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = LOCK_TTL_SEC * 1000;
+const DEFAULT_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = 2 * 60 * 60_000;
+const GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS = 15_000;
+
+const positiveEnvMs = (name: string, fallback: number): number => {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+};
+
+/** Public seams for focused liveness tests and operator diagnostics. */
+export function gitSyncActionIdleTimeoutMs(): number {
+  return positiveEnvMs(
+    'PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS',
+    positiveEnvMs('PAPERCUSP_GIT_SYNC_ACTION_TIMEOUT_MS', DEFAULT_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS),
+  );
+}
+
+export function gitSyncActionHardTimeoutMs(): number {
+  return positiveEnvMs('PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS', DEFAULT_GIT_SYNC_ACTION_HARD_TIMEOUT_MS);
+}
+
+/** A timeout raised by the action-level liveness guard, distinct from git's own child timeout. */
+export class GitSyncActionTimeoutError extends Error {
+  readonly code = 'git_sync_action_timeout';
+  readonly phase: string;
+  readonly timeoutKind: 'idle' | 'hard';
+  readonly timeoutMs: number;
+
+  constructor(phase: string, timeoutKind: 'idle' | 'hard', timeoutMs: number) {
+    super(`git-sync action timed out during ${phase} after ${timeoutMs}ms (${timeoutKind} liveness deadline)`);
+    this.name = 'GitSyncActionTimeoutError';
+    this.phase = phase;
+    this.timeoutKind = timeoutKind;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+interface GitSyncActionLivenessGuard {
+  readonly signal: AbortSignal;
+  readonly timedOut: boolean;
+  readonly timeoutError: GitSyncActionTimeoutError | null;
+  /** Mark real pipeline progress and re-arm the idle deadline. */
+  touch(): void;
+  /** Fail closed before starting a new operation after expiry. */
+  assertActive(): void;
+  /** Run one awaitable operation with a cancellation race that ignores late settlement. */
+  run<T>(operation: () => Promise<T>, phase: string): Promise<T>;
+  /** Wait for the timeout callback's best-effort cleanup, if expiry occurred. */
+  waitForTimeoutCleanup(): Promise<void>;
+  /** Stop both deadline timers after the lock-held critical section settles. */
+  stop(): void;
+}
+
+/**
+ * Create the action-level deadline/abort seam.  `run` does not merely use
+ * Promise.race: it removes its abort listener and ignores a late promise
+ * settlement, so a stale setup await cannot resume the pipeline after cleanup.
+ */
+function createGitSyncActionLivenessGuard(opts: {
+  idleTimeoutMs: number;
+  hardTimeoutMs: number;
+  onTimeout: (error: GitSyncActionTimeoutError) => void | Promise<void>;
+}): GitSyncActionLivenessGuard {
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | null = null;
+  let hardTimer: ReturnType<typeof setTimeout> | null = null;
+  let stopped = false;
+  let timedOut = false;
+  let timeoutError: GitSyncActionTimeoutError | null = null;
+  let activePhase = 'unidentified action phase';
+  let timeoutCleanup: Promise<void> | null = null;
+
+  const expire = (kind: 'idle' | 'hard'): void => {
+    if (stopped || timedOut) return;
+    timedOut = true;
+    timeoutError = new GitSyncActionTimeoutError(
+      activePhase,
+      kind,
+      kind === 'idle' ? opts.idleTimeoutMs : opts.hardTimeoutMs,
+    );
+    // Abort first.  The callback then stops the heartbeat and releases locks;
+    // every in-flight `run` observes the same reason and rejects immediately.
+    controller.abort(timeoutError);
+    timeoutCleanup = Promise.resolve()
+      .then(() => opts.onTimeout(timeoutError!))
+      .catch(() => {
+        // Cleanup is also attempted by the owning finally block; a timer callback
+        // must never create an unhandled rejection if that cleanup itself fails.
+      });
+  };
+
+  const armIdle = (): void => {
+    if (stopped || timedOut) return;
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => expire('idle'), opts.idleTimeoutMs);
+    idleTimer.unref?.();
+  };
+
+  const touch = (): void => {
+    if (!stopped && !timedOut) armIdle();
+  };
+
+  hardTimer = setTimeout(() => expire('hard'), opts.hardTimeoutMs);
+  hardTimer.unref?.();
+  armIdle();
+
+  const run = <T>(operation: () => Promise<T>, phase: string): Promise<T> => {
+    if (stopped) return Promise.reject(new Error(`git-sync action is already stopped before ${phase}`));
+    if (timedOut) return Promise.reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+    activePhase = phase;
+    touch();
+
+    let work: Promise<T>;
+    try {
+      work = Promise.resolve(operation());
+    } catch (error) {
+      return Promise.reject(error);
+    }
+
+    return new Promise<T>((resolve, reject) => {
+      let settled = false;
+      const finish = (): void => {
+        controller.signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        finish();
+        reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+      };
+      if (controller.signal.aborted) {
+        onAbort();
+        return;
+      }
+      controller.signal.addEventListener('abort', onAbort, { once: true });
+      work.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          finish();
+          if (controller.signal.aborted) {
+            reject(timeoutError ?? new GitSyncActionTimeoutError(phase, 'idle', opts.idleTimeoutMs));
+            return;
+          }
+          touch();
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          finish();
+          reject(error);
+        },
+      );
+    });
+  };
+
+  return {
+    signal: controller.signal,
+    get timedOut() {
+      return timedOut;
+    },
+    get timeoutError() {
+      return timeoutError;
+    },
+    touch,
+    assertActive: () => {
+      if (timedOut) throw timeoutError ?? new GitSyncActionTimeoutError(activePhase, 'idle', opts.idleTimeoutMs);
+      if (stopped) throw new Error('git-sync action liveness guard is stopped');
+    },
+    run,
+    waitForTimeoutCleanup: async () => {
+      if (timeoutCleanup) await timeoutCleanup;
+    },
+    stop: () => {
+      stopped = true;
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+      idleTimer = null;
+      hardTimer = null;
+    },
+  };
+}
+
+/**
  * Resource locks coalesce a same-owner acquire into a lease refresh. That is
  * correct for one long-lived caller, but the cron and `git-sync:run` paths both
  * identify themselves as `system:git-sync`; sharing that owner would let two
@@ -2132,6 +2324,90 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   const activityStartedAt = Date.now();
   const stopLockHeartbeat =
     lock.state === 'acquired' ? startLockHeartbeat(cd, slug, [...acquired], lockOwner) : async () => {};
+  // Timeout cleanup is single-flight. The timer callback and the owning finally
+  // block can race: whichever notices expiry first must stop the heartbeat before
+  // releasing the leases, while a late callback must never release a second time.
+  let lockCleanup: Promise<void> | null = null;
+  const cleanupLocks = (): Promise<void> => {
+    if (lockCleanup) return lockCleanup;
+    lockCleanup = new Promise<void>((resolve) => {
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        console.warn(
+          `[git-sync] ${slug}: lock cleanup exceeded ${GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS}ms; ` +
+            'the resource TTL remains the final backstop',
+        );
+        finish();
+      }, GIT_SYNC_ACTION_CLEANUP_TIMEOUT_MS);
+      timer.unref?.();
+      void (async () => {
+        try {
+          await stopLockHeartbeat();
+        } catch (error) {
+          console.warn(
+            `[git-sync] ${slug}: lock heartbeat stop failed during cleanup: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+        if (lock.state === 'acquired') {
+          try {
+            await releaseAll(cd, lockOwner, acquired);
+          } catch (error) {
+            console.warn(
+              `[git-sync] ${slug}: lock release cleanup failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+        }
+        finish();
+      })();
+    });
+    return lockCleanup;
+  };
+  let timeoutActivity: Promise<void> | null = null;
+  const recordTimeoutActivity = (error: GitSyncActionTimeoutError): Promise<void> => {
+    if (timeoutActivity) return timeoutActivity;
+    const failedAt = Date.now();
+    timeoutActivity = patchRoutineMetadata(slug, workspaceId, {
+      last_status: 'error',
+      local_sync_status: 'error',
+      last_error: error.message,
+      last_errors: [`git-sync action timeout (${error.timeoutKind}) during ${error.phase}`],
+      git_sync_activity: {
+        active: false,
+        phase: 'error',
+        started_at: activityStartedAt,
+        updated_at: failedAt,
+        completed_at: failedAt,
+        outcome_status: null,
+      },
+    }).catch((metadataError) => {
+      console.warn(
+        `[git-sync] ${slug}: could not record action timeout metadata: ${
+          metadataError instanceof Error ? metadataError.message : String(metadataError)
+        }`,
+      );
+    });
+    return timeoutActivity;
+  };
+  const liveness = createGitSyncActionLivenessGuard({
+    idleTimeoutMs: gitSyncActionIdleTimeoutMs(),
+    hardTimeoutMs: gitSyncActionHardTimeoutMs(),
+    onTimeout: async (error) => {
+      // Start lock cleanup immediately after aborting any active git child. The
+      // metadata write is best-effort and runs in parallel with lease cleanup.
+      const activity = recordTimeoutActivity(error);
+      await cleanupLocks();
+      await activity;
+    },
+  });
+  const guarded = <T>(phase: string, operation: () => Promise<T>): Promise<T> => liveness.run(operation, phase);
   let outcome: GitSyncOutcome;
   // These values are consumed by the post-pipeline escalation/recording tail;
   // the surrounding catch rethrows every setup failure before that tail runs.
@@ -2140,23 +2416,26 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
   let docFreshnessModule: typeof import('../docs/sweep-after-sync') | null = null;
   let prevHeadSha: string | null = null;
   try {
-    await writeGitSyncActivity(slug, workspaceId, {
+    await guarded('activity-start', () => writeGitSyncActivity(slug, workspaceId, {
       active: true,
       phase: 'local-sync',
       started_at: activityStartedAt,
       updated_at: activityStartedAt,
       completed_at: null,
       outcome_status: null,
-    });
+    }));
     // EI-18: previous tick's counters BEFORE this tick overwrites them.
-    prev = await readEscalationCounters(slug, workspaceId);
+    prev = await guarded('read-escalation-counters', () => readEscalationCounters(slug, workspaceId));
 
     // Capture HEAD before the sync so the doc-freshness sweep (P-003) can diff the
     // exact paths this tick moved. Best-effort — never gate the sync on it.
     try {
-      docFreshnessModule = await import('../docs/sweep-after-sync');
-      prevHeadSha = await docFreshnessModule.captureHeadSha(slug, workspaceId, repoPath);
+      docFreshnessModule = await guarded('load-doc-freshness-module', () => import('../docs/sweep-after-sync'));
+      prevHeadSha = await guarded('capture-pre-sync-head', () =>
+        docFreshnessModule!.captureHeadSha(slug, workspaceId, repoPath),
+      );
     } catch {
+      if (liveness.timedOut) throw liveness.timeoutError;
       /* best-effort */
     }
 
@@ -2164,25 +2443,26 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     // set so runGitSync commits exactly as before this plan (no quarantine/escalation/
     // fixer) — the instant off-switch on the shared commit path, no deploy needed. A
     // flag-infra error falls back to the default (ON), keeping the safety on.
-    const contentGuardOn = await getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug);
+    const contentGuardOn = await guarded('read-content-guard-flag', () => getFlag(FLAGS.GIT_SYNC_CONTENT_GUARD, slug));
     // EI-17 kill-switch: default ON (see FLAGS.GIT_SYNC_DELETION_GUARD doc). A flag-infra
     // error falls back to the default (ON), keeping the safety on — same as content-guard.
-    const deletionGuardOn = await getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug);
+    const deletionGuardOn = await guarded('read-deletion-guard-flag', () => getFlag(FLAGS.GIT_SYNC_DELETION_GUARD, slug));
     // P-004 (git-sync-dx-hardening): derived commit attribution (default OFF). When ON, supply the
     // LIVE roster of active agents + their declared files (coord presence current_files) so runGitSync
     // peels per-agent commits. DERIVED, never authored — agents stay git-free. Flag-gated read; a
     // presence-read failure degrades to no attribution (today's single commit).
-    attributionOn = await getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug);
+    attributionOn = await guarded('read-attribution-flag', () => getFlag(FLAGS.GIT_SYNC_DERIVED_ATTRIBUTION, slug));
     // WI-38594: diff-derived commit subjects (default ON) — subject = the staged diff,
     // intent line demoted to the body. OFF = pre-WI-38594 subjects, no deploy needed.
-    const diffSubjectsOn = await getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug);
+    const diffSubjectsOn = await guarded('read-diff-subjects-flag', () => getFlag(FLAGS.GIT_SYNC_DIFF_SUBJECTS, slug));
     // File locks are the automatic edit-plane authority. Keep git-sync's broad
     // whole-tree sweep from staging a peer's in-flight paths; the pure pipeline
     // maps these superproject-root-relative paths into each submodule before add.
     let liveLockHoldingRows: Awaited<ReturnType<typeof liveLockHoldingsStrict>>;
     try {
-      liveLockHoldingRows = await liveLockHoldingsStrict();
+      liveLockHoldingRows = await guarded('read-live-file-locks', () => liveLockHoldingsStrict());
     } catch (error) {
+      if (liveness.timedOut) throw liveness.timeoutError;
       // This read is a safety gate: treating an unreadable lock plane as [] lets
       // runGitSync stage a peer's transiently-truncated file. Refuse the tick,
       // make the reason visible; the outer finally owns lease cleanup.
@@ -2190,7 +2470,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       const skippedAt = Date.now();
       console.error(`[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`);
       try {
-        await patchRoutineMetadata(slug, workspaceId, {
+        await guarded('record-live-lock-read-failure', () => patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
           local_sync_status: 'skipped',
           last_skip_reason: 'live-lock-read-failed',
@@ -2207,8 +2487,9 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
             completed_at: skippedAt,
             outcome_status: null,
           },
-        });
+        }));
       } catch (metadataError) {
+        if (liveness.timedOut) throw liveness.timeoutError;
         // The primary console error above remains the visible signal if the
         // metadata store is unavailable; cleanup still runs in the outer finally.
         console.warn(
@@ -2222,7 +2503,7 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     const liveLockPaths = liveLockHoldingRows.map((holding) => holding.path);
 
     // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
-    outcome = await runGitSync(slug, {
+    outcome = await guarded('run-git-sync', () => runGitSync(slug, {
       repoPath,
       config: cfg,
       contentDetectors: contentGuardOn ? undefined : [],
@@ -2234,20 +2515,30 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
       // WI-1416: checkpoint each pipeline phase (submodules → pointer-bump → push) as
       // a DBOS sub-step; a passthrough outside a workflow (fireGitSyncNow, tests).
       step: runCheckpointedStep,
-    });
+      onProgress: () => liveness.touch(),
+      signal: liveness.signal,
+    }));
   } catch (error) {
-    await writeGitSyncActivity(slug, workspaceId, {
-      active: false,
-      phase: 'error',
-      started_at: activityStartedAt,
-      updated_at: Date.now(),
-      completed_at: Date.now(),
-      outcome_status: null,
-    }).catch(() => {});
+    if (error instanceof GitSyncActionTimeoutError) {
+      // The timer callback normally starts this write in the same turn as the
+      // abort. Calling it here as well closes the tiny ordering window where
+      // the guarded promise rejects before that callback's microtask runs.
+      await recordTimeoutActivity(error);
+    } else {
+      await writeGitSyncActivity(slug, workspaceId, {
+        active: false,
+        phase: 'error',
+        started_at: activityStartedAt,
+        updated_at: Date.now(),
+        completed_at: Date.now(),
+        outcome_status: null,
+      }).catch(() => {});
+    }
     throw error;
   } finally {
-    await stopLockHeartbeat();
-    if (lock.state === 'acquired') await releaseAll(cd, lockOwner, acquired);
+    await cleanupLocks();
+    await liveness.waitForTimeoutCleanup();
+    liveness.stop();
   }
 
   // WI-3072: stash-detection recurrence guard — read-only (no lock needed), runs

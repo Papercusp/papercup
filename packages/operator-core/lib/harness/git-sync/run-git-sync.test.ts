@@ -48,6 +48,7 @@ import {
   DECLARATION_STATUS_MAX_RETRIES,
   regenerateGeneratedDeclarationsBeforeCommit,
   regenerateToolCatalogBeforeCommit,
+  runGitBounded,
   type RunGit,
 } from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
@@ -83,6 +84,33 @@ describe('git-sync commit identity', () => {
     expect(GIT_SYNC_BOT_NAME).toBe('papercusp-git-sync');
     expect(GIT_SYNC_BOT_EMAIL).toBe('papercupai@users.noreply.github.com');
     expect(GIT_SYNC_BOT_EMAIL).not.toMatch(/@papercusp\.local$/);
+  });
+});
+
+describe('EI-217286 action abort propagation', () => {
+  it('terminates a signal-bearing local git child instead of leaving it running after lease cleanup', async () => {
+    const repo = mkdtempSync(join(tmpdir(), 'git-sync-abort-'));
+    execFileSync('git', ['init', '-q', repo], { encoding: 'utf8' });
+    const savedMode = process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
+    const controller = new AbortController();
+    process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE = '1'; // force the cancellable local runner
+    const abortTimer = setTimeout(() => controller.abort(new Error('test action timeout')), 25);
+    abortTimer.unref?.();
+    try {
+      const result = await runGitBounded(
+        ['-c', 'alias.wait=!exec sleep 30', 'wait'],
+        repo,
+        5_000,
+        { signal: controller.signal },
+      );
+
+      expect(result.code).toBe(-1);
+      expect(result.stderr).toContain('aborted by the git-sync stall guard');
+    } finally {
+      clearTimeout(abortTimer);
+      if (savedMode === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE;
+      else process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE = savedMode;
+    }
   });
 });
 

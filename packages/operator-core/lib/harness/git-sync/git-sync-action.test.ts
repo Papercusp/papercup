@@ -315,6 +315,7 @@ import {
   fireGitSyncNow,
   isResolverInFlight,
   acquireWithContentionRetry,
+  GitSyncActionTimeoutError,
   parseGitSyncOwnerPid,
   formatOwnHeadPublishedLine,
   isIntegratorActorAdmitted,
@@ -1334,6 +1335,166 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     }
   });
 
+  it('EI-217286: bounds a stalled pre-runGitSync await, stops the heartbeat, releases leases, and ignores its late settlement', async () => {
+    const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+    const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = '25';
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = '1000';
+    vi.useFakeTimers();
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
+    try {
+      let flagStarted!: () => void;
+      const flagStartedPromise = new Promise<void>((resolve) => {
+        flagStarted = resolve;
+      });
+      let releaseFlag!: (value: boolean) => void;
+      const stalledFlag = new Promise<boolean>((resolve) => {
+        releaseFlag = resolve;
+      });
+      getFlagMock.mockImplementationOnce(async () => {
+        flagStarted();
+        return stalledFlag;
+      });
+
+      const running = action(ctx);
+      // Attach the rejection handler before advancing the fake clock. Vitest's
+      // unhandled-rejection hook runs at the timer turn itself, before a later
+      // `await running` would be considered a handler.
+      const settled = running.then(
+        () => ({ value: undefined as unknown, error: undefined as unknown }),
+        (error) => ({ value: undefined as unknown, error }),
+      );
+      await flagStartedPromise;
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(30);
+      const settledResult = await settled;
+      const thrown = settledResult.error;
+      expect(thrown).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(thrown).toMatchObject({ phase: 'read-content-guard-flag', timeoutKind: 'idle', timeoutMs: 25 });
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(timers.find((timer) => timer.ms === 60_000)?.stopped).toBe(true);
+      expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+        active: false,
+        phase: 'error',
+        outcome_status: null,
+      });
+      expect(allRoutinePatches()).toContainEqual(expect.objectContaining({
+        last_status: 'error',
+        local_sync_status: 'error',
+        last_error: expect.stringContaining('git-sync action timed out'),
+      }));
+
+      // The underlying setup promise may eventually resolve, but the guarded
+      // await has already rejected and must not let the pipeline resume.
+      releaseFlag(true);
+      await Promise.resolve();
+      await vi.runAllTicks();
+      expect(runGitSyncMock).not.toHaveBeenCalled();
+    } finally {
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
+      if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  });
+
+  it('EI-217286: aborts an active git run at the hard deadline even while progress keeps resetting idle', async () => {
+    const savedIdle = process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+    const savedHard = process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = '40';
+    process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = '60';
+    vi.useFakeTimers();
+    resetScheduledRegistry();
+    const timers: Array<{ cb: () => void; ms: number; stopped: boolean; handle: TimerHandle }> = [];
+    const timerByHandle = new Map<TimerHandle, (typeof timers)[number]>();
+    configureScheduledRegistry({
+      setIntervalImpl: (cb, ms) => {
+        const handle: TimerHandle = { unref: () => undefined };
+        const timer = { cb, ms, stopped: false, handle };
+        timers.push(timer);
+        timerByHandle.set(handle, timer);
+        return handle;
+      },
+      clearIntervalImpl: (handle) => {
+        const timer = timerByHandle.get(handle);
+        if (timer) timer.stopped = true;
+      },
+    });
+    try {
+      let runStarted!: () => void;
+      const runStartedPromise = new Promise<void>((resolve) => {
+        runStarted = resolve;
+      });
+      let reportProgress!: () => void;
+      let aborted = false;
+      runGitSyncMock.mockImplementation(async (_slug, opts) => {
+        reportProgress = opts.onProgress as () => void;
+        const signal = opts.signal as AbortSignal;
+        runStarted();
+        return new Promise<GitSyncOutcome>((_resolve, reject) => {
+          signal.addEventListener(
+            'abort',
+            () => {
+              aborted = true;
+              reject(signal.reason ?? new Error('aborted'));
+            },
+            { once: true },
+          );
+        });
+      });
+
+      const running = action(ctx);
+      const settled = running.then(
+        () => ({ value: undefined as unknown, error: undefined as unknown }),
+        (error) => ({ value: undefined as unknown, error }),
+      );
+      await runStartedPromise;
+      expect(reportProgress).toBeTypeOf('function');
+      await vi.advanceTimersByTimeAsync(15);
+      reportProgress();
+      await vi.advanceTimersByTimeAsync(15);
+      reportProgress();
+      // Two progress touches keep the 40ms idle deadline out, but cannot move
+      // the independent 60ms hard ceiling.
+      await vi.advanceTimersByTimeAsync(40);
+
+      let thrown: unknown;
+      thrown = (await settled).error;
+      expect(thrown).toBeInstanceOf(GitSyncActionTimeoutError);
+      expect(thrown).toMatchObject({ phase: 'run-git-sync', timeoutKind: 'hard', timeoutMs: 60 });
+      expect(aborted).toBe(true);
+      expect((runGitSyncMock.mock.calls[0]?.[1] as { signal: AbortSignal }).signal.aborted).toBe(true);
+      expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+      expect(timers.find((timer) => timer.ms === 60_000)?.stopped).toBe(true);
+    } finally {
+      resetScheduledRegistry();
+      vi.useRealTimers();
+      if (savedIdle === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_IDLE_TIMEOUT_MS = savedIdle;
+      if (savedHard === undefined) delete process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_ACTION_HARD_TIMEOUT_MS = savedHard;
+    }
+  });
+
   // WI-5960: the routine acquires `git-sync:<slug>` under `ctx.workspaceId || '*'`
   // (asserted as 'ws-42' above) — an agent's own `locks:acquire_resource {
   // resource: 'git-sync:<slug>' }` (the su playbook's documented tree-pause
@@ -1519,13 +1680,13 @@ describe('clean sync outcome', () => {
     await action(ctx);
 
     // trigger config defaults flow into the pipeline (+ WI-1416: the checkpoint seam)
-    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
+    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
       repoPath: repoDir,
       config: expect.objectContaining({ push: true, pushSubmodules: true }),
       deletionGuard: true,
       diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
       step: expect.any(Function),
-    });
+    }));
 
     // { last_synced_at, last_status, head_sha } + the EI-18 counters on the metadata
     expect(routinePatches()).toEqual([
@@ -1683,7 +1844,7 @@ describe('clean sync outcome', () => {
       },
     });
 
-    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
+    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
       repoPath: repoDir,
       config: {
         push: false,
@@ -1697,7 +1858,7 @@ describe('clean sync outcome', () => {
       deletionGuard: true,
       diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
       step: expect.any(Function),
-    });
+    }));
   });
 
   it.each(['bridged', 'p2p-only'] as const)(
