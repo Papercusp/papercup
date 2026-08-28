@@ -1127,6 +1127,39 @@ describe('ptool buildCallToolParams', () => {
       _meta: { format: 'json' },
     });
   });
+
+  it('serializes nested tools:invoke args once so shell quoting survives', () => {
+    const nestedArgs = {
+      script: `return await tools.dev.pg_query({ query: "select 'it''s safe'" });`,
+    };
+    const params = buildCallToolParams('tools:invoke', {
+      name: 'code:run',
+      args: nestedArgs,
+    });
+
+    expect(params.arguments).toEqual({
+      name: 'code:run',
+      args: JSON.stringify(nestedArgs),
+    });
+    expect(JSON.parse(params.arguments.args)).toEqual(nestedArgs);
+  });
+
+  it('does not double-encode an already serialized nested tools:invoke args', () => {
+    const encodedArgs = JSON.stringify({ script: 'return "already encoded";' });
+    const params = buildCallToolParams('tools:invoke', {
+      name: 'code:run',
+      args: encodedArgs,
+    });
+
+    expect(params.arguments.args).toBe(encodedArgs);
+  });
+
+  it('keeps direct tool arguments as objects', () => {
+    const directArgs = { script: `return "it's a direct call";` };
+    const params = buildCallToolParams('code:run', directArgs);
+
+    expect(params.arguments).toBe(directArgs);
+  });
 });
 
 describe('ptool prettyText / resultToText', () => {
