@@ -137,6 +137,15 @@ describe('createCodexTimelineParser — real rollout records', () => {
     expect(entry).toMatchObject({ kind: 'tool_result', text: 'Script completed\nWall time 0.0 seconds' });
   });
 
+  it('function_call_output also preserves a bare STRING from a still-running cell', () => {
+    const [entry] = parseCodex(byName(CODEX_WIRE_FIXTURES, 'function_call_output (still-running variant)'));
+    expect(entry).toMatchObject({
+      kind: 'tool_result',
+      toolId: 'call_3NytbeubCVm4GOslHcJZ9OdL',
+      text: 'Script running with cell ID 3\nWall time 31.0 seconds\nOutput:\n',
+    });
+  });
+
   it('response_item/message maps assistant → text and user → prompt', () => {
     expect(parseCodex(byName(CODEX_WIRE_FIXTURES, 'message assistant'))).toEqual([
       { kind: 'text', text: "I'm reading the active plan's `## Now` block first.", ts: '2026-08-25T01:22:43.346Z' },

@@ -247,6 +247,31 @@ export const CODEX_WIRE_FIXTURES: readonly WireFixture[] = [
     },
   },
   {
+    // The same record type also arrives as a bare string while a cell is still
+    // running. Keep this as a sibling fixture (rather than narrowing the
+    // discriminator) so the live guard checks both shapes as one variant group.
+    name: 'function_call_output (still-running variant) — `output` is a bare STRING',
+    discriminator: [
+      { path: 'type', value: 'response_item' },
+      { path: 'payload.type', value: 'function_call_output' },
+    ],
+    readFields: ['payload.type', 'payload.call_id', 'payload.output'],
+    record: {
+      timestamp: '2026-08-27T23:24:31.847Z',
+      type: 'response_item',
+      payload: {
+        type: 'function_call_output',
+        id: 'fco_01a0458a-12e7-79d3-a774-8ab3ebe5f1de',
+        call_id: 'call_3NytbeubCVm4GOslHcJZ9OdL',
+        output: 'Script running with cell ID 3\nWall time 31.0 seconds\nOutput:\n',
+        internal_chat_message_metadata_passthrough: {
+          turn_id: '01a04588-0904-7100-8350-0c413abd9522',
+          create_time: 1787873071.8474357,
+        },
+      },
+    },
+  },
+  {
     name: 'response_item/message assistant — text in `output_text` blocks',
     discriminator: [
       { path: 'type', value: 'response_item' },
