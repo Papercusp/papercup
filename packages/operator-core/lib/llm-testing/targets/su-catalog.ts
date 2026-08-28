@@ -419,7 +419,20 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
           properties: {
             lens: { type: 'string', description: "the generative stance that produced the idea (analogical / first-principles / reframing / constraint-removal / risk-first / user-value / cost-leverage)." },
             bet: { type: 'string', description: 'the concrete upside if the idea pans out.' },
-            cheapExperiment: { type: 'string', description: 'the cheap falsifiable first experiment (the anti-bullshit gate on "bettable").' },
+            cheapExperiment: {
+              type: 'object',
+              description:
+                'the cheap falsifiable first experiment (ScoutExperiment shape: hypothesis, method, falsifiableSignal; the anti-bullshit gate on "bettable").',
+              properties: {
+                hypothesis: { type: 'string', description: 'what we believe will be true if the idea has merit.' },
+                method: { type: 'string', description: 'the cheap first test to run, build, or measure.' },
+                falsifiableSignal: {
+                  type: 'string',
+                  description: 'the observable that would prove the hypothesis wrong.',
+                },
+              },
+              required: ['hypothesis', 'method', 'falsifiableSignal'],
+            },
           },
         },
       },

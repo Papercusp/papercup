@@ -89,6 +89,23 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     }
   });
 
+  it('advertises improvements:capture ideation.cheapExperiment as a structured ScoutExperiment', () => {
+    const entry = SU_CATALOG.find((e) => e.name === 'improvements:capture')!;
+    const properties = (entry.input as { properties?: Record<string, any> }).properties ?? {};
+    const ideation = properties.ideation as { properties?: Record<string, any> };
+    const cheapExperiment = ideation.properties?.cheapExperiment;
+
+    expect(cheapExperiment).toMatchObject({
+      type: 'object',
+      required: ['hypothesis', 'method', 'falsifiableSignal'],
+    });
+    expect(cheapExperiment.properties).toEqual({
+      hypothesis: expect.objectContaining({ type: 'string' }),
+      method: expect.objectContaining({ type: 'string' }),
+      falsifiableSignal: expect.objectContaining({ type: 'string' }),
+    });
+  });
+
   it('work_items:set_state is advertised with keyed lifecycle args', () => {
     const e = SU_CATALOG.find((e) => e.name === 'work_items:set_state')!;
     const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
