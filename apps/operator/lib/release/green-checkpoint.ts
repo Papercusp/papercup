@@ -7489,6 +7489,9 @@ async function runGreenCheckpointInner(
   let repairQueue: FrozenCandidateRepairQueue | null = null;
   let repairVerification = false;
   let initialCandidateVerification = false;
+  // A queue created by this pass is still provisional until the red verdict's moving-tip
+  // re-triage completes. Automatic candidates must not launch repair against a stale cut.
+  let repairQueueCreatedThisPass = false;
   let repairOutcomeReconciled = false;
   let repairPromotionAdvance: AdvanceResult | null = null;
   const reserveFrozenRepairFixer = deps.reserveFrozenRepairFixer;
@@ -8339,6 +8342,7 @@ async function runGreenCheckpointInner(
       nowMs: Date.now(),
     });
     await deps.writeFrozenRepairQueue(repairQueue);
+    repairQueueCreatedThisPass = true;
     initialCandidateVerification = true;
     deps.log(
       `stable-candidate queue persisted ${candidate.slice(0, 8)} before its first suite`,
@@ -9086,6 +9090,7 @@ async function runGreenCheckpointInner(
       deps.prepareFrozenRepairWorktree &&
       deps.dispatchFrozenRepairFixer
     ) {
+      let repairQueueRedPersisted = false;
       if (repairVerification && repairQueue) {
         repairQueue = markFrozenRepairVerificationRed(repairQueue, {
           repairHead: candidate,
@@ -9101,6 +9106,7 @@ async function runGreenCheckpointInner(
           nowMs: Date.now(),
         });
         await deps.writeFrozenRepairQueue(repairQueue);
+        repairQueueRedPersisted = true;
       } else if (!repairQueue) {
         repairQueue = createFrozenCandidateRepairQueue({
           candidate,
@@ -9116,78 +9122,96 @@ async function runGreenCheckpointInner(
           affectedTestProofGroup: deps.runId ?? null,
           nowMs: Date.now(),
         });
+        repairQueueCreatedThisPass = true;
       }
-      let fired: FrozenRepairDispatchResult | null = null;
-      if (hasFrozenRepairDispatchReservation) {
-        // Reserve the durable candidate row before the external fixer launch. The candidate
-        // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
-        // compatibility first-red path atomic for callers that learned about C only here.
-        const dispatch = await dispatchFrozenRepair(repairQueue, true);
-        if (dispatch.reservationBlocked) {
-          repairQueue =
-            (await repairReservationHold(repairQueue, "new queue")) ??
-            repairQueue;
-          const reservation = repairQueue.dispatchReservation;
-          const reservationSummary = reservation
-            ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
-            : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
-          const redSummary = `${verdictSummary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
-          stampPromotion(false, "not-green");
-          const terminalResult: CheckpointResult = {
-            advanced: false,
-            candidate,
-            from: lastReady,
-            green: false,
-            reason: "not-green",
-            summary: redSummary,
-            failingTests,
-            ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
-            failingTestNames: extractFailingTestNames(summary),
-            repairQueue,
-            ...(deps.runId ? { runId: deps.runId } : {}),
-            ...(logPath ? { logPath } : {}),
-            ...(isolationNote ? { isolationNote } : {}),
-            ...(retriedTests ? { retriedTests } : {}),
-            ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
-            ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-          };
-          await emitTerminalRed(terminalResult);
-          return terminalResult;
-        }
-        repairQueue = dispatch.queue ?? repairQueue;
-        fired = dispatch.fired;
-      } else {
-        // Compatibility path for direct/older callers that do not expose the CAS hooks.
+      const deferNewRepairDispatch =
+        repairQueueCreatedThisPass && !opts.candidate;
+      if (deferNewRepairDispatch && repairQueue && !repairQueueRedPersisted) {
+        // Compatibility callers create the queue only after the suite. Persist its red
+        // transition before allowing the moving-tip rescue to inspect the failure.
+        repairQueue = markFrozenCandidateVerificationRed(repairQueue, {
+          failingTests,
+          nowMs: Date.now(),
+        });
         await deps.writeFrozenRepairQueue(repairQueue);
-        const dispatch = await dispatchFrozenRepair(repairQueue, false);
-        repairQueue = dispatch.queue ?? repairQueue;
-        fired = dispatch.fired;
       }
-      const repairSummary =
-        `${verdictSummary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
-        `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
-        `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
-      stampPromotion(false, "not-green");
-      const terminalResult: CheckpointResult = {
-        advanced: false,
-        candidate,
-        from: lastReady,
-        green: false,
-        reason: "not-green",
-        summary: repairSummary,
-        failingTests,
-        ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
-        failingTestNames: extractFailingTestNames(summary),
-        repairQueue,
-        ...(deps.runId ? { runId: deps.runId } : {}),
-        ...(logPath ? { logPath } : {}),
-        ...(isolationNote ? { isolationNote } : {}),
-        ...(retriedTests ? { retriedTests } : {}),
-        ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
-        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-      };
-      await emitTerminalRed(terminalResult);
-      return terminalResult;
+      if (!deferNewRepairDispatch) {
+        let fired: FrozenRepairDispatchResult | null = null;
+        if (hasFrozenRepairDispatchReservation) {
+          // Reserve the durable candidate row before the external fixer launch. The candidate
+          // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
+          // compatibility first-red path atomic for callers that learned about C only here.
+          const dispatch = await dispatchFrozenRepair(repairQueue, true);
+          if (dispatch.reservationBlocked) {
+            repairQueue =
+              (await repairReservationHold(repairQueue, "new queue")) ??
+              repairQueue;
+            const reservation = repairQueue.dispatchReservation;
+            const reservationSummary = reservation
+              ? `frozen repair queue ${repairQueue.candidate.slice(0, 8)} is reserved by another checkpoint until ${reservation.expiresAtMs}; no second fixer launch was attempted`
+              : `frozen repair queue ${repairQueue.candidate.slice(0, 8)} could not reserve its dispatch window; no fixer launch was attempted`;
+            const redSummary = `${verdictSummary}\n\n${reservationSummary}. Moving-tip refire and backward prefix salvage were suppressed.`;
+            stampPromotion(false, "not-green");
+            const terminalResult: CheckpointResult = {
+              advanced: false,
+              candidate,
+              from: lastReady,
+              green: false,
+              reason: "not-green",
+              summary: redSummary,
+              failingTests,
+              ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
+              failingTestNames: extractFailingTestNames(summary),
+              repairQueue,
+              ...(deps.runId ? { runId: deps.runId } : {}),
+              ...(logPath ? { logPath } : {}),
+              ...(isolationNote ? { isolationNote } : {}),
+              ...(retriedTests ? { retriedTests } : {}),
+              ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+              ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+            };
+            await emitTerminalRed(terminalResult);
+            return terminalResult;
+          }
+          repairQueue = dispatch.queue ?? repairQueue;
+          fired = dispatch.fired;
+        } else {
+          // Compatibility path for direct/older callers that do not expose the CAS hooks.
+          await deps.writeFrozenRepairQueue(repairQueue);
+          const dispatch = await dispatchFrozenRepair(repairQueue, false);
+          repairQueue = dispatch.queue ?? repairQueue;
+          fired = dispatch.fired;
+        }
+        const repairSummary =
+          `${verdictSummary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
+          `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
+          `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
+        stampPromotion(false, "not-green");
+        const terminalResult: CheckpointResult = {
+          advanced: false,
+          candidate,
+          from: lastReady,
+          green: false,
+          reason: "not-green",
+          summary: repairSummary,
+          failingTests,
+          ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
+          failingTestNames: extractFailingTestNames(summary),
+          repairQueue,
+          ...(deps.runId ? { runId: deps.runId } : {}),
+          ...(logPath ? { logPath } : {}),
+          ...(isolationNote ? { isolationNote } : {}),
+          ...(retriedTests ? { retriedTests } : {}),
+          ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
+          ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+        };
+        await emitTerminalRed(terminalResult);
+        return terminalResult;
+      }
+      deps.log(
+        `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red transition persisted; ` +
+          "deferring first fixer dispatch until moving-tip re-triage",
+      );
     }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
