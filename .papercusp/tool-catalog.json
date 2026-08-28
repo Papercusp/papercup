@@ -15093,7 +15093,7 @@
           "POST"
         ]
       },
-      "description": "Claim repository files and/or authorized home-directory configuration files for exclusive editing. This is a workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to the same reserved keys the edit hooks use). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp; this is internal telemetry, not a caller override.",
+      "description": "Claim repository files or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp; this is internal telemetry, not a caller override.",
       "capabilities": [
         "locks:write"
       ],
@@ -20033,7 +20033,7 @@
           "POST"
         ]
       },
-      "description": "Cross-plan item query. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
+      "description": "Plan-item query across one or all plans. `itemIds:[…]` restricts results to exact P-NNN ids from the required `slug` plan; cross-plan item selection is rejected. actionable=true returns pickable items (effectiveStatus=\"todo\"). needsHuman=true returns the human's inbox. status filters by effectiveStatus. Legacy plans excluded. With an exact `slug`, operator/superuser scope auto-resolves the owning harness within the caller's workspace. Cross-plan queries still require a concrete `harness`; `harness: 'all'` is valid only in an unscoped (--all-workspaces) session.",
       "capabilities": [
         "plans:read"
       ],
@@ -20053,9 +20053,9 @@
         "cup"
       ],
       "guidance": {
-        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.",
+        "when": "You want to find items by status across all plans — \"what can I pick up\", \"what needs the human\", or filter one exact plan's items. Use `itemIds:[…]` with `slug` for exact item selection. Exact-slug reads can auto-resolve their harness; cross-plan reads must name one.",
         "notWhen": "You want the full plan structure (Now block, decisions, prose) — use plans:get.",
-        "chaining": "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug } for one auto-resolved plan."
+        "chaining": "plans:items { actionable: true, harness } → plans:get { slug } for context on the picked item; or plans:items { slug, itemIds:[…] } for an exact subset of one auto-resolved plan."
       }
     },
     {
