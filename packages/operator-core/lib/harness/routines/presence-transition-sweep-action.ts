@@ -93,10 +93,28 @@ export async function gatherPresenceObservations(): Promise<PresenceObservation[
   }));
 }
 
+/** Re-read one subject's liveness immediately before a queued notice is written. */
+async function gatherCurrentPresenceObservation(
+  agentId: string,
+): Promise<Pick<PresenceObservation, 'sessionState'> | null> {
+  type ObservableAgent = AgentAssignment & { sessionState?: SessionState | null };
+  const agents = groupByAgent(await listFleetAssignments({ agent: agentId }));
+  const subject = agents.find((agent) => agent.agentId === agentId);
+  if (!subject) return null;
+  const [reconciled] = await reconcileWakeability([subject as ObservableAgent]);
+  return { sessionState: reconciled?.sessionState ?? null };
+}
+
 /** Injectable seams so the sweep unit-tests without PG or the coord rail. */
 export interface PresenceTransitionSweepDeps {
   gather?: () => Promise<PresenceObservation[]>;
   gatherCommitments?: (subjectIds: readonly string[]) => Promise<Commitment[]>;
+  /**
+   * Last-moment subject recheck before a queued notice is delivered. `null`
+   * means the subject disappeared; an omitted/unknown state keeps the original
+   * notice because a failed read is not evidence that the edge recovered.
+   */
+  currentObservation?: (agentId: string) => Promise<Pick<PresenceObservation, 'sessionState'> | null>;
   deliver?: (notice: PresenceNotice) => Promise<void>;
 }
 
@@ -143,9 +161,30 @@ export async function runPresenceTransitionSweep(deps: PresenceTransitionSweepDe
 
   const commitments = await gatherCommitments(edges.map((e) => e.agentId));
   const notices = selectPresenceNotices(edges, commitments);
+  const currentObservation = deps.currentObservation ?? gatherCurrentPresenceObservation;
+  const currentBySubject = new Map<string, Promise<Pick<PresenceObservation, 'sessionState'> | null | undefined>>();
+  const recheck = (subjectId: string) => {
+    const existing = currentBySubject.get(subjectId);
+    if (existing) return existing;
+    const current = Promise.resolve()
+      .then(() => currentObservation(subjectId))
+      // A degraded recheck must preserve the original notice: an unknown read
+      // is not evidence that a liveness edge recovered.
+      .catch(() => undefined);
+    currentBySubject.set(subjectId, current);
+    return current;
+  };
 
   let delivered = 0;
   for (const notice of notices) {
+    const current = await recheck(notice.subjectId);
+    // Suppress stale notices when the subject changed state after edge detection.
+    // The next sweep observes that new state and can emit a fresh, correctly
+    // labelled edge instead. `null` means the subject is no longer present;
+    // `undefined`/null sessionState means the recheck was inconclusive, so keep
+    // the original signal fail-open.
+    if (current === null) continue;
+    if (current && current.sessionState !== null && current.sessionState !== notice.edge.to) continue;
     // Per-notice fail-soft: one undeliverable line must not swallow the rest.
     try {
       await deliver(notice);

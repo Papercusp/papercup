@@ -52,6 +52,20 @@ describe('runPresenceTransitionSweep', () => {
     expect(delivered[0].summary).toContain('is DEAD');
   });
 
+  it('suppresses a queued DEAD notice when the peer re-registers live before delivery', async () => {
+    const { deps, delivered } = harness(
+      [[obs('peer', 'live')], [obs('peer', 'ended')]],
+      [{ receiverId: 'me', subjectId: 'peer', kind: 'awaiting-reply', detail: 'msg-1' }],
+    );
+    const currentObservation = vi.fn(async () => ({ sessionState: 'live' }));
+    deps.currentObservation = currentObservation;
+
+    await runPresenceTransitionSweep(deps);
+    expect(await runPresenceTransitionSweep(deps)).toBe(0);
+    expect(delivered).toEqual([]);
+    expect(currentObservation).toHaveBeenCalledWith('peer');
+  });
+
   it('a crossing with NO intersecting commitment costs nothing and says nothing', async () => {
     const { deps, delivered, gatherCommitments } = harness([[obs('peer', 'live')], [obs('peer', 'ended')]], []);
     await runPresenceTransitionSweep(deps);
