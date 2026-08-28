@@ -16,11 +16,16 @@
  * `validate-connection` argument shapes are exactly what they were.
  */
 
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { Cloud, Plus, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import { TextInput } from "@/app/harness/TextInput";
-import { Field, StageHeader, StatusBadge } from "./stage-primitives";
+import {
+  Field,
+  StageHeader,
+  StatusBadge,
+  useFocusLifecycle,
+} from "./stage-primitives";
 import { PROVIDERS } from "./workspace-host-actions";
 import {
   formatTimestamp,
@@ -96,24 +101,13 @@ export function ConnectStage({
     new Map<ProviderTarget, HTMLButtonElement | null>(),
   );
   const panelRef = useRef<HTMLFormElement | null>(null);
-  const previousTarget = useRef<ProviderTarget | null>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
 
-  useEffect(() => {
-    const previous = previousTarget.current;
-    previousTarget.current = connectTarget;
-
-    /* Opened: move into the panel. Switching provider A -> B leaves focus
-       alone, since the panel never left the screen. */
-    if (connectTarget && !previous) {
-      panelRef.current?.querySelector<HTMLElement>("input")?.focus();
-      return;
-    }
-
-    /* Closed: hand focus back to the row that opened it. */
-    if (!connectTarget && previous) {
-      triggerRefs.current.get(previous)?.focus();
-    }
-  }, [connectTarget]);
+  useFocusLifecycle({
+    open: Boolean(activeProvider),
+    onOpenFocus: () => panelRef.current?.querySelector<HTMLElement>("input"),
+    onCloseFocus: () => returnFocusRef.current,
+  });
 
   return (
     <section
@@ -211,7 +205,10 @@ export function ConnectStage({
                             : `${provider.label} connection is not available`
                         }
                         disabled={!provider.supported}
-                        onClick={() => onSelectTarget(provider.target)}
+                        onClick={(event) => {
+                          returnFocusRef.current = event.currentTarget;
+                          onSelectTarget(provider.target);
+                        }}
                       >
                         <Plus size={14} aria-hidden="true" />{" "}
                         {provider.supported ? "Connect" : "Not yet available"}
