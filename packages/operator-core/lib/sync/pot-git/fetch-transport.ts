@@ -179,6 +179,18 @@ export interface TransportResult {
   timedOut: boolean;
 }
 
+/**
+ * Optional durable-admission wrapper for the serving process boundary.
+ *
+ * `serveUploadPack` is a transport primitive and therefore keeps its
+ * low-level tests usable without a workspace runtime. The live
+ * `serve-wiring` caller supplies this callback so the `git upload-pack`
+ * lifetime is covered by the shared governor lease.
+ */
+export type GovernedServeExecution = (
+  run: () => Promise<TransportResult>,
+) => Promise<TransportResult>;
+
 /** Guard: only ever serve upload-pack for a repo INSIDE our pot-git root — a
  *  defense-in-depth backstop so a wiring bug can't turn this into an arbitrary
  *  repo-read oracle for a peer. The (hive, repo) → path mapping already sanitizes
@@ -211,7 +223,7 @@ function assertScopeServeAuthorized(repoPath: string, grant?: ScopeRepoServeGran
  * (the per-fetch stream is disposable). Resolves with the exit result; never
  * throws. `allowOutsideRoot` (tests only) skips the root guard.
  */
-export function serveUploadPack(
+function serveUploadPackUnmanaged(
   repoPath: string,
   duplex: Duplex,
   opts: {
@@ -244,6 +256,8 @@ export function serveUploadPack(
      * diagnosis wakes chasing the wrong half of a two-machine system.
      */
     onFailure?: (reason: string) => void;
+    /** Durable governor wrapper supplied by the live serve wiring. */
+    governedExecution?: GovernedServeExecution;
   } = {},
 ): Promise<TransportResult> {
   return new Promise((resolve) => {
@@ -455,6 +469,23 @@ export function serveUploadPack(
       finish(code ?? -1);
     });
   });
+}
+
+/**
+ * SERVER half — govern the actual `git upload-pack` process when the caller
+ * provides the live workspace admission seam. The transport tests call this
+ * primitive directly with no workspace context; production wiring always
+ * passes `governedExecution` so no capacity cap is needed here.
+ */
+export function serveUploadPack(
+  repoPath: string,
+  duplex: Duplex,
+  opts: Parameters<typeof serveUploadPackUnmanaged>[2] = {},
+): Promise<TransportResult> {
+  const { governedExecution, ...transportOpts } = opts;
+  const run = (): Promise<TransportResult> => serveUploadPackUnmanaged(repoPath, duplex, transportOpts);
+  const runGovernedOperation = governedExecution;
+  return runGovernedOperation ? runGovernedOperation(run) : run();
 }
 
 /**
