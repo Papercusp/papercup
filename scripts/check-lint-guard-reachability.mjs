@@ -468,7 +468,6 @@ export const ACKNOWLEDGED_UNREACHABLE_MODULES = new Map([
   ['apps/operator/lib/release/gate-release-site.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/seed-release-routines.ts', '1 test, 0 callers — wire-or-retire'],
   ['apps/operator/lib/release/verify-seed-payload-cli.ts', '1 test, 0 callers — wire-or-retire'],
-  ['apps/operator/lib/release/retrofit-hive-to-gate.ts', '1 test, 0 callers — one-shot migration tool; likely retire'],
   ['apps/operator/lib/release/rollback.ts', '3 tests, 0 callers. ⚠ NAME IS LOAD-BEARING: verify the live rollback path before retiring'],
   ['apps/operator/lib/release/preview-data-plane.ts', 'no test, no caller — wire-or-retire'],
 ]);

@@ -67,7 +67,7 @@ function assertPullback(dir: string, target = 'universal-apple-darwin') {
   const r = spawnSync(
     'bash',
     ['-c', 'set -uo pipefail; source "$1"; assert_dmg_pullback "$2" "$3"', 'bash', LIB, dir, target],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
   );
   return { status: r.status ?? -1, out: `${r.stdout ?? ''}${r.stderr ?? ''}` };
 }

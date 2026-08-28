@@ -169,7 +169,7 @@ const ALLOWED_RAW_GIT: { file: string; symbol: string; why: string }[] = [
   },
   {
     file: 'sync/pot-git/fetch-transport.ts',
-    symbol: 'serveUploadPack',
+    symbol: 'serveUploadPackUnmanaged',
     why: 'git upload-pack is a BIDIRECTIONAL STREAMING protocol (duplex.pipe(child.stdin)), not a batch invocation — it cannot ride a request/response RPC or an fd handoff. Routing it needs a socket-passing design; tracked separately, not silently tolerated.',
   },
   {

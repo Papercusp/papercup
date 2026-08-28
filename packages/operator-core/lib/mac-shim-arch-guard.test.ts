@@ -78,7 +78,12 @@ function assertSlices(archs: string | null, target: string): { code: number; out
   const res = spawnSync(
     'bash',
     ['-c', `source ${JSON.stringify(LIB)}; assert_shim_slices ${JSON.stringify(dylib)} ${JSON.stringify(target)}`],
-    { encoding: 'utf8', env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` } },
+    {
+      encoding: 'utf8',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}` },
+    },
   );
   return { code: res.status ?? -1, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
 }
@@ -87,7 +92,7 @@ function requiredSlices(target: string): string {
   const res = spawnSync(
     'bash',
     ['-c', `source ${JSON.stringify(LIB)}; required_shim_slices ${JSON.stringify(target)}`],
-    { encoding: 'utf8' },
+    { encoding: 'utf8', timeout: 30_000, killSignal: 'SIGKILL' },
   );
   return (res.stdout ?? '').trim();
 }
