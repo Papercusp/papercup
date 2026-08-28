@@ -33,6 +33,7 @@ import {
   PTOOL_PLANS_NEW_TIMEOUT_MS,
   PTOOL_REQUIRE_CHECKPOINT_TIMEOUT_MS,
   PTOOL_WORK_ITEMS_GET_TIMEOUT_MS,
+  PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS,
   PTOOL_POST_CONNECT_RETRIES,
   PTOOL_PROXY_UPSTREAM_ERROR_MAX_ATTEMPTS,
   PTOOL_RETRY_JITTER_MS,
@@ -246,7 +247,8 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('work_items:get')).toBe(PTOOL_WORK_ITEMS_GET_TIMEOUT_MS);
     expect(timeoutForTool('activity:recent')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('events:status')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
-    expect(timeoutForTool('work_items:complete')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    expect(timeoutForTool('work_items:complete')).toBe(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS);
+    expect(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS).toBeGreaterThan(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('activity:tool-log')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('sessions:search')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
     expect(timeoutForTool('release:deploy')).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
@@ -278,7 +280,7 @@ describe('ptool call deadlines', () => {
     expect(timeoutForTool('tools:invoke', {
       name: 'work_items:complete',
       args: { id: 'EI-21391577717750595', state: 'done' },
-    })).toBe(PTOOL_FOREGROUND_TOOL_TIMEOUT_MS);
+    })).toBe(PTOOL_WORK_ITEMS_COMPLETE_TIMEOUT_MS);
     expect(timeoutForTool('tools:invoke', {
       name: 'activity:tool-log',
       args: { owner: 'su-04f38', max_lines: 20 },
