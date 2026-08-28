@@ -581,7 +581,11 @@ export interface IdleRecipientReport {
   aliveNotWakeable: string[];
 }
 
-const EMPTY_IDLE_REPORT: IdleRecipientReport = {
+/** Complete fail-soft value for callers that need to degrade a report probe
+ * without changing the durable send outcome. Keep every optional classification
+ * field present: consumers should be able to distinguish a degraded diagnostic
+ * from a partial/older-shaped result without guessing at omitted keys. */
+export const EMPTY_IDLE_REPORT: IdleRecipientReport = {
   idle: [],
   live: [],
   dormantScheduled: [],

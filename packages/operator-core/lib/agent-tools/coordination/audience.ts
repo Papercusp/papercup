@@ -135,22 +135,33 @@ export async function expandAudienceDetailed(
 ): Promise<AudienceExpansion> {
   const out = new Set<string>();
   const unresolved = new Set<string>();
-  let presence: ActivePresence[] | null = null;
-  const presenceOnce = async (): Promise<ActivePresence[]> =>
-    (presence ??= await resolvers.listActivePresence());
+  // Cache the in-flight read, not only its eventual value. Multiple selectors
+  // are resolved concurrently below, so a value-only cache would let each
+  // @plan/@file branch start its own identical presence query before the first
+  // one settles.
+  let presencePromise: Promise<ActivePresence[]> | undefined;
+  const presenceOnce = (): Promise<ActivePresence[]> =>
+    (presencePromise ??= resolvers.listActivePresence());
 
-  for (const t of to) {
-    if (!t.startsWith(SELECTOR_PREFIX)) {
-      out.add(t); // plain ownerId / '*' / 'human'
-      continue;
-    }
-    if (mode === 'broadcast') {
-      out.add('*');
-      continue;
-    }
-    const resolved = await resolveSelector(t, resolvers, presenceOnce);
-    if (resolved.length === 0) unresolved.add(t);
-    for (const id of resolved) out.add(id);
+  // Selector reads are independent. Fan them out, then fold the settled arrays
+  // in input order so the existing first-seen/dedup ordering stays stable on the
+  // wire even though the backing reads complete in arbitrary order.
+  const expansions = await Promise.all(
+    to.map(async (t) => {
+      if (!t.startsWith(SELECTOR_PREFIX)) {
+        return { selector: t, resolved: [t], unresolved: false };
+      }
+      if (mode === 'broadcast') {
+        return { selector: t, resolved: ['*'], unresolved: false };
+      }
+      const resolved = await resolveSelector(t, resolvers, presenceOnce);
+      return { selector: t, resolved, unresolved: resolved.length === 0 };
+    }),
+  );
+
+  for (const expansion of expansions) {
+    if (expansion.unresolved) unresolved.add(expansion.selector);
+    for (const id of expansion.resolved) out.add(id);
   }
   return { resolved: [...out], unresolvedSelectors: [...unresolved] };
 }
@@ -168,10 +179,15 @@ async function resolveSelector(
   if (selector.startsWith('@plan:')) {
     const slug = selector.slice('@plan:'.length).trim();
     if (!slug) return [];
+    const [directSubscribers, taggedSubscribers, activePresence] = await Promise.all([
+      resolvers.listTargetSubscribers('object', `plan:${slug}`),
+      taggedTopicSubscribers('plan', slug, resolvers),
+      presenceOnce(),
+    ]);
     const ids = new Set<string>();
-    for (const id of await resolvers.listTargetSubscribers('object', `plan:${slug}`)) ids.add(id);
-    for (const id of await taggedTopicSubscribers('plan', slug, resolvers)) ids.add(id);
-    for (const p of await presenceOnce()) if (p.planSlug === slug) ids.add(p.ownerId);
+    for (const id of directSubscribers) ids.add(id);
+    for (const id of taggedSubscribers) ids.add(id);
+    for (const p of activePresence) if (p.planSlug === slug) ids.add(p.ownerId);
     return [...ids];
   }
 
@@ -274,8 +290,13 @@ async function taggedTopicSubscribers(
   const topics = await resolvers.listTaggedTopics(objectKind, objectRef);
   if (!topics.length) return [];
   const ids = new Set<string>();
-  for (const slug of topics) {
-    for (const id of await resolvers.listTargetSubscribers('topic', slug)) ids.add(id);
+  // A tagged object can carry several topics. Their subscriber reads do not
+  // depend on each other; retain topic/list order while issuing them together.
+  const subscribersByTopic = await Promise.all(
+    topics.map((slug) => resolvers.listTargetSubscribers('topic', slug)),
+  );
+  for (const subscribers of subscribersByTopic) {
+    for (const id of subscribers) ids.add(id);
   }
   return [...ids];
 }
