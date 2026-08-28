@@ -719,7 +719,7 @@ async fn run<B: Backend>(
     // Persist the tutorial dismissal exactly once, the first time it closes.
     let mut tutorial_persisted = !app.show_tutorial;
 
-    while let Some(ev) = rx.recv().await {
+    'event_loop: while let Some(ev) = rx.recv().await {
         let prior_harness = app.harness.clone();
         let prior_context_target = app.context_projection_target.clone();
         let chat_terminal = matches!(&ev, Event::ChatDone | Event::ChatError(_));
@@ -860,6 +860,11 @@ async fn run<B: Backend>(
             tutorial::mark_seen();
         }
 
+        // A control intent can carry a tab-entry side effect. Process that
+        // follow-up through the same dispatcher as key-driven actions instead
+        // of dropping it after posting the intent result.
+        let mut action_queue = vec![action];
+        while let Some(action) = action_queue.pop() {
         match action {
             Action::Render => {
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -1170,7 +1175,9 @@ async fn run<B: Backend>(
                 // semantics — this is the dock-CLI path only.
                 if app.dock_agent_panes && opened_bees > 0 {
                     if let Some(id) = app.hud_pane_id {
-                        if let Err(e) = Zellij.run_action(&crate::mux::MuxAction::FocusPaneId(id)) {
+                            if let Err(e) =
+                                Zellij.run_action(&crate::mux::MuxAction::FocusPaneId(id))
+                            {
                             app.update(Event::Error(format!("focus restore: {e}")));
                         }
                     }
@@ -1186,6 +1193,16 @@ async fn run<B: Backend>(
                 let _ = intent_result_tx.send((id, result_json, error));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+                Action::IntentResultWithFollowup {
+                    id,
+                    result_json,
+                    error,
+                    follow_up,
+                } => {
+                    let _ = intent_result_tx.send((id, result_json, error));
+                    action_queue.push(*follow_up);
+                    terminal.draw(|f| ui::draw(f, &app))?;
+                }
             Action::Workbench(cmd) => {
                 // Execute a palette workbench command (P12b) off the UI thread; it
                 // reports results back as toasts. SaveCrew needs the current crew
@@ -1409,7 +1426,8 @@ async fn run<B: Backend>(
                                     let tx2 = tx.clone();
                                     std::thread::spawn(move || {
                                         while let Ok(ev) = ev_rx.recv() {
-                                            if tx2.send(Event::VoiceUi(VE::Stream(ev))).is_err() {
+                                                if tx2.send(Event::VoiceUi(VE::Stream(ev))).is_err()
+                                                {
                                                 break;
                                             }
                                         }
@@ -1471,7 +1489,8 @@ async fn run<B: Backend>(
                                     let _ = tx.send(Event::VoiceUi(VE::MicState(true)));
                                 }
                                 Err(e) => {
-                                    let _ = tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
+                                        let _ =
+                                            tx.send(Event::VoiceUi(VE::Error(format!("mic: {e}"))));
                                 }
                             }
                         }
@@ -1523,7 +1542,8 @@ async fn run<B: Backend>(
                     Some(c) => c.focus_pane(pane_id),
                     None => {
                         app.update(Event::Error(
-                            "focus: needs the companion plugin (run inside the workbench)".into(),
+                                "focus: needs the companion plugin (run inside the workbench)"
+                                    .into(),
                         ));
                     }
                 }
@@ -1656,8 +1676,9 @@ async fn run<B: Backend>(
                             let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Ok(()))));
                         }
                         Err(e) => {
-                            let _ =
-                                tx.send(Event::Voice(event::VoiceMsg::Started(Err(e.to_string()))));
+                                let _ = tx.send(Event::Voice(event::VoiceMsg::Started(Err(
+                                    e.to_string()
+                                ))));
                         }
                     },
                     VoiceCmd::Cancel => {
@@ -1687,9 +1708,10 @@ async fn run<B: Backend>(
                 }
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
-            Action::Quit => break,
+                Action::Quit => break 'event_loop,
             Action::None => {}
         }
+    }
     }
     Ok(())
 }
@@ -1980,7 +2002,7 @@ async fn config_edit(
     // Always refetch — success re-renders the new truth; failure restores it.
     match client.claude_settings_effective(&harness).await {
         Ok(v) => {
-            let _ = tx.send(Event::Config(v));
+            let _ = tx.send(Event::Config { harness, config: v });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("config refetch: {e}")));
@@ -2554,9 +2576,9 @@ async fn fetch_cupboard(
     }
 }
 
-/// Execute a confirmed per-kind Cupboard action (D-011): harness→join,
-/// blueprint→fork (install), snapshot→fork, plugin→install. Success/failure
-/// ride Notify/Error; harness-affecting outcomes also refresh the pot list.
+/// Execute a confirmed per-kind Cupboard action (D-011). Unsupported catalog
+/// kinds never reach this function because the reducer keeps them read-only;
+/// the fallback remains as defense against stale/injected actions.
 /// Conversations browse (Brief 25): fetch the list under the active state/kind
 /// filter ("all" → no filter). Mirrors `fetch_cupboard` — emits an empty list on
 /// error so the tab degrades to its empty state instead of hanging on "loading".
@@ -2653,6 +2675,7 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
         }
     };
     let name = listing.display_name().to_string();
+    let kind = listing.normalized_kind().to_string();
     let toast = |msg: String| {
         Event::Notify(models::Notif {
             level: "info".to_string(),
@@ -2662,15 +2685,30 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
         })
     };
     // The (outcome, success message, whether the pot list changed).
-    let (result, ok_msg, pots_changed) = match listing.listing_kind.as_str() {
-        "plugin" => (
+    let (result, ok_msg, pots_changed) = match kind.as_str() {
+        "plugin" | "pack" => (
             client.cupboard_install_plugin(&listing.id).await,
-            format!("installed plugin '{name}'"),
+            format!("installed {kind} '{name}'"),
             false,
         ),
         "blueprint" => (
             client.cupboard_install_blueprint(&listing.id).await,
             format!("installed blueprint '{name}' — start a pot from it with :create"),
+            false,
+        ),
+        "template" => (
+            client.cupboard_install_template(&listing.id).await,
+            format!("installed template '{name}' — materialize it with templates:new-app"),
+            false,
+        ),
+        "knowledge-pack" => (
+            client.cupboard_stage_knowledge_pack(&listing.id).await,
+            format!("staged knowledge pack '{name}' — review/install it from Learnings"),
+            false,
+        ),
+        "app" if listing.delivery_type.as_deref() == Some("bundle") => (
+            client.cupboard_install_app(&listing.id).await,
+            format!("installed app bundle '{name}'"),
             false,
         ),
         // ("snapshot" listings are RETIRED — the Cupboard's kinds are now
@@ -2697,7 +2735,7 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
         }
         other => {
             let _ = tx.send(Event::Error(format!(
-                "cupboard: no action for listing kind '{other}'"
+                "cupboard: listing kind '{other}' is read-only in PUI"
             )));
             return;
         }
@@ -2705,10 +2743,7 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
     match result {
         Ok(v) => {
             if let Some(e) = v.get("error").and_then(|e| e.as_str()) {
-                let _ = tx.send(Event::Error(format!(
-                    "cupboard {}: {e}",
-                    listing.listing_kind
-                )));
+                let _ = tx.send(Event::Error(format!("cupboard {}: {e}", kind)));
                 return;
             }
             // Surface the blueprint dep-checker's missing-deps note when present.
@@ -2732,10 +2767,7 @@ async fn cupboard_act(listing: models::CupboardListing, tx: UnboundedSender<Even
             }
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!(
-                "cupboard {}: {e}",
-                listing.listing_kind
-            )));
+            let _ = tx.send(Event::Error(format!("cupboard {}: {e}", kind)));
         }
     }
 }
@@ -4751,7 +4783,10 @@ async fn refetch_all(
         .unwrap_or_else(|_| "papercup".to_string());
     match client.features_for(&slug).await {
         Ok(fs) => {
-            let _ = tx.send(Event::Features(fs));
+            let _ = tx.send(Event::Features {
+                harness: slug.clone(),
+                features: fs,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("features: {e}")));
@@ -4759,7 +4794,10 @@ async fn refetch_all(
     }
     match client.issues_for(&slug).await {
         Ok(is) => {
-            let _ = tx.send(Event::Issues(is));
+            let _ = tx.send(Event::Issues {
+                harness: slug.clone(),
+                issues: is,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("issues: {e}")));
@@ -4769,7 +4807,10 @@ async fn refetch_all(
     let doc = active_doc.lock().ok().and_then(|g| g.clone());
     match client.docs_for(&slug, doc.as_deref()).await {
         Ok(d) => {
-            let _ = tx.send(Event::Docs(d));
+            let _ = tx.send(Event::Docs {
+                harness: slug.clone(),
+                docs: d,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("docs: {e}")));
@@ -4777,7 +4818,10 @@ async fn refetch_all(
     }
     match client.testing_domains(&slug).await {
         Ok(t) => {
-            let _ = tx.send(Event::Testing(t));
+            let _ = tx.send(Event::Testing {
+                harness: slug.clone(),
+                testing: t,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("testing: {e}")));
@@ -4785,7 +4829,10 @@ async fn refetch_all(
     }
     match client.claude_settings_effective(&slug).await {
         Ok(c) => {
-            let _ = tx.send(Event::Config(c));
+            let _ = tx.send(Event::Config {
+                harness: slug.clone(),
+                config: c,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("config: {e}")));
@@ -4794,7 +4841,10 @@ async fn refetch_all(
     // Plugin-contributed TUI panes for the active harness (D-002).
     match client.tui_panes_for(&slug).await {
         Ok(p) => {
-            let _ = tx.send(Event::TuiPanes(p));
+            let _ = tx.send(Event::TuiPanes {
+                harness: slug.clone(),
+                panes: p,
+            });
         }
         Err(e) => {
             let _ = tx.send(Event::Error(format!("tui_panes: {e}")));
@@ -4862,10 +4912,12 @@ async fn refetch_all(
     // (P2). Global — not per-harness — reconciled with the rest on each refetch.
     match client.work_items_list().await {
         Ok(w) => {
-            let _ = tx.send(Event::WorkItems(w));
+            let _ = tx.send(Event::WorkItems { result: Ok(w) });
         }
         Err(e) => {
-            let _ = tx.send(Event::Error(format!("work_items: {e}")));
+            let _ = tx.send(Event::WorkItems {
+                result: Err(e.to_string()),
+            });
         }
     }
     match client.activity_recent(None, 200).await {
@@ -4884,23 +4936,11 @@ async fn refetch_all(
             let _ = tx.send(Event::Error(format!("activity-todos: {e}")));
         }
     }
-    // The Memory tab's list (D-006 Step 2). `ok:false` (backend unavailable —
-    // mem0 unconfigured, auth missing) is an EXPECTED state the tab renders as
-    // its empty state, so errors are quiet here too.
-    match client.memory_list(Some(&slug)).await {
-        Ok(p) => {
-            let _ = tx.send(Event::Memories {
-                available: p.ok,
-                results: p.results,
-            });
-        }
-        Err(_) => {
-            let _ = tx.send(Event::Memories {
-                available: false,
-                results: Vec::new(),
-            });
-        }
-    }
+    // The Memory tab's list (D-006 Step 2). Preserve backend-disabled,
+    // authentication, and transport outcomes as distinct typed states.
+    let _ = tx.send(Event::MemoryLoad(
+        client.memory_list_state(Some(&slug)).await,
+    ));
 }
 
 #[cfg(test)]
