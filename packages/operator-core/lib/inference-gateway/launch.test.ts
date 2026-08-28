@@ -6,6 +6,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
+// The RETIRED per-account multiplier, imported rather than spelled `4`: if the constant
+// is ever deleted with the last of the formula, this file stops compiling instead of
+// silently asserting against a stale literal.
+import { CODEX_ADMISSION_SLOTS_PER_ACCOUNT } from './gateway';
 
 let upstream: http.Server | undefined;
 let svc: RunningGatewayService | undefined;
@@ -72,6 +76,11 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
       log: (_level, message) => logs.push(message),
       resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
       makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+      // An EXPLICIT operator cap stays authoritative under D-006, and it is what makes
+      // "sized from its OWN pool" observable at all: with no override both lanes now
+      // resolve to the same 24, so a one-account fixture could no longer tell a
+      // Codex-sized reserve apart from Claude's. 8 slots ⇒ ceil(8 * 0.15) = 2 ≠ 4.
+      codexConcurrency: 8,
       observePool: () => () => {},
       poolReloadIntervalMs: 0,
     });
@@ -81,20 +90,51 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
       codexAdmission: { maxConcurrent: number; tier1Reserve?: number };
       codexAimd: { cap: number; floor: number };
     };
-    assert.equal(stats.concurrencyCap, 24, 'Claude keeps the larger gateway concurrency cap');
-    assert.equal(stats.codexAdmission.maxConcurrent, 4, 'one Codex account gets four default admission slots');
-    assert.equal(stats.codexAdmission.tier1Reserve, 1, 'Codex reserve is ceil(4 * 0.15), not Claude\'s reserve');
-    assert.equal(stats.codexAimd.cap, 4, 'Codex AIMD cap follows the account-scaled admission cap');
-    assert.equal(stats.codexAimd.floor, 3, 'Codex AIMD floor remains strictly below a cap greater than one');
+    assert.equal(stats.concurrencyCap, 24, 'Claude keeps the gateway concurrency cap it was configured with');
+    assert.equal(stats.codexAdmission.maxConcurrent, 8, 'the explicit Codex cap sizes its own admission pool');
+    assert.equal(stats.codexAdmission.tier1Reserve, 2, 'Codex reserve is ceil(8 * 0.15), not Claude\'s reserve');
+    assert.equal(stats.codexAimd.cap, 8, 'Codex AIMD cap follows its own admission cap, not Claude\'s');
+    assert.equal(stats.codexAimd.floor, 4, 'the default AIMD floor already sits below an 8-slot cap');
     assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=4')), 'launch resolves Claude tiers for 24 slots');
-    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=1')), 'launch resolves Codex tiers for 4 slots');
+    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=2')), 'launch resolves Codex tiers for 8 slots');
   } finally {
     if (previousFlag === undefined) delete process.env[flagEnv];
     else process.env[flagEnv] = previousFlag;
   }
 });
 
-test('startGatewayService caps account-scaled Codex admission at the Claude cap and preserves explicit overrides', async () => {
+test('one Codex account does NOT multiply into a four-slot admission cap (D-006)', async () => {
+  // The falsifier for capless-inference-gateway-2026-08-28 D-006 ("serviceability
+  // informs attribution, not an admission formula"). `accountScaledCodexConcurrency`
+  // used to return accounts * CODEX_ADMISSION_SLOTS_PER_ACCOUNT (1 * 4 = 4); it now
+  // returns the configured Claude cap and the controller learns the real window from
+  // outcomes. ONE account is the only fixture that separates the two — seven accounts
+  // read 24 under both rules (28 clamped, vs. the cap itself), which is why the
+  // sibling multi-account case below cannot catch a reinstated multiplication.
+  const up = await startUpstream();
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+  const codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/codex', source: 'pool' as const }];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const stats = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    concurrencyCap: number;
+    codexAdmission: { maxConcurrent: number };
+    codexAimd: { cap: number };
+  };
+  assert.equal(stats.codexAdmission.maxConcurrent, 24, 'account count is attribution evidence, not an admission formula');
+  assert.equal(stats.codexAdmission.maxConcurrent, stats.concurrencyCap, 'the unoverridden Codex seed is the configured cap itself');
+  assert.equal(stats.codexAimd.cap, 24, 'the Codex AIMD ceiling follows that seed');
+  assert.notEqual(stats.codexAdmission.maxConcurrent, CODEX_ADMISSION_SLOTS_PER_ACCOUNT, 'the retired slots-per-account product must not come back');
+});
+
+test('startGatewayService seeds Codex admission from the configured cap and preserves explicit overrides', async () => {
   const up = await startUpstream();
   const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
   const codexDb = Array.from({ length: 7 }, (_, i) => ({
@@ -117,7 +157,10 @@ test('startGatewayService caps account-scaled Codex admission at the Claude cap 
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number; floor: number };
   };
-  assert.equal(scaled.codexAdmission.maxConcurrent, 24, 'seven accounts scale to 28 slots but remain capped at Claude\'s 24');
+  // D-006: the account COUNT is deliberately not an input here — seven accounts seed the
+  // same 24 that one does. (This case therefore cannot detect a reinstated multiplication;
+  // the single-account case above is the falsifier for that.)
+  assert.equal(scaled.codexAdmission.maxConcurrent, 24, 'the seed is the configured cap, whatever the account count');
   assert.equal(scaled.codexAimd.cap, 24);
   assert.equal(scaled.codexAimd.floor, 4, 'the default AIMD floor is already below the 24-slot cap');
 
