@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -346,14 +346,21 @@ function Field({
   hint,
 }: {
   label: string;
-  children: React.ReactNode;
+  children: React.ReactNode | ((hintId: string | undefined) => React.ReactNode);
   hint?: string;
 }) {
+  const generatedHintId = useId();
+  const hintId = hint ? generatedHintId : undefined;
+
   return (
     <label className={styles.field}>
       <span className={styles.fieldLabel}>{label}</span>
-      {children}
-      {hint ? <span className={styles.fieldHint}>{hint}</span> : null}
+      {typeof children === "function" ? children(hintId) : children}
+      {hint ? (
+        <span id={hintId} className={styles.fieldHint}>
+          {hint}
+        </span>
+      ) : null}
     </label>
   );
 }
@@ -880,12 +887,15 @@ export default function CloudWorkspacesPage() {
                     : undefined
                 }
               >
-                <TextInput
-                  value={nameParam}
-                  onChange={(event) => void setNameParam(event.target.value)}
-                  placeholder="research-control"
-                  aria-label="Workspace name"
-                />
+                {(hintId) => (
+                  <TextInput
+                    value={nameParam}
+                    onChange={(event) => void setNameParam(event.target.value)}
+                    placeholder="research-control"
+                    aria-label="Workspace name"
+                    aria-describedby={hintId}
+                  />
+                )}
               </Field>
               <Field label="Provider connection">
                 <Select
@@ -906,19 +916,22 @@ export default function CloudWorkspacesPage() {
                     : "No projects, accounts, or subscriptions were returned by this provider connection."
                 }
               >
-                <Select
-                  value={selectedScope?.id ?? ""}
-                  onChange={(value) => void setScopeParam(value)}
-                  ariaLabel="Project, account, or subscription"
-                  placeholder="No scopes available"
-                  disabled={!selectedConnection?.scopes.length}
-                  options={
-                    selectedConnection?.scopes.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                    })) ?? []
-                  }
-                />
+                {(hintId) => (
+                  <Select
+                    value={selectedScope?.id ?? ""}
+                    onChange={(value) => void setScopeParam(value)}
+                    ariaLabel="Project, account, or subscription"
+                    placeholder="No scopes available"
+                    disabled={!selectedConnection?.scopes.length}
+                    options={
+                      selectedConnection?.scopes.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                      })) ?? []
+                    }
+                    describedBy={hintId}
+                  />
+                )}
               </Field>
               <Field
                 label="Region"
@@ -928,19 +941,22 @@ export default function CloudWorkspacesPage() {
                     : "No regions were returned by this provider connection."
                 }
               >
-                <Select
-                  value={selectedRegion?.id ?? ""}
-                  onChange={(value) => void setRegionParam(value)}
-                  ariaLabel="Region"
-                  placeholder="No regions available"
-                  disabled={!selectedConnection?.regions.length}
-                  options={
-                    selectedConnection?.regions.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                    })) ?? []
-                  }
-                />
+                {(hintId) => (
+                  <Select
+                    value={selectedRegion?.id ?? ""}
+                    onChange={(value) => void setRegionParam(value)}
+                    ariaLabel="Region"
+                    placeholder="No regions available"
+                    disabled={!selectedConnection?.regions.length}
+                    options={
+                      selectedConnection?.regions.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                      })) ?? []
+                    }
+                    describedBy={hintId}
+                  />
+                )}
               </Field>
               <Field
                 label="Size"
@@ -950,19 +966,22 @@ export default function CloudWorkspacesPage() {
                     : "No machine sizes were returned by this provider connection."
                 }
               >
-                <Select
-                  value={selectedSize?.id ?? ""}
-                  onChange={(value) => void setSizeParam(value)}
-                  ariaLabel="Machine size"
-                  placeholder="No machine sizes available"
-                  disabled={!selectedConnection?.sizes.length}
-                  options={
-                    selectedConnection?.sizes.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                    })) ?? []
-                  }
-                />
+                {(hintId) => (
+                  <Select
+                    value={selectedSize?.id ?? ""}
+                    onChange={(value) => void setSizeParam(value)}
+                    ariaLabel="Machine size"
+                    placeholder="No machine sizes available"
+                    disabled={!selectedConnection?.sizes.length}
+                    options={
+                      selectedConnection?.sizes.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                      })) ?? []
+                    }
+                    describedBy={hintId}
+                  />
+                )}
               </Field>
               <Field
                 label="Image"
@@ -972,29 +991,35 @@ export default function CloudWorkspacesPage() {
                     : "No images were returned by this provider connection."
                 }
               >
-                <Select
-                  value={selectedImage?.id ?? ""}
-                  onChange={(value) => void setImageParam(value)}
-                  ariaLabel="Machine image"
-                  placeholder="No images available"
-                  disabled={!selectedConnection?.images.length}
-                  options={
-                    selectedConnection?.images.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                    })) ?? []
-                  }
-                />
+                {(hintId) => (
+                  <Select
+                    value={selectedImage?.id ?? ""}
+                    onChange={(value) => void setImageParam(value)}
+                    ariaLabel="Machine image"
+                    placeholder="No images available"
+                    disabled={!selectedConnection?.images.length}
+                    options={
+                      selectedConnection?.images.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                      })) ?? []
+                    }
+                    describedBy={hintId}
+                  />
+                )}
               </Field>
               <Field label="Disk (GiB)" hint="20–16,384 GiB">
-                <TextInput
-                  type="number"
-                  min={20}
-                  max={16_384}
-                  value={diskParam}
-                  onChange={(event) => void setDiskParam(event.target.value)}
-                  aria-label="Disk size in GiB"
-                />
+                {(hintId) => (
+                  <TextInput
+                    type="number"
+                    min={20}
+                    max={16_384}
+                    value={diskParam}
+                    onChange={(event) => void setDiskParam(event.target.value)}
+                    aria-label="Disk size in GiB"
+                    aria-describedby={hintId}
+                  />
+                )}
               </Field>
               <Field
                 label="Network"
@@ -1004,19 +1029,22 @@ export default function CloudWorkspacesPage() {
                     : "No networks were returned by this provider connection."
                 }
               >
-                <Select
-                  value={selectedNetwork?.id ?? ""}
-                  onChange={(value) => void setNetworkParam(value)}
-                  ariaLabel="Network"
-                  placeholder="No networks available"
-                  disabled={!selectedConnection?.networks.length}
-                  options={
-                    selectedConnection?.networks.map((option) => ({
-                      value: option.id,
-                      label: option.label,
-                    })) ?? []
-                  }
-                />
+                {(hintId) => (
+                  <Select
+                    value={selectedNetwork?.id ?? ""}
+                    onChange={(value) => void setNetworkParam(value)}
+                    ariaLabel="Network"
+                    placeholder="No networks available"
+                    disabled={!selectedConnection?.networks.length}
+                    options={
+                      selectedConnection?.networks.map((option) => ({
+                        value: option.id,
+                        label: option.label,
+                      })) ?? []
+                    }
+                    describedBy={hintId}
+                  />
+                )}
               </Field>
             </div>
             <div
@@ -1527,12 +1555,15 @@ export default function CloudWorkspacesPage() {
             label="Injected credential reference"
             hint="Examples: env:GCP_APPLICATION_CREDENTIALS or vault:cloud/gcp-prod"
           >
-            <TextInput
-              value={credentialRef}
-              onChange={(event) => setCredentialRef(event.target.value)}
-              placeholder="env:GCP_APPLICATION_CREDENTIALS"
-              aria-label="Injected credential reference"
-            />
+            {(hintId) => (
+              <TextInput
+                value={credentialRef}
+                onChange={(event) => setCredentialRef(event.target.value)}
+                placeholder="env:GCP_APPLICATION_CREDENTIALS"
+                aria-label="Injected credential reference"
+                aria-describedby={hintId}
+              />
+            )}
           </Field>
           <div className={styles.modalActions}>
             <Button variant="ghost" onClick={closeConnectionModal}>

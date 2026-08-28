@@ -54,17 +54,20 @@ vi.mock("@/app/harness/Select", () => ({
     ariaLabel,
     placeholder,
     disabled,
+    describedBy,
   }: {
     value: string;
     options: Array<{ value: string; label: unknown }>;
     ariaLabel: string;
     placeholder?: string;
     disabled?: boolean;
+    describedBy?: string;
   }) => (
     <button
       type="button"
       role="combobox"
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       disabled={disabled}
     >
       {String(
@@ -431,6 +434,31 @@ describe("CloudWorkspacesPage", () => {
     expect(provision.getAttribute("aria-describedby")).toBe(
       "provision-blockers",
     );
+  });
+
+  it("associates visible field guidance with the control it describes", () => {
+    H.rows = [{ ...rows[0], networks: [] }];
+    render(<CloudWorkspacesPage />);
+
+    const expectedDescriptions = [
+      ["textbox", "Workspace name", "Required before provisioning."],
+      ["combobox", "Machine size", "4 vCPU · 16 GiB RAM"],
+      ["spinbutton", "Disk size in GiB", "20–16,384 GiB"],
+      [
+        "combobox",
+        "Network",
+        "No networks were returned by this provider connection.",
+      ],
+    ] as const;
+
+    for (const [role, name, description] of expectedDescriptions) {
+      const control = screen.getByRole(role, { name });
+      const describedBy = control.getAttribute("aria-describedby");
+      expect(describedBy).toBeTruthy();
+      expect(document.getElementById(describedBy!)?.textContent).toBe(
+        description,
+      );
+    }
   });
 
   it("keeps overview metrics readable at narrow embedded pane widths", () => {
