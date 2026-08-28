@@ -236,7 +236,15 @@ const STATIC_CAP =
   /\b(?:maxConcurrent|maxWorkers|maxQueue|maxSimultaneous|capacityCeiling)\b\s*(?:[:=]|\?\?)\s*\d+/i;
 const HIDDEN_SEMAPHORE = /\b(?:Semaphore|semaphore|p-limit|Bottleneck)\b/;
 const DURABLE = /\b(?:work_items|durable|receipt|postgres|DBOS)\b/i;
-const RESIDENT_QUEUE = /\b(?:queue|pending|backlog)\w*\.(?:push|set|add)\s*\(/i;
+// Match collections whose identifier says they are a queue/backlog.  The old
+// `(?:queue|pending|backlog)\w*` prefix also matched diagnostic Sets such as
+// `pendingGradingAuditTargetIds.add(...)`: that is an ID accumulator, not a
+// resident work queue, and made the active P-014 lane fail on its own gate
+// bookkeeping.  Keep the exact `pending` spelling for the small conventional
+// case, while requiring a Queue/Backlog suffix for compound names so pending
+// IDs, tokens, and targets do not look like resident work.
+const RESIDENT_QUEUE =
+  /\b(?:queue|backlog|pending|[A-Za-z_$][\w$]*(?:Queue|Backlog))\.(?:push|set|add)\s*\(/;
 const RETRY_RECEIPT =
   /(?:receipt[\s\S]{0,180}(?:retry|again)|(?:retry|again)[\s\S]{0,180}receipt)/i;
 const DISHONEST_METRIC =
