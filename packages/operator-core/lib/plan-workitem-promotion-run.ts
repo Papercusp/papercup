@@ -283,7 +283,7 @@ function readRawPlanItems(read: PlanRead): RawPlanItem[] {
  */
 async function evaluateSpecTriadForPromotion(
   row: PlanRow,
-): Promise<{ gated: boolean; missing: string[]; gap: string } | null> {
+): Promise<{ gated: boolean; missing: string[]; gap: string; scopeReason: string } | null> {
   try {
     const flagEnabled = await getFlag(FLAGS.SPEC_TRIAD_REQUIRED, systemDistinctId());
     if (!flagEnabled) return null;
@@ -305,10 +305,38 @@ async function evaluateSpecTriadForPromotion(
       gated: true,
       missing: verdict.missing,
       gap: describeSpecTriadGap(verdict.triad),
+      scopeReason: verdict.scope.reason,
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * The operational `op_status` axis is retired for new fleet-driven execution, but
+ * existing plans can still be in flight with only the canonical `## Now` index
+ * recording that state. A report-only/no-clause plan already executing must be
+ * allowed to continue promotion; otherwise the epoch-based triad rollout turns a
+ * compatibility read into a new admission wall. Keep this exact and narrow so a
+ * new plan, or one explicitly declaring `specTriad: required`, remains gated.
+ */
+function isAlreadyExecutingPlan(row: PlanRow): boolean {
+  return row.opStatus === 'started' || row.nowState?.trim().toUpperCase() === 'EXECUTING';
+}
+
+function isLegacyExecutingReportOnlyPlan(
+  row: PlanRow,
+  specQuality: PlanSpecQualityGateVerdict,
+  specTriad: { gated: boolean; scopeReason: string } | null,
+): boolean {
+  return (
+    isAlreadyExecutingPlan(row) &&
+    specQuality.applicable === false &&
+    specQuality.mode === 'report-only' &&
+    specQuality.wouldBlock.includes('no-first-class-spec-clauses') &&
+    specTriad?.gated === true &&
+    specTriad.scopeReason === 'created-after-epoch'
+  );
 }
 
 /**
@@ -391,7 +419,17 @@ export async function promotePlanItems(opts: PromotePlanItemsOptions): Promise<P
   // measured freeze guard, not an intention — 330 live plans would otherwise
   // stop promoting the moment the flag went on.
   const specTriad = await evaluateSpecTriadForPromotion(read.row);
-  if (specTriad?.gated) {
+  // Compatibility for the retired op_status axis: a plan already executing via
+  // the canonical `now_state` index (or the legacy started value) may continue
+  // when spec-quality is explicitly report-only because it has no first-class
+  // clauses. This does not weaken an explicit `specTriad: required` declaration
+  // (`scopeReason` is `required-declared`) or any genuinely new plan.
+  const legacyExecutingContinuation = isLegacyExecutingReportOnlyPlan(
+    read.row,
+    specQuality,
+    specTriad,
+  );
+  if (specTriad?.gated && !legacyExecutingContinuation) {
     const { ensureSpecTriadFiling } = await import('./agent-tools/plans/spec-triad-filing');
     const filed = await ensureSpecTriadFiling({
       workspaceId: opts.workspaceId,

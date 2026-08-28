@@ -22,7 +22,7 @@ import type { RouteContext } from '../define-route';
 // Resolves through the mock below, which spreads the REAL module — so this is the
 // genuine constant, and asserting the route used it catches a value drift that a
 // hand-copied literal in the mock would have hidden.
-import { DISPLAY_TERMINAL_LAUNCH } from '../../adv-sessions';
+import { DISPLAY_TERMINAL_LAUNCH, type AdvSessionRow } from '../../adv-sessions';
 // WI-6821 added `await import('../../../mcp-base-url')` to the LIVE-SPAWN branch of the
 // route. Every test here runs under `vi.useFakeTimers()`, and a FIRST-TIME dynamic import
 // cannot complete while fake timers are installed — the module fetch never gets the real
@@ -136,7 +136,8 @@ vi.mock('../../console-launcher', async (importOriginal) => ({
 // Deferred-launch (D-006) records via recordAdvSession instead of spawning — mock
 // it (vi.hoisted so the factory can reference the spy) so the defer_spawn path
 // doesn't need a real PG.
-const { recordAdvSessionMock } = vi.hoisted(() => ({
+const { getAdvSessionMock, recordAdvSessionMock } = vi.hoisted(() => ({
+  getAdvSessionMock: vi.fn(async (_id: number): Promise<unknown | null> => null),
   recordAdvSessionMock: vi.fn(async (_opts: unknown) => 99),
 }));
 // Spread the REAL module rather than listing exports by hand: launch-su.ts also
@@ -150,7 +151,15 @@ const { recordAdvSessionMock } = vi.hoisted(() => ({
 vi.mock('../../adv-sessions', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../adv-sessions')>()),
   endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+  getAdvSession: getAdvSessionMock,
   recordAdvSession: recordAdvSessionMock,
+}));
+
+const { nativeSessionHandleMock } = vi.hoisted(() => ({
+  nativeSessionHandleMock: vi.fn((_row: unknown): unknown => null),
+}));
+vi.mock('../../native-session-handles', () => ({
+  nativeSessionHandleForAdvSession: nativeSessionHandleMock,
 }));
 
 // A deferred (workbench) record fires a `roster` sync-invalidation so the pui
@@ -248,9 +257,41 @@ function lastOneliner(): string {
   return args[args.length - 1];
 }
 
+function trackedSession(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
+  return {
+    id: 99,
+    workspaceId: 'papercusp-workspace',
+    harnessSlug: 'papercup',
+    planSlug: 'my-plan',
+    agent: 'claude',
+    role: null,
+    feature: null,
+    mode: 'console',
+    terminalBin: null,
+    pid: null,
+    windowId: null,
+    ompThreadId: null,
+    label: null,
+    cwd: '/repo',
+    coordOwnerId: 'su-stable-owner',
+    sessionId: 'claude-native-99',
+    display: 'workbench',
+    launchArgv: ['psu', '--no-picker', '--agent=claude'],
+    launchedAt: '2026-08-27T23:00:00.000Z',
+    startedAt: '2026-08-27T22:59:59.000Z',
+    endedAt: null,
+    exitCode: null,
+    endedBy: null,
+    endedSignal: null,
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  getAdvSessionMock.mockResolvedValue(null);
+  nativeSessionHandleMock.mockReturnValue(null);
   // Default: the spawned child survives the early-exit probe, i.e. the "normal"
   // success path — no `warning` on the response. Individual tests in the
   // "silent launch failure" block flip this.
@@ -359,12 +400,99 @@ describe('launch-su', () => {
     };
     expect(opts.display).toBe('workbench');
     expect(opts.agent).toBe('claude');
+    // P-002: this owner binding lets bootstrap adopt row 99 after PUI claims it;
+    // without it psu inserts a second runtime row and the returned id goes stale.
+    expect((opts as { coordOwnerId?: string }).coordOwnerId).toBe(json.ownerId);
     expect(opts.launchArgv).toEqual(
       expect.arrayContaining(['--no-picker', '--agent=claude', '--harness=papercup', '--plan=my-plan']),
     );
     // …and it wakes the pui dock-driver with a roster invalidation so the pane
     // opens deterministically (not on the firehose / 60s safety-net).
     expect(notifySyncInvalidateMock).toHaveBeenCalledWith('roster');
+  });
+
+  it('threads carry into the one deferred psu argv and rejects invalid carry', async () => {
+    const ok = await callPost({
+      agent: 'codex',
+      harness_slug: 'papercup',
+      defer_spawn: true,
+      carry: 'cold',
+    });
+    expect(ok.status).toBe(200);
+    const recorded = recordAdvSessionMock.mock.calls[0]![0] as { launchArgv?: string[] };
+    expect(recorded.launchArgv).toContain('--carry=cold');
+    expect(realSpawns()).toHaveLength(0);
+
+    vi.clearAllMocks();
+    const bad = await callPost({ agent: 'codex', defer_spawn: true, carry: 'lukewarm' });
+    expect(bad.status).toBe(400);
+    expect((await bad.json()).error).toContain('carry must be warm|cold');
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
+  });
+
+  it('attaches by stable advSessionId and native handle without spawning or recording', async () => {
+    const row = trackedSession({ agent: 'codex', sessionId: null });
+    const native = {
+      backend: 'codex',
+      source: 'adv_sessions',
+      ownerId: row.coordOwnerId,
+      codexHome: '/tmp/codex/session-99',
+      rolloutId: 'rollout-99',
+      exactResumeSupported: true,
+      missingReason: null,
+    };
+    getAdvSessionMock.mockResolvedValue(row);
+    nativeSessionHandleMock.mockReturnValue(native);
+
+    const res = await callPost({
+      agent: 'codex',
+      attach_adv_session_id: 99,
+      harness_slug: 'papercup',
+      plan_slug: 'my-plan',
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      status: 'ok',
+      attached: true,
+      advSessionId: 99,
+      ownerId: 'su-stable-owner',
+      agent: 'codex',
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'papercup',
+      planSlug: 'my-plan',
+      nativeSession: native,
+    });
+    expect(getAdvSessionMock).toHaveBeenCalledWith(99);
+    expect(nativeSessionHandleMock).toHaveBeenCalledWith(row);
+    expect(floorMock).not.toHaveBeenCalled();
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
+    expect(spawnHeadlessMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses attach backend/context mismatches and ambiguous create+attach requests', async () => {
+    getAdvSessionMock.mockResolvedValue(trackedSession());
+
+    const backend = await callPost({ agent: 'omp', attach_adv_session_id: 99 });
+    expect(backend.status).toBe(409);
+    expect((await backend.json()).error).toContain('backend is claude, not omp');
+
+    const harness = await callPost({
+      agent: 'claude',
+      attach_adv_session_id: 99,
+      harness_slug: 'other-harness',
+    });
+    expect(harness.status).toBe(409);
+
+    const implicit = await callPost({ attach_adv_session_id: 99 });
+    expect(implicit.status).toBe(400);
+    expect((await implicit.json()).error).toContain('explicit agent');
+
+    const ambiguous = await callPost({ agent: 'claude', attach_adv_session_id: 99, defer_spawn: true });
+    expect(ambiguous.status).toBe(400);
+    expect(recordAdvSessionMock).not.toHaveBeenCalled();
+    expect(realSpawns()).toHaveLength(0);
   });
 
   it('the live (non-deferred) spawn path records a `terminal` row AND wakes the roster', async () => {

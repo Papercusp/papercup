@@ -5,7 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { launchAgent } from './launch-agent';
+import { launchAgent, openPuiSuSession } from './launch-agent';
 
 const origFetch = globalThis.fetch;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -56,6 +56,10 @@ describe('launchAgent', () => {
       fleet_name: null,
       fleet_scheme: null,
       account: null,
+      // P-002: carry and attach are explicit on the wire. Null keeps the
+      // ordinary live-spawn path byte/behavior compatible with bare psu.
+      carry: null,
+      attach_adv_session_id: null,
       // WI-6505: same always-on-the-wire discipline as the keys above. `false`
       // rather than null because headed IS the default, not "unspecified" — a
       // launch that omitted it would be indistinguishable from one that asked
@@ -96,6 +100,122 @@ describe('launchAgent', () => {
     expect(r.ok).toBe(true);
     expect(r.advSessionId).toBe(77);
     expect(firstBody().defer_spawn).toBe(true);
+  });
+
+  it.each(['claude', 'codex', 'omp'] as const)(
+    'PUI create requires explicit %s and records one deferred psu launch with carry',
+    async (backend) => {
+      fetchMock.mockImplementation(async (_url, init) => {
+        const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return new Response(
+          JSON.stringify({
+            status: 'ok',
+            deferred: true,
+            advSessionId: 81,
+            ownerId: 'su-created',
+            agent: body.agent,
+            workspaceId: 'papercusp-workspace',
+            harnessSlug: body.harness_slug,
+            planSlug: body.plan_slug,
+            nativeSession: null,
+          }),
+          { status: 200 },
+        );
+      });
+
+      const result = await openPuiSuSession({
+        operation: 'create',
+        backend,
+        carry: 'warm',
+        slug: 'papercup',
+        planSlug: 'pui-plan',
+        model: 'selected-model',
+        account: 'default',
+      });
+      expect(result).toEqual({
+        ok: true,
+        session: {
+          operation: 'created',
+          backend,
+          advSessionId: 81,
+          ownerId: 'su-created',
+          workspaceId: 'papercusp-workspace',
+          harnessSlug: 'papercup',
+          planSlug: 'pui-plan',
+          nativeSession: null,
+        },
+      });
+      expect(firstBody()).toMatchObject({
+        agent: backend,
+        model: 'selected-model',
+        account: 'default',
+        carry: 'warm',
+        defer_spawn: true,
+        attach_adv_session_id: null,
+      });
+    },
+  );
+
+  it('PUI attach uses the same route by stable advSessionId and never requests a spawn', async () => {
+    const nativeSession = {
+      backend: 'omp',
+      source: 'adv_sessions',
+      ownerId: 'su-existing',
+      ompThreadId: 'thread-42',
+      agentHome: '/tmp/omp-agent',
+      exactResumeSupported: true,
+      missingReason: null,
+    } as const;
+    fetchMock.mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            status: 'ok',
+            attached: true,
+            advSessionId: 42,
+            ownerId: 'su-existing',
+            agent: 'omp',
+            workspaceId: 'papercusp-workspace',
+            harnessSlug: 'papercup',
+            planSlug: null,
+            nativeSession,
+          }),
+          { status: 200 },
+        ),
+    );
+
+    const result = await openPuiSuSession({
+      operation: 'attach',
+      backend: 'omp',
+      advSessionId: 42,
+      harnessSlug: 'papercup',
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      session: {
+        operation: 'attached',
+        backend: 'omp',
+        advSessionId: 42,
+        ownerId: 'su-existing',
+        nativeSession,
+      },
+    });
+    expect(firstBody()).toMatchObject({
+      agent: 'omp',
+      attach_adv_session_id: 42,
+      defer_spawn: false,
+      carry: null,
+    });
+  });
+
+  it('ordinary launch remains the live-spawn/bare-psu path, not the PUI attach path', async () => {
+    await launchAgent({ agent: 'claude', slug: 'papercup' });
+    expect(firstBody()).toMatchObject({
+      agent: 'claude',
+      defer_spawn: false,
+      attach_adv_session_id: null,
+      carry: null,
+    });
   });
 
   it('claude → POST launch-su', async () => {

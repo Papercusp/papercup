@@ -172,7 +172,12 @@ describe('reconcileProposedCompletionsAtCommit — P-008 causal git fixture', ()
   it('holds dependencies on a partial commit, then upgrades and emits exactly once on the complete commit', async () => {
     const root = mkdtempSync(join(tmpdir(), 'completion-settlement-'));
     TEMP_ROOTS.push(root);
-    const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' }).trim();
+    const git = (...args: string[]) =>
+      execFileSync('git', ['-C', root, ...args], {
+        encoding: 'utf8',
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
+      }).trim();
     git('init', '-q');
     git('config', 'user.email', 'fixture@example.test');
     git('config', 'user.name', 'Settlement Fixture');

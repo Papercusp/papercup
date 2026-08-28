@@ -121,7 +121,7 @@ describe('conflictMarkersDetector', () => {
 });
 
 describe('DEFAULT_CONTENT_DETECTORS', () => {
-  it('ships all ten seeded detectors, keyed for the guard + escalation', () => {
+  it('ships all eleven seeded detectors, keyed for the guard + escalation', () => {
     expect(DEFAULT_CONTENT_DETECTORS.map((d) => d.key)).toEqual([
       // EI-21230011589307899: ordered FIRST. Every other detector here guards a
       // BUILD, where a miss is repaired by the next commit; this one guards git
@@ -138,6 +138,9 @@ describe('DEFAULT_CONTENT_DETECTORS', () => {
       // message must be recorded first. It also catches the SILENT form, where
       // the file parses and ts-parse is structurally blind.
       'sql-comment-backtick',
+      // EI-5240: the bundler's own transform verdict must run before the
+      // TypeScript-only check, which can accept source that esbuild rejects.
+      'esbuild-transform',
       // WI-6683: ordered after smart-quotes so the more specific curly-quote
       // message is recorded first for a file that trips both. nul-bytes sits
       // between them without disturbing that: a NUL byte is a distinct, more

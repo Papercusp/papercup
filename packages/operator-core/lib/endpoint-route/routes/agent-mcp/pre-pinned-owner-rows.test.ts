@@ -11,13 +11,21 @@ const precursor = (id: string): PrePinnedOwnerRow => ({
   id,
   display: DISPLAY_TERMINAL_LAUNCH,
   has_session: false,
+  launched: false,
 });
 const registered = (id: string): PrePinnedOwnerRow => ({
   id,
   display: DISPLAY_TERMINAL_LAUNCH,
   has_session: true,
+  launched: false,
 });
-const console_ = (id: string): PrePinnedOwnerRow => ({ id, display: null, has_session: true });
+const console_ = (id: string): PrePinnedOwnerRow => ({ id, display: null, has_session: true, launched: false });
+const workbench = (id: string, launched: boolean): PrePinnedOwnerRow => ({
+  id,
+  display: 'workbench',
+  has_session: false,
+  launched,
+});
 
 /**
  * A query result that yields EQUAL-BUT-NOT-IDENTICAL row objects on every
@@ -42,6 +50,26 @@ describe('classifyPrePinnedOwnerRows', () => {
     const { precursors, conflicts } = classifyPrePinnedOwnerRows([precursor('14746')]);
     expect(precursors.map((r) => r.id)).toEqual(['14746']);
     expect(conflicts).toEqual([]);
+  });
+
+  it('adopts a claimed workbench row so deferred launch keeps one advSessionId', () => {
+    const { precursors, conflicts } = classifyPrePinnedOwnerRows([workbench('608', true)]);
+    expect(precursors.map((r) => r.id)).toEqual(['608']);
+    expect(conflicts).toEqual([]);
+  });
+
+  it('refuses an UNCLAIMED workbench row — PUI remains the single launcher', () => {
+    const { precursors, conflicts } = classifyPrePinnedOwnerRows([workbench('608', false)]);
+    expect(precursors).toEqual([]);
+    expect(conflicts.map((r) => r.id)).toEqual(['608']);
+  });
+
+  it('refuses a claimed workbench row that already carries a native session', () => {
+    const { precursors, conflicts } = classifyPrePinnedOwnerRows([
+      { ...workbench('608', true), has_session: true },
+    ]);
+    expect(precursors).toEqual([]);
+    expect(conflicts.map((r) => r.id)).toEqual(['608']);
   });
 
   it('still refuses an owner id already bound to a REGISTERED session', () => {
@@ -130,7 +158,7 @@ describe('describePrePinnedConflicts', () => {
 
   it('renders a null display without collapsing it into an empty string', () => {
     // `display=` would read as "the column is blank"; it is genuinely NULL.
-    expect(describePrePinnedConflicts([{ id: '7', display: null, has_session: false }])).toContain(
+    expect(describePrePinnedConflicts([{ id: '7', display: null, has_session: false, launched: false }])).toContain(
       'display=null',
     );
   });

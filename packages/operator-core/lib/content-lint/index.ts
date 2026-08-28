@@ -10,6 +10,7 @@ export { findCodePositionCurlyQuotes, curlyLabel, CURLY, type CurlyQuoteHit } fr
 export { findStaleInsightCitations, formatStaleCitations, type StaleCitation } from './insight-citations';
 export { findConflictMarker, CONFLICT_MARKER_ERE, type ConflictMarkerHit } from './conflict-markers';
 export { findTsParseError, type TsParseError } from './ts-parse';
+export { findEsbuildTransformError, type EsbuildTransformError } from './esbuild-transform';
 export {
   findSqlCommentBacktick,
   sqlCommentBacktickScopeMatches,
@@ -21,6 +22,7 @@ export {
   mdxDetector,
   smartQuotesDetector,
   tsParseDetector,
+  esbuildTransformDetector,
   sqlCommentBacktickDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,

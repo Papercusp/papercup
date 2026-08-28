@@ -348,6 +348,93 @@ export async function waitForNativeTranscriptMarker({
   return { persisted: false, nativeRef: null };
 }
 
+/**
+ * Prove that a provenance-tagged turn actually entered the backend's native
+ * transcript. PTY output is not authority: pressing Enter can repaint the TUI
+ * while leaving the staged text unsubmitted (EI-21653971965333993 / WI-2930).
+ *
+ * One raw-CR retry mirrors the operator's documented stuck-composer recovery.
+ * Callers decide how to dispose a still-unverified child; this helper only
+ * returns the execution-backed verdict. Pure apart from the injected wait/write
+ * callbacks, so launch and carry paths share one tested contract.
+ */
+export async function verifyNativeTurnStartWithRetry({
+  agent,
+  env = process.env,
+  text,
+  sinceMs,
+  home = homedir(),
+  timeoutMs = 30_000,
+  nativeId = null,
+  requireNativeId = false,
+  waitForMarker = waitForNativeTranscriptMarker,
+  writeCr = () => {},
+  onRetry = () => {},
+}) {
+  const marker = leadingTurnOriginMarker(text);
+  const proofSupported = ['claude', 'codex', 'omp'].includes(String(agent || ''));
+  if (!marker) {
+    return {
+      persisted: false,
+      nativeRef: null,
+      retried: false,
+      reason: 'missing-leading-turn-origin',
+    };
+  }
+  if (requireNativeId && !nativeId) {
+    return {
+      persisted: false,
+      nativeRef: null,
+      retried: false,
+      reason: 'missing-native-id',
+    };
+  }
+  if (!proofSupported) {
+    return {
+      persisted: false,
+      nativeRef: null,
+      retried: false,
+      reason: 'unsupported-backend',
+    };
+  }
+  const readProof = () =>
+    waitForMarker({
+      agent,
+      env,
+      marker,
+      sinceMs,
+      home,
+      timeoutMs,
+      nativeId,
+    });
+  let proof = await readProof();
+  if (proof?.persisted) {
+    return {
+      persisted: true,
+      nativeRef: proof.nativeRef ?? null,
+      retried: false,
+      reason: null,
+    };
+  }
+  try {
+    onRetry({ marker, nativeId });
+  } catch {
+    /* retry observability must never block the recovery keystroke */
+  }
+  try {
+    writeCr();
+  } catch {
+    /* the child may have exited while native persistence was checked */
+  }
+  proof = await readProof();
+  return {
+    persisted: Boolean(proof?.persisted),
+    nativeRef: proof?.nativeRef ?? null,
+    retried: true,
+    reason: proof?.persisted ? null : 'native-turn-marker-timeout',
+  };
+}
+
 /** After writing an injected TURN's text, the host sends the submit Enter (CR)
  *  as a SEPARATE keystroke this long later. A single `text + CR` burst is
  *  swallowed by the Claude Code TUI's paste detector — the CR lands as a literal
@@ -4272,8 +4359,39 @@ export function hostThroughPty(o) {
       });
       if (!managedKickoff) {
         if (!r.delivered) return;
+        const proof = await verifyNativeTurnStartWithRetry({
+          agent: env.PAPERCUSP_AGENT,
+          env,
+          text: launchKickoff,
+          sinceMs: nativeCaptureAfterMs,
+          timeoutMs: nativePersistenceTimeoutMs,
+          writeCr: () => child.write('\r'),
+          onRetry: () => {
+            appendHostEvent(ownerId, 'launch-kickoff-turn-start-retry', {
+              reason: 'native-turn-marker-timeout',
+            });
+          },
+        });
+        if (!proof.persisted) {
+          appendHostEvent(ownerId, 'launch-kickoff-turn-start-unverified', {
+            reason: proof.reason,
+            retried: proof.retried,
+          });
+          try {
+            process.stderr.write(
+              `psu: kickoff DROPPED — the exact provenance marker never entered the native transcript ` +
+                `(${proof.reason ?? 'native marker timeout'}).\n`,
+            );
+          } catch {
+            /* diagnostics are best-effort */
+          }
+          try { child.kill(); } catch { /* already exited */ }
+          return;
+        }
         try {
-          process.stderr.write(`psu: kickoff delivered — the resumed session is working its first turn.\n`);
+          process.stderr.write(
+            `psu: kickoff delivered — verified the exact provenance marker in the native transcript.\n`,
+          );
         } catch {
           /* diagnostics are best-effort */
         }
@@ -6132,45 +6250,24 @@ export function hostThroughPty(o) {
       // existing PTY-level contract because their synthetic payloads do not
       // necessarily carry turn provenance.
       if (!drillId && carryResult.delivered) {
-        const marker = leadingTurnOriginMarker(carryText);
-        const proofSupported = ['claude', 'codex', 'omp'].includes(String(env.PAPERCUSP_AGENT || ''));
         const proofWindowMs = Math.max(250, Math.floor(nativePersistenceTimeoutMs / 2));
-        if (marker && nativeId && proofSupported) {
-          turnStartProof = await waitForNativeTranscriptMarker({
-            agent: env.PAPERCUSP_AGENT,
-            env,
-            marker,
-            nativeId,
-            sinceMs: lastRespawnAtMs,
-            timeoutMs: proofWindowMs,
-          });
-          if (!turnStartProof.persisted) {
+        turnStartProof = await verifyNativeTurnStartWithRetry({
+          agent: env.PAPERCUSP_AGENT,
+          env,
+          text: carryText,
+          nativeId,
+          requireNativeId: true,
+          sinceMs: lastRespawnAtMs,
+          timeoutMs: proofWindowMs,
+          writeCr: () => child.write('\r'),
+          onRetry: () => {
             appendHostEvent(ownerId, 'respawn-carry-turn-start-retry', {
               mode: respawnMode,
               nativeId,
               reason: 'native-turn-marker-timeout',
             });
-            try { child.write('\r'); } catch { /* child exit is handled elsewhere */ }
-            turnStartProof = await waitForNativeTranscriptMarker({
-              agent: env.PAPERCUSP_AGENT,
-              env,
-              marker,
-              nativeId,
-              sinceMs: lastRespawnAtMs,
-              timeoutMs: proofWindowMs,
-            });
-          }
-        } else {
-          turnStartProof = {
-            persisted: false,
-            nativeRef: null,
-            reason: !marker
-              ? 'missing-leading-turn-origin'
-              : !nativeId
-                ? 'missing-native-id'
-                : 'unsupported-backend',
-          };
-        }
+          },
+        });
         if (!turnStartProof.persisted) {
           recordCarryDrop();
           carryResult = { ...carryResult, delivered: false, reason: 'turn-start-unverified' };

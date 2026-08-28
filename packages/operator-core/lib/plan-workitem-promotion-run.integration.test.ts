@@ -38,7 +38,14 @@ const h = vi.hoisted(() => ({
   sql: undefined as unknown as postgres.Sql,
   plans: new Map<
     string,
-    { items: { id: string; status: string; text?: string; blockedBy?: string[]; phase?: string | null }[]; title?: string }
+    {
+      items: { id: string; status: string; text?: string; blockedBy?: string[]; phase?: string | null }[];
+      title?: string;
+      content?: string;
+      created?: string | null;
+      nowState?: string | null;
+      opStatus?: string | null;
+    }
   >(),
   flagOn: true,
   specQuality: {
@@ -93,6 +100,10 @@ vi.mock('./agent-tools/plans/source', () => ({
         })),
       },
       row: {
+        content: p.content ?? '',
+        created: p.created ?? null,
+        nowState: p.nowState ?? null,
+        opStatus: p.opStatus ?? null,
         items: p.items.map((i) => ({
           id: i.id,
           status: i.status,
@@ -256,6 +267,68 @@ describe('promotePlanItems (P-006): plan → placeable work-items, against real 
     const res = await run.promotePlanItems(base);
 
     expect(res).toMatchObject({ promoted: 0, skipped: 1, specQualityBlocked: true });
+    expect(await features()).toEqual([]);
+  });
+
+  it('continues an already-executing legacy/report-only plan through the triad rollout', async () => {
+    h.plans.set(PLAN, {
+      created: '2026-08-21',
+      nowState: 'EXECUTING',
+      opStatus: null,
+      content: `---
+title: legacy executing plan
+slug: ${PLAN}
+status: ready
+created: 2026-08-21
+---
+
+## Now
+
+**State:** EXECUTING
+**Next:** promote the remaining lane
+`,
+      items: [{ id: 'P-001', status: 'todo', text: 'Promote the remaining lane' }],
+    });
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res).toMatchObject({
+      promoted: 1,
+      skipped: 0,
+      specQuality: { applicable: false, mode: 'report-only', satisfied: true },
+    });
+    expect(res.specTriadBlocked).toBeUndefined();
+    expect(await features()).toHaveLength(1);
+  });
+
+  it('keeps the triad refusal for a new non-executing report-only plan', async () => {
+    h.plans.set(PLAN, {
+      created: '2026-08-21',
+      nowState: 'READY FOR EXECUTION',
+      opStatus: null,
+      content: `---
+title: new plan without triad
+slug: ${PLAN}
+status: ready
+created: 2026-08-21
+---
+
+## Now
+
+**State:** READY FOR EXECUTION
+**Next:** wait for promotion
+`,
+      items: [{ id: 'P-001', status: 'todo', text: 'Remain gated until specified' }],
+    });
+
+    const res = await run.promotePlanItems(base);
+
+    expect(res).toMatchObject({
+      promoted: 0,
+      skipped: 1,
+      specTriadBlocked: true,
+      specTriadMissing: expect.arrayContaining(['requirements', 'design']),
+    });
     expect(await features()).toEqual([]);
   });
 

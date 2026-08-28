@@ -414,3 +414,46 @@ describe('detectContentOffenders — a credential shape is quarantined before it
     expect(offenders.some((o) => o.detectorKey === 'secrets')).toBe(true);
   });
 });
+
+/**
+ * EI-5240 — the sweep-level proof for the esbuild-only transform class.
+ *
+ * Multiple default exports are accepted by TypeScript's parser and are filtered
+ * out of the parse detector's type-level diagnostics, but esbuild refuses to
+ * transform the module. Running the REAL registry through the REAL guard seam
+ * prevents a wiring regression where the detector exists but is never applied
+ * to a dirty file.
+ */
+describe('detectContentOffenders — the real registry quarantines an esbuild-only transform failure (EI-5240)', () => {
+  const ESBUILD_ONLY_BROKEN_TS = ['export default 1;', 'export default 2;'].join('\n');
+
+  it('excludes the transform-invalid file and reports the esbuild diagnostic', async () => {
+    const file = 'packages/operator-core/lib/duplicate-default.ts';
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: DEFAULT_CONTENT_DETECTORS,
+      runGit: statusRunGit([` M ${file}`]),
+      readText: async () => ESBUILD_ONLY_BROKEN_TS,
+    });
+
+    expect([...new Set(offenders.map((o) => o.file))]).toEqual([file]);
+    const hit = offenders.find((o) => o.detectorKey === 'esbuild-transform');
+    expect(hit).toBeDefined();
+    expect(hit!.error).toMatch(/esbuild transform error at line 2/i);
+    expect(hit!.error).toContain('Multiple exports with the same name');
+    expect(hit!.fixerRole).toBe('content-fixer');
+  });
+
+  it('leaves the same source clean when the esbuild detector is removed', async () => {
+    const file = 'packages/operator-core/lib/duplicate-default.ts';
+    const withoutEsbuild = DEFAULT_CONTENT_DETECTORS.filter((d) => d.key !== 'esbuild-transform');
+    expect(withoutEsbuild).toHaveLength(DEFAULT_CONTENT_DETECTORS.length - 1);
+    const offenders = await detectContentOffenders({
+      repoPath: '/repo',
+      detectors: withoutEsbuild,
+      runGit: statusRunGit([` M ${file}`]),
+      readText: async () => ESBUILD_ONLY_BROKEN_TS,
+    });
+    expect(offenders).toEqual([]);
+  });
+});

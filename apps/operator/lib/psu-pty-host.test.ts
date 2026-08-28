@@ -41,6 +41,7 @@ import {
   makeCarryRearmController,
   makeSubmitVerifier,
   submitVerificationFailureReason,
+  verifyNativeTurnStartWithRetry,
   signalNameFromCode,
   reapDetachedPtyScopeResidue,
   shouldReapDetachedPtyScopeResidue,
@@ -1952,6 +1953,117 @@ describe('makeSubmitVerifier (WI-2930 verify-and-resubmit)', () => {
       'submit-verification-aborted-human-input',
     );
     expect(submitVerificationFailureReason({ exhausted: false, aborted: null })).toBeNull();
+  });
+});
+
+describe('verifyNativeTurnStartWithRetry (EI-216539 execution-backed kickoff)', () => {
+  const tagged =
+    '⟦turn-origin:fleet-kickoff nonce:0123456789abcdef⟧\nStart the fleet lane now';
+
+  it('accepts first-pass native persistence without another CR', async () => {
+    const waitForMarker = vi.fn().mockResolvedValue({
+      persisted: true,
+      nativeRef: '/tmp/codex-session.jsonl',
+    });
+    const writeCr = vi.fn();
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: tagged,
+        sinceMs: 100,
+        waitForMarker,
+        writeCr,
+      }),
+    ).resolves.toEqual({
+      persisted: true,
+      nativeRef: '/tmp/codex-session.jsonl',
+      retried: false,
+      reason: null,
+    });
+    expect(waitForMarker).toHaveBeenCalledTimes(1);
+    expect(writeCr).not.toHaveBeenCalled();
+  });
+
+  it('retries one raw CR and accepts only the second native proof', async () => {
+    const waitForMarker = vi
+      .fn()
+      .mockResolvedValueOnce({ persisted: false, nativeRef: null })
+      .mockResolvedValueOnce({ persisted: true, nativeRef: '/tmp/after-cr.jsonl' });
+    const writeCr = vi.fn();
+    const onRetry = vi.fn();
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: tagged,
+        sinceMs: 100,
+        waitForMarker,
+        writeCr,
+        onRetry,
+      }),
+    ).resolves.toEqual({
+      persisted: true,
+      nativeRef: '/tmp/after-cr.jsonl',
+      retried: true,
+      reason: null,
+    });
+    expect(waitForMarker).toHaveBeenCalledTimes(2);
+    expect(writeCr).toHaveBeenCalledTimes(1);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('never certifies PTY repaint when both native proofs miss', async () => {
+    const waitForMarker = vi.fn().mockResolvedValue({ persisted: false, nativeRef: null });
+    const writeCr = vi.fn();
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: tagged,
+        sinceMs: 100,
+        waitForMarker,
+        writeCr,
+      }),
+    ).resolves.toEqual({
+      persisted: false,
+      nativeRef: null,
+      retried: true,
+      reason: 'native-turn-marker-timeout',
+    });
+    expect(waitForMarker).toHaveBeenCalledTimes(2);
+    expect(writeCr).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails closed before any transcript read when provenance or required native id is missing', async () => {
+    const waitForMarker = vi.fn();
+    const writeCr = vi.fn();
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: 'untagged kickoff',
+        sinceMs: 100,
+        waitForMarker,
+        writeCr,
+      }),
+    ).resolves.toMatchObject({
+      persisted: false,
+      retried: false,
+      reason: 'missing-leading-turn-origin',
+    });
+    await expect(
+      verifyNativeTurnStartWithRetry({
+        agent: 'codex',
+        text: tagged,
+        sinceMs: 100,
+        requireNativeId: true,
+        waitForMarker,
+        writeCr,
+      }),
+    ).resolves.toMatchObject({
+      persisted: false,
+      retried: false,
+      reason: 'missing-native-id',
+    });
+    expect(waitForMarker).not.toHaveBeenCalled();
+    expect(writeCr).not.toHaveBeenCalled();
   });
 });
 

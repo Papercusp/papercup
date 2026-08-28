@@ -302,9 +302,10 @@ describe('adv_sessions birth timestamp (WI-6589)', () => {
 });
 
 /**
- * WI-37743 — `adoptStartingTerminalLaunch` COMPLETES a launcher's own starting
- * row instead of inserting a duplicate beside it. Its entire safety rests on
- * three conjuncts in one WHERE clause, so they are guarded here.
+ * WI-37743/P-002 — `adoptStartingTerminalLaunch` COMPLETES a launcher's own
+ * starting row instead of inserting a duplicate beside it. Its entire safety
+ * rests on the identity + lifecycle predicates in one WHERE clause, so they are
+ * guarded here.
  *
  * Source-level, like the birth-timestamp guards above and for the same reason:
  * the failure this prevents is a row-SELECTION bug, and a unit test that seeds
@@ -332,8 +333,15 @@ describe('adoptStartingTerminalLaunch is narrowly guarded (WI-37743)', () => {
     expect(adopt).toMatch(/AND ended_at IS NULL/);
   });
 
-  it('only ever touches a terminal-launch row, never a workbench/console row', () => {
-    expect(adopt).toMatch(/AND display = \$\{DISPLAY_TERMINAL_LAUNCH\}/);
+  it('allows only a terminal precursor or an already-claimed workbench precursor', () => {
+    expect(adopt).toContain('display = ${DISPLAY_TERMINAL_LAUNCH}');
+    expect(adopt).toContain("display = 'workbench' AND launched_at IS NOT NULL");
+  });
+
+  it('never adopts an unclaimed workbench row', () => {
+    // launched_at is the server-side claim PUI wins BEFORE opening the pane.
+    // Omitting this guard would let copied argv route around the single launcher.
+    expect(adopt).not.toMatch(/OR\s+display = 'workbench'\s*[)\n]/);
   });
 
   it('is pinned to one explicit row id — never a predicate-only match', () => {

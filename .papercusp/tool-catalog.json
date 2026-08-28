@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 834,
+  "count": 835,
   "tools": [
     {
       "name": "ablation:report",
@@ -8857,6 +8857,30 @@
         "when": "Investigating substrate boot state, claim error rates, or workspace-level dogfood health. The substrate always boots, so run this any time after the operator has started.",
         "notWhen": "For per-harness Insights or feature-level data, use the harness:* tools. This is the dogfood substrate layer specifically.",
         "chaining": "Pair with reading the agent-insights/substrate-flag-flip-runbook page for what to do if verdicts come back degraded/unhealthy."
+      }
+    },
+    {
+      "name": "dev:embed_latency",
+      "http": {
+        "path": "/api/agent-tools/dev/embed_latency",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the process-local query-embed latency ring: per-caller count, timeout/error totals, p50/p99/max, and the budget each caller actually used. The ring is bounded and in-memory; `truncatedByCapacity` means counts are floors. ⚠ On clustered operators this is one worker only — read `pid`/`clusterSize` and repeat to sample workers.",
+      "capabilities": [
+        "intel:read"
+      ],
+      "agentRoles": [
+        "operator",
+        "architect",
+        "debugger",
+        "cup"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Diagnosing a degraded hybrid or context-recall search where the embed sidecar is healthy: compare each caller's p99/p50 with its own recorded budget instead of inferring latency from a lexical-only result.",
+        "notWhen": "Service up/down — dev:service_health. Durable recall outcomes — dev:pg_query over memory_recall_stats. This ring is process-local and is not an audit log."
       }
     },
     {

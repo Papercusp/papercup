@@ -258,7 +258,11 @@ async function listen(server: Server): Promise<number> {
 
 async function close(server: Server | undefined): Promise<void> {
   if (!server) return;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
+  server.closeAllConnections?.();
+  await Promise.race([
+    new Promise<void>((resolve) => server.close(() => resolve())),
+    new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
+  ]);
 }
 
 async function putViewState(tab: string): Promise<void> {
@@ -327,6 +331,11 @@ beforeAll(async () => {
   await saveHarnessRegistry({
     projects: [{ slug: HARNESS, path: REPO_ROOT, harness_kind: 'hive', self_repo: true }],
   }, WORKSPACE);
+  // createOrgTestDb supplies the canonical migrated org substrate; a real
+  // harness also has the production compatibility schema/views that route
+  // unqualified `agent_chats` through the consolidated PG table.
+  const { scaffoldHarnessSchema } = await import('../scaffold-harness-schema');
+  await scaffoldHarnessSchema(HARNESS);
   await putViewState('Plans');
 
   const { app } = await import('../../../../apps/operator/bin/host-app');
@@ -336,6 +345,8 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await close(operatorServer);
+  const { stopInvalidationListener } = await import('../sync-sse');
+  await stopInvalidationListener();
   const dbOrg = await import('@papercusp/db-org');
   await dbOrg._resetForTests().catch(() => {});
   await db?.cleanup();
@@ -344,7 +355,7 @@ afterAll(async () => {
     else process.env[key] = value;
   }
   rmSync(home, { recursive: true, force: true });
-});
+}, 120_000);
 
 beforeEach(async () => {
   scriptedProvider.mode = 'success';
@@ -371,11 +382,15 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
 
       // Exercise the visible agent/session picker, not a hidden API shortcut.
+      pane.markHere();
       pane.write('\x1b'); // leave the composer so `s` owns the picker binding
+      await pane.waitFor('Composer — i type', { sinceMark: true });
+      pane.markHere();
       pane.write('s');
-      await pane.waitFor('New operator session');
+      await pane.waitFor('New operator session', { sinceMark: true });
+      pane.markHere();
       pane.write('\r');
-      await pane.waitFor(`new operator session selected in ${HARNESS}`);
+      await pane.waitFor('Composer — i type', { sinceMark: true });
 
       pane.write('i');
       pane.write(prompt);
@@ -501,7 +516,10 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
         identity.agentChat.scope = 'workspace:intentionally-wrong';
         payload = Buffer.from(JSON.stringify(identity));
       }
-      res.writeHead(upstream.status, Object.fromEntries(upstream.headers.entries()));
+      const headers = Object.fromEntries(upstream.headers.entries());
+      delete headers['content-length'];
+      headers['content-length'] = String(payload.byteLength);
+      res.writeHead(upstream.status, headers);
       res.end(payload);
     });
     const proxyPort = await listen(proxy);

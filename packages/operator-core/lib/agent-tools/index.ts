@@ -493,6 +493,9 @@ import './dev/pg_query';
 // no-http-anywhere-2026-07-28 D-074 — publish the read-cache hit/miss counters,
 // which cachedRead has always recorded and nothing ever read.
 import './dev/cache_stats';
+// EI-21647236337874711 — publish the query-embed latency ring so a slow
+// process-local embed is diagnosable before it is misread as a sidecar outage.
+import './dev/embed_latency';
 import './dev/build_status';
 // git-sync-dx-hardening-2026-06-17 P-002 — "where is my change / is it live?" probe
 import './dev/pipeline_position';

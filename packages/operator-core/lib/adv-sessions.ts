@@ -653,14 +653,15 @@ export async function markAdvSessionLaunched(id: number): Promise<boolean> {
 }
 
 /**
- * ADOPT the launcher's starting row as this session's own (WI-37743).
+ * ADOPT the launcher's starting row as this session's own (WI-37743/P-002).
  *
- * A programmatic spawner that PRE-PINS the owner id (`psu --owner-id=…`) writes a
- * `display='terminal'` starting row for the board to render during the boot window
- * (WI-6376) — and that row is bound to the very owner id the booting psu is about
- * to claim. It is this session's row, written moments early by its own launcher;
- * it is NOT a second session. So bootstrap COMPLETES it instead of inserting a
- * duplicate beside it.
+ * A programmatic spawner that PRE-PINS the owner id (`psu --owner-id=…`) writes
+ * either a `display='terminal'` starting row or a deferred `display='workbench'`
+ * row. The latter becomes adoptable only after PUI wins its atomic claim and
+ * stamps `launched_at`. Either row is bound to the owner id the booting psu is
+ * about to claim. It is this session's row, written moments early by its own
+ * launcher; it is NOT a second session. So bootstrap COMPLETES it instead of
+ * inserting a duplicate beside it.
  *
  * Two bugs die here:
  *  - the terminal launch itself. bootstrap's pre-pinned-owner freshness guard
@@ -700,7 +701,10 @@ export async function adoptStartingTerminalLaunch(opts: {
                launch_argv
              )
        WHERE id = ${opts.id}
-         AND display = ${DISPLAY_TERMINAL_LAUNCH}
+         AND (
+           display = ${DISPLAY_TERMINAL_LAUNCH}
+           OR (display = 'workbench' AND launched_at IS NOT NULL)
+         )
          AND session_id IS NULL
          AND ended_at IS NULL
        RETURNING id

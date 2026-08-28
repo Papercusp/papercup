@@ -89,6 +89,34 @@ export function waitForNativeTranscriptMarker({ agent, env, marker, sinceMs, hom
     persisted: boolean;
     nativeRef: null;
 }>;
+/**
+ * Prove that a provenance-tagged turn actually entered the backend's native
+ * transcript. PTY output is not authority: pressing Enter can repaint the TUI
+ * while leaving the staged text unsubmitted (EI-21653971965333993 / WI-2930).
+ *
+ * One raw-CR retry mirrors the operator's documented stuck-composer recovery.
+ * Callers decide how to dispose a still-unverified child; this helper only
+ * returns the execution-backed verdict. Pure apart from the injected wait/write
+ * callbacks, so launch and carry paths share one tested contract.
+ */
+export function verifyNativeTurnStartWithRetry({ agent, env, text, sinceMs, home, timeoutMs, nativeId, requireNativeId, waitForMarker, writeCr, onRetry, }: {
+    agent: any;
+    env?: NodeJS.ProcessEnv | undefined;
+    text: any;
+    sinceMs: any;
+    home?: string | undefined;
+    timeoutMs?: number | undefined;
+    nativeId?: null | undefined;
+    requireNativeId?: boolean | undefined;
+    waitForMarker?: typeof waitForNativeTranscriptMarker | undefined;
+    writeCr?: (() => void) | undefined;
+    onRetry?: (() => void) | undefined;
+}): Promise<{
+    persisted: boolean;
+    nativeRef: string | null;
+    retried: boolean;
+    reason: string | null;
+}>;
 /** Filename-safe key for an ownerId (SIDs are already `[a-z0-9-]`-ish, but a
  *  defensive sanitize keeps a stray char from escaping the dir). Pure. */
 export function sanitizeKey(ownerId: any): string;

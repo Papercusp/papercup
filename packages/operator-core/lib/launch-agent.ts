@@ -11,7 +11,9 @@
  * / console-launch `mode:'omp'` path — omp now rides psu like the others,
  * so there's a single launch implementation instead of two).
  */
+import type { SuSessionBackend } from '@papercusp/chat-protocol';
 import type { LaunchOpts } from './native-console';
+import type { NativeSessionHandle } from './native-session-handles';
 import type { SuAgent, SuContextSize } from './su-agents';
 
 /**
@@ -95,6 +97,20 @@ export interface LaunchAgentOpts extends LaunchOpts {
    *  no --account opens an interactive picker that would hang the spawn. */
   account?: string | null;
   /**
+   * psu `--carry=`: how an autonomous session continues across wakes. This is
+   * independent of headed/headless and is persisted in `launch_argv` so the
+   * runtime's launch contract can be audited after the process starts.
+   */
+  carry?: 'warm' | 'cold' | null;
+  /**
+   * Attach to an existing tracked SU session without spawning anything. Kept
+   * on the canonical launch route so PUI reuses the same workspace-scoped
+   * `adv_sessions` identity and native-handle resolver as every other surface.
+   * PUI callers should use {@link openPuiSuSession}, which requires an explicit
+   * backend and makes create vs attach a discriminated operation.
+   */
+  attachAdvSessionId?: number | null;
+  /**
    * WI-6505 — psu `--headless`: launch with NO desktop window. The session still
    * registers presence, joins its fleet and stays injectable for warm wakes; it
    * just logs to a file instead of a terminal. Orthogonal to every other option.
@@ -154,7 +170,56 @@ export interface LaunchAgentResult {
    * each creating their own; never re-derive it client-side.
    */
   fleetSlug?: string;
+  /** True when this response recorded a pending workbench launch. */
+  deferred?: boolean;
+  /** True when this response attached to an existing row without spawning. */
+  attached?: boolean;
+  /** Explicit backend resolved by launch-su. */
+  agent?: SuAgent;
+  workspaceId?: string;
+  harnessSlug?: string | null;
+  planSlug?: string | null;
+  /** Existing backend-native handle on attach; null while a new row is pending. */
+  nativeSession?: NativeSessionHandle | null;
 }
+
+export type CreatePuiSuSessionInput = {
+  operation: 'create';
+  /** PUI never falls back to the global configured backend. */
+  backend: SuSessionBackend;
+  /** Carry is an explicit launch choice on the PUI contract. */
+  carry: 'warm' | 'cold';
+} & Omit<
+  LaunchAgentOpts,
+  'agent' | 'carry' | 'deferSpawn' | 'attachAdvSessionId' | 'resumeSessionId' | 'fork' | 'runPsu'
+>;
+
+export interface AttachPuiSuSessionInput {
+  operation: 'attach';
+  /** Must match the backend persisted on the target adv_sessions row. */
+  backend: SuSessionBackend;
+  advSessionId: number;
+  /** Optional expected context; a mismatch is refused rather than guessed. */
+  harnessSlug?: string | null;
+  planSlug?: string | null;
+}
+
+export type PuiSuSessionInput = CreatePuiSuSessionInput | AttachPuiSuSessionInput;
+
+export interface PuiSuSessionBinding {
+  operation: 'created' | 'attached';
+  backend: SuSessionBackend;
+  advSessionId: number;
+  ownerId: string | null;
+  workspaceId: string | null;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  nativeSession: NativeSessionHandle | null;
+}
+
+export type PuiSuSessionResult =
+  | { ok: true; session: PuiSuSessionBinding }
+  | { ok: false; code?: LaunchAgentResult['code']; error: string; installCmd?: string };
 
 /** The launch-su endpoints to try (same-origin first, then Tauri fallback ports). */
 function launchSuEndpoints(): string[] {
@@ -193,6 +258,8 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     fleet_name: opts.fleetName ?? null,
     fleet_scheme: opts.fleetScheme ?? null,
     account: opts.account ?? null,
+    carry: opts.carry ?? null,
+    attach_adv_session_id: opts.attachAdvSessionId ?? null,
     // WI-6505. Null-safe like the options above: an omitted flag is "not
     // supplied", which launch-su treats as a headed launch.
     headless: opts.headless ?? false,
@@ -209,7 +276,22 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         body,
       });
       const data = (await r.json().catch(() => null)) as
-        | { status?: string; code?: string; error?: string; advSessionId?: number; ownerId?: string; warning?: string; fleetSlug?: string }
+        | {
+            status?: string;
+            code?: string;
+            error?: string;
+            advSessionId?: number;
+            ownerId?: string;
+            warning?: string;
+            fleetSlug?: string;
+            deferred?: boolean;
+            attached?: boolean;
+            agent?: SuAgent;
+            workspaceId?: string;
+            harnessSlug?: string | null;
+            planSlug?: string | null;
+            nativeSession?: NativeSessionHandle | null;
+          }
         | null;
       if (!data) { lastError = `launch-su HTTP ${r.status} (no body)`; continue; }
       if (data.code === 'psu_not_installed') {
@@ -221,7 +303,20 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
         };
       }
       if (r.ok && data.status === 'ok') {
-        return { ok: true, advSessionId: data.advSessionId, ownerId: data.ownerId, warning: data.warning, fleetSlug: data.fleetSlug };
+        return {
+          ok: true,
+          advSessionId: data.advSessionId,
+          ownerId: data.ownerId,
+          warning: data.warning,
+          fleetSlug: data.fleetSlug,
+          deferred: data.deferred,
+          attached: data.attached,
+          agent: data.agent,
+          workspaceId: data.workspaceId,
+          harnessSlug: data.harnessSlug,
+          planSlug: data.planSlug,
+          nativeSession: data.nativeSession,
+        };
       }
       lastError = data.error ?? `launch-su HTTP ${r.status}`;
     } catch (e: unknown) {
@@ -229,4 +324,64 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     }
   }
   return { ok: false, error: lastError };
+}
+
+/**
+ * PUI's one create/attach door. Creation records one deferred workbench row;
+ * the pane runs that row's `psu` argv and bootstrap adopts the SAME row. Attach
+ * is a read-only lookup by stable advSessionId and never launches a process.
+ */
+export async function openPuiSuSession(input: PuiSuSessionInput): Promise<PuiSuSessionResult> {
+  let launched: LaunchAgentResult;
+  if (input.operation === 'create') {
+    const { operation: _operation, backend, carry, ...opts } = input;
+    launched = await launchAgent({
+      ...opts,
+      agent: backend,
+      carry,
+      deferSpawn: true,
+      attachAdvSessionId: null,
+    });
+  } else {
+    launched = await launchAgent({
+      agent: input.backend,
+      slug: input.harnessSlug ?? null,
+      planSlug: input.planSlug ?? null,
+      deferSpawn: false,
+      attachAdvSessionId: input.advSessionId,
+    });
+  }
+
+  if (!launched.ok) {
+    return {
+      ok: false,
+      ...(launched.code ? { code: launched.code } : {}),
+      error: launched.error ?? 'launch-su request failed',
+      ...(launched.installCmd ? { installCmd: launched.installCmd } : {}),
+    };
+  }
+  if (!Number.isSafeInteger(launched.advSessionId) || launched.advSessionId! <= 0) {
+    return { ok: false, error: 'launch-su returned no stable advSessionId' };
+  }
+  const backend = launched.agent ?? input.backend;
+  if (backend !== input.backend) {
+    return {
+      ok: false,
+      error: `launch-su returned backend ${backend}; expected ${input.backend}`,
+    };
+  }
+
+  return {
+    ok: true,
+    session: {
+      operation: input.operation === 'create' ? 'created' : 'attached',
+      backend,
+      advSessionId: launched.advSessionId!,
+      ownerId: launched.ownerId ?? null,
+      workspaceId: launched.workspaceId ?? null,
+      harnessSlug: launched.harnessSlug ?? (input.operation === 'create' ? input.slug : input.harnessSlug) ?? null,
+      planSlug: launched.planSlug ?? input.planSlug ?? null,
+      nativeSession: launched.nativeSession ?? null,
+    },
+  };
 }

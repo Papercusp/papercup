@@ -132,6 +132,8 @@ describe('scoped repository format check', () => {
         cwd: REPO_ROOT,
         encoding: 'utf8',
         input: source,
+        timeout: 30_000,
+        killSignal: 'SIGKILL',
       },
     );
 

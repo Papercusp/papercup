@@ -1917,9 +1917,10 @@ const post = defineTool({
       // tuple), so a repaired ghost simply drops out of the query.
       await repairStaleAdvSessionTerminalMarkers(requestedSid);
       const live = await sql<
-        Array<{ id: string; display: string | null; has_session: boolean }>
+        Array<{ id: string; display: string | null; has_session: boolean; launched: boolean }>
       >`
-        SELECT id::text, display, (session_id IS NOT NULL) AS has_session
+        SELECT id::text, display, (session_id IS NOT NULL) AS has_session,
+               (launched_at IS NOT NULL) AS launched
           FROM harness_shared.adv_sessions
          WHERE coord_owner_id = ${requestedSid} AND ended_at IS NULL
          ORDER BY id DESC
@@ -1934,11 +1935,12 @@ const post = defineTool({
       // window, which surfaced as "its terminal closed before the session came
       // online" (owner-reported 2026-08-10).
       //
-      // A precursor is recognised NARROWLY — the launcher's own starting shape,
-      // still un-ended and NOT yet carrying a session id. Anything else (a real
-      // running session, or a starting row that already registered) is the
-      // split-identity case WI-5002/EI-13277 added this guard for, and is still
-      // refused loudly.
+      // A precursor is recognised NARROWLY — the launcher's own terminal
+      // starting shape, or a workbench row PUI already claimed (`launched_at`
+      // set), still un-ended and NOT yet carrying a session id. Anything else
+      // (including an unclaimed workbench row, a real running session, or a
+      // starting row that already registered) is the split-identity case
+      // WI-5002/EI-13277 added this guard for, and is still refused loudly.
       //
       // Classified by VALUE in a single pass (classifyPrePinnedOwnerRows) rather
       // than by re-identifying rows across two traversals of the query result — see

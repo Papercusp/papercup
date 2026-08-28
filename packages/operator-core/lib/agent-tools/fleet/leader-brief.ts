@@ -74,7 +74,11 @@ import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
 import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
 import { COORD_ROLES } from '../coordination/roles';
-import { listFleetRosterDiagnosed, liveFleetMemberIds } from '../../fleet/fleet-roster';
+import {
+  listFleetRosterDiagnosed,
+  liveFleetMemberIds,
+  type ListFleetRosterResult,
+} from '../../fleet/fleet-roster';
 import { shouldRecoverClaimFromHealth, type AgentAssignment, type ClaimHealth } from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
@@ -159,6 +163,12 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
 const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 8_000;
+/**
+ * Keep optional leader-brief legs below the MCP transport budget. The roster
+ * has its own larger, per-leg budget; everything after it is advisory and can
+ * truthfully degrade to an absent/unknown block when the database is slow.
+ */
+export const LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS = 2_000;
 
 type LeaderBriefReadResult<T> = T extends () => Promise<infer R> ? R : never;
 
@@ -170,6 +180,31 @@ export async function runLeaderBriefReads<T extends readonly (() => Promise<unkn
   return (await mapWithConcurrency(reads, concurrency, (read) => read())) as {
     [K in keyof T]: LeaderBriefReadResult<T[K]>;
   };
+}
+
+/**
+ * Bound a best-effort leader-brief leg. A bounded fan-out still hangs when one
+ * member promise never settles, so every optional read uses this helper at the
+ * leaf. The fallback keeps the caller's existing "unknown/absent" contract.
+ */
+async function boundedLeaderBriefRead<T>(
+  label: string,
+  work: () => Promise<T>,
+  fallback: T,
+  timeoutMs = LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+): Promise<T> {
+  try {
+    const result = await withBoundedTimeout(work, {
+      fallback,
+      timeoutMs,
+      label: `leader-brief:${label}`,
+    });
+    return result.value;
+  } catch {
+    // `withBoundedTimeout` catches rejected promises; this covers a synchronous
+    // thunk failure as well, preserving the same fail-soft contract.
+    return fallback;
+  }
 }
 
 /**
@@ -224,12 +259,24 @@ export function computeLeaderMonitoringBlindAdvisory(input: {
 export async function readLeaderMonitoringBlindAdvisory(
   fleetSlug: string,
   readActiveAwaits: (eventKey: string) => Promise<readonly unknown[]> = listActiveAwaitsForKey,
+  timeoutMs = LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
 ): Promise<LeaderMonitoringBlindAdvisory | undefined> {
   try {
     const eventKeys = resolveFleetLeaderTransitionEventKeys({ fleetSlug });
-    const counts = await Promise.all(
-      eventKeys.map(async (eventKey) => [eventKey, (await readActiveAwaits(eventKey)).length] as const),
+    const reads = await runLeaderBriefReads(
+      eventKeys.map((eventKey) => () =>
+        withBoundedTimeout(readActiveAwaits(eventKey), {
+          fallback: null,
+          timeoutMs,
+          label: 'leader-brief:monitoring-blind-awaiters',
+        }),
+      ) as never,
     );
+    const results = reads as Array<Awaited<ReturnType<typeof withBoundedTimeout<readonly unknown[] | null>>>>;
+    // A timeout/error means the awaiter count is UNKNOWN. Do not turn that
+    // into zero and emit a false "monitoring blind" alarm.
+    if (results.some((result) => result.degraded || result.value == null)) return undefined;
+    const counts = results.map((result, index) => [eventKeys[index], result.value.length] as const);
     return computeLeaderMonitoringBlindAdvisory({
       fleetSlug,
       eventKeys,
@@ -3027,7 +3074,11 @@ export async function buildLeaderBrief(
 ) {
   const { agentIdentity, ownerId, actorWorkspace, self, allowLeadershipWrites } = caller;
   const membership = caller.resolveCallerMembership
-    ? await resolvePresenceFleet(ownerId, deriveFleetMembership())
+    ? await boundedLeaderBriefRead(
+        'presence-fleet',
+        () => resolvePresenceFleet(ownerId, deriveFleetMembership()),
+        { fleetSlug: null as string | null },
+      )
     : { fleetSlug: null as string | null };
   const fleet = args.fleet ?? membership.fleetSlug;
   if (!fleet) {
@@ -3050,7 +3101,15 @@ export async function buildLeaderBrief(
   // fleet:status's presence-primary roster is the membership authority. The
   // old claim-primary read omitted live idle members whose assignment view had
   // no row, so leader-brief and fleet:status reported different rosters.
-  const rosterResult = await listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId });
+  const rosterResult = await boundedLeaderBriefRead<ListFleetRosterResult>(
+    'roster',
+    () => listFleetRosterDiagnosed({ fleetSlug: fleet, workspaceId }),
+    {
+      entries: [],
+      degradedLegs: ['presence', 'tier1', 'assignments', 'wakeability', 'recorded', 'selfwake'],
+    },
+    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+  );
   const [headcountTargetResult, headcountCurrentResult] = await runLeaderBriefReads(
     [
       () =>

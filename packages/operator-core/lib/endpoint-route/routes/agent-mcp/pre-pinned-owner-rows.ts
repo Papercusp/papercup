@@ -10,6 +10,8 @@ export type PrePinnedOwnerRow = {
   id: string;
   display: string | null;
   has_session: boolean;
+  /** True once a PUI process won the workbench row's claim-before-open gate. */
+  launched: boolean;
   /** The shared liveness-oracle verdict, reduced by
    * `mapPrePinnedOwnerSessionState` for this launch guard. */
   liveness?: PrePinnedOwnerLiveness;
@@ -29,11 +31,14 @@ export type PrePinnedOwnerClassification<T extends PrePinnedOwnerRow> = {
  * Split the live rows for a pre-pinned owner into the launcher's own PRECURSOR
  * rows and genuine CONFLICTS.
  *
- * A precursor is the starting row `launch-su` writes for the very launch that is
- * now booting (WI-6376: `display='terminal'`, no `session_id` yet, so the board can
- * render the session during its boot window). bootstrap-su ADOPTS it instead of
- * inserting a second row. A conflict is anything else — which is the split-identity
- * case the freshness guard exists to refuse (WI-5002/EI-13277). A conflict may be
+ * A precursor is either the starting terminal row `launch-su` writes for the very
+ * launch now booting, or a `display='workbench'` row after PUI atomically claimed
+ * it (`launched_at` set) and opened its one psu pane. bootstrap-su ADOPTS either
+ * precursor instead of inserting a second row, which keeps the deferred row's
+ * advSessionId stable into the running session. An unclaimed workbench row is not
+ * a precursor: accepting it would route around PUI's single-launcher claim gate.
+ * A conflict is anything else — which is the split-identity case the freshness
+ * guard exists to refuse (WI-5002/EI-13277). A conflict may be
  * placed in `reclaimableConflicts` only when the shared oracle maps the owner to
  * `dead` from its `ended`/`suspect` verdict; live and unknown rows stay in `conflicts`.
  *
@@ -63,7 +68,9 @@ export function classifyPrePinnedOwnerRows<T extends PrePinnedOwnerRow>(
   const reclaimableConflicts: T[] = [];
   const conflicts: T[] = [];
   for (const row of live) {
-    if (row.display === DISPLAY_TERMINAL_LAUNCH && !row.has_session) precursors.push(row);
+    const terminalPrecursor = row.display === DISPLAY_TERMINAL_LAUNCH && !row.has_session;
+    const claimedWorkbenchPrecursor = row.display === 'workbench' && row.launched && !row.has_session;
+    if (terminalPrecursor || claimedWorkbenchPrecursor) precursors.push(row);
     else if (row.liveness === 'dead') reclaimableConflicts.push(row);
     else conflicts.push(row);
   }

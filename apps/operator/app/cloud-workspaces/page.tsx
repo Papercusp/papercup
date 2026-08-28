@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -18,27 +18,27 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
-import { parseAsString, parseAsStringEnum, useQueryState } from 'nuqs';
-import { toast } from 'sonner';
-import { useSyncMutate, useSyncQuery } from '@papercusp/sync';
-import { Button } from '@/app/harness/Button';
-import { Modal } from '@/app/harness/Modal';
-import { Select } from '@/app/harness/Select';
-import { TextInput } from '@/app/harness/TextInput';
-import styles from './cloud-workspaces.module.css';
+import { parseAsString, parseAsStringEnum, useQueryState } from "nuqs";
+import { toast } from "sonner";
+import { useSyncMutate, useSyncQuery } from "@papercusp/sync";
+import { Button } from "@/app/harness/Button";
+import { Modal } from "@/app/harness/Modal";
+import { Select } from "@/app/harness/Select";
+import { TextInput } from "@/app/harness/TextInput";
+import styles from "./cloud-workspaces.module.css";
 
-type ProviderTarget = 'gcp' | 'aws' | 'azure';
-type ConnectionStatus = 'connected' | 'degraded' | 'invalid';
+type ProviderTarget = "gcp" | "aws" | "azure";
+type ConnectionStatus = "connected" | "degraded" | "invalid";
 type LifecycleState =
-  | 'provisioning'
-  | 'running'
-  | 'stopped'
-  | 'degraded'
-  | 'repairing'
-  | 'destroying'
-  | 'absent';
-type LifecycleAction = 'start' | 'stop' | 'repair' | 'snapshot' | 'destroy';
-type DestroyDisposition = 'snapshot' | 'backup' | 'discard';
+  | "provisioning"
+  | "running"
+  | "stopped"
+  | "degraded"
+  | "repairing"
+  | "destroying"
+  | "absent";
+type LifecycleAction = "start" | "stop" | "repair" | "snapshot" | "destroy";
+type DestroyDisposition = "snapshot" | "backup" | "discard";
 
 interface CatalogOption {
   id: string;
@@ -52,7 +52,7 @@ interface SizeOption extends CatalogOption {
 }
 
 export interface WorkspaceHostConnectionRow {
-  kind: 'connection';
+  kind: "connection";
   id: string;
   target: string;
   label: string;
@@ -72,8 +72,8 @@ interface OperationEvent {
   id: string;
   ts: string;
   phase: string;
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
-  level?: 'info' | 'warn' | 'error';
+  status: "queued" | "running" | "succeeded" | "failed";
+  level?: "info" | "warn" | "error";
   source?: string;
   message: string;
   details?: unknown;
@@ -81,8 +81,8 @@ interface OperationEvent {
 
 interface OperationProgress {
   id: string;
-  action: LifecycleAction | 'provision';
-  status: 'queued' | 'running' | 'succeeded' | 'failed';
+  action: LifecycleAction | "provision";
+  status: "queued" | "running" | "succeeded" | "failed";
   percent: number;
   message: string;
   request?: unknown;
@@ -106,15 +106,15 @@ interface WorkspaceHostLogRow {
   id: string;
   operationId?: string;
   observedAt?: string;
-  stream: 'cloud-init' | 'systemd' | 'controller';
+  stream: "cloud-init" | "systemd" | "controller";
   unit?: string;
-  level: 'info' | 'warn' | 'error';
+  level: "info" | "warn" | "error";
   message: string;
   metadata?: unknown;
 }
 
 export interface WorkspaceHostControlRow {
-  kind: 'workspace';
+  kind: "workspace";
   id: string;
   name: string;
   connectionId: string;
@@ -132,7 +132,7 @@ export interface WorkspaceHostControlRow {
   providerResourceId?: string;
   endpoint?: string;
   recoverability: {
-    kind: 'snapshot' | 'backup' | 'none';
+    kind: "snapshot" | "backup" | "none";
     label: string;
     updatedAt?: string;
   };
@@ -152,13 +152,20 @@ export interface WorkspaceHostControlRow {
   operation?: OperationProgress;
 }
 
-export type CloudWorkspacesControlRow = WorkspaceHostConnectionRow | WorkspaceHostControlRow;
+export type CloudWorkspacesControlRow =
+  | WorkspaceHostConnectionRow
+  | WorkspaceHostControlRow;
 
 type WorkspaceHostActionArgs =
-  | { action: 'connect'; target: ProviderTarget; label: string; credentialRef: string }
-  | { action: 'validate-connection'; connectionId: string }
   | {
-      action: 'provision';
+      action: "connect";
+      target: ProviderTarget;
+      label: string;
+      credentialRef: string;
+    }
+  | { action: "validate-connection"; connectionId: string }
+  | {
+      action: "provision";
       connectionId: string;
       name: string;
       scopeId: string;
@@ -168,8 +175,8 @@ type WorkspaceHostActionArgs =
       diskGiB: number;
       networkId: string;
     }
-  | { action: Exclude<LifecycleAction, 'destroy'>; workspaceId: string }
-  | { action: 'destroy'; workspaceId: string; disposition: DestroyDisposition };
+  | { action: Exclude<LifecycleAction, "destroy">; workspaceId: string }
+  | { action: "destroy"; workspaceId: string; disposition: DestroyDisposition };
 
 interface WorkspaceHostActionResponse {
   ok: boolean;
@@ -177,20 +184,35 @@ interface WorkspaceHostActionResponse {
   message?: string;
 }
 
-const PROVIDERS: readonly { target: ProviderTarget; label: string; scope: string; accent: string }[] = [
-  { target: 'gcp', label: 'Google Cloud', scope: 'Project', accent: 'GCP' },
-  { target: 'aws', label: 'Amazon Web Services', scope: 'Account', accent: 'AWS' },
-  { target: 'azure', label: 'Microsoft Azure', scope: 'Subscription', accent: 'AZURE' },
+const PROVIDERS: readonly {
+  target: ProviderTarget;
+  label: string;
+  scope: string;
+  accent: string;
+}[] = [
+  { target: "gcp", label: "Google Cloud", scope: "Project", accent: "GCP" },
+  {
+    target: "aws",
+    label: "Amazon Web Services",
+    scope: "Account",
+    accent: "AWS",
+  },
+  {
+    target: "azure",
+    label: "Microsoft Azure",
+    scope: "Subscription",
+    accent: "AZURE",
+  },
 ];
 
 const LIFECYCLE_STATES: readonly LifecycleState[] = [
-  'provisioning',
-  'running',
-  'stopped',
-  'degraded',
-  'repairing',
-  'destroying',
-  'absent',
+  "provisioning",
+  "running",
+  "stopped",
+  "degraded",
+  "repairing",
+  "destroying",
+  "absent",
 ];
 
 function isLifecycleState(value: string): value is LifecycleState {
@@ -198,16 +220,16 @@ function isLifecycleState(value: string): value is LifecycleState {
 }
 
 function formatTimestamp(value?: string): string {
-  if (!value) return 'not yet';
+  if (!value) return "not yet";
   const ms = Date.parse(value);
   return Number.isFinite(ms) ? new Date(ms).toLocaleString() : value;
 }
 
 function formatMoney(value?: number): string {
-  if (value === undefined || !Number.isFinite(value)) return 'Unavailable';
+  if (value === undefined || !Number.isFinite(value)) return "Unavailable";
   return new Intl.NumberFormat(undefined, {
-    style: 'currency',
-    currency: 'USD',
+    style: "currency",
+    currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(value);
@@ -227,9 +249,10 @@ function formatCapacity(
 }
 
 function formatSignal(value: unknown): string {
-  if (value == null) return 'none';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value == null) return "none";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean")
+    return String(value);
   try {
     return JSON.stringify(value);
   } catch {
@@ -238,9 +261,23 @@ function formatSignal(value: unknown): string {
 }
 
 function signalTone(value: string): string {
-  if (['healthy', 'connected', 'ok', 'applied', 'unchanged', 'succeeded'].includes(value)) return styles.good;
-  if (['degraded', 'unreachable', 'failed', 'error', 'invalid'].includes(value)) return styles.bad;
-  if (['warn', 'warning', 'retry-wait', 'reconciling', 'applying'].includes(value)) return styles.warn;
+  if (
+    [
+      "healthy",
+      "connected",
+      "ok",
+      "applied",
+      "unchanged",
+      "succeeded",
+    ].includes(value)
+  )
+    return styles.good;
+  if (["degraded", "unreachable", "failed", "error", "invalid"].includes(value))
+    return styles.bad;
+  if (
+    ["warn", "warning", "retry-wait", "reconciling", "applying"].includes(value)
+  )
+    return styles.warn;
   return styles.neutral;
 }
 
@@ -255,38 +292,63 @@ function SignalList({ items, empty }: { items?: unknown[]; empty: string }) {
   );
 }
 
-function stateTone(state: LifecycleState | ConnectionStatus | OperationEvent['status']): string {
-  if (state === 'running' || state === 'connected' || state === 'succeeded') return styles.good;
-  if (state === 'degraded' || state === 'invalid' || state === 'failed') return styles.bad;
-  if (state === 'provisioning' || state === 'repairing' || state === 'destroying') {
+function stateTone(
+  state: LifecycleState | ConnectionStatus | OperationEvent["status"],
+): string {
+  if (state === "running" || state === "connected" || state === "succeeded")
+    return styles.good;
+  if (state === "degraded" || state === "invalid" || state === "failed")
+    return styles.bad;
+  if (
+    state === "provisioning" ||
+    state === "repairing" ||
+    state === "destroying"
+  ) {
     return styles.warn;
   }
   return styles.neutral;
 }
 
-async function workspaceHostActionRest(args: WorkspaceHostActionArgs): Promise<WorkspaceHostActionResponse> {
-  const response = await fetch('/api/workspace-hosts/action', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+async function workspaceHostActionRest(
+  args: WorkspaceHostActionArgs,
+): Promise<WorkspaceHostActionResponse> {
+  const response = await fetch("/api/workspace-hosts/action", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify(args),
   });
-  const body = (await response.json().catch(() => null)) as WorkspaceHostActionResponse | null;
+  const body = (await response
+    .json()
+    .catch(() => null)) as WorkspaceHostActionResponse | null;
   if (!response.ok || !body?.ok) {
-    throw new Error(body?.message || `Workspace-host action failed (${response.status})`);
+    throw new Error(
+      body?.message || `Workspace-host action failed (${response.status})`,
+    );
   }
   return body;
 }
 
 function StatusBadge({ state, prefix }: { state: string; prefix?: string }) {
-  const normalized = isLifecycleState(state) ? state : state as ConnectionStatus;
+  const normalized = isLifecycleState(state)
+    ? state
+    : (state as ConnectionStatus);
   return (
     <span className={`${styles.badge} ${stateTone(normalized)}`}>
-      {prefix ? `${prefix}: ` : ''}{state}
+      {prefix ? `${prefix}: ` : ""}
+      {state}
     </span>
   );
 }
 
-function Field({ label, children, hint }: { label: string; children: React.ReactNode; hint?: string }) {
+function Field({
+  label,
+  children,
+  hint,
+}: {
+  label: string;
+  children: React.ReactNode;
+  hint?: string;
+}) {
   return (
     <label className={styles.field}>
       <span className={styles.fieldLabel}>{label}</span>
@@ -326,66 +388,128 @@ function SectionHeading({
 }
 
 export default function CloudWorkspacesPage() {
-  const control = useSyncQuery<CloudWorkspacesControlRow>({ queryName: 'workspaceHosts.control' });
-  const mutate = useSyncMutate<WorkspaceHostActionArgs, WorkspaceHostActionResponse>(
-    'workspaceHosts.action',
-    workspaceHostActionRest,
-  );
+  const control = useSyncQuery<CloudWorkspacesControlRow>({
+    queryName: "workspaceHosts.control",
+  });
+  const mutate = useSyncMutate<
+    WorkspaceHostActionArgs,
+    WorkspaceHostActionResponse
+  >("workspaceHosts.action", workspaceHostActionRest);
   const rows = useMemo(() => control.data ?? [], [control.data]);
   const connections = useMemo(
-    () => rows.filter((row): row is WorkspaceHostConnectionRow => row.kind === 'connection'),
+    () =>
+      rows.filter(
+        (row): row is WorkspaceHostConnectionRow => row.kind === "connection",
+      ),
     [rows],
   );
   const workspaces = useMemo(
-    () => rows.filter((row): row is WorkspaceHostControlRow => row.kind === 'workspace'),
+    () =>
+      rows.filter(
+        (row): row is WorkspaceHostControlRow => row.kind === "workspace",
+      ),
     [rows],
   );
 
-  const [connectionParam, setConnectionParam] = useQueryState('connection', parseAsString.withDefault(''));
-  const [scopeParam, setScopeParam] = useQueryState('scope', parseAsString.withDefault(''));
-  const [regionParam, setRegionParam] = useQueryState('region', parseAsString.withDefault(''));
-  const [sizeParam, setSizeParam] = useQueryState('size', parseAsString.withDefault(''));
-  const [imageParam, setImageParam] = useQueryState('image', parseAsString.withDefault(''));
-  const [networkParam, setNetworkParam] = useQueryState('network', parseAsString.withDefault(''));
-  const [diskParam, setDiskParam] = useQueryState('disk', parseAsString.withDefault('100'));
-  const [nameParam, setNameParam] = useQueryState('name', parseAsString.withDefault(''));
-  const [connectTarget, setConnectTarget] = useQueryState(
-    'connect',
-    parseAsStringEnum<ProviderTarget>(['gcp', 'aws', 'azure']),
+  const [connectionParam, setConnectionParam] = useQueryState(
+    "connection",
+    parseAsString.withDefault(""),
   );
-  const [destroyId, setDestroyId] = useQueryState('destroy', parseAsString);
+  const [scopeParam, setScopeParam] = useQueryState(
+    "scope",
+    parseAsString.withDefault(""),
+  );
+  const [regionParam, setRegionParam] = useQueryState(
+    "region",
+    parseAsString.withDefault(""),
+  );
+  const [sizeParam, setSizeParam] = useQueryState(
+    "size",
+    parseAsString.withDefault(""),
+  );
+  const [imageParam, setImageParam] = useQueryState(
+    "image",
+    parseAsString.withDefault(""),
+  );
+  const [networkParam, setNetworkParam] = useQueryState(
+    "network",
+    parseAsString.withDefault(""),
+  );
+  const [diskParam, setDiskParam] = useQueryState(
+    "disk",
+    parseAsString.withDefault("100"),
+  );
+  const [nameParam, setNameParam] = useQueryState(
+    "name",
+    parseAsString.withDefault(""),
+  );
+  const [connectTarget, setConnectTarget] = useQueryState(
+    "connect",
+    parseAsStringEnum<ProviderTarget>(["gcp", "aws", "azure"]),
+  );
+  const [destroyId, setDestroyId] = useQueryState("destroy", parseAsString);
   const [disposition, setDisposition] = useQueryState(
-    'disposition',
-    parseAsStringEnum<DestroyDisposition>(['snapshot', 'backup', 'discard']).withDefault('snapshot'),
+    "disposition",
+    parseAsStringEnum<DestroyDisposition>([
+      "snapshot",
+      "backup",
+      "discard",
+    ]).withDefault("snapshot"),
   );
 
-  const [credentialRef, setCredentialRef] = useState('');
-  const [connectionLabel, setConnectionLabel] = useState('');
-  const [destroyConfirm, setDestroyConfirm] = useState('');
+  const [credentialRef, setCredentialRef] = useState("");
+  const [connectionLabel, setConnectionLabel] = useState("");
+  const [destroyConfirm, setDestroyConfirm] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
 
-  const selectedConnection = connections.find((row) => row.id === connectionParam) ?? connections[0] ?? null;
-  const selectedScope = selectedConnection?.scopes.find((option) => option.id === scopeParam)
-    ?? selectedConnection?.scopes[0]
-    ?? null;
-  const selectedRegion = selectedConnection?.regions.find((option) => option.id === regionParam)
-    ?? selectedConnection?.regions[0]
-    ?? null;
-  const selectedSize = selectedConnection?.sizes.find((option) => option.id === sizeParam)
-    ?? selectedConnection?.sizes[0]
-    ?? null;
-  const selectedImage = selectedConnection?.images.find((option) => option.id === imageParam)
-    ?? selectedConnection?.images[0]
-    ?? null;
-  const selectedNetwork = selectedConnection?.networks.find((option) => option.id === networkParam)
-    ?? selectedConnection?.networks[0]
-    ?? null;
+  const selectedConnection =
+    connections.find((row) => row.id === connectionParam) ??
+    connections[0] ??
+    null;
+  const selectedScope =
+    selectedConnection?.scopes.find((option) => option.id === scopeParam) ??
+    selectedConnection?.scopes[0] ??
+    null;
+  const selectedRegion =
+    selectedConnection?.regions.find((option) => option.id === regionParam) ??
+    selectedConnection?.regions[0] ??
+    null;
+  const selectedSize =
+    selectedConnection?.sizes.find((option) => option.id === sizeParam) ??
+    selectedConnection?.sizes[0] ??
+    null;
+  const selectedImage =
+    selectedConnection?.images.find((option) => option.id === imageParam) ??
+    selectedConnection?.images[0] ??
+    null;
+  const selectedNetwork =
+    selectedConnection?.networks.find((option) => option.id === networkParam) ??
+    selectedConnection?.networks[0] ??
+    null;
+  const provisionBlockers = [
+    selectedConnection?.status !== "connected"
+      ? "validate the provider connection"
+      : null,
+    !nameParam.trim() ? "enter a workspace name" : null,
+    !selectedScope
+      ? "load a project, account, or subscription from the provider catalog"
+      : null,
+    !selectedRegion ? "load a region from the provider catalog" : null,
+    !selectedSize ? "load a machine size from the provider catalog" : null,
+    !selectedImage ? "load an image from the provider catalog" : null,
+    !selectedNetwork ? "load a network from the provider catalog" : null,
+  ].filter((blocker): blocker is string => Boolean(blocker));
   const diskGiB = Number.parseInt(diskParam, 10);
-  const validDiskGiB = Number.isFinite(diskGiB) ? Math.max(20, Math.min(16_384, diskGiB)) : 100;
-  const estimatedMonthlyUsd = selectedSize?.hourlyUsd === undefined
-    ? undefined
-    : selectedSize.hourlyUsd * 730 + validDiskGiB * (selectedConnection?.diskPricePerGiBMonth ?? 0);
-  const destroyWorkspace = workspaces.find((row) => row.id === destroyId) ?? null;
+  const validDiskGiB = Number.isFinite(diskGiB)
+    ? Math.max(20, Math.min(16_384, diskGiB))
+    : 100;
+  const estimatedMonthlyUsd =
+    selectedSize?.hourlyUsd === undefined
+      ? undefined
+      : selectedSize.hourlyUsd * 730 +
+        validDiskGiB * (selectedConnection?.diskPricePerGiBMonth ?? 0);
+  const destroyWorkspace =
+    workspaces.find((row) => row.id === destroyId) ?? null;
   const connectedProviderCount = connections.filter(
     (row) => row.status === "connected",
   ).length;
@@ -405,7 +529,11 @@ export default function CloudWorkspacesPage() {
   );
 
   const perform = useCallback(
-    async (key: string, args: WorkspaceHostActionArgs, successMessage: string) => {
+    async (
+      key: string,
+      args: WorkspaceHostActionArgs,
+      successMessage: string,
+    ) => {
       setBusyKey(key);
       try {
         const response = await mutate(args);
@@ -413,7 +541,11 @@ export default function CloudWorkspacesPage() {
         await control.invalidate?.();
         return true;
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Workspace-host action failed');
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Workspace-host action failed",
+        );
         return false;
       } finally {
         setBusyKey(null);
@@ -424,28 +556,28 @@ export default function CloudWorkspacesPage() {
 
   const closeConnectionModal = useCallback(() => {
     void setConnectTarget(null);
-    setCredentialRef('');
-    setConnectionLabel('');
+    setCredentialRef("");
+    setConnectionLabel("");
   }, [setConnectTarget]);
 
   const closeDestroyModal = useCallback(() => {
     void setDestroyId(null);
-    void setDisposition('snapshot');
-    setDestroyConfirm('');
+    void setDisposition("snapshot");
+    setDestroyConfirm("");
   }, [setDestroyId, setDisposition]);
 
   const canProvision = Boolean(
-    selectedConnection?.status === 'connected'
-      && nameParam.trim()
-      && selectedScope
-      && selectedRegion
-      && selectedSize
-      && selectedImage
-      && selectedNetwork,
+    selectedConnection?.status === "connected" &&
+    nameParam.trim() &&
+    selectedScope &&
+    selectedRegion &&
+    selectedSize &&
+    selectedImage &&
+    selectedNetwork,
   );
 
   return (
-    <main className={styles.page}>
+    <div className={styles.page}>
       <header className={styles.hero}>
         <div className={styles.heroCopy}>
           <p className={styles.eyebrow}>
@@ -459,14 +591,15 @@ export default function CloudWorkspacesPage() {
           </p>
           <div
             className={styles.heroSignals}
+            role="list"
             aria-label="Control-plane posture"
           >
-            <span>
+            <span role="listitem">
               <i className={styles.liveDot} aria-hidden="true" />{" "}
               Provider-neutral orchestration
             </span>
-            <span>Credentials stay injected</span>
-            <span>Recovery is explicit</span>
+            <span role="listitem">Credentials stay injected</span>
+            <span role="listitem">Recovery is explicit</span>
           </div>
         </div>
         <div className={styles.heroActions}>
@@ -737,7 +870,14 @@ export default function CloudWorkspacesPage() {
                   </p>
                 </div>
               </div>
-              <Field label="Workspace name">
+              <Field
+                label="Workspace name"
+                hint={
+                  !nameParam.trim()
+                    ? "Required before provisioning."
+                    : undefined
+                }
+              >
                 <TextInput
                   value={nameParam}
                   onChange={(event) => void setNameParam(event.target.value)}
@@ -756,11 +896,20 @@ export default function CloudWorkspacesPage() {
                   }))}
                 />
               </Field>
-              <Field label="Project, account, or subscription">
+              <Field
+                label="Project, account, or subscription"
+                hint={
+                  selectedConnection?.scopes.length
+                    ? undefined
+                    : "No projects, accounts, or subscriptions were returned by this provider connection."
+                }
+              >
                 <Select
                   value={selectedScope?.id ?? ""}
                   onChange={(value) => void setScopeParam(value)}
                   ariaLabel="Project, account, or subscription"
+                  placeholder="No scopes available"
+                  disabled={!selectedConnection?.scopes.length}
                   options={
                     selectedConnection?.scopes.map((option) => ({
                       value: option.id,
@@ -769,11 +918,20 @@ export default function CloudWorkspacesPage() {
                   }
                 />
               </Field>
-              <Field label="Region">
+              <Field
+                label="Region"
+                hint={
+                  selectedConnection?.regions.length
+                    ? undefined
+                    : "No regions were returned by this provider connection."
+                }
+              >
                 <Select
                   value={selectedRegion?.id ?? ""}
                   onChange={(value) => void setRegionParam(value)}
                   ariaLabel="Region"
+                  placeholder="No regions available"
+                  disabled={!selectedConnection?.regions.length}
                   options={
                     selectedConnection?.regions.map((option) => ({
                       value: option.id,
@@ -784,12 +942,18 @@ export default function CloudWorkspacesPage() {
               </Field>
               <Field
                 label="Size"
-                hint={selectedSize ? formatCapacity(selectedSize) : undefined}
+                hint={
+                  selectedSize
+                    ? formatCapacity(selectedSize)
+                    : "No machine sizes were returned by this provider connection."
+                }
               >
                 <Select
                   value={selectedSize?.id ?? ""}
                   onChange={(value) => void setSizeParam(value)}
                   ariaLabel="Machine size"
+                  placeholder="No machine sizes available"
+                  disabled={!selectedConnection?.sizes.length}
                   options={
                     selectedConnection?.sizes.map((option) => ({
                       value: option.id,
@@ -798,11 +962,20 @@ export default function CloudWorkspacesPage() {
                   }
                 />
               </Field>
-              <Field label="Image">
+              <Field
+                label="Image"
+                hint={
+                  selectedConnection?.images.length
+                    ? undefined
+                    : "No images were returned by this provider connection."
+                }
+              >
                 <Select
                   value={selectedImage?.id ?? ""}
                   onChange={(value) => void setImageParam(value)}
                   ariaLabel="Machine image"
+                  placeholder="No images available"
+                  disabled={!selectedConnection?.images.length}
                   options={
                     selectedConnection?.images.map((option) => ({
                       value: option.id,
@@ -821,11 +994,20 @@ export default function CloudWorkspacesPage() {
                   aria-label="Disk size in GiB"
                 />
               </Field>
-              <Field label="Network">
+              <Field
+                label="Network"
+                hint={
+                  selectedConnection?.networks.length
+                    ? undefined
+                    : "No networks were returned by this provider connection."
+                }
+              >
                 <Select
                   value={selectedNetwork?.id ?? ""}
                   onChange={(value) => void setNetworkParam(value)}
                   ariaLabel="Network"
+                  placeholder="No networks available"
+                  disabled={!selectedConnection?.networks.length}
                   options={
                     selectedConnection?.networks.map((option) => ({
                       value: option.id,
@@ -835,7 +1017,7 @@ export default function CloudWorkspacesPage() {
                 />
               </Field>
             </div>
-            <aside
+            <div
               className={styles.estimate}
               aria-label="Estimated workspace cost"
             >
@@ -866,15 +1048,33 @@ export default function CloudWorkspacesPage() {
                   <dd>{selectedSize ? formatCapacity(selectedSize) : "—"}</dd>
                 </div>
               </dl>
+              {provisionBlockers.length > 0 ? (
+                <p
+                  id="provision-blockers"
+                  className={styles.provisionBlockers}
+                  role="status"
+                >
+                  <AlertTriangle size={16} aria-hidden="true" />
+                  <span>
+                    <strong>Provisioning blocked</strong>
+                    <span>Required: {provisionBlockers.join("; ")}.</span>
+                  </span>
+                </p>
+              ) : null}
               <Button
                 type="submit"
                 variant="primary"
                 size="lg"
                 disabled={!canProvision || busyKey === "provision"}
+                aria-describedby={
+                  provisionBlockers.length > 0
+                    ? "provision-blockers"
+                    : undefined
+                }
               >
                 <Cloud size={16} aria-hidden="true" /> Provision workspace
               </Button>
-            </aside>
+            </div>
           </form>
         )}
       </section>
@@ -1460,6 +1660,6 @@ export default function CloudWorkspacesPage() {
           </div>
         </div>
       </Modal>
-    </main>
+    </div>
   );
 }

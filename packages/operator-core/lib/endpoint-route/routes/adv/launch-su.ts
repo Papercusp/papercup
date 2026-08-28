@@ -28,10 +28,12 @@ import { isOnPath, shellEscape, spawnInTerminal } from '../../../terminal-spawn'
 import { psuLaunchLogPath } from '../../../psu-launch-log.mjs';
 import {
   DISPLAY_TERMINAL_LAUNCH,
+  getAdvSession,
   markAdvSessionEnded,
   recordAdvSession,
   setAdvSessionPid,
 } from '../../../adv-sessions';
+import { nativeSessionHandleForAdvSession } from '../../../native-session-handles';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { isLaunchAccountValue } from '../../../agent-config-constants';
@@ -93,6 +95,12 @@ const launchSu = defineTool({
       // by a GUI launch — psu with no --account opens an INTERACTIVE picker,
       // which would hang a spawned session waiting for a human at a terminal.
       account?: string | null;
+      // PUI SU-session contract: same psu carry input as fleet launch. Persisted
+      // in launch_argv; orthogonal to headed/headless.
+      carry?: string | null;
+      // Read-only attach to one existing workspace-scoped adv_sessions row.
+      // When set, this route returns its native handle and spawns nothing.
+      attach_adv_session_id?: number | null;
       // pui-reactive-session-panes D-006: record a pending workbench launch
       // instead of spawning a terminal — the pui reactively opens the pane that
       // RUNS it (the single launcher). The pane materializes via the roster.
@@ -120,6 +128,18 @@ const launchSu = defineTool({
       if (text.trim()) body = JSON.parse(text);
     } catch {
       return json({ status: 'error', error: 'invalid JSON body' }, 400);
+    }
+
+    const attachAdvSessionId = body.attach_adv_session_id ?? null;
+    if (attachAdvSessionId != null && (!Number.isSafeInteger(attachAdvSessionId) || attachAdvSessionId <= 0)) {
+      return json({ status: 'error', error: 'attach_adv_session_id must be a positive integer' }, 400);
+    }
+    if (attachAdvSessionId != null && body.defer_spawn) {
+      return json({ status: 'error', error: 'attach_adv_session_id and defer_spawn are mutually exclusive' }, 400);
+    }
+    const hasExplicitAgent = typeof body.agent === 'string' && body.agent.trim().length > 0;
+    if (attachAdvSessionId != null && !hasExplicitAgent) {
+      return json({ status: 'error', error: 'attach requires an explicit agent: claude|omp|codex' }, 400);
     }
 
     // No explicit agent → the CONFIGURED backend (/settings/agent — owner ask
@@ -170,6 +190,60 @@ const launchSu = defineTool({
     const account = body.account?.trim() || null;
     if (account && !isLaunchAccountValue(account)) {
       return json({ status: 'error', error: 'invalid account' }, 400);
+    }
+    const carry = body.carry?.trim() || null;
+    if (carry && carry !== 'warm' && carry !== 'cold') {
+      return json({ status: 'error', error: 'carry must be warm|cold' }, 400);
+    }
+
+    // PUI attach is intentionally a READ on the canonical session row, not a
+    // resume/spawn. It lives on this route so create and attach share the same
+    // active-workspace scope, backend vocabulary and native-handle resolver.
+    // Branch before fleet creation, safety-floor admission, psu discovery and
+    // terminal setup: none belongs to a no-spawn attach.
+    if (attachAdvSessionId != null) {
+      const row = await getAdvSession(attachAdvSessionId);
+      if (!row) {
+        return json({ status: 'error', error: `adv session ${attachAdvSessionId} was not found` }, 404);
+      }
+      if (row.agent !== agent) {
+        return json(
+          {
+            status: 'error',
+            error: `adv session ${attachAdvSessionId} backend is ${row.agent ?? 'unrecorded'}, not ${agent}`,
+          },
+          409,
+        );
+      }
+      if (harness && row.harnessSlug !== harness) {
+        return json(
+          {
+            status: 'error',
+            error: `adv session ${attachAdvSessionId} harness is ${row.harnessSlug ?? 'workspace-scoped'}, not ${harness}`,
+          },
+          409,
+        );
+      }
+      if (plan && row.planSlug !== plan) {
+        return json(
+          {
+            status: 'error',
+            error: `adv session ${attachAdvSessionId} plan is ${row.planSlug ?? 'unscoped'}, not ${plan}`,
+          },
+          409,
+        );
+      }
+      return json({
+        status: 'ok',
+        attached: true,
+        advSessionId: row.id,
+        ...(row.coordOwnerId ? { ownerId: row.coordOwnerId } : {}),
+        agent,
+        workspaceId: row.workspaceId,
+        harnessSlug: row.harnessSlug,
+        planSlug: row.planSlug,
+        nativeSession: nativeSessionHandleForAdvSession(row),
+      });
     }
 
     // P-042 / D-067: validate the launch mode against the modes REGISTRY, not a
@@ -315,6 +389,7 @@ const launchSu = defineTool({
     // so a GUI launch and a terminal launch produce an identical launch_argv.
     if (account) psuArgs.push(`--account=${account}`);
     if (fleetSlug) psuArgs.push(`--fleet=${fleetSlug}`);
+    if (carry) psuArgs.push(`--carry=${carry}`);
     if (resumeSessionId) psuArgs.push(`--resume-session=${resumeSessionId}`);
     if (kickoffFile) psuArgs.push(`--launch-context=${kickoffFile}`);
     // hive-agent-tabs P-006: a New-plan launch IS the Planner — launch the
@@ -359,6 +434,10 @@ const launchSu = defineTool({
         mode: 'console',
         cwd: null, // psu cds itself from --harness/--plan (parity with the terminal path)
         label,
+        // P-002: the deferred row is the session's durable identity, not merely
+        // a queue receipt. Once PUI atomically marks it launched, bootstrap-su
+        // recognizes and adopts this same owner-bound row.
+        coordOwnerId: ownerId,
         display: 'workbench',
         launchArgv: psuArgs,
       });
@@ -379,8 +458,10 @@ const launchSu = defineTool({
         advSessionId,
         ...(ownerId ? { ownerId } : {}),
         agent,
+        workspaceId: activeWorkspaceId(),
         harnessSlug: harness,
         planSlug: plan,
+        nativeSession: null,
         ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
       });
     }

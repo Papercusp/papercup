@@ -16,6 +16,7 @@ import { findCodePositionCurlyQuotes, curlyLabel } from './smart-quotes';
 import { findShellSyntaxError } from './shell-syntax';
 import { findConflictMarker } from './conflict-markers';
 import { findTsParseError } from './ts-parse';
+import { findEsbuildTransformError } from './esbuild-transform';
 import { findNulBytes, autoFixNulBytes, nulByteScopeMatches } from './nul-bytes';
 import { findConstantConditional } from './constant-conditional';
 import { findFocusedTest } from './focused-test';
@@ -176,6 +177,30 @@ export const tsParseDetector: ContentDetector = {
       `TypeScript parse error at ${at} (TS${hit.code}): ${hit.reason} — the file does not PARSE, ` +
       'so every consumer of this package hard-fails to typecheck, not just this file'
     );
+  },
+  fixerRole: CONTENT_FIXER_ROLE,
+};
+
+/**
+ * The esbuild TRANSFORM detector — source files that TypeScript accepts but
+ * the bundle host rejects (EI-5240). A TypeScript-only parse/check is not
+ * enough here: esbuild reports hard failures for duplicate declarations,
+ * duplicate modifiers, and other ECMAScript transform errors that can survive
+ * the TypeScript diagnostics used by `ts-parse`.
+ *
+ * Esbuild is loaded lazily by the pure helper, keeping registry import safe in
+ * hosts without its optional runtime installation; a loader failure propagates
+ * and the content guard's existing fail-open path logs and skips the detector.
+ */
+export const esbuildTransformDetector: ContentDetector = {
+  key: 'esbuild-transform',
+  glob: '**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
+  matches: (f) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) && !isExcludedPath(f),
+  detect: async (file, text) => {
+    const hit = await findEsbuildTransformError(file, text);
+    if (!hit) return null;
+    const at = hit.line != null ? `line ${hit.line}${hit.col != null ? `:${hit.col}` : ''}` : 'unknown position';
+    return `esbuild transform error at ${at}: ${hit.reason}`;
   },
   fixerRole: CONTENT_FIXER_ROLE,
 };
@@ -514,6 +539,7 @@ export const DEFAULT_CONTENT_DETECTORS: ContentDetector[] = [
   // so the specific detector must record first. It also catches the SILENT form,
   // which ts-parse cannot see at all (the file parses).
   sqlCommentBacktickDetector,
+  esbuildTransformDetector,
   tsParseDetector,
   shellSyntaxDetector,
   conflictMarkersDetector,
