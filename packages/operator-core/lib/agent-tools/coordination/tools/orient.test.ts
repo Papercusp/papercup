@@ -55,6 +55,11 @@ const foldNeverDropFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[
 // the WHOLE facts fold: 9 cases here red with `facts: null` while the fold itself
 // was correct. Same rule as the two folds above: only the IO reads are mocked.
 const listFactEvictionDisclosuresMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+// WI-311113 focused tests must not let the read-side contest marker open a live
+// PG query. The orient facts fold is deliberately best-effort in production,
+// but a unit test that leaves `supersededVersionsForKeys` real can hang for the
+// database driver's retry window when the shared test DB is unavailable.
+const supersededVersionsForKeysMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
 // P-007: keep the PURE exports real (renderFactSrc renders the provenance-
 // hydrated src the fold projection is asserted on) — only the IO reads are mocked.
@@ -63,6 +68,7 @@ vi.mock('../../../agent-facts/store', async (importOriginal) => ({
   foldFacts: foldFactsMock,
   foldNeverDropFacts: foldNeverDropFactsMock,
   listFactEvictionDisclosures: listFactEvictionDisclosuresMock,
+  supersededVersionsForKeys: supersededVersionsForKeysMock,
 }));
 
 // EI-18725816532600240: the facts fold is the ONLY consumer of '../watermarks' in
@@ -148,9 +154,11 @@ beforeEach(() => {
   foldFactsMock.mockClear();
   foldNeverDropFactsMock.mockClear();
   listFactEvictionDisclosuresMock.mockClear();
+  supersededVersionsForKeysMock.mockClear();
   foldFactsMock.mockResolvedValue([]);
   foldNeverDropFactsMock.mockResolvedValue([]);
   listFactEvictionDisclosuresMock.mockResolvedValue([]);
+  supersededVersionsForKeysMock.mockResolvedValue([]);
   readWatermarkMock.mockResolvedValue({ cursors: {} });
   writeWatermarkMock.mockClear();
   listActiveAnnouncementsMock.mockResolvedValue([]);
