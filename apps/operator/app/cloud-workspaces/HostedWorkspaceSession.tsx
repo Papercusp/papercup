@@ -111,6 +111,15 @@ export function HostedWorkspaceSession({
   const resizeRef = useRef<ResizeObserver | null>(null);
   const socketRef = useRef<WebSocket | null>(null);
   const roleRef = useRef<HostedWorkspaceTabRole | null>(null);
+  /*
+   * The relay's message listener is registered ONCE, inside connect(), so it
+   * keeps calling the `handleMessage` that existed at connect time. Anything
+   * that handler reads straight from render scope is therefore frozen at its
+   * connect-time value — which for `path` meant every post-operation refresh
+   * re-listed the root and dragged the operator out of their directory. Same
+   * reason `roleRef` exists for the terminal callbacks.
+   */
+  const pathRef = useRef(".");
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
 
@@ -128,6 +137,10 @@ export function HostedWorkspaceSession({
   useEffect(() => {
     roleRef.current = role;
   }, [role]);
+
+  useEffect(() => {
+    pathRef.current = path;
+  }, [path]);
 
   const send = useCallback((payload: unknown): boolean => {
     const socket = socketRef.current;
@@ -223,15 +236,16 @@ export function HostedWorkspaceSession({
   }, [send]);
 
   const listFiles = useCallback(
-    (target = path) => {
+    (target = pathRef.current) => {
       if (
         send({ type: "file.list", requestId: requestId("list"), path: target })
       ) {
+        pathRef.current = target;
         setPath(target);
         setNotice(`Listing ${target}`);
       }
     },
-    [path, send],
+    [send],
   );
 
   const handleMessage = useCallback(
@@ -299,7 +313,9 @@ export function HostedWorkspaceSession({
       if (event.kind === "file-result") {
         if (event.operation === "list") {
           setEntries(event.entries ?? []);
-          setNotice(`Listed ${event.entries?.length ?? 0} entries in ${path}.`);
+          setNotice(
+            `Listed ${event.entries?.length ?? 0} entries in ${pathRef.current}.`,
+          );
         } else if (event.operation === "read" && event.data !== undefined) {
           try {
             const text =
@@ -318,11 +334,11 @@ export function HostedWorkspaceSession({
           }
         } else {
           setNotice(`${event.operation} completed.`);
-          listFiles(path);
+          listFiles();
         }
       }
     },
-    [listFiles, path],
+    [listFiles],
   );
 
   const connect = useCallback(async () => {
