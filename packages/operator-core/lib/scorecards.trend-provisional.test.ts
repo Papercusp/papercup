@@ -87,20 +87,25 @@ const RUBRIC_DEFINITION = {
   updatedAt: '2026-08-01T00:00:00.000Z',
 } as const;
 
-const sqlTag = Object.assign(
-  (strings: TemplateStringsArray, ..._vals: unknown[]) => {
-    const text = strings.join(' ? ');
-    if (text.includes('FROM harness_shared.engineer_issues')) {
-      return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
-    }
-    return { __sqlFragment: text } as unknown as Promise<unknown[]>;
-  },
-  { begin: vi.fn() },
-);
+const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
+  const text = strings.join(' ? ');
+  if (text.includes('FROM harness_shared.engineer_issues')) {
+    return Promise.resolve(rowsForQuery) as unknown as Promise<unknown[]>;
+  }
+  return { __sqlFragment: text } as unknown as Promise<unknown[]>;
+};
+
+// scorecards.ts now reads through boundedPgReadTxn. Execute that callback on
+// the tagged mock and absorb its READ ONLY/session setup statements so the
+// fixture returns rowsForQuery instead of the old empty-begin undefined.
+const sqlMock = Object.assign(sqlTag, {
+  begin: vi.fn(async <T>(transaction: (tx: unknown) => Promise<T>) => transaction(sqlMock)),
+  unsafe: vi.fn(async () => []),
+});
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: sqlTag }),
+  getOrgPg: () => ({ sql: sqlMock }),
 }));
 
 vi.mock('./issues-engineer', () => ({

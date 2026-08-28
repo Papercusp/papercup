@@ -66,13 +66,22 @@ const DB_ROWS = [
  * mock discriminates on the template text: the real SELECT resolves rows, a fragment
  * returns an opaque marker.
  */
-const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]) => {
+const sqlTag = (strings: TemplateStringsArray, ..._vals: unknown[]) => {
   const text = strings.join(' ? ');
   if (text.includes('FROM harness_shared.engineer_issues')) {
     return Promise.resolve(DB_ROWS) as unknown as Promise<unknown[]>;
   }
   return { __sqlFragment: text } as unknown as Promise<unknown[]>;
-}, { begin: vi.fn() });
+};
+
+// scorecards.ts runs the SELECT through boundedPgReadTxn. Keep this unit seam
+// transaction-shaped: execute the callback against the same tagged client and
+// absorb the transaction setup statements instead of leaving sql.begin as an
+// empty mock (which makes the production read resolve to undefined).
+const sqlMock = Object.assign(sqlTag, {
+  begin: vi.fn(async <T>(transaction: (tx: unknown) => Promise<T>) => transaction(sqlMock)),
+  unsafe: vi.fn(async () => []),
+});
 
 // FULL-REPLACEMENT MOCK HAZARD (WI-39843 class, and the reason this file red-pinned the
 // gate at red #28): a bare factory replaces the WHOLE module, so every export this file's
@@ -82,7 +91,7 @@ const sqlTag = Object.assign((strings: TemplateStringsArray, ..._vals: unknown[]
 // is what makes this robust to the NEXT export added, rather than stranding again.
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
-  getOrgPg: () => ({ sql: sqlTag }),
+  getOrgPg: () => ({ sql: sqlMock }),
 }));
 
 const issuesOutLinksMany = vi.fn(
