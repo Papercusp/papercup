@@ -145,6 +145,19 @@ export interface GatewayServiceOptions {
    * callers retain the in-memory compatibility queue unless opted in.
    */
   durableAdmission?: boolean | Omit<DurableGatewayAdmissionOptions, 'workspaceId'>;
+  /**
+   * PRE-ACCEPTANCE request-body spool (D-004/D-011).
+   *
+   * DEFAULTS TO `durableAdmission`, and that coupling is deliberate rather than a convenience: a
+   * durable receipt whose body was never spooled cannot satisfy D-004's "restart/failover preserves
+   * accepted work" — after a restart the receipt would name a request whose bytes died with the
+   * socket. Enabling the durable queue without the spool produces receipts the gateway cannot
+   * honour, so the two travel together unless a caller explicitly says otherwise.
+   *
+   * Pass `false` to run the durable queue without spooling (a test seam), or an options object to
+   * tune the ceiling / TTL.
+   */
+  payloadSpool?: boolean | Omit<GatewayPayloadSpoolOptions & PgGatewayPayloadStoreOptions, 'workspaceId'>;
 }
 
 export interface RunningGatewayService {
@@ -602,6 +615,18 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
           workspaceId: opts.workspace,
           ...(typeof opts.durableAdmission === 'object' ? opts.durableAdmission : {}),
         });
+  // D-004: spool ON wherever the durable queue is on, unless the caller opts out explicitly.
+  // `opts.payloadSpool === undefined` inherits the durable-admission decision; only an explicit
+  // `false` disables it, so enabling the durable queue can never silently produce receipts whose
+  // payload was not persisted.
+  const payloadSpoolRequested = opts.payloadSpool ?? durableAdmission !== undefined;
+  const payloadSpool =
+    payloadSpoolRequested === false
+      ? undefined
+      : createGatewayPayloadSpool({
+          workspaceId: opts.workspace,
+          ...(typeof payloadSpoolRequested === 'object' ? payloadSpoolRequested : {}),
+        });
   const localBackendPool: LocalBackendPool = createLocalBackendPool();
   // ⚠ lifecycle + unitName ARE PART OF THIS SIGNATURE ON PURPOSE (P-008/D-009). The signature is
   // what gates reload(), so a field missing here is a field the RUNNING gateway can never see
@@ -825,6 +850,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     codexCliPool,
     codexOAuthProxy,
     ...(durableAdmission ? { admissionGovernor: durableAdmission } : {}),
+    ...(payloadSpool ? { payloadSpool } : {}),
     // Getter (not a snapshot) so a reloadPool() that adds/removes a codex-cli account
     // applies to the very next /v1/responses request without a gateway restart.
     codexCliAccounts: () => cliAccountsOf(codexAccounts),
