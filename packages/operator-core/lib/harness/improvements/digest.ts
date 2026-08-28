@@ -32,6 +32,13 @@ const SEVERITY_WEIGHT: Record<ImprovementSeverity, number> = {
 };
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Shared lexical-duplicate threshold (DUP_THRESHOLD).  Keep this scalar in the
+ * already-lightweight digest module so callers that only need the title-token
+ * policy do not import the PG-bound capture implementation.
+ */
+export const DUP_THRESHOLD = 0.6;
+
 export interface ScoredItem {
   id: string;
   kind: WorkItemKind;

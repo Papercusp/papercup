@@ -74,7 +74,6 @@ import {
 } from './work-item-dispatch-states';
 import { createBlockingEdgeReader, ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
-import { releaseWorkItemLease } from './work-item-claim-lease-wiring';
 import {
   COMPLETION_ATTESTATIONS_KEY,
   TERMINAL_ASSUMPTIONS_KEY,
@@ -110,6 +109,26 @@ import {
   readAgentReviewState,
   readStructuredOwnerAsk,
 } from './harness/improvements/agent-review-policy';
+
+/**
+ * Release cleanup is only needed on the explicit release paths. Keep the
+ * cross-Swarm claim-lease wiring out of this facade's eager import graph (it
+ * pulls the boot/orchestrator tree) and load it at the call site instead.
+ * Cleanup is best-effort by contract, so a failed lazy load must remain a
+ * no-op just like the implementation's own failure handling.
+ */
+async function releaseWorkItemLease(opts: {
+  harness: string;
+  workItemId: string;
+  owner: string | null | undefined;
+}): Promise<void> {
+  try {
+    const { releaseWorkItemLease: release } = await import('./work-item-claim-lease-wiring');
+    await release(opts);
+  } catch {
+    // A stale lease is temporary; never let cleanup block the release itself.
+  }
+}
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,

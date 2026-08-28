@@ -62,6 +62,7 @@ import {
   admissionIdentity,
   titleSimilarity,
   titleContainment,
+  DUP_THRESHOLD,
   recallAlreadyDecided,
   type AdmissionIdentity,
   type AlreadyDecidedRecall,
@@ -86,7 +87,9 @@ import {
 /** The fileable improvement kinds (companion D-001). */
 export type ImprovementKind = 'bug' | 'change' | 'feature';
 
-export const DUP_THRESHOLD = 0.6;
+// Re-export the shared threshold for existing capture-core callers while keeping
+// the value owned by the lightweight digest policy module.
+export { DUP_THRESHOLD };
 
 /** Keep the lexical dedup leg from holding the whole capture request hostage. */
 export const CAPTURE_LEXICAL_SEARCH_BUDGET_MS = 1_500;

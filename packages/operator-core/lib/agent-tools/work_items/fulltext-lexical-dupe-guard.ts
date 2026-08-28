@@ -38,8 +38,7 @@
  * silently. Only OPEN (non-terminal) candidates are surfaced.
  */
 import { searchIssuesForDedup } from '../../issues-engineer';
-import { titleSimilarity } from '../../harness/improvements/digest';
-import { DUP_THRESHOLD } from '../../harness/improvements/capture-core';
+import { DUP_THRESHOLD, titleSimilarity } from '../../harness/improvements/digest';
 import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 import type { SemanticDupeCandidate } from './semantic-dupe-guard';
 
