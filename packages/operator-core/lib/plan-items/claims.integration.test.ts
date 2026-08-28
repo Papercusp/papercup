@@ -60,6 +60,17 @@ beforeAll(async () => {
   // tables, harmless to apply even though this file's own tests don't touch
   // plan_item_assignments).
   await applyPlanItemClaimMigrations(db.sql);
+  // renewOwnerActivityClaims consults the latest recorded session as its
+  // liveness authority. Keep this fixture minimal; the claim-store tests do
+  // not need the rest of migration 079's session columns.
+  await db.sql`
+    CREATE TABLE IF NOT EXISTS harness_shared.adv_sessions (
+      id BIGSERIAL PRIMARY KEY,
+      coord_owner_id text,
+      started_at timestamptz NOT NULL DEFAULT now(),
+      ended_at timestamptz
+    )
+  `;
 });
 
 afterAll(async () => {
@@ -70,6 +81,7 @@ beforeEach(async () => {
   resetAgentStateStamps();
   await db.sql`DELETE FROM harness_shared.plan_item_claims`;
   await db.sql`DELETE FROM harness_shared.agent_activity`;
+  await db.sql`DELETE FROM harness_shared.adv_sessions`;
 });
 
 /** Record a holder tool-activity event `ageSec` seconds in the past (EI-8997 grace). */
@@ -249,6 +261,11 @@ describe('renewOwnerActivityClaims — the per-turn auto-renewal', () => {
   // activity-claim-renewal.integration.test.ts; this case pins the
   // boundary conditions (lapsed + other-owner untouched).
   it('renews the owner\'s live claims (both modes); lapsed + other owners untouched', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.adv_sessions (coord_owner_id, started_at, ended_at)
+      VALUES ('su-alice', clock_timestamp() - interval '1 minute', NULL),
+             ('su-bob', clock_timestamp() - interval '1 minute', NULL)
+    `;
     await acquire({ itemId: 'P-020', livenessMode: 'activity' });
     await acquire({ itemId: 'P-021', livenessMode: 'activity' });
     await acquire({ itemId: 'P-022' }); // availability — renews too (EI-295)
