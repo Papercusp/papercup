@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   WORKSPACE_HOST_CREDENTIAL_CHANNELS,
+  WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
   WORKSPACE_HOST_INITIALIZATION_CONTRACT_VERSION,
+  WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
   ReplaySafeWorkspaceHostInitializationExecutor,
   buildWorkspaceHostBackupCredentialManifest,
   buildWorkspaceHostBackupRestoreCredentialRebindRequest,
@@ -311,6 +313,33 @@ describe("ReplaySafeWorkspaceHostInitializationExecutor", () => {
 
     expect(first).toEqual(replay);
     expect(seen).toEqual([step.idempotencyKey]);
+  });
+
+  it("accepts the remote adapter's known lifecycle capability superset", async () => {
+    const step = planWorkspaceHostInitialization(request()).steps[0]!;
+    const seen: string[] = [];
+    const executor = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: {
+        // The concrete GCP adapter serves both runners and therefore advertises all ten wire
+        // kinds. Initialization execution must accept that manifest while still receiving only
+        // the six initialization step shapes here.
+        supportedStepKinds: [
+          ...WORKSPACE_HOST_INITIALIZATION_STEP_KINDS,
+          ...WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS,
+        ],
+        async execute(current) {
+          seen.push(current.id);
+          return { observedAt: "2026-08-22T10:05:00Z" };
+        },
+      },
+      replayStore: memoryReplayStore(),
+    });
+
+    await expect(executor.execute(step)).resolves.toMatchObject({
+      stepId: step.id,
+      status: "succeeded",
+    });
+    expect(seen).toEqual([step.id]);
   });
 
   it("fails closed before execution when a host adapter does not declare the step kind", async () => {
