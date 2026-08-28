@@ -96,7 +96,11 @@ vi.mock("@/app/harness/Modal", () => ({
     ) : null,
 }));
 
-import CloudWorkspacesPage, { type CloudWorkspacesControlRow } from "./page";
+import CloudWorkspacesPage, {
+  type CloudWorkspacesControlRow,
+  workspaceHostActionRest,
+  workspaceHostIdFromName,
+} from "./page";
 
 const cloudPageCss = readFileSync(
   "app/cloud-workspaces/cloud-workspaces.module.css",
@@ -112,8 +116,19 @@ const rows: CloudWorkspacesControlRow[] = [
     status: "connected",
     credentialRef: "env:GCP_APPLICATION_CREDENTIALS",
     lastValidatedAt: "2026-08-22T05:00:00.000Z",
+    provider: {
+      projectId: "papercusp-prod",
+      serviceAccountEmail:
+        "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
+    },
     scopes: [{ id: "papercusp-prod", label: "papercusp-prod" }],
-    regions: [{ id: "us-central1", label: "Iowa · us-central1" }],
+    regions: [
+      {
+        id: "us-central1",
+        label: "Iowa · us-central1",
+        zones: ["us-central1-a"],
+      },
+    ],
     sizes: [
       {
         id: "e2-standard-4",
@@ -123,8 +138,14 @@ const rows: CloudWorkspacesControlRow[] = [
         hourlyUsd: 0.08,
       },
     ],
-    images: [{ id: "ubuntu-2404", label: "Ubuntu 24.04 LTS" }],
-    networks: [{ id: "default", label: "default" }],
+    images: [
+      {
+        id: "projects/papercusp-images/global/images/ubuntu-2404",
+        version: "ubuntu-2404",
+        label: "Ubuntu 24.04 LTS",
+      },
+    ],
+    networks: [{ id: "managed", label: "Papercusp-managed private network" }],
     diskPricePerGiBMonth: 0.145,
   },
   {
@@ -224,7 +245,10 @@ beforeEach(() => {
   H.invalidate.mockReset().mockResolvedValue(undefined);
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("CloudWorkspacesPage", () => {
   it("renders provider state, URL-backed provisioning selections, estimate, lifecycle, and progress", () => {
@@ -257,11 +281,13 @@ describe("CloudWorkspacesPage", () => {
     ).toBeTruthy();
     expect(
       screen.getByRole("button", {
-        name: "Connect Amazon Web Services",
+        name: "Amazon Web Services connection is not available",
       }),
     ).toBeTruthy();
     expect(
-      screen.getByRole("button", { name: "Connect Microsoft Azure" }),
+      screen.getByRole("button", {
+        name: "Microsoft Azure connection is not available",
+      }),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Connect$/ })).toBeNull();
     expect(screen.getByText("Production GCP")).toBeTruthy();
@@ -337,7 +363,86 @@ describe("CloudWorkspacesPage", () => {
     );
   });
 
-  it("requires an explicit recoverability disposition before destroy", async () => {
+  it("builds the canonical persisted desired spec for provisioning", async () => {
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), {
+      target: { value: "Research Control" },
+    });
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    }) as HTMLButtonElement;
+    expect(provision.disabled).toBe(false);
+    fireEvent.click(provision);
+
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith({
+        action: "provision",
+        connectionId: "gcp-main",
+        name: "Research Control",
+        desired: {
+          hostId: "host-research-control",
+          target: "gcp",
+          scope: { kind: "project", id: "papercusp-prod" },
+          region: "us-central1",
+          zone: "us-central1-a",
+          size: "e2-standard-4",
+          image: {
+            id: "projects/papercusp-images/global/images/ubuntu-2404",
+            version: "ubuntu-2404",
+          },
+          data: { volumeGiB: 100, encrypted: true },
+          provider: { network: { mode: "managed" } },
+        },
+      }),
+    );
+  });
+
+  it("collects the complete supported GCP connection admission contract", async () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect a provider" }));
+
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Connection label" }),
+      {
+        target: { value: "Production GCP" },
+      },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Injected credential reference" }),
+      { target: { value: "adc://default" } },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Google Cloud project ID" }),
+      { target: { value: "papercusp-prod" } },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Runtime service account email" }),
+      {
+        target: {
+          value: "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
+        },
+      },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect and validate" }),
+    );
+
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith({
+        action: "connect",
+        target: "gcp",
+        label: "Production GCP",
+        credentialRef: "adc://default",
+        projectId: "papercusp-prod",
+        serviceAccountEmail:
+          "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
+      }),
+    );
+  });
+
+  it("preserves explicit recoverability selection but fails closed without audited canary evidence", () => {
     render(<CloudWorkspacesPage />);
 
     fireEvent.click(screen.getByRole("button", { name: "Destroy" }));
@@ -361,16 +466,12 @@ describe("CloudWorkspacesPage", () => {
       screen.getByLabelText("Type research-control to confirm discard"),
       { target: { value: "research-control" } },
     );
-    expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(confirmButton);
-
-    await waitFor(() =>
-      expect(H.mutate).toHaveBeenCalledWith({
-        action: "destroy",
-        workspaceId: "host-1",
-        disposition: "discard",
-      }),
+    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
+    expect(confirmButton.getAttribute("aria-describedby")).toBe(
+      "destroy-admission-blocker",
     );
+    expect(screen.getByText("Audited canary evidence required")).toBeTruthy();
+    expect(H.mutate).not.toHaveBeenCalled();
   });
 
   it("uses one tab stop and arrow-key selection in the recoverability radiogroup", () => {
@@ -415,6 +516,69 @@ describe("CloudWorkspacesPage", () => {
     expect(
       screen.getByRole("dialog", { name: "Connect Google Cloud" }),
     ).toBeTruthy();
+  });
+
+  it("dispatches each mutation family to its canonical REST route and surfaces typed errors", async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ ok: true, message: "accepted" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await workspaceHostActionRest({
+      action: "connect",
+      target: "gcp",
+      label: "GCP",
+      credentialRef: "adc://default",
+      projectId: "paper-prod",
+      serviceAccountEmail: "host@paper-prod.iam.gserviceaccount.com",
+    });
+    await workspaceHostActionRest({
+      action: "provision",
+      connectionId: "gcp:production",
+      name: "Research",
+      desired: {
+        hostId: "host-research",
+        target: "gcp",
+        scope: { kind: "project", id: "paper-prod" },
+        region: "us-central1",
+        zone: "us-central1-a",
+        size: "e2-small",
+        image: { id: "projects/images/global/images/papercusp-v1" },
+        data: { volumeGiB: 100, encrypted: true },
+        provider: { network: { mode: "managed" } },
+      },
+    });
+    await workspaceHostActionRest({ action: "stop", workspaceId: "host-1" });
+
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual([
+      "/api/workspace-hosts/connection",
+      "/api/workspace-hosts/provision",
+      "/api/workspace-hosts/action",
+    ]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body as string)).toEqual({
+      connectionId: "gcp:production",
+      name: "Research",
+      desired: expect.objectContaining({ hostId: "host-research" }),
+    });
+
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ ok: false, error: "typed route refusal" }),
+        {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        },
+      ),
+    );
+    await expect(
+      workspaceHostActionRest({ action: "repair", workspaceId: "host-1" }),
+    ).rejects.toThrow("typed route refusal");
+    expect(workspaceHostIdFromName("  Résumé / Lab  ")).toBe("host-resume-lab");
   });
 
   it("does not leak undefined capacity values from an incomplete runtime catalog row", () => {
