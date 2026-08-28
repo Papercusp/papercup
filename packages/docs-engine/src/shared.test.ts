@@ -132,6 +132,24 @@ describe('sliceByHeading', () => {
     expect(sliceByHeading(md, '  sEcTiOn A  ', toc)).toBe('## Section A\n\ncontent A');
   });
 
+  it('accepts a normalized anchor when an older TOC preserves case and punctuation runs', () => {
+    const title = 'What NOT to do — server-side / data layer';
+    const legacyToc: TocEntry[] = [
+      { url: '#What-NOT-to-do---server-side---data-layer', title, depth: 2 },
+    ];
+    expect(
+      sliceByHeading(`## ${title}\n\nbody`, 'what-not-to-do-server-side-data-layer', legacyToc),
+    ).toBe(`## ${title}\n\nbody`);
+  });
+
+  it('does not guess when normalization aliases more than one TOC entry', () => {
+    const ambiguousToc: TocEntry[] = [
+      { url: '#A--B', title: 'A / B', depth: 2 },
+      { url: '#A---B', title: 'A — B', depth: 2 },
+    ];
+    expect(sliceByHeading('## A / B\n\none\n\n## A — B\n\ntwo', 'a-b', ambiguousToc)).toBeNull();
+  });
+
   it('returns null for a missing TOC entry', () => {
     expect(sliceByHeading(md, 'no-such-id', toc)).toBeNull();
   });

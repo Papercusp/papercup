@@ -215,7 +215,43 @@ export function detectDrivenWorkItemId(goal: string): string | null {
   // same notion of what a work-item id looks like, and two regexes obliged to agree
   // are two regexes that eventually disagree.
   const distinct = extractGoalWorkItemIds(goal);
-  return distinct.length === 1 ? distinct[0] : null;
+  if (distinct.length !== 1) return null;
+
+  // A cold-loop goal is often a compact carry note, and carry notes routinely
+  // mention the item that must remain OUT of scope (for example, "continue the
+  // plan; ignore WI-1774"). Treating that lone negative mention as the driven
+  // item is worse than ambiguity: the arm-time auto-claim then grabs exactly the
+  // item the goal and its scheduler lane excluded. Keep the general extractor
+  // unchanged — staleness still needs every id a goal names — and narrow only
+  // this auto-claim detector to positive/driving mentions.
+  const id = distinct[0]!;
+  const idIndex = goal.toUpperCase().indexOf(id);
+  if (idIndex < 0) return null;
+  const sentenceStart = Math.max(
+    goal.lastIndexOf('\n', idIndex - 1),
+    goal.lastIndexOf('.', idIndex - 1),
+    goal.lastIndexOf(';', idIndex - 1),
+    goal.lastIndexOf('!', idIndex - 1),
+    goal.lastIndexOf('?', idIndex - 1),
+  );
+  const sentenceEndCandidates = ['\n', '.', ';', '!', '?']
+    .map((boundary) => goal.indexOf(boundary, idIndex + id.length))
+    .filter((index) => index >= 0);
+  const sentenceEnd = sentenceEndCandidates.length > 0 ? Math.min(...sentenceEndCandidates) : goal.length;
+  const sentence = goal.slice(sentenceStart + 1, sentenceEnd);
+  const idInSentence = sentence.toUpperCase().indexOf(id);
+  const beforeId = sentence.slice(0, idInSentence);
+  const afterId = sentence.slice(idInSentence + id.length);
+  const excludedBefore =
+    /\b(?:ignore|ignored|ignoring|exclude|excluded|excluding|skip|skipped|skipping|avoid|avoided|avoiding|omit|omitted|omitting|defer|deferred|park|parked)\b[\s\S]{0,80}$/i.test(
+      beforeId,
+    ) ||
+    /\b(?:do not|don't|never)\s+(?:work on|claim|touch|take|resume)\b[\s\S]{0,80}$/i.test(beforeId);
+  const excludedAfter =
+    /^\s*(?:is|was|remains|stays)?\s*(?:explicitly\s+)?(?:excluded|out of scope|outside (?:the )?scope|not in scope)\b/i.test(
+      afterId,
+    );
+  return excludedBefore || excludedAfter ? null : id;
 }
 
 /**

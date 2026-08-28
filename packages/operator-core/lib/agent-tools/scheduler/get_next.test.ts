@@ -158,7 +158,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-import getNextTool, { GET_NEXT_BUDGET_MS } from './get_next';
+import getNextTool, { GET_NEXT_BUDGET_MS, GET_NEXT_TOTAL_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
@@ -628,6 +628,30 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     // A transient timeout is NOT a drained lane — windDown must never be set for it.
     expect(b.windDown).toBeUndefined();
     // The bounded-timeout deadline fired (the fail-fast) — assert it explicitly.
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
+    warnSpy.mockRestore();
+  });
+
+  it('shares one deadline across a slow preflight and a hanging claim', async () => {
+    vi.useFakeTimers();
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    getFlagM
+      .mockImplementationOnce(
+        () => new Promise<boolean>((resolve) => setTimeout(() => resolve(true), 20_000)),
+      )
+      .mockResolvedValue(true);
+    getNextM.mockImplementation(() => new Promise(() => {}));
+
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_TOTAL_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, error: 'timeout', retryable: true });
+    expect(body.budgetMs).toBeLessThan(GET_NEXT_BUDGET_MS);
+    expect(Date.now()).toBe(GET_NEXT_TOTAL_BUDGET_MS + 100);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
     warnSpy.mockRestore();
   });

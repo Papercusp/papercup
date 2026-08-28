@@ -32,7 +32,7 @@ export interface TranscriptSearchWarmupResult {
   ok: boolean;
   ms: number;
   /** Which legs completed (search implies embed-acquire was attempted too). */
-  legs: { search: boolean; roster: boolean; corpus: boolean };
+  legs: { search: boolean; roster: boolean; corpus: boolean; workItems: boolean };
   error?: string;
 }
 
@@ -55,6 +55,9 @@ export interface TranscriptSearchWarmupDeps {
   loadCorpusWarmup: () => Promise<{
     warmCorpusEmbedder: (opts?: { acquireBudgetMs?: number }) => Promise<boolean>;
   }>;
+  loadWorkItemWarmup: () => Promise<{
+    warmWorkItemQueryEmbedder: () => Promise<boolean>;
+  }>;
 }
 
 const realDeps: TranscriptSearchWarmupDeps = {
@@ -67,6 +70,11 @@ const realDeps: TranscriptSearchWarmupDeps = {
   // Keep the corpus leg dynamic: corpus-recall-io imports the full search
   // stack, and boot should only pay that graph after the listener is ready.
   loadCorpusWarmup: () => import('./memory/corpus-recall-io') as never,
+  // Work-item search has its own process-local single-flight latch. Warming
+  // only the generic query embedder leaves the first semantic dedup request
+  // cold, so keep this exact hook dynamic and invoke it as an independent,
+  // fail-soft leg below.
+  loadWorkItemWarmup: () => import('./work-items') as never,
 };
 
 /** Warm query: embeds fine, matches little (cheap BM25), exercises every code
@@ -80,7 +88,7 @@ export async function warmTranscriptSearchPath(
   const log = opts.log ?? ((m: string) => console.warn(m));
   const deps = opts.deps ?? realDeps;
   const t0 = Date.now();
-  const legs = { search: false, roster: false, corpus: false };
+  const legs = { search: false, roster: false, corpus: false, workItems: false };
   try {
     const [
       { runHybridSearch },
@@ -138,8 +146,20 @@ export async function warmTranscriptSearchPath(
           log('[transcript-search-warmup] corpus leg did not become warm (ignored)');
         }
       })().catch((err) => log(`[transcript-search-warmup] corpus leg failed (ignored): ${(err as Error).message}`)),
+      (async () => {
+        // `searchWorkItems` keeps a separate warm latch so it can report an
+        // honest retry receipt to interactive callers. Warm that exact latch;
+        // resolving the generic transcript-search embedder alone is not enough.
+        const { warmWorkItemQueryEmbedder } = await deps.loadWorkItemWarmup();
+        legs.workItems = await warmWorkItemQueryEmbedder();
+        if (!legs.workItems) {
+          log('[transcript-search-warmup] work-item embedder leg did not become warm (ignored)');
+        }
+      })().catch((err) =>
+        log(`[transcript-search-warmup] work-item embedder leg failed (ignored): ${(err as Error).message}`),
+      ),
     ]);
-    return { ok: legs.search || legs.roster || legs.corpus, ms: Date.now() - t0, legs };
+    return { ok: legs.search || legs.roster || legs.corpus || legs.workItems, ms: Date.now() - t0, legs };
   } catch (err) {
     // Even the import phase is fail-soft: a warmup must never affect boot.
     return { ok: false, ms: Date.now() - t0, legs, error: (err as Error).message };
@@ -165,7 +185,8 @@ export function scheduleTranscriptSearchWarmup(
       .then((r) => {
         log(
           `[transcript-search-warmup] ${r.ok ? 'done' : 'failed'} in ${r.ms}ms ` +
-            `(search=${r.legs.search} roster=${r.legs.roster} corpus=${r.legs.corpus}${r.error ? ` error=${r.error}` : ''})`,
+            `(search=${r.legs.search} roster=${r.legs.roster} corpus=${r.legs.corpus} ` +
+            `workItems=${r.legs.workItems}${r.error ? ` error=${r.error}` : ''})`,
         );
       })
       .catch(() => {});

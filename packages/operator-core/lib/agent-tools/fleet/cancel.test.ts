@@ -181,8 +181,12 @@ describe('fleet:cancel — bulk envelope + processes_aborted aggregation (Gap 10
   });
 
   it('refuses a non-nursery owner/session id loudly instead of reporting an empty successful cancel', async () => {
-    h.sql.mockImplementation(async (_strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
-      spawnId === 'su-omp-hook-session' ? [] : [{ spawn_id: spawnId }],
+    h.sql.mockImplementation(async (strings: TemplateStringsArray, _workspaceId: string, spawnId: string) =>
+      strings.join(' ').includes('harness_shared.task_ledger')
+        ? []
+        : spawnId === 'su-omp-hook-session'
+          ? []
+          : [{ spawn_id: spawnId }],
     );
     h.cancelSubtree.mockResolvedValue(baseCancelResult('real-spawn', ['real-spawn']));
     h.abortLocalSpawn.mockReturnValue(false);

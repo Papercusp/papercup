@@ -2297,6 +2297,32 @@ describe('unified work_items surface (real PG)', () => {
     expect(warm.legs.semantic.blocked).toBeNull();
   });
 
+  it('a boot prewarm publishes the work-item embedder before the first semantic search', async () => {
+    await wi.createWorkItem({
+      kind: 'bug',
+      title: 'boot prewarm work item',
+      harness: 'papercup',
+      createdBy: 'agA',
+    });
+
+    const vector = Array.from({ length: 768 }, () => 0.01);
+    const embed = vi.fn(async (text: string) => vector);
+    const resolver = vi.fn(async () => ({ mode: 'gemma', dims: 768, embed }));
+
+    expect(await wi.warmWorkItemQueryEmbedder(resolver)).toBe(true);
+    const first = await wi.searchWorkItems('boot prewarm', {
+      semantic: true,
+      embedderResolver: resolver,
+    });
+
+    expect(first.items.some((w) => w.title === 'boot prewarm work item')).toBe(true);
+    expect(first.legs.semantic.blocked).toBeNull();
+    expect(first.retry).toBeUndefined();
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(embed).toHaveBeenNthCalledWith(1, 'work-items search embedder warmup');
+    expect(embed).toHaveBeenNthCalledWith(2, 'boot prewarm', expect.any(AbortSignal));
+  });
+
   it('keeps the retry receipt on the mandatory delayed retry while warmup remains in flight', async () => {
     await wi.createWorkItem({
       kind: 'bug',

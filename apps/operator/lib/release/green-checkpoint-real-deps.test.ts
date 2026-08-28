@@ -27,6 +27,7 @@ import {
   vi,
 } from "vitest";
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -2669,13 +2670,18 @@ describe("realCheckpointDeps.setupTree / push — real-path wiring (gap #10)", (
         prewarmed.identity,
         ".papercusp-dependency-generation",
       );
+      // The publisher makes the immutable marker 0444. This negative control
+      // intentionally corrupts it, so restore owner-write permission first;
+      // otherwise the fixture tests filesystem permissions rather than token
+      // drift and fails before the consumer assertion runs.
+      chmodSync(generationMarker, 0o644);
       writeFileSync(
         generationMarker,
         `${readFileSync(generationMarker, "utf8")}tampered=1\n`,
       );
       await expect(
         real.setupTree(candidate, { preparedSource: true }),
-      ).rejects.toThrow(/replaced after validation/i);
+      ).rejects.toThrow(/invalid publication token|replaced after validation/i);
     } finally {
       if (priorAfterCopyHook === undefined)
         delete process.env.DEPENDENCY_GENERATION_AFTER_COPY_HOOK;

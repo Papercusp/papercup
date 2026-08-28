@@ -144,6 +144,14 @@ export const IDLE_PULL_MISS_ADVICE =
 export const GET_NEXT_BUDGET_MS = 30_000;
 
 /**
+ * Whole-handler wall-clock ceiling. Individual 30s phase budgets used to stack
+ * sequentially (preflight + claim + recheck), so two healthy fail-fast guards
+ * could still exceed the MCP transport's ~55s clamp. Every bounded phase now
+ * consumes only the time remaining from this one deadline.
+ */
+export const GET_NEXT_TOTAL_BUDGET_MS = 45_000;
+
+/**
  * The fast, self-describing miss the tool returns when its DB path exceeds GET_NEXT_BUDGET_MS,
  * instead of hanging until the MCP client's 300s idle-timeout abort (EI-18167154191955470).
  * Distinct `error: 'timeout'` + `retryable: true` so a caller can distinguish it from a genuine
@@ -806,6 +814,9 @@ export default defineTool({
       ),
   }),
   async handler(rawArgs, ctx) {
+    const handlerStartedAt = Date.now();
+    const remainingBudgetMs = (phaseCapMs = GET_NEXT_BUDGET_MS): number =>
+      Math.max(1, Math.min(phaseCapMs, GET_NEXT_TOTAL_BUDGET_MS - (Date.now() - handlerStartedAt)));
     // WI-38059 — default `harness` from the session instead of requiring it.
     //
     // WHY: this was filed FIVE separate times by different agents before anyone
@@ -901,6 +912,7 @@ export default defineTool({
           specOn: boolean;
           contendedPaths: string[];
         };
+    const preflightBudgetMs = remainingBudgetMs();
     const preflight = await withBoundedTimeout<PreflightState | null>(
       async () => {
         // WI-5940: refuse to SERVE a critical-context caller, with a compact-first verdict.
@@ -992,7 +1004,7 @@ export default defineTool({
         const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
         return { kind: 'ready', reconciliation, specOn, contendedPaths };
       },
-      { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:preflight' },
+      { fallback: null, timeoutMs: preflightBudgetMs, label: 'scheduler:get_next:preflight' },
     );
     if (preflight.degraded || !preflight.value) {
       return {
@@ -1000,7 +1012,7 @@ export default defineTool({
           {
             type: 'text' as const,
             text: JSON.stringify(
-              getNextPreflightTimeoutResult(GET_NEXT_BUDGET_MS, preflight.reason, preflight.errorMessage),
+              getNextPreflightTimeoutResult(preflightBudgetMs, preflight.reason, preflight.errorMessage),
             ),
           },
         ],
@@ -1108,6 +1120,7 @@ export default defineTool({
     // orphan — but that orphan is self-healing (reconcileFleetScopeClaims + the lease reclaim
     // run at the TOP of the very next get_next sweep it) AND it already existed under today's
     // 300s hang; we only fail faster. A real throw is re-surfaced loudly, never a silent miss.
+    const claimBudgetMs = remainingBudgetMs();
     const claim = await withBoundedTimeout(
       getNextForBee({
         cupId: ident.ownerId,
@@ -1130,7 +1143,7 @@ export default defineTool({
       }),
       // fallback:null is a type-correct member of getNextForBee's return (`... | null`) and is
       // NEVER read — we branch on `claim.degraded` before ever touching `claim.value`.
-      { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:claim' },
+      { fallback: null, timeoutMs: claimBudgetMs, label: 'scheduler:get_next:claim' },
     );
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
     // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
@@ -1147,7 +1160,7 @@ export default defineTool({
     // Budget exceeded: return the fast, retryable timeout miss instead of hanging to the abort.
     if (claim.degraded) {
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult()) }],
+        content: [{ type: 'text' as const, text: JSON.stringify(getNextTimeoutResult(claimBudgetMs)) }],
       };
     }
     let res = await arbitrateSchedulerClaim(claim.value);
@@ -1237,6 +1250,7 @@ export default defineTool({
         rigAvailable: args.rigAvailable,
       });
       if (issueBreakdown && issueBreakdown.claimable > 0) {
+        const divergenceBudgetMs = remainingBudgetMs();
         const retry = await withBoundedTimeout(
           getNextForBee({
             cupId: ident.ownerId,
@@ -1249,7 +1263,7 @@ export default defineTool({
             ignoreStoredSpec: !specOn && !reconciliation.scope,
             checkIdleDrainOnMiss: true,
           }),
-          { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:divergenceRecheck' },
+          { fallback: null, timeoutMs: divergenceBudgetMs, label: 'scheduler:get_next:divergenceRecheck' },
         );
         // A degraded retry (timeout/error) proves nothing either way — leave the original
         // breakdown in place and let the miss report itself exactly as it would have.
@@ -1294,6 +1308,7 @@ export default defineTool({
           // A genuine tier-1 candidate exists even though the claim (which just queried
           // this exact table) missed moments ago — retry once, same shape as the
           // claimable>0 divergence recheck above.
+          const featureRecheckBudgetMs = remainingBudgetMs();
           const retry = await withBoundedTimeout(
             getNextForBee({
               cupId: ident.ownerId,
@@ -1306,7 +1321,7 @@ export default defineTool({
               ignoreStoredSpec: !specOn && !reconciliation.scope,
               checkIdleDrainOnMiss: true,
             }),
-            { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:featureFamilyRecheck' },
+            { fallback: null, timeoutMs: featureRecheckBudgetMs, label: 'scheduler:get_next:featureFamilyRecheck' },
           );
           if (!retry.degraded && retry.value) {
             res = await arbitrateSchedulerClaim(retry.value);
@@ -1652,7 +1667,7 @@ export default defineTool({
                   diagnosis: undefined,
                   floors: undefined,
                 },
-                timeoutMs: 15_000,
+                timeoutMs: remainingBudgetMs(15_000),
                 label: 'scheduler:get_next:missDiagnosis',
               },
             )

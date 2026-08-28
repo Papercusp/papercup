@@ -37,6 +37,23 @@ export function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Normalize an authored heading, a rendered anchor, or a caller-supplied
+ * heading ref into the common Starlight / doc-sections anchor vocabulary.
+ *
+ * Some older adapters preserve case and replace EACH punctuation character
+ * with `-`, while Starlight and the semantic index lowercase and collapse a
+ * punctuation run. `docs:get` has to accept both generations until every
+ * stored TOC has been refreshed.
+ */
+export function normalizeHeadingAnchor(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
 /** Title-case a kebab-case slug. Fallback when meta.json has no title. */
 export function humanize(slug: string): string {
   return slug
@@ -108,14 +125,22 @@ export function levenshteinNearest(
  * be located in the rendered markdown.
  */
 export function sliceByHeading(md: string, headingRef: string, toc: TocEntry[]): string | null {
-  const targetById = toc.find((h) => (h.url ?? '').replace(/^#/, '') === headingRef);
-  const normalizedRef = headingRef.trim().toLowerCase();
+  const exactRef = headingRef.trim();
+  const targetById = toc.find((h) => (h.url ?? '').replace(/^#/, '') === exactRef);
+  const exactTextRef = exactRef.toLowerCase();
+  const normalizedRef = normalizeHeadingAnchor(exactRef);
+  const normalizedMatches = toc.filter((h) => {
+    const id = (h.url ?? '').replace(/^#/, '');
+    const text = reactToText(h.title);
+    return normalizeHeadingAnchor(id) === normalizedRef || normalizeHeadingAnchor(text) === normalizedRef;
+  });
   const target =
     targetById ??
     toc.find((h) => {
       const text = reactToText(h.title).trim().toLowerCase();
-      return text.length > 0 && text === normalizedRef;
-    });
+      return text.length > 0 && text === exactTextRef;
+    }) ??
+    (normalizedMatches.length === 1 ? normalizedMatches[0] : undefined);
   if (!target) return null;
 
   const text = reactToText(target.title);

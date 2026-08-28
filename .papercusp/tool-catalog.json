@@ -15242,7 +15242,7 @@
           "POST"
         ]
       },
-      "description": "Claim repository files or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass absolute files below your home via `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp; this is internal telemetry, not a caller override.",
+      "description": "Claim repository or authorized home-directory configuration files for exclusive editing. A workspace-global file-lock surface: omit `harness` and `workspace`; use `coordination_domain` only when the physical checkout differs. Pass repo-relative POSIX `paths`; pass home files via absolute `external_paths` (mapped to edit-hook reserved keys). Do not pass a top-level `goal_ref`: the server derives lock attribution from the caller's current agent-state stamp, not caller input.",
       "capabilities": [
         "locks:write"
       ],
@@ -15303,9 +15303,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
-        "notWhen": "Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.",
-        "chaining": "On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy PREFER wake_on_grant:true → END YOUR TURN; you are re-invoked on grant with your lock_id + running TTL — never poll, never hold a turn. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
+        "when": "When a session lacks lock hooks, claim its atomic edit set; for a DELIBERATE multi-file change acquire once and release after the edits so git-sync can commit them; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
+        "notWhen": "Read-only inspection needs no claim. In a hooked session, do not wrap incidental edits in manual acquire/release.",
+        "chaining": "On ok: finish the atomic edits → locks:release { lock_id }; git-sync excludes live-locked paths. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy PREFER wake_on_grant:true → END YOUR TURN; grant re-invokes you with lock_id + running TTL — never poll or hold the turn. Block only when you need the lock this turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
       }
     },
     {

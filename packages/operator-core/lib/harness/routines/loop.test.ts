@@ -850,6 +850,11 @@ describe('detectDrivenWorkItemId (WI-2429 fix A — goal auto-detect)', () => {
   it('returns null when the goal is AMBIGUOUS (multiple distinct ids) — never guess which is driven', () => {
     expect(detectDrivenWorkItemId('reconcile WI-1 against WI-2')).toBeNull();
   });
+  it('returns null when the only id is explicitly excluded by the goal', () => {
+    expect(detectDrivenWorkItemId('continue the scoped plan; ignore WI-1774')).toBeNull();
+    expect(detectDrivenWorkItemId('WI-1774 is explicitly excluded from this lane')).toBeNull();
+    expect(detectDrivenWorkItemId('do not work on WI-1774')).toBeNull();
+  });
   it('a repeated single id is still unambiguous (one distinct id)', () => {
     expect(detectDrivenWorkItemId('WI-5: continue WI-5')).toBe('WI-5');
   });

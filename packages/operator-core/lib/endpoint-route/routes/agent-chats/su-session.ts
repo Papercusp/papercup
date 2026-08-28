@@ -52,7 +52,7 @@ const eventsRoute = defineTool({
 const commandRoute = defineTool({
   method: 'POST',
   path: '/harness/:slug/agent-chats/:chatId/su-session/commands',
-  auth: 'public',
+  auth: 'loopback',
   async handler(request, context) {
     const host = hostFor(context.params.slug, context.params.chatId);
     if (!host) {
