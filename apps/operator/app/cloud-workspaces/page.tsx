@@ -45,10 +45,18 @@ interface CatalogOption {
   label: string;
 }
 
+interface RegionOption extends CatalogOption {
+  zones?: string[];
+}
+
 interface SizeOption extends CatalogOption {
   vcpu: number;
   memoryGiB: number;
   hourlyUsd?: number;
+}
+
+interface ImageOption extends CatalogOption {
+  version?: string;
 }
 
 export interface WorkspaceHostConnectionRow {
@@ -60,10 +68,14 @@ export interface WorkspaceHostConnectionRow {
   credentialRef: string;
   lastValidatedAt?: string;
   statusDetail?: string;
+  provider?: {
+    projectId?: string;
+    serviceAccountEmail?: string;
+  };
   scopes: CatalogOption[];
-  regions: CatalogOption[];
+  regions: RegionOption[];
   sizes: SizeOption[];
-  images: CatalogOption[];
+  images: ImageOption[];
   networks: CatalogOption[];
   diskPricePerGiBMonth?: number;
 }
@@ -162,18 +174,27 @@ type WorkspaceHostActionArgs =
       target: ProviderTarget;
       label: string;
       credentialRef: string;
+      projectId: string;
+      serviceAccountEmail: string;
     }
   | { action: "validate-connection"; connectionId: string }
   | {
       action: "provision";
       connectionId: string;
       name: string;
-      scopeId: string;
-      regionId: string;
-      sizeId: string;
-      imageId: string;
-      diskGiB: number;
-      networkId: string;
+      desired: {
+        hostId: string;
+        target: ProviderTarget;
+        scope: { kind: "project"; id: string };
+        region: string;
+        zone: string;
+        size: string;
+        image: { id: string; version?: string };
+        data: { volumeGiB: number; encrypted: true };
+        provider: {
+          network: { mode: "managed" };
+        };
+      };
     }
   | { action: Exclude<LifecycleAction, "destroy">; workspaceId: string }
   | { action: "destroy"; workspaceId: string; disposition: DestroyDisposition };
@@ -182,6 +203,7 @@ interface WorkspaceHostActionResponse {
   ok: boolean;
   operationId?: string;
   message?: string;
+  error?: string;
 }
 
 const PROVIDERS: readonly {
@@ -331,20 +353,47 @@ function stateTone(
   return styles.neutral;
 }
 
-async function workspaceHostActionRest(
+export function workspaceHostIdFromName(name: string): string {
+  const normalized = name
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/\p{M}+/gu, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 120);
+  return `host-${normalized || "workspace"}`;
+}
+
+export async function workspaceHostActionRest(
   args: WorkspaceHostActionArgs,
 ): Promise<WorkspaceHostActionResponse> {
-  const response = await fetch("/api/workspace-hosts/action", {
+  const endpoint =
+    args.action === "connect" || args.action === "validate-connection"
+      ? "/api/workspace-hosts/connection"
+      : args.action === "provision"
+        ? "/api/workspace-hosts/provision"
+        : "/api/workspace-hosts/action";
+  const payload =
+    args.action === "provision"
+      ? {
+          connectionId: args.connectionId,
+          name: args.name,
+          desired: args.desired,
+        }
+      : args;
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(args),
+    body: JSON.stringify(payload),
   });
   const body = (await response
     .json()
     .catch(() => null)) as WorkspaceHostActionResponse | null;
   if (!response.ok || !body?.ok) {
     throw new Error(
-      body?.message || `Workspace-host action failed (${response.status})`,
+      body?.message ||
+        body?.error ||
+        `Workspace-host action failed (${response.status})`,
     );
   }
   return body;
@@ -488,6 +537,8 @@ export default function CloudWorkspacesPage() {
 
   const [credentialRef, setCredentialRef] = useState("");
   const [connectionLabel, setConnectionLabel] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [serviceAccountEmail, setServiceAccountEmail] = useState("");
   const [destroyConfirm, setDestroyConfirm] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const dispositionButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
@@ -504,6 +555,7 @@ export default function CloudWorkspacesPage() {
     selectedConnection?.regions.find((option) => option.id === regionParam) ??
     selectedConnection?.regions[0] ??
     null;
+  const selectedZone = selectedRegion?.zones?.[0] ?? null;
   const selectedSize =
     selectedConnection?.sizes.find((option) => option.id === sizeParam) ??
     selectedConnection?.sizes[0] ??
@@ -517,6 +569,9 @@ export default function CloudWorkspacesPage() {
     selectedConnection?.networks[0] ??
     null;
   const provisionBlockers = [
+    selectedConnection && selectedConnection.target !== "gcp"
+      ? "choose a supported Google Cloud connection"
+      : null,
     selectedConnection?.status !== "connected"
       ? "validate the provider connection"
       : null,
@@ -525,6 +580,9 @@ export default function CloudWorkspacesPage() {
       ? "load a project, account, or subscription from the provider catalog"
       : null,
     !selectedRegion ? "load a region from the provider catalog" : null,
+    selectedRegion && !selectedZone
+      ? "load an available zone for the selected region"
+      : null,
     !selectedSize ? "load a machine size from the provider catalog" : null,
     !selectedImage ? "load an image from the provider catalog" : null,
     !selectedNetwork ? "load a network from the provider catalog" : null,
@@ -588,6 +646,8 @@ export default function CloudWorkspacesPage() {
     void setConnectTarget(null);
     setCredentialRef("");
     setConnectionLabel("");
+    setProjectId("");
+    setServiceAccountEmail("");
   }, [setConnectTarget]);
 
   const closeDestroyModal = useCallback(() => {
@@ -620,10 +680,12 @@ export default function CloudWorkspacesPage() {
   );
 
   const canProvision = Boolean(
+    selectedConnection?.target === "gcp" &&
     selectedConnection?.status === "connected" &&
     nameParam.trim() &&
     selectedScope &&
     selectedRegion &&
+    selectedZone &&
     selectedSize &&
     selectedImage &&
     selectedNetwork,
@@ -764,6 +826,7 @@ export default function CloudWorkspacesPage() {
         />
         <div className={styles.providerGrid}>
           {PROVIDERS.map((provider) => {
+            const supported = provider.target === "gcp";
             const connection = connections.find(
               (row) => row.target === provider.target,
             );
@@ -813,8 +876,9 @@ export default function CloudWorkspacesPage() {
                   </dl>
                 ) : (
                   <p className={styles.providerPrompt}>
-                    Add an injected credential reference to load this provider's
-                    live catalog.
+                    {supported
+                      ? "Add a safe local credential reference to load this provider's live catalog."
+                      : "Connection admission is not available in this local build yet."}
                   </p>
                 )}
                 <div className={styles.cardActions}>
@@ -822,7 +886,14 @@ export default function CloudWorkspacesPage() {
                     <Button
                       variant="ghost"
                       aria-label={`Validate ${provider.label} connection`}
-                      disabled={busyKey === `validate:${connection.id}`}
+                      disabled={
+                        !supported || busyKey === `validate:${connection.id}`
+                      }
+                      title={
+                        supported
+                          ? undefined
+                          : "Connection validation is not available for this provider yet."
+                      }
                       onClick={() =>
                         void perform(
                           `validate:${connection.id}`,
@@ -839,10 +910,16 @@ export default function CloudWorkspacesPage() {
                   ) : (
                     <Button
                       variant="primary"
-                      aria-label={`Connect ${provider.label}`}
+                      aria-label={
+                        supported
+                          ? `Connect ${provider.label}`
+                          : `${provider.label} connection is not available`
+                      }
+                      disabled={!supported}
                       onClick={() => void setConnectTarget(provider.target)}
                     >
-                      <Plus size={14} aria-hidden="true" /> Connect
+                      <Plus size={14} aria-hidden="true" />{" "}
+                      {supported ? "Connect" : "Not yet available"}
                     </Button>
                   )}
                 </div>
@@ -888,8 +965,10 @@ export default function CloudWorkspacesPage() {
               if (
                 !canProvision ||
                 !selectedConnection ||
+                selectedConnection.target !== "gcp" ||
                 !selectedScope ||
                 !selectedRegion ||
+                !selectedZone ||
                 !selectedSize ||
                 !selectedImage ||
                 !selectedNetwork
@@ -901,12 +980,22 @@ export default function CloudWorkspacesPage() {
                   action: "provision",
                   connectionId: selectedConnection.id,
                   name: nameParam.trim(),
-                  scopeId: selectedScope.id,
-                  regionId: selectedRegion.id,
-                  sizeId: selectedSize.id,
-                  imageId: selectedImage.id,
-                  diskGiB: validDiskGiB,
-                  networkId: selectedNetwork.id,
+                  desired: {
+                    hostId: workspaceHostIdFromName(nameParam),
+                    target: "gcp",
+                    scope: { kind: "project", id: selectedScope.id },
+                    region: selectedRegion.id,
+                    zone: selectedZone,
+                    size: selectedSize.id,
+                    image: {
+                      id: selectedImage.id,
+                      ...(selectedImage.version
+                        ? { version: selectedImage.version }
+                        : {}),
+                    },
+                    data: { volumeGiB: validDiskGiB, encrypted: true },
+                    provider: { network: { mode: "managed" } },
+                  },
                 },
                 `Provisioning ${nameParam.trim()}`,
               );
@@ -1599,14 +1688,42 @@ export default function CloudWorkspacesPage() {
           </Field>
           <Field
             label="Injected credential reference"
-            hint="Examples: env:GCP_APPLICATION_CREDENTIALS or vault:cloud/gcp-prod"
+            hint="Use adc://default or gcloud://active-user. Service-account key files are rejected."
           >
             {(hintId) => (
               <TextInput
                 value={credentialRef}
                 onChange={(event) => setCredentialRef(event.target.value)}
-                placeholder="env:GCP_APPLICATION_CREDENTIALS"
+                placeholder="adc://default"
                 aria-label="Injected credential reference"
+                aria-describedby={hintId}
+              />
+            )}
+          </Field>
+          <Field
+            label="Google Cloud project ID"
+            hint="The project must be active and visible to the selected credential."
+          >
+            {(hintId) => (
+              <TextInput
+                value={projectId}
+                onChange={(event) => setProjectId(event.target.value)}
+                placeholder="papercusp-prod"
+                aria-label="Google Cloud project ID"
+                aria-describedby={hintId}
+              />
+            )}
+          </Field>
+          <Field
+            label="Runtime service account email"
+            hint="This identity is attached to the host VM; no key material is stored."
+          >
+            {(hintId) => (
+              <TextInput
+                value={serviceAccountEmail}
+                onChange={(event) => setServiceAccountEmail(event.target.value)}
+                placeholder="papercusp-host@papercusp-prod.iam.gserviceaccount.com"
+                aria-label="Runtime service account email"
                 aria-describedby={hintId}
               />
             )}
@@ -1619,8 +1736,11 @@ export default function CloudWorkspacesPage() {
               variant="primary"
               disabled={
                 !connectTarget ||
+                connectTarget !== "gcp" ||
                 !connectionLabel.trim() ||
                 !credentialRef.trim() ||
+                !projectId.trim() ||
+                !serviceAccountEmail.trim() ||
                 busyKey === "connect"
               }
               onClick={() => {
@@ -1632,6 +1752,8 @@ export default function CloudWorkspacesPage() {
                     target: connectTarget,
                     label: connectionLabel.trim(),
                     credentialRef: credentialRef.trim(),
+                    projectId: projectId.trim(),
+                    serviceAccountEmail: serviceAccountEmail.trim(),
                   },
                   `${connectionLabel.trim()} connected`,
                 ).then((ok) => {
@@ -1695,32 +1817,28 @@ export default function CloudWorkspacesPage() {
               />
             </Field>
           ) : null}
+          <p
+            id="destroy-admission-blocker"
+            className={styles.provisionBlockers}
+            role="status"
+          >
+            <AlertTriangle size={16} aria-hidden="true" />
+            <span>
+              <strong>Audited canary evidence required</strong>
+              <span>
+                Final destroy stays disabled here until the host canary workflow
+                supplies its approved contract, cost, and teardown evidence.
+              </span>
+            </span>
+          </p>
           <div className={styles.modalActions}>
             <Button variant="ghost" onClick={closeDestroyModal}>
               Cancel
             </Button>
             <Button
               variant="destructive"
-              disabled={
-                !destroyWorkspace ||
-                busyKey === `destroy:${destroyWorkspace?.id}` ||
-                (disposition === "discard" &&
-                  destroyConfirm !== destroyWorkspace?.name)
-              }
-              onClick={() => {
-                if (!destroyWorkspace) return;
-                void perform(
-                  `destroy:${destroyWorkspace.id}`,
-                  {
-                    action: "destroy",
-                    workspaceId: destroyWorkspace.id,
-                    disposition,
-                  },
-                  `Destroy scheduled for ${destroyWorkspace.name}`,
-                ).then((ok) => {
-                  if (ok) closeDestroyModal();
-                });
-              }}
+              disabled
+              aria-describedby="destroy-admission-blocker"
             >
               <Trash2 size={14} aria-hidden="true" /> Confirm destroy
             </Button>

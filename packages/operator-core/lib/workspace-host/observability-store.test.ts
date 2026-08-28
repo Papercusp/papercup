@@ -61,6 +61,7 @@ describe('workspace-host observability store', () => {
     H.rows.set('FROM harness_shared.workspace_host_connections WHERE', [
       {
         id: 'connection-1',
+        label: 'Production GCP',
         target: 'gcp',
         credential_ref: 'adc://controller',
         provider_config: { projectId: 'project-1', credentialSource: 'hosted-delegation' },
@@ -71,6 +72,7 @@ describe('workspace-host observability store', () => {
 
     await expect(readWorkspaceHostConnection('ws-1', 'connection-1')).resolves.toEqual({
       id: 'connection-1',
+      label: 'Production GCP',
       target: 'gcp',
       status: 'connected',
       connection: {

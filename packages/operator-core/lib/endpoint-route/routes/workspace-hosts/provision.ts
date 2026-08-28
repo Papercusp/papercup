@@ -75,11 +75,11 @@ export function createWorkspaceHostProvisionRoute(
       if (!isRecord(body.desired)) {
         return Response.json({ ok: false, error: 'desired must be an object' }, { status: 400 });
       }
-      const desired = body.desired as unknown as WorkspaceHostDesiredSpec;
-      if (typeof desired.hostId !== 'string' || !SAFE_ID.test(desired.hostId)) {
+      const requestedDesired = body.desired as unknown as WorkspaceHostDesiredSpec;
+      if (typeof requestedDesired.hostId !== 'string' || !SAFE_ID.test(requestedDesired.hostId)) {
         return Response.json({ ok: false, error: 'invalid desired.hostId' }, { status: 400 });
       }
-      if (typeof desired.target !== 'string' || !desired.target.trim()) {
+      if (typeof requestedDesired.target !== 'string' || !requestedDesired.target.trim()) {
         return Response.json({ ok: false, error: 'desired.target must be a non-empty string' }, { status: 400 });
       }
       if (body.operationId !== undefined && (typeof body.operationId !== 'string' || !SAFE_ID.test(body.operationId))) {
@@ -108,15 +108,34 @@ export function createWorkspaceHostProvisionRoute(
           { status: 409 },
         );
       }
-      if (stored.target !== desired.target) {
+      if (stored.target !== requestedDesired.target) {
         return Response.json({ ok: false, error: 'connection target does not match desired.target' }, { status: 422 });
       }
-      if (desired.target !== 'gcp') {
+      if (requestedDesired.target !== 'gcp') {
         return Response.json(
-          { ok: false, error: 'workspace-host provisioning target is not implemented', target: desired.target },
+          {
+            ok: false,
+            error: 'workspace-host provisioning target is not implemented',
+            target: requestedDesired.target,
+          },
           { status: 501 },
         );
       }
+      // The control query deliberately masks credential references. Rebind the
+      // stored raw reference and connection metadata server-side so a browser
+      // never has to round-trip either secret-adjacent identity or stale config.
+      const requestedProvider = isRecord(requestedDesired.provider) ? requestedDesired.provider : {};
+      const desired = {
+        ...requestedDesired,
+        credentials: {
+          ...(isRecord(requestedDesired.credentials) ? requestedDesired.credentials : {}),
+          cloudCredentialRef: stored.connection.cloudCredentialRef,
+        },
+        provider: {
+          ...requestedProvider,
+          ...(stored.connection.provider ?? {}),
+        },
+      } as WorkspaceHostDesiredSpec;
 
       try {
         const result = await dependencies.startProvisioning({

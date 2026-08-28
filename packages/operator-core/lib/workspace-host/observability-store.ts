@@ -133,6 +133,7 @@ export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnecti
 
 export interface StoredWorkspaceHostConnection {
   id: string;
+  label?: string;
   target: string;
   status: ConnectionStatus;
   statusDetail?: string;
@@ -148,6 +149,7 @@ export async function readWorkspaceHostConnection(
     const rows = await tx<
       Array<{
         id: string;
+        label: string;
         target: string;
         credential_ref: string;
         provider_config: JsonRecord;
@@ -155,7 +157,7 @@ export async function readWorkspaceHostConnection(
         status_detail: string | null;
       }>
     >`
-      SELECT id, target, credential_ref, provider_config, status, status_detail
+      SELECT id, label, target, credential_ref, provider_config, status, status_detail
       FROM harness_shared.workspace_host_connections
       WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
       LIMIT 1
@@ -164,6 +166,7 @@ export async function readWorkspaceHostConnection(
     if (!row) return null;
     return {
       id: row.id,
+      label: row.label,
       target: row.target,
       status: row.status,
       ...(row.status_detail ? { statusDetail: row.status_detail } : {}),

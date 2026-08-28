@@ -51,6 +51,10 @@ function harness() {
     connection: {
       target: 'gcp',
       cloudCredentialRef: { kind: 'cloud' as const, ref: 'adc://controller' },
+      provider: {
+        projectId: 'project-1',
+        serviceAccountEmail: 'papercusp-host@project-1.iam.gserviceaccount.com',
+      },
     },
   }));
   const dependencies: WorkspaceHostProvisionRouteDependencies = {
@@ -133,7 +137,13 @@ describe('POST /workspace-hosts/provision', () => {
     const response = await post(dependencies, {
       connectionId: 'connection-1',
       name: 'Research host',
-      desired,
+      desired: {
+        ...desired,
+        credentials: {
+          cloudCredentialRef: { kind: 'cloud', ref: 'masked://configured' },
+        },
+        provider: { network: { mode: 'managed' }, zone: 'client-value-must-not-replace-provider-config' },
+      },
       operationId: 'op-1',
     });
 
@@ -149,12 +159,27 @@ describe('POST /workspace-hosts/provision', () => {
         workspaceId: 'ws-1',
         connectionId: 'connection-1',
         operationId: 'op-1',
-        desired,
-        connection: {
+        desired: {
+          ...desired,
+          credentials: {
+            cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+          },
+          provider: {
+            network: { mode: 'managed' },
+            zone: 'client-value-must-not-replace-provider-config',
+            projectId: 'project-1',
+            serviceAccountEmail: 'papercusp-host@project-1.iam.gserviceaccount.com',
+          },
+        },
+        connection: expect.objectContaining({
           target: 'gcp',
           cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
           scope: { kind: 'project', id: 'project-1' },
-        },
+          provider: {
+            projectId: 'project-1',
+            serviceAccountEmail: 'papercusp-host@project-1.iam.gserviceaccount.com',
+          },
+        }),
       }),
     );
   });
