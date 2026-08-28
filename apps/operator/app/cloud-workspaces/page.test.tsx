@@ -376,6 +376,38 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
     expect(H.queryUpdates).toContainEqual(["step", "configure"]);
     expect(screen.getByRole("heading", { name: "New workspace" })).toBeTruthy();
   });
+
+  it("contributes no nested <main> landmark", () => {
+    /* The ROUTER owns the document's single main landmark — __root.tsx renders
+       <main data-route-transition-page>, the element GlobalFindInPage targets —
+       so this page must not add a second one. A document with two nested <main>s
+       is invalid and costs screen-reader users the landmark as a navigation aid.
+
+       The pre-redesign suite pinned this indirectly, via
+       expect(pageHeading.closest("main")).toBeNull(). That test was dropped in
+       the guided-rail rewrite while the stage area simultaneously shipped as a
+       <main>, so the regression became unpinned at the moment it was introduced
+       (WI-370245 — found by the independent acceptance grader, not by us).
+       Assert the property DIRECTLY rather than as a side effect of where the
+       heading sits, so it cannot come back silently. */
+    const { container } = render(<CloudWorkspacesPage />);
+
+    /* Presence guard fused into the same test: a blank or crashed render would
+       satisfy a zero-count assertion vacuously. The rail is present on every
+       step, so requiring it proves the page actually mounted. */
+    expect(
+      screen.getByRole("navigation", { name: "Cloud workspace setup" }),
+    ).toBeTruthy();
+
+    /* Positive control for the INSTRUMENT, kept permanently rather than proven
+       once by mutating the tree: a zero count means nothing unless the same
+       query demonstrably finds a <main> when one is really there. */
+    const control = document.createElement("div");
+    control.innerHTML = "<main>control</main>";
+    expect(control.querySelectorAll("main").length).toBe(1);
+
+    expect(container.querySelectorAll("main").length).toBe(0);
+  });
 });
 
 describe("CloudWorkspacesPage — mutation seam", () => {
