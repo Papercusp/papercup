@@ -392,14 +392,14 @@ function normalizeStructuredCheckpoint(value: unknown): unknown {
 }
 
 /** Shared by the single shorthand and each items[] entry. */
-function checkpointBodySpec() {
+function checkpointBodySpec(): z.ZodType<string | null | undefined> {
   // Keep the structured compatibility shape visible in the published JSON schema.
   // A preprocess around only the normalized string hides its input type from Zod's
   // schema emitter, so MCP rejects the documented object before this normalizer runs.
   return z.preprocess(
     normalizeStructuredCheckpoint,
     z.union([z.string().max(CHECKPOINT_CAP), structuredCheckpointSchema]).nullish(),
-  );
+  ) as z.ZodType<string | null | undefined>;
 }
 
 /**

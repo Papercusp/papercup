@@ -11,7 +11,7 @@
  * { ok, results:[{ ok, id, … | error }], counts } — assertions read results[0], not
  * the top level.
  */
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, expectTypeOf, vi, beforeEach, afterAll } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 // EI-20004424625703051: bind the cap-eviction guard to the REAL constant, so raising
@@ -242,6 +242,11 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
 
     expect(hasStructuredCheckpoint(json.properties?.checkpoint)).toBe(true);
     expect(hasStructuredCheckpoint(json.properties?.items?.items)).toBe(true);
+  });
+
+  it('keeps the parsed checkpoint output text-typed after exposing the structured input schema', () => {
+    type ParsedArgs = z.output<typeof checkpoint.args>;
+    expectTypeOf<ParsedArgs['checkpoint']>().toEqualTypeOf<string | null | undefined>();
   });
 
   it('accepts loop checkpoint aliases while canonical fields win, and rejects unrelated object keys', () => {
