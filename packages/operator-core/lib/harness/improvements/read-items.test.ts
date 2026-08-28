@@ -460,7 +460,7 @@ describe('improvementSourceCounts (WI-471938 — the corpus source VOCABULARY, n
     const counts = await improvementSourceCounts(
       { harnessScopes: ['harness:my-hive', 'harness:member-a'] },
       {
-        countIssuesBySourceRole: async (f) => {
+        countIssuesBySourceRole: async (f): Promise<Record<string, number>> => {
           calls.push(f);
           return f.scope === 'harness:my-hive' ? { Scout: 3, system: 1 } : { Scout: 5 };
         },
