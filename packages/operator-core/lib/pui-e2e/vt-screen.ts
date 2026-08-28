@@ -137,11 +137,7 @@ export class VtScreen {
           index = end + 1;
         } else if (kind === ']') {
           let end = index + 2;
-          while (
-            end < data.length &&
-            data[end] !== '\x07' &&
-            !(data[end] === ESC && data[end + 1] === '\\')
-          ) {
+          while (end < data.length && data[end] !== '\x07' && !(data[end] === ESC && data[end + 1] === '\\')) {
             end++;
           }
           if (end >= data.length) break;

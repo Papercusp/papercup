@@ -602,9 +602,7 @@ function configureHudCockpitFixture(fake: FakeOperator): void {
         mechanism: 'needs-human',
       },
     ],
-    unclaimed: [
-      { id: 'WI-HUD-READY', kind: 'change', title: 'Take the next cockpit lane', state: 'open' },
-    ],
+    unclaimed: [{ id: 'WI-HUD-READY', kind: 'change', title: 'Take the next cockpit lane', state: 'open' }],
     counts: { total: 10, terminal: 7, inFlight: 1, parked: 1, unclaimed: 1 },
   });
   fake.runToolResponses.set('work_items:get', { ok: true, results: [] });
@@ -669,10 +667,7 @@ beforeAll(async () => {
   tempHome = mkdtempSync(path.join(tmpdir(), 'pui-e2e-home-'));
   // Pre-seed the first-run tutorial as seen so its overlay does not eat keys.
   mkdirSync(path.join(tempHome, '.papercusp'), { recursive: true });
-  writeFileSync(
-    path.join(tempHome, '.papercusp', 'pui-state.json'),
-    JSON.stringify({ tutorialSeen: true }),
-  );
+  writeFileSync(path.join(tempHome, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
   operator = new FakeOperator();
   await operator.listen();
 }, 900_000);
@@ -682,345 +677,337 @@ afterAll(async () => {
 });
 
 describe('pui context-pane cockpit (installed binary, real PTY, fake canonical operator)', () => {
-  test(
-    'owned-loop cockpit: claim → burn-down flip, auto-unblock, task ops wire + render, promote for-edge, g refresh',
-    async () => {
-      operator.queries = [];
-      operator.taskOps = [];
-      operator.projections.delete(CHAT_ID);
+  test('owned-loop cockpit: claim → burn-down flip, auto-unblock, task ops wire + render, promote for-edge, g refresh', async () => {
+    operator.queries = [];
+    operator.taskOps = [];
+    operator.projections.delete(CHAT_ID);
 
-      const pane = new PuiPane(bin, ['context-pane', 'agent_chat', CHAT_ID, HARNESS], paneEnv(operator.port, tempHome));
-      try {
-        // Boot: explicit target, no projection rows yet → explicit degradation.
-        await pane.waitFor('does not expose Context', { timeoutMs: 30_000 });
+    const pane = new PuiPane(bin, ['context-pane', 'agent_chat', CHAT_ID, HARNESS], paneEnv(operator.port, tempHome));
+    try {
+      // Boot: explicit target, no projection rows yet → explicit degradation.
+      await pane.waitFor('does not expose Context', { timeoutMs: 30_000 });
 
-        // ── Stage A: initial projection ─────────────────────────────────────
-        const tasksA: TaskFixture[] = [
-          { id: 't1', content: 'Wire the cockpit E2E', activeForm: 'Wiring the cockpit E2E', status: 'in_progress' },
-          { id: 't2', content: 'Verify blocker clears', activeForm: 'Verifying blocker clears', status: 'blocked', blockerRef: 'WI-9001' },
-          { id: 't3', content: 'Drop this decoy task', activeForm: 'Dropping the decoy task', status: 'pending' },
-          { id: 't4', content: 'Promote me to a work-item', activeForm: 'Promoting to a work-item', status: 'pending' },
-        ];
-        operator.projections.set(
-          CHAT_ID,
-          makeProjection({
-            sourceKind: 'agent_chat',
-            sessionId: CHAT_ID,
-            tier: 'owned-loop',
-            taskWrite: true,
-            burnDown: '2/5 open',
-            claim: { value: 'unclaimed', state: 'waiting' },
-            tasks: tasksA,
-            approvals: [{ callId: 'call-1', toolName: 'locks:acquire', status: 'pending', reason: 'requested' }],
-          }),
-        );
-        pane.write('g');
-        await pane.waitFor('Context · owned-loop');
-        await pane.waitFor('task write');
-        await pane.waitFor('Burn-down');
-        await pane.waitFor('2/5 open');
-        await pane.waitFor('unclaimed');
-        // in_progress renders the activeForm; blocked renders content + typed block ref
-        await pane.waitFor('Wiring the cockpit E2E');
-        await pane.waitFor('blocked on WI-9001');
-        await pane.waitFor('Tasks (4)');
-        // approvals surface
-        await pane.waitFor('Needs you (1)');
-        await pane.waitFor('locks:acquire');
-        // writable footer
-        await pane.waitFor('Shift-P promote');
-
-        // The wire was queried with the typed target.
-        const projQueries = operator.queries.filter((q) => q.name === 'conversations.contextProjection');
-        expect(projQueries.length).toBeGreaterThan(0);
-        expect(projQueries.at(-1)!.args).toMatchObject({
+      // ── Stage A: initial projection ─────────────────────────────────────
+      const tasksA: TaskFixture[] = [
+        { id: 't1', content: 'Wire the cockpit E2E', activeForm: 'Wiring the cockpit E2E', status: 'in_progress' },
+        {
+          id: 't2',
+          content: 'Verify blocker clears',
+          activeForm: 'Verifying blocker clears',
+          status: 'blocked',
+          blockerRef: 'WI-9001',
+        },
+        { id: 't3', content: 'Drop this decoy task', activeForm: 'Dropping the decoy task', status: 'pending' },
+        { id: 't4', content: 'Promote me to a work-item', activeForm: 'Promoting to a work-item', status: 'pending' },
+      ];
+      operator.projections.set(
+        CHAT_ID,
+        makeProjection({
           sourceKind: 'agent_chat',
           sessionId: CHAT_ID,
-          harness: HARNESS,
-        });
+          tier: 'owned-loop',
+          taskWrite: true,
+          burnDown: '2/5 open',
+          claim: { value: 'unclaimed', state: 'waiting' },
+          tasks: tasksA,
+          approvals: [{ callId: 'call-1', toolName: 'locks:acquire', status: 'pending', reason: 'requested' }],
+        }),
+      );
+      pane.write('g');
+      await pane.waitFor('Context · owned-loop');
+      await pane.waitFor('task write');
+      await pane.waitFor('Burn-down');
+      await pane.waitFor('2/5 open');
+      await pane.waitFor('unclaimed');
+      // in_progress renders the activeForm; blocked renders content + typed block ref
+      await pane.waitFor('Wiring the cockpit E2E');
+      await pane.waitFor('blocked on WI-9001');
+      await pane.waitFor('Tasks (4)');
+      // approvals surface
+      await pane.waitFor('Needs you (1)');
+      await pane.waitFor('locks:acquire');
+      // writable footer
+      await pane.waitFor('Shift-P promote');
 
-        // ── Stage B: claim lands server-side → burn-down flips; blocker WI resolves → auto-unblock ──
-        const tasksB: TaskFixture[] = [
-          tasksA[0],
-          { ...tasksA[1], status: 'in_progress', blockerRef: null },
-          tasksA[2],
-          tasksA[3],
-        ];
-        operator.projections.set(
-          CHAT_ID,
-          makeProjection({
-            sourceKind: 'agent_chat',
-            sessionId: CHAT_ID,
-            tier: 'owned-loop',
-            taskWrite: true,
-            burnDown: '3/5 open',
-            claim: { value: 'su-e2e · claimed', state: 'live' },
-            tasks: tasksB,
-            approvals: [],
-          }),
-        );
-        pane.write('g');
-        await pane.waitFor('3/5 open');
-        await pane.waitFor('su-e2e · claimed');
-        // auto-unblock: t2 now renders its in_progress activeForm, with no block ref
-        await pane.waitFor('Verifying blocker clears');
-        // …and the stale typed block ref is no longer anywhere on the screen.
-        expect(pane.contains('blocked on WI-9001')).toBe(false);
+      // The wire was queried with the typed target.
+      const projQueries = operator.queries.filter((q) => q.name === 'conversations.contextProjection');
+      expect(projQueries.length).toBeGreaterThan(0);
+      expect(projQueries.at(-1)!.args).toMatchObject({
+        sourceKind: 'agent_chat',
+        sessionId: CHAT_ID,
+        harness: HARNESS,
+      });
 
-        // ── Task op: x = check (selected task index 0 → t1) ─────────────────
-        operator.mutationProjection = makeProjection({
+      // ── Stage B: claim lands server-side → burn-down flips; blocker WI resolves → auto-unblock ──
+      const tasksB: TaskFixture[] = [
+        tasksA[0],
+        { ...tasksA[1], status: 'in_progress', blockerRef: null },
+        tasksA[2],
+        tasksA[3],
+      ];
+      operator.projections.set(
+        CHAT_ID,
+        makeProjection({
           sourceKind: 'agent_chat',
           sessionId: CHAT_ID,
           tier: 'owned-loop',
           taskWrite: true,
           burnDown: '3/5 open',
           claim: { value: 'su-e2e · claimed', state: 'live' },
-          tasks: [{ ...tasksB[0], status: 'completed' }, tasksB[1], tasksB[2], tasksB[3]],
-        });
-        pane.write('x');
-        await pane.waitFor('Wire the cockpit E2E'); // completed renders content form ("Wiring…" → "Wire…")
-        expect(operator.taskOps.at(-1)).toMatchObject({
-          path: `/api/harness/${HARNESS}/agent-chats/${CHAT_ID}/tasks`,
-          body: { action: 'check', taskId: 't1' },
-        });
+          tasks: tasksB,
+          approvals: [],
+        }),
+      );
+      pane.write('g');
+      await pane.waitFor('3/5 open');
+      await pane.waitFor('su-e2e · claimed');
+      // auto-unblock: t2 now renders its in_progress activeForm, with no block ref
+      await pane.waitFor('Verifying blocker clears');
+      // …and the stale typed block ref is no longer anywhere on the screen.
+      expect(pane.contains('blocked on WI-9001')).toBe(false);
 
-        // ── Task op: d = drop (nav j j → t3) ────────────────────────────────
-        operator.mutationProjection = makeProjection({
-          sourceKind: 'agent_chat',
-          sessionId: CHAT_ID,
-          tier: 'owned-loop',
-          taskWrite: true,
-          burnDown: '3/5 open',
-          claim: { value: 'su-e2e · claimed', state: 'live' },
-          tasks: [
-            { ...tasksB[0], status: 'completed' },
-            tasksB[1],
-            { ...tasksB[2], status: 'dropped' },
-            tasksB[3],
-          ],
-        });
-        pane.write('jj');
-        await sleep(200);
-        pane.write('d');
-        const dropDeadline = Date.now() + 15_000;
-        while (Date.now() < dropDeadline && operator.taskOps.at(-1)?.body.action !== 'drop') {
-          await sleep(60);
-        }
-        expect(operator.taskOps.at(-1)).toMatchObject({ body: { action: 'drop', taskId: 't3' } });
+      // ── Task op: x = check (selected task index 0 → t1) ─────────────────
+      operator.mutationProjection = makeProjection({
+        sourceKind: 'agent_chat',
+        sessionId: CHAT_ID,
+        tier: 'owned-loop',
+        taskWrite: true,
+        burnDown: '3/5 open',
+        claim: { value: 'su-e2e · claimed', state: 'live' },
+        tasks: [{ ...tasksB[0], status: 'completed' }, tasksB[1], tasksB[2], tasksB[3]],
+      });
+      pane.write('x');
+      await pane.waitFor('Wire the cockpit E2E'); // completed renders content form ("Wiring…" → "Wire…")
+      expect(operator.taskOps.at(-1)).toMatchObject({
+        path: `/api/harness/${HARNESS}/agent-chats/${CHAT_ID}/tasks`,
+        body: { action: 'check', taskId: 't1' },
+      });
 
-        // ── Task op: Shift-P = promote (nav j → t4); response carries the for-edge ──
-        operator.mutationProjection = makeProjection({
-          sourceKind: 'agent_chat',
-          sessionId: CHAT_ID,
-          tier: 'owned-loop',
-          taskWrite: true,
-          burnDown: '3/5 open',
-          claim: { value: 'su-e2e · claimed', state: 'live' },
-          tasks: [
-            { ...tasksB[0], status: 'completed' },
-            tasksB[1],
-            { ...tasksB[2], status: 'dropped' },
-            {
-              ...tasksB[3],
-              status: 'blocked',
-              blockerRef: 'WI-7777',
-              links: [{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }],
-            },
-          ],
-        });
-        pane.write('j');
-        await sleep(200);
-        pane.write('P');
-        await pane.waitFor('blocked on WI-7777');
-        const promoteOp = operator.taskOps.at(-1)!;
-        expect(promoteOp).toMatchObject({ body: { action: 'promote', taskId: 't4' } });
-        // The canonical projection the operator returned for the promote carries
-        // the created work-item's `for` edge; the pane applied that projection
-        // (the WI-7777 block ref just asserted comes from it).
-        const promoted = (operator.mutationProjection as { frames: Array<Record<string, unknown>> }).frames.find(
-          (f) => f.kind === 'task' && (f as { taskId?: string }).taskId === 't4',
-        ) as { links: Array<{ workItemId: string; relation: string }> };
-        expect(promoted.links).toEqual([{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }]);
-
-        // ── Task op: u = clear blocker (still on t4) ────────────────────────
-        operator.mutationProjection = makeProjection({
-          sourceKind: 'agent_chat',
-          sessionId: CHAT_ID,
-          tier: 'owned-loop',
-          taskWrite: true,
-          burnDown: '3/5 open',
-          claim: { value: 'su-e2e · claimed', state: 'live' },
-          tasks: [
-            { ...tasksB[0], status: 'completed' },
-            tasksB[1],
-            { ...tasksB[2], status: 'dropped' },
-            {
-              ...tasksB[3],
-              status: 'in_progress',
-              activeForm: 'Unblocked and rolling',
-              blockerRef: null,
-              links: [{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }],
-            },
-          ],
-        });
-        pane.write('u');
-        await pane.waitFor('Unblocked and rolling');
-        expect(operator.taskOps.at(-1)).toMatchObject({ body: { action: 'clear_blocker', taskId: 't4' } });
-      } finally {
-        pane.kill();
+      // ── Task op: d = drop (nav j j → t3) ────────────────────────────────
+      operator.mutationProjection = makeProjection({
+        sourceKind: 'agent_chat',
+        sessionId: CHAT_ID,
+        tier: 'owned-loop',
+        taskWrite: true,
+        burnDown: '3/5 open',
+        claim: { value: 'su-e2e · claimed', state: 'live' },
+        tasks: [{ ...tasksB[0], status: 'completed' }, tasksB[1], { ...tasksB[2], status: 'dropped' }, tasksB[3]],
+      });
+      pane.write('jj');
+      await sleep(200);
+      pane.write('d');
+      const dropDeadline = Date.now() + 15_000;
+      while (Date.now() < dropDeadline && operator.taskOps.at(-1)?.body.action !== 'drop') {
+        await sleep(60);
       }
-    },
-    180_000,
-  );
+      expect(operator.taskOps.at(-1)).toMatchObject({ body: { action: 'drop', taskId: 't3' } });
 
-  test(
-    'codex target is read-only: degraded footer, and task keys emit no wire ops',
-    async () => {
-      operator.queries = [];
-      operator.taskOps = [];
-      const SESSION = 'rollout-x';
-
-      const pane = new PuiPane(bin, ['context-pane', 'codex', SESSION, HARNESS], paneEnv(operator.port, tempHome));
-      try {
-        await pane.waitFor('does not expose Context', { timeoutMs: 30_000 });
-
-        operator.projections.set(
-          SESSION,
-          makeProjection({
-            sourceKind: 'codex',
-            sessionId: SESSION,
-            tier: 'shared-projection',
-            taskWrite: false,
-            burnDown: '1/2 open',
-            claim: { value: 'foreign session', state: 'parked' },
-            tasks: [{ id: 'c1', content: 'Codex-side task', activeForm: 'Codex-side task running', status: 'in_progress' }],
-          }),
-        );
-        pane.write('g');
-        await pane.waitFor('Context · shared-projection');
-        await pane.waitFor('tasks read-only');
-        await pane.waitFor('unavailable sections stay absent');
-        await pane.waitFor('Codex-side task running');
-
-        // The typed target rode the query.
-        const projQueries = operator.queries.filter((q) => q.name === 'conversations.contextProjection');
-        expect(projQueries.at(-1)!.args).toMatchObject({ sourceKind: 'codex', sessionId: SESSION });
-
-        // Task keys on a read-only (non-agent_chat) target emit NO mutations.
-        const opsBefore = operator.taskOps.length;
-        pane.write('x');
-        pane.write('d');
-        pane.write('P');
-        pane.write('u');
-        await sleep(700);
-        expect(operator.taskOps.length).toBe(opsBefore);
-      } finally {
-        pane.kill();
-      }
-    },
-    120_000,
-  );
-
-  test(
-    'HUD cockpit: semantic cards, actionable frontier, lifecycle oracle, launcher door, ended sessions, leader tape and critical path',
-    async () => {
-      operator.queries = [];
-      operator.taskOps = [];
-      operator.requests = [];
-      operator.jsonRoutes.clear();
-      operator.runToolResponses.clear();
-      configureHudCockpitFixture(operator);
-
-      const pane = new PuiPane(bin, ['hud'], paneEnv(operator.port, tempHome));
-      try {
-        // Persisted cross-model tool aliases must reach the semantic registry in
-        // the real HUD transcript, not fall back to the raw MCP identifier.
-        pane.write('1');
-        await pane.waitFor('Completing work item', { timeoutMs: 40_000 });
-        expect(pane.contains('mcp__papercusp-su__work_items_complete')).toBe(false);
-
-        // Plans owns both dependency truth and the one fleet-launch seam.
-        pane.write('3');
-        await pane.waitFor('HUD cockpit installed-binary gate');
-        pane.write('K');
-        await pane.waitFor('Critical path');
-        await pane.waitFor('P-HUD-ROOT [wip]');
-        await pane.waitFor('P-HUD-NEXT [todo]');
-        await pane.waitFor('critical');
-        pane.write('K');
-
-        pane.write('L');
-        await pane.waitFor('Fleet launcher');
-        await pane.waitFor('preview proposed 1');
-        await pane.waitFor('y CONFIRM LAUNCH');
-        pane.write('y');
-        const launch = await operator.waitForTool('fleet:launch-on-plan');
-        expect(launch.body).toMatchObject({
-          name: 'fleet:launch-on-plan',
-          confirmed: false,
-          args: {
-            name: 'pui-hud-cockpit-e2e',
-            plan: 'hud-cockpit-e2e',
-            harness: HUD_HARNESS,
-            count: 1,
-            agent: 'codex',
-            account: 'default',
-            carry: 'warm',
-            headless: false,
+      // ── Task op: Shift-P = promote (nav j → t4); response carries the for-edge ──
+      operator.mutationProjection = makeProjection({
+        sourceKind: 'agent_chat',
+        sessionId: CHAT_ID,
+        tier: 'owned-loop',
+        taskWrite: true,
+        burnDown: '3/5 open',
+        claim: { value: 'su-e2e · claimed', state: 'live' },
+        tasks: [
+          { ...tasksB[0], status: 'completed' },
+          tasksB[1],
+          { ...tasksB[2], status: 'dropped' },
+          {
+            ...tasksB[3],
+            status: 'blocked',
+            blockerRef: 'WI-7777',
+            links: [{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }],
           },
-        });
-        pane.write('L');
+        ],
+      });
+      pane.write('j');
+      await sleep(200);
+      pane.write('P');
+      await pane.waitFor('blocked on WI-7777');
+      const promoteOp = operator.taskOps.at(-1)!;
+      expect(promoteOp).toMatchObject({ body: { action: 'promote', taskId: 't4' } });
+      // The canonical projection the operator returned for the promote carries
+      // the created work-item's `for` edge; the pane applied that projection
+      // (the WI-7777 block ref just asserted comes from it).
+      const promoted = (operator.mutationProjection as { frames: Array<Record<string, unknown>> }).frames.find(
+        (f) => f.kind === 'task' && (f as { taskId?: string }).taskId === 't4',
+      ) as { links: Array<{ workItemId: string; relation: string }> };
+      expect(promoted.links).toEqual([{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }]);
 
-        // The fleet surface is driven by burn_down (not a hand-built queue),
-        // and sessionState=ended wins even when heartbeatFresh=true.
-        pane.write('4');
-        await pane.waitFor('Agents (2)');
-        await pane.waitFor('leader members');
-        await pane.waitFor('hud-fleet');
-        await pane.waitFor('Finished the prior lane');
-        expect(pane.contains('ended')).toBe(true);
+      // ── Task op: u = clear blocker (still on t4) ────────────────────────
+      operator.mutationProjection = makeProjection({
+        sourceKind: 'agent_chat',
+        sessionId: CHAT_ID,
+        tier: 'owned-loop',
+        taskWrite: true,
+        burnDown: '3/5 open',
+        claim: { value: 'su-e2e · claimed', state: 'live' },
+        tasks: [
+          { ...tasksB[0], status: 'completed' },
+          tasksB[1],
+          { ...tasksB[2], status: 'dropped' },
+          {
+            ...tasksB[3],
+            status: 'in_progress',
+            activeForm: 'Unblocked and rolling',
+            blockerRef: null,
+            links: [{ workItemId: 'WI-7777', workItemHarness: HARNESS, relation: 'for' }],
+          },
+        ],
+      });
+      pane.write('u');
+      await pane.waitFor('Unblocked and rolling');
+      expect(operator.taskOps.at(-1)).toMatchObject({ body: { action: 'clear_blocker', taskId: 't4' } });
+    } finally {
+      pane.kill();
+    }
+  }, 180_000);
 
-        // The leader cockpit intentionally owns the right column while its
-        // brief is available. A failed refresh must fall back to the canonical
-        // whole-fleet frontier instead of leaving that work surface unreachable.
-        operator.runToolResponses.set('fleet:leader-brief', 'invalid');
-        pane.write('3');
-        await pane.waitFor('HUD cockpit installed-binary gate');
-        pane.write('4');
-        await pane.waitFor('Agents (2)');
-        pane.write('l');
-        await pane.waitFor('WORK FRONTIER');
-        await pane.waitFor('READY NOW');
-        await pane.waitFor('WI-HUD-READY');
+  test('codex target is read-only: degraded footer, and task keys emit no wire ops', async () => {
+    operator.queries = [];
+    operator.taskOps = [];
+    const SESSION = 'rollout-x';
 
-        // Curated → Mirror → Tape. The lossless ledger must retain the semantic
-        // item-completed transition rather than collapsing it into roster state.
-        pane.write('\t\t');
-        await pane.waitFor('Transition tape');
-        await pane.waitFor('item-completed');
-        await pane.waitFor('WI-HUD-DONE');
+    const pane = new PuiPane(bin, ['context-pane', 'codex', SESSION, HARNESS], paneEnv(operator.port, tempHome));
+    try {
+      await pane.waitFor('does not expose Context', { timeoutMs: 30_000 });
 
-        // Both the durable Sessions destination and Ctrl-S switcher keep ended
-        // sessions browseable/resumable. The fixture's fresh heartbeat is a
-        // positive control that the lifecycle verdict, not heartbeat age, wins.
-        pane.write('s');
-        await pane.waitFor('Ended Fresh');
-        await pane.waitFor('ended');
-        pane.write('\x13');
-        await pane.waitFor('fuzzy live + parked + ended + recorded');
-        await pane.waitFor('Ended Fresh');
+      operator.projections.set(
+        SESSION,
+        makeProjection({
+          sourceKind: 'codex',
+          sessionId: SESSION,
+          tier: 'shared-projection',
+          taskWrite: false,
+          burnDown: '1/2 open',
+          claim: { value: 'foreign session', state: 'parked' },
+          tasks: [
+            { id: 'c1', content: 'Codex-side task', activeForm: 'Codex-side task running', status: 'in_progress' },
+          ],
+        }),
+      );
+      pane.write('g');
+      await pane.waitFor('Context · shared-projection');
+      await pane.waitFor('tasks read-only');
+      await pane.waitFor('unavailable sections stay absent');
+      await pane.waitFor('Codex-side task running');
 
-        expect(operator.requests.some((request) => request.path === '/api/adv/roster')).toBe(true);
-        expect(
-          operator.requests.some(
-            (request) => request.body?.name === 'work_items:burn_down' &&
-              (request.body.args as Record<string, unknown> | undefined)?.harness === HUD_HARNESS,
-          ),
-        ).toBe(true);
-      } finally {
-        pane.kill();
-      }
-    },
-    300_000,
-  );
+      // The typed target rode the query.
+      const projQueries = operator.queries.filter((q) => q.name === 'conversations.contextProjection');
+      expect(projQueries.at(-1)!.args).toMatchObject({ sourceKind: 'codex', sessionId: SESSION });
+
+      // Task keys on a read-only (non-agent_chat) target emit NO mutations.
+      const opsBefore = operator.taskOps.length;
+      pane.write('x');
+      pane.write('d');
+      pane.write('P');
+      pane.write('u');
+      await sleep(700);
+      expect(operator.taskOps.length).toBe(opsBefore);
+    } finally {
+      pane.kill();
+    }
+  }, 120_000);
+
+  test('HUD cockpit: semantic cards, actionable frontier, lifecycle oracle, launcher door, ended sessions, leader tape and critical path', async () => {
+    operator.queries = [];
+    operator.taskOps = [];
+    operator.requests = [];
+    operator.jsonRoutes.clear();
+    operator.runToolResponses.clear();
+    configureHudCockpitFixture(operator);
+
+    const pane = new PuiPane(bin, ['hud'], paneEnv(operator.port, tempHome));
+    try {
+      // Persisted cross-model tool aliases must reach the semantic registry in
+      // the real HUD transcript, not fall back to the raw MCP identifier.
+      pane.write('1');
+      await pane.waitFor('Completing work item', { timeoutMs: 40_000 });
+      expect(pane.contains('mcp__papercusp-su__work_items_complete')).toBe(false);
+
+      // Plans owns both dependency truth and the one fleet-launch seam.
+      pane.write('3');
+      await pane.waitFor('HUD cockpit installed-binary gate');
+      pane.write('K');
+      await pane.waitFor('Critical path');
+      await pane.waitFor('P-HUD-ROOT [wip]');
+      await pane.waitFor('P-HUD-NEXT [todo]');
+      await pane.waitFor('critical');
+      pane.write('K');
+
+      pane.write('L');
+      await pane.waitFor('Fleet launcher');
+      await pane.waitFor('preview proposed 1');
+      await pane.waitFor('y CONFIRM LAUNCH');
+      pane.write('y');
+      const launch = await operator.waitForTool('fleet:launch-on-plan');
+      expect(launch.body).toMatchObject({
+        name: 'fleet:launch-on-plan',
+        confirmed: false,
+        args: {
+          name: 'pui-hud-cockpit-e2e',
+          plan: 'hud-cockpit-e2e',
+          harness: HUD_HARNESS,
+          count: 1,
+          agent: 'codex',
+          account: 'default',
+          carry: 'warm',
+          headless: false,
+        },
+      });
+      pane.write('L');
+
+      // The fleet surface is driven by burn_down (not a hand-built queue),
+      // and sessionState=ended wins even when heartbeatFresh=true.
+      pane.write('4');
+      await pane.waitFor('Agents (2)');
+      await pane.waitFor('leader members');
+      await pane.waitFor('hud-fleet');
+      await pane.waitFor('Finished the prior lane');
+      expect(pane.contains('ended')).toBe(true);
+
+      // The leader cockpit intentionally owns the right column while its
+      // brief is available. A failed refresh must fall back to the canonical
+      // whole-fleet frontier instead of leaving that work surface unreachable.
+      operator.runToolResponses.set('fleet:leader-brief', 'invalid');
+      pane.write('3');
+      await pane.waitFor('HUD cockpit installed-binary gate');
+      pane.write('4');
+      await pane.waitFor('Agents (2)');
+      pane.write('l');
+      await pane.waitFor('WORK FRONTIER');
+      await pane.waitFor('READY NOW');
+      await pane.waitFor('WI-HUD-READY');
+
+      // Curated → Mirror → Tape. The lossless ledger must retain the semantic
+      // item-completed transition rather than collapsing it into roster state.
+      pane.write('\t\t');
+      await pane.waitFor('Transition tape');
+      await pane.waitFor('item-completed');
+      await pane.waitFor('WI-HUD-DONE');
+
+      // Both the durable Sessions destination and Ctrl-S switcher keep ended
+      // sessions browseable/resumable. The fixture's fresh heartbeat is a
+      // positive control that the lifecycle verdict, not heartbeat age, wins.
+      pane.write('s');
+      await pane.waitFor('Ended Fresh');
+      await pane.waitFor('ended');
+      pane.write('\x13');
+      await pane.waitFor('fuzzy live + parked + ended + recorded');
+      await pane.waitFor('Ended Fresh');
+
+      expect(operator.requests.some((request) => request.path === '/api/adv/roster')).toBe(true);
+      expect(
+        operator.requests.some(
+          (request) =>
+            request.body?.name === 'work_items:burn_down' &&
+            (request.body.args as Record<string, unknown> | undefined)?.harness === HUD_HARNESS,
+        ),
+      ).toBe(true);
+    } finally {
+      pane.kill();
+    }
+  }, 300_000);
 });

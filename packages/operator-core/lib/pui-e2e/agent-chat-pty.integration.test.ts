@@ -48,10 +48,14 @@ vi.mock('../agent-loop/provider-router', () => ({
           if (req.signal?.aborted) return resolve();
           const timer = setTimeout(resolve, 15_000);
           timer.unref?.();
-          req.signal?.addEventListener('abort', () => {
-            clearTimeout(timer);
-            resolve();
-          }, { once: true });
+          req.signal?.addEventListener(
+            'abort',
+            () => {
+              clearTimeout(timer);
+              resolve();
+            },
+            { once: true },
+          );
         });
         yield req.signal?.aborted
           ? { type: 'stop', reason: 'aborted' }
@@ -59,9 +63,7 @@ vi.mock('../agent-loop/provider-router', () => ({
         return;
       }
       if (scriptedProvider.mode === 'hitl') {
-        const hasResult = req.messages.some((message) =>
-          message.content.some((part) => part.type === 'tool_result'),
-        );
+        const hasResult = req.messages.some((message) => message.content.some((part) => part.type === 'tool_result'));
         if (!hasResult) {
           yield {
             type: 'tool_call',
@@ -172,7 +174,9 @@ class PuiPane {
         TMUX: '',
       },
     });
-    this.pty.onData((chunk) => { this.raw += chunk; });
+    this.pty.onData((chunk) => {
+      this.raw += chunk;
+    });
     this.exit = new Promise((resolve) => this.pty.onExit(resolve));
   }
 
@@ -204,19 +208,26 @@ class PuiPane {
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     throw new Error(
-      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` +
-      this.screen(),
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` + this.screen(),
     );
   }
 
   async stop(): Promise<void> {
-    try { this.pty.write('q'); } catch { /* exited */ }
+    try {
+      this.pty.write('q');
+    } catch {
+      /* exited */
+    }
     const graceful = await Promise.race([
       this.exit.then(() => true),
       new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500)),
     ]);
     if (!graceful) {
-      try { this.pty.kill(); } catch { /* exited */ }
+      try {
+        this.pty.kill();
+      } catch {
+        /* exited */
+      }
       await Promise.race([
         this.exit,
         new Promise((_, reject) => setTimeout(() => reject(new Error('pui PTY did not exit')), 5_000)),
@@ -265,17 +276,35 @@ async function putViewState(tab: string): Promise<void> {
   await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false });
 }
 
-async function persistedChats(db: OrgTestDb) {
-  return db.adminSql<Array<{
-    id: string;
-    role: string;
-    transcript: Array<{ role: string; content: string; error?: boolean }>;
-  }>>`
+type PersistedChat = {
+  id: string;
+  role: string;
+  transcript: Array<{ role: string; content: string; error?: boolean }>;
+};
+
+async function persistedChats(db: OrgTestDb): Promise<PersistedChat[]> {
+  return db.adminSql<PersistedChat[]>`
     SELECT id, role, transcript
     FROM harness_shared.agent_chats_consolidated
     WHERE workspace_id = ${WORKSPACE}
     ORDER BY updated_at DESC
   `;
+}
+
+async function waitForPersistedChat(
+  db: OrgTestDb,
+  predicate: (chat: PersistedChat) => boolean,
+  timeoutMs = 15_000,
+): Promise<PersistedChat> {
+  const deadline = Date.now() + timeoutMs;
+  let last: PersistedChat[] = [];
+  while (Date.now() < deadline) {
+    last = await persistedChats(db);
+    const chat = last.find(predicate);
+    if (chat) return chat;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+  }
+  throw new Error(`timed out waiting for persisted Agent Chat state; last rows: ${JSON.stringify(last)}`);
 }
 
 let db: OrgTestDb;
@@ -325,9 +354,12 @@ beforeAll(async () => {
   await dbOrg._resetForTests();
 
   const { saveHarnessRegistry } = await import('../harness-registry');
-  await saveHarnessRegistry({
-    projects: [{ slug: HARNESS, path: REPO_ROOT, harness_kind: 'hive', self_repo: true }],
-  }, WORKSPACE);
+  await saveHarnessRegistry(
+    {
+      projects: [{ slug: HARNESS, path: REPO_ROOT, harness_kind: 'hive', self_repo: true }],
+    },
+    WORKSPACE,
+  );
   // createOrgTestDb supplies the canonical migrated org substrate; a real
   // harness also has the production compatibility schema/views that route
   // unqualified `agent_chats` through the consolidated PG table.
@@ -392,12 +424,16 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
       await pane.waitFor('Message — Enter send');
 
-      const [chat] = await persistedChats(db);
+      const chat = await waitForPersistedChat(db, (candidate) =>
+        candidate.transcript.some((turn) => turn.role === 'assistant' && turn.content === scriptedProvider.successText),
+      );
       expect(chat?.role).toBe('operator');
-      expect(chat?.transcript).toEqual(expect.arrayContaining([
-        expect.objectContaining({ role: 'user', content: prompt }),
-        expect.objectContaining({ role: 'assistant', content: scriptedProvider.successText }),
-      ]));
+      expect(chat?.transcript).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ role: 'user', content: prompt }),
+          expect.objectContaining({ role: 'assistant', content: scriptedProvider.successText }),
+        ]),
+      );
       expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
       expect(scriptedProvider.requests.length).toBeGreaterThanOrEqual(1);
 
@@ -431,7 +467,12 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('PUI HITL round-trip complete', { timeoutMs: 30_000 });
       await pane.waitFor('Message — Enter send');
 
-      const [chat] = await persistedChats(db);
+      const chat = await waitForPersistedChat(
+        db,
+        (candidate) =>
+          candidate.transcript.at(-1)?.role === 'assistant' &&
+          candidate.transcript.at(-1)?.content === 'PUI HITL round-trip complete',
+      );
       expect(chat?.transcript.at(-1)).toMatchObject({
         role: 'assistant',
         content: 'PUI HITL round-trip complete',
@@ -453,7 +494,10 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       pane.enter();
       await pane.waitFor('PUI-E2E provider stream failed visibly', { timeoutMs: 30_000 });
       await pane.waitFor('Message — Enter send');
-      const [chat] = await persistedChats(db);
+      const chat = await waitForPersistedChat(
+        db,
+        (candidate) => candidate.transcript.at(-1)?.role === 'assistant' && candidate.transcript.at(-1)?.error === true,
+      );
       expect(chat?.transcript.at(-1)).toMatchObject({
         role: 'assistant',
         error: true,
@@ -479,12 +523,16 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
 
       scriptedProvider.mode = 'success';
       scriptedProvider.successText = 'PUI retry recovered';
-      pane.write('i');
       pane.write('PUI-E2E retry after cancel');
       pane.enter();
       await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
 
-      const [chat] = await persistedChats(db);
+      const chat = await waitForPersistedChat(
+        db,
+        (candidate) =>
+          candidate.transcript.at(-1)?.role === 'assistant' &&
+          candidate.transcript.at(-1)?.content === scriptedProvider.successText,
+      );
       expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
       expect(chat?.transcript.at(-1)).toMatchObject({ role: 'assistant', content: scriptedProvider.successText });
     } finally {
@@ -494,26 +542,33 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
 
   test('canonical-identity mismatch fails quickly with an actionable visible error', async () => {
     const proxy = createServer(async (req, res) => {
-      const target = `http://127.0.0.1:${operatorPort}${req.url ?? '/'}`;
-      const body: Buffer[] = [];
-      for await (const chunk of req) body.push(Buffer.from(chunk));
-      const upstream = await fetch(target, {
-        method: req.method,
-        headers: req.headers as Record<string, string>,
-        body: body.length ? Buffer.concat(body) : undefined,
-        duplex: body.length ? 'half' : undefined,
-      } as RequestInit & { duplex?: 'half' });
-      let payload = Buffer.from(await upstream.arrayBuffer());
-      if ((req.url ?? '').startsWith('/api/tui/identity')) {
-        const identity = JSON.parse(payload.toString()) as { agentChat: { scope: string } };
-        identity.agentChat.scope = 'workspace:intentionally-wrong';
-        payload = Buffer.from(JSON.stringify(identity));
+      try {
+        const target = `http://127.0.0.1:${operatorPort}${req.url ?? '/'}`;
+        const body: Buffer[] = [];
+        for await (const chunk of req) body.push(Buffer.from(chunk));
+        const upstream = await fetch(target, {
+          method: req.method,
+          headers: req.headers as Record<string, string>,
+          body: body.length ? Buffer.concat(body) : undefined,
+          duplex: body.length ? 'half' : undefined,
+        } as RequestInit & { duplex?: 'half' });
+        let payload = Buffer.from(await upstream.arrayBuffer());
+        if ((req.url ?? '').startsWith('/api/tui/identity')) {
+          const identity = JSON.parse(payload.toString()) as { agentChat: { scope: string } };
+          identity.agentChat.scope = 'workspace:intentionally-wrong';
+          payload = Buffer.from(JSON.stringify(identity));
+        }
+        const headers = Object.fromEntries(upstream.headers.entries());
+        delete headers['content-length'];
+        headers['content-length'] = String(payload.byteLength);
+        res.writeHead(upstream.status, headers);
+        res.end(payload);
+      } catch {
+        // The pui deliberately exits as soon as the identity mismatch is
+        // rendered. Its concurrent background reads can therefore disconnect
+        // while this proxy still awaits the canonical operator response.
+        if (!res.writableEnded) res.destroy();
       }
-      const headers = Object.fromEntries(upstream.headers.entries());
-      delete headers['content-length'];
-      headers['content-length'] = String(payload.byteLength);
-      res.writeHead(upstream.status, headers);
-      res.end(payload);
     });
     const proxyPort = await listen(proxy);
     const pane = new PuiPane(bin, proxyPort, home);
