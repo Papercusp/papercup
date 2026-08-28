@@ -5113,7 +5113,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainFeed');
       const page = await readRetainFeed(sql, ws, await retainStoreDeps(sql, ws, a.hive), {
         tab: a.tab,
-        filter: a.filter,
         cursor: a.cursor ?? null,
         q: a.q,
         filters: a.filters,
@@ -5150,7 +5149,6 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const harnessScopes = await retainHiveScopes(a.hive, 'learning.retainFeed.summary');
       const opts = {
         tab: a.tab,
-        filter: a.filter,
         q: a.q,
         filters: a.filters,
         ...(a.limit != null ? { limit: a.limit } : {}),
