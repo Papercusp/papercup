@@ -642,7 +642,7 @@ export default defineTool({
       COORD_KIND_FILTER_DESCRIPTION +
       " Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
-    // WI-71582: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
+    // EI-21600823435053404: trimmed to clear the 1500-char prompt-weight HARD CAP (was 1706 —
     // a gate RED). Both cut sentences were redundant, not lost: the `limit` vs
     // `coord:orient.inboxLimit` mapping is already stated in the description above,
     // and the "OMP hook will do this once it ships" aside described unshipped work.
