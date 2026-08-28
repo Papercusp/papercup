@@ -2276,31 +2276,22 @@ export async function armWorkItemHolderInterests(
   ownerId: string,
 ): Promise<import('./interest-auto-arm').InterestAutoArmHandle | undefined> {
   try {
-    const { reconcileInterestEventAwaits } = await import('./interest-auto-arm');
-    const claim = await reconcileInterestEventAwaits({
-      ownerId,
-      eventKeys: [`claim:released:${wi.id}`],
-      boundTo: { kind: 'work-item-claim', ref: wi.id },
-      note: `claim-holder auto-arm for ${wi.id}`,
-    });
+    const { holderBlockerInterestEventKeys, reconcileInterestEventAwaits, retireInterestEventAwaits } =
+      await import('./interest-auto-arm');
+    // `claim:released:<id>` is for a delegator/leader waiting for this holder to
+    // put the item back in the pool. The holder itself must never await that key:
+    // only the sleeping holder can release its own claim, so this is a guaranteed
+    // self-deadlock. Retire stale registrations left by the pre-fix path too.
+    await retireInterestEventAwaits({ kind: 'work-item-claim', ref: wi.id }, ownerId);
     const blockers = await readUnresolvedDepBlockers(wi.id, wi.harness ?? undefined);
     const blockerIds = blockers.map(({ ref }) => ref.slice(ref.lastIndexOf('#') + 1));
     const blocked = await reconcileInterestEventAwaits({
       ownerId,
-      eventKeys:
-        blockerIds.length > 0
-          ? [...blockerIds.map((id) => `work-item:done:${id}`), `work-item:unblocked:${wi.id}`]
-          : [],
+      eventKeys: holderBlockerInterestEventKeys(wi.id, blockerIds),
       boundTo: { kind: 'work-item-blocked', ref: wi.id },
       note: `blocked-item-holder auto-arm for ${wi.id}`,
     });
-    const awaitIds = [...new Set([...claim.await_ids, ...blocked.await_ids])];
-    return {
-      event_keys: [...new Set([...claim.event_keys, ...blocked.event_keys])],
-      await_ids: awaitIds,
-      cancel: awaitIds.length > 0 ? { tool: 'events:cancel', args: { await_ids: awaitIds } } : null,
-      handle_note: claim.handle_note,
-    };
+    return blocked;
   } catch {
     return undefined;
   }

@@ -28,6 +28,25 @@ const defaultDeps: InterestAutoArmDeps = {
   cancel: cancelAwait,
 };
 
+/**
+ * The event interests a CLAIM HOLDER may safely await for its own item.
+ *
+ * `claim:released:<id>` is a delegator/leader signal: it wakes someone waiting
+ * for another holder to put an item back into the pool. A holder awaiting the
+ * release of its own claim can never make progress, because only that sleeping
+ * holder can release it. Keep this helper pure so the self-deadlock exclusion is
+ * independently pinned from the database-backed arm path.
+ */
+export function holderBlockerInterestEventKeys(
+  workItemId: string,
+  blockerIds: readonly string[],
+): string[] {
+  const ids = [...new Set(blockerIds.map((id) => id.trim()).filter(Boolean))];
+  return ids.length > 0
+    ? [...ids.map((id) => `work-item:done:${id}`), `work-item:unblocked:${workItemId}`]
+    : [];
+}
+
 /** Reconcile one lifecycle's exact, one-shot event interests for one owner. */
 export async function reconcileInterestEventAwaits(
   input: {

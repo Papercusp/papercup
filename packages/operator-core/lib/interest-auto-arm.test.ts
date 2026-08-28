@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { reconcileInterestEventAwaits, type InterestAutoArmDeps } from './interest-auto-arm';
+import {
+  holderBlockerInterestEventKeys,
+  reconcileInterestEventAwaits,
+  type InterestAutoArmDeps,
+} from './interest-auto-arm';
 
 function deps(active: any[] = []): InterestAutoArmDeps {
   return {
@@ -34,5 +38,19 @@ describe('reconcileInterestEventAwaits', () => {
     expect(d.cancel).toHaveBeenCalledWith({ awaitId: 8, subscriberId: 'agent-2' });
     expect(d.register).toHaveBeenCalledWith(expect.objectContaining({ eventKey: 'work-item:done:new', once: true, boundTo: { kind: 'work-item-blocked', ref: 'WI-2' } }));
     expect(out.cancel?.args.await_ids).toHaveLength(1);
+  });
+});
+
+describe('holderBlockerInterestEventKeys', () => {
+  it('never arms the holder on release of its own claim', () => {
+    expect(holderBlockerInterestEventKeys('WI-1', ['WI-BLOCKER'])).toEqual([
+      'work-item:done:WI-BLOCKER',
+      'work-item:unblocked:WI-1',
+    ]);
+    expect(holderBlockerInterestEventKeys('WI-1', ['WI-1'])).not.toContain('claim:released:WI-1');
+  });
+
+  it('does not create a wake when the holder has no unresolved blockers', () => {
+    expect(holderBlockerInterestEventKeys('WI-1', [])).toEqual([]);
   });
 });
