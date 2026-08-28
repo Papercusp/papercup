@@ -11,6 +11,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ReactNode,
 } from "react";
 import {
   useQueryState,
@@ -169,6 +170,7 @@ import {
   LearningVisualEmpty,
   LearningVisualError,
   LearningVisualStyles,
+  LoopSection,
 } from "./LearningVisuals";
 import { snapshotFault } from "./snapshot-fault";
 
@@ -2208,9 +2210,16 @@ function ImprovementsView({
         {sources.length > 0 ? (
           <>
             <span className="pc-learning__segdiv" />
+            {/* NOT a tablist, deliberately: unlike the lane and scope segments
+                (which always have exactly one selection), "Filed by" is a
+                TOGGLE — clicking the active source clears it back to null, so
+                the strip can legitimately have nothing selected. That is
+                toggle-button-group semantics, not tab semantics. It keeps the
+                shared Retain segment CHROME (pc-learning__seg/__segtab) while
+                exposing the honest role + aria-pressed. */}
             <div
               className="pc-learning__seg"
-              role="tablist"
+              role="group"
               aria-label="Filed by"
             >
               {sources.map((s) => {
@@ -2223,8 +2232,7 @@ function ImprovementsView({
                   <Tooltip key={s} label={`Filed by ${label}`}>
                     <button
                       type="button"
-                      role="tab"
-                      aria-selected={src === s}
+                      aria-pressed={src === s}
                       className={`pc-learning__segtab${src === s ? " is-on" : ""}`}
                       onClick={() => void setSrc(src === s ? null : s)}
                     >
@@ -2247,14 +2255,32 @@ function ImprovementsView({
       </div>
 
       {/* Every gauge behind ONE labelled disclosure: the cycle engine that
-          makes ideas, and the capture/resolve flow that burns them down. */}
+          makes ideas, and the capture/resolve flow that burns them down.
+          P-004 (owner 2026-08-28) groups them under the plain-language QUESTION
+          each answers, instead of one unlabelled pile of chips. Nothing was
+          removed — every instrument that was here is still here, now under a
+          heading that says what it is for. */}
       <LearningDisclosure
         label="How the loop is doing"
-        subtitle="what fires a cycle, the recent runs, and whether capture and resolve keep pace"
+        subtitle="five questions, one answer each"
+        aside={<LoopWarningsAside snap={snap} />}
       >
         <LoopEngineInstruments snap={snap} scoutWord={t("scout")} />
-        {digest?.flow ? <FlowStrip flow={digest.flow} /> : null}
-        <LearningEfficacyPanel />
+        {/* The two "did the work land" questions read side by side: both are
+            retrospective, and neither needs full width. */}
+        <div className="pc-learning__loopgrid">
+          {digest?.flow ? (
+            <LoopSection
+              label="Is it keeping up?"
+              answer={flowAnswer(digest.flow)}
+            >
+              <FlowStrip flow={digest.flow} />
+            </LoopSection>
+          ) : null}
+          {/* Wraps itself in its own "Did it stick?" section — it is the only
+              thing that knows when its read is empty. */}
+          <LearningEfficacyPanel />
+        </div>
       </LearningDisclosure>
 
       <LensWeights snap={snap} scoutWord={t("scout")} />
@@ -3240,6 +3266,21 @@ function watchdogHealth(
 }
 
 /** The flow scoreboard — is the loop CYCLING (in vs out), not just how big the pile is. */
+/**
+ * The in-flow vs out-flow verdict in one sentence (P-004). `net7d` is
+ * captured − resolved over the trailing 7 days — the same field the strip's own
+ * ↑/↓ chip renders — so a NEGATIVE net means resolution outpaced capture and the
+ * backlog shrank. Stated in words here precisely because the sign convention is
+ * the opposite of what "net up is good" intuition suggests.
+ */
+function flowAnswer(flow: ImprovementFlow): string {
+  const net = flow.net7d;
+  const base = "in-flow vs out-flow";
+  if (net < 0) return `${base} — the backlog shrank by ${-net} this week`;
+  if (net > 0) return `${base} — the backlog grew by ${net} this week`;
+  return `${base} — the backlog held level this week`;
+}
+
 function FlowStrip({ flow }: { flow: ImprovementFlow }) {
   const net = flow.net7d;
   const netTone: "good" | "warn" | "flat" =
@@ -5490,6 +5531,20 @@ function ThroughputView({
  * Score/threshold/lane counts arrive server-derived from the gate's own reader
  * (never re-computed here); this renders them as a score bar + per-lane chips.
  */
+/**
+ * The firing state in one sentence. Extracted (P-004) because the "Will it
+ * fire?" section leads with this line and the CadenceCard repeats it beside the
+ * gauge — two renderings of one verdict, so they derive from one function
+ * rather than two hand-kept copies that can disagree.
+ */
+function cadenceVerdict(cadence: ScoutCadenceState): string {
+  if (cadence.score >= cadence.threshold)
+    return "ready — the next cycle fires within ~30s";
+  if (cadence.score <= 0)
+    return "quiet — no new signal, so nothing fires (and nothing is spent)";
+  return "collecting signal — fires at the threshold, or on the hourly heartbeat";
+}
+
 function CadenceCard({
   cadence,
   scoutWord,
@@ -5502,13 +5557,8 @@ function CadenceCard({
       ? Math.min(100, Math.round((cadence.score / cadence.threshold) * 100))
       : 0;
   const armed = cadence.score >= cadence.threshold;
-  const quiet = cadence.score <= 0;
   const wmMs = cadence.watermarkAt ? Date.parse(cadence.watermarkAt) : NaN;
-  const verdict = armed
-    ? "ready — the next cycle fires within ~30s"
-    : quiet
-      ? "quiet — no new signal, so nothing fires (and nothing is spent)"
-      : "collecting signal — fires at the threshold, or on the hourly heartbeat";
+  const verdict = cadenceVerdict(cadence);
   return (
     <div
       className="pc-learning__cadence"
@@ -5586,36 +5636,6 @@ function CadenceCard({
  * disclosure: the gauges are on demand, the plain summary is always up top.
  */
 /**
- * P-004 (owner 2026-08-28: "The how the loop section is also confusing"). One
- * instrument group, led by the plain-language QUESTION it answers. The section
- * label is the question; the line beside it is the answer in words, so the
- * numbers below it are read as evidence for a claim already made rather than as
- * a wall of chips the reader has to decode into one.
- *
- * Nothing is summarised away: every instrument that was in this section before
- * is still in it, under the question it happens to answer.
- */
-function LoopSection({
-  label,
-  answer,
-  children,
-}: {
-  label: string;
-  answer: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="pc-learning__loopsec" aria-label={label}>
-      <div className="pc-learning__loopsechead">
-        <span className="pc-learning__loopseclabel">{label}</span>
-        <span className="pc-learning__loopsecanswer">{answer}</span>
-      </div>
-      {children}
-    </section>
-  );
-}
-
-/**
  * The loop's health markers, compressed to one line for the disclosure header
  * (P-004). These used to render ONLY inside the collapsed body, so a starving
  * loop announced itself to nobody until someone thought to expand the section.
@@ -5675,10 +5695,7 @@ function LoopEngineInstruments({
           first question about a loop turned out to be whether it is going to
           run at all, not what it has already produced. */}
       {cadence ? (
-        <LoopSection
-          label="Will it fire?"
-          answer={cadenceAnswer(cadence, scoutWord)}
-        >
+        <LoopSection label="Will it fire?" answer={cadenceVerdict(cadence)}>
           <CadenceCard cadence={cadence} scoutWord={scoutWord} />
         </LoopSection>
       ) : null}
@@ -5702,35 +5719,35 @@ function LoopEngineInstruments({
         >
         <div className="pc-learning__funnel" aria-label="Idea-to-work funnel">
           <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
-            <strong>{snap.improveFunnel.routed}</strong>
+            <strong>{funnel.routed}</strong>
             <small>ideas</small>
           </span>
           <i aria-hidden>→</i>
           <span
             title={`Filed as work on the improvement rail. ${PIPELINE_STATES.approved.desc}`}
           >
-            <strong>{snap.improveFunnel.filed}</strong>
+            <strong>{funnel.filed}</strong>
             <small>{PIPELINE_STATES.approved.label}</small>
           </span>
           <i aria-hidden>→</i>
           <span title={PIPELINE_STATES["in-flight"].desc}>
-            <strong>{snap.improveFunnel.claimed}</strong>
+            <strong>{funnel.claimed}</strong>
             <small>{PIPELINE_STATES["in-flight"].label}</small>
           </span>
           <i aria-hidden>→</i>
           <span
-            className={snap.improveFunnel.done > 0 ? "is-good" : undefined}
+            className={funnel.done > 0 ? "is-good" : undefined}
             title={
               // Name the abandoned population rather than hiding it: it is
               // excluded from `shipped` by design (EI-18792873324746237), and
               // an unexplained gap between stages invites the reader to assume
               // the number is broken — which, until this fix, it was.
-              snap.improveFunnel.dropped > 0
-                ? `${PIPELINE_STATES.shipped.desc} ${snap.improveFunnel.dropped} more were dropped — abandoned, not shipped, and never counted here.`
+              funnel.dropped > 0
+                ? `${PIPELINE_STATES.shipped.desc} ${funnel.dropped} more were dropped — abandoned, not shipped, and never counted here.`
                 : PIPELINE_STATES.shipped.desc
             }
           >
-            <strong>{snap.improveFunnel.done}</strong>
+            <strong>{funnel.done}</strong>
             <small>{PIPELINE_STATES.shipped.label}</small>
           </span>
         </div>
@@ -7349,6 +7366,41 @@ export function LearningStyles() {
         border: 1px solid var(--border, rgba(125, 211, 252, 0.15));
         border-radius: 8px; overflow: hidden; min-width: 0;
       }
+
+      /* P-004: "How the loop is doing" — one card per QUESTION, each leading
+         with its answer in words. The instruments inside are unchanged; only
+         the grouping and these labels are new. */
+      .pc-learning__loopsec {
+        display: flex; flex-direction: column; gap: 7px; min-width: 0;
+        padding: 10px 12px; margin-top: 8px;
+        border: 1px solid var(--border, rgba(125, 211, 252, 0.18));
+        border-radius: 8px; background: var(--bg-2, rgba(255, 255, 255, 0.03));
+      }
+      .pc-learning__loopsechead { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+      /* Tracking would be the obvious way to set a small uppercase label apart;
+         it is not an approved primitive here (lint:design-primitives), so the
+         separation comes from case + size + weight, as chat-controls.css does. */
+      .pc-learning__loopseclabel {
+        font-size: 10px; font-weight: 700; letter-spacing: 0;
+        text-transform: uppercase; color: var(--accent, #7dd3fc); flex: none;
+      }
+      .pc-learning__loopsecanswer { font-size: 12px; color: var(--fg-dim, #b9d4e8); min-width: 0; }
+      .pc-learning__loopgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; align-items: start; }
+      @container learning (max-width: 820px) { .pc-learning__loopgrid { grid-template-columns: minmax(0, 1fr); } }
+      /* The tick rows' column headers — the four positional fields were
+         unlabelled until P-004, readable only by hovering a row. Tracks the
+         pc-learning__tickrow grid below so the headings sit over their data. */
+      .pc-learning__tickhead {
+        display: grid; grid-template-columns: 60px 90px 1fr 60px; gap: 9px; padding: 0 9px;
+        font-size: 9.5px; font-weight: 700; letter-spacing: 0;
+        text-transform: uppercase; color: var(--fg-mute, #7f9bb4);
+      }
+      .pc-learning__loopwarnaside {
+        display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px;
+        color: var(--warn, #fbbf24); max-width: 46ch; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+      }
+      .pc-learning__loopwarnaside.is-bad { color: var(--bad, #f87171); }
       .pc-learning__retainedfilternote { margin: 4px 0 0; font-size: 11px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell { display: inline-flex; align-items: center; gap: 5px; font-size: 10.5px; color: var(--fg-mute, #7f9bb4); }
       .pc-learning__retainedkindcell svg { flex-shrink: 0; }

@@ -876,7 +876,10 @@ describe("LearningTab — Improvements view (default)", () => {
     // Assert the merged pane itself rather than a tab that correctly no
     // longer exists.
     expect(screen.getByLabelText("Where these came from")).toBeTruthy();
-    expect(screen.getByText("135")).toBeTruthy(); // captured (stat line)
+    // Scoped to the stat line's <dd>: since P-003 the lane segments carry their
+    // own <em> count badges (the Retain chrome), so a bare getByText("135")
+    // legitimately matches two nodes.
+    expect(screen.getByText("135", { selector: "dd" })).toBeTruthy(); // captured (stat line)
     // open now rides the quiet header signal ("117 open") rather than a standalone
     // hero number (owner ask 2026-07-19: header pill + metric tiles → one stat line).
     expect(screen.getByText(/117\s+open/)).toBeTruthy(); // open (header signal)
@@ -946,7 +949,7 @@ describe("LearningTab — Improvements view (default)", () => {
     const humanTitle = "Peer restarts massacre in-flight spawns";
 
     render(<LearningTab />);
-    fireEvent.click(screen.getByRole("tab", { name: "Auto-fixable" }));
+    fireEvent.click(screen.getByRole("tab", { name: /^Auto-fixable/ }));
     expect(nuqsState.lane).toBe("auto");
 
     // The lane selection is sent to the server and the returned auto row is
@@ -961,11 +964,14 @@ describe("LearningTab — Improvements view (default)", () => {
 
     // Source/provenance is an independent predicate and must preserve the
     // matching auto row rather than blanking the lane during projection.
+    // P-003 split the old single scope bar into sibling segments on one row:
+    // "Where these came from" is now the SCOPE axis (From the loop / Every
+    // capture) and provenance lives in its own "Filed by" segment. They are
+    // different predicates, so they no longer share one aria-label.
     fireEvent.click(
-      within(screen.getByLabelText("Where these came from")).getByRole(
-        "button",
-        { name: "system" },
-      ),
+      within(screen.getByLabelText("Filed by")).getByRole("button", {
+        name: "system",
+      }),
     );
     expect(nuqsState.lsrc).toBe("system");
     renderCurrent();
@@ -1107,8 +1113,8 @@ describe("LearningTab — Improvements view (default)", () => {
 
   it("shows the four-stage loop and keeps Improvements inside Improve", () => {
     render(<LearningTab />);
-    expect(screen.getByRole("tab", { name: "Auto-fixable" })).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Needs review" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^Auto-fixable/ })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: /^Needs review/ })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Observe" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Improve" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Verify" })).toBeTruthy();
@@ -1490,7 +1496,8 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(
       screen.queryByLabelText("Improvement flow (trailing window)"),
     ).toBeNull();
-    expect(screen.getByText("135")).toBeTruthy(); // the stat line still renders
+    // Scoped to <dd> for the same reason as above (P-003 lane count badges).
+    expect(screen.getByText("135", { selector: "dd" })).toBeTruthy(); // the stat line still renders
   });
 
   it("renders the dispatch-ledger chip when flow.dispatch is present — fired/fixed counts, red on dead dispatches (P-010 / B-04)", () => {
@@ -3149,8 +3156,10 @@ describe("LearningTab — inherited pot lens (owner directive 2026-07-26; was P-
     render(<LearningTab />);
 
     const expected = {
+      // `filter` is deliberately absent: P-001/P-002 removed the
+      // Shipped/In-flight retain filter entirely, so the query no longer
+      // carries that arg.
       tab: "all",
-      filter: "all",
       q: "target",
       filters: {
         title: "migration",
