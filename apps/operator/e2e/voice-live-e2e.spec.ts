@@ -23,8 +23,12 @@ import { expect, test } from './_egress';
  * whisper's real API changed. This spec speaks a known sentence and demands to
  * hear it back, through the browser, end to end.
  *
- * Requires the local voice services (kokoro :8880, whisper :2022). By default,
- * an unavailable service skips the describe so ordinary CI stays green without
+ * Requires a provisioned local Kokoro service (:8880) and an operator whose
+ * voice-engine-health route reports a usable Whisper capability. The operator
+ * route is intentional here: P-003 retires the broken per-user Whisper unit and
+ * may serve STT through the managed whisper-server child on a dynamic port, so
+ * this test must not assume the historical :2022 compatibility port. By default,
+ * an unavailable capability skips the describe so ordinary CI stays green without
  * local model services. Release acceptance MUST set
  * `PAPERCUSP_REQUIRE_LIVE_VOICE=1`, which turns that skip into a collection
  * failure so a dead or starved local engine cannot produce a false-green gate.
@@ -35,7 +39,15 @@ import { expect, test } from './_egress';
  */
 
 const KOKORO_URL = process.env.KOKORO_URL ?? 'http://127.0.0.1:8880';
-const VOICEMODE_URL = process.env.VOICEMODE_URL ?? 'http://localhost:2022';
+// The browser exercises /api/agent-mcp/operator-stt, not a localhost Whisper
+// port. Resolve the same operator instance Playwright drives so the preflight
+// asks the canonical health route whether its external or managed Whisper leg
+// is ready. Keep the historical :3055 default for standalone local runs.
+const OPERATOR_BASE = (
+  process.env.OPERATOR_E2E_BASE_URL ??
+  process.env.OPERATOR_BASE ??
+  `http://127.0.0.1:${process.env.OPERATOR_E2E_PORT ?? '3055'}`
+).replace(/\/+$/, '');
 
 /** The sentence the fake microphone will "speak". A pangram: broad phoneme coverage. */
 const PHRASE = 'the quick brown fox jumps over the lazy dog';
@@ -53,7 +65,14 @@ const curl = (args: string[]): void => {
 function prepareLiveFixtures(): boolean {
   try {
     curl(['-o', '/dev/null', `${KOKORO_URL}/health`]);
-    curl(['-o', '/dev/null', `${VOICEMODE_URL}/health`]);
+    const health = JSON.parse(
+      execFileSync(
+        'curl',
+        ['-sf', '--max-time', '30', `${OPERATOR_BASE}/api/agent-mcp/operator-voice-engine-health`],
+        { encoding: 'utf8' },
+      ),
+    ) as { voicemode?: unknown };
+    if (health.voicemode !== true) return false;
     if (!existsSync(FAKE_MIC_WAV)) {
       curl([
         '-X', 'POST', `${KOKORO_URL}/v1/audio/speech`,
@@ -74,7 +93,7 @@ const requireLive = process.env.PAPERCUSP_REQUIRE_LIVE_VOICE === '1';
 if (requireLive && !live) {
   throw new Error(
     `PAPERCUSP_REQUIRE_LIVE_VOICE=1 but the live voice fixtures could not be prepared ` +
-    `(Kokoro: ${KOKORO_URL}, Voicemode: ${VOICEMODE_URL})`,
+    `(Kokoro: ${KOKORO_URL}, operator health: ${OPERATOR_BASE}/api/agent-mcp/operator-voice-engine-health)`,
   );
 }
 
