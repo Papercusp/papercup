@@ -55,6 +55,8 @@ describe('Gmail flagship respond-with-draft binding', () => {
       planHarnessSlug: input.planHarnessSlug,
       planSlug: input.planSlug,
       goalId: null,
+      workItemHarnessSlug: null,
+      workItemKind: null,
       eventPattern: input.eventPattern,
       eventFilter: input.eventFilter ?? {},
       action: { type: 'launch-plan' },
