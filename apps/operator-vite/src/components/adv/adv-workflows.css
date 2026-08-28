@@ -725,7 +725,7 @@
   border-radius: 10px;
   color: inherit;
   text-align: left;
-  background: var(--bg-2, rgba(255, 255, 255, 0.045));
+  background: color-mix(in srgb, var(--bg-raised, #112235), white 3%);
   cursor: pointer;
 }
 .pc-workflows-create__choice-inner {
