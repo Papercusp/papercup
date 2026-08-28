@@ -213,12 +213,17 @@ export default function AdvWorkflowsTab() {
   const { confirm, element: confirmElement } = useConfirmDialog();
   const [busy, setBusy] = useState<string | null>(null);
   const [lastTestRun, setLastTestRun] = useState<{ workflowId: string; runId: string } | null>(null);
-  const [composerOpen, setComposerOpen] = useState(false);
-  const [createOpen, setCreateOpen] = useState(false);
-  // Mid-edit intent handed into the canonical workflow-agent conversation.
+  // Dialog open-state is nuqs, not useState: the repo's split lists drawer/dialog
+  // open-state as user-meaningful, and an agent driving this tab through ui:dispatch can
+  // neither observe nor open a modal held in component state. One scalar rather than two
+  // booleans, because the two dialogs are mutually exclusive and hand off to each other.
+  const [dialog, setDialog] = useQueryState(
+    'wfDialog',
+    parseAsStringEnum<'compose' | 'create'>(['compose', 'create']),
+  );
+  // Mid-edit intent handed into the canonical workflow-agent conversation — genuinely
+  // mid-edit text, so it stays useState by that same split, as does the composer draft.
   const [composerPrompt, setComposerPrompt] = useState('');
-  // Draft text is mid-edit state, so it is useState by the repo's own split; every
-  // user-meaningful selection above is nuqs.
   const [draft, setDraft] = useState('');
 
   const catalogQuery = useSyncQuery<AutomationCatalog>({
@@ -513,8 +518,13 @@ export default function AdvWorkflowsTab() {
 
   const openComposer = useCallback((prompt: string) => {
     setComposerPrompt(prompt);
-    setComposerOpen(true);
-  }, []);
+    void setDialog('compose');
+  }, [setDialog]);
+
+  const closeDialog = useCallback(() => {
+    void setDialog(null);
+    setComposerPrompt('');
+  }, [setDialog]);
 
   /**
    * The needs-you strip's action.
@@ -590,22 +600,22 @@ export default function AdvWorkflowsTab() {
   return (
     <section className="pc-wf" aria-label="Workflows">
       {confirmElement}
-      {composerOpen ? (
+      {dialog === 'compose' ? (
         <WorkflowComposerDialog
           harnessSlug={creationHarness}
           sources={external?.sources ?? []}
           intent={composerPrompt}
-          onClose={() => { setComposerOpen(false); setComposerPrompt(''); }}
-          onAdvancedSetup={() => { setComposerOpen(false); setCreateOpen(true); }}
+          onClose={closeDialog}
+          onAdvancedSetup={() => void setDialog('create')}
         />
       ) : null}
-      {createOpen ? (
+      {dialog === 'create' ? (
         <CreateAutomationModal
           plans={plansQuery.data ?? []}
           sources={external?.sources ?? []}
           defaultHarness={creationHarness}
           initialOutcome={composerPrompt}
-          onClose={() => { setCreateOpen(false); setComposerPrompt(''); }}
+          onClose={closeDialog}
           onCreated={(plan) => {
             refreshAll();
             void setSelectedId(`plan:${planRefKey(plan)}`);

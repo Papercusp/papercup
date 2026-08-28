@@ -112,6 +112,13 @@ describe('Workflows legibility contract', () => {
       expect(declared, `${selector} must declare a max-height it can scroll inside`).toMatch(/max-height:/);
       expect(declared, `${selector} must scroll inside that budget`).toMatch(/overflow-y:\s*auto/);
     }
+    // The other half of the same defect: in the ~980px pane the Armed control sat entirely
+    // off-screen. A dense table narrower than its columns must be reachable, not truncated.
+    const ledger = [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter((match) => selectorsOf(match[1]).includes('.pc-wf__ledger'))
+      .map((match) => match[2])
+      .join('\n');
+    expect(ledger, '.pc-wf__ledger must scroll horizontally').toMatch(/overflow-x:\s*auto/);
   });
 
   it('uses the stronger dim foreground token for secondary production copy', () => {

@@ -730,7 +730,7 @@ const setTestingFlag = (on: boolean) =>
     evaluatedAt: Date.now(),
     source: "override",
   });
-import LearningTab, { ARMING_WORKFLOWS_TAB } from "./LearningTab";
+import LearningTab, { ARMING_WORKFLOWS_KIND, ARMING_WORKFLOWS_TAB } from "./LearningTab";
 
 beforeEach(() => {
   // Flags are a MODULE-level store, so an armed flag would leak into every later
@@ -742,6 +742,7 @@ beforeEach(() => {
   nuqsState.tab = null;
   nuqsState.wfView = null;
   nuqsState.wfFilter = null;
+  nuqsState.wfKind = null;
   nuqsState.grade = null;
   nuqsState.irail = null;
   nuqsState.lsrc = null;
@@ -2477,8 +2478,12 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     fireEvent.click(within(empty).getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
     expect(nuqsState.tab).toBe("workflows");
-    expect(nuqsState.wfView).toBe("catalog");
-    expect(nuqsState.wfFilter).toBe("ai");
+    // The Workflows tab reads wfKind now; the retired wfView/wfFilter would land this link
+    // on a default tab and silently drop the intent (workflows-tab-one-frame-2026-08-28).
+    expect(nuqsState.wfKind).toBe(ARMING_WORKFLOWS_KIND);
+    expect(nuqsState.wfKind).toBe("routine");
+    expect(nuqsState.wfView).toBeNull();
+    expect(nuqsState.wfFilter).toBeNull();
   });
 
   it("3b. withholds the teaching copy when the list is empty because of a FILTER", () => {
@@ -3222,8 +3227,12 @@ describe("LearningTab — P-009 first-run orientation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open Arming" }));
     expect(nuqsState.tab).toBe(ARMING_WORKFLOWS_TAB);
     expect(nuqsState.tab).toBe("workflows");
-    expect(nuqsState.wfView).toBe("catalog");
-    expect(nuqsState.wfFilter).toBe("ai");
+    // The Workflows tab reads wfKind now; the retired wfView/wfFilter would land this link
+    // on a default tab and silently drop the intent (workflows-tab-one-frame-2026-08-28).
+    expect(nuqsState.wfKind).toBe(ARMING_WORKFLOWS_KIND);
+    expect(nuqsState.wfKind).toBe("routine");
+    expect(nuqsState.wfView).toBeNull();
+    expect(nuqsState.wfFilter).toBeNull();
   });
 
   it("renders the visible view gloss for the active view (same source as the tab tooltips)", () => {

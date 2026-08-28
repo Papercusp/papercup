@@ -21,6 +21,8 @@ const H = vi.hoisted(() => ({
   emptyData: false,
   /** Reproduces the real workspace's scale, which is where the strip and the DOM blew up. */
   manyPlans: false,
+  /** A triggered plan whose run history has no rollup — the "No verified run cost" path. */
+  noRollup: false,
 }));
 
 /** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
@@ -88,6 +90,7 @@ vi.mock('@papercusp/sync', () => ({
     ], loading: false, invalidate };
     if (queryName === 'plans.schedule') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', schedule: { rrule: 'RRULE:FREQ=DAILY;BYHOUR=9', tzid: 'America/New_York' }, scheduledAt: null, expiresAt: null, tzid: 'America/New_York', scheduleActive: true }], loading: false, invalidate };
     if (queryName === 'plans.scheduledOccurrences') return { data: [{ templateSlug: 'customer-digest', title: 'Customer feedback digest', harnessSlug: 'papercusp', occurrenceMs: Date.now() + 18 * 60_000, kind: 'recurring', scheduleActive: true, lastOutcome: 'success' }], loading: false, invalidate };
+    if (queryName === 'plans.runHistory' && H.noRollup) return { data: [{ runs: [], rollup: null }], loading: false, invalidate };
     if (queryName === 'plans.runHistory') return { data: [{ runs: [{ id: 1, status: 'done', trigger: 'manual', outcome: 'success', launchedAt: Date.now() - 60_000, durationMs: 45_000, costUsd: 0.62 }], rollup: { total: 1, successRate: 1, totalCostUsd: 0.62, medianDurationMs: 45_000, running: 0, failed: 0 } }], loading: false, invalidate };
     return { data: [], loading: false, invalidate };
   },
@@ -164,6 +167,7 @@ beforeEach(() => {
   H.queries.length = 0;
   H.emptyData = false;
   H.manyPlans = false;
+  H.noRollup = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
@@ -316,11 +320,35 @@ describe('<AdvWorkflowsTab> — the inspector is the detail surface (D-002)', ()
     await waitFor(() => expect(within(inspector).getByText('$0.62 · 1 run')).toBeTruthy());
   });
 
-  it('reports no verified run cost rather than formatting an absent number as $0.00', async () => {
+  it('reports the routine classification rather than formatting an absent number as $0.00', async () => {
     renderTab({ wfSelId: 'routine:git-sync:papercusp' });
     const inspector = await screen.findByLabelText('Workflow inspector');
     expect(within(inspector).getByText('$0 model spend')).toBeTruthy();
     expect(within(inspector).queryByText('$0.00')).toBeNull();
+  });
+
+  it('says "No verified run cost" for a TRIGGERED PLAN whose run history has no rollup', async () => {
+    // The branch a routine never reaches: rewriting it to render $0.00 must fail a test,
+    // since "$0.00 where no rollup exists" is this criterion's own drift marker.
+    H.noRollup = true;
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    await waitFor(() => expect(within(inspector).getByText('No verified run cost')).toBeTruthy());
+    expect(within(inspector).queryByText(/^\$/)).toBeNull();
+  });
+
+  it('offers only the agent-mediated controls — no structural edit affordance (D-016)', async () => {
+    // The negative half of D-016. Without it, adding a Delete control to the inspector
+    // would leave every other test green.
+    renderTabOnDigest();
+    const inspector = await screen.findByLabelText('Workflow inspector');
+    for (const forbidden of [/delete/i, /remove/i, /connect/i, /rename/i, /drag/i]) {
+      expect(within(inspector).queryByRole('button', { name: forbidden })).toBeNull();
+    }
+    // ...and the ones that must be there, so this cannot pass by rendering nothing at all.
+    expect(within(inspector).getByRole('button', { name: 'Run manually' })).toBeTruthy();
+    expect(within(inspector).getByRole('button', { name: /^Expand/ })).toBeTruthy();
+    expect(within(inspector).getByRole('button', { name: 'Disarm ext:slack:message' })).toBeTruthy();
   });
 
   it('fires Run manually through plans:run-now', async () => {

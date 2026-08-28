@@ -509,22 +509,28 @@ const HIVE_AWARE_VIEWS: ReadonlySet<LView> = new Set<LView>([
   "throughput",
 ]);
 
-/** Learning's arming teaching links now open the full-width Automations catalog.
- * The middle pane no longer owns a duplicate Agents/System automation catalog. */
+/** Learning's arming teaching links open the Workflows tab filtered to AI routines.
+ * The middle pane no longer owns a duplicate Agents/System automation catalog.
+ *
+ * The destination params changed with the Workflows one-frame redesign
+ * (workflows-tab-one-frame-2026-08-28, D-001): the tab no longer reads `wfView`/`wfFilter`,
+ * so writing them landed this link on a DEFAULT Workflows tab and silently dropped the
+ * intent. `wfKind=routine` is the exact successor of the old `wfFilter=ai` — both select the
+ * ai-routine population — and the retired view param has no successor because there is only
+ * one frame now. */
 export const ARMING_WORKFLOWS_TAB = "workflows";
+export const ARMING_WORKFLOWS_KIND = "routine";
 
 function useOpenArming(): () => void {
   const [, setDestination] = useQueryStates({
     tab: parseAsString,
-    wfView: parseAsString,
-    wfFilter: parseAsString,
+    wfKind: parseAsString,
   });
   return useCallback(
     () =>
       void setDestination({
         tab: ARMING_WORKFLOWS_TAB,
-        wfView: "catalog",
-        wfFilter: "ai",
+        wfKind: ARMING_WORKFLOWS_KIND,
       }),
     [setDestination],
   );
