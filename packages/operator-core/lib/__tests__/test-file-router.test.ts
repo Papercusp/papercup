@@ -427,7 +427,8 @@ describe('bounded observable Vitest child execution (EI-21400813289605169)', () 
           spawnImpl,
           killProcessImpl,
           onProgress,
-          governProcess: false,
+          governedProcessImpl: (_governedOptions: unknown, run: Function) =>
+            run(undefined, undefined, { inherited: true }),
         },
       );
 
