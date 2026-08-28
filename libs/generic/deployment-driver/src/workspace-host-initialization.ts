@@ -107,6 +107,19 @@ export const WORKSPACE_HOST_INITIALIZATION_STEP_KINDS = [
 export type WorkspaceHostInitializationStepKind =
   (typeof WORKSPACE_HOST_INITIALIZATION_STEP_KINDS)[number];
 
+/**
+ * Capability kinds a host adapter may advertise to the initialization seam.
+ *
+ * The concrete remote initializer deliberately serves both the six initialization steps and
+ * the four credential-lifecycle steps.  Initialization execution still receives only an
+ * `WorkspaceHostInitializationStep`, but its capability manifest is allowed to describe the
+ * complete wire surface so one adapter can be shared by the canary's initialization and
+ * lifecycle runners.
+ */
+export type WorkspaceHostInitializationSupportedStepKind =
+  | WorkspaceHostInitializationStepKind
+  | WorkspaceHostCredentialLifecycleStepKind;
+
 export interface WorkspaceHostInitializationStep {
   id: string;
   kind: WorkspaceHostInitializationStepKind;
@@ -152,7 +165,7 @@ export interface WorkspaceHostInitializationHostOperationResult {
  * credential-delivery parity.
  */
 export interface WorkspaceHostInitializationHostOperations {
-  readonly supportedStepKinds: readonly WorkspaceHostInitializationStepKind[];
+  readonly supportedStepKinds: readonly WorkspaceHostInitializationSupportedStepKind[];
   execute(
     step: WorkspaceHostInitializationStep,
   ): Promise<WorkspaceHostInitializationHostOperationResult>;
@@ -244,21 +257,28 @@ export function workspaceHostInitializationStepFingerprint(
 export class ReplaySafeWorkspaceHostInitializationExecutor implements WorkspaceHostInitializationExecutor {
   private readonly operations: WorkspaceHostInitializationHostOperations;
   private readonly replayStore: WorkspaceHostInitializationReplayStore;
-  private readonly supportedStepKinds: ReadonlySet<WorkspaceHostInitializationStepKind>;
+  private readonly supportedStepKinds: ReadonlySet<WorkspaceHostInitializationSupportedStepKind>;
 
   constructor(deps: ReplaySafeWorkspaceHostInitializationExecutorDeps) {
     requireCondition(
       deps.operations.supportedStepKinds.length > 0,
       "Workspace-host initialization operations must declare at least one supported step kind",
     );
-    const supported = new Set(deps.operations.supportedStepKinds);
+    const supported = new Set<WorkspaceHostInitializationSupportedStepKind>(
+      deps.operations.supportedStepKinds,
+    );
     requireCondition(
       supported.size === deps.operations.supportedStepKinds.length,
       "Workspace-host initialization operations must not declare duplicate step kinds",
     );
     for (const kind of supported) {
       requireCondition(
-        WORKSPACE_HOST_INITIALIZATION_STEP_KINDS.includes(kind),
+        (
+          WORKSPACE_HOST_INITIALIZATION_STEP_KINDS as readonly string[]
+        ).includes(kind) ||
+          (
+            WORKSPACE_HOST_CREDENTIAL_LIFECYCLE_STEP_KINDS as readonly string[]
+          ).includes(kind),
         `Unsupported workspace-host initialization step kind '${kind}'`,
       );
     }

@@ -11,7 +11,6 @@ import {
   type WorkspaceHostInitializationHostOperationResult,
   type WorkspaceHostInitializationHostOperations,
   type WorkspaceHostInitializationStep,
-  type WorkspaceHostInitializationStepKind,
 } from '@papercusp/deployment-driver';
 import { quotePosixShellArg } from './local-connection-manager';
 
@@ -20,8 +19,7 @@ import { quotePosixShellArg } from './local-connection-manager';
  * (`workspace-host-remote-initializer.ts`); re-declaring the literal here would let the two ends
  * of the same pipe drift apart with nothing failing until a real host rejected a real request.
  */
-export const GCP_IAP_INITIALIZATION_PROTOCOL_VERSION =
-  WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
+export const GCP_IAP_INITIALIZATION_PROTOCOL_VERSION = WORKSPACE_HOST_REMOTE_INITIALIZER_PROTOCOL_VERSION;
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024;
@@ -148,9 +146,7 @@ export function buildGcpIapWorkspaceHostInitializationCommand(
 
   const protocolRequest = {
     protocolVersion: GCP_IAP_INITIALIZATION_PROTOCOL_VERSION,
-    step: isWorkspaceHostCredentialLifecycleStep(step)
-      ? encodeWorkspaceHostCredentialLifecycleStep(step)
-      : step,
+    step: isWorkspaceHostCredentialLifecycleStep(step) ? encodeWorkspaceHostCredentialLifecycleStep(step) : step,
   };
   assertWorkspaceHostSecretIsolation(protocolRequest, 'workspaceHost.gcpIap.initialization.request');
 
@@ -312,10 +308,9 @@ function parseResponse(stdout: string, stepId: string): WorkspaceHostInitializat
 
 /** Concrete capability-declaring adapter for the signed remote initializer. */
 export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHostInitializationHostOperations {
-  // The legacy initialization seam narrows this property to its six initialization kinds, while
-  // the concrete adapter also serves lifecycle runners and must advertise the full wire union.
-  readonly supportedStepKinds =
-    WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS as readonly WorkspaceHostInitializationStepKind[];
+  // This adapter is shared by the initialization and credential-lifecycle runners, so its
+  // capability manifest intentionally advertises the complete remote wire union.
+  readonly supportedStepKinds = WORKSPACE_HOST_REMOTE_INITIALIZER_STEP_KINDS;
 
   private readonly profile: GcpIapWorkspaceHostInitializationProfile;
   private readonly runner: GcpIapWorkspaceHostInitializationCommandRunner;
@@ -329,12 +324,8 @@ export class GcpIapWorkspaceHostInitializationOperations implements WorkspaceHos
   }
 
   async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult>;
-  async execute(
-    step: WorkspaceHostCredentialLifecycleStep,
-  ): Promise<WorkspaceHostInitializationHostOperationResult>;
-  async execute(
-    step: GcpIapWorkspaceHostInitializationStep,
-  ): Promise<WorkspaceHostInitializationHostOperationResult> {
+  async execute(step: WorkspaceHostCredentialLifecycleStep): Promise<WorkspaceHostInitializationHostOperationResult>;
+  async execute(step: GcpIapWorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult> {
     const command = buildGcpIapWorkspaceHostInitializationCommand(this.profile, step);
     const result = await this.runner.run(command);
     if (result.exitCode !== 0) {

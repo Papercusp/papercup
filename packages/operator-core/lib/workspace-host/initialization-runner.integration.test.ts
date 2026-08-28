@@ -26,6 +26,7 @@ import type {
   WorkspaceHostInitializationHostOperationResult,
   WorkspaceHostInitializationHostOperations,
   WorkspaceHostInitializationStep,
+  WorkspaceHostInitializationSupportedStepKind,
 } from '@papercusp/deployment-driver';
 import type { WorkspaceHostCredentialRefs } from '@papercusp/deployment-driver';
 
@@ -87,9 +88,7 @@ function recordingAdapter(failOn?: string): WorkspaceHostInitializationHostOpera
       'bind-credential',
       'verify-initialization',
     ],
-    async execute(
-      step: WorkspaceHostInitializationStep,
-    ): Promise<WorkspaceHostInitializationHostOperationResult> {
+    async execute(step: WorkspaceHostInitializationStep): Promise<WorkspaceHostInitializationHostOperationResult> {
       calls.push(step.id);
       if (failOn && step.id === failOn) {
         throw new Error(`host refused step ${step.id}`);
@@ -126,7 +125,12 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     return hostId;
   }
 
-  const runInput = (workspaceId: string, hostId: string, operations: WorkspaceHostInitializationHostOperations, operationId?: string) => ({
+  const runInput = (
+    workspaceId: string,
+    hostId: string,
+    operations: WorkspaceHostInitializationHostOperations,
+    operationId?: string,
+  ) => ({
     workspaceId,
     hostId,
     ...(operationId ? { operationId } : {}),
@@ -209,8 +213,7 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     expect(phases).toContain('initialize:create-workspace');
     expect(phases).toContain('initialize:bind-credential');
     expect(phases).toContain('initialize:complete');
-    expect(events.some((row) =>
-      row.phase === 'initialize:complete' && row.status === 'succeeded')).toBe(true);
+    expect(events.some((row) => row.phase === 'initialize:complete' && row.status === 'succeeded')).toBe(true);
   });
 
   it('RESUMES an interrupted run without re-executing steps that already succeeded', async () => {
@@ -220,9 +223,9 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
 
     // First attempt: the host refuses the third step.
     const failing = recordingAdapter('bind-git');
-    await expect(
-      runWorkspaceHostInitialization(runInput(ws, hostId, failing, operationId)),
-    ).rejects.toThrow(/host refused step bind-git/);
+    await expect(runWorkspaceHostInitialization(runInput(ws, hostId, failing, operationId))).rejects.toThrow(
+      /host refused step bind-git/,
+    );
 
     expect(failing.calls).toEqual(['workspace', 'bind-cloud', 'bind-git']);
 
@@ -235,9 +238,7 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     // Second attempt, SAME operationId: a fresh adapter, so any call it records is by definition
     // a re-execution against the host. The two already-succeeded steps must not appear.
     const resuming = recordingAdapter();
-    const result = await runWorkspaceHostInitialization(
-      runInput(ws, hostId, resuming, operationId),
-    );
+    const result = await runWorkspaceHostInitialization(runInput(ws, hostId, resuming, operationId));
 
     expect(resuming.calls).not.toContain('workspace');
     expect(resuming.calls).not.toContain('bind-cloud');
@@ -250,6 +251,54 @@ describe('workspace-host initialization runner (real PG + real RLS)', () => {
     `;
     expect(succeeded.status).toBe('succeeded');
     expect(succeeded.percent).toBe(100);
+  });
+
+  it('terminalizes a capability-validation failure after the operation row is created', async () => {
+    const ws = freshWs();
+    const hostId = await seedHost(ws);
+    const operationId = `op_${randomBytes(4).toString('hex')}`;
+    const invalid: WorkspaceHostInitializationHostOperations = {
+      supportedStepKinds: [
+        'create-workspace',
+        'clone-repository',
+        'pair-workspace',
+        'import-workspace',
+        'bind-credential',
+        'verify-initialization',
+        'not-a-real-step' as unknown as WorkspaceHostInitializationSupportedStepKind,
+      ],
+      async execute() {
+        throw new Error('the adapter must not execute after capability validation fails');
+      },
+    };
+
+    await expect(runWorkspaceHostInitialization(runInput(ws, hostId, invalid, operationId))).rejects.toThrow(
+      /Unsupported workspace-host initialization step kind/,
+    );
+
+    const [operation] = await db.adminSql`
+      SELECT status, percent, finished_at
+        FROM harness_shared.workspace_host_operations
+       WHERE workspace_id = ${ws} AND id = ${operationId}
+    `;
+    expect(operation.status).toBe('failed');
+    expect(operation.percent).toBe(0);
+    expect(operation.finished_at).not.toBeNull();
+
+    const [event] = await db.adminSql`
+      SELECT phase, status, details
+        FROM harness_shared.workspace_host_events
+       WHERE workspace_id = ${ws} AND operation_id = ${operationId}
+       ORDER BY occurred_at, id
+    `;
+    expect(event).toMatchObject({ phase: 'initialize:failed', status: 'failed' });
+
+    const steps = await db.adminSql`
+      SELECT 1
+        FROM harness_shared.workspace_host_initialization_steps
+       WHERE workspace_id = ${ws} AND host_id = ${hostId}
+    `;
+    expect(steps).toHaveLength(0);
   });
 
   it('keeps initialization state isolated between workspaces', async () => {

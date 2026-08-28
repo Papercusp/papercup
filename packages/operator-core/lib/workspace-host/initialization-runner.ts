@@ -129,64 +129,68 @@ export async function runWorkspaceHostInitialization(
     request: plan,
   });
 
-  const replayStore = createWorkspaceHostInitializationReplayStore({
-    workspaceId: input.workspaceId,
-    hostId: input.hostId,
-    leaseOwner: input.leaseOwner ?? `workspace-host-initialization:${operationId}`,
-    ...(input.leaseTtlMs !== undefined ? { leaseTtlMs: input.leaseTtlMs } : {}),
-    ...(input.now ? { now: input.now } : {}),
-  });
-
-  const replaySafe = new ReplaySafeWorkspaceHostInitializationExecutor({
-    operations: input.operations,
-    replayStore,
-  });
-
   let completedSteps = 0;
 
-  /**
-   * Progress reporting wraps the replay-safe executor rather than being folded into it: the
-   * replay store must own execution-exactly-once, and timeline writes must NOT participate in
-   * that ownership. A failure to append an event after a step has already succeeded therefore
-   * cannot cause the step to re-run against the host — the receipt is already durable, so a
-   * retry replays it.
-   */
-  const reportingExecutor: WorkspaceHostInitializationExecutor = {
-    async execute(step) {
-      const receipt = await replaySafe.execute(step);
-      completedSteps += 1;
-
-      await appendWorkspaceHostEvent({
-        workspaceId: input.workspaceId,
-        hostId: input.hostId,
-        operationId,
-        occurredAt: receipt.observedAt,
-        phase: `initialize:${step.kind}`,
-        status: 'running',
-        level: 'info',
-        source: 'controller',
-        message: `Initialization step '${step.id}' (${step.kind}) succeeded`,
-        details: {
-          stepId: step.id,
-          kind: step.kind,
-          ...(receipt.publicEvidence ? { publicEvidence: receipt.publicEvidence } : {}),
-        },
-      });
-
-      await updateWorkspaceHostOperation({
-        workspaceId: input.workspaceId,
-        operationId,
-        status: 'running',
-        // Capped below 100 so terminal completion is the only writer of 100.
-        percent: Math.min(99, Math.round((completedSteps / Math.max(totalSteps, 1)) * 100)),
-        message: `Completed ${completedSteps}/${totalSteps}: ${step.kind}`,
-      });
-
-      return receipt;
-    },
-  };
-
   try {
+    // Everything after beginWorkspaceHostOperation is inside the same failure boundary. Adapter
+    // capability validation and replay-store setup can fail synchronously; if either does, the
+    // operation row must become a durable failed operation rather than an apparently live 0%
+    // orphan with no step/event evidence.
+    const replayStore = createWorkspaceHostInitializationReplayStore({
+      workspaceId: input.workspaceId,
+      hostId: input.hostId,
+      leaseOwner: input.leaseOwner ?? `workspace-host-initialization:${operationId}`,
+      ...(input.leaseTtlMs !== undefined ? { leaseTtlMs: input.leaseTtlMs } : {}),
+      ...(input.now ? { now: input.now } : {}),
+    });
+
+    const replaySafe = new ReplaySafeWorkspaceHostInitializationExecutor({
+      operations: input.operations,
+      replayStore,
+    });
+
+    /**
+     * Progress reporting wraps the replay-safe executor rather than being folded into it: the
+     * replay store must own execution-exactly-once, and timeline writes must NOT participate in
+     * that ownership. A failure to append an event after a step has already succeeded therefore
+     * cannot cause the step to re-run against the host — the receipt is already durable, so a
+     * retry replays it.
+     */
+    const reportingExecutor: WorkspaceHostInitializationExecutor = {
+      async execute(step) {
+        const receipt = await replaySafe.execute(step);
+        completedSteps += 1;
+
+        await appendWorkspaceHostEvent({
+          workspaceId: input.workspaceId,
+          hostId: input.hostId,
+          operationId,
+          occurredAt: receipt.observedAt,
+          phase: `initialize:${step.kind}`,
+          status: 'running',
+          level: 'info',
+          source: 'controller',
+          message: `Initialization step '${step.id}' (${step.kind}) succeeded`,
+          details: {
+            stepId: step.id,
+            kind: step.kind,
+            ...(receipt.publicEvidence ? { publicEvidence: receipt.publicEvidence } : {}),
+          },
+        });
+
+        await updateWorkspaceHostOperation({
+          workspaceId: input.workspaceId,
+          operationId,
+          status: 'running',
+          // Capped below 100 so terminal completion is the only writer of 100.
+          percent: Math.min(99, Math.round((completedSteps / Math.max(totalSteps, 1)) * 100)),
+          message: `Completed ${completedSteps}/${totalSteps}: ${step.kind}`,
+        });
+
+        return receipt;
+      },
+    };
+
     const receipts = await executeWorkspaceHostInitialization(plan, reportingExecutor);
 
     await updateWorkspaceHostOperation({

@@ -107,6 +107,7 @@ export type {
   WorkspaceHostInitializationSource,
   WorkspaceHostInitializationRequest,
   WorkspaceHostInitializationStepKind,
+  WorkspaceHostInitializationSupportedStepKind,
   WorkspaceHostInitializationStep,
   WorkspaceHostInitializationPlan,
   WorkspaceHostInitializationStepReceipt,
