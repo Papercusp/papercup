@@ -1,8 +1,10 @@
 import {
   ENFORCED_FROM as MIGRATION_LINT_ENFORCED_FROM,
+  EXCLUSIVE_LOCK_ENFORCED_FROM,
   INDEX_SWAP_ENFORCED_FROM,
   findLiteralTenantDefault,
   findRawTxControl,
+  findUnacknowledgedExclusiveLock,
   findUnguardedConstraintRename,
   findUnguardedReslug,
   findUniqueIndexShapeSwap,
@@ -59,6 +61,21 @@ export function assertMigrationPassesPreApplyLints(args: {
     const swaps = findUniqueIndexShapeSwap(sqlText);
     if (swaps.length > 0) {
       failures.push(`same-migration unique-index shape swap (${swaps.map((hit: { index: string }) => hit.index).join(', ')})`);
+    }
+  }
+
+  // This one matters MOST here rather than at the gate: the hazard is an ACCESS
+  // EXCLUSIVE lock taken at APPLY time, and boot apply is exactly when the box is
+  // busiest. Refusing here turns a fleet-wide read stall into a startup error
+  // naming the offending statement (EI-21698566084995732).
+  if (num >= EXCLUSIVE_LOCK_ENFORCED_FROM) {
+    const locks = findUnacknowledgedExclusiveLock(sqlText);
+    if (locks.length > 0) {
+      failures.push(
+        `ACCESS EXCLUSIVE lock with no -- EXCLUSIVE-LOCK: acknowledgement (${locks
+          .map((hit: { table: string; action: string; target: string }) => `${hit.action} TRIGGER ${hit.target} on ${hit.table}`)
+          .join(', ')})`,
+      );
     }
   }
 
