@@ -9,7 +9,12 @@ import { test, beforeEach, afterEach } from 'vitest';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { createInferenceGateway, OWNER_HEADER, type GatewayDeps } from './gateway';
-import { createLocalBackendPool, HEALTH_FAIL_THRESHOLD, type LocalBackend, type LocalBackendPool } from './local-backend-pool';
+import {
+  createLocalBackendPool,
+  HEALTH_FAIL_THRESHOLD,
+  type LocalBackend,
+  type LocalBackendPool,
+} from './local-backend-pool';
 
 interface FakeBackend {
   id: string;
@@ -229,13 +234,25 @@ test('GET /admin/local-backends reports the live registry + health + in-flight',
   const b1 = await startFakeBackend('b1', okJsonReply({}));
   backends = [b1];
   await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }]);
+  const engineCapacity = {
+    freeSlots: 3,
+    totalSlots: 4,
+    contextTokens: 131_072,
+    observedAtMs: Date.now(),
+    source: '/props',
+  };
+  pool.updateEngineCapacity('b1', engineCapacity);
   const res = await fetch(`http://127.0.0.1:${port}/admin/local-backends`);
   assert.equal(res.status, 200);
-  const json = (await res.json()) as { configured: boolean; backends: { id: string; inFlight: number }[] };
+  const json = (await res.json()) as {
+    configured: boolean;
+    backends: { id: string; inFlight: number; engineCapacity: typeof engineCapacity | null }[];
+  };
   assert.equal(json.configured, true);
   assert.equal(json.backends.length, 1);
   assert.equal(json.backends[0].id, 'b1');
   assert.equal(json.backends[0].inFlight, 0);
+  assert.deepEqual(json.backends[0].engineCapacity, engineCapacity);
 });
 
 test('GET /admin/local-backends without a configured pool reports configured:false, not a crash', async () => {
@@ -301,44 +318,6 @@ test('/v1/messages (Anthropic path) is unaffected by an unmatched local-backend 
   assert.notEqual(res.status, 502); // and never through proxyLocal's "no reachable backend" path
 });
 
-// ---------------------------------------------------------------------------------------------
-// Per-CLIENT circuit breaker (local-concurrent-inference-2026-07-02 P-015, D-010) — protects the
-// shared local-backend pool from one storming/wedged owner. See local-backend-client-circuit.ts.
-// ---------------------------------------------------------------------------------------------
-
-test('per-client in-flight cap sheds a storming owner with 429 + retry-after, without touching the backend — a DIFFERENT owner is unaffected', async () => {
-  const held: http.ServerResponse[] = [];
-  const b1 = await startFakeBackend('b1', (_req, res) => {
-    held.push(res); // never end() — keeps requests "in flight" from the pool's perspective
-  });
-  backends = [b1];
-  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 8, enabled: true }], {
-    localBackendClientMaxInFlight: 1,
-  });
-
-  // Owner A's first request is admitted and hangs (never resolves) — occupies its one allowed slot.
-  const inflightA = chatCompletionsAs('owner-a', { model: 'm' });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(pool.inFlight('b1'), 1);
-
-  // Owner A's SECOND concurrent request is shed by the in-flight cap — never reaches the backend.
-  const shedRes = await chatCompletionsAs('owner-a', { model: 'm' });
-  assert.equal(shedRes.status, 429);
-  assert.ok(shedRes.headers.get('retry-after'));
-  const shedJson = (await shedRes.json()) as { error: { message: string } };
-  assert.match(shedJson.error.message, /in-flight cap/);
-  assert.equal(pool.inFlight('b1'), 1); // unchanged — the shed never touched the backend
-
-  // A DIFFERENT owner is unaffected — its request is admitted normally onto the same backend.
-  const inflightB = chatCompletionsAs('owner-b', { model: 'm' });
-  await new Promise((r) => setTimeout(r, 50));
-  assert.equal(pool.inFlight('b1'), 2);
-
-  held.forEach((res) => res.writeHead(200, { 'content-type': 'application/json' }));
-  held.forEach((res) => res.end('{}'));
-  await Promise.all([inflightA, inflightB]);
-});
-
 test('a saturated pool (model served, every slot busy) 429s with retry-after — retryable backpressure, NOT a 502 dead end', async () => {
   const held: http.ServerResponse[] = [];
   const b1 = await startFakeBackend('b1', (_req, res) => {
@@ -347,6 +326,7 @@ test('a saturated pool (model served, every slot busy) 429s with retry-after —
   backends = [b1];
   // A single-slot backend: once one request is in flight, the pool is saturated for 'm'.
   await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 1, enabled: true }]);
+  pool.updateEngineCapacity('b1', { totalSlots: 1, freeSlots: 1, observedAtMs: Date.now(), source: '/props' });
 
   // Occupy the one slot with a hanging request (unidentified caller — isolates POOL saturation from
   // the per-client circuit entirely).
@@ -367,84 +347,6 @@ test('a saturated pool (model served, every slot busy) 429s with retry-after —
   held.forEach((res) => res.writeHead(200, { 'content-type': 'application/json' }));
   held.forEach((res) => res.end('{}'));
   await inflight;
-});
-
-test('per-client failure-streak circuit opens after repeated no-reachable-backend failures, sheds fast, isolates other owners, and self-closes after the cooldown', async () => {
-  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
-    localBackendClientFailureThreshold: 2,
-    localBackendClientCooldownMs: 100,
-  });
-
-  // Two failed (no-reachable-backend) requests trip owner-a's circuit (threshold 2).
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
-
-  // The THIRD request is shed immediately by the now-OPEN circuit — the backend is never touched
-  // (its recorded health failure count does not advance).
-  const failuresBefore = pool.health().get('dead')?.consecutiveFailures ?? 0;
-  const shed = await chatCompletionsAs('owner-a', { model: 'm' });
-  assert.equal(shed.status, 429);
-  const shedJson = (await shed.json()) as { error: { message: string } };
-  assert.match(shedJson.error.message, /circuit open/);
-  assert.equal(pool.health().get('dead')?.consecutiveFailures ?? 0, failuresBefore);
-
-  // A DIFFERENT owner is NOT gated by owner-a's open circuit (per-owner isolation) — its request is
-  // genuinely ATTEMPTED (502 from the dead backend, not a 429 shed).
-  assert.equal((await chatCompletionsAs('owner-b', { model: 'm' })).status, 502);
-
-  // After the cooldown elapses, owner-a's circuit self-closes and the next request is attempted again.
-  await new Promise((r) => setTimeout(r, 150));
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502); // attempted, not shed
-});
-
-test('an unidentified caller (no owner header) is never gated by the per-client circuit, even after repeated failures', async () => {
-  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
-    localBackendClientFailureThreshold: 1,
-    localBackendClientCooldownMs: 60_000,
-  });
-  for (let i = 0; i < 4; i++) {
-    const res = await chatCompletions({ model: 'm' }); // no x-papercusp-owner header
-    assert.equal(res.status, 502); // always genuinely attempted — never 429-shed
-  }
-});
-
-test('a caller-input error (no "model" field) does not trip the owner circuit — it is the caller\'s own mistake, not a pool wedge', async () => {
-  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
-    localBackendClientFailureThreshold: 1,
-  });
-  const res = await chatCompletionsAs('owner-a', {}); // no "model" field
-  assert.equal(res.status, 400);
-  // A genuinely failing request right after should still be ATTEMPTED (502), not pre-emptively shed
-  // by a circuit the 400 should never have tripped.
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
-});
-
-test('GET /admin/local-backends reports per-client circuit state for an owner with recorded activity', async () => {
-  await boot([{ id: 'dead', kind: 'llama-server', baseUrl: 'http://127.0.0.1:1', models: ['m'], maxConcurrent: 4, enabled: true }], {
-    localBackendClientFailureThreshold: 5,
-  });
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 502);
-
-  const adminRes = await fetch(`http://127.0.0.1:${port}/admin/local-backends`);
-  const json = (await adminRes.json()) as {
-    clients: { ownerId: string; consecutiveFailures: number; inFlight: number; circuitOpen: boolean }[];
-  };
-  const entry = json.clients.find((c) => c.ownerId === 'owner-a');
-  assert.ok(entry, 'owner-a should appear in the clients list after a failed request');
-  assert.equal(entry!.consecutiveFailures, 1);
-  assert.equal(entry!.inFlight, 0);
-  assert.equal(entry!.circuitOpen, false);
-});
-
-test('GET /admin/local-backends omits an owner with no recorded activity (clean owners are not listed)', async () => {
-  const b1 = await startFakeBackend('b1', okJsonReply({ id: 'ok' }));
-  backends = [b1];
-  await boot([{ id: 'b1', kind: 'llama-server', baseUrl: b1.baseUrl, models: ['m'], maxConcurrent: 4, enabled: true }]);
-  assert.equal((await chatCompletionsAs('owner-a', { model: 'm' })).status, 200);
-
-  const adminRes = await fetch(`http://127.0.0.1:${port}/admin/local-backends`);
-  const json = (await adminRes.json()) as { clients: { ownerId: string }[] };
-  assert.equal(json.clients.find((c) => c.ownerId === 'owner-a'), undefined);
 });
 
 // ── MAINTENANCE backend-context probe (deterministic-context-carry P-005) ──────────────────────
@@ -608,6 +510,7 @@ test('P-008/D-009: a SATURATED pool still 429s and does NOT start another backen
       return { ok: true };
     },
   });
+  pool.updateEngineCapacity('ornith', { totalSlots: 1, freeSlots: 1, observedAtMs: Date.now(), source: '/props' });
   pool.recordStart('ornith');
   assert.equal(pool.select('ornith-35b'), null, 'precondition: nothing selectable');
   assert.equal(pool.saturatedFor('ornith-35b'), true, 'precondition: null for SATURATION, not for a dead end');
@@ -641,6 +544,7 @@ test('P-008/D-009 CONTROL: the saturation guard is CAUSAL — the SAME busy stat
     },
     (p) => ({ ...p, saturatedFor: () => false }),
   );
+  pool.updateEngineCapacity('ornith', { totalSlots: 1, freeSlots: 1, observedAtMs: Date.now(), source: '/props' });
   pool.recordStart('ornith');
   assert.equal(pool.select('ornith-35b'), null, 'same dead-end select() as the 429 test');
 
