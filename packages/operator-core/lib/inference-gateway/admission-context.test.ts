@@ -133,6 +133,10 @@ test('server control paths use registered bypass admission while maintenance use
   assert.equal(statsAdmission?.admissionClass, 'control');
   assert.equal(maintenanceAdmission?.admissionClass, 'control');
   assert.equal(maintenanceAdmission?.bypassKey, undefined, 'maintenance is not a silent bypass');
+  assert.ok(
+    (maintenanceAdmission?.deadlineAtMs ?? 0) - Date.now() <= 150_000,
+    'maintenance carries its bounded whole-call deadline into admission',
+  );
   assert.ok(innerInferenceAdmission, 'the loopback model call still crosses normal inference admission');
   assert.equal(released.length, admitted.length, 'every server/loopback lease is released after its response settles');
 });

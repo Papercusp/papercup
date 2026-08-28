@@ -3071,9 +3071,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   /**
    * Proxy an OpenAI-compatible `/v1/chat/completions` or `/v1/completions` request to the LOCAL
-   * backend pool (local-concurrent-inference-2026-07-02 P-004, D-002). No account/credential/
-   * governor involvement — local backends are unauthenticated localhost/LAN processes. Least-loaded
-   * routing via `deps.localBackends.select()`; on a connect/transport failure, retries against a
+   * backend pool (local-concurrent-inference-2026-07-02 P-004, D-002). The server boundary admits the
+   * request through the canonical resource governor before this function; local backends themselves
+   * are unauthenticated localhost/LAN processes. Least-loaded routing via `deps.localBackends.select()`;
+   * on a connect/transport failure, retries against a
    * DIFFERENT backend (up to LOCAL_BACKEND_MAX_ATTEMPTS) before giving up with a 502. Streams the
    * upstream response body through untouched (SSE `stream:true` included).
    */
@@ -6458,6 +6459,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     req: http.IncomingMessage,
     kind: GatewayAdmissionKind,
     bypassKey?: GatewayAdmissionBypassKey,
+    options: { readonly deadlineAtMs?: number } = {},
   ): GatewayAdmissionRequestInput {
     const path = (req.url ?? '/').split('?', 1)[0] || '/';
     const sequence = ++gatewayAdmissionRequestSeq;
@@ -6485,7 +6487,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       pinMode,
       transport: null,
       priority: priorityFromLabel(effectivePriorityLabel(req.headers as Record<string, unknown>)),
-      deadlineAtMs: Date.now() + requestCeilingMs,
+      deadlineAtMs: options.deadlineAtMs ?? Date.now() + requestCeilingMs,
       idempotencyKey,
       payloadRef: requestHeader(req, 'x-papercusp-payload-ref'),
       parent: gatewayAdmissionParent,
@@ -7306,7 +7308,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // metadata, and admin surfaces carry an explicitly registered bypass key;
     // the Governor, rather than the router, is the authority that authorizes it.
     const kind = bypassKey ? gatewayAdmissionKindForBypassKey(bypassKey) : 'maintenance';
-    const input = gatewayAdmissionInputForRequest(req, kind, bypassKey ?? undefined);
+    const input = gatewayAdmissionInputForRequest(
+      req,
+      kind,
+      bypassKey ?? undefined,
+      isMaintenanceSummarize ? { deadlineAtMs: Date.now() + maintenanceTimeoutMs } : undefined,
+    );
     void runServerAdmission(res, input, () => dispatchRequest(req, res)).catch((e) => {
       if (res.headersSent || res.writableEnded || res.destroyed) {
         if (!res.destroyed) res.destroy();
