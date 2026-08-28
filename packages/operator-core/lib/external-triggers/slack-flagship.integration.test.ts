@@ -13,6 +13,26 @@ import {
 import { normalizeSlackSocketEnvelope } from './slack';
 import { upsertOwnedExternalTriggerSource } from './source-store';
 
+const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
+
+// Canonical promotion uses the shared stores rather than the explicit plan-run
+// transaction client. Keep every one of those reads/writes in this throwaway DB;
+// the Slack integration previously left the operator-home shortcut active, so
+// promotion could not see the disposable instance seeded by this test.
+vi.mock('@papercusp/db-org', async (orig) => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return {
+    ...(await orig<typeof import('@papercusp/db-org')>()),
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    withWorkspace: async <T>(_workspaceId: string, fn: (tx: Sql) => Promise<T>) => fn(h.sql),
+  };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => WS };
+});
+
 const WS = 'slack-flagship-e2e';
 let org: OrgTestDb;
 let sql: Sql;
@@ -21,11 +41,32 @@ let userId: string;
 beforeAll(async () => {
   org = await createOrgTestDb();
   sql = org.adminSql;
+  h.sql = sql;
   const users = await sql<Array<{ id: string }>>`
     INSERT INTO harness_shared.users (username, display_name)
     VALUES (${'slack-flagship-owner-' + Date.now()}, 'Slack Flagship Owner')
     RETURNING id`;
   userId = users[0].id;
+  await sql`
+    INSERT INTO harness_shared.pots
+      (workspace_id, pot_home_slug, public_key, keychain_id, created_at)
+    VALUES (${WS}, ${SLACK_RESPOND_IN_THREAD_HARNESS}, ${Buffer.from([2])}, 'kc-slack-flagship', 0)
+    ON CONFLICT (workspace_id, pot_home_slug) DO NOTHING`;
+  await sql`
+    INSERT INTO harness_shared.harness_registry (workspace_id, payload)
+    VALUES (
+      ${WS},
+      ${JSON.stringify({
+        projects: [
+          {
+            slug: SLACK_RESPOND_IN_THREAD_HARNESS,
+            path: '/tmp/slack-flagship',
+            harness_kind: 'hive',
+          },
+        ],
+      })}::text::jsonb
+    )
+    ON CONFLICT (workspace_id) DO UPDATE SET payload = EXCLUDED.payload`;
   await sql`
     INSERT INTO harness_shared.datatype_registry
       (workspace_id, id, title, description, tier, payload_schema, authoritative_writer)
