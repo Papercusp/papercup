@@ -3,7 +3,7 @@
 //! `App` is the whole UI state; `update` is the only mutator. Rendering is a
 //! pure function of `&App` (see `ui.rs`), so views are snapshot-testable.
 
-use crate::event::Event;
+use crate::event::{Event, MemoryLoadState};
 use crate::fleet::FleetState;
 use crate::models::{
     ActivityRow, AttentionItem, ChatMessage, ChatToolCall, ConversationContextFrame,
@@ -22,9 +22,18 @@ use std::sync::{Arc, Mutex};
 /// Cap on retained notification history (P8).
 const NOTIF_HISTORY_CAP: usize = 50;
 
-/// The Cupboard kind-filter cycle (D-011): `f` steps through these;
-/// `cupboard_kind` indexes this array. "all" sends no `kind` param.
+/// Fallback Cupboard kind order for legacy workers that do not return
+/// `kind_facets`. Once facets arrive the filter cycle is derived from their
+/// live keys, with these known kinds kept in a stable order.
 pub const CUPBOARD_KINDS: [&str; 5] = ["all", "harness", "blueprint", "pack", "plugin"];
+
+fn normalize_cupboard_kind(kind: &str) -> &str {
+    if kind == "tool-pack" {
+        "pack"
+    } else {
+        kind
+    }
+}
 
 /// The Conversations state-filter cycle (Brief 25): `s` steps through these;
 /// `conv_state_idx` indexes this array. "all" sends no `state` param.
@@ -137,6 +146,14 @@ pub enum Action {
         id: i64,
         result_json: String,
         error: Option<String>,
+    },
+    /// Result of an agent control intent that also needs a run-loop side effect
+    /// after the result is posted (currently `set_tab`'s lazy on-enter fetch).
+    IntentResultWithFollowup {
+        id: i64,
+        result_json: String,
+        error: Option<String>,
+        follow_up: Box<Action>,
     },
     /// A command-palette workbench command (P12b) — the run loop dispatches it to
     /// the workbench-command task (list/save/restore layouts + crews).
@@ -532,6 +549,55 @@ pub fn filter_wake_groups(
                 .collect()
         }
     }
+}
+
+/// Rank roster markers that identify the owner-facing Papercup/operator
+/// session for the Context pane. The backend's current canonical spelling is
+/// `agentPaneKind: "papercup"` for `role: "operator"`; `sentinel` is retained
+/// only as a legacy pane/agent marker. In particular, do not treat
+/// `role: "sentinel"` as the legacy operator: that role is now the read-mostly
+/// Sentinel watcher and is classified as a worker (`cup`).
+fn context_target_marker_rank(row: &RosterEntry) -> Option<u8> {
+    let canonical = [
+        row.agent_pane_kind.as_deref(),
+        row.role.as_deref(),
+        row.agent.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|marker| {
+        marker.eq_ignore_ascii_case("papercup") || marker.eq_ignore_ascii_case("operator")
+    });
+    if canonical {
+        return Some(0);
+    }
+
+    let legacy = [row.agent_pane_kind.as_deref(), row.agent.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|marker| marker.eq_ignore_ascii_case("sentinel"));
+    legacy.then_some(1)
+}
+
+/// Resolve the live owner-facing roster row to the one exact Context
+/// projection address. Rows without a concrete native-session id are skipped
+/// rather than guessed, and canonical Papercup/operator markers always outrank
+/// legacy Sentinel markers regardless of roster ordering.
+fn resolve_context_projection_target(
+    roster: &[RosterEntry],
+) -> Option<ConversationContextProjectionTarget> {
+    roster
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.is_live())
+        .filter_map(|(index, row)| {
+            let rank = context_target_marker_rank(row)?;
+            let handle = row.native_session.as_ref()?;
+            let target = ConversationContextProjectionTarget::from_native_session(handle, None)?;
+            Some(((rank, index), target))
+        })
+        .min_by_key(|(rank, _)| *rank)
+        .map(|(_, target)| target)
 }
 
 /// The fleet-wide staged-wake board (the `pui wake-pane` dock pane, EI-312):
@@ -1387,7 +1453,7 @@ pub struct App {
     pub goal_sel: usize,
     /// The one shared context-projection address and snapshot rendered by the
     /// refitted plans-board pane. An explicit CLI target stays pinned; otherwise
-    /// each roster snapshot resolves the live Sentinel's native session id.
+    /// each roster snapshot resolves the live Papercup/operator native session id.
     pub context_projection_target: Option<ConversationContextProjectionTarget>,
     pub context_projection_target_explicit: bool,
     pub context_projection: Option<ConversationContextProjection>,
@@ -1563,16 +1629,17 @@ pub struct App {
     pub memory_hits: Option<(String, Vec<crate::models::MemoryEntry>)>,
     pub memory_sel: usize,
     pub memory_available: bool,
+    pub memory_load_state: MemoryLoadState,
     pub memory_search_open: bool,
     pub memory_search_input: String,
-    /// Cupboard tab (D-011): the fetched listings under the active kind filter
-    /// (`cupboard_kind` indexes `CUPBOARD_KINDS`) + search query, the cursor,
-    /// the in-flight flag, the `/`-search composer state, and the armed
-    /// confirm — a per-kind action (join/fork/install) fires only after Enter
-    /// arms a listing id and `y` confirms it.
+    /// Cupboard tab (D-011): the fetched listings under the active live-facet
+    /// filter + search query, cursor, in-flight state, and armed confirmation.
+    /// `cupboard_kind_filter` is the wire value; `cupboard_kind` is its cursor
+    /// inside `cupboard_kind_options()` for rendering and `f` cycling.
     pub cupboard: Vec<crate::models::CupboardListing>,
     pub cupboard_sel: usize,
     pub cupboard_kind: usize,
+    pub cupboard_kind_filter: String,
     pub cupboard_query: String,
     pub cupboard_search_open: bool,
     pub cupboard_search_input: String,
@@ -1988,11 +2055,13 @@ impl App {
             memory_hits: None,
             memory_sel: 0,
             memory_available: false,
+            memory_load_state: MemoryLoadState::BackendUnavailable { reason: None },
             memory_search_open: false,
             memory_search_input: String::new(),
             cupboard: Vec::new(),
             cupboard_sel: 0,
             cupboard_kind: 0,
+            cupboard_kind_filter: "all".to_string(),
             cupboard_query: String::new(),
             cupboard_search_open: false,
             cupboard_search_input: String::new(),
@@ -2544,20 +2613,7 @@ impl App {
             self.fleet.leader_brief_error = None;
         }
         if !self.context_projection_target_explicit {
-            let next = self
-                .roster
-                .iter()
-                .filter(|row| row.is_live())
-                .filter(|row| {
-                    row.agent_pane_kind.as_deref() == Some("sentinel")
-                        || row.role.as_deref() == Some("sentinel")
-                        || row.agent.as_deref() == Some("sentinel")
-                })
-                .find_map(|row| {
-                    row.native_session.as_ref().and_then(|handle| {
-                        ConversationContextProjectionTarget::from_native_session(handle, None)
-                    })
-                });
+            let next = resolve_context_projection_target(&self.roster);
             if next != self.context_projection_target {
                 self.context_projection_target = next;
                 self.context_projection = None;
@@ -3337,6 +3393,25 @@ impl App {
         restored_theme
     }
 
+    fn apply_set_tab_intent(&mut self, args: &Value) -> Result<(Tab, Value), String> {
+        let title = args
+            .get("tab")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "set_tab: missing string `tab`".to_string())?;
+        let tab =
+            Tab::from_title(title).ok_or_else(|| format!("set_tab: unknown tab `{title}`"))?;
+        self.switch_to(tab);
+        Ok((tab, json!({ "ok": true, "tab": tab.title() })))
+    }
+
+    fn apply_set_tab_intent_with_action(
+        &mut self,
+        args: &Value,
+    ) -> Result<(Value, Action), String> {
+        let (tab, result) = self.apply_set_tab_intent(args)?;
+        Ok((result, self.tab_entry_side_effect(tab)))
+    }
+
     /// Apply an agent control intent (P12b / D-002 A6 — tui:dispatch). Returns the
     /// JSON result to POST back (a state snapshot for `get_state`, else
     /// `{"ok":true}`); Err carries a message for the error result.
@@ -3350,16 +3425,7 @@ impl App {
                 self.tab = Tab::Operator;
                 Ok(json!({ "ok": true, "tab": "Operator" }))
             }
-            "set_tab" => {
-                let title = args
-                    .get("tab")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| "set_tab: missing string `tab`".to_string())?;
-                let tab = Tab::from_title(title)
-                    .ok_or_else(|| format!("set_tab: unknown tab `{title}`"))?;
-                self.tab = tab;
-                Ok(json!({ "ok": true, "tab": tab.title() }))
-            }
+            "set_tab" => self.apply_set_tab_intent(args).map(|(_, result)| result),
             "set_harness" => {
                 let slug = args
                     .get("slug")
@@ -5910,14 +5976,18 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::Features(fs) => {
-                self.set_features(fs);
+            Event::Features { harness, features } => {
+                if harness == self.harness {
+                    self.set_features(features);
                 self.last_error = None;
+                }
                 Action::Render
             }
-            Event::Issues(is) => {
-                self.set_issues(is);
+            Event::Issues { harness, issues } => {
+                if harness == self.harness {
+                    self.set_issues(issues);
                 self.last_error = None;
+                }
                 Action::Render
             }
             Event::Harnesses(hs) => {
@@ -5925,14 +5995,18 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::Docs(d) => {
-                self.set_docs(d);
+            Event::Docs { harness, docs } => {
+                if harness == self.harness {
+                    self.set_docs(docs);
                 self.last_error = None;
+                }
                 Action::Render
             }
-            Event::Testing(t) => {
-                self.set_testing(t);
+            Event::Testing { harness, testing } => {
+                if harness == self.harness {
+                    self.set_testing(testing);
                 self.last_error = None;
+                }
                 Action::Render
             }
             Event::TestingFiles { domain_id, files } => {
@@ -5951,7 +6025,28 @@ impl App {
             }
             Event::Memories { available, results } => {
                 self.memory_available = available;
+                self.memory_load_state = if available {
+                    MemoryLoadState::Available {
+                        results: results.clone(),
+                    }
+                } else {
+                    MemoryLoadState::BackendUnavailable { reason: None }
+                };
                 self.memories = results;
+                let len = self.visible_memories().len();
+                if self.memory_sel >= len {
+                    self.memory_sel = len.saturating_sub(1);
+                }
+                self.last_error = None;
+                Action::Render
+            }
+            Event::MemoryLoad(state) => {
+                self.memory_available = matches!(&state, MemoryLoadState::Available { .. });
+                self.memories = match &state {
+                    MemoryLoadState::Available { results } => results.clone(),
+                    _ => Vec::new(),
+                };
+                self.memory_load_state = state;
                 let len = self.visible_memories().len();
                 if self.memory_sel >= len {
                     self.memory_sel = len.saturating_sub(1);
@@ -5982,9 +6077,11 @@ impl App {
                 });
                 Action::Render
             }
-            Event::Config(c) => {
-                self.set_config(c);
+            Event::Config { harness, config } => {
+                if harness == self.harness {
+                    self.set_config(config);
                 self.last_error = None;
+                }
                 Action::Render
             }
             Event::Flags(fl) => {
@@ -6064,9 +6161,17 @@ impl App {
                 self.last_error = None;
                 Action::Render
             }
-            Event::WorkItems(w) => {
-                self.fleet.set_work_items(w);
+            Event::WorkItems { result } => {
+                match result {
+                    Ok(work_items) => {
+                        self.fleet.set_work_items(work_items);
+                        self.fleet.work_items_error = None;
                 self.last_error = None;
+                    }
+                    Err(error) => {
+                        self.fleet.work_items_error = Some(error);
+                    }
+                }
                 Action::Render
             }
             Event::ActivitySeed(a) => {
@@ -6248,7 +6353,7 @@ impl App {
                 // the cursor that was current when it was requested. A refresh
                 // clears that cursor, so an older append can never repaint it.
                 let active_filter =
-                    kind == CUPBOARD_KINDS[self.cupboard_kind] && query == self.cupboard_query;
+                    kind == self.cupboard_kind_filter && query == self.cupboard_query;
                 let active_cursor = !append || requested_cursor == self.cupboard_next_cursor;
                 if active_filter && active_cursor {
                     if failed {
@@ -6258,7 +6363,6 @@ impl App {
                             self.cupboard.clear();
                             self.cupboard_next_cursor = None;
                             self.cupboard_total = None;
-                            self.cupboard_kind_facets.clear();
                             self.cupboard_sel = 0;
                         }
                     } else if append {
@@ -6284,7 +6388,14 @@ impl App {
                     }
                     if !failed {
                         self.cupboard_total = total;
+                        // An empty map is also the legacy-worker fallback shape.
+                        // Preserve the last live taxonomy across a search miss or
+                        // transient legacy page instead of snapping back to the
+                        // retired five-kind strip.
+                        if !kind_facets.is_empty() {
                         self.cupboard_kind_facets = kind_facets;
+                            self.sync_cupboard_kind_index();
+                        }
                         self.cupboard_loading = false;
                         self.cupboard_loading_more = false;
                         if self.cupboard_sel >= self.cupboard.len() {
@@ -6325,9 +6436,11 @@ impl App {
                 }
                 Action::Render
             }
-            Event::TuiPanes(p) => {
-                self.set_panes(p);
+            Event::TuiPanes { harness, panes } => {
+                if harness == self.harness {
+                    self.set_panes(panes);
                 self.last_error = None;
+                }
                 Action::Render
             }
             Event::Plugins(p) => {
@@ -6461,6 +6574,21 @@ impl App {
                             id,
                             result_json: "null".to_string(),
                             error: Some("focus_pane: missing integer `pane_id`".to_string()),
+                        },
+                    };
+                }
+                if intent == "set_tab" {
+                    return match self.apply_set_tab_intent_with_action(&args) {
+                        Ok((result, follow_up)) => Action::IntentResultWithFollowup {
+                            id,
+                            result_json: result.to_string(),
+                            error: None,
+                            follow_up: Box::new(follow_up),
+                        },
+                        Err(e) => Action::IntentResult {
+                            id,
+                            result_json: "null".to_string(),
+                            error: Some(e),
                         },
                     };
                 }
@@ -7817,7 +7945,7 @@ impl App {
             KeyCode::Char('L') if self.tab == Tab::Plans => self.open_fleet_launcher(),
             KeyCode::Char('i') if self.tab == Tab::Conversations => self.conv_promote(),
             KeyCode::Char('f') if self.tab == Tab::Cupboard => {
-                self.cupboard_kind = (self.cupboard_kind + 1) % CUPBOARD_KINDS.len();
+                self.cycle_cupboard_kind();
                 self.cupboard_sel = 0;
                 self.cupboard_confirm = None;
                 self.refetch_cupboard()
@@ -7835,8 +7963,10 @@ impl App {
                 // which may have moved since arming).
                 if let Some(id) = self.cupboard_confirm.take() {
                     if let Some(l) = self.cupboard.iter().find(|l| l.id == id) {
+                        if l.action_label().is_some() {
                         return Action::CupboardAct { listing: l.clone() };
                     }
+                }
                 }
                 Action::Render
             }
@@ -8091,14 +8221,8 @@ impl App {
             }
             // Global tab cycle — scalable past the 1-9/0 digit shortcuts as more
             // tabs are appended (pui-fleet-status-view-2026-06-04).
-            KeyCode::Char('>') => {
-                self.cycle_tab(1);
-                Action::Render
-            }
-            KeyCode::Char('<') => {
-                self.cycle_tab(-1);
-                Action::Render
-            }
+            KeyCode::Char('>') => self.cycle_tab(1),
+            KeyCode::Char('<') => self.cycle_tab(-1),
             KeyCode::Tab if self.tab == Tab::Harnesses => {
                 self.harness_focus = match self.harness_focus {
                     HarnessFocus::Features => HarnessFocus::Issues,
@@ -8225,45 +8349,7 @@ impl App {
             // `switch_key` switches to it. Must be the last `Char` arm so the
             // contextual char handlers above (n/g/r/i/p/N/[/]/</>) win first.
             KeyCode::Char(c) => match Tab::from_switch_key(c) {
-                Some(t) => {
-                    self.switch_to(t);
-                    // Lazy-load the Cupboard listings the first time it's opened
-                    // (D-011) — the marketplace isn't part of the startup fetch.
-                    if t == Tab::Cupboard && self.cupboard.is_empty() && !self.cupboard_loading {
-                        return self.refetch_cupboard();
-                    }
-                    // Same lazy-load for Conversations (Brief 25) — not in the
-                    // startup poll; fetch the list on first open.
-                    if t == Tab::Conversations
-                        && self.conversations.is_empty()
-                        && !self.conversations_loading
-                    {
-                        return self.refetch_conversations();
-                    }
-                    if t == Tab::Sessions {
-                        if self.session_browser.rows.is_empty() {
-                            return self.refetch_session_browser();
-                        }
-                        return self.fetch_selected_browser_transcript();
-                    }
-                    // Voice tab (holepunch-voice-channels P-008): connect the voice
-                    // socket + fetch the channel list on first open.
-                    if t == Tab::Voice && !self.voice_ui.connected {
-                        return Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect);
-                    }
-                    // Fleet (Swarm) tab: refresh the whole-fleet task list — the
-                    // default dossier (pui-dock-consolidation-2026-06-07 #2) —
-                    // on every entry (assignments are volatile: claims churn).
-                    if t == Tab::Fleet {
-                        return Action::FetchFleetAssignments;
-                    }
-                    // Hives tab: refresh the federated p2p roster on every entry
-                    // (presence is volatile — peers announce + go stale).
-                    if t == Tab::Hives {
-                        return Action::FetchHives;
-                    }
-                    Action::Render
-                }
+                Some(t) => self.tab_entry_action(t),
                 None => Action::None,
             },
             _ => Action::None,
@@ -8306,14 +8392,126 @@ impl App {
     /// Cycle the active tab by `delta` (wrapping) across `Tab::ALL` — the
     /// scalable nav beyond the digit shortcuts (`<`/`>`). Landing on Inbox
     /// acknowledges its notification badge, mirroring the digit-'2' handler.
-    fn cycle_tab(&mut self, delta: isize) {
+    fn cycle_tab(&mut self, delta: isize) -> Action {
         let n = Tab::ALL.len() as isize;
         let cur = self.tab.index() as isize;
         let next = ((cur + delta).rem_euclid(n)) as usize;
-        self.switch_to(Tab::ALL[next]);
+        self.tab_entry_action(Tab::ALL[next])
+    }
+
+    /// Apply the lazy work associated with entering a tab. Keeping this
+    /// separate from `switch_to` lets both key-driven navigation and
+    /// `tui:dispatch set_tab` share exactly one side-effect path.
+    fn tab_entry_side_effect(&mut self, tab: Tab) -> Action {
+        if tab == Tab::Cupboard && self.cupboard.is_empty() && !self.cupboard_loading {
+            return self.refetch_cupboard();
+        }
+        if tab == Tab::Conversations && self.conversations.is_empty() && !self.conversations_loading
+        {
+            return self.refetch_conversations();
+        }
+        if tab == Tab::Sessions {
+            if self.session_browser.rows.is_empty() {
+                return self.refetch_session_browser();
+            }
+            return self.fetch_selected_browser_transcript();
+        }
+        if tab == Tab::Voice && !self.voice_ui.connected {
+            return Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect);
+        }
+        if tab == Tab::Fleet {
+            return Action::FetchFleetAssignments;
+        }
+        if tab == Tab::Hives {
+            return Action::FetchHives;
+        }
+        Action::Render
+    }
+
+    fn tab_entry_action(&mut self, tab: Tab) -> Action {
+        self.switch_to(tab);
+        self.tab_entry_side_effect(tab)
     }
 
     // ─── Cupboard tab (D-011) ───
+
+    /// Live Cupboard filter options. Facet keys are the catalog taxonomy; the
+    /// old constant is used only until a legacy worker returns real facets.
+    pub fn cupboard_kind_options(&self) -> Vec<String> {
+        let mut live = self
+            .cupboard_kind_facets
+            .keys()
+            .map(|kind| normalize_cupboard_kind(kind).to_string())
+            .filter(|kind| !kind.is_empty() && kind != "all")
+            .collect::<std::collections::BTreeSet<_>>();
+
+        let mut kinds = vec!["all".to_string()];
+        if live.is_empty() {
+            kinds.extend(
+                CUPBOARD_KINDS
+                    .iter()
+                    .skip(1)
+                    .map(|kind| (*kind).to_string()),
+            );
+        } else {
+            for known in CUPBOARD_KINDS.iter().skip(1) {
+                if live.remove(*known) {
+                    kinds.push((*known).to_string());
+                }
+            }
+            kinds.extend(live);
+        }
+
+        let active = normalize_cupboard_kind(&self.cupboard_kind_filter);
+        if active != "all" && !kinds.iter().any(|kind| kind == active) {
+            kinds.push(active.to_string());
+        }
+        kinds
+    }
+
+    /// Exact facet count for one normalized kind. The all-filter count prefers
+    /// the server's exact population total and otherwise sums the live facets.
+    pub fn cupboard_kind_count(&self, kind: &str) -> Option<usize> {
+        if kind == "all" {
+            let facet_total = (!self.cupboard_kind_facets.is_empty())
+                .then(|| self.cupboard_kind_facets.values().sum());
+            return if self.cupboard_kind_filter == "all" {
+                self.cupboard_total.or(facet_total)
+            } else {
+                facet_total
+            };
+        }
+        let mut found = false;
+        let count = self
+            .cupboard_kind_facets
+            .iter()
+            .filter_map(|(facet, count)| {
+                (normalize_cupboard_kind(facet) == kind).then(|| {
+                    found = true;
+                    *count
+                })
+            })
+            .sum();
+        found.then_some(count)
+    }
+
+    fn sync_cupboard_kind_index(&mut self) {
+        let kinds = self.cupboard_kind_options();
+        self.cupboard_kind = kinds
+            .iter()
+            .position(|kind| kind == &self.cupboard_kind_filter)
+            .unwrap_or(0);
+    }
+
+    fn cycle_cupboard_kind(&mut self) {
+        let kinds = self.cupboard_kind_options();
+        let current = kinds
+            .iter()
+            .position(|kind| kind == &self.cupboard_kind_filter)
+            .unwrap_or(0);
+        self.cupboard_kind = (current + 1) % kinds.len();
+        self.cupboard_kind_filter = kinds[self.cupboard_kind].clone();
+    }
 
     /// Trigger a Cupboard listings fetch for the active (kind, query) filter.
     /// Marks the in-flight flag; the run loop emits `Event::CupboardListings`,
@@ -8323,9 +8521,8 @@ impl App {
         self.cupboard_loading_more = false;
         self.cupboard_next_cursor = None;
         self.cupboard_total = None;
-        self.cupboard_kind_facets.clear();
         Action::FetchCupboard {
-            kind: CUPBOARD_KINDS[self.cupboard_kind].to_string(),
+            kind: self.cupboard_kind_filter.clone(),
             query: self.cupboard_query.clone(),
             cursor: None,
             append: false,
@@ -8343,7 +8540,7 @@ impl App {
         }
         self.cupboard_loading_more = true;
         Action::FetchCupboard {
-            kind: CUPBOARD_KINDS[self.cupboard_kind].to_string(),
+            kind: self.cupboard_kind_filter.clone(),
             query: self.cupboard_query.clone(),
             cursor: Some(cursor),
             append: true,
@@ -8358,6 +8555,10 @@ impl App {
         let Some(listing) = self.cupboard.get(self.cupboard_sel) else {
             return Action::None;
         };
+        if listing.action_label().is_none() {
+            self.cupboard_confirm = None;
+            return Action::Render;
+        }
         if self.cupboard_confirm.as_deref() == Some(listing.id.as_str()) {
             self.cupboard_confirm = None;
             Action::CupboardAct {
@@ -8904,8 +9105,32 @@ fn fuzzy_score(haystack: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ActivityRow, PlanSummary, WorkItem};
+    use crate::models::{ActivityRow, NativeSessionHandle, PlanSummary, RosterEntry, WorkItem};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn live_context_row(
+        pane_kind: Option<&str>,
+        role: Option<&str>,
+        agent: Option<&str>,
+        session_id: Option<&str>,
+    ) -> RosterEntry {
+        RosterEntry {
+            liveness: "live".into(),
+            session_state: Some("live".into()),
+            agent_pane_kind: pane_kind.map(str::to_owned),
+            role: role.map(str::to_owned),
+            agent: agent.map(str::to_owned),
+            native_session: session_id.map(|id| NativeSessionHandle::Claude {
+                source: "adv_sessions".into(),
+                owner_id: Some("operator-1".into()),
+                session_id: Some(id.into()),
+                config_dir: None,
+                exact_resume_supported: true,
+                missing_reason: None,
+            }),
+            ..Default::default()
+        }
+    }
 
     #[test]
     fn claude_transcript_gate_tracks_disk_state() {
@@ -8946,6 +9171,104 @@ mod tests {
             owner_id: "s-plain".into(),
             ..Default::default()
         }));
+    }
+
+    #[test]
+    fn context_target_resolver_prefers_canonical_papercup_over_legacy_sentinel() {
+        let legacy = live_context_row(Some("sentinel"), None, Some("sentinel"), Some("legacy"));
+        let canonical = live_context_row(
+            Some("papercup"),
+            Some("operator"),
+            Some("codex"),
+            Some("canonical"),
+        );
+
+        let target = resolve_context_projection_target(&[legacy, canonical])
+            .expect("a live canonical Papercup row with a native handle is targetable");
+        assert_eq!(target.source_kind, "claude");
+        assert_eq!(target.session_id, "canonical");
+    }
+
+    #[test]
+    fn context_target_resolver_rejects_sentinel_watcher_and_non_exact_handles() {
+        // `sentinel` is now the read-mostly watcher role, not the owner-facing
+        // Papercup role. It must not steal Context from a real operator row.
+        let watcher = live_context_row(Some("cup"), Some("sentinel"), None, Some("watcher"));
+        assert!(resolve_context_projection_target(&[watcher]).is_none());
+
+        let no_handle = live_context_row(Some("papercup"), Some("operator"), None, None);
+        let blank_handle = live_context_row(Some("papercup"), Some("operator"), None, Some("  "));
+        assert!(resolve_context_projection_target(&[no_handle, blank_handle]).is_none());
+
+        let mut ended = live_context_row(Some("papercup"), Some("operator"), None, Some("ended"));
+        ended.session_state = Some("ended".into());
+        assert!(resolve_context_projection_target(&[ended]).is_none());
+    }
+
+    #[test]
+    fn generated_papercup_roster_row_binds_context_projection() {
+        // This is the backend-generated shape: classifyAgentPane stamps the
+        // canonical papercup kind while the operator role carries the same
+        // identity and nativeSession carries the exact projection id.
+        let row: RosterEntry = serde_json::from_value(serde_json::json!({
+            "ownerId": "operator-1",
+            "label": "Papercup",
+            "liveness": "live",
+            "sessionState": "live",
+            "agentPaneKind": "papercup",
+            "role": "operator",
+            "nativeSession": {
+                "backend": "codex",
+                "source": "adv_sessions",
+                "ownerId": "operator-1",
+                "codexHome": "/tmp/codex",
+                "rolloutId": "rollout-canonical",
+                "exactResumeSupported": true
+            }
+        }))
+        .expect("generated papercup roster row should decode");
+
+        let mut app = App::new();
+        app.set_roster(vec![row]);
+        let target = app
+            .context_projection_target
+            .clone()
+            .expect("canonical generated row should select a Context target");
+        assert_eq!(target.source_kind, "codex");
+        assert_eq!(target.session_id, "rollout-canonical");
+
+        let projection = ConversationContextProjection {
+            schema_version: "conversation-context-v1".into(),
+            session: crate::models::ConversationContextSession {
+                source_kind: "codex".into(),
+                session_id: "rollout-canonical".into(),
+                harness: None,
+                role: Some("operator".into()),
+                linked_work_item_id: None,
+                capability_tier: "live".into(),
+            },
+            capabilities: crate::models::ConversationContextCapabilities {
+                live_frames: true,
+                task_write: false,
+                approval_write: false,
+            },
+            frames: vec![],
+        };
+        assert_eq!(
+            app.update(Event::ConversationContextProjectionLoaded {
+                target,
+                projection: Some(projection),
+            }),
+            Action::Render
+        );
+        assert_eq!(
+            app.context_projection
+                .as_ref()
+                .expect("matching projection should be accepted")
+                .session
+                .session_id,
+            "rollout-canonical"
+        );
     }
 
     fn key(c: char, mods: KeyModifiers) -> Event {
@@ -9202,6 +9525,7 @@ mod tests {
             spec: spec.to_string(),
             when: None,
             backend: None,
+            loop_capability: None,
         }
     }
 
@@ -11020,6 +11344,174 @@ mod tests {
     }
 
     #[test]
+    fn per_harness_fetch_events_drop_delayed_responses_after_switch() {
+        use crate::models::{
+            DocsResponse, EffectiveClaudeSettings, HarnessFeature, HarnessIssue, HarnessRef,
+            TestingDomain, TuiPaneContribution,
+        };
+
+        let mut a = App::new();
+        a.set_harnesses(vec![
+            HarnessRef {
+                slug: "papercup".into(),
+                path: None,
+            },
+            HarnessRef {
+                slug: "other-pot".into(),
+                path: None,
+            },
+        ]);
+        assert!(a.cycle_harness(1));
+        assert_eq!(a.harness, "other-pot");
+        a.last_error = Some("keep this error".into());
+
+        // These responses were started for papercup before the selection
+        // changed. They arrive after select_harness cleared the per-pot state.
+        a.update(Event::Features {
+            harness: "papercup".into(),
+            features: vec![HarnessFeature {
+                id: "old-feature".into(),
+                title: "old feature".into(),
+                status: "todo".into(),
+                attempts: 0,
+            }],
+        });
+        a.update(Event::Issues {
+            harness: "papercup".into(),
+            issues: vec![HarnessIssue {
+                id: "old-issue".into(),
+                title: "old issue".into(),
+                severity: "minor".into(),
+                status: "open".into(),
+                source: "test".into(),
+                found_during: None,
+                linked_feature_id: None,
+                attempts: 0,
+            }],
+        });
+        a.update(Event::Docs {
+            harness: "papercup".into(),
+            docs: DocsResponse {
+                files: vec!["old.md".into()],
+                active_path: Some("old.md".into()),
+                content: Some("old docs".into()),
+                entries: vec![],
+                active_entry: None,
+            },
+        });
+        a.update(Event::Testing {
+            harness: "papercup".into(),
+            testing: vec![TestingDomain {
+                id: "old-domain".into(),
+                label: "old domain".into(),
+                description: "old".into(),
+                tier: "unit".into(),
+            }],
+        });
+        a.update(Event::Config {
+            harness: "papercup".into(),
+            config: EffectiveClaudeSettings {
+                content: "old config".into(),
+                effective: json!({"pot": "papercup"}),
+                file_keys: vec!["pot".into()],
+                parse_error: None,
+            },
+        });
+        a.update(Event::TuiPanes {
+            harness: "papercup".into(),
+            panes: vec![TuiPaneContribution {
+                plugin_name: "old-plugin".into(),
+                slug: "papercup".into(),
+                label: "old pane".into(),
+                icon: None,
+                command: vec!["old".into()],
+                cwd: "/tmp".into(),
+            }],
+        });
+
+        assert!(a.features.is_empty());
+        assert!(a.issues.is_empty());
+        assert!(a.docs_files.is_empty());
+        assert!(a.doc_content.is_empty());
+        assert!(a.testing.is_empty());
+        assert!(a.config.content.is_empty());
+        assert!(a.config.effective.is_null());
+        assert!(a.panes.is_empty());
+        assert_eq!(a.last_error.as_deref(), Some("keep this error"));
+
+        // Responses tagged with the current pot still populate each pane.
+        a.update(Event::Features {
+            harness: "other-pot".into(),
+            features: vec![HarnessFeature {
+                id: "new-feature".into(),
+                title: "new feature".into(),
+                status: "todo".into(),
+                attempts: 0,
+            }],
+        });
+        a.update(Event::Issues {
+            harness: "other-pot".into(),
+            issues: vec![HarnessIssue {
+                id: "new-issue".into(),
+                title: "new issue".into(),
+                severity: "minor".into(),
+                status: "open".into(),
+                source: "test".into(),
+                found_during: None,
+                linked_feature_id: None,
+                attempts: 0,
+            }],
+        });
+        a.update(Event::Docs {
+            harness: "other-pot".into(),
+            docs: DocsResponse {
+                files: vec!["new.md".into()],
+                active_path: Some("new.md".into()),
+                content: Some("new docs".into()),
+                entries: vec![],
+                active_entry: None,
+            },
+        });
+        a.update(Event::Testing {
+            harness: "other-pot".into(),
+            testing: vec![TestingDomain {
+                id: "new-domain".into(),
+                label: "new domain".into(),
+                description: "new".into(),
+                tier: "unit".into(),
+            }],
+        });
+        a.update(Event::Config {
+            harness: "other-pot".into(),
+            config: EffectiveClaudeSettings {
+                content: "new config".into(),
+                effective: json!({"pot": "other-pot"}),
+                file_keys: vec!["pot".into()],
+                parse_error: None,
+            },
+        });
+        a.update(Event::TuiPanes {
+            harness: "other-pot".into(),
+            panes: vec![TuiPaneContribution {
+                plugin_name: "new-plugin".into(),
+                slug: "other-pot".into(),
+                label: "new pane".into(),
+                icon: None,
+                command: vec!["new".into()],
+                cwd: "/tmp".into(),
+            }],
+        });
+
+        assert_eq!(a.features[0].id, "new-feature");
+        assert_eq!(a.issues[0].id, "new-issue");
+        assert_eq!(a.docs_files, vec!["new.md"]);
+        assert_eq!(a.doc_content, "new docs");
+        assert_eq!(a.testing[0].id, "new-domain");
+        assert_eq!(a.config.content, "new config");
+        assert_eq!(a.panes[0].label, "new pane");
+    }
+
+    #[test]
     fn docs_tab_navigates_and_publishes_selection() {
         use crate::models::DocsResponse;
         let mut a = App::new();
@@ -11937,6 +12429,95 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tui_set_tab_event_runs_the_same_lazy_entry_side_effects_as_key_navigation() {
+        let mut a = App::new();
+
+        let action = a.update(Event::TuiIntent {
+            id: 42,
+            intent: "set_tab".into(),
+            args: serde_json::json!({"tab":"Cupboard"}),
+        });
+
+        let Action::IntentResultWithFollowup {
+            id,
+            result_json,
+            error,
+            follow_up,
+        } = action
+        else {
+            panic!("expected set_tab result with follow-up action");
+        };
+        assert_eq!(id, 42);
+        assert!(error.is_none());
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&result_json).unwrap(),
+            serde_json::json!({"ok": true, "tab": "Cupboard"})
+        );
+        assert_eq!(a.tab, Tab::Cupboard);
+        assert!(a.cupboard_loading);
+        assert!(matches!(
+            *follow_up,
+            Action::FetchCupboard {
+                kind,
+                query,
+                cursor: None,
+                append: false,
+            } if kind == "all" && query.is_empty()
+        ));
+    }
+
+    #[test]
+    fn tui_set_tab_event_routes_non_lazy_tab_entry_actions() {
+        let cases = [
+            ("Convos", "conversations"),
+            ("Sessions", "sessions"),
+            ("Voice", "voice"),
+            ("Fleet", "fleet"),
+            ("Hives", "hives"),
+        ];
+
+        for (title, expected) in cases {
+            let mut a = App::new();
+            let action = a.update(Event::TuiIntent {
+                id: 1,
+                intent: "set_tab".into(),
+                args: serde_json::json!({"tab": title}),
+            });
+            let Action::IntentResultWithFollowup { follow_up, .. } = action else {
+                panic!("expected follow-up for set_tab {title}");
+            };
+
+            match (expected, *follow_up) {
+                (
+                    "conversations",
+                    Action::FetchConversations {
+                        state,
+                        kind,
+                    },
+                ) => {
+                    assert_eq!(state, "open");
+                    assert_eq!(kind, "all");
+                    assert!(a.conversations_loading);
+                }
+                ("sessions", Action::FetchSessionBrowser { query }) => {
+                    assert!(query.is_empty());
+                    assert!(a.session_browser.loading);
+                }
+                (
+                    "voice",
+                    Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect),
+                ) => {
+                    assert!(!a.voice_ui.connected);
+                }
+                ("fleet", Action::FetchFleetAssignments) => {}
+                ("hives", Action::FetchHives) => {}
+                _ => panic!("unexpected follow-up for set_tab {title}"),
+            }
+            assert_eq!(a.tab.title(), title);
+        }
+    }
+
     // --- P10 Settings tab (feature flags) ---
 
     fn flags(pairs: &[(&str, bool)]) -> FlagsResponse {
@@ -12193,14 +12774,28 @@ mod tests {
             next_cursor: Some("v1:50:L1".into()),
             total: Some(101),
             kind_facets: std::collections::BTreeMap::from([
-                ("harness".into(), 100),
+                ("app".into(), 3),
+                ("harness".into(), 90),
+                ("knowledge-pack".into(), 3),
                 ("plugin".into(), 1),
+                ("template".into(), 4),
             ]),
         });
         assert_eq!(a.cupboard.len(), 1);
         assert!(!a.cupboard_loading);
         assert_eq!(a.cupboard_total, Some(101));
         assert_eq!(a.cupboard_kind_facets.get("plugin"), Some(&1));
+        assert_eq!(
+            a.cupboard_kind_options(),
+            vec![
+                "all",
+                "harness",
+                "plugin",
+                "app",
+                "knowledge-pack",
+                "template"
+            ]
+        );
         // `n` carries the opaque cursor and appends rather than replacing.
         let next = a.update(key('n', KeyModifiers::NONE));
         assert!(matches!(
@@ -12247,8 +12842,11 @@ mod tests {
             next_cursor: None,
             total: Some(101),
             kind_facets: std::collections::BTreeMap::from([
-                ("harness".into(), 100),
+                ("app".into(), 3),
+                ("harness".into(), 90),
+                ("knowledge-pack".into(), 3),
                 ("plugin".into(), 1),
+                ("template".into(), 4),
             ]),
         });
         assert_eq!(a.cupboard.len(), 2);
@@ -12274,12 +12872,38 @@ mod tests {
         // `f` cycles the kind filter (all→harness) and refetches.
         let f = a.update(key('f', KeyModifiers::NONE));
         assert_eq!(a.cupboard_kind, 1);
-        assert_eq!(CUPBOARD_KINDS[a.cupboard_kind], "harness");
+        assert_eq!(a.cupboard_kind_filter, "harness");
         assert!(matches!(f, Action::FetchCupboard { .. }));
         // `/` opens the search composer seeded with the active query.
         let s = a.update(key('/', KeyModifiers::NONE));
         assert!(a.cupboard_search_open);
         assert_eq!(s, Action::Render);
+    }
+
+    #[test]
+    fn cupboard_unsupported_rows_are_read_only() {
+        use crate::models::CupboardListing;
+        let mut a = App::new();
+        a.tab = Tab::Cupboard;
+        a.cupboard = vec![CupboardListing {
+            id: "plan-1".into(),
+            listing_kind: "plan".into(),
+            ..Default::default()
+        }];
+
+        assert_eq!(
+            a.on_key(KeyCode::Enter, KeyModifiers::empty()),
+            Action::Render
+        );
+        assert!(a.cupboard_confirm.is_none());
+
+        // A stale/injected confirm id is defense-in-depth guarded too.
+        a.cupboard_confirm = Some("plan-1".into());
+        assert_eq!(
+            a.on_key(KeyCode::Char('y'), KeyModifiers::empty()),
+            Action::Render
+        );
+        assert!(a.cupboard_confirm.is_none());
     }
 
     #[test]
@@ -12830,10 +13454,25 @@ mod tests {
     fn fleet_events_update_state() {
         let mut a = App::new();
         assert_eq!(
-            a.update(Event::WorkItems(vec![work_item("feature", "passed")])),
+            a.update(Event::WorkItems {
+                result: Ok(vec![work_item("feature", "passed")]),
+            }),
             Action::Render
         );
         assert_eq!(a.fleet.work_items.len(), 1);
+        a.last_error = Some("unrelated error".into());
+        assert_eq!(
+            a.update(Event::WorkItems {
+                result: Err("array-root decode failed".into()),
+            }),
+            Action::Render
+        );
+        assert_eq!(a.fleet.work_items.len(), 1);
+        assert_eq!(
+            a.fleet.work_items_error.as_deref(),
+            Some("array-root decode failed")
+        );
+        assert_eq!(a.last_error.as_deref(), Some("unrelated error"));
         assert_eq!(
             a.update(Event::ActivitySeed(vec![activity_row(
                 "su-a", "tool", "✎ x.rs"
@@ -12841,6 +13480,14 @@ mod tests {
             Action::Render
         );
         assert_eq!(a.fleet.activity.len(), 1);
+        assert_eq!(
+            a.fleet.work_items_error.as_deref(),
+            Some("array-root decode failed")
+        );
+        a.update(Event::WorkItems {
+            result: Ok(Vec::new()),
+        });
+        assert!(a.fleet.work_items_error.is_none());
         assert_eq!(
             a.update(Event::ActivityLive(activity_row("su-b", "tool", "▶ test"))),
             Action::Render
@@ -13708,6 +14355,45 @@ mod tests {
             metadata: Some(serde_json::json!({ "kind": kind })),
             score: None,
         }
+    }
+
+    #[test]
+    fn memory_load_state_distinguishes_backend_auth_and_transport_failures() {
+        let mut a = App::new();
+
+        a.update(Event::MemoryLoad(MemoryLoadState::BackendUnavailable {
+            reason: Some("mem0 disabled".into()),
+        }));
+        assert!(!a.memory_available);
+        assert!(matches!(
+            a.memory_load_state,
+            MemoryLoadState::BackendUnavailable { .. }
+        ));
+
+        a.update(Event::MemoryLoad(MemoryLoadState::AuthFailure {
+            message: "401 principal required".into(),
+        }));
+        assert!(!a.memory_available);
+        assert!(a.memories.is_empty());
+        assert!(matches!(
+            a.memory_load_state,
+            MemoryLoadState::AuthFailure { .. }
+        ));
+
+        a.update(Event::MemoryLoad(MemoryLoadState::TransportFailure {
+            message: "connection refused".into(),
+        }));
+        assert!(!a.memory_available);
+        assert!(matches!(
+            a.memory_load_state,
+            MemoryLoadState::TransportFailure { .. }
+        ));
+
+        a.update(Event::MemoryLoad(MemoryLoadState::Available {
+            results: vec![mem("m1", "likes rust", "preference")],
+        }));
+        assert!(a.memory_available);
+        assert_eq!(a.memories.len(), 1);
     }
 
     #[test]
