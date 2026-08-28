@@ -131,7 +131,7 @@ export default function Page() {
   return (
     <div style={{ padding: 24, fontFamily: 'ui-monospace, Menlo, monospace', maxWidth: 720, margin: '0 auto' }}>
       <h1>EL minimal-React test</h1>
-      <p>Same code as <code>el-bare-test.html</code> but inside the operator React tree (root layout providers still wrap it; no chrome, no OracleDock, no voice button on this route).</p>
+      <p>Same minimal diagnostic flow inside the operator React tree (root layout providers still wrap it; no chrome, no OracleDock, no voice button on this route).</p>
       <p>
         <strong>Auto-stops</strong> after {IDLE_TIMEOUT_MS / 1000}s of user silence
         or {SESSION_MAX_MS / 60_000} min hard ceiling — diagnostic page should never

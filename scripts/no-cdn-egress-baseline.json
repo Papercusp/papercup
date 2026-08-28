@@ -51,18 +51,6 @@
       "reason": "Same emoji-mart remote-data fallback as the i18n row; proven not live in cdn-egress-fixes-2026-08-02 P-005. Note the unpinned '@latest' — if this branch ever DID become reachable it would also mean unversioned, silently-drifting upstream data, so treat any change here as high-severity."
     },
     {
-      "file": "el-bare-test.html",
-      "url": "https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.4.0/+esm",
-      "status": "unresolved",
-      "reason": "A standalone ElevenLabs scratch/test page in the operator's public/ that imports its ESM straight from jsdelivr. Not referenced by the app, but it SHIPS in dist and is reachable by URL, so it is live for anyone who opens it. Almost certainly should be deleted rather than mirrored. Tracked: WI-7117."
-    },
-    {
-      "file": "el-fresh-test.html",
-      "url": "https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.4.0/+esm",
-      "status": "unresolved",
-      "reason": "Second ElevenLabs scratch/test page, same jsdelivr ESM import as el-bare-test.html. Tracked: WI-7117."
-    },
-    {
       "file": "excalidraw/chunk-<hash>.js",
       "url": "https://embed.reddit.com/widgets.js",
       "status": "unresolved",
