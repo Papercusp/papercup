@@ -98,6 +98,19 @@ export const SEPARATE_PROCESS_ALLOWLIST = new Set([
   'packages/operator-core/lib/inference-gateway/launch.ts', // :8788 gateway process bootstrap
   'packages/operator-core/lib/inference-gateway/watchdog.mjs', // standalone systemd watchdog for the gateway
   'apps/operator/lib/mcp-proxy/watchdog.mjs', // standalone systemd watchdog for mcp-proxy -- plain node, no TS imports (deliberately dependency-free, same class as inference-gateway/watchdog.mjs)
+  // The plain-Node bridge used by the two test CLIs (scripts/test-files.mjs,
+  // scripts/affected-tests.mjs). Its own header states the constraint: these
+  // entrypoints must stay executable by bare `node scripts/*.mjs` for packaged
+  // installs where a project-wide TS loader is not an option, so it registers
+  // tsx LAZILY and only when a real child is about to start. A static import of
+  // @papercusp/scheduled-registry (whose package main is a .ts file) would break
+  // exactly that case. The timer is also armed in the TEST-RUNNER process, not
+  // the operator host, so its registry entry would land in a separate
+  // per-process inventory that `schedule:inventory` never serves — the same
+  // structural unreachability recorded for event-loop-sentinel.worker.ts. Its
+  // in-host twin (createTestProcessDemandSampler in agent-tools/testing/run.ts)
+  // IS registered via managedSetInterval. [P-018]
+  'scripts/lib/governed-test-process.mjs',
 ]);
 
 /** Permanently-allowed individual files (rare; prefer ALLOWLIST_DIRS). */

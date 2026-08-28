@@ -65,6 +65,7 @@ import { REPO_ROOT } from '../docs/_repo-paths';
 import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
+import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { activeWorkspaceId } from '../../workspace-registry';
 import {
   admissionContextFromEnvironment,
@@ -523,7 +524,7 @@ export function createTestProcessDemandSampler(
   now: () => number = Date.now,
 ): TestProcessDemandSampler {
   let pid: number | null = null;
-  let timer: ReturnType<typeof setInterval> | null = null;
+  let timer: ManagedHandle | null = null;
   let stopped = false;
   let peakRss: number | null = null;
   let peakFds: number | null = null;
@@ -569,15 +570,24 @@ export function createTestProcessDemandSampler(
       if (stopped || !Number.isInteger(nextPid) || (nextPid as number) <= 0) return;
       pid = nextPid as number;
       sample();
-      timer = setInterval(sample, TEST_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS);
-      timer.unref?.();
+      // One sampler is armed per governed test process, so the timer is
+      // `instanced` (each arm coexists and the inventory aggregates them into
+      // one row). It is `must-sample`: procfs has no push source for a live
+      // process's peak RSS/CPU, which is the actual-demand this governed
+      // execution releases with.
+      timer = managedSetInterval(
+        'lifecycle:test-process-resource-sampler',
+        TEST_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS,
+        sample,
+        { category: 'lifecycle', instanced: true, classification: 'must-sample' },
+      );
     },
     sample,
     stop(extra = {}): ResourceDemand {
       if (stoppedDemand) return stoppedDemand;
       if (!stopped) sample();
       stopped = true;
-      if (timer) clearInterval(timer);
+      timer?.stop();
       timer = null;
       stoppedDemand = {
         cpuWeight: extra.cpuWeight ?? cpuWeight ?? planned.cpuWeight ?? 1,
