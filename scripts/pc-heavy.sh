@@ -253,6 +253,90 @@
 # command slower than that window, which is precisely the set of commands it
 # exists to protect. Kill-switch: PC_HEAVY_COALESCE=0.
 
+# ── Nested scratch + sweep-on-mint (WI-75008/WI-38830, plan P-001) ──────────
+# Every mktemp site below used to mint its scratch FLAT at ${TMPDIR:-/tmp}, so
+# each pc-heavy invocation (~12/min fleet-wide) cost the shared TMPDIR one
+# top-level dirent per site, permanently if the invocation died before its own
+# cleanup ran — a SIGKILLed process cannot clean up after itself no matter
+# which trap you install (same argument as libs/test-config/src/hermetic-
+# tmpdir.ts's module doc). Measured 2026-08-27: pc-heavy-self.* alone was 41%
+# of a leak growing /tmp by ~17k entries/day; /tmp held 52,489 entries against
+# a 50,000 warn threshold. This is a DIRENT problem (degrades every
+# mkdir/readdir/stat under the shared TMPDIR, including the testcontainer
+# start-lock), not a disk-space one — 449k such entries measured only 2.6 GiB.
+#
+# The fix mirrors hermetic-tmpdir.ts's two-part contract, in bash:
+#   1. NEST every site under ONE parent (${TMPDIR:-/tmp}/pc-heavy/), so a leak
+#      costs the shared TMPDIR a single top-level entry no matter how many
+#      sites or invocations leak into it.
+#   2. SWEEP dead siblings on every mint, reaping an entry ONLY when it is
+#      BOTH older than an age floor (PC_HEAVY_SCRATCH_SWEEP_MAX_AGE_MIN,
+#      default 240min) AND its creator pid — embedded as name field 2,
+#      dot-separated, e.g. "self.$$.XXXXXX.sh" — is no longer alive. Neither
+#      guard alone is safe, and dropping either reintroduces a real failure:
+#        - age alone would reap a run merely LONGER than the floor. The
+#          self-copy in particular must stay openable BY PATH for its whole
+#          logical run: internal `bash "$0"` re-invocations reopen it minutes
+#          in (see the self-copy note below), and reaping it mid-run
+#          reproduces the exact torn-read syntax-error failure the self-copy
+#          exists to prevent (EI-21508700734325898).
+#        - pid-liveness alone would never expire a truly-dead entry whose pid
+#          got recycled (this host wraps pids ~daily under fleet load); the
+#          age floor is the backstop that collects it anyway — the only
+#          failure direction it can produce is "kept too long", never
+#          "deleted too soon".
+#
+# Fail-OPEN throughout: if the nested parent can't be created, mint at the old
+# flat path (same historical prefix, so the shape stays greppable) rather than
+# ever refusing to run — admission control must never be why a legitimate
+# build can't start (same contract as the slot machinery elsewhere here).
+PC_HEAVY_SCRATCH_ROOT_DEFAULT="${TMPDIR:-/tmp}/pc-heavy"
+
+# Remove dead siblings from $1 (the nested scratch root) before a new mint.
+# Best-effort: every fs call is individually guarded, because this runs on a
+# path many concurrent pc-heavy invocations mutate; a racing peer removing an
+# entry between our glob and our rm is the normal case here, not an error.
+_pc_heavy_sweep_scratch_root() {
+  local _root="${1:-}"
+  local _max_age_min="${PC_HEAVY_SCRATCH_SWEEP_MAX_AGE_MIN:-240}"
+  case "$_max_age_min" in ''|*[!0-9]*) _max_age_min=240 ;; esac
+  [ -n "$_root" ] && [ -d "$_root" ] || return 0
+  local _path='' _entry='' _pid=''
+  while IFS= read -r -d '' _path; do
+    _entry="${_path##*/}"
+    _pid="$(printf '%s' "$_entry" | cut -d. -f2 2>/dev/null || true)"
+    case "$_pid" in ''|*[!0-9]*) _pid='' ;; esac
+    # Creator still alive (or its pid belongs to another user, which we
+    # cannot disprove) -> never touch it, however old it looks.
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+      continue
+    fi
+    rm -rf -- "$_path" 2>/dev/null || true
+  done < <(find "$_root" -mindepth 1 -maxdepth 1 -mmin "+${_max_age_min}" -print0 2>/dev/null)
+}
+
+# Mint a uniquely-named scratch path under the nested root, embedding $$ as
+# name field 2 (dot-separated) so the sweep above can judge liveness, sweeping
+# dead siblings first. $1 is a short label (e.g. "self", "start"); $2 is an
+# optional trailing literal suffix kept after mktemp's XXXXXX run (e.g.
+# ".sh") — GNU mktemp only substitutes the run of X's, so trailing text
+# survives untouched. Prints the new path on success; prints nothing and
+# returns non-zero on failure, exactly like plain `mktemp`, INCLUDING the
+# fail-open fallback to the historical flat shape when the nested root
+# cannot be created.
+_pc_heavy_scratch_mktemp() {
+  local _label="${1:-scratch}" _suffix="${2:-}"
+  local _root="${PC_HEAVY_SCRATCH_ROOT:-$PC_HEAVY_SCRATCH_ROOT_DEFAULT}"
+  if mkdir -p "$_root" 2>/dev/null; then
+    _pc_heavy_sweep_scratch_root "$_root"
+    if mktemp "$_root/${_label}.$$.XXXXXX${_suffix}" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # Fail open: old flat shape, so it stays greppable/consistent with history.
+  mktemp "${TMPDIR:-/tmp}/pc-heavy-${_label}.XXXXXX${_suffix}" 2>/dev/null
+}
+
 # NOTE: deliberately no `set -e` — a non-blocking flock miss returns non-zero by
 # design and must not abort the script.
 # EI-21508700734325898: bash reads scripts INCREMENTALLY, and this wrapper
@@ -269,7 +353,7 @@
 # PC_HEAVY_NO_SELF_COPY=1. Temp copies are left for /tmp's reaper (the script
 # manages its own traps later; an EXIT rm here would be clobbered).
 if [ -z "${_PC_HEAVY_SELF_COPIED:-}" ] && [ "${PC_HEAVY_NO_SELF_COPY:-}" != "1" ] && [ -f "$0" ]; then
-  _pc_heavy_self_copy="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-self.XXXXXX.sh" 2>/dev/null)" && {
+  _pc_heavy_self_copy="$(_pc_heavy_scratch_mktemp self .sh)" && {
     if cp "$0" "$_pc_heavy_self_copy" 2>/dev/null; then
       export _PC_HEAVY_SELF_COPIED=1
       exec bash "$_pc_heavy_self_copy" "$@"
@@ -2785,7 +2869,7 @@ fi
 _preempt_start_file=''
 unset PC_HEAVY_PREEMPT_START_FILE
 if [ "$_preemptible" = 1 ]; then
-  _preempt_start_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-start.XXXXXX" 2>/dev/null || true)"
+  _preempt_start_file="$(_pc_heavy_scratch_mktemp start || true)"
   if [ -n "$_preempt_start_file" ] && rm -f "$_preempt_start_file" 2>/dev/null; then
     export PC_HEAVY_PREEMPT_START_FILE="$_preempt_start_file"
   else
@@ -3060,7 +3144,7 @@ _pc_heavy_run_with_retries() {
     _retry_limit=10
   fi
 
-  _pc_heavy_retry_result_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-preempt-result.XXXXXX" 2>/dev/null || true)"
+  _pc_heavy_retry_result_file="$(_pc_heavy_scratch_mktemp preempt-result || true)"
   if [ -z "$_pc_heavy_retry_result_file" ]; then
     echo "[pc-heavy] retry marker unavailable; running without preemption retries" >&2
     main "$@"
@@ -3124,7 +3208,7 @@ _pc_heavy_run_with_retries() {
   # warn and keep today's inherited-stdout behavior rather than refusing to run.
   local _retry_stdout_file='' _retry_buffered=0
   if [ ! -t 1 ]; then
-    _retry_stdout_file="$(mktemp "${TMPDIR:-/tmp}/pc-heavy-attempt-stdout.XXXXXX" 2>/dev/null || true)"
+    _retry_stdout_file="$(_pc_heavy_scratch_mktemp attempt-stdout || true)"
     if [ -n "$_retry_stdout_file" ]; then
       _retry_buffered=1
     else
