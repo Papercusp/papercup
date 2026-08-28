@@ -146,6 +146,16 @@ describe('resolver brief — the D-001/D-002 policy it carries into the run', ()
   it('gives it a way to give up VISIBLY rather than stalling the run', () => {
     expect(brief).toMatch(/inbox:bulk-run-settle \{ failed: true, error \}/);
   });
+
+  it('carries the owner-selected confidence mode into the resolver brief', () => {
+    const policyBrief = buildResolverBrief('run-policy', 4, {
+      mode: 'safe-medium-plus',
+      minConfidence: 'medium',
+    });
+    expect(policyBrief).toContain('safe-medium-plus');
+    expect(policyBrief).toContain('minimum confidence medium');
+    expect(policyBrief).toMatch(/confidence \(high\|medium\|low\|insufficient\)/i);
+  });
 });
 
 describe('resolver launch — a real supervised headless agent, never a shell greeting', () => {

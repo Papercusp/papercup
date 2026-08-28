@@ -12,7 +12,7 @@
  */
 import { defineTool } from '@papercusp/agent-mcp';
 import { decodeAudioBase64, normalizeAudioFormat } from './operator-voice-proxy-helpers';
-import { whisperSttBaseUrl } from '../../../voice-node/local-whisper-service';
+import { fetchWhisperWithRecovery } from '../../../voice-node/local-whisper-service';
 
 export default defineTool({
   method: 'POST',
@@ -32,24 +32,25 @@ export default defineTool({
     const audio = decoded.audio;
     const format = normalizeAudioFormat(body.format);
 
-    const fd = new FormData();
-    fd.append(
-      'file',
-      // A Node Buffer isn't a BlobPart; wrap as a plain Uint8Array view.
-      new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
-      `audio.${format}`,
-    );
-    fd.append('model', 'whisper-1');
-
     let r: Response;
     try {
       // External whisper (VOICEMODE_URL) when reachable; else the operator-managed
-      // provisioned whisper-server child, spawned on demand (P-009 hop 3).
-      const sttBase = whisperSttBaseUrl();
-      r = await fetch(`${sttBase}/v1/audio/transcriptions`, {
-        method: 'POST',
-        body: fd,
-        signal: AbortSignal.timeout(60_000),
+      // provisioned whisper-server child. A transport/5xx failure gets one lifecycle warm +
+      // retry; successful and client-error requests stay single-fetch (P-003).
+      r = await fetchWhisperWithRecovery((sttBase) => {
+        const fd = new FormData();
+        fd.append(
+          'file',
+          // A Node Buffer isn't a BlobPart; wrap as a plain Uint8Array view.
+          new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
+          `audio.${format}`,
+        );
+        fd.append('model', 'whisper-1');
+        return fetch(`${sttBase}/v1/audio/transcriptions`, {
+          method: 'POST',
+          body: fd,
+          signal: AbortSignal.timeout(60_000),
+        });
       });
     } catch (e) {
       return Response.json(

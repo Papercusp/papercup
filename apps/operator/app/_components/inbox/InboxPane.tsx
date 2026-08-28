@@ -91,6 +91,7 @@ import InboxBulkStrip from "./InboxBulkStrip";
 import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
   INBOX_BULK_RUN_PARAM,
+  canonicalInboxDisposition,
   useBulkRunOps,
   useInboxBulkRun,
   type BulkRunItem,
@@ -950,13 +951,18 @@ export default function InboxPane() {
                       it never looked at. */}
                           {bulkRow && bulkRow.outcome !== "pending" ? (
                             <span
-                              className={`op-inbox__rowstate op-inbox__rowstate--${bulkRow.outcome}`}
+                              className={`op-inbox__rowstate op-inbox__rowstate--${canonicalInboxDisposition(bulkRow)}`}
                               data-testid={`inbox-bulk-state-${i.id}`}
                               title={
-                                bulkRow.rationale ?? bulkRow.error ?? undefined
+                                bulkRow.recommendation?.rationale ??
+                                bulkRow.rationale ??
+                                bulkRow.error ??
+                                undefined
                               }
                             >
-                              {BULK_OUTCOME_LABEL[bulkRow.outcome]}
+                              {bulkRow.recommendation?.label ??
+                                BULK_OUTCOME_LABEL[bulkRow.outcome] ??
+                                "needs review"}
                             </span>
                           ) : null}
                           {rel ? (

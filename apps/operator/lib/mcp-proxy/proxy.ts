@@ -268,9 +268,15 @@ export interface McpProxyOptions {
   /** Maximum time (ms) a critical-continuation write may wait for the dedicated slot. */
   maxCriticalContinuationQueueWaitMs?: number;
   /**
+   * EI-21669304707115602 — bounded FIFO waiters for pure `coord:send` batches. These
+   * handoffs have their own one-socket lane so they cannot sit behind a long completion or
+   * checkpoint on the general continuation socket.
+   */
+  maxCoordSendQueue?: number;
+  /**
    * EI-21653510279635866 — `coord:send` must fail before ptool's 60s client deadline when
-   * the shared continuation slot is occupied. Other durability writes deliberately inherit the
-   * unbounded default, but a send that never reached the handler is safe to reject/retry.
+   * its dedicated continuation slot is occupied. A send that never reached the handler is safe
+   * to reject/retry, while a mixed critical batch remains governed by the shared lane.
    */
   coordSendQueueWaitMs?: number;
   /**
@@ -321,8 +327,13 @@ export interface McpProxyOptions {
    * behind ordinary reserved-control-plane traffic: they persist the state needed to recover
    * from the very overload that can fill the ordinary pool. Caller owns an injected agent's
    * lifecycle.
-   */
+  */
   criticalContinuationAgent?: http.Agent;
+  /**
+   * EI-21669304707115602 — injectable one-socket agent for pure `coord:send` handoffs. Caller
+   * owns an injected agent's lifecycle.
+   */
+  coordSendAgent?: http.Agent;
   /**
    * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
    * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
@@ -1176,6 +1187,10 @@ export const DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE = Number.isFinite(
 )
   ? Math.max(0, Math.floor(configuredMaxCriticalContinuationQueue))
   : DEFAULT_MAX_IN_FLIGHT;
+/** EI-21669304707115602 — pure `coord:send` uses a separate FIFO with the same default bound
+ * as the general continuation queue; callers may tune the lanes independently. */
+export const DEFAULT_MAX_COORD_SEND_QUEUE =
+  DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE;
 const MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS = 16;
 /**
  * EI-21504897841052086 — bounded dwell for a handshake WAITING in the admission FIFO.
@@ -1356,6 +1371,7 @@ const RESERVED_CONTROL_PLANE_METHODS = new Set([
   "tools/list",
 ]);
 const TOOLS_INVOKE_NAME = normalizeMcpName("tools:invoke");
+const COORD_SEND_TOOL_NAME = normalizeMcpName("coord:send");
 
 /**
  * Whether the complete JSON-RPC batch is a write-free session handshake. `prepareForward`
@@ -1453,6 +1469,79 @@ interface CriticalContinuationIdentity {
   tools: string[];
 }
 
+interface CoordSendIdentity {
+  coordSend: boolean;
+  /** Bounded, argument-free tool identities safe to expose in health + failure telemetry. */
+  tools: string[];
+}
+
+/** Return the canonical coord:send identity for one tools/call message, if it is pure send. */
+function coordSendToolName(message: unknown): "coord:send" | null {
+  if (!message || typeof message !== "object") return null;
+  const call = message as {
+    method?: unknown;
+    params?: { name?: unknown; arguments?: unknown };
+  };
+  if (call.method !== "tools/call" || typeof call.params?.name !== "string")
+    return null;
+  const calledTool = normalizeMcpName(call.params.name);
+  if (calledTool === COORD_SEND_TOOL_NAME) return "coord:send";
+  if (calledTool !== TOOLS_INVOKE_NAME) return null;
+  const invokeArgs = call.params.arguments;
+  if (
+    !invokeArgs ||
+    typeof invokeArgs !== "object" ||
+    Array.isArray(invokeArgs)
+  )
+    return null;
+  const target = (invokeArgs as { name?: unknown }).name;
+  return typeof target === "string" &&
+    normalizeMcpName(target) === COORD_SEND_TOOL_NAME
+    ? "coord:send"
+    : null;
+}
+
+/**
+ * Whether a complete JSON-RPC batch contains only direct or deferred `coord:send` calls.
+ * A mixed batch deliberately returns false so it stays on the general critical lane.
+ */
+function classifyCoordSendCall(
+  rawBody: Buffer,
+  requestPath?: string,
+): CoordSendIdentity {
+  if (isCriticalSessionLifecyclePath(requestPath)) {
+    return { coordSend: false, tools: [] };
+  }
+  try {
+    const parsed = JSON.parse(rawBody.toString("utf8")) as unknown;
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    const tools = messages.map(coordSendToolName);
+    const coordSend =
+      messages.length > 0 && tools.every((tool): tool is "coord:send" => tool !== null);
+    return coordSend
+      ? { coordSend: true, tools: ["coord:send"] }
+      : { coordSend: false, tools: [] };
+  } catch {
+    return { coordSend: false, tools: [] };
+  }
+}
+
+/** Whether this complete JSON-RPC batch can use the dedicated coord:send lane. */
+export function isCoordSendContinuationCall(
+  rawBody: Buffer,
+  requestPath?: string,
+): boolean {
+  return classifyCoordSendCall(rawBody, requestPath).coordSend;
+}
+
+/** Argument-free identity for a pure coord:send request occupying/waiting on its lane. */
+export function coordSendToolNames(
+  rawBody: Buffer,
+  requestPath?: string,
+): string[] {
+  return classifyCoordSendCall(rawBody, requestPath).tools;
+}
+
 function classifyCriticalContinuationCall(
   rawBody: Buffer,
   requestPath?: string,
@@ -1503,7 +1592,8 @@ function classifyCriticalContinuationCall(
         );
         return true;
       });
-    return critical
+    const coordSend = classifyCoordSendCall(rawBody, requestPath).coordSend;
+    return critical && !coordSend
       ? {
           critical: true,
           tools: [...new Set(tools)].slice(0, MAX_RECORDED_RPC_METHODS),
@@ -1684,6 +1774,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       keepAlive: false,
       maxSockets: 1,
     });
+  const ownsCoordSendAgent = opts.coordSendAgent === undefined;
+  // Pure coord:send handoffs get their own one-socket bulkhead. This keeps the recovery
+  // message path live while a completion/checkpoint occupies criticalContinuationAgent.
+  const coordSendAgent =
+    opts.coordSendAgent ??
+    new http.Agent({
+      keepAlive: false,
+      maxSockets: 1,
+    });
   const maxHandshakeInFlight =
     opts.maxHandshakeInFlight ?? DEFAULT_MAX_HANDSHAKES_IN_FLIGHT;
   const configuredHandshakeQueue =
@@ -1706,11 +1805,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   )
     ? Math.max(0, Math.floor(configuredCriticalContinuationQueue))
     : 0;
+  const configuredCoordSendQueue =
+    opts.maxCoordSendQueue ?? maxCriticalContinuationQueue;
+  const maxCoordSendQueue = Number.isFinite(configuredCoordSendQueue)
+    ? Math.max(0, Math.floor(configuredCoordSendQueue))
+    : 0;
   const maxCriticalContinuationQueueWaitMs =
     opts.maxCriticalContinuationQueueWaitMs ??
     DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS;
-  const coordSendQueueWaitMs =
+  const configuredCoordSendQueueWaitMs =
     opts.coordSendQueueWaitMs ?? DEFAULT_COORD_SEND_QUEUE_WAIT_MS;
+  const coordSendQueueWaitMs =
+    Number.isFinite(configuredCoordSendQueueWaitMs) &&
+    configuredCoordSendQueueWaitMs >= 0
+      ? Math.floor(configuredCoordSendQueueWaitMs)
+      : DEFAULT_COORD_SEND_QUEUE_WAIT_MS;
   const loopCheckpointQueueWaitMs =
     opts.loopCheckpointQueueWaitMs ?? DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS;
   const criticalContinuationQueueWaitLogMs =
@@ -1729,6 +1838,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // exceed the normal partition without becoming an unbounded escape hatch.
   let watchdogProbeInFlight = 0;
   let criticalContinuationInFlight = 0;
+  let coordSendInFlight = 0;
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const initializeSlowMs = opts.initializeSlowMs ?? DEFAULT_INITIALIZE_SLOW_MS;
   const inFlightStarts = new Map<number, number>();
@@ -1736,15 +1846,17 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   const reservedControlPlaneInFlightStarts = new Map<number, number>();
   const watchdogProbeInFlightStarts = new Map<number, number>();
   const criticalContinuationInFlightStarts = new Map<number, number>();
-  interface CriticalContinuationRequestDetails {
+  const coordSendInFlightStarts = new Map<number, number>();
+  interface ContinuationRequestDetails {
     startedAtMs: number;
     traceId: string;
     tools: string[];
   }
   const criticalContinuationRequests = new Map<
     number,
-    CriticalContinuationRequestDetails
+    ContinuationRequestDetails
   >();
+  const coordSendRequests = new Map<number, ContinuationRequestDetails>();
   const completedForwardAtMs: number[] = [];
   let nextInFlightId = 0;
 
@@ -1793,6 +1905,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   type QueuedHandshake = QueuedAdmission;
   const handshakeQueue: QueuedHandshake[] = [];
   const criticalContinuationQueue: QueuedCriticalContinuation[] = [];
+  interface QueuedCoordSend extends QueuedAdmission {
+    traceId: string;
+    tools: string[];
+    maxWaitMs: number;
+  }
+  const coordSendQueue: QueuedCoordSend[] = [];
   // Resolve one waiter at a time so the async continuation can increment the live counters
   // before another queued request is granted. This reservation also keeps the global hard cap
   // true while the grant continuation is between the queue and the forwarding loop.
@@ -1800,6 +1918,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   let pumpHandshakeQueue: () => void = () => {};
   let criticalContinuationGrantReservations = 0;
   let pumpCriticalContinuationQueue: () => void = () => {};
+  let coordSendGrantReservations = 0;
+  let pumpCoordSendQueue: () => void = () => {};
 
   const handshakeQueueLength = (): number =>
     handshakeQueue.reduce(
@@ -1808,6 +1928,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     );
   const criticalContinuationQueueLength = (): number =>
     criticalContinuationQueue.reduce(
+      (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
+      0,
+    );
+  const coordSendQueueLength = (): number =>
+    coordSendQueue.reduce(
       (count, waiter) => count + (waiter.cancelled || waiter.granted ? 0 : 1),
       0,
     );
@@ -1859,19 +1984,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         !waiter.granted &&
         waiter.tools.some((tool) => completionContinuationTools.has(tool)),
     );
-  // EI-21648286127930654 — coord:send is the control-plane handoff that tells a live
-  // owner or peer how to recover a blocked lane. Preserve one bounded priority waiter
-  // when the ordinary continuation FIFO is full, so the first handoff is not shed at
-  // exactly the saturation point where coordination is most needed. Keep the slot
-  // separate from terminal completion: both may be needed during one recovery turn.
-  const coordSendContinuationTools = new Set(["coord:send"]);
-  const hasQueuedCoordSend = (): boolean =>
-    criticalContinuationQueue.some(
-      (waiter) =>
-        !waiter.cancelled &&
-        !waiter.granted &&
-        waiter.tools.some((tool) => coordSendContinuationTools.has(tool)),
-    );
+  // EI-21669304707115602 — pure coord:send batches use the dedicated lane below. Keep the
+  // canonical name in CRITICAL_CONTINUATION_TOOLS so a mixed batch (coord:send plus another
+  // continuation write) is still recognized as critical, but never give that mixed batch the
+  // pure-send lane's dwell/priority semantics.
   // EI-21646782269636565 — improvements:capture is the required incident/bug record for a
   // failed tool call. Preserve one bounded priority waiter when the ordinary continuation FIFO
   // is full, so the capture of the saturation failure is not itself shed at the point where the
@@ -1975,6 +2091,16 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     pumpCriticalContinuationQueue();
   };
 
+  const canGrantCoordSend = (): boolean =>
+    !shouldShedForInFlight(coordSendInFlight + coordSendGrantReservations, 1);
+
+  const cancelQueuedCoordSend = (waiter: QueuedCoordSend): void => {
+    if (waiter.cancelled || waiter.granted) return;
+    waiter.cancelled = true;
+    waiter.resolve(false);
+    pumpCoordSendQueue();
+  };
+
   pumpCriticalContinuationQueue = (): void => {
     while (criticalContinuationQueue.length > 0) {
       const waiter = criticalContinuationQueue.shift();
@@ -1985,6 +2111,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       }
       waiter.granted = true;
       criticalContinuationGrantReservations++;
+      waiter.resolve(true);
+      // The continuation that received this reservation increments the live counter before the
+      // event loop returns here, so one grant per pump is the simplest fail-closed guarantee.
+      return;
+    }
+  };
+
+  pumpCoordSendQueue = (): void => {
+    while (coordSendQueue.length > 0) {
+      const waiter = coordSendQueue.shift();
+      if (!waiter || waiter.cancelled) continue;
+      if (!canGrantCoordSend()) {
+        coordSendQueue.unshift(waiter);
+        return;
+      }
+      waiter.granted = true;
+      coordSendGrantReservations++;
       waiter.resolve(true);
       // The continuation that received this reservation increments the live counter before the
       // event loop returns here, so one grant per pump is the simplest fail-closed guarantee.
@@ -2030,6 +2173,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
       const oldestAgeMs = Date.now() - startedAt;
       const count = inFlightStarts.size;
       const criticalDetails = criticalContinuationRequests.get(inFlightId);
+      const coordSendDetails = coordSendRequests.get(inFlightId);
       log(
         `heartbeat: request #${inFlightId} held ${Math.round(oldestAgeMs / 1000)}s, ${count} in flight total`,
       );
@@ -2039,11 +2183,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         oldestAgeMs,
         maxInFlight,
         inFlightId,
-        ...(criticalDetails
+        ...(criticalDetails || coordSendDetails
           ? {
-              admissionClass: "critical-continuation",
-              traceId: criticalDetails.traceId,
-              tools: criticalDetails.tools,
+              admissionClass: coordSendDetails
+                ? "coord-send"
+                : "critical-continuation",
+              traceId: (coordSendDetails ?? criticalDetails)!.traceId,
+              tools: (coordSendDetails ?? criticalDetails)!.tools,
             }
           : {}),
       });
@@ -2154,6 +2300,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
           maxWaitMs: waiter.maxWaitMs,
         }));
+      const activeCoordSendRequests = [...coordSendRequests.entries()]
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map(([inFlightId, details]) => ({
+          inFlightId,
+          traceId: details.traceId,
+          tools: details.tools,
+          ageMs: Math.max(0, healthNow - details.startedAtMs),
+        }));
+      const waitingCoordSendRequests = coordSendQueue
+        .filter((waiter) => !waiter.cancelled && !waiter.granted)
+        .slice(0, MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS)
+        .map((waiter) => ({
+          traceId: waiter.traceId,
+          tools: waiter.tools,
+          ageMs: Math.max(0, healthNow - waiter.enqueuedAtMs),
+          maxWaitMs: waiter.maxWaitMs,
+        }));
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
@@ -2183,6 +2346,22 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                   : null,
               requests: waitingCriticalContinuationRequests,
             },
+            coordSend: coordSendInFlight,
+            coordSendRequests: activeCoordSendRequests,
+            coordSendQueue: {
+              waiting: coordSendQueueLength(),
+              max: maxCoordSendQueue,
+              maxWaitMs: coordSendQueueWaitMs,
+              oldestAgeMs:
+                waitingCoordSendRequests.length > 0
+                  ? Math.max(
+                      ...waitingCoordSendRequests.map(
+                        (request) => request.ageMs,
+                      ),
+                    )
+                  : null,
+              requests: waitingCoordSendRequests,
+            },
             maxInFlight,
             ordinaryCeiling: ordinaryInFlightCeiling,
             ordinaryGuaranteedFloor,
@@ -2199,6 +2378,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 criticalContinuationInFlightStarts,
                 healthNow,
               ),
+              coordSend: oldestAgeMs(coordSendInFlightStarts, healthNow),
             },
           },
         }),

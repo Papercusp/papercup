@@ -53,7 +53,7 @@ import {
   MAX_TEXT_CHARS,
 } from '../agent-mcp/operator-voice-proxy-helpers';
 import { synthesize } from '../agent-mcp/tts-synth';
-import { whisperSttBaseUrl, warmLocalWhisper } from '../../../voice-node/local-whisper-service';
+import { fetchWhisperWithRecovery, warmLocalWhisper } from '../../../voice-node/local-whisper-service';
 import { kokoroTtsAvailable } from '../../../voice-node/kokoro-local';
 import { loadVoicePrefs } from '../../../voice-prefs';
 import { createSentenceExtractor } from '../../../voice-turn-sentences';
@@ -79,19 +79,21 @@ async function transcribe(
   audio: Buffer,
   format: 'wav' | 'webm',
 ): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
-  const fd = new FormData();
-  fd.append(
-    'file',
-    new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
-    `audio.${format}`,
-  );
-  fd.append('model', 'whisper-1');
   let r: Response;
   try {
-    r = await fetch(`${whisperSttBaseUrl()}/v1/audio/transcriptions`, {
-      method: 'POST',
-      body: fd,
-      signal: AbortSignal.timeout(60_000),
+    r = await fetchWhisperWithRecovery((sttBase) => {
+      const fd = new FormData();
+      fd.append(
+        'file',
+        new Blob([new Uint8Array(audio)], { type: format === 'wav' ? 'audio/wav' : 'audio/webm' }),
+        `audio.${format}`,
+      );
+      fd.append('model', 'whisper-1');
+      return fetch(`${sttBase}/v1/audio/transcriptions`, {
+        method: 'POST',
+        body: fd,
+        signal: AbortSignal.timeout(60_000),
+      });
     });
   } catch (e) {
     return { ok: false, error: `whisper unreachable: ${(e as Error).message}` };

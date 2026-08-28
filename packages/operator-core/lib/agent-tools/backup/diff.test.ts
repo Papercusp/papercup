@@ -29,6 +29,9 @@ vi.mock('node:child_process', () => ({
 }));
 vi.mock('../../backup', () => ({ deriveRepoPassword: vi.fn(async () => 'repo-pw') }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1'), workspacesRoot: vi.fn(() => '/root') }));
+vi.mock('../../resource-governor/execution', () => ({
+  runGovernedOperation: async (_input: unknown, run: (context: unknown) => Promise<unknown>) => run({}),
+}));
 
 import { spawn } from 'node:child_process';
 const spawnM = vi.mocked(spawn);

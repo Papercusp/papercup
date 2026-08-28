@@ -191,7 +191,12 @@ import {
 } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
-import { runDependencyGenerationPrebuild } from '../../release/dependency-generation-prebuild';
+import {
+  enqueueDependencyPrebuild,
+  recoverQueuedDependencyPrebuild,
+  runDependencyGenerationPrebuild,
+  type DependencyPrebuildRequest,
+} from '../../release/dependency-generation-prebuild';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
@@ -213,6 +218,49 @@ const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
  * own definitely-dead lease.
  */
 const newGitSyncLockOwner = (): string => `${GIT_SYNC_OWNER}:${process.pid}:${randomUUID()}`;
+
+/**
+ * Start the advisory dependency producer without making its long build part of
+ * the git-sync critical path. The caller must have persisted the queued
+ * handoff first; that ordering is what makes a process exit recoverable.
+ */
+function fireDependencyPrebuild(request: DependencyPrebuildRequest, source: 'published' | 'recovery'): void {
+  void runDependencyGenerationPrebuild(request)
+    .then((prebuildOutcome) => {
+      console.log(
+        `[git-sync] ${request.installSlug}: dependency prebuild ${prebuildOutcome} (${source}) for ${request.candidate.slice(0, 12)}`,
+      );
+    })
+    .catch((error) => {
+      // The gate's fail-closed fallback remains authoritative. Observable but
+      // never allowed to turn a successful Git publication into a failed tick.
+      console.warn(
+        `[git-sync] ${request.installSlug}: dependency prebuild ${source} failed for ${request.candidate.slice(0, 12)}: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+}
+
+/**
+ * A queued handoff can outlive the DBOS fire that created it. Every later
+ * git-sync tick gets one cheap read and, when it finds a strict queued marker,
+ * rehydrates the request from that marker rather than from ambient env/path
+ * state. The producer's atomic claim makes concurrent recoveries harmless.
+ */
+function fireQueuedDependencyPrebuildRecovery(workspaceId: string, installSlug: string): void {
+  void recoverQueuedDependencyPrebuild({ workspaceId, installSlug })
+    .then((outcome) => {
+      if (outcome !== 'none') {
+        console.log(`[git-sync] ${installSlug}: dependency prebuild recovery ${outcome}`);
+      }
+    })
+    .catch((error) => {
+      console.warn(
+        `[git-sync] ${installSlug}: queued dependency prebuild recovery failed: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
+}
 
 /**
  * EI-20366486129597369: invert `newGitSyncLockOwner` for the stale-holder
@@ -2373,26 +2421,21 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     throw error;
   }
 
-  const completedAt = Date.now();
-  await writeGitSyncActivity(slug, workspaceId, {
-    active: false,
-    phase: 'complete',
-    started_at: activityStartedAt,
-    updated_at: completedAt,
-    completed_at: completedAt,
-    outcome_status: outcome.status,
-  });
-
-  // P-004 / WI-305952: hand the FINAL published candidate to the existing
-  // immutable dependency-generation producer only after every Git post-leg has
-  // settled and the activity marker is terminal. This is deliberately
-  // fire-and-forget: git-sync publishes source; dependency prebuild is advisory
-  // early work whose building/ready/failed lifecycle persists on this same
-  // routine row. Green-checkpoint consumes the exact ready marker or joins the
-  // existing install-safe publisher before taking its own run lock.
-  let dependencyPrebuildCandidate: string | null = null;
+  // P-004 / WI-305952: derive the FINAL published candidate after every Git
+  // post-leg has settled. Persist its queued handoff BEFORE the activity marker
+  // becomes terminal. The ordering is the crash-safety boundary: a bounded
+  // `git-sync:run` or a DBOS fire cancelled after this point leaves enough data
+  // for the next tick to reconstruct and resume the producer.
+  let dependencyPrebuildRequest: DependencyPrebuildRequest | null = null;
   if (outcome.status === 'synced' && FULL_COMMIT_SHA.test(outcome.headSha)) {
-    dependencyPrebuildCandidate = outcome.headSha;
+    dependencyPrebuildRequest = {
+      workspaceId,
+      installSlug: slug,
+      candidate: outcome.headSha,
+      integrationRoot: repoPath ?? '',
+      toolingRoot: process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() ?? '',
+      queuedAtMs: Date.now(),
+    };
   }
   if (gate.hiveGitMode && repoPath && (outcome.status === 'synced' || outcome.status === 'nothing')) {
     // A bridged/P2P post-leg can advance the worktree AFTER runGitSync returns.
@@ -2406,31 +2449,65 @@ async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | n
     ).catch(() => null);
     const resolved = finalHead?.code === 0 ? finalHead.stdout.trim() : '';
     if (FULL_COMMIT_SHA.test(resolved) && (outcome.status === 'synced' || !prevHeadSha || resolved !== prevHeadSha)) {
-      dependencyPrebuildCandidate = resolved;
+      dependencyPrebuildRequest = {
+        workspaceId,
+        installSlug: slug,
+        candidate: resolved,
+        integrationRoot: repoPath,
+        toolingRoot: process.env.PAPERCUSP_INTEGRATION_ROOT?.trim() ?? '',
+        queuedAtMs: Date.now(),
+      };
     }
   }
-  const dependencyPrebuildToolingRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
-  if (dependencyPrebuildCandidate && repoPath && dependencyPrebuildToolingRoot) {
-    const request = {
-      workspaceId,
-      installSlug: slug,
-      candidate: dependencyPrebuildCandidate,
-      integrationRoot: repoPath,
-      toolingRoot: dependencyPrebuildToolingRoot,
-      queuedAtMs: Date.now(),
-    };
-    void runDependencyGenerationPrebuild(request)
-      .then((prebuildOutcome) => {
-        console.log(`[git-sync] ${slug}: dependency prebuild ${prebuildOutcome} for ${request.candidate.slice(0, 12)}`);
-      })
-      .catch((error) => {
-        // The gate's fail-closed fallback remains authoritative. Observable but
-        // never allowed to turn a successful Git publication into a failed tick.
-        console.warn(
-          `[git-sync] ${slug}: dependency prebuild enqueue/run failed for ${request.candidate.slice(0, 12)}: ` +
-            `${error instanceof Error ? error.message : String(error)}`,
-        );
-      });
+
+  // Missing roots are an explicit no-op (the legacy/manual launcher may not
+  // expose PAPERCUSP_INTEGRATION_ROOT); a queued marker from an earlier tick is
+  // still recovered below using the roots persisted in that marker.
+  if (
+    dependencyPrebuildRequest &&
+    (!dependencyPrebuildRequest.integrationRoot || !dependencyPrebuildRequest.toolingRoot)
+  ) {
+    dependencyPrebuildRequest = null;
+  }
+
+  let dependencyPrebuildQueued = false;
+  if (dependencyPrebuildRequest) {
+    try {
+      // This UPDATE is one atomic candidate handoff on the existing routine row.
+      // Do not move it below the terminal activity write or turn it into a
+      // fire-and-forget promise: that was the production loss window.
+      dependencyPrebuildQueued = await enqueueDependencyPrebuild(dependencyPrebuildRequest);
+    } catch (error) {
+      const failedAt = Date.now();
+      await writeGitSyncActivity(slug, workspaceId, {
+        active: false,
+        phase: 'error',
+        started_at: activityStartedAt,
+        updated_at: failedAt,
+        completed_at: failedAt,
+        outcome_status: outcome.status,
+      }).catch(() => {});
+      throw error;
+    }
+  }
+
+  const completedAt = Date.now();
+  await writeGitSyncActivity(slug, workspaceId, {
+    active: false,
+    phase: 'complete',
+    started_at: activityStartedAt,
+    updated_at: completedAt,
+    completed_at: completedAt,
+    outcome_status: outcome.status,
+  });
+
+  // Start only after the queued handoff and terminal activity are both durable.
+  // If another process already owns this candidate, leave it alone; a queued
+  // marker that outlives that process is picked up by the next tick's recovery.
+  if (dependencyPrebuildRequest && dependencyPrebuildQueued) {
+    fireDependencyPrebuild(dependencyPrebuildRequest, 'published');
+  } else if (!dependencyPrebuildRequest) {
+    fireQueuedDependencyPrebuildRecovery(workspaceId, slug);
   }
 
   // P-003/D-004: documentation freshness is advisory follow-up work, not part of

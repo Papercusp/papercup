@@ -2,13 +2,18 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   awaitDependencyPrebuildState,
   dependencyPrebuildKey,
+  dependencyPrebuildRequestFromQueuedState,
+  enqueueDependencyPrebuild,
   parseDependencyPrebuildState,
+  recoverQueuedDependencyPrebuild,
   runDependencyGenerationPrebuild,
   type DependencyPrebuildBuildingState,
   type DependencyPrebuildCommand,
+  type DependencyPrebuildQueuedState,
   type DependencyPrebuildReadyState,
   type DependencyPrebuildState,
 } from './dependency-generation-prebuild';
+import type { Sql } from 'postgres';
 
 const CANDIDATE_A = 'a'.repeat(40);
 const CANDIDATE_B = 'b'.repeat(40);
@@ -43,6 +48,19 @@ function ready(candidate = CANDIDATE_A, inputFingerprint = INPUT): DependencyPre
     identity: IDENTITY,
     token: TOKEN,
     reused: true,
+  };
+}
+
+function queued(candidate = CANDIDATE_A): DependencyPrebuildQueuedState {
+  return {
+    schema: 1,
+    status: 'queued',
+    candidate,
+    queuedAtMs: 100,
+    updatedAtMs: 101,
+    producerPid: 7,
+    integrationRoot: '/integration',
+    toolingRoot: '/tooling',
   };
 }
 
@@ -233,6 +251,91 @@ describe('dependency generation background prebuild', () => {
 });
 
 describe('dependency prebuild state/wait contract', () => {
+  it('strictly parses a queued handoff and reconstructs the complete producer request', () => {
+    const state = queued();
+    expect(parseDependencyPrebuildState(state)).toEqual(state);
+    expect(dependencyPrebuildRequestFromQueuedState(TARGET, state)).toEqual({
+      ...TARGET,
+      candidate: CANDIDATE_A,
+      integrationRoot: '/integration',
+      toolingRoot: '/tooling',
+      queuedAtMs: 100,
+    });
+    expect(parseDependencyPrebuildState({ ...state, integrationRoot: 'relative' })).toBeNull();
+    expect(parseDependencyPrebuildState({ ...state, updatedAtMs: 99 })).toBeNull();
+    expect(parseDependencyPrebuildState({ ...state, producerPid: 0 })).toBeNull();
+  });
+
+  it('recovers only a queued marker and passes its persisted paths to the producer', async () => {
+    const run = vi.fn(async (request: { candidate: string; integrationRoot: string; toolingRoot: string }) => {
+      expect(request).toMatchObject({
+        candidate: CANDIDATE_A,
+        integrationRoot: '/integration',
+        toolingRoot: '/tooling',
+      });
+      return 'ready' as const;
+    });
+    await expect(
+      recoverQueuedDependencyPrebuild(TARGET, {
+        readState: async () => queued(),
+        run,
+      }),
+    ).resolves.toBe('ready');
+    expect(run).toHaveBeenCalledOnce();
+    await expect(
+      recoverQueuedDependencyPrebuild(TARGET, {
+        readState: async () => ready(),
+        run,
+      }),
+    ).resolves.toBe('none');
+    expect(run).toHaveBeenCalledOnce();
+  });
+
+  it('writes the queued handoff atomically and preserves a newer candidate marker', async () => {
+    const calls: Array<{ text: string; values: unknown[] }> = [];
+    let returnRows: Array<{ queued: boolean }> = [{ queued: true }];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ text: strings.join('?'), values });
+      if (strings.join('?').includes('UPDATE harness_shared.routines')) {
+        const rows = returnRows;
+        returnRows = [];
+        return Promise.resolve(rows);
+      }
+      return Promise.resolve([]);
+    }) as unknown as Sql;
+    await expect(
+      enqueueDependencyPrebuild(
+        {
+          ...TARGET,
+          candidate: CANDIDATE_A,
+          integrationRoot: '/integration',
+          toolingRoot: '/tooling',
+          queuedAtMs: 123,
+        },
+        sql,
+      ),
+    ).resolves.toBe(true);
+    const update = calls.find((call) => call.text.includes('UPDATE harness_shared.routines'));
+    expect(update?.text).toContain("'dependency_prebuild'");
+    expect(update?.values).toContain(TARGET.workspaceId);
+    expect(update?.values).toContain(TARGET.installSlug);
+    expect(update?.values.some((value) => String(value).includes('"status":"queued"'))).toBe(true);
+
+    returnRows = [];
+    await expect(
+      enqueueDependencyPrebuild(
+        {
+          ...TARGET,
+          candidate: CANDIDATE_B,
+          integrationRoot: '/integration',
+          toolingRoot: '/tooling',
+          queuedAtMs: 123,
+        },
+        sql,
+      ),
+    ).resolves.toBe(false);
+  });
+
   it('rejects malformed or mismatched ready metadata instead of treating it as usable', () => {
     expect(parseDependencyPrebuildState({ ...ready(), token: '' })).toBeNull();
     expect(

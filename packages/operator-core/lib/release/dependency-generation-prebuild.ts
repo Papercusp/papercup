@@ -17,7 +17,7 @@
 
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { pinModuleState } from '@papercusp/module-singleton';
@@ -75,6 +75,7 @@ export interface DependencyPrebuildFailedState extends DependencyPrebuildBase {
 }
 
 export type DependencyPrebuildState =
+  | DependencyPrebuildQueuedState
   | DependencyPrebuildBuildingState
   | DependencyPrebuildReadyState
   | DependencyPrebuildFailedState;
@@ -84,6 +85,23 @@ export interface DependencyPrebuildRequest extends DependencyPrebuildTarget {
   integrationRoot: string;
   toolingRoot: string;
   queuedAtMs?: number;
+}
+
+/**
+ * Crash-safe handoff written before candidate fingerprinting starts. The
+ * fingerprint is intentionally absent here: deriving it is the first child
+ * process, and that process is exactly where a cancelled git-sync fire used to
+ * lose the candidate before any durable state existed.
+ */
+export interface DependencyPrebuildQueuedState {
+  schema: 1;
+  status: 'queued';
+  candidate: string;
+  queuedAtMs: number;
+  updatedAtMs: number;
+  producerPid: number;
+  integrationRoot: string;
+  toolingRoot: string;
 }
 
 export interface DependencyPrebuildCommandResult {
@@ -141,6 +159,18 @@ function finiteInt(value: unknown): number | null {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
+function positiveInt(value: unknown): number | null {
+  const parsed = finiteInt(value);
+  return parsed !== null && parsed > 0 ? parsed : null;
+}
+
+function absolutePath(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes('\0') || !isAbsolute(trimmed)) return null;
+  return trimmed;
+}
+
 export function dependencyPrebuildKey(candidate: string, inputFingerprint: string): string {
   return `${candidate.toLowerCase()}:${inputFingerprint.toLowerCase()}`;
 }
@@ -149,6 +179,42 @@ export function dependencyPrebuildKey(candidate: string, inputFingerprint: strin
 export function parseDependencyPrebuildState(value: unknown): DependencyPrebuildState | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const raw = value as Record<string, unknown>;
+
+  // The queued handoff has no input fingerprint yet: deriving that key is the
+  // first child process, and this state protects the candidate across a process
+  // exit before that child returns. Keep the shape strict; malformed metadata is
+  // absence, never readiness.
+  if (raw.status === 'queued') {
+    const candidate = typeof raw.candidate === 'string' ? raw.candidate : '';
+    const queuedAtMs = finiteInt(raw.queuedAtMs);
+    const updatedAtMs = finiteInt(raw.updatedAtMs);
+    const producerPid = positiveInt(raw.producerPid);
+    const integrationRoot = absolutePath(raw.integrationRoot);
+    const toolingRoot = absolutePath(raw.toolingRoot);
+    if (
+      raw.schema !== 1 ||
+      !FULL_COMMIT_RE.test(candidate) ||
+      queuedAtMs === null ||
+      updatedAtMs === null ||
+      producerPid === null ||
+      updatedAtMs < queuedAtMs ||
+      integrationRoot === null ||
+      toolingRoot === null
+    ) {
+      return null;
+    }
+    return {
+      schema: 1,
+      status: 'queued',
+      candidate,
+      queuedAtMs,
+      updatedAtMs,
+      producerPid,
+      integrationRoot,
+      toolingRoot,
+    };
+  }
+
   const candidate = typeof raw.candidate === 'string' ? raw.candidate : '';
   const inputFingerprint = typeof raw.inputFingerprint === 'string' ? raw.inputFingerprint : '';
   const key = typeof raw.key === 'string' ? raw.key : '';
@@ -156,9 +222,9 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
   const queuedAtMs = finiteInt(raw.queuedAtMs);
   const startedAtMs = finiteInt(raw.startedAtMs);
   const updatedAtMs = finiteInt(raw.updatedAtMs);
-  const producerPid = finiteInt(raw.producerPid);
+  const producerPid = positiveInt(raw.producerPid);
   const hasChildPid = Object.prototype.hasOwnProperty.call(raw, 'childPid');
-  const childPid = raw.childPid === null ? null : finiteInt(raw.childPid);
+  const childPid = raw.childPid === null ? null : positiveInt(raw.childPid);
   if (
     raw.schema !== 1 ||
     !FULL_COMMIT_RE.test(candidate) ||
@@ -173,6 +239,7 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
   ) {
     return null;
   }
+  if (startedAtMs < queuedAtMs || updatedAtMs < startedAtMs) return null;
   const base: DependencyPrebuildBase = {
     schema: 1,
     key,
@@ -190,6 +257,7 @@ export function parseDependencyPrebuildState(value: unknown): DependencyPrebuild
   }
   const completedAtMs = finiteInt(raw.completedAtMs);
   if (completedAtMs === null) return null;
+  if (completedAtMs < startedAtMs) return null;
   if (raw.status === 'ready') {
     const identity = typeof raw.identity === 'string' ? raw.identity : '';
     const token = typeof raw.token === 'string' ? raw.token : '';
@@ -226,6 +294,107 @@ export async function readDependencyPrebuildState(
   return parseDependencyPrebuildState(rows[0]?.state ?? null);
 }
 
+/**
+ * Persist a candidate handoff before any expensive fingerprint/copy work. The
+ * write is newest-queued-at-wins and never downgrades a ready/building marker
+ * for the same candidate. It deliberately extends the existing routine-row
+ * metadata instead of introducing another queue or cache.
+ */
+export async function enqueueDependencyPrebuild(
+  request: DependencyPrebuildRequest,
+  sql?: Sql,
+): Promise<boolean> {
+  const candidate = request.candidate.trim().toLowerCase();
+  if (!FULL_COMMIT_RE.test(candidate)) {
+    throw new Error(`dependency prebuild candidate is not a full commit: ${request.candidate}`);
+  }
+  const integrationRoot = absolutePath(request.integrationRoot);
+  const toolingRoot = absolutePath(request.toolingRoot);
+  if (integrationRoot === null || toolingRoot === null) {
+    throw new Error('dependency prebuild handoff requires integrationRoot and toolingRoot');
+  }
+  const queuedAtMs = request.queuedAtMs ?? Date.now();
+  if (!Number.isSafeInteger(queuedAtMs) || queuedAtMs < 0) {
+    throw new Error(`dependency prebuild handoff queuedAtMs is invalid: ${queuedAtMs}`);
+  }
+  const state: DependencyPrebuildQueuedState = {
+    schema: 1,
+    status: 'queued',
+    candidate,
+    queuedAtMs,
+    updatedAtMs: queuedAtMs,
+    producerPid: process.pid,
+    integrationRoot,
+    toolingRoot,
+  };
+  const rows = await db(sql)<{ queued: boolean }[]>`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb)
+                    || jsonb_build_object('dependency_prebuild', ${JSON.stringify(state)}::text::jsonb),
+           updated_at = now()
+     WHERE workspace_id = ${request.workspaceId}
+       AND install_slug = ${request.installSlug}
+       AND target_role = 'system:git-sync'
+       AND (
+         metadata->'dependency_prebuild' IS NULL
+         OR (
+           metadata->'dependency_prebuild'->>'candidate' IS DISTINCT FROM ${candidate}
+           AND CASE
+                 WHEN COALESCE(metadata->'dependency_prebuild'->>'queuedAtMs', '') ~ '^[0-9]+$'
+                   THEN (metadata->'dependency_prebuild'->>'queuedAtMs')::bigint
+                 WHEN COALESCE(metadata->'dependency_prebuild'->>'startedAtMs', '') ~ '^[0-9]+$'
+                   THEN (metadata->'dependency_prebuild'->>'startedAtMs')::bigint
+                 WHEN COALESCE(metadata->'dependency_prebuild'->>'completedAtMs', '') ~ '^[0-9]+$'
+                   THEN (metadata->'dependency_prebuild'->>'completedAtMs')::bigint
+                 ELSE 0
+               END <= ${queuedAtMs}
+         )
+       )
+    RETURNING true AS queued
+  `;
+  const queued = rows.length > 0;
+  if (queued) await notifyDependencyPrebuildChange(request, state, sql);
+  return queued;
+}
+
+/** Reconstruct a runnable producer request from a persisted queued handoff. */
+export function dependencyPrebuildRequestFromQueuedState(
+  target: DependencyPrebuildTarget,
+  state: DependencyPrebuildQueuedState,
+): DependencyPrebuildRequest {
+  return {
+    workspaceId: target.workspaceId,
+    installSlug: target.installSlug,
+    candidate: state.candidate,
+    integrationRoot: state.integrationRoot,
+    toolingRoot: state.toolingRoot,
+    queuedAtMs: state.queuedAtMs,
+  };
+}
+
+export interface DependencyPrebuildRecoveryDeps {
+  readState?: (target: DependencyPrebuildTarget) => Promise<DependencyPrebuildState | null>;
+  run?: (request: DependencyPrebuildRequest) => Promise<DependencyPrebuildRunOutcome>;
+}
+
+/**
+ * Recover the handoff left by a cancelled producer process. The read is
+ * authoritative and the queued payload carries every path needed to restart;
+ * no ambient environment is consulted. Claiming/building remains in
+ * `runDependencyGenerationPrebuild`, so two ticks recovering the same marker
+ * are harmless and only one can publish the candidate.
+ */
+export async function recoverQueuedDependencyPrebuild(
+  target: DependencyPrebuildTarget,
+  deps: DependencyPrebuildRecoveryDeps = {},
+): Promise<DependencyPrebuildRunOutcome | 'none'> {
+  const readState = deps.readState ?? readDependencyPrebuildState;
+  const state = await readState(target);
+  if (state?.status !== 'queued') return 'none';
+  const request = dependencyPrebuildRequestFromQueuedState(target, state);
+  return (deps.run ?? runDependencyGenerationPrebuild)(request);
+}
+
 async function notifyDependencyPrebuildChange(
   target: DependencyPrebuildTarget,
   state: DependencyPrebuildState,
@@ -235,7 +404,7 @@ async function notifyDependencyPrebuildChange(
     workspaceId: target.workspaceId,
     installSlug: target.installSlug,
     candidate: state.candidate,
-    inputFingerprint: state.inputFingerprint,
+    ...(state.status !== 'queued' ? { inputFingerprint: state.inputFingerprint } : {}),
     status: state.status,
   });
   try {
@@ -537,7 +706,7 @@ export async function runDependencyGenerationPrebuild(
   const startedAtMs = now();
   const key = dependencyPrebuildKey(candidate, inputFingerprint);
   const current = await readState(target).catch(() => null);
-  if (current?.key === key) {
+  if (current?.status !== 'queued' && current?.key === key) {
     if (current.status === 'ready') return 'deduped-ready';
     if (current.status === 'building' && startedAtMs - current.updatedAtMs < DEPENDENCY_PREBUILD_HARD_TIMEOUT_MS) {
       return 'deduped-building';
@@ -695,8 +864,9 @@ export async function awaitDependencyPrebuildState(
   try {
     while (true) {
       const current = await readState(target);
-      if (!current || current.key !== key || current.status !== 'building') {
-        return current?.key === key ? current : null;
+      const currentKey = current && current.status !== 'queued' ? current.key : null;
+      if (!current || currentKey !== key || current.status !== 'building') {
+        return currentKey === key ? current : null;
       }
       const remaining = deadline - now();
       if (remaining <= 0) return current;

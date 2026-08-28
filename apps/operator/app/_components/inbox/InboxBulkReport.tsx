@@ -228,7 +228,10 @@ export function buildInboxBulkReviewGroups(
     const kind = itemKind(item, runItem);
     const action = actionLabel(item, runItem);
     const disposition = canonicalInboxDisposition(runItem);
-    const groupId = `${runItem.actionId ?? disposition}:${kind}`;
+    // Keep the raw skipped key stable for deep links/tests from pre-1015 runs;
+    // the human-facing title/evidence still uses the canonical recommendation.
+    const groupKey = runItem.outcome === "skipped" ? "skipped" : disposition;
+    const groupId = `${runItem.actionId ?? groupKey}:${kind}`;
     let group = grouped.get(groupId);
     if (!group) {
       group = {

@@ -46,7 +46,7 @@ export function StatusBadge({
     ? state
     : (state as ConnectionStatus);
   return (
-    <span className={`${styles.badge} ${stateTone(normalized)}`}>
+    <span className={`${styles.badge} ${styles[stateTone(normalized)]}`}>
       {prefix ? `${prefix}: ` : ""}
       {state}
     </span>

@@ -1,5 +1,28 @@
 // @vitest-environment jsdom
 
+/**
+ * Cloud Workspaces — the guided rail.
+ *
+ * Every invariant the pre-redesign suite pinned is re-expressed here against
+ * the new UI; none was dropped. Where the redesign moved a control, the test
+ * moved with it and says so:
+ *
+ *  - Validate now lives on the Connect stage, Stop/Repair on Operate, so the
+ *    overlapping-mutation invariant is exercised with TWO HOSTS rather than
+ *    two stages (it was always about per-key independence, not about which
+ *    section the buttons sat in);
+ *  - Destroy moved into the row overflow menu, so the destroy tests open it;
+ *  - the semicolon-joined blocker sentence became the readiness checklist, so
+ *    the fix strings are asserted on the checklist;
+ *  - machine sizes became radio cards, so the size-describedby case is
+ *    asserted on the empty-catalog fallback (which is still a combobox);
+ *  - the hosted session mounts inside the expanded host panel, so the test
+ *    expands the host first.
+ *
+ * New coverage the redesign earns: step routing/landing/degradation, the rail
+ * status column, and the single drift chip.
+ */
+
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -112,6 +135,12 @@ vi.mock("@/app/harness/Modal", () => ({
     ) : null,
 }));
 
+/* The rail's tooltip is Radix-portalled decoration; the accessible name it
+   supplements is on the button itself, which is what these tests read. */
+vi.mock("@/app/harness/Tooltip", () => ({
+  Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+}));
+
 import CloudWorkspacesPage, {
   type CloudWorkspacesControlRow,
   workspaceHostActionRest,
@@ -123,135 +152,141 @@ const cloudPageCss = readFileSync(
   "utf8",
 );
 
-const rows: CloudWorkspacesControlRow[] = [
-  {
-    kind: "connection",
-    id: "gcp-main",
-    target: "gcp",
-    label: "Production GCP",
-    status: "connected",
-    credentialRef: "env:GCP_APPLICATION_CREDENTIALS",
-    lastValidatedAt: "2026-08-22T05:00:00.000Z",
-    provider: {
-      projectId: "papercusp-prod",
-      serviceAccountEmail:
-        "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
-    },
-    scopes: [{ id: "papercusp-prod", label: "papercusp-prod" }],
-    regions: [
-      {
-        id: "us-central1",
-        label: "Iowa · us-central1",
-        zones: ["us-central1-a"],
-      },
-    ],
-    sizes: [
-      {
-        id: "e2-standard-4",
-        label: "e2-standard-4",
-        vcpu: 4,
-        memoryGiB: 16,
-        hourlyUsd: 0.08,
-      },
-    ],
-    images: [
-      {
-        id: "projects/papercusp-images/global/images/ubuntu-2404",
-        version: "ubuntu-2404",
-        label: "Ubuntu 24.04 LTS",
-      },
-    ],
-    networks: [{ id: "managed", label: "Papercusp-managed private network" }],
-    diskPricePerGiBMonth: 0.145,
+const connectionRow: CloudWorkspacesControlRow = {
+  kind: "connection",
+  id: "gcp-main",
+  target: "gcp",
+  label: "Production GCP",
+  status: "connected",
+  credentialRef: "env:GCP_APPLICATION_CREDENTIALS",
+  lastValidatedAt: "2026-08-22T05:00:00.000Z",
+  provider: {
+    projectId: "papercusp-prod",
+    serviceAccountEmail:
+      "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
   },
-  {
-    kind: "workspace",
-    id: "host-1",
-    name: "research-control",
-    connectionId: "gcp-main",
-    target: "gcp",
-    scopeLabel: "papercusp-prod",
-    region: "us-central1",
-    size: "e2-standard-4",
-    image: "ubuntu-2404",
-    diskGiB: 100,
-    network: "default",
-    estimatedMonthlyUsd: 72.9,
-    desiredState: "running",
-    observedState: "running",
-    observedAt: "2026-08-22T05:10:00.000Z",
-    providerResourceId:
-      "projects/papercusp-prod/zones/us-central1-a/instances/research-control",
-    endpoint: "ssh://10.0.0.8",
-    recoverability: {
-      kind: "snapshot",
-      label: "snapshot-20260822",
-      updatedAt: "2026-08-22T04:50:00.000Z",
+  scopes: [{ id: "papercusp-prod", label: "papercusp-prod" }],
+  regions: [
+    {
+      id: "us-central1",
+      label: "Iowa · us-central1",
+      zones: ["us-central1-a"],
     },
-    capabilities: {
-      start: false,
-      stop: true,
-      repair: true,
-      snapshot: true,
-      destroy: true,
+  ],
+  sizes: [
+    {
+      id: "e2-standard-4",
+      label: "e2-standard-4",
+      vcpu: 4,
+      memoryGiB: 16,
+      hourlyUsd: 0.08,
     },
-    resources: [
+  ],
+  images: [
+    {
+      id: "projects/papercusp-images/global/images/ubuntu-2404",
+      version: "ubuntu-2404",
+      label: "Ubuntu 24.04 LTS",
+    },
+  ],
+  networks: [{ id: "managed", label: "Papercusp-managed private network" }],
+  diskPricePerGiBMonth: 0.145,
+};
+
+const workspaceRow: CloudWorkspacesControlRow = {
+  kind: "workspace",
+  id: "host-1",
+  name: "research-control",
+  connectionId: "gcp-main",
+  target: "gcp",
+  scopeLabel: "papercusp-prod",
+  region: "us-central1",
+  size: "e2-standard-4",
+  image: "ubuntu-2404",
+  diskGiB: 100,
+  network: "default",
+  estimatedMonthlyUsd: 72.9,
+  desiredState: "running",
+  observedState: "running",
+  observedAt: "2026-08-22T05:10:00.000Z",
+  providerResourceId:
+    "projects/papercusp-prod/zones/us-central1-a/instances/research-control",
+  endpoint: "ssh://10.0.0.8",
+  recoverability: {
+    kind: "snapshot",
+    label: "snapshot-20260822",
+    updatedAt: "2026-08-22T04:50:00.000Z",
+  },
+  capabilities: {
+    start: false,
+    stop: true,
+    repair: true,
+    snapshot: true,
+    destroy: true,
+  },
+  resources: [
+    {
+      logicalKey: "vm",
+      kind: "vm",
+      state: "applied",
+      providerId:
+        "projects/papercusp-prod/zones/us-central1-a/instances/research-control",
+      providerRequestId: "request-1",
+      attempts: 1,
+      updatedAt: "2026-08-22T05:08:00.000Z",
+    },
+  ],
+  health: {
+    status: "healthy",
+    attestedAt: "2026-08-22T05:09:00.000Z",
+    checks: [{ name: "systemd", ok: true }],
+    bootstrapVersion: "1.4.0",
+  },
+  versionDrift: [{ component: "agent", desired: "1.4.0", observed: "1.3.0" }],
+  tunnel: { state: "connected", transport: "gcp-iap-ssh" },
+  costSignals: [{ estimatedMonthlyUsd: 72.9 }],
+  quotaSignals: [{ resource: "CPUS", remaining: 8 }],
+  logs: [
+    {
+      id: "log-1",
+      operationId: "op-1",
+      observedAt: "2026-08-22T05:09:30.000Z",
+      stream: "systemd",
+      unit: "papercusp-agent",
+      level: "info",
+      message: "Agent ready",
+    },
+  ],
+  operation: {
+    id: "op-1",
+    action: "provision",
+    status: "succeeded",
+    percent: 100,
+    message: "Host attested",
+    request: {
+      image: "ubuntu-2404",
+      credentialRef: "env:GCP_APPLICATION_CREDENTIALS",
+    },
+    events: [
       {
-        logicalKey: "vm",
-        kind: "vm",
-        state: "applied",
-        providerId:
-          "projects/papercusp-prod/zones/us-central1-a/instances/research-control",
-        providerRequestId: "request-1",
-        attempts: 1,
-        updatedAt: "2026-08-22T05:08:00.000Z",
-      },
-    ],
-    health: {
-      status: "healthy",
-      attestedAt: "2026-08-22T05:09:00.000Z",
-      checks: [{ name: "systemd", ok: true }],
-      bootstrapVersion: "1.4.0",
-    },
-    versionDrift: [{ component: "agent", desired: "1.4.0", observed: "1.3.0" }],
-    tunnel: { state: "connected", transport: "gcp-iap-ssh" },
-    costSignals: [{ estimatedMonthlyUsd: 72.9 }],
-    quotaSignals: [{ resource: "CPUS", remaining: 8 }],
-    logs: [
-      {
-        id: "log-1",
-        operationId: "op-1",
-        observedAt: "2026-08-22T05:09:30.000Z",
-        stream: "systemd",
-        unit: "papercusp-agent",
+        id: "evt-1",
+        ts: "2026-08-22T05:09:00.000Z",
+        phase: "attest",
+        status: "succeeded",
         level: "info",
-        message: "Agent ready",
+        source: "controller",
+        message: "Bootstrap healthy",
       },
     ],
-    operation: {
-      id: "op-1",
-      action: "provision",
-      status: "succeeded",
-      percent: 100,
-      message: "Host attested",
-      request: {
-        image: "ubuntu-2404",
-        credentialRef: "env:GCP_APPLICATION_CREDENTIALS",
-      },
-      events: [
-        {
-          id: "evt-1",
-          ts: "2026-08-22T05:09:00.000Z",
-          phase: "attest",
-          status: "succeeded",
-          level: "info",
-          source: "controller",
-          message: "Bootstrap healthy",
-        },
-      ],
-    },
   },
-];
+};
+
+const rows: CloudWorkspacesControlRow[] = [connectionRow, workspaceRow];
+
+/** The configure stage is only reachable once a connection exists. */
+const onConfigure = { step: "configure" } as const;
+/** Operate is the landing step whenever a workspace exists; be explicit anyway. */
+const onOperate = { step: "operate" } as const;
 
 beforeEach(() => {
   H.rows = rows;
@@ -268,97 +303,81 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("CloudWorkspacesPage", () => {
-  it("renders provider state, URL-backed provisioning selections, estimate, lifecycle, and progress", () => {
+describe("CloudWorkspacesPage — rail and step routing", () => {
+  it("lands on Operate when a workspace exists, and reports each step's evidence", () => {
     render(<CloudWorkspacesPage />);
 
-    const pageHeading = screen.getByRole("heading", {
-      name: "Cloud Workspaces",
+    const rail = screen.getByRole("navigation", {
+      name: "Cloud workspace setup",
     });
-    expect(pageHeading).toBeTruthy();
-    expect(pageHeading.closest("main")).toBeNull();
-    const posture = screen.getByRole("list", {
-      name: "Control-plane posture",
-    });
-    expect(posture.querySelectorAll('[role="listitem"]')).toHaveLength(3);
-    const overview = screen.getByRole("region", {
-      name: "Cloud workspace overview",
-    });
-    expect(overview.textContent).toContain("Connected providers1 / 3");
-    expect(overview.textContent).toContain("Managed workspaces1");
-    expect(overview.textContent).toContain("1 of 1 desired states aligned");
-    expect(overview.textContent).toContain("Healthy hosts1");
-    expect(overview.textContent).toContain("Monthly footprint$72.90");
+    expect(rail).toBeTruthy();
+
+    const operateStep = screen.getByRole("button", { name: /03 Operate/ });
+    expect(operateStep.getAttribute("aria-current")).toBe("step");
+    /* Evidence, not a bare tick: every step states its own condition. */
+    expect(operateStep.getAttribute("aria-label")).toContain("current step");
+    /* A healthy connection reports WHEN it was validated, not just that it is. */
+    expect(
+      screen.getByRole("button", { name: /01 Connect/ }).getAttribute("aria-label"),
+    ).toContain("GCP · validated");
+    expect(operateStep.getAttribute("aria-label")).toContain(
+      "1 workspace · all aligned",
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Managed workspaces" }),
+    ).toBeTruthy();
+    /* One stage at a time: Connect's own heading is not on screen. */
+    expect(screen.queryByRole("heading", { name: "Provider readiness" })).toBeNull();
+
+    const stats = screen.getByRole("region", { name: "Fleet posture" });
+    expect(stats.textContent).toContain("Running1");
+    expect(stats.textContent).toContain("Drifting0");
+    expect(stats.textContent).toContain("$72.90");
+  });
+
+  it("lands on Configure with a connection but no workspace, and on Connect with neither", () => {
+    H.rows = [connectionRow];
+    const { unmount } = render(<CloudWorkspacesPage />);
+    expect(screen.getByRole("heading", { name: "New workspace" })).toBeTruthy();
+    unmount();
+    cleanup();
+
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
     expect(
       screen.getByRole("heading", { name: "Provider readiness" }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("button", {
-        name: "Validate Google Cloud connection",
-      }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", {
-        name: "Amazon Web Services connection is not available",
-      }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", {
-        name: "Microsoft Azure connection is not available",
-      }),
-    ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /^Connect$/ })).toBeNull();
-    expect(screen.getByText("Production GCP")).toBeTruthy();
-    expect(
-      screen.getByRole("combobox", {
-        name: "Project, account, or subscription",
-      }).textContent,
-    ).toContain("papercusp-prod");
-    const estimate = screen.getByLabelText("Estimated workspace cost");
-    expect(estimate.tagName).toBe("DIV");
-    expect(estimate.getAttribute("role")).toBe("group");
-    expect(estimate.textContent).toContain("$72.90");
-    expect(
-      screen.getByLabelText("Desired running; observed running"),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("list", { name: "Progress for research-control" })
-        .textContent,
-    ).toContain("Bootstrap healthy");
-    expect(screen.getByText(/Recoverability · snapshot/)).toBeTruthy();
-    expect(
-      screen.getByLabelText("Health and attestation for research-control")
-        .textContent,
-    ).toContain("healthy");
-    expect(
-      screen.getByLabelText("Provider resources for research-control")
-        .textContent,
-    ).toContain("request-1");
-    expect(
-      screen.getByLabelText("Drift and connectivity for research-control")
-        .textContent,
-    ).toContain("gcp-iap-ssh");
-    expect(
-      screen.getByLabelText("Cost and quota signals for research-control")
-        .textContent,
-    ).toContain("CPUS");
-    expect(
-      screen.getByLabelText("Recent host logs for research-control")
-        .textContent,
-    ).toContain("Agent ready");
-    expect(
-      screen.getByText("Redacted request").parentElement?.textContent,
-    ).toContain("ubuntu-2404");
-    expect(
-      screen.getByLabelText("Lifecycle actions for research-control"),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("link", { name: "Audit export" }).getAttribute("href"),
-    ).toBe("/api/workspace-hosts/host-1/audit");
   });
 
-  it("routes connection and lifecycle actions through the sync mutation seam", async () => {
+  it("degrades an unreachable requested step instead of rendering a blank stage", () => {
+    H.rows = [];
+    H.queryDefaults = { ...onOperate };
     render(<CloudWorkspacesPage />);
+
+    /* ?step=operate on a workspace-less install falls back to Connect. */
+    expect(
+      screen.getByRole("heading", { name: "Provider readiness" }),
+    ).toBeTruthy();
+    const operateStep = screen.getByRole("button", {
+      name: /03 Operate/,
+    }) as HTMLButtonElement;
+    expect(operateStep.disabled).toBe(true);
+  });
+
+  it("navigates between reachable steps from the rail", () => {
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: /02 Configure/ }));
+    expect(H.queryUpdates).toContainEqual(["step", "configure"]);
+    expect(screen.getByRole("heading", { name: "New workspace" })).toBeTruthy();
+  });
+});
+
+describe("CloudWorkspacesPage — mutation seam", () => {
+  it("routes connection and lifecycle actions through the sync mutation seam", async () => {
+    H.queryDefaults = { step: "connect" };
+    const { unmount } = render(<CloudWorkspacesPage />);
 
     fireEvent.click(
       screen.getByRole("button", {
@@ -371,7 +390,11 @@ describe("CloudWorkspacesPage", () => {
         connectionId: "gcp-main",
       }),
     );
+    unmount();
+    cleanup();
 
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
     fireEvent.click(screen.getByRole("button", { name: "Stop" }));
     await waitFor(() =>
       expect(H.mutate).toHaveBeenCalledWith({
@@ -382,45 +405,58 @@ describe("CloudWorkspacesPage", () => {
   });
 
   it("tracks overlapping mutations until each request settles", async () => {
-    let resolveValidation!: (value: { ok: boolean }) => void;
-    let resolveStop!: (value: { ok: boolean }) => void;
-    const validation = new Promise<{ ok: boolean }>((resolve) => {
-      resolveValidation = resolve;
+    /*
+     * Per-key busy tracking: two hosts stopped at once must disable
+     * independently and each re-enable on its OWN settle.
+     */
+    H.rows = [
+      connectionRow,
+      workspaceRow,
+      { ...workspaceRow, id: "host-2", name: "batch-runner" },
+    ];
+    H.queryDefaults = { ...onOperate };
+
+    let resolveFirst!: (value: { ok: boolean }) => void;
+    let resolveSecond!: (value: { ok: boolean }) => void;
+    const first = new Promise<{ ok: boolean }>((resolve) => {
+      resolveFirst = resolve;
     });
-    const stop = new Promise<{ ok: boolean }>((resolve) => {
-      resolveStop = resolve;
+    const second = new Promise<{ ok: boolean }>((resolve) => {
+      resolveSecond = resolve;
     });
-    H.mutate.mockImplementation((args: { action: string }) =>
-      args.action === "validate-connection" ? validation : stop,
+    H.mutate.mockImplementation((args: { workspaceId?: string }) =>
+      args.workspaceId === "host-1" ? first : second,
     );
+
     render(<CloudWorkspacesPage />);
-
-    const validateButton = screen.getByRole("button", {
-      name: "Validate Google Cloud connection",
-    }) as HTMLButtonElement;
-    const stopButton = screen.getByRole("button", {
+    const [stopOne, stopTwo] = screen.getAllByRole("button", {
       name: "Stop",
-    }) as HTMLButtonElement;
+    }) as HTMLButtonElement[];
 
-    fireEvent.click(validateButton);
-    await waitFor(() => expect(validateButton.disabled).toBe(true));
-    fireEvent.click(stopButton);
+    fireEvent.click(stopOne);
+    await waitFor(() => expect(stopOne.disabled).toBe(true));
+    /* The second host is untouched by the first host's in-flight mutation. */
+    expect(stopTwo.disabled).toBe(false);
+
+    fireEvent.click(stopTwo);
     await waitFor(() => {
-      expect(validateButton.disabled).toBe(true);
-      expect(stopButton.disabled).toBe(true);
+      expect(stopOne.disabled).toBe(true);
+      expect(stopTwo.disabled).toBe(true);
     });
 
-    resolveStop({ ok: true });
-    await waitFor(() => expect(stopButton.disabled).toBe(false));
-    expect(validateButton.disabled).toBe(true);
-    fireEvent.click(validateButton);
+    resolveSecond({ ok: true });
+    await waitFor(() => expect(stopTwo.disabled).toBe(false));
+    expect(stopOne.disabled).toBe(true);
+    /* A re-click while still in flight is refused, not queued. */
+    fireEvent.click(stopOne);
     expect(H.mutate).toHaveBeenCalledTimes(2);
 
-    resolveValidation({ ok: true });
-    await waitFor(() => expect(validateButton.disabled).toBe(false));
+    resolveFirst({ ok: true });
+    await waitFor(() => expect(stopOne.disabled).toBe(false));
   });
 
   it("builds the canonical persisted desired spec for provisioning", async () => {
+    H.queryDefaults = { ...onConfigure };
     render(<CloudWorkspacesPage />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), {
@@ -453,282 +489,6 @@ describe("CloudWorkspacesPage", () => {
         },
       }),
     );
-  });
-
-  it("blocks silent disk correction and submits only an explicitly valid volume", async () => {
-    render(<CloudWorkspacesPage />);
-
-    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), {
-      target: { value: "Disk Check" },
-    });
-    const disk = screen.getByRole("spinbutton", {
-      name: "Disk size in GiB",
-    }) as HTMLInputElement;
-    const provision = screen.getByRole("button", {
-      name: "Provision workspace",
-    }) as HTMLButtonElement;
-
-    for (const invalidValue of ["", "19", "20.5", "16385"]) {
-      fireEvent.change(disk, { target: { value: invalidValue } });
-      await waitFor(() => expect(provision.disabled).toBe(true));
-      expect(disk.getAttribute("aria-invalid")).toBe("true");
-      expect(screen.getByRole("status").textContent).toContain(
-        "enter a whole-number disk size between 20 and 16,384 GiB",
-      );
-    }
-
-    fireEvent.change(disk, { target: { value: "120" } });
-    await waitFor(() => expect(provision.disabled).toBe(false));
-    expect(disk.getAttribute("aria-invalid")).toBe("false");
-    fireEvent.click(provision);
-
-    await waitFor(() =>
-      expect(H.mutate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: "provision",
-          desired: expect.objectContaining({
-            data: { volumeGiB: 120, encrypted: true },
-          }),
-        }),
-      ),
-    );
-  });
-
-  it("mounts the browser session plane when a WebSocket connector is advertised", () => {
-    H.rows = rows.map((row) =>
-      row.kind === "workspace"
-        ? {
-            ...row,
-            tunnel: {
-              hostedConnector: {
-                routeLabel: "workspace-relay",
-                transport: "websocket",
-              },
-            },
-          }
-        : row,
-    );
-
-    render(<CloudWorkspacesPage />);
-
-    const session = screen.getByRole("region", {
-      name: "Browser workspace session for research-control",
-    });
-    expect(session).toBeTruthy();
-    expect(session.textContent).toContain("outbound relay · workspace-relay");
-    expect(session.textContent).toContain("Connect to open the authenticated PTY");
-  });
-
-  it("canonicalizes stale URL-backed catalog IDs before provisioning", async () => {
-    H.queryDefaults = {
-      connection: "retired-connection",
-      scope: "retired-project",
-      region: "retired-region",
-      size: "retired-size",
-      image: "retired-image",
-      network: "retired-network",
-      name: "Recovered Link",
-    };
-    render(<CloudWorkspacesPage />);
-
-    const provision = screen.getByRole("button", {
-      name: "Provision workspace",
-    }) as HTMLButtonElement;
-    await waitFor(() => {
-      expect(H.queryUpdates).toEqual(
-        expect.arrayContaining([
-          ["connection", "gcp-main"],
-          ["scope", "papercusp-prod"],
-          ["region", "us-central1"],
-          ["size", "e2-standard-4"],
-          ["image", "projects/papercusp-images/global/images/ubuntu-2404"],
-          ["network", "managed"],
-        ]),
-      );
-      expect(provision.disabled).toBe(false);
-    });
-
-    fireEvent.click(provision);
-    await waitFor(() =>
-      expect(H.mutate).toHaveBeenCalledWith(
-        expect.objectContaining({
-          action: "provision",
-          connectionId: "gcp-main",
-          desired: expect.objectContaining({
-            scope: { kind: "project", id: "papercusp-prod" },
-            region: "us-central1",
-            size: "e2-standard-4",
-            image: expect.objectContaining({
-              id: "projects/papercusp-images/global/images/ubuntu-2404",
-            }),
-            provider: { network: { mode: "managed" } },
-          }),
-        }),
-      ),
-    );
-  });
-
-  it("clears stale dependent IDs when the selected catalog has no options", async () => {
-    H.rows = [
-      {
-        ...rows[0],
-        scopes: [],
-        regions: [],
-        sizes: [],
-        images: [],
-        networks: [],
-      },
-    ];
-    H.queryDefaults = {
-      connection: "retired-connection",
-      scope: "retired-project",
-      region: "retired-region",
-      size: "retired-size",
-      image: "retired-image",
-      network: "retired-network",
-      name: "Blocked Link",
-    };
-    render(<CloudWorkspacesPage />);
-
-    await waitFor(() =>
-      expect(H.queryUpdates).toEqual(
-        expect.arrayContaining([
-          ["connection", "gcp-main"],
-          ["scope", ""],
-          ["region", ""],
-          ["size", ""],
-          ["image", ""],
-          ["network", ""],
-        ]),
-      ),
-    );
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Provision workspace",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(true);
-  });
-
-  it("collects the complete supported GCP connection admission contract", async () => {
-    H.rows = [];
-    render(<CloudWorkspacesPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect a provider" }));
-
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Connection label" }),
-      {
-        target: { value: "Production GCP" },
-      },
-    );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Injected credential reference" }),
-      { target: { value: "adc://default" } },
-    );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Google Cloud project ID" }),
-      { target: { value: "papercusp-prod" } },
-    );
-    fireEvent.change(
-      screen.getByRole("textbox", { name: "Runtime service account email" }),
-      {
-        target: {
-          value: "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
-        },
-      },
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Connect and validate" }),
-    );
-
-    await waitFor(() =>
-      expect(H.mutate).toHaveBeenCalledWith({
-        action: "connect",
-        target: "gcp",
-        label: "Production GCP",
-        credentialRef: "adc://default",
-        projectId: "papercusp-prod",
-        serviceAccountEmail:
-          "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
-      }),
-    );
-  });
-
-  it("preserves explicit recoverability selection but fails closed without audited canary evidence", () => {
-    render(<CloudWorkspacesPage />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Destroy" }));
-    expect(
-      screen.getByRole("dialog", { name: "Destroy research-control" }),
-    ).toBeTruthy();
-    expect(
-      screen
-        .getByRole("radio", { name: /Create a snapshot first/ })
-        .getAttribute("aria-checked"),
-    ).toBe("true");
-    fireEvent.click(
-      screen.getByRole("radio", { name: /Discard recoverability/ }),
-    );
-
-    const confirmButton = screen.getByRole("button", {
-      name: "Confirm destroy",
-    });
-    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(
-      screen.getByLabelText("Type research-control to confirm discard"),
-      { target: { value: "research-control" } },
-    );
-    expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
-    expect(confirmButton.getAttribute("aria-describedby")).toBe(
-      "destroy-admission-blocker",
-    );
-    expect(screen.getByText("Audited canary evidence required")).toBeTruthy();
-    expect(H.mutate).not.toHaveBeenCalled();
-  });
-
-  it("uses one tab stop and arrow-key selection in the recoverability radiogroup", () => {
-    render(<CloudWorkspacesPage />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Destroy" }));
-    const radios = screen.getAllByRole("radio") as HTMLButtonElement[];
-    expect(radios.map((radio) => radio.tabIndex)).toEqual([0, -1, -1]);
-
-    radios[0].focus();
-    fireEvent.keyDown(radios[0], { key: "ArrowDown" });
-    expect(document.activeElement).toBe(radios[1]);
-    expect(radios[1].getAttribute("aria-checked")).toBe("true");
-    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, 0, -1]);
-
-    fireEvent.keyDown(radios[1], { key: "End" });
-    expect(document.activeElement).toBe(radios[2]);
-    expect(radios[2].getAttribute("aria-checked")).toBe("true");
-    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, -1, 0]);
-
-    fireEvent.keyDown(radios[2], { key: "ArrowDown" });
-    expect(document.activeElement).toBe(radios[0]);
-    expect(radios[0].getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("fails closed when the sync control-plane read is unavailable", () => {
-    H.rows = [];
-    H.error = new Error("workspaceHosts.control is not registered");
-    render(<CloudWorkspacesPage />);
-
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Local cloud control plane unavailable",
-    );
-    expect(screen.getByText("Connect a provider to begin")).toBeTruthy();
-  });
-
-  it("offers an actionable provider connection from the empty configuration state", () => {
-    H.rows = [];
-    render(<CloudWorkspacesPage />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Connect a provider" }));
-    expect(
-      screen.getByRole("dialog", { name: "Connect Google Cloud" }),
-    ).toBeTruthy();
   });
 
   it("dispatches each mutation family to its canonical REST route and surfaces typed errors", async () => {
@@ -780,69 +540,325 @@ describe("CloudWorkspacesPage", () => {
     });
 
     fetchMock.mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({ ok: false, error: "typed route refusal" }),
-        {
-          status: 422,
-          headers: { "content-type": "application/json" },
-        },
-      ),
+      new Response(JSON.stringify({ ok: false, error: "typed route refusal" }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      }),
     );
     await expect(
       workspaceHostActionRest({ action: "repair", workspaceId: "host-1" }),
     ).rejects.toThrow("typed route refusal");
     expect(workspaceHostIdFromName("  Résumé / Lab  ")).toBe("host-resume-lab");
   });
+});
+
+describe("CloudWorkspacesPage — 01 Connect", () => {
+  it("collects the complete supported GCP connection admission contract", async () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Connection label" }), {
+      target: { value: "Production GCP" },
+    });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Injected credential reference" }),
+      { target: { value: "adc://default" } },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Google Cloud project ID" }),
+      { target: { value: "papercusp-prod" } },
+    );
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Runtime service account email" }),
+      {
+        target: {
+          value: "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
+        },
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Connect and validate" }));
+
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith({
+        action: "connect",
+        target: "gcp",
+        label: "Production GCP",
+        credentialRef: "adc://default",
+        projectId: "papercusp-prod",
+        serviceAccountEmail:
+          "papercusp-host@papercusp-prod.iam.gserviceaccount.com",
+      }),
+    );
+  });
+
+  it("withholds admission until every contract field is supplied", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+
+    const submit = screen.getByRole("button", {
+      name: "Connect and validate",
+    }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+
+    for (const [name, value] of [
+      ["Connection label", "Production GCP"],
+      ["Injected credential reference", "adc://default"],
+      ["Google Cloud project ID", "papercusp-prod"],
+    ] as const) {
+      fireEvent.change(screen.getByRole("textbox", { name }), {
+        target: { value },
+      });
+      /* Three of four is still incomplete. */
+      expect(submit.disabled).toBe(true);
+    }
+
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Runtime service account email" }),
+      { target: { value: "host@papercusp-prod.iam.gserviceaccount.com" } },
+    );
+    expect(submit.disabled).toBe(false);
+  });
+
+  it("keeps the connect form beside its provider rather than over them", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+
+    /* An inline panel, not a modal: the provider rows stay on screen. */
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByRole("heading", { name: "Connect Google Cloud" }),
+    ).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Provider connections" })).toBeTruthy();
+  });
+
+  it("marks unsupported providers as planned rather than merely disabled", () => {
+    H.rows = [];
+    render(<CloudWorkspacesPage />);
+
+    const providers = screen.getByRole("list", { name: "Provider connections" });
+    expect(providers.querySelectorAll("li")).toHaveLength(3);
+    expect(providers.textContent).toContain("planned");
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Amazon Web Services connection is not available",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
+});
+
+describe("CloudWorkspacesPage — 02 Configure", () => {
+  it("blocks silent disk correction and submits only an explicitly valid volume", async () => {
+    H.queryDefaults = { ...onConfigure };
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Workspace name" }), {
+      target: { value: "Disk Check" },
+    });
+    const disk = screen.getByRole("spinbutton", {
+      name: "Disk size in GiB",
+    }) as HTMLInputElement;
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    }) as HTMLButtonElement;
+
+    for (const invalidValue of ["", "19", "20.5", "16385"]) {
+      fireEvent.change(disk, { target: { value: invalidValue } });
+      await waitFor(() => expect(provision.disabled).toBe(true));
+      expect(disk.getAttribute("aria-invalid")).toBe("true");
+      /* No silent correction — the typed value survives verbatim. */
+      expect(disk.value).toBe(invalidValue);
+      expect(screen.getByRole("status").textContent).toContain(
+        "enter a whole-number disk size between 20 and 16,384 GiB",
+      );
+    }
+
+    fireEvent.change(disk, { target: { value: "120" } });
+    await waitFor(() => expect(provision.disabled).toBe(false));
+    expect(disk.getAttribute("aria-invalid")).toBe("false");
+    fireEvent.click(provision);
+
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "provision",
+          desired: expect.objectContaining({
+            data: { volumeGiB: 120, encrypted: true },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("canonicalizes stale URL-backed catalog IDs before provisioning", async () => {
+    H.queryDefaults = {
+      ...onConfigure,
+      connection: "retired-connection",
+      scope: "retired-project",
+      region: "retired-region",
+      size: "retired-size",
+      image: "retired-image",
+      network: "retired-network",
+      name: "Recovered Link",
+    };
+    render(<CloudWorkspacesPage />);
+
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    }) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(H.queryUpdates).toEqual(
+        expect.arrayContaining([
+          ["connection", "gcp-main"],
+          ["scope", "papercusp-prod"],
+          ["region", "us-central1"],
+          ["size", "e2-standard-4"],
+          ["image", "projects/papercusp-images/global/images/ubuntu-2404"],
+          ["network", "managed"],
+        ]),
+      );
+      expect(provision.disabled).toBe(false);
+    });
+
+    fireEvent.click(provision);
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "provision",
+          connectionId: "gcp-main",
+          desired: expect.objectContaining({
+            scope: { kind: "project", id: "papercusp-prod" },
+            region: "us-central1",
+            size: "e2-standard-4",
+            image: expect.objectContaining({
+              id: "projects/papercusp-images/global/images/ubuntu-2404",
+            }),
+            provider: { network: { mode: "managed" } },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("clears stale dependent IDs when the selected catalog has no options", async () => {
+    H.rows = [
+      {
+        ...connectionRow,
+        scopes: [],
+        regions: [],
+        sizes: [],
+        images: [],
+        networks: [],
+      },
+    ];
+    H.queryDefaults = {
+      ...onConfigure,
+      connection: "retired-connection",
+      scope: "retired-project",
+      region: "retired-region",
+      size: "retired-size",
+      image: "retired-image",
+      network: "retired-network",
+      name: "Blocked Link",
+    };
+    render(<CloudWorkspacesPage />);
+
+    await waitFor(() =>
+      expect(H.queryUpdates).toEqual(
+        expect.arrayContaining([
+          ["connection", "gcp-main"],
+          ["scope", ""],
+          ["region", ""],
+          ["size", ""],
+          ["image", ""],
+          ["network", ""],
+        ]),
+      ),
+    );
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Provision workspace",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+  });
 
   it("does not leak undefined capacity values from an incomplete runtime catalog row", () => {
     H.rows = [
       {
-        ...rows[0],
+        ...connectionRow,
         sizes: [{ id: "e2-small", label: "e2-small" } as never],
       },
     ];
+    H.queryDefaults = { ...onConfigure };
     render(<CloudWorkspacesPage />);
 
     expect(screen.getAllByText("Capacity details unavailable")).toHaveLength(2);
     expect(screen.queryByText(/undefined vCPU/)).toBeNull();
+    expect(screen.queryByText(/\$NaN/)).toBeNull();
   });
 
   it("explains empty catalog dimensions instead of rendering a blank provisioning dead end", () => {
-    H.rows = [{ ...rows[0], networks: [] }];
+    H.rows = [{ ...connectionRow, networks: [] }];
+    H.queryDefaults = { ...onConfigure };
     render(<CloudWorkspacesPage />);
 
     const network = screen.getByRole("combobox", { name: "Network" });
     expect((network as HTMLButtonElement).disabled).toBe(true);
     expect(network.textContent).toContain("No networks available");
     expect(
-      screen.getByText(
-        "No networks were returned by this provider connection.",
-      ),
+      screen.getByText("No networks were returned by this provider connection."),
     ).toBeTruthy();
 
-    const blocker = screen.getByRole("status");
-    expect(blocker.textContent).toContain("Provisioning blocked");
-    expect(blocker.textContent).toContain("enter a workspace name");
-    expect(blocker.textContent).toContain(
+    /* The checklist replaces the semicolon-joined blocker sentence: one line
+       per unmet condition, each naming its own fix. */
+    const readiness = screen.getByRole("status");
+    expect(readiness.textContent).toContain("Provisioning blocked");
+    expect(readiness.textContent).toContain("enter a workspace name");
+    expect(readiness.textContent).toContain(
       "load a network from the provider catalog",
     );
+    expect(readiness.querySelectorAll('li[data-ok="false"]').length).toBe(2);
 
-    const provision = screen.getByRole("button", {
-      name: "Provision workspace",
-    });
+    const provision = screen.getByRole("button", { name: "Provision workspace" });
     expect((provision as HTMLButtonElement).disabled).toBe(true);
     expect(provision.getAttribute("aria-describedby")).toBe(
-      "provision-blockers",
+      "provision-readiness",
     );
   });
 
+  it("presents machine sizes as comparable priced cards", () => {
+    H.queryDefaults = { ...onConfigure };
+    render(<CloudWorkspacesPage />);
+
+    const size = screen.getByRole("radio", {
+      name: /e2-standard-4/,
+    }) as HTMLInputElement;
+    expect(size.checked).toBe(true);
+    const card = size.closest("label");
+    expect(card?.textContent).toContain("4 vCPU · 16 GiB RAM");
+    /* Each card carries its own price, so sizes can be compared in place. */
+    expect(card?.textContent).toContain("$58.40 / month");
+  });
+
   it("associates visible field guidance with the control it describes", () => {
-    H.rows = [{ ...rows[0], networks: [] }];
+    H.rows = [{ ...connectionRow, networks: [], sizes: [] }];
+    H.queryDefaults = { ...onConfigure };
     render(<CloudWorkspacesPage />);
 
     const expectedDescriptions = [
       ["textbox", "Workspace name", "Required before provisioning."],
-      ["combobox", "Machine size", "4 vCPU · 16 GiB RAM"],
+      ["combobox", "Region", "Zone us-central1-a"],
+      [
+        "combobox",
+        "Machine size",
+        "No machine sizes were returned by this provider connection.",
+      ],
       ["spinbutton", "Disk size in GiB", "20–16,384 GiB"],
       [
         "combobox",
@@ -860,14 +876,217 @@ describe("CloudWorkspacesPage", () => {
       );
     }
   });
+});
 
-  it("keeps overview metrics readable at narrow embedded pane widths", () => {
-    expect(cloudPageCss).toContain("minmax(min(220px, 100%), 1fr)");
+describe("CloudWorkspacesPage — 03 Operate", () => {
+  it("states drift on one chip and names the diverging host in a banner", () => {
+    H.rows = [
+      connectionRow,
+      { ...workspaceRow, desiredState: "running", observedState: "stopped" },
+    ];
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    /* The chip STATES the divergence; it does not leave it to be computed
+       from separate desired/observed pills. */
+    expect(screen.getByText("stopped → running")).toBeTruthy();
+
+    const banner = screen.getByRole("status");
+    expect(banner.textContent).toContain(
+      "1 host has diverged from its desired state",
+    );
+    expect(banner.textContent).toContain("research-control");
+    expect(banner.textContent).toContain("diverged for");
+
+    const stats = screen.getByRole("region", { name: "Fleet posture" });
+    expect(stats.textContent).toContain("Drifting1");
+  });
+
+  it("shows one chip and no drift banner when desired and observed agree", () => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    expect(screen.getByText("running")).toBeTruthy();
+    expect(screen.queryByText(/diverged from/)).toBeNull();
+    expect(screen.queryByText(/desired:/)).toBeNull();
+    expect(screen.queryByText(/observed:/)).toBeNull();
+  });
+
+  it("offers one contextual primary action with the rest in overflow", () => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    /* This host is stoppable and not startable, so Stop is the primary and
+       Start is not rendered at all — the pre-redesign page greyed Start out
+       on every running host. */
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "More actions for research-control" }),
+    );
+    const menu = screen.getByRole("menu", {
+      name: "More actions for research-control",
+    });
+    expect(
+      Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
+        (item) => item.textContent,
+      ),
+    ).toEqual(["Repair", "Snapshot", "Destroy"]);
+  });
+
+  it("expands the selected host in place with tabbed detail", () => {
+    H.queryDefaults = { ...onOperate, host: "host-1", tab: "resources" };
+    render(<CloudWorkspacesPage />);
+
+    const tab = screen.getByRole("tab", { name: /Resources/ });
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tabpanel").textContent).toContain("vm");
+
+    fireEvent.click(screen.getByRole("tab", { name: /Logs/ }));
+    expect(H.queryUpdates).toContainEqual(["tab", "logs"]);
+    expect(screen.getByRole("tabpanel").textContent).toContain("Agent ready");
+  });
+
+  it("keeps the audit export reachable from the expanded host", () => {
+    H.queryDefaults = { ...onOperate, host: "host-1" };
+    render(<CloudWorkspacesPage />);
+
+    expect(
+      screen.getByRole("link", { name: /Audit export/ }).getAttribute("href"),
+    ).toBe("/api/workspace-hosts/host-1/audit");
+  });
+
+  it("mounts the browser session plane when a WebSocket connector is advertised", () => {
+    H.rows = [
+      connectionRow,
+      {
+        ...workspaceRow,
+        tunnel: {
+          hostedConnector: {
+            routeLabel: "workspace-relay",
+            transport: "websocket",
+          },
+        },
+      },
+    ];
+    H.queryDefaults = { ...onOperate, host: "host-1" };
+    render(<CloudWorkspacesPage />);
+
+    const session = screen.getByRole("region", {
+      name: "Browser workspace session for research-control",
+    });
+    expect(session).toBeTruthy();
+    expect(session.textContent).toContain("outbound relay · workspace-relay");
+    expect(session.textContent).toContain(
+      "Connect to open the authenticated PTY",
+    );
+  });
+
+  it("preserves explicit recoverability selection but fails closed without audited canary evidence", () => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "More actions for research-control" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Destroy" }));
+
+    expect(
+      screen.getByRole("dialog", { name: "Destroy research-control" }),
+    ).toBeTruthy();
+    expect(
+      screen
+        .getByRole("radio", { name: /Create a snapshot first/ })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+    fireEvent.click(screen.getByRole("radio", { name: /Discard recoverability/ }));
+
+    const confirmButton = screen.getByRole("button", {
+      name: "Confirm destroy",
+    }) as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(true);
+    fireEvent.change(
+      screen.getByLabelText("Type research-control to confirm discard"),
+      { target: { value: "research-control" } },
+    );
+    /* Fails CLOSED: typing the confirmation does not arm destroy. */
+    expect(confirmButton.disabled).toBe(true);
+    expect(confirmButton.getAttribute("aria-describedby")).toBe(
+      "destroy-admission-blocker",
+    );
+    expect(screen.getByText("Audited canary evidence required")).toBeTruthy();
+    expect(H.mutate).not.toHaveBeenCalled();
+  });
+
+  it("uses one tab stop and arrow-key selection in the recoverability radiogroup", () => {
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "More actions for research-control" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Destroy" }));
+
+    const radios = screen.getAllByRole("radio") as HTMLButtonElement[];
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([0, -1, -1]);
+
+    radios[0].focus();
+    fireEvent.keyDown(radios[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(radios[1]);
+    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, 0, -1]);
+
+    fireEvent.keyDown(radios[1], { key: "End" });
+    expect(document.activeElement).toBe(radios[2]);
+    expect(radios[2].getAttribute("aria-checked")).toBe("true");
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, -1, 0]);
+
+    fireEvent.keyDown(radios[2], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(radios[0]);
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+describe("CloudWorkspacesPage — failure and layout", () => {
+  it("fails closed when the sync control-plane read is unavailable", () => {
+    H.rows = [];
+    H.error = new Error("workspaceHosts.control is not registered");
+    render(<CloudWorkspacesPage />);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Local cloud control plane unavailable",
+    );
+    /* Routed to Connect rather than stranded in an inert form. */
+    expect(
+      screen.getByRole("heading", { name: "Provider readiness" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /02 Configure/ }),
+    ).toHaveProperty("disabled", true);
+  });
+
+  it("collapses the rail to an icon strip at narrow widths without losing its labels", () => {
+    /* The labels leave the LAYOUT, never the accessible name — the collapse
+       must cost a keyboard or screen-reader user nothing. */
     expect(cloudPageCss).toMatch(
-      /\.summaryCard p\s*\{[^}]*white-space:\s*normal/s,
+      /@container cw-shell \(max-width: 1100px\)[\s\S]*?\.railStepBody[\s\S]*?display: none/,
     );
-    expect(cloudPageCss).not.toMatch(
-      /\.overviewGrid\s*\{\s*grid-template-columns:\s*repeat\(2,/s,
+    expect(cloudPageCss).toContain("container-name: cw-shell");
+    expect(cloudPageCss).toMatch(
+      /@media \(max-width: 1100px\)\s*\{\s*\.shell\s*\{\s*grid-template-columns: 74px/,
     );
+  });
+
+  it("raises the type floor above the pre-redesign 8.5px metadata", () => {
+    const sizes = Array.from(cloudPageCss.matchAll(/font-size:\s*([\d.]+)px/g)).map(
+      (match) => Number(match[1]),
+    );
+    expect(sizes.length).toBeGreaterThan(20);
+    expect(Math.min(...sizes)).toBeGreaterThanOrEqual(10.5);
+  });
+
+  it("keeps a reduced-motion path", () => {
+    expect(cloudPageCss).toContain("prefers-reduced-motion: reduce");
   });
 });

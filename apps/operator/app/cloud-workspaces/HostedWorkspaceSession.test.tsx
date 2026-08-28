@@ -114,6 +114,140 @@ afterEach(() => {
 });
 
 describe("HostedWorkspaceSession", () => {
+  it("round-trips zero-byte read, download, and upload payloads", async () => {
+    const originalCreateObjectURL = URL.createObjectURL;
+    const originalRevokeObjectURL = URL.revokeObjectURL;
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:empty-file");
+    const revokeObjectURL = vi.fn();
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: revokeObjectURL,
+    });
+    const anchorClick = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    try {
+      render(
+        <HostedWorkspaceSession
+          hostId="host-1"
+          routeLabel="workspace-relay"
+          workspaceName="research-control"
+        />,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+      await waitFor(() => expect(M.sockets).toHaveLength(1));
+      const socket = M.sockets[0];
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "pty.ready",
+          role: "controller",
+          resumed: false,
+        }),
+      });
+      await waitFor(() => {
+        const status = screen.getByText("live", { exact: true }).parentElement;
+        expect(status?.textContent).toContain("controller");
+      });
+
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "file.result",
+          requestId: "list-empty-1",
+          operation: "list",
+          path: ".",
+          entries: [{ name: "empty.txt", kind: "file", bytes: 0 }],
+        }),
+      });
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: /empty\.txt/ })).toBeTruthy(),
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /empty\.txt/ }));
+      expect(
+        JSON.parse(socket.send.mock.calls.at(-1)?.[0] as string),
+      ).toMatchObject({
+        type: "file.read",
+        path: "empty.txt",
+      });
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "file.result",
+          requestId: "read-empty-1",
+          operation: "read",
+          path: "empty.txt",
+          bytes: 0,
+          encoding: "base64",
+          data: "",
+        }),
+      });
+      await waitFor(() =>
+        expect(screen.getByText("Read empty.txt.")).toBeTruthy(),
+      );
+
+      const pathInput = screen.getByLabelText("Workspace file path");
+      fireEvent.change(pathInput, { target: { value: "empty.txt" } });
+      fireEvent.click(screen.getByRole("button", { name: /Download/ }));
+      expect(
+        JSON.parse(socket.send.mock.calls.at(-1)?.[0] as string),
+      ).toMatchObject({
+        type: "file.download",
+        path: "empty.txt",
+      });
+      socket.emit("message", {
+        data: JSON.stringify({
+          type: "file.result",
+          requestId: "download-empty-1",
+          operation: "download",
+          path: "empty.txt",
+          bytes: 0,
+          encoding: "base64",
+          data: "",
+        }),
+      });
+      await waitFor(() =>
+        expect(screen.getByText("Downloaded empty.txt.")).toBeTruthy(),
+      );
+      expect(createObjectURL).toHaveBeenCalledOnce();
+      expect(createObjectURL.mock.calls[0][0]).toBeInstanceOf(Blob);
+      expect((createObjectURL.mock.calls[0][0] as Blob).size).toBe(0);
+      expect(anchorClick).toHaveBeenCalledOnce();
+      expect(revokeObjectURL).toHaveBeenCalledWith("blob:empty-file");
+
+      fireEvent.change(pathInput, { target: { value: "." } });
+      const upload = new File([], "empty-upload.txt", { type: "text/plain" });
+      fireEvent.change(screen.getByLabelText("Upload workspace file"), {
+        target: { files: [upload] },
+      });
+      await waitFor(() =>
+        expect(screen.getByText("Uploading empty-upload.txt…")).toBeTruthy(),
+      );
+      expect(
+        JSON.parse(socket.send.mock.calls.at(-1)?.[0] as string),
+      ).toMatchObject({
+        type: "file.upload",
+        path: "empty-upload.txt",
+        encoding: "base64",
+        data: "",
+      });
+    } finally {
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: originalCreateObjectURL,
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: originalRevokeObjectURL,
+      });
+      anchorClick.mockRestore();
+    }
+  });
+
   it("ignores delayed frames from a superseded socket after reconnect", async () => {
     render(
       <HostedWorkspaceSession

@@ -128,11 +128,8 @@ export function bytesToBase64(bytes: Uint8Array): string {
 }
 
 export function base64ToBytes(value: string): Uint8Array {
-  if (
-    value.length === 0 ||
-    value.length % 4 === 1 ||
-    !/^[A-Za-z0-9+/]*={0,2}$/.test(value)
-  ) {
+  // Empty base64 is the canonical encoding for a valid zero-byte file.
+  if (value.length % 4 === 1 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
     throw new TypeError("invalid_base64");
   }
   let binary: string;
@@ -313,4 +310,3 @@ export function parseHostedWorkspaceProtocolMessage(
 
   return null;
 }
-

@@ -7,8 +7,10 @@ import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import type { DetectedHardware } from '../provisioner/hardware-detect';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
+import { _registeredSidecarShutdownLabelsForTests } from '../process-supervision/sidecar-spawn-shared';
 import {
   ensureLocalWhisper,
+  fetchWhisperWithRecovery,
   stopLocalWhisper,
   whisperSttBaseUrl,
   __resetLocalWhisperStateForTests,
@@ -131,6 +133,7 @@ describe('local-whisper-service', () => {
     expect(spawned!.cmd).toBe(binPath);
     expect(spawned!.args).toContain('--inference-path');
     expect(spawned!.args).toContain('/v1/audio/transcriptions');
+    expect(_registeredSidecarShutdownLabelsForTests()).toContain('local-whisper-service');
 
     // Second call: managed child reused, no new spawn.
     let respawned = false;
@@ -331,5 +334,58 @@ describe('local-whisper-service', () => {
     const url = whisperSttBaseUrl({ externalUrl: 'http://localhost:29999', probe });
     expect(url).toBe('http://localhost:29999');
     expect(probe).not.toHaveBeenCalled();
+  });
+
+  describe('failure-only warm + retry recovery', () => {
+    it('does not warm or retry a successful request', async () => {
+      const warm = vi.fn(async () => ({ ok: true }));
+      const request = vi.fn(async () => new Response(JSON.stringify({ text: 'ok' }), { status: 200 }));
+
+      const response = await fetchWhisperWithRecovery(request, { externalUrl: 'http://whisper.test' }, { warm });
+
+      expect(response.status).toBe(200);
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(warm).not.toHaveBeenCalled();
+    });
+
+    it('warms once and retries a transport failure', async () => {
+      const warm = vi.fn(async () => ({ ok: true }));
+      let attempts = 0;
+      const request = vi.fn(async () => {
+        attempts++;
+        if (attempts === 1) throw new Error('ECONNREFUSED');
+        return new Response(JSON.stringify({ text: 'recovered' }), { status: 200 });
+      });
+
+      const response = await fetchWhisperWithRecovery(request, { externalUrl: 'http://whisper.test' }, { warm });
+
+      expect(response.status).toBe(200);
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(warm).toHaveBeenCalledTimes(1);
+    });
+
+    it('warms + retries 5xx, but leaves client errors and rate limits single-shot', async () => {
+      const warm = vi.fn(async () => ({ ok: true }));
+      const serverError = vi.fn(async () => new Response('down', { status: 503 }));
+      const serverResponse = await fetchWhisperWithRecovery(
+        serverError,
+        { externalUrl: 'http://whisper.test' },
+        { warm },
+      );
+      expect(serverResponse.status).toBe(503);
+      expect(serverError).toHaveBeenCalledTimes(2);
+      expect(warm).toHaveBeenCalledTimes(1);
+
+      warm.mockClear();
+      const clientError = vi.fn(async () => new Response('bad audio', { status: 400 }));
+      await fetchWhisperWithRecovery(clientError, { externalUrl: 'http://whisper.test' }, { warm });
+      expect(clientError).toHaveBeenCalledTimes(1);
+      expect(warm).not.toHaveBeenCalled();
+
+      const rateLimited = vi.fn(async () => new Response('slow down', { status: 429 }));
+      await fetchWhisperWithRecovery(rateLimited, { externalUrl: 'http://whisper.test' }, { warm });
+      expect(rateLimited).toHaveBeenCalledTimes(1);
+      expect(warm).not.toHaveBeenCalled();
+    });
   });
 });

@@ -164,8 +164,12 @@ vi.mock('./run-git-sync', () => ({
 }));
 
 const runDependencyGenerationPrebuildMock = vi.fn(async (_request: Record<string, unknown>) => 'ready');
+const enqueueDependencyPrebuildMock = vi.fn(async (_request: Record<string, unknown>) => true);
+const recoverQueuedDependencyPrebuildMock = vi.fn(async (_target: Record<string, unknown>) => 'none');
 vi.mock('../../release/dependency-generation-prebuild', () => ({
   runDependencyGenerationPrebuild: (request: Record<string, unknown>) => runDependencyGenerationPrebuildMock(request),
+  enqueueDependencyPrebuild: (request: Record<string, unknown>) => enqueueDependencyPrebuildMock(request),
+  recoverQueuedDependencyPrebuild: (target: Record<string, unknown>) => recoverQueuedDependencyPrebuildMock(target),
 }));
 
 // EI-438 content-guard kill-switch flag — default ON; a test can flip it to exercise
@@ -490,6 +494,10 @@ beforeEach(() => {
   runGitSyncMock.mockReset();
   runDependencyGenerationPrebuildMock.mockReset();
   runDependencyGenerationPrebuildMock.mockResolvedValue('ready');
+  enqueueDependencyPrebuildMock.mockReset();
+  enqueueDependencyPrebuildMock.mockResolvedValue(true);
+  recoverQueuedDependencyPrebuildMock.mockReset();
+  recoverQueuedDependencyPrebuildMock.mockResolvedValue('none');
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
   emitGitSyncCommittedEventMock.mockReset();
@@ -603,6 +611,15 @@ describe('P-004 dependency-generation prebuild handoff', () => {
       outcome_status: 'synced',
     });
     expect(runDependencyGenerationPrebuildMock).toHaveBeenCalledOnce();
+    expect(enqueueDependencyPrebuildMock).toHaveBeenCalledOnce();
+    expect(enqueueDependencyPrebuildMock).toHaveBeenCalledWith({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      candidate,
+      integrationRoot: repoDir,
+      toolingRoot: tmpRoot,
+      queuedAtMs: expect.any(Number),
+    });
     expect(runDependencyGenerationPrebuildMock).toHaveBeenCalledWith({
       workspaceId: ctx.workspaceId,
       installSlug: ctx.installSlug,
@@ -627,6 +644,58 @@ describe('P-004 dependency-generation prebuild handoff', () => {
     }
 
     expect(runDependencyGenerationPrebuildMock).not.toHaveBeenCalled();
+    expect(enqueueDependencyPrebuildMock).not.toHaveBeenCalled();
+  });
+
+  it('recovers a queued handoff on a later tick without consulting the ambient tooling root', async () => {
+    runGitSyncMock.mockResolvedValue({
+      status: 'nothing',
+      dirtyPathCount: 0,
+      committedCount: 0,
+      oversized: [],
+      contentErrors: [],
+      strandedSubmodules: [],
+    });
+    recoverQueuedDependencyPrebuildMock.mockResolvedValue('ready');
+
+    await action(ctx);
+    expect(recoverQueuedDependencyPrebuildMock).toHaveBeenCalledWith({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+    });
+    expect(enqueueDependencyPrebuildMock).not.toHaveBeenCalled();
+  });
+
+  it('does not publish terminal activity until the queued handoff write resolves', async () => {
+    const candidate = 'c'.repeat(40);
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, headSha: candidate });
+    const priorToolingRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = tmpRoot;
+    let releaseHandoff!: (value: boolean) => void;
+    enqueueDependencyPrebuildMock.mockImplementation(
+      () => new Promise<boolean>((resolve) => {
+        releaseHandoff = resolve;
+      }),
+    );
+    try {
+      const pending = action(ctx);
+      await vi.waitFor(() => expect(releaseHandoff).toBeTypeOf('function'));
+      expect(
+        gitSyncActivityPatches().some(
+          (activity) => activity.phase === 'complete' && activity.active === false,
+        ),
+      ).toBe(false);
+      releaseHandoff(true);
+      await pending;
+      expect(
+        gitSyncActivityPatches().some(
+          (activity) => activity.phase === 'complete' && activity.active === false,
+        ),
+      ).toBe(true);
+    } finally {
+      if (priorToolingRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorToolingRoot;
+    }
   });
 });
 

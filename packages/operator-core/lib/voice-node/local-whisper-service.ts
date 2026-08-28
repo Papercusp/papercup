@@ -35,6 +35,7 @@ import {
   type WhisperModelId,
 } from '../provisioner/whisper-binary';
 import { managedSpawn } from '../task-manager/managed-spawn';
+import { registerSidecarShutdownHooks } from '../process-supervision/sidecar-spawn-shared';
 import { platformKeyFor } from '../provisioner/llama-binary';
 import { detectHardware, type DetectedHardware } from '../provisioner/hardware-detect';
 
@@ -70,6 +71,21 @@ export interface LocalWhisperDeps {
   healthTimeoutMs?: number;
   healthIntervalMs?: number;
   now?: () => number;
+}
+
+/**
+ * Options for the failure-recovery wrapper used by STT routes.
+ *
+ * The ordinary transcription path deliberately stays a single request: callers first use the
+ * lifecycle URL returned by {@link whisperSttBaseUrl}, and only a transport/5xx failure enters
+ * this wrapper. Keeping the warm function injectable makes the recovery contract hermetic in
+ * route tests without making the hot path depend on a test-only global.
+ */
+export interface WhisperRecoveryOptions {
+  /** Warm/reconcile the local endpoint before the one permitted retry. */
+  warm?: (deps: LocalWhisperDeps) => Promise<unknown>;
+  /** Retryable upstream statuses. Defaults to connection failures and HTTP 5xx/408. */
+  shouldRetryStatus?: (status: number) => boolean;
 }
 
 interface ManagedState {
@@ -243,6 +259,43 @@ export async function warmLocalWhisper(deps: LocalWhisperDeps = {}): Promise<Ens
   return ensureLocalWhisper(deps);
 }
 
+/**
+ * Execute one Whisper request and recover once when the endpoint has failed.
+ *
+ * A healthy request is always one fetch. A 4xx (bad audio/request) and a 429 (quota/rate
+ * limiting) are returned unchanged, because warming a local process cannot repair either and a
+ * second request would obscure the actionable provider response. Connection failures, timeouts,
+ * and 5xx responses are the lifecycle-failure class: warm the external-or-managed endpoint once,
+ * then retry exactly once against the freshly selected URL. The helper is shared by the operator,
+ * device, and P2P STT paths so they cannot drift into three different retry policies.
+ */
+export async function fetchWhisperWithRecovery(
+  request: (baseUrl: string) => Promise<Response>,
+  deps: LocalWhisperDeps = {},
+  options: WhisperRecoveryOptions = {},
+): Promise<Response> {
+  const shouldRetryStatus = options.shouldRetryStatus ?? ((status: number) => status === 408 || status >= 500);
+  const warm = options.warm ?? ((d: LocalWhisperDeps) => warmLocalWhisper(d));
+  const firstBase = whisperSttBaseUrl(deps);
+  try {
+    const first = await request(firstBase);
+    if (first.ok || !shouldRetryStatus(first.status)) return first;
+    // We are discarding this retryable response. Release its body before warming so a keep-alive
+    // socket cannot linger while the child starts (undici's `Response` body is otherwise held by
+    // the connection pool until its timeout).
+    await first.body?.cancel().catch(() => {});
+  } catch {
+    // A transport failure is the strongest signal that the managed child may have died. Continue
+    // to the same single warm + retry path; the retry's error is intentionally allowed to reach
+    // the route, which reports the honest final 502 rather than hiding it behind the first error.
+  }
+
+  // Warm is best-effort. If the cache is absent or the child cannot start, the retry still runs
+  // against the external URL and preserves the original route error surface.
+  await warm(deps).catch(() => {});
+  return request(whisperSttBaseUrl(deps));
+}
+
 async function startManaged(deps: LocalWhisperDeps, probe: (u: string) => Promise<boolean>): Promise<EnsureWhisperResult> {
   const now = deps.now ?? Date.now;
   // Spawn-storm guard: a binary that boots-then-dies must not respawn unboundedly.
@@ -363,6 +416,20 @@ async function spawnAndHealthGate(opts: {
       { spawnOptions: { stdio: 'ignore', detached: false }, spawnFn },
     );
     child = managed.child;
+    // Register the lifecycle hook on the SPAWN seam, not at one lucky host bootstrap call site.
+    // `async-with-exit` signals the child synchronously even on Node's `exit` event, then awaits
+    // the bounded stop sequence for normal SIGTERM/SIGINT. The registrar is idempotent by label,
+    // so repeated recovery attempts never stack process listeners.
+    registerSidecarShutdownHooks({
+      label: 'local-whisper-service',
+      mode: 'async-with-exit',
+      stop: stopLocalWhisper,
+    });
+    // Keep the pending child visible to stopLocalWhisper while its model is loading. Previously
+    // state.child was assigned only after /health passed, so a shutdown in this window had no
+    // handle to signal and leaked the just-spawned server.
+    state.child = child;
+    state.url = url;
   } catch (e) {
     return { ok: false, reason: 'spawn-failed', detail: e instanceof Error ? e.message : String(e) };
   }
@@ -384,13 +451,15 @@ async function spawnAndHealthGate(opts: {
         return { ok: false, reason: 'spawn-failed' as const, detail: `whisper-server exited ${child.exitCode} during startup` };
       }
       if (await probe(url)) {
-        state.child = child;
-        state.url = url;
         return { ok: true, url, source: 'managed' as const };
       }
       await new Promise((r) => setTimeout(r, intervalMs));
     }
     child.kill('SIGTERM');
+    if (state.child === child) {
+      state.child = null;
+      state.url = null;
+    }
     return { ok: false, reason: 'unhealthy' as const, detail: `whisper-server did not answer /health within ${timeoutMs}ms` };
   })();
 

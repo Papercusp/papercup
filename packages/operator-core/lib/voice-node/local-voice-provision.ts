@@ -14,6 +14,8 @@
  * per-leg `blocked` string — never a throw, never a half-written cache (each leg's own
  * module guarantees verify-before-trust).
  */
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { detectHardware } from '../provisioner/hardware-detect';
 import {
   resolveWhisperBinary,
@@ -25,6 +27,14 @@ import {
 import { platformKeyFor } from '../provisioner/llama-binary';
 import { isKokoroLocalProvisioned, provisionKokoroLocal } from './kokoro-local';
 import { warmLocalWhisper } from './local-whisper-service';
+
+const execFileAsync = promisify(execFile);
+
+/** The user-level units shipped by the legacy Voicemode installer. */
+export const LEGACY_VOICE_UNITS = {
+  whisper: 'voicemode-whisper.service',
+  kokoro: 'voicemode-kokoro.service',
+} as const;
 
 export interface LegStatus {
   done: boolean;
@@ -40,6 +50,27 @@ export interface LocalVoiceProvisionStatus {
   kokoro: LegStatus;
 }
 
+export interface LegacyVoiceUnitResult {
+  unit: string;
+  ok: boolean;
+  action: 'disabled' | 'already-absent' | 'retained' | 'failed' | 'unsupported';
+  detail?: string;
+}
+
+export interface LegacyVoiceReconcileResult {
+  whisper: LegacyVoiceUnitResult;
+  kokoro: LegacyVoiceUnitResult;
+}
+
+export interface LegacyVoiceReconcileDeps {
+  /** Injectable `systemctl` seam; defaults to a bounded `execFile`. */
+  runSystemctl?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  /** Tests can force the platform branch; defaults to `process.platform`. */
+  platform?: NodeJS.Platform;
+  /** Retire the compatibility Kokoro unit too. Default false: retain it as an accelerator. */
+  retireKokoro?: boolean;
+}
+
 export interface LocalVoiceProvisionDeps {
   home?: string;
   now?: () => string;
@@ -49,6 +80,10 @@ export interface LocalVoiceProvisionDeps {
   provisionKokoro?: () => Promise<LegStatus>;
   /** Injected for tests; defaults to warmLocalWhisper (spawn the server once the files land). */
   warmWhisper?: () => Promise<unknown>;
+  /** Injected systemd seam for the legacy-unit reconciliation. */
+  runSystemctl?: (args: string[]) => Promise<{ stdout: string; stderr: string }>;
+  /** Override the hardware probe used by the idle disk refresh. */
+  detectHw?: () => Promise<Awaited<ReturnType<typeof detectHardware>>>;
 }
 
 let current: LocalVoiceProvisionStatus = {
@@ -58,20 +93,80 @@ let current: LocalVoiceProvisionStatus = {
   kokoro: { done: false },
 };
 let inflight: Promise<LocalVoiceProvisionStatus> | null = null;
+// Fully injected leg functions are unit-test seams, not durable installers. Keep their result
+// in-memory so a hermetic test (or an embedding caller intentionally supplying its own legs) is
+// not overwritten by an unrelated empty real-home cache read. The production/default path always
+// refreshes exact disk truth.
+let refreshDiskOnIdle = true;
+
+async function defaultSystemctl(args: string[]): Promise<{ stdout: string; stderr: string }> {
+  const r = await execFileAsync('systemctl', args, { timeout: 15_000 });
+  return { stdout: r.stdout, stderr: r.stderr };
+}
+
+function absentLegacyUnit(error: unknown): boolean {
+  return /not found|not loaded|no such file|could not be found|not installed/i.test(
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+async function disableLegacyUnit(
+  unit: string,
+  runSystemctl: (args: string[]) => Promise<{ stdout: string; stderr: string }>,
+): Promise<LegacyVoiceUnitResult> {
+  try {
+    await runSystemctl(['--user', 'disable', '--now', unit]);
+    return { unit, ok: true, action: 'disabled', detail: 'disabled and stopped; operator-managed local voice is canonical' };
+  } catch (error) {
+    if (absentLegacyUnit(error)) {
+      return { unit, ok: true, action: 'already-absent', detail: 'legacy unit is not installed' };
+    }
+    return { unit, ok: false, action: 'failed', detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/**
+ * Reconcile the old per-user Voicemode units with the single operator-owned lifecycle.
+ *
+ * Whisper's old unit points at a deleted script and therefore enters a permanent 203/EXEC
+ * restart loop. It is never a supported second owner, so every explicit local-voice provision
+ * pass disables/stops it (idempotently). Kokoro is retained by default as a developer-host
+ * compatibility accelerator; callers that have proven the in-process fallback and want a fully
+ * retired legacy stack can pass `retireKokoro:true`. Errors are returned as data so a systemd
+ * outage cannot make model provisioning report a false failure.
+ */
+export async function reconcileLegacyVoiceServices(
+  deps: LegacyVoiceReconcileDeps = {},
+): Promise<LegacyVoiceReconcileResult> {
+  if ((deps.platform ?? process.platform) !== 'linux') {
+    return {
+      whisper: { unit: LEGACY_VOICE_UNITS.whisper, ok: true, action: 'unsupported', detail: 'user systemd reconciliation is Linux-only' },
+      kokoro: { unit: LEGACY_VOICE_UNITS.kokoro, ok: true, action: 'unsupported', detail: 'user systemd reconciliation is Linux-only' },
+    };
+  }
+  const runSystemctl = deps.runSystemctl ?? defaultSystemctl;
+  const whisper = await disableLegacyUnit(LEGACY_VOICE_UNITS.whisper, runSystemctl);
+  const kokoro = deps.retireKokoro
+    ? await disableLegacyUnit(LEGACY_VOICE_UNITS.kokoro, runSystemctl)
+    : { unit: LEGACY_VOICE_UNITS.kokoro, ok: true, action: 'retained' as const, detail: 'retained as optional compatibility accelerator' };
+  return { whisper, kokoro };
+}
 
 /** Test hook. */
 export function __resetLocalVoiceProvisionForTests(): void {
   current = { running: false, whisperBinary: { done: false }, whisperModel: { done: false }, kokoro: { done: false } };
   inflight = null;
+  refreshDiskOnIdle = true;
 }
 
 /** Cheap poll: the last/ongoing run's status, with the done-flags refreshed from disk so an
  *  install completed in a PREVIOUS operator process still reads done. */
 export async function getLocalVoiceProvisionStatus(deps: LocalVoiceProvisionDeps = {}): Promise<LocalVoiceProvisionStatus> {
   if (current.running) return current;
+  if (!refreshDiskOnIdle) return current;
   // Refresh from the durable caches (fs-only, no network).
   try {
-    const hw = await detectHardware();
+    const hw = await (deps.detectHw ?? detectHardware)();
     const platformKey = platformKeyFor(whisperPlatformSpec(hw));
     const [bin, model, kokoro] = await Promise.all([
       findCachedWhisperBinary({ home: deps.home, platformKey }),
@@ -80,9 +175,18 @@ export async function getLocalVoiceProvisionStatus(deps: LocalVoiceProvisionDeps
     ]);
     return {
       ...current,
-      whisperBinary: bin ? { done: true } : current.whisperBinary,
-      whisperModel: !model.needsDownload ? { done: true } : current.whisperModel,
-      kokoro: kokoro ? { done: true } : current.kokoro,
+      // Disk is authoritative while idle. Do not retain a stale `done:true` from a previous
+      // process/run after an operator or cleanup removed the cache; that was the exact UI lie
+      // that made a missing Whisper model look provisioned.
+      whisperBinary: bin
+        ? { done: true }
+        : { done: false, blocked: current.whisperBinary.blocked ?? 'whisper binary is not provisioned' },
+      whisperModel: !model.needsDownload
+        ? { done: true }
+        : { done: false, blocked: current.whisperModel.blocked ?? model.detail ?? 'whisper model is not provisioned' },
+      kokoro: kokoro
+        ? { done: true }
+        : { done: false, blocked: current.kokoro.blocked ?? 'kokoro local model is not provisioned' },
     };
   } catch {
     return current;
@@ -123,6 +227,14 @@ export function startLocalVoiceProvision(deps: LocalVoiceProvisionDeps = {}): { 
     whisperModel: { done: false },
     kokoro: { done: false },
   };
+  // The default legs are the production path. Reconcile the broken legacy Whisper owner before
+  // downloads begin, but skip the side effect for fully injected unit tests unless they explicitly
+  // supply a systemctl seam. This keeps tests hermetic while making every real install self-heal.
+  const injectedLeg = Boolean(deps.provisionWhisperBinary || deps.provisionWhisperModel || deps.provisionKokoro);
+  refreshDiskOnIdle = !injectedLeg;
+  if (!injectedLeg || deps.runSystemctl) {
+    void reconcileLegacyVoiceServices({ runSystemctl: deps.runSystemctl }).catch(() => {});
+  }
   inflight = (async () => {
     const binLeg = deps.provisionWhisperBinary ?? (() => defaultWhisperBinaryLeg(deps.home));
     const modelLeg = deps.provisionWhisperModel ?? (() => defaultWhisperModelLeg(deps.home));

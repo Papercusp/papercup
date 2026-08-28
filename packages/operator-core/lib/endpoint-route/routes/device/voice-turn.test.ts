@@ -31,6 +31,7 @@ vi.mock('../../../voice-node/kokoro-local', () => ({ kokoroTtsAvailable: vi.fn(a
 vi.mock('../../../voice-node/local-whisper-service', () => ({
   whisperSttBaseUrl: () => 'http://whisper.stub',
   warmLocalWhisper: vi.fn(async () => ({ ok: true, source: 'managed' })),
+  fetchWhisperWithRecovery: (request: (baseUrl: string) => Promise<Response>) => request('http://whisper.stub'),
 }));
 vi.mock('../agent-mcp/tts-synth', () => ({ synthesize: vi.fn() }));
 vi.mock('../agent-mcp/operator-voice-proxy-helpers', () => ({

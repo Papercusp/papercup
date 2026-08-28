@@ -185,6 +185,10 @@
 .op-inbox__bulk-count--good { color: var(--good, #6ee7b7); }
 .op-inbox__bulk-count--review { color: color-mix(in srgb, var(--accent, #8b5cf6) 60%, #ffffff); }
 .op-inbox__bulk-count--left { color: var(--fg-mute, #8a8a91); }
+.op-inbox__bulk-counts--accounting {
+  padding-top: 2px;
+  border-top: 1px solid color-mix(in srgb, var(--border, #ffffff22) 55%, transparent);
+}
 
 /* ── REVIEW: accept-all + dismiss ─────────────────────────────────────── */
 .op-inbox__bulk-actions { display: flex; align-items: center; gap: 7px; }
@@ -351,6 +355,11 @@
   border-color: color-mix(in srgb, var(--bad, #f87171) 45%, transparent);
 }
 .op-inbox__rowstate--skipped { color: var(--fg-mute, #8a8a91); }
+.op-inbox__rowstate--owner_action { color: var(--warn, #fbbf24); }
+.op-inbox__rowstate--cleanup_candidate { color: #c4b5fd; }
+.op-inbox__rowstate--retry_needed { color: #7dd3fc; }
+.op-inbox__rowstate--routed { color: #93c5fd; }
+.op-inbox__rowstate--investigate { color: var(--warn, #fbbf24); }
 
 @media (max-width: 520px) {
   .op-inbox__bulk-start-sub { display: none; }

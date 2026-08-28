@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   HOSTED_WORKSPACE_SESSION_PROTOCOL,
+  base64ToBytes,
   base64ToUtf8,
   buildHostedWorkspaceSocketUrl,
   bytesToBase64,
@@ -21,29 +22,39 @@ describe("hosted workspace browser protocol", () => {
         session: { workspaceId: "customer-workspace-1" },
       }),
     ).toBe("customer-workspace-1");
-    expect(readHostedWorkspaceTicket({ ok: true, ticket: TICKET })).toBe(TICKET);
+    expect(readHostedWorkspaceTicket({ ok: true, ticket: TICKET })).toBe(
+      TICKET,
+    );
     expect(
-      buildHostedWorkspaceSocketUrl("https://app.papercusp.com/settings", TICKET),
+      buildHostedWorkspaceSocketUrl(
+        "https://app.papercusp.com/settings",
+        TICKET,
+      ),
     ).toBe(
       `wss://app.papercusp.com/api/hosted/connectors/socket?ticket=${TICKET}`,
     );
-    expect(
-      buildHostedWorkspaceSocketUrl("http://127.0.0.1:3170", TICKET),
-    ).toBe(
+    expect(buildHostedWorkspaceSocketUrl("http://127.0.0.1:3170", TICKET)).toBe(
       `ws://127.0.0.1:3170/api/hosted/connectors/socket?ticket=${TICKET}`,
     );
     expect(() =>
       buildHostedWorkspaceSocketUrl("file:///tmp/operator", TICKET),
     ).toThrow("unsupported_hosted_workspace_origin");
-    expect(readHostedWorkspaceTicket({ ok: true, ticket: "replayed" })).toBeNull();
+    expect(
+      readHostedWorkspaceTicket({ ok: true, ticket: "replayed" }),
+    ).toBeNull();
   });
 
   it("round-trips UTF-8 and binary frames without Node-only Buffer semantics", () => {
     const value = "paste λ → workspace\n";
     expect(base64ToUtf8(utf8ToBase64(value))).toBe(value);
-    expect(bytesToBase64(new Uint8Array([0, 127, 128, 255]))).toBe(
-      "AH+A/w==",
-    );
+    expect(bytesToBase64(new Uint8Array([0, 127, 128, 255]))).toBe("AH+A/w==");
+  });
+
+  it("round-trips zero-byte payloads while rejecting malformed non-empty base64", () => {
+    expect(bytesToBase64(new Uint8Array())).toBe("");
+    expect(base64ToBytes("")).toEqual(new Uint8Array());
+    expect(base64ToUtf8("")).toBe("");
+    expect(() => base64ToBytes("not base64!")).toThrow("invalid_base64");
   });
 
   it("parses controller binding, arbitration, resume, output, and exit payloads", () => {
@@ -122,6 +133,25 @@ describe("hosted workspace browser protocol", () => {
     });
     expect(
       parseHostedWorkspaceProtocolMessage({
+        type: "file.result",
+        requestId: "read-empty-1",
+        operation: "read",
+        path: "empty.txt",
+        bytes: 0,
+        encoding: "base64",
+        data: "",
+      }),
+    ).toEqual({
+      kind: "file-result",
+      requestId: "read-empty-1",
+      operation: "read",
+      path: "empty.txt",
+      bytes: 0,
+      encoding: "base64",
+      data: "",
+    });
+    expect(
+      parseHostedWorkspaceProtocolMessage({
         type: "session.denied",
         reason: "observer_read_only",
         requestType: "file.upload",
@@ -180,4 +210,3 @@ describe("hosted workspace browser protocol", () => {
     ).toBeNull();
   });
 });
-
