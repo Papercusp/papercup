@@ -6182,7 +6182,8 @@ mod tests {
         use crate::models::CupboardListing;
         let mut app = App::new();
         app.tab = Tab::Cupboard;
-        app.show_presence = false; // keep the long kind/population title visible
+        // Keep the long kind/population title visible.
+        app.show_presence = false;
         // Empty state first (not loading → the refetch hint).
         let empty = render(&app, 110, 16);
         assert!(empty.contains("Cupboard"));
