@@ -421,7 +421,7 @@ describe("PlansCleanupStrip", () => {
     render(<PlansCleanupStrip {...p} />);
     expect(
       screen.getByTestId("plans-cleanup-review-headline").textContent,
-    ).toContain("1 fix need your call");
+    ).toContain("1 assessed · 0 auto-applied · 1 still open");
 
     fireEvent.click(screen.getByTestId("plans-cleanup-open-review"));
     expect(p.onReview).toHaveBeenCalledWith("run-1");
@@ -483,9 +483,9 @@ describe("PlansCleanupStrip", () => {
 
     expect(
       screen.getByTestId("plans-cleanup-review-headline").textContent,
-    ).toContain("3 fixes need your call · 4 auto-applied · 5 not reached");
+    ).toContain("12 assessed · 4 auto-applied · 8 still open");
     const continueButton = screen.getByTestId("plans-cleanup-continue");
-    expect(continueButton.textContent).toContain("Continue 5 remaining");
+    expect(continueButton.textContent).toContain("Continue 5 retryable");
     fireEvent.click(continueButton);
 
     await waitFor(() => expect(H.fetch).toHaveBeenCalledTimes(1));
