@@ -102,7 +102,8 @@ test('startGatewayService caps account-scaled Codex admission at the Claude cap 
     credentialRef: `token:/codex-${i}`,
     source: 'pool' as const,
   }));
-  const resolveAccounts = async (_ws: string | undefined, provider: 'claude' | 'codex') => (provider === 'codex' ? codexDb : claudeDb);
+  const resolveAccounts = async (_ws: string | undefined, provider: 'claude' | 'codex' = 'claude') =>
+    provider === 'codex' ? codexDb : claudeDb;
   svc = await startGatewayService({
     port: 0,
     upstreamBase: up.base,
