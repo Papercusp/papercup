@@ -14,7 +14,7 @@
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,6 +27,13 @@ import {
 } from './lib/vitest-summary.mjs';
 import { killSpawnedProcessTree, parseBatchProgress } from './lib/batch-watchdog.mjs';
 import { formatTaskOutcomeFields } from './lib/task-progress-line.mjs';
+import {
+  buildGovernedProcessDemand,
+  classifyGovernedTestProcessOutcome,
+  createGovernedProcessDemandSampler,
+  governedProcessIdempotencyKey,
+  runGovernedTestProcess,
+} from './lib/governed-test-process.mjs';
 
 // Re-exported so this module's own callers and tests (packages/operator-core/lib/__tests__/
 // test-file-router.test.ts) keep importing it from here unchanged. The IMPLEMENTATION moved to
@@ -1512,18 +1519,28 @@ export function runCapturedTestProcess(command, args, options = {}) {
     onProgress = (line) => console.error(line),
     onAllFilesComplete = () => null,
     onClose = () => {},
+    // Tests may replace this narrow governance seam; production callers leave
+    // the canonical bridge in place.
+    governedProcessImpl = runGovernedTestProcess,
   } = options;
   const ownsProcessGroup = Boolean(setsidPath);
   const spawnCommand = setsidPath ?? command;
   const spawnArgs = setsidPath ? ['--wait', command, ...args] : args;
-  const startedAt = Date.now();
+  const plannedDemand = buildGovernedProcessDemand({
+    fileCount: files.length,
+    diskBytes: maxBuffer,
+    fileDescriptors: 16 + Math.max(1, files.length),
+  });
 
-  return new Promise((resolveRun) => {
+  const runChild = (admissionContext, governedEnv, { inherited = false } = {}) => new Promise((resolveRun) => {
+    const startedAt = Date.now();
+    const sampler = createGovernedProcessDemandSampler(plannedDemand);
     const child = spawnImpl(spawnCommand, spawnArgs, {
       cwd,
-      env,
+      env: governedEnv ?? env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    sampler.attach(child.pid);
     const stdout = [];
     const stderr = [];
     const completedFiles = new Set();
@@ -1688,9 +1705,45 @@ export function runCapturedTestProcess(command, args, options = {}) {
         stderr: Buffer.concat(stderr).toString('utf8'),
         error: spawnError ?? captureError,
         timedOut,
+        actualDemand: sampler.stop({ diskBytes: capturedBytes }),
+        admissionReceiptId: admissionContext?.receiptId ?? null,
+        admissionInherited: inherited,
       });
     });
   });
+  // A repeated invocation of the same file is a NEW resident process and must
+  // not reuse a completed receipt. Keep the human-readable command in the
+  // identity while adding a per-call nonce for durable idempotency.
+  const processIdentity = `${process.pid}:${randomUUID()}:${JSON.stringify({ command, args, cwd, files, cwdLabel })}`;
+  const governedOptions = {
+    workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+    namespace: 'test-files-process',
+    owner: `test-files:${cwdLabel}:${process.pid}`,
+    idempotencyKey: governedProcessIdempotencyKey('test-files', processIdentity),
+    payloadRef: `test-files:${cwdLabel}`,
+    timeoutMs,
+    demand: plannedDemand,
+    metadata: {
+      processKind: 'test-files-child',
+      cwd: cwdLabel,
+      fileCount: files.length,
+      timeoutMs,
+    },
+    env,
+    settle: classifyGovernedTestProcessOutcome,
+  };
+  return governedProcessImpl(governedOptions, runChild).catch((error) => ({
+    status: null,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
+      code: 'GOVERNED_ADMISSION_FAILED',
+    }),
+    timedOut: false,
+    actualDemand: plannedDemand,
+    governedAdmissionError: true,
+  }));
 }
 
 // `testing:run` is the supported routed surface for focused tests. Keep every
@@ -1808,12 +1861,40 @@ export async function main(
       console.log(`ROUTE cwd=${cwdLabel} runner=node:test`);
       for (const file of exact) console.log(`  requested ${file}`);
       if (!dry && !ensurePreemptReady()) return 75;
-      const result = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
-        cwd: group.cwd,
-        env: process.env,
-        encoding: 'utf8',
-        maxBuffer: 256 * 1024 * 1024,
+      const nodeDemand = buildGovernedProcessDemand({
+        fileCount: exact.length,
+        diskBytes: 256 * 1024 * 1024,
+        fileDescriptors: 16 + Math.max(1, exact.length),
       });
+      const nodeIdentity = `${process.pid}:${randomUUID()}:${cwdLabel}:${exact.join('\0')}`;
+      const result = await runGovernedTestProcess({
+        workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+        namespace: 'test-files-node-process',
+        owner: `test-files:${cwdLabel}:${process.pid}`,
+        idempotencyKey: governedProcessIdempotencyKey('test-files-node', nodeIdentity),
+        payloadRef: `test-files:${cwdLabel}`,
+        timeoutMs: TEST_FILE_RUN_TIMEOUT_MS,
+        demand: nodeDemand,
+        metadata: { processKind: 'test-files-node-child', cwd: cwdLabel, fileCount: exact.length },
+        env: process.env,
+        settle: classifyGovernedTestProcessOutcome,
+      }, async (_admissionContext, governedEnv) => {
+        const child = spawnSync(process.execPath, ['--test', ...exact, ...vitestArgs], {
+          cwd: group.cwd,
+          env: governedEnv,
+          encoding: 'utf8',
+          maxBuffer: 256 * 1024 * 1024,
+        });
+        return { ...child, actualDemand: nodeDemand };
+      }).catch((error) => ({
+        status: null,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        error: Object.assign(new Error(error instanceof Error ? error.message : String(error)), {
+          code: 'GOVERNED_ADMISSION_FAILED',
+        }),
+      }));
       if (result.stdout) process.stdout.write(result.stdout);
       if (result.stderr) process.stderr.write(result.stderr);
       if (result.error) {

@@ -162,6 +162,13 @@ import {
   outSync as rawOutSync,
   errSync as rawErrSync,
 } from "./lib/sync-write.mjs";
+import {
+  buildGovernedProcessDemand,
+  classifyGovernedTestProcessOutcome,
+  createGovernedProcessDemandSampler,
+  governedProcessIdempotencyKey,
+  runGovernedTestProcess,
+} from "./lib/governed-test-process.mjs";
 
 // EI-15802: an agent running this as a BACKGROUND task only sees the harness's
 // own truncated tail (~150 lines) plus an exit-code notification — on a long
@@ -4190,8 +4197,37 @@ function runCapturedTask(
       });
     }
   }
-  const startedAt = Date.now();
-  return new Promise((resolveRun) => {
+  // One durable receipt covers the whole resident npm -> shell -> Vitest tree.
+  // The scheduler's worker allocation is a reservation for this process, not a
+  // second concurrency ceiling; the close path below replaces it with measured
+  // peak residency before Governor.release(actualDemand).
+  const processDemand = buildGovernedProcessDemand({
+    memoryBytes: Math.max(1, allocation.memoryMb) * 1024 * 1024,
+    diskBytes: MAX_CAPTURE_BYTES,
+    fileDescriptors: 16 + Math.max(1, allocation.workers),
+  });
+  const processIdentity = `${taskKey(spawnTask)}:${journalLabel}`;
+  const governedOptions = {
+    workspaceId: process.env.PAPERCUSP_WORKSPACE_ID ?? process.env.PAPERCUSP_WORKSPACE,
+    namespace: "affected-tests-process",
+    owner: `affected-tests:${RUN_TOKEN}`,
+    idempotencyKey: governedProcessIdempotencyKey("affected-tests", `${RUN_TOKEN}:${processIdentity}`),
+    payloadRef: `affected-tests:${RUN_TOKEN}`,
+    timeoutMs: taskTimeoutMs,
+    demand: processDemand,
+    metadata: {
+      processKind: "affected-tests-task",
+      task: processIdentity,
+      workers: allocation.workers,
+      timeoutMs: taskTimeoutMs,
+    },
+    env: childEnv,
+    settle: classifyGovernedTestProcessOutcome,
+  };
+  return runGovernedTestProcess(
+    governedOptions,
+    (_admissionContext, governedEnv, { inherited }) => new Promise((resolveRun) => {
+    const startedAt = Date.now();
     const stdout = [];
     const stderr = [];
     let capturedBytes = 0;
@@ -4201,10 +4237,11 @@ function runCapturedTask(
     let watchdogTimedOut = false;
     const progressTask = JSON.stringify(taskKey(spawnTask));
     let child;
+    const sampler = createGovernedProcessDemandSampler(processDemand);
     try {
       child = spawn(cmd, argv, {
         cwd,
-        env: childEnv,
+        env: governedEnv,
         stdio: ["ignore", "pipe", "pipe"],
         // Own a process group so the watchdog can reap npm -> shell -> vitest ->
         // worker descendants together. A direct-child kill leaves descendants
@@ -4241,6 +4278,9 @@ function runCapturedTask(
         __watchdogTimedOut: false,
         __watchdogDeadlineMs: taskTimeoutMs,
         __watchdogKillReason: null,
+        actualDemand: sampler.stop({ diskBytes: 0 }),
+        __admissionReceiptId: _admissionContext.receiptId ?? null,
+        __admissionInherited: inherited,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",
@@ -4271,6 +4311,9 @@ function runCapturedTask(
       resolveRun(result);
       return;
     }
+    // Start sampling only after the actual child exists. A queued wait is not
+    // process residency and must not be charged to this receipt.
+    sampler.attach(child.pid);
     // EI-21048499991398082: `status`/`signal` are Node's `child.close(code, signal)` pair,
     // which is MUTUALLY EXCLUSIVE by construction — a normal exit has a numeric `code` and a
     // `null` signal; a signal-killed process has a `null` code and a signal name. Both are
@@ -4394,6 +4437,9 @@ function runCapturedTask(
         __watchdogTimedOut: watchdogTimedOut,
         __watchdogDeadlineMs: watchdog.deadlineMs,
         __watchdogKillReason: watchdog.killReason,
+        actualDemand: sampler.stop({ diskBytes: capturedBytes }),
+        __admissionReceiptId: _admissionContext.receiptId ?? null,
+        __admissionInherited: inherited,
         ...(cacheDecision
           ? {
               __cacheStatus: "miss",
@@ -4428,6 +4474,43 @@ function runCapturedTask(
       );
       resolveRun(result);
     });
+    }),
+  ).catch((error) => {
+    // Admission/loader failures are attributed to this task rather than
+    // rejecting the scheduler shard and losing the terminal run marker.
+    const message = error instanceof Error ? error.message : String(error);
+    const result = {
+      status: 1,
+      signal: null,
+      stdout: "",
+      stderr: "",
+      error: Object.assign(new Error(message), { code: "GOVERNED_ADMISSION_FAILED" }),
+      __elapsedMs: 0,
+      __timeoutMs: taskTimeoutMs,
+      __timeoutSource: taskTimeoutSource,
+      __durationEstimateMs: taskDurationMs,
+      __capturedBytes: 0,
+      __watchdogTimedOut: false,
+      __watchdogDeadlineMs: taskTimeoutMs,
+      __watchdogKillReason: null,
+      __governedAdmissionError: true,
+      ...(cacheDecision
+        ? {
+            __cacheStatus: "miss",
+            __cacheReason: cacheDecision.reason,
+            __cacheIdentity: cacheIdentity,
+            __crossRunCacheIdentity: crossRunCacheIdentity,
+          }
+        : {}),
+    };
+    result.__outputJournaled = journalCapturedTaskOutput(spawnTask, result, allocation, journalLabel);
+    rawErrSync(
+      `AFFECTED_TASK_PROGRESS state=governed-admission-error task=${JSON.stringify(taskKey(spawnTask))} ` +
+        `elapsedSec=0 capturedBytes=0 stalledForSec=0 timeoutMs=${taskTimeoutMs} ` +
+        `timeoutSource=${taskTimeoutSource} durationEstimateMs=${taskDurationMs ?? "unknown"} ` +
+        `exitStatus=1 signal=none reason=${JSON.stringify(message)}`,
+    );
+    return result;
   });
 }
 
