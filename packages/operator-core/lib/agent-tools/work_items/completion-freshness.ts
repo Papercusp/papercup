@@ -11,6 +11,7 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
+import { hasValidGitEntry } from '../locks/valid-git-entry';
 import type {
   CompletionSettlementManifest,
   CompletionTreeStamp,
@@ -301,6 +302,8 @@ export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): Compl
 export interface CompletionTreeStampForEvidenceProbe {
   /** Injectable path probe so repository selection stays pure in unit tests. */
   exists?: (abs: string) => boolean;
+  /** Injectable checkout-root probe; production accepts real `.git` entries only. */
+  isCheckoutRoot?: (abs: string) => boolean;
   /** Forwarded to completionTreeStamp after the owning repository is selected. */
   readFile?: (abs: string) => string | undefined;
   readBytes?: (abs: string) => Uint8Array | undefined;
@@ -327,21 +330,83 @@ export function completionTreeStampForEvidence(
   if (roots.length === 0) return undefined;
 
   const exists = probe.exists ?? ((abs: string) => existsSync(abs));
+  const isCheckoutRoot = probe.isCheckoutRoot ?? hasValidGitEntry;
   const declared = (evidence.filesChanged ?? []).slice(0, MAX_PATHS_PROBED);
-  let selectedRoot = roots[0]!;
+  const primaryRoot = roots[0]!;
+
+  // A relative path such as `papercusp-desktop/bin/check.sh` is resolved against the
+  // primary checkout by callers. If that directory is itself an independent nested
+  // repository, scoring the primary root would make the writer compare the file against
+  // the parent tree (where the path is untracked) and record a false stale completion.
+  // Discover those nested roots before scoring so the path can be re-rooted to the checkout
+  // that actually owns its HEAD. This is deliberately bounded by the declared paths and
+  // their ancestor chains; it never walks the repository tree.
+  const nestedOwners = new Map<string, { absolutePath: string; root: string }>();
+  for (const raw of declared) {
+    const declaredPath = raw.trim();
+    if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+    const absolutePath = nodePath.resolve(primaryRoot, declaredPath);
+    if (absolutePath !== primaryRoot && !absolutePath.startsWith(primaryRoot + nodePath.sep)) continue;
+
+    let dir = nodePath.dirname(absolutePath);
+    for (let depth = 0; depth < 64 && dir !== primaryRoot; depth += 1) {
+      if (isCheckoutRoot(dir)) {
+        nestedOwners.set(declaredPath, { absolutePath, root: dir });
+        break;
+      }
+      const parent = nodePath.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+
+  const candidateRoots = [
+    ...new Set([
+      ...roots,
+      ...[...nestedOwners.values()].map(({ root }) => root),
+    ]),
+  ];
+
+  const pathForRoot = (
+    root: string,
+    raw: string,
+  ): { absolutePath: string; relativePath: string } | undefined => {
+    const declaredPath = raw.trim();
+    if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) return undefined;
+    const nested = nestedOwners.get(declaredPath);
+    if (nested) {
+      // Once the primary-root anchor identifies an owning nested checkout, do not let the
+      // parent score the physical file as its own. A mixed-root completion therefore remains
+      // unproven instead of combining half-matching repositories into one identity.
+      if (root !== nested.root) return undefined;
+      return {
+        absolutePath: nested.absolutePath,
+        relativePath: nodePath.relative(root, nested.absolutePath).split(nodePath.sep).join('/'),
+      };
+    }
+
+    const absolutePath = nodePath.resolve(root, declaredPath);
+    if (absolutePath !== root && !absolutePath.startsWith(root + nodePath.sep)) return undefined;
+    return {
+      absolutePath,
+      relativePath: nodePath.relative(root, absolutePath).split(nodePath.sep).join('/'),
+    };
+  };
+
+  let selectedRoot = primaryRoot;
   let selectedMatches = -1;
   let selectedAbsoluteSpecificity = -1;
 
-  for (const repoRoot of roots) {
+  for (const repoRoot of candidateRoots) {
     let matches = 0;
     let absoluteSpecificity = -1;
     for (const raw of declared) {
       const declaredPath = raw.trim();
       if (!declaredPath || declaredPath.includes('*') || declaredPath.includes('?')) continue;
+      const resolved = pathForRoot(repoRoot, declaredPath);
+      if (!resolved) continue;
       try {
-        const abs = nodePath.resolve(repoRoot, declaredPath);
-        if (abs !== repoRoot && !abs.startsWith(repoRoot + nodePath.sep)) continue;
-        if (exists(abs)) {
+        if (exists(resolved.absolutePath)) {
           matches += 1;
           // An absolute path can be physically contained by both a superproject and its
           // submodule. Prefer the deepest containing checkout so its HEAD/blob identity is
@@ -362,12 +427,17 @@ export function completionTreeStampForEvidence(
     }
   }
 
+  const selectedFiles = declared.map((raw) => {
+    const resolved = pathForRoot(selectedRoot, raw);
+    return resolved?.relativePath ?? normalizedRepoPath(selectedRoot, raw);
+  });
+
   return completionTreeStamp({
     repoRoot: selectedRoot,
     readFile: probe.readFile,
     readBytes: probe.readBytes,
     headBlobs: probe.headBlobs,
-    filesChanged: declared,
+    filesChanged: selectedFiles,
   });
 }
 

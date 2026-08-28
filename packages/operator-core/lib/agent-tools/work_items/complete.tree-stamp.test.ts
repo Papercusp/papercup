@@ -442,6 +442,50 @@ describe('completionTreeStampForEvidence (EI-20460682854560939)', () => {
     ).toMatchObject({ repositoryRoot: submoduleRoot });
   });
 
+  it('resolves a relative path to an independent nested repository', () => {
+    const workspaceRoot = mkdtempSync(join(tmpdir(), 'completion-tree-stamp-relative-nested-'));
+    TEMP_ROOTS.push(workspaceRoot);
+    const operatorRoot = join(workspaceRoot, 'papercusp');
+    const nestedRoot = join(operatorRoot, 'papercusp-desktop');
+    const changedPath = join(nestedRoot, 'bin', 'mac-vm-health.sh');
+    mkdirSync(join(nestedRoot, 'bin'), { recursive: true });
+
+    const git = (cwd: string, args: string[]) =>
+      execFileSync('git', ['-C', cwd, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 60_000,
+      }).trim();
+    git(operatorRoot, ['init', '-q']);
+    git(operatorRoot, ['config', 'user.email', 'completion-test@example.invalid']);
+    git(operatorRoot, ['config', 'user.name', 'Completion Test']);
+    writeFileSync(join(operatorRoot, 'README.md'), 'parent\n');
+    git(operatorRoot, ['add', 'README.md']);
+    git(operatorRoot, ['commit', '-qm', 'parent']);
+
+    git(nestedRoot, ['init', '-q']);
+    git(nestedRoot, ['config', 'user.email', 'completion-test@example.invalid']);
+    git(nestedRoot, ['config', 'user.name', 'Completion Test']);
+    writeFileSync(changedPath, '#!/bin/sh\necho healthy\n');
+    git(nestedRoot, ['add', 'bin/mac-vm-health.sh']);
+    git(nestedRoot, ['commit', '-qm', 'nested fix']);
+
+    const stamp = completionTreeStampForEvidence(
+      { filesChanged: ['papercusp-desktop/bin/mac-vm-health.sh'] },
+      [operatorRoot],
+    );
+
+    expect(stamp?.repositoryRoot).toBe(nestedRoot);
+    expect(stamp?.contentIdentity).toEqual([
+      expect.objectContaining({
+        path: 'bin/mac-vm-health.sh',
+        workingTreeBlobSha: expect.any(String),
+        headBlobSha: expect.any(String),
+      }),
+    ]);
+    expect(stamp?.contentIdentity?.[0]?.workingTreeBlobSha).toBe(stamp?.contentIdentity?.[0]?.headBlobSha);
+  });
+
   it('keeps the primary checkout on a tie so legacy completions do not change repositories', () => {
     expect(
       completionTreeStampForEvidence(

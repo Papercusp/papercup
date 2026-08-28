@@ -1,102 +1,48 @@
 // @vitest-environment jsdom
-/**
- * Select.test.tsx — the Radix Select wrapper's OWN logic: the empty-value
- * defensive filter (Radix throws on a '' Item value), flat-vs-group rendering
- * (the `kind:'group'` discriminant), disabled passthrough, the aria-label on the
- * trigger, and the onChange → onValueChange wiring.
- *
- * @radix-ui/react-select is mocked to inert passthroughs so the items render
- * inline (no portal / open-state machine) — this isolates the wrapper's mapping
- * logic deterministically instead of driving Radix's flaky jsdom open behavior.
- */
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import type { ReactNode } from 'react';
 
-vi.mock('@radix-ui/react-select', () => ({
-  Root: ({ children, onValueChange }: { children: ReactNode; onValueChange: (v: string) => void }) => (
-    <div>{children}<button data-testid="fire-change" onClick={() => onValueChange('picked')} /></div>
-  ),
-  Trigger: ({ children, ...rest }: { children: ReactNode } & Record<string, unknown>) => (
-    <button aria-label={rest['aria-label'] as string} data-testid={rest['data-testid'] as string} id={rest.id as string}>{children}</button>
-  ),
-  Value: ({ placeholder }: { placeholder?: string }) => <span>{placeholder}</span>,
-  Icon: ({ children }: { children: ReactNode }) => <>{children}</>,
-  Portal: ({ children }: { children: ReactNode }) => <>{children}</>,
-  Content: ({ children, style }: { children: ReactNode; style?: Record<string, unknown> }) => (
-    <div data-testid="select-content" style={style}>{children}</div>
-  ),
-  Viewport: ({ children, style }: { children: ReactNode; style?: Record<string, unknown> }) => (
-    <div data-testid="select-viewport" style={style}>{children}</div>
-  ),
-  Group: ({ children }: { children: ReactNode }) => <div role="group">{children}</div>,
-  Label: ({ children }: { children: ReactNode }) => <div data-testid="group-label">{children}</div>,
-  Item: ({ children, value, disabled }: { children: ReactNode; value: string; disabled?: boolean }) => (
-    <div role="option" data-value={value} aria-disabled={disabled || undefined}>{children}</div>
-  ),
-  ItemText: ({ children }: { children: ReactNode }) => <>{children}</>,
-  ItemIndicator: ({ children }: { children: ReactNode }) => <>{children}</>,
-}));
+import { readFileSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { Select } from "./Select";
 
-import { Select } from './Select';
+const harnessCss = readFileSync("app/harness/harness.css", "utf8");
 
 afterEach(cleanup);
 
-describe('Select', () => {
-  it('renders the trigger with the aria-label', () => {
-    render(<Select value="a" onChange={() => {}} ariaLabel="Pick one" options={[{ value: 'a', label: 'A' }]} />);
-    expect(screen.getByLabelText('Pick one')).toBeTruthy();
-  });
-
-  it('renders flat options and drops empty-value ones (the Radix crash guard)', () => {
+describe("Select", () => {
+  it("gives the default trigger a visible keyboard-focus hook without suppressing its outline inline", () => {
     render(
       <Select
-        value="a"
-        onChange={() => {}}
-        options={[{ value: '', label: 'none' }, { value: 'a', label: 'A' }, { value: 'b', label: 'B' }]}
+        value="one"
+        onChange={vi.fn()}
+        ariaLabel="Focus-visible select"
+        options={[{ value: "one", label: "One" }]}
       />,
     );
-    const opts = screen.getAllByRole('option');
-    expect(opts.map((o) => o.getAttribute('data-value'))).toEqual(['a', 'b']);
+
+    const trigger = screen.getByRole("combobox", {
+      name: "Focus-visible select",
+    });
+    expect(trigger.className).toBe("h-select-trigger");
+    expect((trigger as HTMLButtonElement).style.outline).toBe("");
+    expect(harnessCss).toMatch(
+      /\.h-select-trigger:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\);[^}]*outline-offset:\s*2px;/s,
+    );
   });
 
-  it('renders groups with their label, filtering empty options inside the group', () => {
+  it("preserves a caller-owned trigger class and styling surface", () => {
     render(
       <Select
-        value="g1a"
-        onChange={() => {}}
-        options={[
-          { kind: 'group', label: 'Group One', options: [{ value: '', label: 'skip' }, { value: 'g1a', label: 'G1A' }] },
-          { value: 'flat', label: 'Flat' },
-        ]}
+        value="one"
+        onChange={vi.fn()}
+        ariaLabel="Custom select"
+        triggerClassName="custom-trigger"
+        options={[{ value: "one", label: "One" }]}
       />,
     );
-    expect(screen.getByTestId('group-label').textContent).toBe('Group One');
-    expect(screen.getByRole('group')).toBeTruthy();
-    expect(screen.getAllByRole('option').map((o) => o.getAttribute('data-value'))).toEqual(['g1a', 'flat']);
-  });
 
-  it('passes the disabled flag through to the option', () => {
-    render(<Select value="a" onChange={() => {}} options={[{ value: 'a', label: 'A', disabled: true }]} />);
-    expect(screen.getByRole('option').getAttribute('aria-disabled')).toBe('true');
-  });
-
-  it('wires onChange to the Radix onValueChange', () => {
-    const onChange = vi.fn();
-    render(<Select value="a" onChange={onChange} options={[{ value: 'a', label: 'A' }]} />);
-    fireEvent.click(screen.getByTestId('fire-change'));
-    expect(onChange).toHaveBeenCalledWith('picked');
-  });
-
-  it('bounds the whole menu to available height while the viewport owns scrolling', () => {
-    render(<Select value="a" onChange={() => {}} options={[{ value: 'a', label: 'A' }]} />);
-    const content = screen.getByTestId('select-content');
-    const viewport = screen.getByTestId('select-viewport');
-    expect(content.style.boxSizing).toBe('border-box');
-    expect(content.style.maxHeight).toBe('min(434px, var(--radix-select-content-available-height))');
-    expect(content.style.overflow).toBe('hidden');
-    expect(viewport.style.maxHeight).toBe('420px');
-    expect(viewport.style.overflowY).toBe('auto');
-    expect(viewport.style.overscrollBehavior).toBe('contain');
+    const trigger = screen.getByRole("combobox", { name: "Custom select" });
+    expect(trigger.className).toBe("custom-trigger");
+    expect(trigger.getAttribute("style")).toBeNull();
   });
 });

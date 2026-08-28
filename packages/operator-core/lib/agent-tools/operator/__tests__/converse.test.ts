@@ -17,6 +17,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../../agent-chat-stream', () => ({ runAgentChat: vi.fn() }));
+const { getMemoryBackendMock, rememberConversationMock } = vi.hoisted(() => {
+  const rememberConversationMock = vi.fn(async () => ({ ids: [], storedEvents: 0 }));
+  return {
+    getMemoryBackendMock: vi.fn(() => ({
+      name: 'fake',
+      available: vi.fn(async () => ({ ok: true })),
+      rememberConversation: rememberConversationMock,
+    })),
+    rememberConversationMock,
+  };
+});
+vi.mock('../../../memory/backend', () => ({ getMemoryBackend: getMemoryBackendMock }));
 // converse reads the superuser token from disk via a local readFileSync; stub
 // just that one read so mcpConfig is built without depending on the real token
 // file existing. Everything else passes through to the real fs.
@@ -278,6 +290,55 @@ describe('operator:converse — loop behaviors (P-019)', () => {
     );
     expect(checkBudget).not.toHaveBeenCalled();
     expect(runAgentChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('llm-testing client id skips post-turn conversation capture', async () => {
+    await handler(
+      {
+        messages: [{ role: 'user', content: 'seeded benchmark prompt' }],
+        uiClientId: 'llm-testing/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee',
+        sessionUser: {
+          id: 'user-1',
+          username: 'owner',
+          display_name: 'Owner',
+          has_password: true,
+        },
+      },
+      makeCtx(),
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(getMemoryBackendMock).not.toHaveBeenCalled();
+    expect(rememberConversationMock).not.toHaveBeenCalled();
+  });
+
+  it('ordinary session-user turns still capture the conversation after streaming', async () => {
+    await handler(
+      {
+        messages: [{ role: 'user', content: 'ordinary prompt' }],
+        uiClientId: 'desktop-client',
+        sessionUser: {
+          id: 'user-1',
+          username: 'owner',
+          display_name: 'Owner',
+          has_password: true,
+        },
+      },
+      makeCtx(),
+    );
+    await vi.waitFor(() => expect(rememberConversationMock).toHaveBeenCalledTimes(1));
+
+    expect(getMemoryBackendMock).toHaveBeenCalledTimes(1);
+    expect(rememberConversationMock).toHaveBeenCalledWith(
+      [
+        { role: 'user', content: 'ordinary prompt' },
+        { role: 'assistant', content: 'hi' },
+      ],
+      expect.objectContaining({
+        scope: 'user-1',
+        metadata: expect.objectContaining({ workspace_id: 'ws-real' }),
+      }),
+    );
   });
 
   it('empty output on every attempt → retries once, then throws', async () => {

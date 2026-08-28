@@ -254,6 +254,8 @@ describe('no-hand-rolled-module-pin — the tree', () => {
     for (const migrated of [
       // EI-19463700807328229 — the first subject
       'libs/generic/scheduled-registry/src/index.ts',
+      // WI-307194 — a later sync bus-tap regression caught by the tree guard
+      'libs/generic/sync/src/bus-tap.ts',
       // EI-19469900474673886 — the five @papercusp/* libs
       'libs/generic/lexicon/src/config.ts',
       'libs/generic/kokoro-tts/src/config.ts',

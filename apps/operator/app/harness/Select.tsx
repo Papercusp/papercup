@@ -1,10 +1,9 @@
-'use client';
+"use client";
 
-import * as RS from '@radix-ui/react-select';
-import { Check, ChevronDown } from 'lucide-react';
-import type { CSSProperties, ReactNode } from 'react';
-import { usePopperZ } from './popper-z';
-
+import * as RS from "@radix-ui/react-select";
+import { Check, ChevronDown } from "lucide-react";
+import type { CSSProperties, ReactNode } from "react";
+import { usePopperZ } from "./popper-z";
 
 export interface SelectOption {
   value: string;
@@ -21,7 +20,7 @@ export interface SelectOption {
  * their resolved harness.
  */
 export interface SelectGroup {
-  kind: 'group';
+  kind: "group";
   /** Group heading, e.g. the harness slug. */
   label: ReactNode;
   options: SelectOption[];
@@ -30,37 +29,38 @@ export interface SelectGroup {
 export type SelectEntry = SelectOption | SelectGroup;
 
 const GROUP_LABEL_STYLE: CSSProperties = {
-  padding: '6px 8px 2px',
+  padding: "6px 8px 2px",
   fontSize: 10,
   fontWeight: 700,
-  textTransform: 'uppercase',
-  color: 'color-mix(in oklab, var(--fg, #e7f7ff), transparent 38%)',
+  textTransform: "uppercase",
+  color: "color-mix(in oklab, var(--fg, #e7f7ff), transparent 38%)",
 };
 
 function isGroup(entry: SelectEntry): entry is SelectGroup {
-  return (entry as { kind?: string }).kind === 'group';
+  return (entry as { kind?: string }).kind === "group";
 }
 
 const TRIGGER_DEFAULT_STYLE: CSSProperties = {
-  display: 'inline-flex',
-  alignItems: 'center',
+  display: "inline-flex",
+  alignItems: "center",
   gap: 6,
-  padding: '4px 8px',
-  background: 'var(--bg-2)',
-  color: 'var(--fg)',
-  border: '1px solid var(--border)',
+  padding: "4px 8px",
+  background: "var(--bg-2)",
+  color: "var(--fg)",
+  border: "1px solid var(--border)",
   borderRadius: 4,
   fontSize: 12,
-  fontFamily: 'inherit',
-  cursor: 'pointer',
-  outline: 'none',
+  fontFamily: "inherit",
+  cursor: "pointer",
 };
 
+const DEFAULT_TRIGGER_CLASS = "h-select-trigger";
+
 const CONTENT_STYLE: CSSProperties = {
-  boxSizing: 'border-box',
-  background: 'color-mix(in srgb, var(--bg-deeper), transparent 2%)',
-  color: 'var(--fg)',
-  border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
+  boxSizing: "border-box",
+  background: "color-mix(in srgb, var(--bg-deeper), transparent 2%)",
+  color: "var(--fg)",
+  border: "1px solid color-mix(in oklab, var(--accent), transparent 62%)",
   borderRadius: 10,
   padding: 6,
   /* THIS number is what actually decides whether the menu is reachable, and it
@@ -80,16 +80,17 @@ const CONTENT_STYLE: CSSProperties = {
      is not a constant — `usePopperZ()` supplies it per render in the component
      below, and a literal here would be an inert value that reads as if it were
      the one in force. */
-  boxShadow: '0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)',
+  boxShadow:
+    "0 18px 54px rgba(0,0,0,0.62), inset 0 1px 0 rgba(255,255,255,0.06)",
   fontSize: 12,
-  minWidth: 'var(--radix-select-trigger-width)',
-  backdropFilter: 'blur(14px) saturate(150%)',
+  minWidth: "var(--radix-select-trigger-width)",
+  backdropFilter: "blur(14px) saturate(150%)",
   /* Bound the WHOLE popper, not only its scrolling viewport. The content shell
      adds 6px padding + a 1px border on every side; constraining only Viewport
      lets that 14px of chrome escape Radix's collision boundary at short window
      heights. 434px preserves the 420px desktop viewport cap plus that chrome. */
-  maxHeight: 'min(434px, var(--radix-select-content-available-height))',
-  overflow: 'hidden',
+  maxHeight: "min(434px, var(--radix-select-content-available-height))",
+  overflow: "hidden",
 };
 
 /**
@@ -102,19 +103,19 @@ const CONTENT_STYLE: CSSProperties = {
  */
 const VIEWPORT_STYLE: CSSProperties = {
   maxHeight: 420,
-  overflowY: 'auto',
-  overscrollBehavior: 'contain',
+  overflowY: "auto",
+  overscrollBehavior: "contain",
 };
 
 const ITEM_STYLE: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
   gap: 8,
-  padding: '4px 8px',
+  padding: "4px 8px",
   borderRadius: 3,
-  outline: 'none',
-  cursor: 'pointer',
+  outline: "none",
+  cursor: "pointer",
 };
 
 /**
@@ -180,8 +181,8 @@ export function Select({
    */
   triggerChildren?: ReactNode;
   /** Preferred side to open on. Radix still flips when there is no room. */
-  side?: 'top' | 'right' | 'bottom' | 'left';
-  align?: 'start' | 'center' | 'end';
+  side?: "top" | "right" | "bottom" | "left";
+  align?: "start" | "center" | "end";
   /**
    * Extra `data-*` attributes for the trigger, for state a caller needs to
    * read off the element (styling hooks, test handles). Keys are used exactly
@@ -215,20 +216,31 @@ export function Select({
     Object.entries(triggerData ?? {}).filter(([, v]) => v !== undefined),
   );
   return (
-    <RS.Root value={value} onValueChange={onChange} disabled={disabled} onOpenChange={onOpenChange}>
+    <RS.Root
+      value={value}
+      onValueChange={onChange}
+      disabled={disabled}
+      onOpenChange={onOpenChange}
+    >
       <RS.Trigger
         id={id}
         aria-label={ariaLabel}
         aria-describedby={describedBy}
         data-testid={testId}
         {...triggerDataAttrs}
-        className={triggerClassName ?? className}
-        style={triggerClassName || className ? undefined : { ...TRIGGER_DEFAULT_STYLE, ...triggerStyle }}
+        className={triggerClassName ?? className ?? DEFAULT_TRIGGER_CLASS}
+        style={
+          triggerClassName || className
+            ? undefined
+            : { ...TRIGGER_DEFAULT_STYLE, ...triggerStyle }
+        }
       >
         {triggerChildren ?? (
           <>
             <RS.Value placeholder={placeholder} />
-            <RS.Icon><ChevronDown size={11} /></RS.Icon>
+            <RS.Icon>
+              <ChevronDown size={11} />
+            </RS.Icon>
           </>
         )}
       </RS.Trigger>
@@ -251,17 +263,35 @@ export function Select({
               isGroup(entry) ? (
                 <RS.Group key={`grp-${idx}`}>
                   <RS.Label style={GROUP_LABEL_STYLE}>{entry.label}</RS.Label>
-                  {entry.options.filter((opt) => opt.value !== '').map((opt) => (
-                    <RS.Item key={opt.value} value={opt.value} disabled={opt.disabled} style={ITEM_STYLE} className="h-select-item">
-                      <RS.ItemText>{opt.label}</RS.ItemText>
-                      <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
-                    </RS.Item>
-                  ))}
+                  {entry.options
+                    .filter((opt) => opt.value !== "")
+                    .map((opt) => (
+                      <RS.Item
+                        key={opt.value}
+                        value={opt.value}
+                        disabled={opt.disabled}
+                        style={ITEM_STYLE}
+                        className="h-select-item"
+                      >
+                        <RS.ItemText>{opt.label}</RS.ItemText>
+                        <RS.ItemIndicator>
+                          <Check size={11} />
+                        </RS.ItemIndicator>
+                      </RS.Item>
+                    ))}
                 </RS.Group>
-              ) : entry.value === '' ? null : (
-                <RS.Item key={entry.value} value={entry.value} disabled={entry.disabled} style={ITEM_STYLE} className="h-select-item">
+              ) : entry.value === "" ? null : (
+                <RS.Item
+                  key={entry.value}
+                  value={entry.value}
+                  disabled={entry.disabled}
+                  style={ITEM_STYLE}
+                  className="h-select-item"
+                >
                   <RS.ItemText>{entry.label}</RS.ItemText>
-                  <RS.ItemIndicator><Check size={11} /></RS.ItemIndicator>
+                  <RS.ItemIndicator>
+                    <Check size={11} />
+                  </RS.ItemIndicator>
                 </RS.Item>
               ),
             )}

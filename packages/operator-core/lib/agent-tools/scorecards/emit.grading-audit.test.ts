@@ -177,6 +177,50 @@ describe('scorecards:emit grading audit path (P-013)', () => {
     expect(recordGradingAudit).toHaveBeenCalledWith('EI-CARD', expect.objectContaining({ verdict: 'failed' }));
   });
 
+  it('refuses a same-rubric non-author emit for a pending subject audit and teaches the grading-integrity shape', async () => {
+    getRubric.mockResolvedValue(mkRubric('goal-mode-e2e', 'standard'));
+    getIssue.mockResolvedValue(null);
+    listScorecards.mockResolvedValue([
+      {
+        issueId: 'EI-PENDING-SUBJECT',
+        createdAt: '2026-08-27T14:00:00.000Z',
+        createdBy: 'su-subject-author',
+        subject: { kind: 'plan', ref: 'plan-x' },
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        nKeys: 1,
+        missingKeys: [],
+        extraKeys: [],
+        rubricResolved: true,
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-27T14:00:00.000Z',
+        },
+        synthesized: false,
+        score10: 10,
+        linkedItems: [],
+      },
+    ]);
+
+    const res = await emitScorecard(
+      {
+        rubricRef: 'goal-mode-e2e',
+        ratings: RATINGS,
+        terminal: true,
+        subject: { kind: 'plan', ref: 'plan-x' },
+      },
+      { createdBy: 'su-auditor', ctxHarness: 'papercusp' },
+    );
+
+    expect(res.ok).toBe(false);
+    expect((res as { error?: string }).error).toContain('grading-integrity');
+    expect((res as { error?: string }).error).toContain("subject:{ kind:'scorecard'");
+    expect((res as { error?: string }).error).toContain('EI-PENDING-SUBJECT');
+    expect(captureImprovement).not.toHaveBeenCalled();
+    expect(recordGradingAudit).not.toHaveBeenCalled();
+  });
+
   it('control (THE mirror rule): a SELF-audit is refused and nothing is filed or settled', async () => {
     const res = await emitScorecard(auditArgs, {
       createdBy: 'su-grader-author', // the graded card's own author

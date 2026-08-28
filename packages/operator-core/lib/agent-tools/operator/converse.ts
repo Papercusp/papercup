@@ -590,7 +590,12 @@ export default defineTool({
       });
     }
 
-    if (sessionUser) {
+    // llm-testing turns may resolve the live default session user through the
+    // HTTP route, but their scenario memory is isolated/explicitly cleaned up.
+    // Keep those benchmark turns out of the operator's normal post-turn
+    // conversation extractor; prompt-time recall and ordinary user capture are
+    // intentionally unchanged.
+    if (sessionUser && !input.uiClientId?.startsWith('llm-testing/')) {
       void (async () => {
         try {
           // EI-2032: kill switch for per-turn conversation capture — the largest
