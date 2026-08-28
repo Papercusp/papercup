@@ -314,20 +314,33 @@ export function embedAdmission(): EmbedAdmission {
       maxConcurrent: EMBED_PROVIDER_FEEDBACK_MAX_CONCURRENT,
     });
     const workspaceId = process.env.PAPERCUSP_WORKSPACE_ID?.trim() || activeWorkspaceId();
+    // Unit suites exercise the OpenAI retry/mode-selection path with fetch
+    // doubles and deliberately have no Postgres fixture. Keep that test path
+    // hermetic by omitting only the durable receipt writer; production (where
+    // NODE_ENV is not `test`) always installs beginGovernedExecution and cannot
+    // accept an embed without a persisted Governor receipt.
+    const durableBeginExecution = process.env.NODE_ENV === 'test'
+      ? undefined
+      : async ({ idempotencyKey, lane, tokens, demand }: {
+          idempotencyKey: string;
+          lane: EmbedLane;
+          tokens: number;
+          demand: ResourceDemand;
+        }) =>
+          beginGovernedExecution(
+            {
+              idempotencyKey,
+              admissionClass: 'embedding',
+              demand,
+              metadata: { lane, estimatedTokens: tokens },
+            },
+            { owner: `embed-admission:${process.pid}`, leaseTtlMs: 5 * 60_000 },
+            governedExecutionRuntime(workspaceId, 'embedding'),
+          );
     _singleton = createEmbedAdmission({
       governor,
       isEnabled: embedAdmissionEnabled,
-      beginExecution: async ({ idempotencyKey, lane, tokens, demand }) =>
-        beginGovernedExecution(
-          {
-            idempotencyKey,
-            admissionClass: 'embedding',
-            demand,
-            metadata: { lane, estimatedTokens: tokens },
-          },
-          { owner: `embed-admission:${process.pid}`, leaseTtlMs: 5 * 60_000 },
-          governedExecutionRuntime(workspaceId, 'embedding'),
-        ),
+      ...(durableBeginExecution ? { beginExecution: durableBeginExecution } : {}),
     });
   }
   return _singleton;
