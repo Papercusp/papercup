@@ -100,6 +100,10 @@ vi.mock('./issues-engineer', () => ({
   listIssueScopes: vi.fn(async () => [] as string[]),
   projectAllIssuesForBoundedRead: vi.fn(async () => []),
   countIssues: vi.fn(async () => 0),
+  // read-items.ts wires this source-role census dependency at module scope;
+  // keep the full replacement mock collection-safe as the production export
+  // evolves (the urgent-create assertions do not exercise its result).
+  countIssuesBySourceRole: vi.fn(async () => ({})),
   searchIssuesForDedup: vi.fn(async () => []),
   findIssuesByWatchdogKeys: vi.fn(async () => []),
   updateIssue: vi.fn(async () => null),
