@@ -1,11 +1,7 @@
 /** Exact specSetHash gate shared by plans:start and direct plan-item promotion (P-004). */
 import { listScorecards, scorecardEvidenceFingerprint, type ScorecardRow } from '../../scorecards';
 import { listSpecClauses } from './spec-clauses-store';
-import {
-  evaluatePlanSpecQuality,
-  SPEC_QUALITY_RUBRIC_REF,
-  type PlanSpecQualityResult,
-} from './spec-quality';
+import { evaluatePlanSpecQuality, SPEC_QUALITY_RUBRIC_REF, type PlanSpecQualityResult } from './spec-quality';
 import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
 
 export type PlanSpecQualityGateCode =
@@ -111,6 +107,7 @@ export async function evaluatePlanSpecQualityGate(
   const evaluations = PLAN_CLASS_RUBRIC_REFS.map((classRef) =>
     evaluatePlanSpecQuality({
       planSlug: input.planSlug,
+      harnessSlug: input.harnessSlug,
       planItemIds: input.planItemIds,
       clauses,
       classRef,

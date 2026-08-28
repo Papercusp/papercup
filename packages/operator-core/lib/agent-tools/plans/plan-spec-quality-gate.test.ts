@@ -34,6 +34,7 @@ function clause(over: Partial<SpecClauseRevision> = {}): SpecClauseRevision {
 function matchingCard(clauses: SpecClauseRevision[]): ScorecardRow {
   const evaluation = evaluatePlanSpecQuality({
     planSlug: 'quality-plan',
+    harnessSlug: 'papercusp',
     planItemIds: ['P-001'],
     clauses,
     classRef: 'plan-class-feature-ship',

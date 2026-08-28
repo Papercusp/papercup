@@ -6,10 +6,7 @@ import {
   specBehaviorNonAtomicReason,
   specBehaviorNonFalsifiableReason,
 } from './spec-clause-compiler';
-import {
-  PLAN_CLASS_RUBRIC_REFS,
-  type PlanClassRubricRef,
-} from './spec-test-adequacy';
+import { PLAN_CLASS_RUBRIC_REFS, type PlanClassRubricRef } from './spec-test-adequacy';
 
 export const SPEC_QUALITY_RUBRIC_REF = 'spec-quality';
 
@@ -69,6 +66,20 @@ function fail(evidence: string, suggestion: string): SpecQualityRatingEntry {
 
 function notApplicable(evidence: string): SpecQualityRatingEntry {
   return { rating: 'not-applicable', evidence };
+}
+
+function rerunnableEvidence(
+  input: { planSlug: string; harnessSlug: string; classRef: PlanClassRubricRef },
+  criterion: SpecQualityCriterion,
+  evidence: string,
+): string {
+  const planArgs = `slug:${JSON.stringify(input.planSlug)}, harness:${JSON.stringify(input.harnessSlug)}`;
+  const evaluationArgs = `${planArgs}, classRef:${JSON.stringify(input.classRef)}`;
+  return (
+    `Source store: plans:get-specs { ${planArgs} }. ` +
+    `Re-run exactly: plans:evaluate-spec-quality { ${evaluationArgs} }; ` +
+    `inspect ratings[${JSON.stringify(criterion)}]. ${evidence}`
+  );
 }
 
 function trimmedField(value: unknown): string | null {
@@ -142,6 +153,7 @@ export function specQualitySubjectRef(planSlug: string, classRef: PlanClassRubri
  */
 export function evaluatePlanSpecQuality(input: {
   planSlug: string;
+  harnessSlug: string;
   planItemIds: readonly string[];
   clauses: readonly SpecClauseRevision[];
   classRef: PlanClassRubricRef;
@@ -180,9 +192,7 @@ export function evaluatePlanSpecQuality(input: {
       )
     : pass(`${currentSet.length} current clause(s) have unique identities, content hashes, and acceptance provenance.`);
 
-  const coveredItems = new Set(
-    [...behavioral, ...validExemptions].map((clause) => clause.planItemId),
-  );
+  const coveredItems = new Set([...behavioral, ...validExemptions].map((clause) => clause.planItemId));
   const uncoveredPlanItemIds = planItemIds.filter((itemId) => !coveredItems.has(itemId));
   ratings['item-contract-coverage'] = uncoveredPlanItemIds.length
     ? fail(
@@ -194,38 +204,41 @@ export function evaluatePlanSpecQuality(input: {
   const atomicityFailures = behavioral
     .map((clause) => ({ clause, reason: specBehaviorNonAtomicReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings['atomic-observable-behavior'] = behavioral.length === 0
-    ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
-    : atomicityFailures.length
-      ? fail(
-          atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-          'Split compound outcomes into atomic clauses with one observable behavior each.',
-        )
-      : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
+  ratings['atomic-observable-behavior'] =
+    behavioral.length === 0
+      ? notApplicable('0 behavioral clause(s) are available for structural atomicity evaluation.')
+      : atomicityFailures.length
+        ? fail(
+            atomicityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            'Split compound outcomes into atomic clauses with one observable behavior each.',
+          )
+        : pass(`${behavioral.length} behavioral clause(s) are structurally atomic.`);
 
   const falsifiabilityFailures = behavioral
     .map((clause) => ({ clause, reason: specBehaviorNonFalsifiableReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings.falsifiability = behavioral.length === 0
-    ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
-    : falsifiabilityFailures.length
-      ? fail(
-          falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-          'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
-        )
-      : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
+  ratings.falsifiability =
+    behavioral.length === 0
+      ? notApplicable('0 behavioral clause(s) are available for falsifiability evaluation.')
+      : falsifiabilityFailures.length
+        ? fail(
+            falsifiabilityFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            'Rewrite vague or discretionary text as a concrete outcome that can be shown false.',
+          )
+        : pass(`${behavioral.length} behavioral clause(s) state falsifiable outcomes.`);
 
   const couplingFailures = behavioral
     .map((clause) => ({ clause, reason: implementationCouplingReason(clause.behavior) }))
     .filter((entry): entry is { clause: SpecClauseRevision; reason: string } => Boolean(entry.reason));
-  ratings['implementation-independence'] = behavioral.length === 0
-    ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
-    : couplingFailures.length
-      ? fail(
-          couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
-          'Describe externally observable behavior instead of filenames or internal constructs.',
-        )
-      : pass('No active clause is coupled to an obvious implementation filename or construct.');
+  ratings['implementation-independence'] =
+    behavioral.length === 0
+      ? notApplicable('0 behavioral clause(s) are available for implementation-independence evaluation.')
+      : couplingFailures.length
+        ? fail(
+            couplingFailures.map(({ clause, reason }) => `${clause.specId}:${reason}`).join('; '),
+            'Describe externally observable behavior instead of filenames or internal constructs.',
+          )
+        : pass('No active clause is coupled to an obvious implementation filename or construct.');
 
   const invalidExemptionSpecIds = exemptions
     .filter((clause) => !validExplicitExemption(clause))
@@ -240,20 +253,37 @@ export function evaluatePlanSpecQuality(input: {
       : { rating: 'not-applicable', evidence: 'No clause claims a non-behavioral exemption.' };
 
   const classFit = planClassFit(input.classRef, behavioral);
-  const everyItemExplicitlyExempt = planItemIds.length > 0 && planItemIds.every((itemId) =>
-    validExemptions.some((clause) => clause.planItemId === itemId),
-  );
-  ratings['plan-class-specialization'] = classFit.ok || (input.classRef === 'plan-class-investigation' && everyItemExplicitlyExempt)
-    ? pass(
-        classFit.ok
-          ? classFit.evidence
-          : 'Every investigation item is explicitly non-behavioral and exempt with provenance.',
-      )
-    : fail(classFit.evidence, `Evaluate against the correct class (${PLAN_CLASS_RUBRIC_REFS.join(', ')}) or add its required behavior class.`);
+  const everyItemExplicitlyExempt =
+    planItemIds.length > 0 &&
+    planItemIds.every((itemId) => validExemptions.some((clause) => clause.planItemId === itemId));
+  ratings['plan-class-specialization'] =
+    classFit.ok || (input.classRef === 'plan-class-investigation' && everyItemExplicitlyExempt)
+      ? pass(
+          classFit.ok
+            ? classFit.evidence
+            : 'Every investigation item is explicitly non-behavioral and exempt with provenance.',
+        )
+      : fail(
+          classFit.evidence,
+          `Evaluate against the correct class (${PLAN_CLASS_RUBRIC_REFS.join(', ')}) or add its required behavior class.`,
+        );
 
   ratings['spec-set-freshness'] = pass(
     `Verdict is pinned to exact current specSetHash ${specSetHash} over ${currentSet.length} clause(s).`,
   );
+
+  // The start gate pins the exact ratings fingerprint, so the evaluator itself
+  // must emit evidence that a non-author can execute verbatim. Otherwise a
+  // grading-integrity repair changes the fingerprint and can never satisfy both
+  // gates. Keep the raw finding, but prefix its source store, full probe args,
+  // and exact result field for every criterion.
+  for (const criterion of SPEC_QUALITY_CRITERIA) {
+    const entry = ratings[criterion];
+    ratings[criterion] = {
+      ...entry,
+      evidence: rerunnableEvidence(input, criterion, entry.evidence),
+    };
+  }
 
   const wouldBlock = SPEC_QUALITY_CRITERIA.filter((key) => ['fail', 'unknown'].includes(ratings[key].rating));
   const verdict = wouldBlock.some((key) => ratings[key].rating === 'fail')
@@ -262,9 +292,7 @@ export function evaluatePlanSpecQuality(input: {
       ? 'unknown'
       : 'pass';
   const subjectRef = specQualitySubjectRef(input.planSlug, input.classRef, specSetHash);
-  const draftSpecIds = currentSet
-    .filter((clause) => clause.lifecycleStatus === 'draft')
-    .map((clause) => clause.specId);
+  const draftSpecIds = currentSet.filter((clause) => clause.lifecycleStatus === 'draft').map((clause) => clause.specId);
   return {
     planSlug: input.planSlug,
     classRef: input.classRef,

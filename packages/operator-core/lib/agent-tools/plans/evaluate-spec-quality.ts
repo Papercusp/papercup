@@ -17,10 +17,11 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:evaluate-spec-quality',
   description:
-    'Grade a plan\'s exact current first-class spec set against the reusable spec-quality rubric, specialized by plan class. Returns a scorecards:emit-compatible draft, exact specSetHash, and every would-block reason; read-only.',
+    "Grade a plan's exact current first-class spec set against the reusable spec-quality rubric, specialized by plan class. Returns a scorecards:emit-compatible draft, exact specSetHash, and every would-block reason; read-only.",
   guidance: {
     when: 'Before plans:start or direct item promotion for a plan that has adopted first-class spec clauses.',
-    notWhen: 'Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.',
+    notWhen:
+      'Authoring clauses — use plans:set-specs. Grading implementation proof — use plans:evaluate-spec-test-adequacy.',
     chaining:
       'plans:get-specs → plans:evaluate-spec-quality { classRef } → scorecards:emit the returned draft → plans:start. Any spec revision changes specSetHash and requires a fresh scorecard.',
     seeAlso: ['plans:get-specs', 'scorecards:emit', 'rubrics:get spec-quality'],
@@ -42,6 +43,7 @@ export default defineTool({
     const clauses = await listSpecClauses({ harnessSlug, planSlug: args.slug });
     const evaluation = evaluatePlanSpecQuality({
       planSlug: args.slug,
+      harnessSlug,
       planItemIds,
       clauses,
       classRef: args.classRef,
