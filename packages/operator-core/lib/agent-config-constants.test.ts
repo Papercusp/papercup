@@ -16,6 +16,7 @@ import {
   KNOWN_CLOUD_ALIASES,
   defaultBulkResolverLaunchProfiles,
   launchAgentBackendForModel,
+  resolveBulkResolverLaunch,
 } from './agent-config-constants';
 import { ROLE_MODEL_DEFAULTS } from '@papercusp/orchestrator/role-models';
 
@@ -77,6 +78,23 @@ describe('bulk resolver client-safe launch vocabulary', () => {
     expect(launchAgentBackendForModel('openrouter/anthropic/claude-opus:max')).toBe('omp');
     expect(launchAgentBackendForModel(null)).toBeNull();
     expect(launchAgentBackendForModel('unknown-full-id')).toBeNull();
+  });
+
+  it('carries owner automation policy through the effective launch snapshot', () => {
+    expect(
+      resolveBulkResolverLaunch({
+        model: 'sonnet',
+        effort: 'high',
+        account: 'default',
+        carry: 'warm',
+        automationMode: 'safe-medium-plus',
+        minConfidence: 'medium',
+      }),
+    ).toMatchObject({
+      ok: true,
+      effective: { automationMode: 'safe-medium-plus', minConfidence: 'medium' },
+    });
+    expect(resolveBulkResolverLaunch({ automationMode: 'nope' } as never).ok).toBe(false);
   });
 
   it('derives Codex from canonical gpt-5.6 family ids, including effort and window markers', () => {

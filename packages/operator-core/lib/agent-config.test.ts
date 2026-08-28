@@ -91,6 +91,36 @@ describe('bulk resolver launch profiles', () => {
     );
     expect(bulkResolverLaunchProfilesProblem({ 'plan-cleanup': { carry: 'tepid' } })).toMatch(/warm or cold/);
   });
+
+  it('round-trips the owner automation policy while keeping legacy profiles compact', () => {
+    expect(
+      parseBulkResolverLaunchProfiles({
+        'inbox-resolve': {
+          model: 'sonnet',
+          effort: 'high',
+          account: 'default',
+          carry: 'warm',
+          automationMode: 'safe-medium-plus',
+          minConfidence: 'medium',
+        },
+      }),
+    ).toMatchObject({
+      'inbox-resolve': {
+        automationMode: 'safe-medium-plus',
+        minConfidence: 'medium',
+      },
+    });
+    expect(
+      bulkResolverLaunchProfilesProblem({
+        'inbox-resolve': { automationMode: 'unsupported' },
+      }),
+    ).toMatch(/automationMode/);
+    expect(
+      bulkResolverLaunchProfilesProblem({
+        'plan-cleanup': { minConfidence: 'uncertain' },
+      }),
+    ).toMatch(/minConfidence/);
+  });
 });
 
 describe('parseTerminalEmulator', () => {

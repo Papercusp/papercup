@@ -116,6 +116,20 @@ import {
   shouldShedClient,
   type ClientCircuitState,
 } from './local-backend-client-circuit';
+import {
+  AdmitImmediatelyDriver,
+  Governor,
+  type AdmissionContext,
+} from '../resource-governor/admission';
+import {
+  admitGatewayRequest,
+  gatewayAdmissionBypassKeyForRequest,
+  gatewayAdmissionInputForLane,
+  gatewayAdmissionKindForBypassKey,
+  withGatewayAdmission,
+  GATEWAY_ADMISSION_BYPASS_REGISTRY,
+  type GatewayAdmissionGovernor,
+} from './admission-context';
 
 /** `RequestInit` plus undici's `dispatcher` extension (per-account egress routing). The standard
  *  lib `RequestInit` type omits it, but Node's global `fetch` honors it. */
@@ -707,6 +721,15 @@ const STRIP_REQUEST = new Set([
 const STRIP_RESPONSE = new Set(['content-encoding', 'content-length', 'transfer-encoding', 'connection', 'keep-alive']);
 
 export interface GatewayDeps {
+  /**
+   * Canonical resource-governor seam for gateway request starts.  The default
+   * uses the admit-immediately compatibility driver while the durable queue
+   * migration is staged; the existing provider queues remain the execution
+   * authority until those later items land.
+   */
+  admissionGovernor?: GatewayAdmissionGovernor;
+  /** Optional parent lineage when the gateway is itself running under a governed request. */
+  admissionParent?: AdmissionContext | null;
   /** Single-account fallback: a fresh bearer for the bound account (the resolver's `current`).
    *  Superseded by `pool` when present. */
   token?(): Promise<string>;
@@ -1615,6 +1638,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // live credential (the 2026-07-03 invalid-header 502 echoed a full sk-ant-oat token).
   const rawLog = deps.log ?? (() => {});
   const log: NonNullable<typeof deps.log> = (level, msg) => rawLog(level, scrubSecrets(msg));
+  // P-002 compatibility seam: the canonical Governor records typed gateway
+  // admission context, while the established provider queues below continue
+  // to own live execution until the durable-driver migration lands.
+  const gatewayAdmissionGovernor: GatewayAdmissionGovernor =
+    deps.admissionGovernor ??
+    new Governor(new AdmitImmediatelyDriver(), { bypassKeys: GATEWAY_ADMISSION_BYPASS_REGISTRY });
+  const gatewayAdmissionParent = deps.admissionParent ?? null;
+  let gatewayAdmissionRequestSeq = 0;
   const maxQueued = deps.maxQueued ?? DEFAULT_MAX_QUEUED;
   const maintenanceModel = deps.maintenanceModel ?? DEFAULT_MAINTENANCE_MODEL;
   const maintenanceMaxTokens = deps.maintenanceMaxTokens ?? DEFAULT_MAINTENANCE_MAX_TOKENS;
@@ -6328,12 +6359,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const entry = legacyEntryRouteForGatewayLane(opts.lane);
     const span = requestSpan(opts.req);
     const requestId = span?.requestId ?? ++legacyAdmissionRequestSeq;
-    return executeGatewayLegacyLane({
+    const ownerId = span?.ownerId ?? (opts.req.headers[OWNER_HEADER] as string | undefined)?.trim() ?? null;
+    const accountId = (opts.req.headers[ACCOUNT_HEADER] as string | undefined)?.trim() || null;
+    const pinMode = accountId
+      ? (opts.req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard'
+        ? 'hard'
+        : 'soft'
+      : 'none';
+    const execute = () => executeGatewayLegacyLane({
       context: {
         requestId,
         correlationId: `legacy-${requestId}`,
         lane: opts.lane,
-        ownerId: span?.ownerId ?? (opts.req.headers[OWNER_HEADER] as string | undefined)?.trim() ?? null,
+        ownerId,
         pin: null,
         signal: legacyAdmissionSignal,
         startedAt: span?.startedAt ?? Date.now(),
@@ -6346,6 +6384,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
       admission: opts.admission,
       execute: () => opts.task(entry.executor),
     });
+    // `/v1/models` and the admin/health surfaces are explicitly registered
+    // non-resident bypasses; their outer request wrapper owns the bypass
+    // admission. Every other lane crosses Governor.admit before its legacy
+    // executor can start provider/local work.
+    if (gatewayAdmissionBypassKeyForRequest(opts.req.method, opts.req.url)) return execute();
+    const request = gatewayAdmissionInputForLane({
+      lane: opts.lane,
+      idempotencyKey:
+        (opts.req.headers['x-papercusp-request-id'] as string | undefined)?.trim() ||
+        `gateway:${opts.lane.id}:${requestId}`,
+      ownerId,
+      accountId,
+      streaming: null,
+      pinMode,
+      priority: priorityFromLabel((opts.req.headers[PRIORITY_HEADER] as string | undefined)?.trim()),
+      deadlineAtMs: Date.now() + requestCeilingMs,
+      payloadRef: (opts.req.headers['x-papercusp-payload-ref'] as string | undefined)?.trim() || undefined,
+      parent: gatewayAdmissionParent,
+    });
+    return withGatewayAdmission(gatewayAdmissionGovernor, request, async () => execute());
   }
 
   const server = http.createServer((req, res) => {

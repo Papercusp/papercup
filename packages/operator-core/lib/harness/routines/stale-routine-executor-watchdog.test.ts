@@ -214,8 +214,8 @@ describe('executorAlarmContext — identify the owning service before suggesting
   it('names bg-host service and the sanctioned restart lever instead of presenting a bare worker identity', () => {
     const context = executorAlarmContext('port-3271');
 
-    expect(context.unit).toBe('papercup-bg-host.service');
-    expect(context.identityLabel).toContain('papercup-bg-host.service');
+    expect(context.unit).toBe('papercusp-bg-host.service');
+    expect(context.identityLabel).toContain('papercusp-bg-host.service');
     expect(context.identityLabel).toContain('executor identity port-3271');
     expect(context.restartLever).toBe("dev:restart { target: 'bg-host', confirm: true, authorize: true, reason: 'reload the owning executor with updated code' }");
     expect(context.identityLabel).not.toMatch(/^pid-/);

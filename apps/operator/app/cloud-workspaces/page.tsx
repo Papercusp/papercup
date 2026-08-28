@@ -623,10 +623,10 @@ export default function CloudWorkspacesPage() {
             className={styles.dispositionGroup}
             optionClassName={styles.disposition}
             value={disposition}
-            options={DESTROY_DISPOSITIONS.map((entry) => ({
-              value: entry.value,
-              ...entry,
-            }))}
+            options={DESTROY_DISPOSITIONS.map(
+              // Each entry already carries `value`; spreading it is enough.
+              (entry) => ({ ...entry }),
+            )}
             onChange={(next) => void setDisposition(next)}
           >
             {({ label, detail }) => (

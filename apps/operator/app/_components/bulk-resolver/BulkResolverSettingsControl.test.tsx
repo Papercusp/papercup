@@ -223,6 +223,28 @@ describe("BulkResolverSettingsControl", () => {
     });
   });
 
+  it("exposes the owner automation floor and persists a safe medium-plus choice", () => {
+    render(
+      <BulkResolverSettingsControl
+        kind="inbox-resolve"
+        settings={settings()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("inbox-resolve-settings-trigger"));
+    expect(screen.getByLabelText("Inbox resolver automation policy")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Inbox resolver automation policy"), {
+      target: { value: "safe-medium-plus" },
+    });
+    expect(H.updateProfile).toHaveBeenCalledWith({
+      model: null,
+      effort: null,
+      account: "default",
+      carry: "warm",
+      automationMode: "safe-medium-plus",
+      minConfidence: "medium",
+    });
+  });
+
   it("renders the canonical stale diagnostic and exposes the restart action", () => {
     const onRestart = vi.fn();
     render(

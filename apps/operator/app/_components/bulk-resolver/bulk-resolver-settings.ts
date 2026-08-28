@@ -7,6 +7,11 @@ import {
   type BulkResolverLaunchProfile,
   type BulkResolverProfileKind,
 } from "@papercusp/operator-core/lib/agent-config-constants";
+import {
+  DEFAULT_BULK_AUTOMATION_POLICY,
+  isBulkAutomationMode,
+  isBulkConfidence,
+} from "@papercusp/operator-core/lib/attention/bulk-dispositions";
 
 function freshDefault(): BulkResolverLaunchProfile {
   return { ...DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE };
@@ -27,7 +32,27 @@ export function normalizeResolverLaunchProfile(
     );
   }
   const { model, effort, account, carry } = resolved.effective;
-  return { model, effort, account, carry };
+  const hasPolicy =
+    typeof value.automationMode === "string" ||
+    typeof value.minConfidence === "string";
+  return {
+    model,
+    effort,
+    account,
+    carry,
+    ...(hasPolicy
+      ? {
+          automationMode:
+            isBulkAutomationMode(value.automationMode)
+              ? value.automationMode
+              : DEFAULT_BULK_AUTOMATION_POLICY.mode,
+          minConfidence:
+            isBulkConfidence(value.minConfidence)
+              ? value.minConfidence
+              : DEFAULT_BULK_AUTOMATION_POLICY.minConfidence,
+        }
+      : {}),
+  };
 }
 
 export async function loadResolverLaunchProfile(

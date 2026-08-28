@@ -35,6 +35,8 @@ import { dispatchCleanupFindingAction } from '../../plan-cleanup/action-dispatch
 import {
   BULK_CONFIDENCE_LEVELS,
   BULK_RECOMMENDATION_KINDS,
+  bulkAutomationEligibility,
+  normalizeBulkAutomationPolicy,
 } from '../../attention/bulk-dispositions';
 
 async function cleanupEnabled(): Promise<boolean> {
@@ -200,6 +202,28 @@ export const cleanupAct = defineTool({
         runId,
         actionDispatched: false,
       });
+    }
+
+    if (run.automationPolicy) {
+      const policy = normalizeBulkAutomationPolicy(run.automationPolicy);
+      const finding = (await getRunFindings(runId, run.workspaceId)).find(
+        (row) => row.findingId === args.findingId,
+      );
+      const confidenceLevel =
+        finding?.confidenceLevel ?? (finding?.confidence === 'provable' ? 'high' : 'medium');
+      const eligibility = bulkAutomationEligibility(policy, confidenceLevel);
+      if (!eligibility.allowed) {
+        return toolJson({
+          ok: false,
+          refused: 'confidence_policy',
+          reason: eligibility.reason,
+          policy,
+          runId,
+          findingId: args.findingId,
+          message:
+            'The selected confidence policy does not permit auto-application. Report a typed recommendation with evidence and confidence instead.',
+        });
+      }
     }
 
     const call = inProcessCall(ctx);

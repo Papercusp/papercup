@@ -302,6 +302,71 @@ exports[`contrast lint > tracks every pair the lint could NOT statically verify 
     default:background:unsupported-function(rgb(0 0 0 / 0.2))
     frost:background:unsupported-function(rgb(0 0 0 / 0.2))
     honeycomb:background:unsupported-function(rgb(0 0 0 / 0.2))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .badge :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .emptyIcon :: color:--fg-mute on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .estimateIcon :: color:--accent on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .hostIcon :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .overflowItem:hover:not(:disabled) :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .providerIcon :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .railStep:hover:not(:disabled) :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .railStepIcon :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .readinessMark :: color:--fg-mute on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .recoverability, .dangerNotice :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/cloud-workspaces.module.css :: .stageNumber :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/hosted-workspace-session.module.css :: .pathInput :: color:--fg on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
+  "operator/app/cloud-workspaces/hosted-workspace-session.module.css :: .toolbar button, .fileToolbar button, .fileEntry button, .claimButton :: color:--fg-dim on background:--bg-2
+    black:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    default:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    frost:background:unsupported-function(rgba(255, 255, 255, 0.045))
+    honeycomb:background:unsupported-function(rgba(255, 255, 255, 0.045))",
   "operator/app/command-palette.css :: .h-cmd-kbd :: color:--fg-dim on background:--bg-3
     black:background:unsupported-function(rgba(255, 255, 255, 0.075))
     default:background:unsupported-function(rgba(255, 255, 255, 0.075))

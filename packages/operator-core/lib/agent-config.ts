@@ -42,6 +42,12 @@ import {
   type ModelTier,
   type SurfaceKey,
 } from './agent-config-constants';
+import {
+  BULK_AUTOMATION_MODES,
+  BULK_CONFIDENCE_LEVELS,
+  isBulkAutomationMode,
+  isBulkConfidence,
+} from './attention/bulk-dispositions';
 
 // Client-safe constants + types live in `agent-config-constants.ts` (a leaf
 // module with no Node/server imports) so the /settings/agent client page can
@@ -184,7 +190,20 @@ function parseBulkResolverLaunchProfile(raw: unknown, fallback: BulkResolverLaun
   const carry = (BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(value.carry)
     ? (value.carry as BulkResolverLaunchProfile['carry'])
     : fallback.carry;
-  return { model, effort: model ? effort : null, account, carry };
+  const automationMode = isBulkAutomationMode(value.automationMode)
+    ? value.automationMode
+    : fallback.automationMode;
+  const minConfidence = isBulkConfidence(value.minConfidence)
+    ? value.minConfidence
+    : fallback.minConfidence;
+  return {
+    model,
+    effort: model ? effort : null,
+    account,
+    carry,
+    ...(automationMode ? { automationMode } : {}),
+    ...(minConfidence ? { minConfidence } : {}),
+  };
 }
 
 /**
@@ -213,7 +232,7 @@ export function bulkResolverLaunchProfilesProblem(
     (kind) => !(BULK_RESOLVER_PROFILE_KINDS as readonly string[]).includes(kind),
   );
   if (unknownKinds.length > 0) return `unknown run kind ${unknownKinds[0]}`;
-  const allowedFields = new Set(['model', 'effort', 'account', 'carry']);
+  const allowedFields = new Set(['model', 'effort', 'account', 'carry', 'automationMode', 'minConfidence']);
   for (const kind of BULK_RESOLVER_PROFILE_KINDS) {
     if (!(kind in value)) continue;
     const rawProfile = value[kind];
@@ -246,6 +265,12 @@ export function bulkResolverLaunchProfilesProblem(
     }
     if ('carry' in profile && !(BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(profile.carry)) {
       return `${kind}.carry must be warm or cold`;
+    }
+    if ('automationMode' in profile && !isBulkAutomationMode(profile.automationMode)) {
+      return `${kind}.automationMode must be one of ${BULK_AUTOMATION_MODES.join('|')}`;
+    }
+    if ('minConfidence' in profile && !isBulkConfidence(profile.minConfidence)) {
+      return `${kind}.minConfidence must be one of ${BULK_CONFIDENCE_LEVELS.join('|')}`;
     }
     const effectiveModel = 'model' in profile ? profile.model : fallback[kind].model;
     const effectiveEffort = 'effort' in profile ? profile.effort : fallback[kind].effort;

@@ -91,14 +91,12 @@ export function StageHeader({
   eyebrow,
   title,
   description,
-  actions,
 }: {
   id: string;
   step: string;
   eyebrow: string;
   title: string;
   description: string;
-  actions?: React.ReactNode;
 }) {
   return (
     <div className={styles.stageHeader}>
@@ -112,7 +110,6 @@ export function StageHeader({
         <h2 id={id}>{title}</h2>
         <p className={styles.stageDescription}>{description}</p>
       </div>
-      {actions ? <div className={styles.stageHeaderActions}>{actions}</div> : null}
     </div>
   );
 }

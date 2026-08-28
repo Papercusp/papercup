@@ -14,6 +14,18 @@
  * pattern. Keep this module free of any Node/server imports.
  */
 
+import type {
+  BulkAutomationMode,
+  BulkConfidence,
+} from './attention/bulk-dispositions';
+import {
+  BULK_AUTOMATION_MODES,
+  BULK_CONFIDENCE_LEVELS,
+  DEFAULT_BULK_AUTOMATION_POLICY,
+  isBulkAutomationMode,
+  isBulkConfidence,
+} from './attention/bulk-dispositions';
+
 /**
  * Canonical subprocess-spawn backend set (operator side). Kept in sync with the
  * orchestrator's `AGENT_BACKENDS` (`@papercusp/orchestrator` types.ts) and the
@@ -691,6 +703,10 @@ export interface BulkResolverLaunchProfile {
   effort: ModelEffort | null;
   account: string;
   carry: BulkResolverCarryMode;
+  /** Optional for legacy config documents; absent means `safe-high`. */
+  automationMode?: BulkAutomationMode;
+  /** Optional for legacy config documents; absent means `high`. */
+  minConfidence?: BulkConfidence;
 }
 
 export type BulkResolverLaunchProfiles = Record<BulkResolverProfileKind, BulkResolverLaunchProfile>;
@@ -851,6 +867,9 @@ export interface EffectiveBulkResolverLaunch {
   carry: BulkResolverCarryMode;
   /** DERIVED from `model` (D-002), never a separately editable truth. */
   backend: LaunchAgentBackend;
+  /** Effective owner policy; optional to preserve the legacy launch shape. */
+  automationMode?: BulkAutomationMode;
+  minConfidence?: BulkConfidence;
 }
 
 /** {@link resolveBulkResolverLaunch}: the effective settings, or a corrective
@@ -860,7 +879,7 @@ export interface BulkResolverLaunchResolution {
   message?: string;
   /** Which control the message is about, so a pane can mark that field rather
    *  than reddening the whole popover. */
-  field?: 'model' | 'effort' | 'account' | 'carry';
+  field?: 'model' | 'effort' | 'account' | 'carry' | 'automationMode' | 'minConfidence';
   effective?: EffectiveBulkResolverLaunch;
 }
 
@@ -894,6 +913,33 @@ export function resolveBulkResolverLaunch(
   profile?: Partial<BulkResolverLaunchProfile> | null,
 ): BulkResolverLaunchResolution {
   const p = profile ?? {};
+
+  const automationMode =
+    p.automationMode === undefined
+      ? undefined
+      : isBulkAutomationMode(p.automationMode)
+        ? p.automationMode
+        : null;
+  if (automationMode === null) {
+    return {
+      ok: false,
+      field: 'automationMode',
+      message: `automationMode must be one of ${BULK_AUTOMATION_MODES.join('|')}.`,
+    };
+  }
+  const minConfidence =
+    p.minConfidence === undefined
+      ? undefined
+      : isBulkConfidence(p.minConfidence)
+        ? p.minConfidence
+        : null;
+  if (minConfidence === null) {
+    return {
+      ok: false,
+      field: 'minConfidence',
+      message: `minConfidence must be one of ${BULK_CONFIDENCE_LEVELS.join('|')}.`,
+    };
+  }
 
   const rawCarry = p.carry ?? DEFAULT_BULK_RESOLVER_LAUNCH_PROFILE.carry;
   if (!(BULK_RESOLVER_CARRY_MODES as readonly unknown[]).includes(rawCarry)) {
@@ -955,10 +1001,20 @@ export function resolveBulkResolverLaunch(
     backend = inferred;
   }
 
-  return {
-    ok: true,
-    effective: { model, effort: effort as ModelEffort | null, account: rawAccount, carry, backend },
+  const effective: EffectiveBulkResolverLaunch = {
+    model,
+    effort: effort as ModelEffort | null,
+    account: rawAccount,
+    carry,
+    backend,
   };
+  // Preserve the compact legacy launch shape when no policy fields were posted;
+  // the run store's dedicated automation_policy column supplies the default.
+  if (automationMode !== undefined || minConfidence !== undefined) {
+    effective.automationMode = automationMode ?? DEFAULT_BULK_AUTOMATION_POLICY.mode;
+    effective.minConfidence = minConfidence ?? DEFAULT_BULK_AUTOMATION_POLICY.minConfidence;
+  }
+  return { ok: true, effective };
 }
 
 /** Output-reservation + startup-attachment headroom subtracted from the hard

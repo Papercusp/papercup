@@ -748,9 +748,9 @@
 
 .sizeFieldset {
   grid-column: 1 / -1;
-  margin: 0;
-  padding: 0;
-  border: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
 }
 
 /* Sizes as comparable cards: the alternatives you are choosing between stay
@@ -771,6 +771,7 @@
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--bg);
+  text-align: left;
   cursor: pointer;
 }
 
@@ -779,14 +780,9 @@
   background: color-mix(in srgb, var(--accent), var(--bg) 91%);
 }
 
-.sizeCard:focus-within {
+.sizeCard:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
-}
-
-.sizeCard input {
-  margin: 2px 0 0;
-  accent-color: var(--accent);
 }
 
 .sizeCardBody {

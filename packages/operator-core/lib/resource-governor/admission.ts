@@ -55,8 +55,14 @@ export interface AdmissionContext {
   readonly idempotencyKey: string;
   readonly admissionClass: AdmissionClass;
   readonly priority: number;
+  /** Request deadline copied onto the lineage context when one was supplied. */
+  readonly deadlineAtMs?: number | null;
   /** Incremental demand introduced at THIS boundary, not the whole root request. */
   readonly demand: Readonly<ResourceDemand>;
+  /** Durable payload reference copied onto the lineage context when one was supplied. */
+  readonly payloadRef?: string | null;
+  /** Structured caller/provider facts, kept separate from the resource vector. */
+  readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
   readonly depth: number;
   readonly createdAtMs: number;
   readonly decisionGeneration: number;
@@ -340,7 +346,10 @@ export class Governor {
       idempotencyKey: request.idempotencyKey,
       admissionClass: request.admissionClass,
       priority: request.priority,
+      ...(request.deadlineAtMs !== null ? { deadlineAtMs: request.deadlineAtMs } : {}),
       demand: request.demand,
+      ...(request.payloadRef !== null ? { payloadRef: request.payloadRef } : {}),
+      ...(Object.keys(request.metadata).length > 0 ? { metadata: request.metadata } : {}),
       depth: (request.parent?.depth ?? -1) + 1,
       createdAtMs: this.now(),
       decisionGeneration: 0,

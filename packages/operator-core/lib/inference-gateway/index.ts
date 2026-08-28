@@ -8,3 +8,4 @@ export * from './credential-store';
 export * from './account-resolver';
 export * from './launch';
 export * from './capacity-inventory';
+export * from './admission-context';

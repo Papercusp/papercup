@@ -27,10 +27,18 @@ import {
   type BulkResolverProfileKind,
   type EffectiveBulkResolverLaunch,
 } from "@papercusp/operator-core/lib/agent-config-constants";
+import {
+  BULK_AUTOMATION_MODES,
+  DEFAULT_BULK_AUTOMATION_POLICY,
+  normalizeBulkAutomationPolicy,
+  type BulkAutomationPolicy,
+} from "@papercusp/operator-core/lib/attention/bulk-dispositions";
 import type { BulkResolverSettingsState } from "./bulk-resolver-settings";
 import type { RunLiveness } from "@papercusp/operator-core/lib/attention/bulk-run-store";
 
-type LaunchReceipt = Partial<EffectiveBulkResolverLaunch>;
+type LaunchReceipt = Partial<EffectiveBulkResolverLaunch> & {
+  automationPolicy?: BulkAutomationPolicy | null;
+};
 
 export function formatResolverLaunchReceipt(
   snapshot: LaunchReceipt | null | undefined,
@@ -49,6 +57,11 @@ export function formatResolverLaunchReceipt(
     backend,
     snapshot.account ?? "default",
     snapshot.carry ?? "warm",
+    snapshot.automationPolicy
+      ? snapshot.automationPolicy.mode
+      : snapshot.automationMode
+        ? snapshot.automationMode
+        : "safe-high",
   ].join(" · ");
 }
 
@@ -76,6 +89,24 @@ const CARRY_OPTIONS: ComboboxOption[] = BULK_RESOLVER_CARRY_MODES.map(
   }),
 );
 
+const AUTOMATION_OPTIONS: ComboboxOption[] = BULK_AUTOMATION_MODES.map(
+  (mode) => ({
+    value: mode,
+    label:
+      mode === "review-all"
+        ? "Review all"
+        : mode === "safe-medium-plus"
+          ? "Safe · medium+"
+          : "Safe · high confidence",
+    detail:
+      mode === "review-all"
+        ? "Never auto-apply; prepare recommendations for you"
+        : mode === "safe-medium-plus"
+          ? "Auto-apply only eligible medium/high-confidence actions"
+          : "Auto-apply only eligible high-confidence actions",
+  }),
+);
+
 export interface BulkResolverSettingsControlProps {
   kind: BulkResolverProfileKind;
   settings: BulkResolverSettingsState;
@@ -99,6 +130,10 @@ export default function BulkResolverSettingsControl({
 }: BulkResolverSettingsControlProps) {
   const [open, setOpen] = useState(false);
   const profile = settings.profile;
+  const automationPolicy = normalizeBulkAutomationPolicy({
+    mode: profile.automationMode,
+    minConfidence: profile.minConfidence,
+  });
   const backend = modelBackend(profile.model ?? "") ?? "claude";
   const launchOptions = useSuLaunchOptions(null, backend);
   const modelOptions = useMemo(
@@ -304,10 +339,31 @@ export default function BulkResolverSettingsControl({
               testId={`${kind}-carry`}
             />
           </label>
+          <label>
+            <span>Automation</span>
+            <Combobox
+              value={automationPolicy.mode}
+              onChange={(mode) => {
+                const next = normalizeBulkAutomationPolicy({ mode: mode as typeof automationPolicy.mode });
+                update({
+                  automationMode: next.mode,
+                  minConfidence: next.minConfidence,
+                });
+              }}
+              ariaLabel={`${label} automation policy`}
+              emptyLabel="No automation modes match"
+              options={AUTOMATION_OPTIONS}
+              testId={`${kind}-automation`}
+            />
+          </label>
         </div>
         <p className="op-resolver-settings__fixed-copy">
           Fixed invariants: fresh session · headless · superuser. The model
           selects the compatible backend.
+        </p>
+        <p className="op-resolver-settings__hint">
+          Confidence is an additional floor; protected and owner-only actions
+          always stay manual. Default: {DEFAULT_BULK_AUTOMATION_POLICY.mode}.
         </p>
         {launchOptions.error ? (
           <p className="op-resolver-settings__hint">
