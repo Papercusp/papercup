@@ -298,27 +298,24 @@ function registryKey(path, code) {
   return `${path}::${code}`;
 }
 
-function inventory(
-  id,
-  migration,
-  paths,
-  resourceDimensions,
-  enforcement = `pending-${migration}`,
-) {
+/**
+ * Build one inventory row. Every descriptive field is REQUIRED and none has a
+ * default — deliberately.
+ *
+ * The previous signature defaulted fanOut/durableSource/telemetry/contextAndRelease/
+ * currentCaps/writerEvidence to five shared constants, so every lane inherited
+ * identical prose and `validateInventory`'s presence check passed while the
+ * inventory described nothing (auditSeq 9, D-026). Removing the defaults is what
+ * makes that regression structurally impossible rather than merely detected: a new
+ * lane cannot be decorative by omission, because omission no longer compiles into
+ * boilerplate — it produces `undefined` and trips `inventory-missing`.
+ */
+function inventory(row) {
   return Object.freeze({
-    id,
     disposition: "govern",
-    enforcement,
-    paths,
-    resourceDimensions,
-    fanOut: "measured at each migrated writer; no configured ceiling",
-    durableSource:
-      "the source durable job/work-item/receipt; never an in-memory resident queue",
-    telemetry: "bounded governor state with unknown/stale preserved",
-    contextAndRelease:
-      "AdmissionContext lineage and exact actual-cost release required at migration",
-    currentCaps: `delete during ${migration} after focused validation`,
-    writerEvidence: `required when ${migration} activates this lane`,
+    ...row,
+    enforcement: row.enforcement ?? `pending-${row.migration}`,
+    sites: Object.freeze((row.sites ?? []).map((s) => Object.freeze(s))),
   });
 }
 
@@ -370,7 +367,39 @@ export function inspectGovernorSource(source) {
   return findings;
 }
 
-export function validateInventory(rows = RESOURCE_GOVERNOR_INVENTORY) {
+/**
+ * P-001 acceptance is that each admission SITE names its own resource dimensions,
+ * fan-out, durable source, telemetry, context/release path and the cap to delete.
+ *
+ * A PRESENCE check cannot enforce that, and the audit (auditSeq 9) proved it: the
+ * seven lanes shared five identical boilerplate constants, satisfied `required`
+ * completely, and carried no per-site information whatsoever. A field that every
+ * row can satisfy with the SAME string is not describing anything — it is a check
+ * that cannot fail. So presence is necessary and no longer sufficient:
+ *
+ *   1. NO SHARED BOILERPLATE. If two rows give byte-identical prose for a
+ *      descriptive field, neither row is describing itself. Duplicate ⇒ finding.
+ *   2. SITES ARE NAMED, NOT IMPLIED. Every governed lane enumerates the concrete
+ *      admission sites it owns; a lane that names none is a path prefix, not an
+ *      inventory.
+ *   3. NAMED SITES MUST EXIST. `pathExists` (injected by scanTree, omitted by pure
+ *      callers) resolves each site against the tree, so the inventory cannot drift
+ *      into citing files that were renamed or deleted — the decorative-inventory
+ *      failure one level up from the decorative-allowlist one.
+ */
+const DESCRIPTIVE_FIELDS = [
+  "fanOut",
+  "durableSource",
+  "telemetry",
+  "contextAndRelease",
+  "currentCaps",
+  "writerEvidence",
+];
+
+export function validateInventory(
+  rows = RESOURCE_GOVERNOR_INVENTORY,
+  { pathExists = null } = {},
+) {
   const findings = [];
   const ids = new Set();
   const required = [
@@ -385,7 +414,25 @@ export function validateInventory(rows = RESOURCE_GOVERNOR_INVENTORY) {
     "contextAndRelease",
     "currentCaps",
     "writerEvidence",
+    "sites",
   ];
+  // (1) shared boilerplate across rows — the exact defect auditSeq 9 found.
+  for (const field of DESCRIPTIVE_FIELDS) {
+    const seen = new Map();
+    for (const row of rows) {
+      const value = row[field];
+      if (typeof value !== "string" || value === "") continue;
+      const norm = value.trim().replace(/\s+/g, " ");
+      if (!seen.has(norm)) seen.set(norm, []);
+      seen.get(norm).push(row.id);
+    }
+    for (const [, sharers] of seen) {
+      if (sharers.length > 1)
+        findings.push(
+          `inventory-boilerplate:${field}:${sharers.sort().join("+")}`,
+        );
+    }
+  }
   for (const row of rows) {
     if (ids.has(row.id)) findings.push(`duplicate-inventory:${row.id}`);
     ids.add(row.id);
@@ -397,6 +444,13 @@ export function validateInventory(rows = RESOURCE_GOVERNOR_INVENTORY) {
         (Array.isArray(value) && value.length === 0)
       )
         findings.push(`inventory-missing:${row.id}:${field}`);
+    }
+    // (2)+(3) named sites, and they must resolve against the tree.
+    for (const site of row.sites ?? []) {
+      if (!site?.path || !site?.start)
+        findings.push(`inventory-site-incomplete:${row.id}`);
+      else if (pathExists && !pathExists(site.path))
+        findings.push(`inventory-site-missing:${row.id}:${site.path}`);
     }
     if (
       !["govern", "bypass", "semantic", "upstream", "false-positive"].includes(
