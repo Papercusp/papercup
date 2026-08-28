@@ -6236,7 +6236,7 @@
           "POST"
         ]
       },
-      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, escalation, escalation_resolved, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. Free-text `q` is not an inbox argument; time bounds (`since`) are not either — use `coord:feed` for query matching or time-bounded reads. This is a VIEW, not a delta: re-reading the same window does not empty it.",
+      "description": "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. Supported narrowing filters are `kinds`, `from`, and `unanswered_only` (alias `unansweredOnly`). The `kinds` filter accepts canonical `CoordKind` wire values only: subscribe, unsubscribe, notify, handoff, handoff_accepted, handoff_expired, handoff_repinged, contract, plan_event, yield, message, ack, escalation, escalation_resolved, presence_alert. `interrupt` is conceptual language for actionable coordination traffic, not a `kinds` value; a cooperative turn-interrupt/wrap-up is encoded as the canonical executable kind `yield`. Free-text `q` and time bounds (`since`) are not inbox arguments — use `coord:feed` for either. This is a VIEW, not a delta: re-reading the same window does not empty it.",
       "capabilities": [
         "coord:read"
       ],
@@ -6259,7 +6259,7 @@
         "release-fixer"
       ],
       "guidance": {
-        "when": "Read your coordination mailbox. Bound a direct read with `limit`; `inboxLimit` belongs only to coord:orient.",
+        "when": "At turn start; whenever you suspect another agent contacted you.",
         "notWhen": "For agent-presence (\"who is active?\") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll."
       }
     },
