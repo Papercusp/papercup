@@ -25,6 +25,8 @@ import { getClaimAuthority } from './claim-authority';
 import { notifyAgentOrdersChanged } from '../agent-orders-notify';
 import { clearGoalClaimedIfMatches } from '../agent-state-stamp';
 import { planItemRef } from '../agent-goal-ref';
+import { SESSION_END_MARKER } from '../agent-tools/activity/lifecycle-markers';
+import { LIVE_TURN_WINDOW_MS } from '../agent-tools/coordination/presence-wakeability';
 
 export type LivenessMode = 'availability' | 'activity';
 export type HeartbeatKind = 'activity' | 'extend' | 'keepalive';
@@ -414,7 +416,13 @@ export async function releaseAllClaimsForOwner(workspaceId: string, owner: strin
  * (the same two-domain split EI-295 fixed in the assignments reader — claims are
  * keyed by the PLAN-STORE scope, activity by the AGENT workspace). We renew all of
  * the owner's claims rather than one item: owner ids are globally unique, so this
- * is exactly the owner's live working set. Returns the renewed item ids.
+ * is exactly the owner's live working set. The latest `adv_sessions` row for the
+ * owner is the session authority: an open row proves the owner is live, while an
+ * ended row requires a recent native `tool`/`todos` event after the latest exact
+ * session-end marker (or the row's ended timestamp) to prove a resumed turn.
+ * Lifecycle and wake-only reports therefore cannot keep an ended owner's claims
+ * alive, and an owner with no session authority fails closed. Returns the renewed
+ * item ids.
  *
  * Local (not authority-routed): on a single box the authority is self, so the renewal
  * runs on the same store the claim lives in. Cross-machine the renewal would route to
@@ -424,6 +432,7 @@ export async function releaseAllClaimsForOwner(workspaceId: string, owner: strin
  */
 export async function renewOwnerActivityClaims(workspaceId: string, owner: string): Promise<string[]> {
   const { sql } = getOrgPg();
+  const liveTurnWindowSec = Math.max(1, Math.round(LIVE_TURN_WINDOW_MS / 1000));
   const rows = await sql<{ item_id: string }[]>`
     UPDATE harness_shared.plan_item_claims
        SET expires_ts = clock_timestamp() + make_interval(secs => ttl_sec),
@@ -435,6 +444,40 @@ export async function renewOwnerActivityClaims(workspaceId: string, owner: strin
        -- the ONLY thing keeping a turn-active owner's availability lane from
        -- lapsing mid-session (activity-claim-renewal.integration.test.ts).
        AND expires_ts > clock_timestamp()
+       -- EI-216473: NOTIFY carries only owner_id, so lifecycle/wake-only reports
+       -- from an ended session used to renew every claim the owner ever held.
+       -- The newest adv_sessions row is authoritative. An ended row can renew
+       -- only when a recent native tool/todo event follows the latest exact end
+       -- marker, proving that a new turn actually resumed; no session row is
+       -- deliberately a fail-closed result.
+       AND EXISTS (
+         SELECT 1
+           FROM (
+             SELECT ended_at
+               FROM harness_shared.adv_sessions
+              WHERE coord_owner_id = ${owner}
+              ORDER BY started_at DESC, id DESC
+              LIMIT 1
+           ) AS latest_session
+          WHERE latest_session.ended_at IS NULL
+             OR EXISTS (
+               SELECT 1
+                 FROM harness_shared.agent_activity AS resumed
+                WHERE resumed.owner_id = ${owner}
+                  AND resumed.kind IN ('tool', 'todos')
+                  AND resumed.created_at > clock_timestamp() - make_interval(secs => ${liveTurnWindowSec})
+                  AND resumed.created_at > COALESCE(
+                    (
+                      SELECT max(end_marker.created_at)
+                        FROM harness_shared.agent_activity AS end_marker
+                       WHERE end_marker.owner_id = ${owner}
+                         AND end_marker.kind = 'lifecycle'
+                         AND end_marker.summary = ${SESSION_END_MARKER}
+                    ),
+                    latest_session.ended_at
+                  )
+             )
+       )
     RETURNING item_id
   `;
   return rows.map((r) => r.item_id);
