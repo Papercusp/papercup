@@ -391,6 +391,8 @@ export function buildConsoleOneliner(
    * `psu` exits would leave a detached process consuming host resources.
    */
   keepOpen = true,
+  /** Optional receipt path for the interactive tab shell's `$$` PID. */
+  terminalPidReceiptPath: string | null = null,
 ): string {
   const envExports: string[] = [];
   const pathExport = buildPathExport(env);
@@ -430,6 +432,7 @@ export function buildConsoleOneliner(
   const greetingScript = keepOpen
     ? keepWindowOpenOnFailure(greeting, {
         receiptPath: bootReceiptPath,
+        terminalPidReceiptPath,
         interactivePrelude: includeLivenessSentinel
           ? `touch .papercup-console-active.$$; ` +
             `trap 'rm -f .papercup-console-active.$$' EXIT`
@@ -486,7 +489,11 @@ function runCommandAndExit(command: string, opts?: { receiptPath?: string | null
  */
 export function keepWindowOpenOnFailure(
   command: string,
-  opts?: { receiptPath?: string | null; interactivePrelude?: string | null },
+  opts?: {
+    receiptPath?: string | null;
+    terminalPidReceiptPath?: string | null;
+    interactivePrelude?: string | null;
+  },
 ): string {
   // EI-19330040718883562: also persist the failure line to a receipt file when
   // one was supplied, so a poller OUTSIDE the terminal can observe it. The
@@ -497,7 +504,15 @@ export function keepWindowOpenOnFailure(
     `if [ "$__papercusp_greeting_rc" -ne 0 ]; then ` +
     `printf '\\n[papercusp] initial terminal command exited with status %s; terminal left open for inspection.\\n' "$__papercusp_greeting_rc"${receiptTee}; ` +
     `fi`;
+  // The PID returned by child_process.spawn is the terminal emulator (or its
+  // systemd-run launcher), not the interactive shell that owns the tab. Write
+  // the latter from inside the interactive bash itself so fleet:kill can use
+  // the same marker + birth identity it authenticates for terminal_pids.
+  const terminalPidReceipt = opts?.terminalPidReceiptPath
+    ? `printf '%s\\n' "$$" > ${shellEscape(opts.terminalPidReceiptPath)}`
+    : null;
   const interactiveScript = [
+    terminalPidReceipt,
     opts?.interactivePrelude,
     `(eval ${shellEscape(command)})`,
     banner,
@@ -1092,6 +1107,20 @@ export interface SpawnConsoleOpts {
     windowMs?: number;
   };
   /**
+   * Capture the PID of the interactive tab shell (not the terminal emulator
+   * returned as {@link SpawnConsoleResult.pid}) in an ephemeral receipt. This
+   * is opt-in because it adds a bounded wait and is only useful to callers
+   * that may later close an orphaned visible window. Missing receipts return
+   * `terminalPid:null`; callers must never use `pid` as a fallback.
+   */
+  captureTerminalPid?: boolean;
+  /** Injectable seams for the opt-in terminal-PID receipt poll. */
+  terminalPidProbes?: {
+    readReceipt?: (path: string) => string;
+    sleep?: (ms: number) => Promise<void>;
+    windowMs?: number;
+  };
+  /**
    * WI-37476 (EI-9748 Route B): injectable platform/PATH probes for
    * {@link buildConsoleScopedSpawnCommand}, mirroring
    * {@link SpawnHeadlessOpts.spawnCommandProbes}. Tests pass fakes so the
@@ -1106,6 +1135,12 @@ export type SpawnConsoleResult =
   | {
       status: 'ok';
       pid: number | null;
+      /**
+       * PID of the authenticated interactive tab shell. This is distinct from
+       * `pid`, which remains the terminal emulator/systemd launcher PID used
+       * for process liveness. Present only when captureTerminalPid was opted in.
+       */
+      terminalPid?: number | null;
       terminal: string;
       /** Task-manager identity for an enrolled headless launch. Visible desktop
        *  launches do not currently have a task row at this seam. */
@@ -1223,6 +1258,53 @@ async function pollConsoleBootReceipt(
 }
 
 /**
+ * Read the PID receipt written by the interactive tab shell. The terminal
+ * emulator (and, on Linux, systemd-run) is the process returned by `spawn`,
+ * but `fleet:kill` must authenticate the shell that owns the tab via its
+ * marker and birth identity. Keep this poll separate from the boot-failure
+ * receipt: a healthy launch has a PID line, while a failed greeting has a
+ * banner, and callers need to distinguish those two contracts.
+ */
+async function pollTerminalPidReceipt(
+  receiptPath: string | null,
+  probes: SpawnConsoleOpts['terminalPidProbes'],
+): Promise<number | null> {
+  if (!receiptPath) return null;
+  const readReceipt = probes?.readReceipt ?? ((p: string) => {
+    try {
+      return readFileSync(p, 'utf8');
+    } catch {
+      return '';
+    }
+  });
+  const sleep = probes?.sleep ?? ((ms: number) => new Promise<void>((r) => { setTimeout(r, ms).unref?.(); }));
+  const windowMs = probes?.windowMs ?? TERMINAL_PID_RECEIPT_MS;
+  const deadline = Date.now() + windowMs;
+  for (;;) {
+    const raw = readReceipt(receiptPath).trim();
+    if (/^\d+$/.test(raw)) {
+      const pid = Number(raw);
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        try {
+          unlinkSync(receiptPath);
+        } catch {
+          /* best-effort */
+        }
+        return pid;
+      }
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(50);
+  }
+  try {
+    unlinkSync(receiptPath);
+  } catch {
+    /* best-effort */
+  }
+  return null;
+}
+
+/**
  * Open a NEW native terminal window running the envelope's one-liner.
  *
  * Returns the spawned `child` so the caller can attach its own exit watcher /
@@ -1281,6 +1363,12 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
         `papercup-console-receipt-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.log`,
       )
     : null;
+  const terminalPidReceiptPath = opts.captureTerminalPid
+    ? join(
+        tmpdir(),
+        `papercup-console-terminal-pid-${process.pid}-${Date.now()}-${Math.floor(Math.random() * 1e6)}.txt`,
+      )
+    : null;
 
   // 2. Build the one-liner once (appearance/OSC colors + cd + env + sentinel +
   //    greeting + exec login shell). Same shape on every OS.
@@ -1295,6 +1383,9 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
       scheme: opts.scheme ?? null,
     },
     receiptPath,
+    true,
+    true,
+    terminalPidReceiptPath,
   );
 
   // 3. macOS: the operator is USUALLY a child of the desktop .app in the user's
@@ -1307,7 +1398,15 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
   //    verifies that exit rather than assuming success — callers get a real
   //    error and can fall back to spawnHeadless.
   if (process.platform === 'darwin') {
-    return spawnMacConsole(envelope, oneliner, opts.macProbes, receiptPath, opts.bootProbes);
+    return spawnMacConsole(
+      envelope,
+      oneliner,
+      opts.macProbes,
+      receiptPath,
+      opts.bootProbes,
+      terminalPidReceiptPath,
+      opts.terminalPidProbes,
+    );
   }
 
   // 4. Windows has no server-side path: the operator runs inside the WSL2 distro,
@@ -1558,12 +1657,14 @@ export async function spawnConsole(opts: SpawnConsoleOpts): Promise<SpawnConsole
     // a null receiptPath returns immediately with zero added latency.
     const bootFailure = await pollConsoleBootReceipt(receiptPath, opts.bootProbes);
     if (bootFailure) return bootFailure;
+    const terminalPid = await pollTerminalPidReceipt(terminalPidReceiptPath, opts.terminalPidProbes);
     // EI-8289: report the DISPLAY the window actually opened on (its own env
     // if it already had one, else whatever we resolved/injected) so a virtual-
     // placement window is disclosed to the caller, never silent.
     return {
       status: 'ok',
       pid: child.pid ?? null,
+      ...(terminalPidReceiptPath ? { terminalPid } : {}),
       terminal: term.bin,
       child,
       display: desktopEnv.DISPLAY ?? process.env.DISPLAY ?? null,
@@ -1635,6 +1736,15 @@ export const MAC_COMMAND_RECEIPT_MS = 2500;
 export const HEADLESS_BOOT_RECEIPT_MS = 6000;
 
 /**
+ * How long an opted-in visible launch waits for the interactive tab shell to
+ * publish its PID receipt. The terminal emulator's child PID is not the shell
+ * that owns the window, so callers that need authenticated window cleanup use
+ * this separate identity. A missing receipt is reported as `terminalPid:null`
+ * rather than falling back to the emulator PID.
+ */
+export const TERMINAL_PID_RECEIPT_MS = 6000;
+
+/**
  * The sentinel `buildConsoleOneliner` prints when the agent command dies. This
  * is OUR OWN emitted contract (see the `__papercusp_greeting_rc` branch there),
  * not a third-party log string, which is what makes matching it sound.
@@ -1657,6 +1767,8 @@ async function spawnMacConsole(
   /** EI-19330040718883562: null unless the caller opted into verifyBootReceipt. */
   receiptPath: string | null = null,
   bootProbes: SpawnConsoleOpts['bootProbes'] = undefined,
+  terminalPidReceiptPath: string | null = null,
+  terminalPidProbes: SpawnConsoleOpts['terminalPidProbes'] = undefined,
 ): Promise<SpawnConsoleResult> {
   // Pre-flight (EI-19311623077693508, third and final half): with nobody logged
   // into the GUI a window CANNOT be displayed, no matter what `open` reports. Say
@@ -1799,9 +1911,18 @@ async function spawnMacConsole(
     // default) returns immediately with zero added latency.
     const bootFailure = await pollConsoleBootReceipt(receiptPath, bootProbes);
     if (bootFailure) return bootFailure;
+    const terminalPid = await pollTerminalPidReceipt(terminalPidReceiptPath, terminalPidProbes);
     // macOS has no X DISPLAY concept — display/desktopEnvResolvedVia are always
     // null here (the EI-8289 disclosure only applies to the Linux X11 path).
-    return { status: 'ok', pid: child.pid ?? null, terminal: inv.term, child, display: null, desktopEnvResolvedVia: null };
+    return {
+      status: 'ok',
+      pid: child.pid ?? null,
+      ...(terminalPidReceiptPath ? { terminalPid } : {}),
+      terminal: inv.term,
+      child,
+      display: null,
+      desktopEnvResolvedVia: null,
+    };
   } catch (e: any) {
     if (stderrPath != null) {
       try { unlinkSync(stderrPath); } catch { /* best-effort */ }
