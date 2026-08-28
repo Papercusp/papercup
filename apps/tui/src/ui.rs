@@ -3401,26 +3401,22 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
                     "(memory backend unavailable — {})",
                     trunc(reason.as_deref().unwrap_or("not configured yet"), 72)
                 ),
-                crate::event::MemoryLoadState::AuthFailure { message } => format!(
-                    "(memory request unauthorized — {})",
-                    trunc(message, 72)
-                ),
-                crate::event::MemoryLoadState::TransportFailure { message } => format!(
-                    "(memory request failed — {})",
-                    trunc(message, 72)
-                ),
-                crate::event::MemoryLoadState::Available { .. } =>
-                    "(memory data unavailable)".to_string(),
+                crate::event::MemoryLoadState::AuthFailure { message } => {
+                    format!("(memory request unauthorized — {})", trunc(message, 72))
+                }
+                crate::event::MemoryLoadState::TransportFailure { message } => {
+                    format!("(memory request failed — {})", trunc(message, 72))
+                }
+                crate::event::MemoryLoadState::Available { .. } => {
+                    "(memory data unavailable)".to_string()
+                }
             }
         } else if app.memory_hits.is_some() {
             "(no hits — Esc returns to the list)".to_string()
         } else {
             "(no memories stored yet)".to_string()
         };
-        vec![ListItem::new(Line::from(Span::styled(
-            hint,
-            Theme::dim(),
-        )))]
+        vec![ListItem::new(Line::from(Span::styled(hint, Theme::dim())))]
     } else {
         items
     };
@@ -3483,10 +3479,9 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
 }
 
 /// The Cupboard tab (D-011): the marketplace listings under the active kind
-/// filter + search, with a detail pane and per-kind action dispatch
-/// (harness→join · blueprint→fork · snapshot→fork · plugin→install). The kind
-/// filter row renders above the list; the armed confirm shows in the detail
-/// title (Enter arms, `y` fires).
+/// filter + search, with a detail pane and safe per-kind action dispatch. The
+/// filter row is derived from the live `kind_facets`; unsupported kinds remain
+/// browsable but read-only instead of exposing a confirmation that must fail.
 fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -3494,18 +3489,13 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Kind-filter row + search status in the list title.
-    let kinds = crate::app::CUPBOARD_KINDS
+    let kinds = app
+        .cupboard_kind_options()
         .iter()
-        .enumerate()
-        .map(|(i, k)| {
-            let count = if *k == "all" {
-                (!app.cupboard_kind_facets.is_empty())
-                    .then(|| app.cupboard_kind_facets.values().sum::<usize>())
-            } else {
-                app.cupboard_kind_facets.get(*k).copied()
-            };
+        .map(|k| {
+            let count = app.cupboard_kind_count(k);
             let label = count.map_or_else(|| k.to_string(), |n| format!("{k}:{n}"));
-            if i == app.cupboard_kind {
+            if k == &app.cupboard_kind_filter {
                 format!("[{label}]")
             } else {
                 label
@@ -3537,7 +3527,7 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         .map(|l| {
             ListItem::new(Line::from(format!(
                 "{:<10} {:<28} {}",
-                trunc(&l.listing_kind, 10),
+                trunc(l.normalized_kind(), 10),
                 trunc(l.display_name(), 28),
                 trunc(l.description.as_deref().unwrap_or(""), 40),
             )))
@@ -3588,38 +3578,41 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         .get(app.cupboard_sel.min(app.cupboard.len().saturating_sub(1)));
     let (detail, action_label) = match sel {
         Some(l) => {
-            let action = match l.listing_kind.as_str() {
-                "harness" => "join",
-                "blueprint" => "fork (install)",
-                "plugin" => "install",
-                _ => "—",
-            };
+            let action = l.action_label();
+            let action_hint = action.map_or_else(
+                || "Read-only in PUI — no safe action for this listing kind".to_string(),
+                |label| format!("Enter: arm {label} · y: confirm"),
+            );
             let gh = l.github_url.as_deref().unwrap_or("—");
             let by = l.publisher_github_login.as_deref().unwrap_or("—");
             let claim = l.claim_status.as_deref().unwrap_or("—");
             let pot = l.project_ref.as_deref().unwrap_or("—");
+            let release = l.latest_json_url.as_deref().unwrap_or("—");
             (
                 format!(
-                    "{}\n\n{}\n\nkind: {}\npot: {}\ngithub: {}\npublisher: {}\nclaim: {}\n\nEnter: arm {} · y: confirm",
+                    "{}\n\n{}\n\nkind: {}\npot: {}\ngithub: {}\npublisher: {}\nclaim: {}\nrelease: {}\n\n{}",
                     l.display_name(),
                     l.description.as_deref().unwrap_or("(no description)"),
-                    l.listing_kind,
+                    l.normalized_kind(),
                     pot,
                     gh,
                     by,
                     claim,
-                    action,
+                    release,
+                    action_hint,
                 ),
                 action,
             )
         }
-        None => ("No listing selected.".to_string(), "—"),
+        None => ("No listing selected.".to_string(), None),
     };
     let armed = sel
-        .map(|l| app.cupboard_confirm.as_deref() == Some(l.id.as_str()))
+        .map(|l| {
+            l.action_label().is_some() && app.cupboard_confirm.as_deref() == Some(l.id.as_str())
+        })
         .unwrap_or(false);
     let detail_title = if armed {
-        format!(" Detail — press y to {action_label} ")
+        format!(" Detail — press y to {} ", action_label.unwrap_or("act"))
     } else {
         " Detail ".to_string()
     };
@@ -6038,6 +6031,18 @@ mod tests {
         // Backend unavailable → the clear empty state (mem0 unconfigured today).
         let unavailable = render(&app, 110, 16);
         assert!(unavailable.contains("memory backend unavailable"));
+        app.memory_load_state = crate::event::MemoryLoadState::AuthFailure {
+            message: "401 principal required".into(),
+        };
+        let unauthorized = render(&app, 110, 16);
+        assert!(unauthorized.contains("memory request unauthorized"));
+        assert!(!unauthorized.contains("backend unavailable"));
+        app.memory_load_state = crate::event::MemoryLoadState::TransportFailure {
+            message: "connection refused".into(),
+        };
+        let transport = render(&app, 110, 16);
+        assert!(transport.contains("memory request failed"));
+        assert!(!transport.contains("backend unavailable"));
         // Available but empty.
         app.memory_available = true;
         let empty = render(&app, 110, 16);
@@ -6089,10 +6094,18 @@ mod tests {
         }];
         app.cupboard_total = Some(137);
         app.cupboard_next_cursor = Some("v1:50:deep".into());
-        app.cupboard_kind_facets =
-            std::collections::BTreeMap::from([("harness".into(), 100), ("plugin".into(), 37)]);
+        app.cupboard_kind_facets = std::collections::BTreeMap::from([
+            ("app".into(), 10),
+            ("harness".into(), 70),
+            ("knowledge-pack".into(), 5),
+            ("plugin".into(), 37),
+            ("template".into(), 15),
+        ]);
         let text = render(&app, 240, 18);
         assert!(text.contains("[all:137]")); // exact corpus count in the active filter
+        assert!(text.contains("app:10"));
+        assert!(text.contains("knowledge-pack:5"));
+        assert!(text.contains("template:15"));
         assert!(text.contains("1/137"));
         assert!(text.contains("n:next"));
         assert!(text.contains("load next page"));
@@ -6108,6 +6121,21 @@ mod tests {
         app.cupboard_search_input = "worker".into();
         let search = render(&app, 240, 18);
         assert!(search.contains("Search the Cupboard"));
+
+        // Unsupported live kinds remain browseable without a false arm/confirm
+        // promise, even if a stale confirm id is present.
+        app.cupboard_search_open = false;
+        app.cupboard = vec![CupboardListing {
+            id: "plan-1".into(),
+            listing_kind: "plan".into(),
+            latest_json_url: Some("https://example.test/plan.json".into()),
+            ..Default::default()
+        }];
+        app.cupboard_confirm = Some("plan-1".into());
+        let read_only = render(&app, 240, 18);
+        assert!(read_only.contains("Read-only in PUI"));
+        assert!(read_only.contains("https://example.test/plan.json"));
+        assert!(!read_only.contains("press y to"));
     }
 
     #[test]

@@ -2412,7 +2412,8 @@ impl OperatorClient {
     // ─── Cupboard tab (D-011) ───
 
     /// Browse/search marketplace listings (`GET /api/cupboard/listings`).
-    /// `kind` narrows to harness|blueprint|snapshot|plugin; `q` is full-text.
+    /// `kind` is one of the live facet keys returned by the catalog; `q` is
+    /// full-text. Unknown future kinds remain browseable without client churn.
     pub async fn cupboard_listings(
         &self,
         kind: Option<&str>,
@@ -2435,7 +2436,8 @@ impl OperatorClient {
             .context("decode cupboard listings")
     }
 
-    /// Install a plugin listing (`POST /api/cupboard/install-plugin`).
+    /// Install a plugin or runtime-less code-tool pack listing
+    /// (`POST /api/cupboard/install-plugin`).
     /// `acceptCapabilities` auto-grants the manifest's capability requests —
     /// the TUI confirm step happens BEFORE this call (the `y` confirm).
     pub async fn cupboard_install_plugin(&self, listing_id: &str) -> Result<serde_json::Value> {
@@ -2456,9 +2458,41 @@ impl OperatorClient {
         .await
     }
 
+    /// Install an app-template into the local template store. Materializing a
+    /// new app remains a separate `templates:new-app` action.
+    pub async fn cupboard_install_template(&self, listing_id: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/cupboard/install-template",
+            serde_json::json!({ "listingId": listing_id }),
+        )
+        .await
+    }
+
+    /// Stage a Comb-listed knowledge pack in the local store. Installing it
+    /// into a Hive remains the normal reviewed Learnings flow.
+    pub async fn cupboard_stage_knowledge_pack(
+        &self,
+        listing_id: &str,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/knowledge-packs/fetch-from-comb",
+            serde_json::json!({ "listingId": listing_id }),
+        )
+        .await
+    }
+
+    /// Install a bundle app and its declared dependencies into this workspace.
+    /// Standalone apps intentionally never call this route.
+    pub async fn cupboard_install_app(&self, listing_id: &str) -> Result<serde_json::Value> {
+        self.post_json(
+            "/api/cupboard/install-app",
+            serde_json::json!({ "listingId": listing_id }),
+        )
+        .await
+    }
+
     // NOTE: `snapshot_fork_from_cupboard` was REMOVED — the Cupboard's
-    // `snapshot` listing kind is retired (kinds are now harness | blueprint |
-    // plugin | pack, see routes/cupboard.ts) and `/api/snapshots/
+    // `snapshot` listing kind is retired and `/api/snapshots/
     // fork-from-cupboard` has no successor route (P-003, 2026-08-24).
 
     /// Join a shared harness from its `papercusp://harness?…` link
@@ -2744,6 +2778,38 @@ fn parse_federated_hives(text: &str) -> Result<Vec<crate::models::PresenceRow>> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn memory_load_error_classifies_typed_http_auth_failures() {
+        let state = OperatorClient::memory_load_error(anyhow::Error::new(HttpStatusError {
+            method: "POST".into(),
+            path: "/api/agent-tools/memory/list".into(),
+            status: 401,
+            body: "principal required".into(),
+        }));
+
+        match state {
+            MemoryLoadState::AuthFailure { message } => {
+                assert!(message.contains("401"), "{message}");
+                assert!(message.contains("principal required"), "{message}");
+            }
+            other => panic!("expected auth failure, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn memory_load_error_keeps_ipc_auth_and_transport_failures_distinct() {
+        let auth = OperatorClient::memory_load_error(anyhow::anyhow!(
+            "sys:http: POST /api/agent-tools/memory/list -> 403: forbidden"
+        ));
+        assert!(matches!(auth, MemoryLoadState::AuthFailure { .. }));
+
+        let transport = OperatorClient::memory_load_error(anyhow::anyhow!("connection refused"));
+        assert!(matches!(
+            transport,
+            MemoryLoadState::TransportFailure { .. }
+        ));
+    }
 
     #[test]
     fn parses_current_array_root_work_items_list_shape() {

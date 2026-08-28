@@ -335,7 +335,13 @@ mod tests {
             .sys_http("GET", "/api/missing", None)
             .await
             .unwrap_err();
-        assert!(err.to_string().contains("404"));
+        let status = err
+            .downcast_ref::<HttpStatusError>()
+            .expect("non-success responses preserve their typed status");
+        assert_eq!(status.status, 404);
+        assert_eq!(status.method, "GET");
+        assert_eq!(status.path, "/api/missing");
+        assert_eq!(status.body, "nope");
     }
 
     #[tokio::test]

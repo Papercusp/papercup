@@ -66,6 +66,7 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
   it('resets the base ExecStart, bundles first, and preserves the inline runtime environment', () => {
     const serviceLines = dropIn.split('\n').map((line) => line.trim());
     const execLines = serviceLines.filter((line) => line.startsWith('ExecStart'));
+    const environmentLines = serviceLines.filter((line) => line.startsWith('Environment='));
 
     expect(execLines).toEqual([
       `ExecStartPre=${BUNDLE_HOST_UNIT_PATH}`,
@@ -76,7 +77,10 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     expect(dropIn.indexOf('ExecStart=\n')).toBeLessThan(dropIn.indexOf('ExecStart=/usr/bin/bash'));
     expect(dropIn).toContain('node dist-host/hono-host.mjs"');
     expect(dropIn).not.toContain('npx tsx bin/hono-host.ts');
-    expect(dropIn).not.toMatch(/^Environment=/m);
+    // Supervisor policy belongs on the unit; child runtime configuration stays
+    // inline in ExecStart. Requiring the exact set catches drift in either
+    // direction without rejecting the stale-bundle availability opt-in.
+    expect(environmentLines).toEqual(['Environment=PAPERCUSP_BUNDLE_ALLOW_STALE_START=1']);
 
     for (const assignment of [
       'PAPERCUSP_HONO_PORT=3271',
