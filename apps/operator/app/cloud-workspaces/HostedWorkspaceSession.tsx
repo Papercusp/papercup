@@ -1,12 +1,13 @@
 "use client";
 
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import { Clipboard, Download, Files, TerminalSquare, Upload } from "lucide-react";
+  Clipboard,
+  Download,
+  Files,
+  TerminalSquare,
+  Upload,
+} from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import "@xterm/xterm/css/xterm.css";
 import styles from "./hosted-workspace-session.module.css";
@@ -38,6 +39,15 @@ type SessionMeta = {
 
 type JsonRecord = Record<string, unknown>;
 
+export function isCurrentHostedWorkspaceSocket(
+  socket: WebSocket,
+  socketEpoch: number,
+  activeSocket: WebSocket | null,
+  activeEpoch: number,
+): boolean {
+  return socket === activeSocket && socketEpoch === activeEpoch;
+}
+
 function record(value: unknown): JsonRecord | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
@@ -57,7 +67,8 @@ function responseError(value: unknown, fallback: string): string {
 }
 
 function requestId(prefix: string): string {
-  const suffix = globalThis.crypto?.randomUUID?.() ??
+  const suffix =
+    globalThis.crypto?.randomUUID?.() ??
     `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${suffix}`;
 }
@@ -129,32 +140,29 @@ export function HostedWorkspaceSession({
     }
   }, []);
 
-  const dispose = useCallback(
-    (notify = true) => {
-      connectEpochRef.current += 1;
-      const socket = socketRef.current;
-      socketRef.current = null;
-      if (socket && notify && socket.readyState === WebSocket.OPEN) {
-        try {
-          socket.send(JSON.stringify({ type: "session.detach" }));
-        } catch {
-          // The close below is still authoritative cleanup.
-        }
-      }
+  const dispose = useCallback((notify = true) => {
+    connectEpochRef.current += 1;
+    const socket = socketRef.current;
+    socketRef.current = null;
+    if (socket && notify && socket.readyState === WebSocket.OPEN) {
       try {
-        socket?.close(1000, "browser_detached");
+        socket.send(JSON.stringify({ type: "session.detach" }));
       } catch {
-        // Already closed.
+        // The close below is still authoritative cleanup.
       }
-      resizeRef.current?.disconnect();
-      resizeRef.current = null;
-      terminalRef.current?.dispose();
-      terminalRef.current = null;
-      fitRef.current = null;
-      roleRef.current = null;
-    },
-    [],
-  );
+    }
+    try {
+      socket?.close(1000, "browser_detached");
+    } catch {
+      // Already closed.
+    }
+    resizeRef.current?.disconnect();
+    resizeRef.current = null;
+    terminalRef.current?.dispose();
+    terminalRef.current = null;
+    fitRef.current = null;
+    roleRef.current = null;
+  }, []);
 
   useEffect(() => () => dispose(true), [dispose]);
 
@@ -176,8 +184,7 @@ export function HostedWorkspaceSession({
       convertEol: true,
       scrollback: 5_000,
       fontSize: 12,
-      fontFamily:
-        "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+      fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
       theme: { background: "#101418", foreground: "#d9e1e8" },
     });
     const fit = new FitAddon();
@@ -199,7 +206,11 @@ export function HostedWorkspaceSession({
       try {
         fit.fit();
         if (roleRef.current === "controller") {
-          send({ type: "pty.resize", cols: terminal.cols, rows: terminal.rows });
+          send({
+            type: "pty.resize",
+            cols: terminal.cols,
+            rows: terminal.rows,
+          });
         }
       } catch {
         // A hidden or unmounted terminal has no measurable geometry.
@@ -257,7 +268,9 @@ export function HostedWorkspaceSession({
         setRole(event.role);
         setMeta((current) => ({ ...current, resumed: event.resumed }));
         setStatus("live");
-        setNotice(event.resumed ? "Detached session resumed." : "New session ready.");
+        setNotice(
+          event.resumed ? "Detached session resumed." : "New session ready.",
+        );
         listFiles(".");
         return;
       }
@@ -290,18 +303,13 @@ export function HostedWorkspaceSession({
         } else if (event.operation === "read" && event.data !== undefined) {
           try {
             const text =
-              event.encoding === "utf8"
-                ? event.data
-                : base64ToUtf8(event.data);
+              event.encoding === "utf8" ? event.data : base64ToUtf8(event.data);
             setPreview({ path: event.path ?? "file", text });
             setNotice(`Read ${event.path ?? "file"}.`);
           } catch {
             setNotice("The selected file is not valid UTF-8 text.");
           }
-        } else if (
-          event.operation === "download" &&
-          event.data !== undefined
-        ) {
+        } else if (event.operation === "download" && event.data !== undefined) {
           try {
             downloadFile(event.path ?? "workspace-download", event.data);
             setNotice(`Downloaded ${event.path ?? "file"}.`);
@@ -361,7 +369,10 @@ export function HostedWorkspaceSession({
       const ticket = readHostedWorkspaceTicket(ticketPayload);
       if (!ticketResponse.ok || !ticket) {
         throw new Error(
-          responseError(ticketPayload, "Could not mint a workspace session ticket"),
+          responseError(
+            ticketPayload,
+            "Could not mint a workspace session ticket",
+          ),
         );
       }
       if (epoch !== connectEpochRef.current) return;
@@ -371,12 +382,30 @@ export function HostedWorkspaceSession({
       const socket = new WebSocket(
         buildHostedWorkspaceSocketUrl(window.location.origin, ticket),
       );
+      const socketEpoch = epoch;
       socketRef.current = socket;
       socket.addEventListener("message", (event) => {
+        if (
+          !isCurrentHostedWorkspaceSocket(
+            socket,
+            socketEpoch,
+            socketRef.current,
+            connectEpochRef.current,
+          )
+        )
+          return;
         if (typeof event.data === "string") handleMessage(event.data);
       });
       socket.addEventListener("close", (event) => {
-        if (socketRef.current !== socket) return;
+        if (
+          !isCurrentHostedWorkspaceSocket(
+            socket,
+            socketEpoch,
+            socketRef.current,
+            connectEpochRef.current,
+          )
+        )
+          return;
         socketRef.current = null;
         setStatus((current) => (current === "error" ? current : "closed"));
         setNotice(
@@ -386,7 +415,15 @@ export function HostedWorkspaceSession({
         );
       });
       socket.addEventListener("error", () => {
-        if (socketRef.current !== socket) return;
+        if (
+          !isCurrentHostedWorkspaceSocket(
+            socket,
+            socketEpoch,
+            socketRef.current,
+            connectEpochRef.current,
+          )
+        )
+          return;
         setError("The workspace relay connection failed.");
         setStatus("error");
       });
@@ -401,7 +438,9 @@ export function HostedWorkspaceSession({
     dispose(true);
     setStatus("closed");
     setRole(null);
-    setNotice("Session detached. Reconnect within the idle window to resume it.");
+    setNotice(
+      "Session detached. Reconnect within the idle window to resume it.",
+    );
   }, [dispose]);
 
   const paste = useCallback(async () => {
@@ -469,7 +508,9 @@ export function HostedWorkspaceSession({
         });
         setNotice(`Uploading ${target}…`);
       } catch (cause) {
-        setNotice(`Upload failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        setNotice(
+          `Upload failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
       }
     },
     [path, role, send],
@@ -477,7 +518,8 @@ export function HostedWorkspaceSession({
 
   const live = status === "live";
   const controller = live && role === "controller";
-  const statusTone = status === "live" ? "good" : status === "error" ? "bad" : "neutral";
+  const statusTone =
+    status === "live" ? "good" : status === "error" ? "bad" : "neutral";
 
   return (
     <section
@@ -488,7 +530,8 @@ export function HostedWorkspaceSession({
         <div>
           <strong>Browser workspace session</strong>
           <small>
-            <TerminalSquare size={12} aria-hidden="true" /> outbound relay · {routeLabel}
+            <TerminalSquare size={12} aria-hidden="true" /> outbound relay ·{" "}
+            {routeLabel}
           </small>
         </div>
         <div className={styles.headerActions}>
@@ -502,7 +545,12 @@ export function HostedWorkspaceSession({
             </button>
           ) : null}
           {live || status === "connecting" ? (
-            <Button type="button" variant="ghost" size="sm" onClick={disconnect}>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={disconnect}
+            >
               Detach
             </Button>
           ) : (
@@ -521,7 +569,11 @@ export function HostedWorkspaceSession({
 
       <div className={styles.body}>
         <div className={styles.terminalPane}>
-          <div className={styles.status} data-tone={statusTone} aria-live="polite">
+          <div
+            className={styles.status}
+            data-tone={statusTone}
+            aria-live="polite"
+          >
             <span>{status}</span>
             {role ? <span>· {role}</span> : null}
             {meta.generation !== undefined ? (
@@ -535,7 +587,8 @@ export function HostedWorkspaceSession({
           <div className={styles.terminal} ref={terminalContainerRef}>
             {!live ? (
               <div className={styles.terminalPlaceholder}>
-                Connect to open the authenticated PTY. A detached PTY remains resumable until its idle expiry.
+                Connect to open the authenticated PTY. A detached PTY remains
+                resumable until its idle expiry.
               </div>
             ) : null}
           </div>
@@ -543,7 +596,11 @@ export function HostedWorkspaceSession({
             <button type="button" onClick={() => void copy()} disabled={!live}>
               <Clipboard size={12} aria-hidden="true" /> Copy
             </button>
-            <button type="button" onClick={() => void paste()} disabled={!controller}>
+            <button
+              type="button"
+              onClick={() => void paste()}
+              disabled={!controller}
+            >
               Paste
             </button>
             <button
@@ -565,7 +622,9 @@ export function HostedWorkspaceSession({
 
         <div className={styles.filePane}>
           <div className={styles.fileHeader}>
-            <strong><Files size={12} aria-hidden="true" /> Safe-root files</strong>
+            <strong>
+              <Files size={12} aria-hidden="true" /> Safe-root files
+            </strong>
             <span>{entries.length} entries</span>
           </div>
           <div className={styles.fileToolbar}>
@@ -575,7 +634,11 @@ export function HostedWorkspaceSession({
               onChange={(event) => setPath(event.target.value)}
               aria-label="Workspace file path"
             />
-            <button type="button" onClick={() => listFiles(path)} disabled={!live}>
+            <button
+              type="button"
+              onClick={() => listFiles(path)}
+              disabled={!live}
+            >
               List
             </button>
             <button type="button" onClick={download} disabled={!live}>
@@ -603,11 +666,20 @@ export function HostedWorkspaceSession({
           {entries.length ? (
             <ul className={styles.fileList}>
               {entries.map((entry) => (
-                <li className={styles.fileEntry} key={`${entry.kind}:${entry.name}`}>
-                  <button type="button" onClick={() => openEntry(entry)} disabled={!live}>
+                <li
+                  className={styles.fileEntry}
+                  key={`${entry.kind}:${entry.name}`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => openEntry(entry)}
+                    disabled={!live}
+                  >
                     {entry.kind === "directory" ? "▸" : "·"} {entry.name}
                   </button>
-                  <small>{entry.kind === "directory" ? "dir" : fileSize(entry.bytes)}</small>
+                  <small>
+                    {entry.kind === "directory" ? "dir" : fileSize(entry.bytes)}
+                  </small>
                 </li>
               ))}
             </ul>
@@ -615,12 +687,21 @@ export function HostedWorkspaceSession({
             <p className={styles.empty}>No directory listing loaded.</p>
           )}
           <div className={styles.preview}>
-            <span className={styles.previewLabel}>{preview?.path ?? "Text preview"}</span>
-            <pre>{preview?.text ?? "Select a file to read it through the safe-root file plane."}</pre>
+            <span className={styles.previewLabel}>
+              {preview?.path ?? "Text preview"}
+            </span>
+            <pre>
+              {preview?.text ??
+                "Select a file to read it through the safe-root file plane."}
+            </pre>
           </div>
         </div>
       </div>
-      {notice ? <div className={styles.notice} aria-live="polite">{notice}</div> : null}
+      {notice ? (
+        <div className={styles.notice} aria-live="polite">
+          {notice}
+        </div>
+      ) : null}
     </section>
   );
 }
