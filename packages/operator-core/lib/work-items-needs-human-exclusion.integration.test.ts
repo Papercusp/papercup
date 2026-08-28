@@ -221,6 +221,35 @@ describe('setWorkItemStateWithAliasInfo retires legacy needsHuman writes (P-006)
     expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsOwnerAction).toBe(true);
   });
 
+  it('accepts a product-decision structured owner ask when retrying needs-human parking', async () => {
+    const { blockers } = wi.updateExternalBlockerHistory(
+      {},
+      {
+        kind: 'human',
+        capability: 'product-decision',
+        ref: 'decision:scope',
+        summary: 'Choose the supported scope.',
+        nextVerb: 'Record the product decision.',
+      },
+      'tester',
+      '2026-08-23T18:00:00.000Z',
+    );
+    await seedIssue('EI-product-decision-human', {
+      kind: 'change',
+      status: 'open',
+      payload: { humanCapability: 'product-decision', externalBlockers: blockers },
+    });
+
+    const res = await wi.setWorkItemStateWithAliasInfo('EI-product-decision-human', 'needs-human', {
+      harness: H,
+      by: 'tester',
+    });
+
+    expect(res.appliedState).toBe('needs-human');
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsOwnerAction).toBe(true);
+    expect((res.workItem?.payload as Record<string, unknown> | undefined)?.needsHuman).toBeUndefined();
+  });
+
   it('does not disturb an item already pending agent review', async () => {
     const agentReview = { status: 'pending', submittedBy: 'su-filer', ledgerIdeaId: 'WI-ledger', round: 1 };
     await seedIssue('EI-echo-review', { kind: 'change', status: 'open', payload: { agentReview } });

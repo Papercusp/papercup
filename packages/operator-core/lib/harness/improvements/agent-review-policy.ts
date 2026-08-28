@@ -38,17 +38,32 @@ const STRICT_OWNER_CAPABILITIES = new Set<ExternalBlockerCapability>([
   'credential',
   'physical-device',
   'external-service-action',
+  'product-decision',
+]);
+
+// Product decisions are strict owner capabilities for typed blocker/lifecycle
+// writes, but resolve-core deliberately sends them through agent review. Keep
+// that review-specific distinction local instead of weakening the shared
+// structured-owner-ask validator.
+const AGENT_REVIEW_OWNER_ACTION_CAPABILITIES = new Set<ExternalBlockerCapability>([
+  'credential',
+  'physical-device',
+  'external-service-action',
 ]);
 
 export function isStrictOwnerActionCapability(value: unknown): value is ExternalBlockerCapability {
   return typeof value === 'string' && STRICT_OWNER_CAPABILITIES.has(value as ExternalBlockerCapability);
 }
 
+function isAgentReviewOwnerActionCapability(value: unknown): value is ExternalBlockerCapability {
+  return typeof value === 'string' && AGENT_REVIEW_OWNER_ACTION_CAPABILITIES.has(value as ExternalBlockerCapability);
+}
+
 export function hasStrictOwnerAction(payloadValue: unknown): boolean {
   const payload = record(payloadValue);
   if (payload.needsOwnerAction === true) return true;
-  if (isStrictOwnerActionCapability(payload.humanCapability)) return true;
-  return activeExternalBlockers(payload).some((blocker) => isStrictOwnerActionCapability(blocker.capability));
+  if (isAgentReviewOwnerActionCapability(payload.humanCapability)) return true;
+  return activeExternalBlockers(payload).some((blocker) => isAgentReviewOwnerActionCapability(blocker.capability));
 }
 
 /**

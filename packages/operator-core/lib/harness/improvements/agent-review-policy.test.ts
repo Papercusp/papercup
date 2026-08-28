@@ -2,8 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentReviewEligibility,
+  hasStrictOwnerAction,
   LEGACY_AGENT_REVIEW_SUBMITTER,
+  isStrictOwnerActionCapability,
   readAgentReviewState,
+  readStructuredOwnerAsk,
 } from './agent-review-policy';
 
 describe('readAgentReviewState', () => {
@@ -81,10 +84,34 @@ describe('agentReviewEligibility (abolish-human-review D-003)', () => {
     },
   );
 
+  it('recognizes product-decision as a strict structured owner capability', () => {
+    expect(isStrictOwnerActionCapability('product-decision')).toBe(true);
+    expect(readStructuredOwnerAsk({
+      externalBlockers: [{
+        kind: 'human',
+        capability: 'product-decision',
+        capabilitySource: 'explicit',
+        ref: 'decision:scope',
+        summary: 'Choose the supported scope.',
+        nextVerb: 'Record the product decision.',
+        status: 'active',
+        createdAt: '2026-08-20T00:00:00.000Z',
+        createdBy: 'su-filer',
+        updatedAt: '2026-08-20T00:00:00.000Z',
+      }],
+    })).toMatchObject({
+      question: 'Choose the supported scope.',
+      askedOf: 'product-owner',
+      askedBy: 'su-filer',
+      unblockedBy: 'Record the product decision.',
+    });
+  });
+
   it('keeps product decisions agent-reviewable', () => {
     expect(agentReviewEligibility({
       kind: 'change',
       payload: { humanCapability: 'product-decision' },
     })).toEqual({ eligible: true });
+    expect(hasStrictOwnerAction({ humanCapability: 'product-decision' })).toBe(false);
   });
 });
