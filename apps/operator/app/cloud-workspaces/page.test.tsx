@@ -16,6 +16,8 @@ const H = vi.hoisted(() => ({
   loading: false,
   mutate: vi.fn(),
   invalidate: vi.fn(),
+  queryDefaults: {} as Record<string, unknown>,
+  queryUpdates: [] as Array<[string, unknown]>,
 }));
 
 vi.mock("@papercusp/sync", () => ({
@@ -40,8 +42,22 @@ vi.mock("nuqs", async () => {
   return {
     parseAsString: parser(),
     parseAsStringEnum: () => parser(),
-    useQueryState: (_key: string, config?: { defaultValue?: unknown }) =>
-      React.useState(config?.defaultValue ?? null),
+    useQueryState: (key: string, config?: { defaultValue?: unknown }) => {
+      const [value, setValue] = React.useState(
+        Object.prototype.hasOwnProperty.call(H.queryDefaults, key)
+          ? H.queryDefaults[key]
+          : (config?.defaultValue ?? null),
+      );
+      const setQueryValue = React.useCallback(
+        (next: unknown) => {
+          H.queryUpdates.push([key, next]);
+          setValue(next);
+          return Promise.resolve(next);
+        },
+        [key],
+      );
+      return [value, setQueryValue];
+    },
   };
 });
 
@@ -243,6 +259,8 @@ beforeEach(() => {
   H.loading = false;
   H.mutate.mockReset().mockResolvedValue({ ok: true });
   H.invalidate.mockReset().mockResolvedValue(undefined);
+  H.queryDefaults = {};
+  H.queryUpdates = [];
 });
 
 afterEach(() => {
@@ -435,6 +453,98 @@ describe("CloudWorkspacesPage", () => {
         },
       }),
     );
+  });
+
+  it("canonicalizes stale URL-backed catalog IDs before provisioning", async () => {
+    H.queryDefaults = {
+      connection: "retired-connection",
+      scope: "retired-project",
+      region: "retired-region",
+      size: "retired-size",
+      image: "retired-image",
+      network: "retired-network",
+      name: "Recovered Link",
+    };
+    render(<CloudWorkspacesPage />);
+
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    }) as HTMLButtonElement;
+    await waitFor(() => {
+      expect(H.queryUpdates).toEqual(
+        expect.arrayContaining([
+          ["connection", "gcp-main"],
+          ["scope", "papercusp-prod"],
+          ["region", "us-central1"],
+          ["size", "e2-standard-4"],
+          ["image", "projects/papercusp-images/global/images/ubuntu-2404"],
+          ["network", "managed"],
+        ]),
+      );
+      expect(provision.disabled).toBe(false);
+    });
+
+    fireEvent.click(provision);
+    await waitFor(() =>
+      expect(H.mutate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: "provision",
+          connectionId: "gcp-main",
+          desired: expect.objectContaining({
+            scope: { kind: "project", id: "papercusp-prod" },
+            region: "us-central1",
+            size: "e2-standard-4",
+            image: expect.objectContaining({
+              id: "projects/papercusp-images/global/images/ubuntu-2404",
+            }),
+            provider: { network: { mode: "managed" } },
+          }),
+        }),
+      ),
+    );
+  });
+
+  it("clears stale dependent IDs when the selected catalog has no options", async () => {
+    H.rows = [
+      {
+        ...rows[0],
+        scopes: [],
+        regions: [],
+        sizes: [],
+        images: [],
+        networks: [],
+      },
+    ];
+    H.queryDefaults = {
+      connection: "retired-connection",
+      scope: "retired-project",
+      region: "retired-region",
+      size: "retired-size",
+      image: "retired-image",
+      network: "retired-network",
+      name: "Blocked Link",
+    };
+    render(<CloudWorkspacesPage />);
+
+    await waitFor(() =>
+      expect(H.queryUpdates).toEqual(
+        expect.arrayContaining([
+          ["connection", "gcp-main"],
+          ["scope", ""],
+          ["region", ""],
+          ["size", ""],
+          ["image", ""],
+          ["network", ""],
+        ]),
+      ),
+    );
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Provision workspace",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
   });
 
   it("collects the complete supported GCP connection admission contract", async () => {
