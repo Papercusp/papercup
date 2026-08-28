@@ -290,9 +290,7 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       terminal_owner: null,
     });
 
-    const occurrences = await db.sql<
-      Array<{ canonical: string; kind: string; evidence: Record<string, unknown> }>
-    >`
+    const occurrences = await db.sql<Array<{ canonical: string; kind: string; evidence: Record<string, unknown> }>>`
       SELECT canonical_work_item_id AS canonical,
              report_kind AS kind,
              evidence
@@ -377,7 +375,9 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       }),
     ).rejects.toThrow('fetch failed');
 
-    const stage = await db.sql<Array<{ detail: { status: string; error: string; errorCause: Record<string, unknown> } }>>`
+    const stage = await db.sql<
+      Array<{ detail: { status: string; error: string; errorCause: Record<string, unknown> } }>
+    >`
       SELECT detail FROM harness_shared.admission_runs WHERE id = 'bulk-cause-stage-1'`;
     expect(stage[0]?.detail).toMatchObject({
       status: 'failed',
@@ -388,6 +388,100 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
         code: 'UND_ERR_CONNECT_TIMEOUT',
         cause: { code: 'ETIMEDOUT', message: 'connect timed out' },
       },
+    });
+
+    await expect(
+      runWorkItemAdmissionBulkDedup({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'bulk-cause',
+        sql: db.sql,
+        census: { chunkCount: 2, targetTokens: 1_000 },
+        llmCall: async () => ({
+          text: '',
+          json: { judgements: [{ pairKey: 'not::supplied', verdict: 'distinct', reason: 'invalid cross-pair' }] },
+          inputTokens: 50,
+          outputTokens: 10,
+        }),
+      }),
+    ).rejects.toThrow('bulk dedup made no scoped progress');
+
+    const retried = await db.sql<Array<{ detail: Record<string, unknown>; has_error_cause: boolean }>>`
+      SELECT detail, detail ? 'errorCause' AS has_error_cause
+        FROM harness_shared.admission_runs WHERE id = 'bulk-cause-stage-1'`;
+    expect(retried[0]?.detail).toMatchObject({
+      status: 'failed',
+      error: 'bulk dedup made no scoped progress: 1 -> 1 pair(s)',
+    });
+    expect(retried[0]?.has_error_cause).toBe(false);
+  }, 60_000);
+
+  it('contains an unlisted cross-pair to its batch and retries an omitted expected pair in the next stage', async () => {
+    await seed();
+    await db.sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, title, summary, status, lane, payload,
+         item_kind, condition_key, created_ts, updated_ts, embedding, embedding_mode, admission,
+         admitted_at, admitted_by)
+      VALUES (${WS}, ${HARNESS}, 'd', 'Unrelated sibling', 'A separate failure and remedy',
+              'open', NULL, '{}'::jsonb, 'change', 'watch:other', 4, 4,
+              '[0,0.999,0.04]'::vector, 'gemma', 'admitted', now(), 'test')`;
+    await db.sql`
+      UPDATE harness_shared.work_items
+         SET condition_key = NULL
+       WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS}`;
+
+    const seenBatches: string[][] = [];
+    const result = await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-cross-pair',
+      sql: db.sql,
+      pairsPerCall: 1,
+      shardConcurrency: 1,
+      census: { chunkCount: 1, targetTokens: 1_000, fullCorpusPairThreshold: 0 },
+      llmCall: async (input) => {
+        const keys = [...input.messages[0]!.content.matchAll(/^([^\s]+::[^\s]+) \|/gm)].map((match) => match[1]!);
+        seenBatches.push(keys);
+        const pairKey = keys[0]!;
+        return {
+          text: '',
+          json: {
+            judgements:
+              seenBatches.length === 1
+                ? [{ pairKey: 'c::d', verdict: 'distinct', reason: 'authoritative but unlisted cross-pair' }]
+                : [{ pairKey, verdict: 'distinct', reason: 'separate finding' }],
+          },
+          inputTokens: 50,
+          outputTokens: 10,
+        };
+      },
+    });
+
+    expect(seenBatches).toEqual([['a::b'], ['c::d'], ['a::b']]);
+    expect(result).toMatchObject({ converged: true, initialCensus: 2, finalCensus: 0 });
+    expect(result.stages).toHaveLength(2);
+    expect(result.stages[0]).toMatchObject({
+      pairs: 2,
+      ignoredUnknownJudgements: 1,
+      omittedExpectedJudgements: 1,
+      scopedPairsAfter: 1,
+    });
+    expect(result.stages[1]).toMatchObject({
+      pairs: 1,
+      ignoredUnknownJudgements: 0,
+      omittedExpectedJudgements: 0,
+      scopedPairsAfter: 0,
+    });
+
+    const firstStage = await db.sql<Array<{ protocol: Record<string, unknown> }>>`
+      SELECT detail->'modelProtocol' AS protocol
+        FROM harness_shared.admission_runs WHERE id = 'bulk-cross-pair-stage-1'`;
+    expect(firstStage[0]?.protocol).toMatchObject({
+      failures: 0,
+      exhaustedBatches: 0,
+      ignoredUnknownJudgements: 1,
+      omittedExpectedJudgements: 1,
     });
   }, 60_000);
 
