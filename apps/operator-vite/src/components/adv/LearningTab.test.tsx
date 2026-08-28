@@ -125,6 +125,13 @@ vi.mock("nuqs", () => ({
 // useVirtualizer to yield one VirtualItem per row so the full window mounts
 // under test (mirrors grid-core's own RichGrid.virtual.test.tsx and
 // AdvConversationsTab.test.tsx).
+// WI-523949: `scrollToIndex` is the ONLY way a virtualized list can bring a row
+// the reader cannot currently see into view — an unmounted row has no element to
+// run `scrollIntoView` on. So it is the observable a deep-link contract has to be
+// asserted against; hoisted out of the factory so a test can read what the
+// component actually asked the virtualizer for.
+const virtualizerSpies = vi.hoisted(() => ({ scrollToIndex: vi.fn() }));
+
 vi.mock("@tanstack/react-virtual", () => {
   const stubVirtualizer = ({
     count,
@@ -147,7 +154,7 @@ vi.mock("@tanstack/react-virtual", () => {
       getTotalSize: () => count * ROW,
       measureElement: () => {},
       measure: () => {},
-      scrollToIndex: () => {},
+      scrollToIndex: virtualizerSpies.scrollToIndex,
     };
   };
   // The factory REPLACES the whole module, so every export a mounted view
@@ -3020,6 +3027,73 @@ describe("LearningTab — an idea's provenance on a merged row: rail, lens, trac
     expect(promise).not.toContain("routed to this rail in all");
     // No divergence ⇒ no promise to make, so the chip says only what it is.
     expect(railChipPromise("Routed to a plan", 4, 4)).toBe("Routed to a plan");
+  });
+
+  // ── WI-523949. `?lsel` is documented at its own declaration as "highlighted +
+  // scrolled into view". Only the CARD list ever scrolled, and the card list is
+  // the one a pot with FEWER than 4 open items gets — the short one. Every list
+  // long enough for the promise to matter renders through the virtualized grid,
+  // where a highlight on an unmounted row is not observable by anyone.
+  //
+  // These assert on `scrollToIndex` because it is the only thing that can move a
+  // virtualized list to a row that is not mounted. 8b is the calibration control
+  // for 8: it drives the identical instrument with no selection and must NOT
+  // scroll, so a passing 8 cannot be an always-firing effect; 8c pins the third
+  // state (a target the row set does not hold) that separates "nothing to scroll
+  // to" from "scrolls to whatever index findIndex returned", which for a miss
+  // is -1 — an index the virtualizer would happily accept.
+  it("8. brings the ?lsel deep-link target into view in the virtualized grid, not just highlights it", () => {
+    virtualizerSpies.scrollToIndex.mockClear();
+    // Both deep-link params are pinned in every case below, so each test states
+    // WHICH target it is attributing the scroll to rather than inheriting one
+    // from whatever ran before it.
+    nuqsState.itrace = null;
+    nuqsState.lsel = "EI-85";
+    render(<LearningTab />);
+
+    // CALIBRATION, in-test: the dead-instrument reading of a "was not called"
+    // result is that nothing rendered or the deep-link never applied. Rule both
+    // out first — the row IS mounted and IS visibly selected — so the only
+    // remaining explanation for a missing scroll is that none was requested.
+    const row = rowFor("Peer restarts massacre in-flight spawns");
+    expect(row.style.background).toContain("color-mix");
+
+    // The grid's own wrapper carries the virtual index it was rendered at, so
+    // the expectation is read from the component's own numbering rather than a
+    // hand-counted fixture order that a later fixture edit would silently break.
+    const wrapper = row.closest("[data-index]") as HTMLElement | null;
+    expect(wrapper).not.toBeNull();
+    const expectedIndex = Number(wrapper!.dataset.index);
+    expect(Number.isFinite(expectedIndex)).toBe(true);
+
+    expect(virtualizerSpies.scrollToIndex).toHaveBeenCalled();
+    expect(virtualizerSpies.scrollToIndex.mock.calls[0]?.[0]).toBe(expectedIndex);
+  });
+
+  it("8b. CONTROL: the same render with no deep-link scrolls nowhere", () => {
+    virtualizerSpies.scrollToIndex.mockClear();
+    nuqsState.lsel = null;
+    nuqsState.itrace = null;
+    render(<LearningTab />);
+
+    // Same instrument, same mounted grid — proof that 8's call came from the
+    // deep-link and not from an effect that fires on every mount.
+    expect(
+      document.querySelectorAll('[role="row"]').length,
+    ).toBeGreaterThan(1);
+    expect(virtualizerSpies.scrollToIndex).not.toHaveBeenCalled();
+  });
+
+  it("8c. does not scroll for a deep-link the loaded rows do not hold", () => {
+    virtualizerSpies.scrollToIndex.mockClear();
+    nuqsState.itrace = null;
+    nuqsState.lsel = "EI-does-not-exist";
+    render(<LearningTab />);
+
+    // A miss must be a no-op, never `scrollToIndex(-1)`. It must also stay
+    // unlatched: the target routinely arrives on a later read, and the scroll is
+    // re-attempted then.
+    expect(virtualizerSpies.scrollToIndex).not.toHaveBeenCalled();
   });
 });
 

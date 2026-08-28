@@ -1668,6 +1668,14 @@ function ImprovementsView({
   );
   // Selected item (`?lsel=`): set by deep-links (e.g. a Scout-routed improvement
   // click) — the row is highlighted + scrolled into view; clicking it dismisses.
+  //
+  // "Scrolled into view" is TWO mechanisms, because the list has two renderers:
+  // the card list scrolls the row itself (`LoopRowView`), and the grid asks the
+  // virtualizer (`ImproveGrid`'s `scrollToRowKey`). It cannot be one mechanism —
+  // under virtualization the target row is usually not mounted, so it cannot run
+  // an effect to scroll itself. This comment claimed the whole behaviour while
+  // only the card half existed — on the path taken by a pot with FEWER than 4
+  // open items, i.e. the one short enough not to need scrolling (WI-523949).
   const [lsel, setLsel] = useQueryState("lsel", parseAsString);
   // Absorbed from the retired Ideas view, both URL state so an agent can drive
   // them through ui:dispatch: the rail facet and the pipeline-trace expansion.
@@ -2677,11 +2685,13 @@ function ImprovementsView({
   );
 }
 
-/** First page renders immediately; the long tail mounts only on demand
- *  (WI-5412 perf: ~380 un-virtualized rows mounted at once was a real slice of
- *  the first-click cost). The deep-link target (?lsel) is hoisted into the
- *  first page so a selection is never hidden behind the disclosure. */
-const IMPROVEMENTS_PAGE = 60;
+/* WI-523949: the `IMPROVEMENTS_PAGE = 60` constant that sat here is DELETED, not
+ * re-tuned. It documented a first-page/disclosure pager that WI-39536 replaced
+ * with virtualization, including a "the deep-link target (?lsel) is hoisted into
+ * the first page so a selection is never hidden" guarantee — and it had no
+ * remaining references, so that guarantee had been gone as long as the constant
+ * had been dead. What replaces it is `ImproveGrid`'s `scrollToRowKey`: the same
+ * promise, made where it can actually be kept. */
 
 /** Everything a merged row needs from the view, in one object — see the note at
  *  its construction site for why it is passed whole rather than as props. */
@@ -2971,6 +2981,10 @@ function ImproveGrid({
   const expandedRowKey = traceOpen
     ? (rows.find((r) => r.idea?.ideaId === traceOpen)?.key ?? null)
     : null;
+  // The `?lsel` target only IF this list holds it — see the scroll note below.
+  // A work row's key is its item id, which is what `lsel` carries.
+  const selectedRowKey =
+    lsel != null && rows.some((r) => r.key === lsel) ? lsel : null;
 
   return (
     // P-003: the bordered rounded frame the Retained ledger's grid sits in, so
@@ -3004,6 +3018,27 @@ function ImproveGrid({
             : undefined
         }
         expandedRowKey={expandedRowKey}
+        // WI-523949. Highlighting (`getRowBg`) and expanding (`expandedRowKey`)
+        // are both no-ops for a row outside the mounted window, and this grid
+        // shows ~18 rows (34px into `min(58vh, 640px)`) of a read bounded by
+        // LEARNING_IMPROVE_ROW_LIMIT = 500 — so before this, a deep-link landed
+        // on a row nobody could see. The trace's own grounding
+        // chip is the loudest case: its tooltip says "select in this list", and
+        // clicking it changed nothing on screen.
+        //
+        // `lsel` wins over the open trace because it is the newer intent: the
+        // chip sets a selection while leaving `?itrace=` open, whereas opening a
+        // trace is a click on an already-visible row that needs no scroll. Both
+        // are row keys — a work row's key IS its item id — so either can be
+        // handed to the grid as-is.
+        //
+        // It yields when the list does not hold that row, which is NOT the rare
+        // case: a grounding chip's `wi:` ref is whatever work item seeded the
+        // idea, and those are routinely resolved and therefore absent from a
+        // digest of OPEN items. Without the check, one unreachable selection
+        // would pin the scroll target forever and the open trace could never
+        // claim it.
+        scrollToRowKey={selectedRowKey ?? expandedRowKey}
         renderExpandedRow={(r) =>
           r.idea ? (
             <div className="pc-learning__gridtrace">
