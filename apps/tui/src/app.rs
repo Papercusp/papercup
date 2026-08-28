@@ -1836,6 +1836,10 @@ pub struct App {
     pub chat_draft: String,
     pub chat_scroll: u16,
     pub chat_streaming: bool,
+    /// The next native turn follows a locally cancelled one and may wait
+    /// boundedly for that turn's server-side chat lock to finish releasing.
+    /// Consumed exactly once by the run loop when the retry is sent.
+    pub chat_retry_after_cancel: bool,
     /// Latest owned-loop step boundary for the in-flight turn. The wire uses
     /// zero-based indices; this read model stores a one-based display number.
     pub chat_step: Option<crate::models::ChatStepProgress>,
@@ -2143,6 +2147,7 @@ impl App {
             chat_draft: String::new(),
             chat_scroll: 0,
             chat_streaming: false,
+            chat_retry_after_cancel: false,
             chat_step: None,
             conversation_id: None,
             agent_chat_id: None,
@@ -2287,6 +2292,7 @@ impl App {
         self.chat_messages.clear();
         self.pending_approvals.clear();
         self.chat_streaming = false;
+        self.chat_retry_after_cancel = false;
         self.chat_step = None;
         self.chat_scroll = 0;
     }
@@ -7479,6 +7485,7 @@ impl App {
             && code == KeyCode::Char('x')
             && mods.contains(KeyModifiers::CONTROL)
         {
+            self.chat_retry_after_cancel = true;
             return Action::CancelChat;
         }
         // Operator chat composer captures all input while focused (like the
@@ -14188,6 +14195,9 @@ mod tests {
             a.update(key('x', KeyModifiers::CONTROL)),
             Action::CancelChat
         );
+        assert!(a.chat_retry_after_cancel);
+        a.reset_agent_chat_binding();
+        assert!(!a.chat_retry_after_cancel);
     }
 
     #[test]

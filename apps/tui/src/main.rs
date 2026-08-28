@@ -1298,6 +1298,7 @@ async fn run<B: Backend>(
                 // bubble; spawn the native turn against the active harness's
                 // agent-chat. No transcript snapshot is sent — the loop owns the
                 // history in PG, keyed by `agent_chat_id`.
+                let retry_after_cancel = std::mem::take(&mut app.chat_retry_after_cancel);
                 native_chat_turn = Some(tokio::spawn(stream_agent_chat_turn(
                     text,
                     app.harness.clone(),
@@ -1311,6 +1312,7 @@ async fn run<B: Backend>(
                     app.chat_model.clone(),
                     app.chat_effort.clone(),
                     app.chat_account.clone(),
+                    retry_after_cancel,
                     tx.clone(),
                 )));
                 terminal.draw(|f| ui::draw(f, &app))?;
@@ -3619,6 +3621,7 @@ async fn stream_agent_chat_turn(
     model: Option<String>,
     effort: Option<String>,
     account: Option<String>,
+    retry_after_cancel: bool,
     tx: UnboundedSender<Event>,
 ) {
     use crate::agent_chats::{AgentChatEvent, AgentChatTurnRequest, NewAgentChat};
@@ -3683,6 +3686,7 @@ async fn stream_agent_chat_turn(
         model,
         effort,
         account,
+        retry_after_cancel,
     };
     let mut stream = match client
         .start_agent_chat_turn(&harness, &chat_id, &request)
