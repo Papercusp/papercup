@@ -25,6 +25,66 @@ export const BULK_CONFIDENCE_LEVELS = [
 
 export type BulkConfidence = (typeof BULK_CONFIDENCE_LEVELS)[number];
 
+/** Owner-selectable automation posture for a bulk run. */
+export const BULK_AUTOMATION_MODES = [
+  'review-all',
+  'safe-high',
+  'safe-medium-plus',
+] as const;
+
+export type BulkAutomationMode = (typeof BULK_AUTOMATION_MODES)[number];
+
+export interface BulkAutomationPolicy {
+  /** `safe-high` is the default when a legacy run has no policy snapshot. */
+  mode: BulkAutomationMode;
+  /** Minimum confidence required before a terminal action may auto-apply. */
+  minConfidence: BulkConfidence;
+}
+
+export const DEFAULT_BULK_AUTOMATION_POLICY: Readonly<BulkAutomationPolicy> = {
+  mode: 'safe-high',
+  minConfidence: 'high',
+};
+
+/** Numeric ordering used only for the additional confidence floor. */
+const CONFIDENCE_RANK: Record<BulkConfidence, number> = {
+  insufficient: 0,
+  low: 1,
+  medium: 2,
+  high: 3,
+};
+
+export function meetsBulkConfidenceFloor(
+  confidence: BulkConfidence | null | undefined,
+  minimum: BulkConfidence,
+): boolean {
+  return confidence != null && CONFIDENCE_RANK[confidence] >= CONFIDENCE_RANK[minimum];
+}
+
+export function isBulkAutomationMode(value: unknown): value is BulkAutomationMode {
+  return typeof value === 'string' && (BULK_AUTOMATION_MODES as readonly string[]).includes(value);
+}
+
+export function normalizeBulkAutomationPolicy(
+  value: Partial<BulkAutomationPolicy> | null | undefined,
+): BulkAutomationPolicy {
+  const mode = isBulkAutomationMode(value?.mode) ? value!.mode : DEFAULT_BULK_AUTOMATION_POLICY.mode;
+  const requested = isBulkConfidence(value?.minConfidence)
+    ? value!.minConfidence
+    : mode === 'safe-medium-plus'
+      ? 'medium'
+      : DEFAULT_BULK_AUTOMATION_POLICY.minConfidence;
+  const modeFloor: BulkConfidence = mode === 'safe-medium-plus' ? 'medium' : 'high';
+  // Review-all is a stronger floor than any confidence value; keeping the
+  // explicit mode makes the UI/report understandable while the numeric floor
+  // remains useful to server-side policy checks.
+  return {
+    mode,
+    minConfidence:
+      CONFIDENCE_RANK[requested] >= CONFIDENCE_RANK[modeFloor] ? requested : modeFloor,
+  };
+}
+
 /** The owner-readable, non-terminal next-step classes. */
 export const BULK_RECOMMENDATION_KINDS = [
   'owner_action',
@@ -289,7 +349,11 @@ export function canonicalDispositionForRow(row: {
   itemId?: string | null;
   targetRef?: string | null;
 }): BulkDispositionRecord {
-  if (row.disposition && row.disposition !== 'legacy_skipped') {
+  if (
+    row.disposition &&
+    isBulkDispositionKind(row.disposition) &&
+    row.disposition !== 'legacy_skipped'
+  ) {
     const hasRecommendation = BULK_RECOMMENDATION_KINDS.includes(
       row.disposition as BulkRecommendationKind,
     );
@@ -449,4 +513,3 @@ export function isBulkRecommendationKind(value: unknown): value is BulkRecommend
 export function isBulkDispositionKind(value: unknown): value is BulkDispositionKind {
   return typeof value === 'string' && (BULK_DISPOSITION_KINDS as readonly string[]).includes(value);
 }
-

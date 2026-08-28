@@ -37,6 +37,16 @@ import type { Sql, TransactionSql } from 'postgres';
 import { activeWorkspaceId } from '../workspace-registry';
 import { RUNNING_PHASES, type BulkRunPhase, type BulkRunRow } from '../attention/bulk-run-store';
 import type { CleanupConfidence, CleanupEvidenceRef, CleanupFindingKind } from './scanner';
+import {
+  canonicalDispositionForRow,
+  type BulkConfidence,
+  type BulkDispositionKind,
+  type BulkRecommendation,
+  type BulkRecommendationKind,
+  type BulkResponsibility,
+  isBulkDispositionKind,
+  normalizeBulkAutomationPolicy,
+} from '../attention/bulk-dispositions';
 
 /**
  * Row-level finding kind: the scanner's mechanical kinds plus 'semantic' — the
@@ -78,6 +88,13 @@ export interface SeedableCleanupFinding {
   to?: string;
   confidence?: CleanupConfidence;
   evidence?: CleanupEvidenceRef[];
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[] | null;
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
 }
 
 export interface CleanupRunFindingRow {
@@ -97,6 +114,16 @@ export interface CleanupRunFindingRow {
   outcome: CleanupFindingOutcome;
   error: string | null;
   decidedAt: string | null;
+  disposition?: BulkDispositionKind;
+  legacyDisposition?: string | null;
+  recommendation?: BulkRecommendation | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[];
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
 }
 
 /** One resolver/review verdict for one finding. `evidence`, when present,
@@ -107,6 +134,23 @@ export interface CleanupFindingOutcomeReport {
   outcome: Exclude<CleanupFindingOutcome, 'pending'>;
   error?: string | null;
   evidence?: CleanupEvidenceRef[] | null;
+  disposition?: BulkDispositionKind | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[] | null;
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
+}
+
+function dispositionForFindingReport(report: CleanupFindingOutcomeReport): BulkDispositionKind {
+  if (report.disposition && isBulkDispositionKind(report.disposition)) {
+    return report.disposition;
+  }
+  if (report.outcome === 'auto_applied' || report.outcome === 'accepted') return 'auto_resolved';
+  if (report.outcome === 'skipped') return 'legacy_skipped';
+  return report.outcome as BulkDispositionKind;
 }
 
 /** Why a write was refused. Same contract shape as the item store's refusals:
@@ -127,6 +171,21 @@ function asEvidence(v: unknown): CleanupEvidenceRef[] {
   return Array.isArray(v) ? (v as CleanupEvidenceRef[]) : [];
 }
 
+function asStringArray(v: unknown): string[] {
+  if (Array.isArray(v)) return v.filter((entry): entry is string => typeof entry === 'string');
+  if (typeof v === 'string') {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed)
+        ? parsed.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 interface RawFindingRow {
   workspace_id: string;
   run_id: string;
@@ -144,9 +203,47 @@ interface RawFindingRow {
   outcome: CleanupFindingOutcome;
   error: string | null;
   decided_at: Date | string | null;
+  disposition: string | null;
+  recommendation_kind: BulkRecommendationKind | null;
+  recommendation_label: string | null;
+  recommendation_rationale: string | null;
+  evidence_basis: unknown;
+  responsibility: BulkResponsibility | null;
+  confidence_level: BulkConfidence | null;
+  retry_condition: string | null;
 }
 
 function mapFinding(r: RawFindingRow): CleanupRunFindingRow {
+  const normalizedOutcome =
+    r.outcome === 'auto_applied' || r.outcome === 'accepted'
+      ? 'auto_resolved'
+      : r.outcome;
+  const rawDisposition = r.disposition;
+  const canonical = canonicalDispositionForRow({
+    outcome: normalizedOutcome,
+    disposition:
+      rawDisposition && isBulkDispositionKind(rawDisposition)
+        ? rawDisposition
+        : null,
+    itemKind: 'plan-cleanup',
+    title: r.target,
+    error: r.error,
+    itemId: r.finding_id,
+  });
+  const recommendation =
+    r.recommendation_kind && r.recommendation_label && r.recommendation_rationale
+      ? {
+          kind: r.recommendation_kind,
+          label: r.recommendation_label,
+          rationale: r.recommendation_rationale,
+          evidenceBasis: asStringArray(r.evidence_basis),
+          confidence: r.confidence_level ?? 'insufficient',
+          responsibility: r.responsibility ?? 'unknown',
+          actionId: null,
+          retryCondition: r.retry_condition,
+          targetRef: r.finding_id,
+        }
+      : canonical.recommendation;
   return {
     workspaceId: r.workspace_id,
     runId: r.run_id,
@@ -164,15 +261,29 @@ function mapFinding(r: RawFindingRow): CleanupRunFindingRow {
     outcome: r.outcome,
     error: r.error,
     decidedAt: iso(r.decided_at),
+    disposition: canonical.disposition,
+    legacyDisposition:
+      rawDisposition && rawDisposition !== canonical.disposition ? rawDisposition : null,
+    recommendation,
+    recommendationKind: r.recommendation_kind ?? recommendation?.kind ?? null,
+    recommendationLabel: r.recommendation_label ?? recommendation?.label ?? null,
+    recommendationRationale: r.recommendation_rationale ?? recommendation?.rationale ?? null,
+    evidenceBasis: asStringArray(r.evidence_basis ?? recommendation?.evidenceBasis),
+    responsibility: r.responsibility ?? recommendation?.responsibility ?? null,
+    confidenceLevel: r.confidence_level ?? recommendation?.confidence ?? null,
+    retryCondition: r.retry_condition ?? recommendation?.retryCondition ?? null,
   };
 }
 
 const FINDING_COLUMNS = `workspace_id, run_id, finding_id, finding_kind, plan_slug, harness_slug,
                          item_id, target, from_state, to_state, confidence, evidence, position,
-                         outcome, error, decided_at`;
+                         outcome, error, decided_at, disposition, recommendation_kind,
+                         recommendation_label, recommendation_rationale, evidence_basis,
+                         responsibility, confidence_level, retry_condition`;
 
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
                      run_kind, seed_refs, filter_snapshot, launch_snapshot,
+                     automation_policy,
                      total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at, heartbeat_at`;
 
@@ -267,11 +378,19 @@ export async function seedFindings(input: {
       const inserted = await tx<RawFindingRow[]>`
         INSERT INTO harness_shared.plan_cleanup_run_findings
           (workspace_id, run_id, finding_id, finding_kind, plan_slug, harness_slug,
-           item_id, target, from_state, to_state, confidence, evidence, position)
+           item_id, target, from_state, to_state, confidence, evidence, position,
+           disposition, recommendation_kind, recommendation_label, recommendation_rationale,
+           evidence_basis, responsibility, confidence_level, retry_condition)
         VALUES (${ws}, ${input.runId}, ${f.findingId}, ${f.kind}, ${f.planSlug},
                 ${f.harnessSlug ?? null}, ${f.itemId ?? null}, ${f.target ?? ''},
                 ${f.from ?? ''}, ${f.to ?? ''}, ${f.confidence ?? 'recommended'},
-                ${JSON.stringify(f.evidence ?? [])}::jsonb, ${i})
+                ${JSON.stringify(f.evidence ?? [])}::jsonb, ${i}, 'pending',
+                ${f.recommendationKind ?? null}, ${f.recommendationLabel ?? null},
+                ${f.recommendationRationale ?? null},
+                ${JSON.stringify(f.evidenceBasis ?? [])}::jsonb,
+                ${f.responsibility ?? null},
+                ${f.confidenceLevel ?? (f.confidence === 'provable' ? 'high' : 'medium')},
+                ${f.retryCondition ?? null})
         ON CONFLICT (workspace_id, run_id, finding_id) DO UPDATE
           SET finding_kind = EXCLUDED.finding_kind,
               plan_slug = EXCLUDED.plan_slug,
@@ -310,6 +429,13 @@ export async function executeCleanupFindingAction<T>(input: {
    *  Persisted on the existing evidence ledger in the same transaction as the
    *  mutation outcome, so a reloaded report never loses the decision's why. */
   rationale?: string | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[] | null;
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
   resolverOwner?: string | null;
   workspaceId?: string;
   execute: (finding: CleanupRunFindingRow) => Promise<T>;
@@ -356,6 +482,14 @@ export async function executeCleanupFindingAction<T>(input: {
     const updatedRows = await tx<RawFindingRow[]>`
       UPDATE harness_shared.plan_cleanup_run_findings
          SET outcome = 'auto_applied',
+             disposition = 'auto_resolved',
+             recommendation_kind = ${input.recommendationKind ?? null},
+             recommendation_label = ${input.recommendationLabel ?? null},
+             recommendation_rationale = ${input.recommendationRationale ?? input.rationale ?? null},
+             evidence_basis = ${JSON.stringify(input.evidenceBasis ?? [])}::jsonb,
+             responsibility = ${input.responsibility ?? null},
+             confidence_level = ${input.confidenceLevel ?? 'high'},
+             retry_condition = ${input.retryCondition ?? null},
              evidence = ${JSON.stringify(evidence)}::jsonb,
              error = NULL,
              decided_at = now(),
@@ -406,9 +540,18 @@ export async function reportFindingOutcomes(input: {
     const updated: CleanupRunFindingRow[] = [];
     const missing: string[] = [];
     for (const report of input.reports ?? []) {
+      const disposition = dispositionForFindingReport(report);
       const rows = await tx<RawFindingRow[]>`
         UPDATE harness_shared.plan_cleanup_run_findings
            SET outcome = ${report.outcome},
+               disposition = ${disposition},
+               recommendation_kind = ${report.recommendationKind ?? null},
+               recommendation_label = ${report.recommendationLabel ?? null},
+               recommendation_rationale = ${report.recommendationRationale ?? null},
+               evidence_basis = ${JSON.stringify(report.evidenceBasis ?? [])}::jsonb,
+               responsibility = ${report.responsibility ?? null},
+               confidence_level = ${report.confidenceLevel ?? null},
+               retry_condition = ${report.retryCondition ?? null},
                error = ${report.error ?? null},
                evidence = CASE WHEN ${report.evidence != null}
                                THEN ${JSON.stringify(report.evidence ?? [])}::jsonb
@@ -490,6 +633,7 @@ export async function markCleanupFindingAccepted(input: {
     const updatedRows = await tx<RawFindingRow[]>`
       UPDATE harness_shared.plan_cleanup_run_findings
          SET outcome = 'accepted',
+             disposition = 'auto_resolved',
              evidence = ${JSON.stringify(evidence)}::jsonb,
              error = NULL,
              decided_at = now(),
@@ -555,6 +699,7 @@ export async function markCleanupFindingDismissed(input: {
     const updatedRows = await tx<RawFindingRow[]>`
       UPDATE harness_shared.plan_cleanup_run_findings
          SET outcome = 'dismissed',
+             disposition = 'dismissed',
              evidence = ${JSON.stringify(evidence)}::jsonb,
              error = NULL,
              decided_at = now(),
@@ -592,6 +737,7 @@ function mapRunLoose(r: {
   seed_refs: unknown;
   filter_snapshot: unknown;
   launch_snapshot: unknown;
+  automation_policy?: unknown;
   total_items: number | string;
   auto_resolved: number | string;
   recommended: number | string;
@@ -615,6 +761,9 @@ function mapRunLoose(r: {
     seedRefs: Array.isArray(r.seed_refs) ? (r.seed_refs as string[]) : [],
     filterSnapshot: (r.filter_snapshot ?? {}) as BulkRunRow['filterSnapshot'],
     launchSnapshot: (r.launch_snapshot ?? {}) as BulkRunRow['launchSnapshot'],
+    automationPolicy: normalizeBulkAutomationPolicy(
+      (r.automation_policy ?? {}) as Record<string, unknown>,
+    ),
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
     recommended: Number(r.recommended ?? 0),

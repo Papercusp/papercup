@@ -36,6 +36,17 @@ import type {
   LaunchAgentBackend,
   ModelEffort,
 } from '../agent-config-constants';
+import {
+  canonicalDispositionForRow,
+  type BulkAutomationPolicy,
+  type BulkConfidence,
+  type BulkDispositionKind,
+  type BulkRecommendation,
+  type BulkRecommendationKind,
+  type BulkResponsibility,
+  isBulkDispositionKind,
+  normalizeBulkAutomationPolicy,
+} from './bulk-dispositions';
 
 /** Lifecycle of a run. `review` means the agent is done and the owner has
  *  recommendations waiting; `complete` means nothing is left to act on. */
@@ -162,6 +173,8 @@ export interface BulkRunLaunchSnapshot {
   account?: string | null;
   carry?: BulkResolverCarryMode | null;
   backend?: LaunchAgentBackend | null;
+  /** Owner-selected confidence/automation floor, added by migration 1015. */
+  automationPolicy?: BulkAutomationPolicy | null;
 }
 
 /** One item as the client was displaying it at click time. */
@@ -191,6 +204,8 @@ export interface BulkRunRow {
   /** Click-time snapshot of the effective launch settings (migration 943).
    *  `{}` for runs created before 943 or by a release that posts no settings. */
   launchSnapshot: BulkRunLaunchSnapshot;
+  /** Normalized owner policy; legacy rows use Safe high-confidence defaults. */
+  automationPolicy?: BulkAutomationPolicy;
   totalItems: number;
   autoResolved: number;
   recommended: number;
@@ -230,6 +245,18 @@ export interface BulkRunItemRow {
   consultReply: string | null;
   error: string | null;
   decidedAt: string | null;
+  /** Canonical disposition; legacy `skipped` rows are classified on read. */
+  disposition?: BulkDispositionKind;
+  /** Raw DB value when it differs from the canonical compatibility projection. */
+  legacyDisposition?: string | null;
+  recommendation?: BulkRecommendation | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[];
+  responsibility?: BulkResponsibility | null;
+  confidenceLevel?: BulkConfidence | null;
+  retryCondition?: string | null;
 }
 
 /** What the resolver reports back for one item. */
@@ -240,9 +267,27 @@ export interface BulkOutcomeReport {
   rationale?: string | null;
   draftAnswer?: string | null;
   confidence?: 'low' | 'high' | null;
+  confidenceLevel?: BulkConfidence | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[] | null;
+  responsibility?: BulkResponsibility | null;
+  retryCondition?: string | null;
   consulted?: boolean;
   consultReply?: string | null;
   error?: string | null;
+  /** Canonical typed disposition. Required for new non-terminal reports; old
+   *  callers may omit it and retain legacy outcome semantics. */
+  disposition?: BulkDispositionKind | null;
+}
+
+function dispositionForReport(report: BulkOutcomeReport): BulkDispositionKind {
+  if (report.disposition && isBulkDispositionKind(report.disposition)) {
+    return report.disposition;
+  }
+  if (report.outcome === 'skipped') return 'legacy_skipped';
+  return report.outcome;
 }
 
 function iso(v: Date | string | null | undefined): string | null {
@@ -296,6 +341,7 @@ interface RawRunRow {
   seed_refs: unknown;
   filter_snapshot: unknown;
   launch_snapshot: unknown;
+  automation_policy: unknown;
   total_items: number | string;
   auto_resolved: number | string;
   recommended: number | string;
@@ -310,6 +356,12 @@ interface RawRunRow {
 }
 
 function mapRun(r: RawRunRow): BulkRunRow {
+  const launchSnapshot = asObject(r.launch_snapshot) as BulkRunLaunchSnapshot;
+  if (launchSnapshot.automationPolicy) {
+    launchSnapshot.automationPolicy = normalizeBulkAutomationPolicy(
+      launchSnapshot.automationPolicy,
+    );
+  }
   return {
     runId: r.run_id,
     workspaceId: r.workspace_id,
@@ -320,7 +372,10 @@ function mapRun(r: RawRunRow): BulkRunRow {
     runKind: r.run_kind ?? DEFAULT_RUN_KIND,
     seedRefs: asStringArray(r.seed_refs),
     filterSnapshot: asObject(r.filter_snapshot) as BulkRunFilterSnapshot,
-    launchSnapshot: asObject(r.launch_snapshot) as BulkRunLaunchSnapshot,
+    launchSnapshot,
+    automationPolicy: normalizeBulkAutomationPolicy(
+      asObject(r.automation_policy) as Partial<BulkAutomationPolicy>,
+    ),
     totalItems: Number(r.total_items ?? 0),
     autoResolved: Number(r.auto_resolved ?? 0),
     recommended: Number(r.recommended ?? 0),
@@ -352,9 +407,44 @@ interface RawItemRow {
   consult_reply: string | null;
   error: string | null;
   decided_at: Date | string | null;
+  disposition: string | null;
+  recommendation_kind: BulkRecommendationKind | null;
+  recommendation_label: string | null;
+  recommendation_rationale: string | null;
+  evidence_basis: unknown;
+  responsibility: BulkResponsibility | null;
+  confidence_level: BulkConfidence | null;
+  retry_condition: string | null;
 }
 
 function mapItem(r: RawItemRow): BulkRunItemRow {
+  const rawDisposition = r.disposition;
+  const canonical = canonicalDispositionForRow({
+    outcome: r.outcome,
+    disposition: rawDisposition as BulkDispositionKind | null,
+    itemKind: r.item_kind,
+    title: r.item_title,
+    error: r.error,
+    rationale: r.rationale,
+    itemId: r.item_id,
+  });
+  const hasPersistedRecommendation =
+    r.recommendation_kind != null &&
+    r.recommendation_label != null &&
+    r.recommendation_rationale != null;
+  const recommendation = hasPersistedRecommendation
+    ? {
+        kind: r.recommendation_kind!,
+        label: r.recommendation_label!,
+        rationale: r.recommendation_rationale!,
+        evidenceBasis: asStringArray(r.evidence_basis),
+        confidence: r.confidence_level ?? 'insufficient',
+        responsibility: r.responsibility ?? 'unknown',
+        actionId: r.action_id,
+        retryCondition: r.retry_condition,
+        targetRef: r.item_id,
+      }
+    : canonical.recommendation;
   return {
     runId: r.run_id,
     itemId: r.item_id,
@@ -372,17 +462,31 @@ function mapItem(r: RawItemRow): BulkRunItemRow {
     consultReply: r.consult_reply,
     error: r.error,
     decidedAt: iso(r.decided_at),
+    disposition: canonical.disposition,
+    legacyDisposition:
+      rawDisposition && rawDisposition !== canonical.disposition ? rawDisposition : null,
+    recommendation,
+    recommendationKind: r.recommendation_kind ?? recommendation?.kind ?? null,
+    recommendationLabel: r.recommendation_label ?? recommendation?.label ?? null,
+    recommendationRationale: r.recommendation_rationale ?? recommendation?.rationale ?? null,
+    evidenceBasis: asStringArray(r.evidence_basis ?? recommendation?.evidenceBasis),
+    responsibility: r.responsibility ?? recommendation?.responsibility ?? null,
+    confidenceLevel: r.confidence_level ?? recommendation?.confidence ?? null,
+    retryCondition: r.retry_condition ?? recommendation?.retryCondition ?? null,
   };
 }
 
 const RUN_COLUMNS = `run_id, workspace_id, harness_slug, requested_by, resolver_owner, phase,
                      run_kind, seed_refs, filter_snapshot, launch_snapshot,
+                     automation_policy,
                      total_items, auto_resolved, recommended, skipped, failed,
                      error, created_at, updated_at, started_at, finished_at, heartbeat_at`;
 
 const ITEM_COLUMNS = `run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id,
                       outcome, action_id, rationale, draft_answer, confidence, consulted,
-                      consult_reply, error, decided_at`;
+                      consult_reply, error, decided_at, disposition, recommendation_kind,
+                      recommendation_label, recommendation_rationale, evidence_basis,
+                      responsibility, confidence_level, retry_condition`;
 
 type BulkSql = Sql | TransactionSql;
 
@@ -445,6 +549,13 @@ export async function executeBulkRunAction<T>(input: {
   rationale: string;
   draftAnswer?: string | null;
   confidence?: 'low' | 'high' | null;
+  confidenceLevel?: BulkConfidence | null;
+  recommendationKind?: BulkRecommendationKind | null;
+  recommendationLabel?: string | null;
+  recommendationRationale?: string | null;
+  evidenceBasis?: string[] | null;
+  responsibility?: BulkResponsibility | null;
+  retryCondition?: string | null;
   consulted?: boolean;
   consultReply?: string | null;
   /** When present, the irreversible action is accepted only from the resolver
@@ -534,6 +645,14 @@ export async function executeBulkRunAction<T>(input: {
              confidence = ${input.confidence ?? null},
              consulted = ${input.consulted === true},
              consult_reply = ${input.consultReply ?? null},
+             disposition = 'auto_resolved',
+             recommendation_kind = ${input.recommendationKind ?? null},
+             recommendation_label = ${input.recommendationLabel ?? null},
+             recommendation_rationale = ${input.recommendationRationale ?? null},
+             evidence_basis = ${JSON.stringify(input.evidenceBasis ?? [])}::jsonb,
+             responsibility = ${input.responsibility ?? null},
+             confidence_level = ${input.confidenceLevel ?? (input.confidence === 'high' ? 'high' : input.confidence === 'low' ? 'low' : null)},
+             retry_condition = ${input.retryCondition ?? null},
              error = NULL,
              decided_at = now(),
              updated_at = now()
@@ -579,6 +698,8 @@ export async function createRun(input: {
    *  Optional so every existing call site is unchanged: omitting it stores `{}`,
    *  which readers render as "launcher default", exactly as before. */
   launchSnapshot?: BulkRunLaunchSnapshot;
+  /** Owner-selected automation policy; legacy callers use Safe high-confidence. */
+  automationPolicy?: Partial<BulkAutomationPolicy> | null;
 }): Promise<BulkRunRow> {
   const runKind = input.runKind ?? DEFAULT_RUN_KIND;
   const items = input.items ?? [];
@@ -595,6 +716,10 @@ export async function createRun(input: {
   const { sql } = getOrgPg();
   const ws = input.workspaceId ?? activeWorkspaceId();
   const runId = input.runId ?? `bulk-${randomUUID()}`;
+  const automationPolicy = normalizeBulkAutomationPolicy(input.automationPolicy);
+  const launchSnapshot = input.launchSnapshot
+    ? ({ ...input.launchSnapshot, automationPolicy } as BulkRunLaunchSnapshot)
+    : ({} as BulkRunLaunchSnapshot);
 
   // WI-41012 — single-flight. Starting a run LAUNCHES A REAL HEADLESS AGENT with
   // terminal authority over the owner's attention items, so two live runs means
@@ -632,11 +757,12 @@ export async function createRun(input: {
       const inserted = await tx<RawRunRow[]>`
         INSERT INTO harness_shared.attention_bulk_runs
           (workspace_id, run_id, harness_slug, requested_by, phase, run_kind, seed_refs,
-           filter_snapshot, launch_snapshot, total_items)
+           filter_snapshot, launch_snapshot, automation_policy, total_items)
         VALUES (${ws}, ${runId}, ${input.harnessSlug ?? null}, ${input.requestedBy ?? null},
                 'pending', ${runKind}, ${JSON.stringify(seedRefs)}::jsonb,
                 ${JSON.stringify(input.filterSnapshot ?? {})}::jsonb,
-                ${JSON.stringify(input.launchSnapshot ?? {})}::jsonb, ${totalItems})
+                ${JSON.stringify(launchSnapshot)}::jsonb,
+                ${JSON.stringify(automationPolicy)}::jsonb, ${totalItems})
         RETURNING ${tx.unsafe(RUN_COLUMNS)}
       `;
 
@@ -644,9 +770,10 @@ export async function createRun(input: {
         const it = unique[i]!;
         await tx`
           INSERT INTO harness_shared.attention_bulk_run_items
-            (workspace_id, run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id, outcome)
+            (workspace_id, run_id, item_id, position, item_kind, item_title, item_ref, owner_agent_id,
+             outcome, disposition)
           VALUES (${ws}, ${runId}, ${it.itemId}, ${i}, ${it.kind ?? null}, ${it.title ?? null},
-                  ${JSON.stringify(it.ref ?? {})}::jsonb, ${it.ownerAgentId ?? null}, 'pending')
+                  ${JSON.stringify(it.ref ?? {})}::jsonb, ${it.ownerAgentId ?? null}, 'pending', 'pending')
           ON CONFLICT (workspace_id, run_id, item_id) DO NOTHING
         `;
       }
@@ -977,7 +1104,12 @@ export async function resumeReviewRun(input: {
         UPDATE harness_shared.attention_bulk_run_items
            SET outcome = 'pending', action_id = NULL, rationale = NULL,
                draft_answer = NULL, confidence = NULL, consulted = FALSE,
-               consult_reply = NULL, error = NULL, decided_at = NULL, updated_at = now()
+               consult_reply = NULL, error = NULL, decided_at = NULL,
+               disposition = 'pending', recommendation_kind = NULL,
+               recommendation_label = NULL, recommendation_rationale = NULL,
+               evidence_basis = '[]'::jsonb, responsibility = NULL,
+               confidence_level = NULL, retry_condition = NULL,
+               updated_at = now()
          WHERE workspace_id = ${ws} AND run_id = ${input.runId}
            AND item_id = ANY(${ids})
            AND outcome NOT IN ('auto_resolved', 'dismissed')
@@ -1160,6 +1292,7 @@ export async function reportOutcomes(input: {
 
     for (const o of input.outcomes ?? []) {
       if (!o?.itemId) continue;
+      const disposition = dispositionForReport(o);
       const rows = await tx<{ item_id: string }[]>`
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = ${o.outcome},
@@ -1169,6 +1302,14 @@ export async function reportOutcomes(input: {
              confidence = ${o.confidence ?? null},
              consulted = ${o.consulted === true},
              consult_reply = ${o.consultReply ?? null},
+             disposition = ${disposition},
+             recommendation_kind = ${o.recommendationKind ?? null},
+             recommendation_label = ${o.recommendationLabel ?? null},
+             recommendation_rationale = ${o.recommendationRationale ?? o.rationale ?? null},
+             evidence_basis = ${JSON.stringify(o.evidenceBasis ?? [])}::jsonb,
+             responsibility = ${o.responsibility ?? null},
+             confidence_level = ${o.confidenceLevel ?? (o.confidence === 'high' ? 'high' : o.confidence === 'low' ? 'low' : null)},
+             retry_condition = ${o.retryCondition ?? null},
              error = ${o.error ?? null},
              decided_at = now(),
              updated_at = now()
@@ -1234,6 +1375,7 @@ export async function markItemAccepted(input: {
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = 'auto_resolved',
              action_id = ${input.actionId},
+             disposition = 'auto_resolved',
              rationale = COALESCE(${input.note ?? null}, rationale),
              decided_at = now(),
              updated_at = now()
@@ -1275,6 +1417,7 @@ export async function markItemDismissed(input: {
     const rows = await tx<RawItemRow[]>`
       UPDATE harness_shared.attention_bulk_run_items
          SET outcome = 'dismissed',
+             disposition = 'dismissed',
              rationale = COALESCE(${input.note?.trim() || null}, rationale),
              error = NULL,
              decided_at = now(),

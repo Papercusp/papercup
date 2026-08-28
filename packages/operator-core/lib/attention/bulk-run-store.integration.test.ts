@@ -186,6 +186,43 @@ describe('attention bulk-run store (real PG)', () => {
     expect((await getRun(run.runId))?.launchSnapshot).toEqual({});
   });
 
+  it('persists typed recommendation metadata and the owner automation policy', async () => {
+    const run = await createRun({
+      items: seed('typed'),
+      automationPolicy: { mode: 'safe-medium-plus', minConfidence: 'medium' },
+      launchSnapshot: { model: 'sonnet', effort: 'high', account: 'default', carry: 'warm', backend: 'claude' },
+    });
+    expect(run.automationPolicy).toEqual({ mode: 'safe-medium-plus', minConfidence: 'medium' });
+    expect(run.launchSnapshot.automationPolicy).toEqual({ mode: 'safe-medium-plus', minConfidence: 'medium' });
+
+    const reported = await reportOutcomes({
+      runId: run.runId,
+      outcomes: [{
+        itemId: 'work-item-needs-human:typed-2',
+        outcome: 'recommended',
+        disposition: 'owner_action',
+        recommendationKind: 'owner_action',
+        recommendationLabel: 'Provide the external key',
+        recommendationRationale: 'The item explicitly names a credential only the owner can provide.',
+        evidenceBasis: ['work-item-needs-human:typed-2', 'credential dependency'],
+        responsibility: 'owner',
+        confidenceLevel: 'high',
+        rationale: 'The item explicitly names a credential only the owner can provide.',
+      }],
+    });
+    expect(reported.updated).toEqual(['work-item-needs-human:typed-2']);
+    const item = (await getRunItems(run.runId)).find((row) => row.itemId === 'work-item-needs-human:typed-2');
+    expect(item).toMatchObject({
+      outcome: 'recommended',
+      disposition: 'owner_action',
+      recommendationKind: 'owner_action',
+      recommendationLabel: 'Provide the external key',
+      confidenceLevel: 'high',
+      responsibility: 'owner',
+    });
+    expect(item?.recommendation?.actionId).toBeNull();
+  });
+
   it('de-dupes repeated ids in the snapshot rather than aborting the seed', async () => {
     const dupe = seed('b');
     const run = await createRun({ items: [...dupe, dupe[0]!] });

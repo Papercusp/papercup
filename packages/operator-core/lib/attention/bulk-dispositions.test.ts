@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest';
 import {
   BULK_CONFIDENCE_LEVELS,
   BULK_DISPOSITION_KINDS,
+  DEFAULT_BULK_AUTOMATION_POLICY,
   canonicalDispositionForRow,
   classifyLegacySkipped,
   countBulkDispositions,
   isBulkConfidence,
+  meetsBulkConfidenceFloor,
+  normalizeBulkAutomationPolicy,
   isBulkDispositionKind,
   isBulkRecommendationKind,
 } from './bulk-dispositions';
@@ -22,6 +25,21 @@ describe('bulk disposition vocabulary', () => {
     expect(isBulkRecommendationKind('skipped')).toBe(false);
     expect(isBulkDispositionKind('legacy_skipped')).toBe(true);
     expect(isBulkDispositionKind('not-a-disposition')).toBe(false);
+  });
+
+  it('normalizes owner automation modes without letting confidence bypass review-all', () => {
+    expect(DEFAULT_BULK_AUTOMATION_POLICY).toEqual({ mode: 'safe-high', minConfidence: 'high' });
+    expect(normalizeBulkAutomationPolicy({ mode: 'review-all', minConfidence: 'low' })).toEqual({
+      mode: 'review-all',
+      minConfidence: 'high',
+    });
+    expect(normalizeBulkAutomationPolicy({ mode: 'safe-medium-plus', minConfidence: 'medium' })).toEqual({
+      mode: 'safe-medium-plus',
+      minConfidence: 'medium',
+    });
+    expect(meetsBulkConfidenceFloor('high', 'medium')).toBe(true);
+    expect(meetsBulkConfidenceFloor('low', 'medium')).toBe(false);
+    expect(meetsBulkConfidenceFloor('insufficient', 'high')).toBe(false);
   });
 
   it('classifies owner-authority rows without inventing an action id', () => {
