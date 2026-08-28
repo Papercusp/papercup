@@ -773,6 +773,7 @@ interface HostDbRow {
   desired_state: string;
   observed_state: string;
   observed_at: Date | string | null;
+  created_at: Date | string;
   endpoint: string | null;
   recoverability_kind: 'snapshot' | 'backup' | 'none';
   recoverability_label: string;
@@ -863,7 +864,11 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
     const hosts = await tx<HostDbRow[]>`
       SELECT id, name, connection_id, target, scope_label, region, size, image,
              disk_gib, network, estimated_monthly_usd, desired_state, observed_state,
-             observed_at, endpoint, recoverability_kind, recoverability_label,
+             -- created_at is the one column that still means "when this host was
+             -- provisioned": it is deliberately absent from the upsert's ON CONFLICT
+             -- UPDATE set above, so an observation refresh moves observed_at and
+             -- leaves it alone.
+             observed_at, created_at, endpoint, recoverability_kind, recoverability_label,
              recoverability_updated_at, health_status, health_attested_at, health_checks,
              bootstrap_version, version_drift, tunnel_status, cost_signals, quota_signals
       FROM harness_shared.workspace_hosts
@@ -963,6 +968,7 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
         desiredState: row.desired_state,
         observedState: row.observed_state,
         observedAt: iso(row.observed_at),
+        provisionedAt: iso(row.created_at),
         providerResourceId:
           hostResources.find((resource) => resource.kind === 'vm')?.provider_id ??
           hostResources.find((resource) => resource.provider_id)?.provider_id ??

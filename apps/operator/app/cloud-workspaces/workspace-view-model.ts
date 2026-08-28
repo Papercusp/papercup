@@ -136,7 +136,15 @@ export interface WorkspaceHostControlRow {
   estimatedMonthlyUsd?: number;
   desiredState: LifecycleState;
   observedState: LifecycleState;
+  /** When the provider was last observed — refreshed by every lifecycle action. */
   observedAt?: string;
+  /**
+   * When this host was provisioned. A separate field from `observedAt` for a
+   * load-bearing reason: `observedAt` moves every time the provider is
+   * observed, so it cannot answer "how old is this fleet". Projected from
+   * `workspace_hosts.created_at`, which the host upsert never overwrites.
+   */
+  provisionedAt?: string;
   providerResourceId?: string;
   endpoint?: string;
   recoverability: {

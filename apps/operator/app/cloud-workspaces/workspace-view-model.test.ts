@@ -485,6 +485,28 @@ describe("rail model", () => {
     expect(connect?.evidence).toBe("GCP · validated 2h ago");
   });
 
+  it("ages the Configure step from when the host was provisioned, not from when it was last observed", () => {
+    /* `observedAt` is refreshed by every provider observation — every start,
+       stop, repair and destroy — so reading the provisioning age off it makes a
+       host stopped seconds ago report as freshly provisioned. `provisionedAt`
+       is the row's creation stamp, which the host upsert deliberately never
+       overwrites. */
+    const model = railModel(
+      [connection()],
+      [
+        workspace({
+          provisionedAt: "2026-08-26T05:00:00.000Z",
+          observedAt: "2026-08-28T04:59:57.000Z",
+        }),
+      ],
+      "operate",
+      now,
+    );
+    expect(model.steps.find((step) => step.id === "configure")?.evidence).toBe(
+      "Last provisioned 2d ago",
+    );
+  });
+
   it("marks the active step current even when it would otherwise read done", () => {
     const model = railModel([connection()], [workspace()], "connect", now);
     expect(model.steps.find((step) => step.id === "connect")?.status).toBe(

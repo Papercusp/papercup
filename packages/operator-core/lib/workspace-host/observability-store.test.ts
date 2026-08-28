@@ -263,6 +263,11 @@ describe('workspace-host observability store', () => {
         desired_state: 'running',
         observed_state: 'running',
         observed_at: '2026-08-22T00:03:00Z',
+        /* Deliberately two days before `observed_at`: `created_at` survives the
+           host upsert's ON CONFLICT UPDATE set, so it is the only column that
+           still means "when this host was provisioned" after a reconcile has
+           moved `observed_at`. */
+        created_at: '2026-08-20T00:00:00Z',
         endpoint: 'ssh://host-1',
         recoverability_kind: 'snapshot',
         recoverability_label: 'snap-1',
@@ -358,6 +363,11 @@ describe('workspace-host observability store', () => {
     expect(rows[1]).toMatchObject({
       kind: 'workspace',
       id: 'host-1',
+      /* Distinct from observedAt, and it has to be: the rail's Configure step
+         reports how long ago the fleet was PROVISIONED, which no observation
+         stamp can answer once a lifecycle action has refreshed it. */
+      provisionedAt: '2026-08-20T00:00:00.000Z',
+      observedAt: '2026-08-22T00:03:00.000Z',
       providerResourceId: 'projects/p/zones/z/instances/research',
       health: { status: 'healthy', bootstrapVersion: '1.4.0' },
       tunnel: { connected: true },
