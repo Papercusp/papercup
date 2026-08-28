@@ -224,6 +224,7 @@ function HostRow({
   const overflowRef = useRef<HTMLDivElement | null>(null);
   const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
   const skipRestoreFocusRef = useRef(false);
+  const menuItemsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const tabButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const chip = hostStateChip(workspace);
   const plan = lifecycleActionPlan(workspace);
@@ -254,9 +255,7 @@ function HostRow({
   useFocusLifecycle({
     open: overflowOpen,
     onOpenFocus: () =>
-      overflowRef.current?.querySelector<HTMLElement>(
-        '[role="menuitem"]:not([disabled])',
-      ),
+      menuItemsRef.current.find((item) => item && !item.disabled),
     onCloseFocus: () => {
       if (skipRestoreFocusRef.current) {
         skipRestoreFocusRef.current = false;
@@ -265,6 +264,47 @@ function HostRow({
       return overflowTriggerRef.current;
     },
   });
+
+  const onMenuKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    const enabledIndices = plan.overflow.reduce<number[]>(
+      (indices, action, actionIndex) => {
+        if (
+          action.enabled &&
+          !busyKeys.has(`${action.action}:${workspace.id}`)
+        ) {
+          indices.push(actionIndex);
+        }
+        return indices;
+      },
+      [],
+    );
+    if (enabledIndices.length === 0) return;
+
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+      const position = enabledIndices.indexOf(index);
+      nextIndex =
+        enabledIndices[(position < 0 ? 0 : position + 1) % enabledIndices.length];
+    } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+      const position = enabledIndices.indexOf(index);
+      nextIndex =
+        enabledIndices[
+          (position < 0 ? enabledIndices.length - 1 : position - 1 + enabledIndices.length) %
+            enabledIndices.length
+        ];
+    } else if (event.key === "Home") {
+      nextIndex = enabledIndices[0];
+    } else if (event.key === "End") {
+      nextIndex = enabledIndices[enabledIndices.length - 1];
+    }
+    if (nextIndex === null || nextIndex === undefined) return;
+
+    event.preventDefault();
+    menuItemsRef.current[nextIndex]?.focus();
+  };
 
   useEffect(() => {
     if (!overflowOpen) return;
@@ -379,14 +419,18 @@ function HostRow({
               <div
                 className={styles.overflowMenu}
                 role="menu"
+                aria-orientation="vertical"
                 aria-label={`More actions for ${workspace.name}`}
               >
-                {plan.overflow.map((action) => (
+                {plan.overflow.map((action, index) => (
                   <button
                     key={action.action}
                     type="button"
                     role="menuitem"
                     className={styles.overflowItem}
+                    ref={(node) => {
+                      menuItemsRef.current[index] = node;
+                    }}
                     data-destructive={
                       action.action === "destroy" ? "true" : "false"
                     }
@@ -394,6 +438,7 @@ function HostRow({
                       !action.enabled ||
                       busyKeys.has(`${action.action}:${workspace.id}`)
                     }
+                    onKeyDown={(event) => onMenuKeyDown(event, index)}
                     onClick={() => {
                       /*
                        * Same unmount, same drop: activating an item removes

@@ -1081,6 +1081,31 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     expect(document.activeElement).toBe(
       screen.getByRole("menuitem", { name: "Repair" }),
     );
+    const repairItem = screen.getByRole("menuitem", {
+      name: "Repair",
+    }) as HTMLButtonElement;
+    fireEvent.keyDown(repairItem, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Snapshot" }),
+    );
+    const snapshotItem = screen.getByRole("menuitem", {
+      name: "Snapshot",
+    }) as HTMLButtonElement;
+    fireEvent.keyDown(snapshotItem, { key: "End" });
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Destroy" }),
+    );
+    const destroyItem = screen.getByRole("menuitem", {
+      name: "Destroy",
+    }) as HTMLButtonElement;
+    fireEvent.keyDown(destroyItem, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Snapshot" }),
+    );
+    fireEvent.keyDown(snapshotItem, { key: "Home" });
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Repair" }),
+    );
     expect(
       Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
         (item) => item.textContent,
