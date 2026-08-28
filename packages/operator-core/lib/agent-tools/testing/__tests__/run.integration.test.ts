@@ -39,6 +39,7 @@ import runTool, {
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
   normalizeTestFilePaths,
+  parseRouterTestResult,
   selectTestFileRoot,
 } from '../run';
 import { cancelRun, getRun } from '../../../testing-run-store';
@@ -104,6 +105,7 @@ const GREEN_TARGET_TEST_NAME_FRAGMENT = 'computeFlakiness';
  * Chosen for being a pure readFileSync text guard: fast, PG-free, no Tauri/Xvfb.
  */
 const CROSS_WORKSPACE_GREEN_TARGET = 'apps/operator/lib/verify-tauri-headless-port-straggler.test.ts';
+const NODE_TEST_TARGET = 'papercusp-desktop/test/mac-vm-health.test.js';
 
 // The real SideStage checkout is the measured external-Hive case. Keep the target discovery
 // dynamic so this suite remains portable to boxes that do not have a local Hive seed; the test
@@ -361,6 +363,37 @@ describe('testing:run (integration)', () => {
     );
     expect(routerScript).not.toBeNull();
   }, 180_000);
+
+  it('distills a passing node:test router result when no Vitest JSON report exists', async () => {
+    const out = await body(call({ files: [NODE_TEST_TARGET] }));
+
+    expect(out.ok, JSON.stringify(out)).toBe(true);
+    expect(out.error).toBeUndefined();
+    expect(out.files).toBe(1);
+    expect(out.passed).toBeGreaterThan(0);
+    expect(out.failed).toBe(0);
+    expect(out.failures).toEqual([]);
+  }, 180_000);
+
+  it('requires the router marker and a non-zero numeric test summary for the node:test fallback', () => {
+    const output = [
+      '\u2139 tests 2',
+      '\u2139 pass 2',
+      '\u2139 fail 0',
+      '\u2139 skipped 0',
+      'TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed head=abc provenance=stamped',
+    ].join('\n');
+
+    expect(parseRouterTestResult(output, [NODE_TEST_TARGET])).toMatchObject({
+      passed: 2,
+      failed: 0,
+      skipped: 0,
+      files: 1,
+      failures: [],
+      byFile: { [NODE_TEST_TARGET]: { passed: 2, failed: 0, skipped: 0, collectionFailed: false } },
+    });
+    expect(parseRouterTestResult('TEST_FILE_RESULT requested=1 executed=1 matched=1 status=passed', [NODE_TEST_TARGET])).toBeNull();
+  });
 
   it('returns structured actual/expected values for a real failing assertion', async () => {
     const relativeFixture = `packages/operator-core/lib/__testing-run-sidecar-${randomUUID()}.test.ts`;
