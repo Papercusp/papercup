@@ -48,13 +48,29 @@ vi.mock('../console-launcher', () => ({
     mcpJsonContents: '',
   })),
 }));
+type GoalLaunchMockResult = {
+  effective: Record<string, unknown>;
+  refusal: null;
+  goalBrief: { portfolio?: unknown } | null;
+};
+const goalLaunchMocks = vi.hoisted(() => ({
+  buildBrief: vi.fn((o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`),
+  resolve: vi.fn(
+    async (_input?: unknown): Promise<GoalLaunchMockResult> => ({
+      effective: {},
+      refusal: null,
+      goalBrief: null,
+    }),
+  ),
+}));
+
 // The brief's own content is pinned in ../agent-tools/goals/start.test.ts;
 // mocking it here keeps this file off the whole tool-module graph.
 vi.mock('../agent-tools/goals/start', () => ({
-  buildGoalKickoffBrief: (o: { goalId: string }) => `kickoff for ${o.goalId}`,
+  buildGoalKickoffBrief: (o: { goalId: string }) => goalLaunchMocks.buildBrief(o),
 }));
 vi.mock('../goal-launch-settings', () => ({
-  resolveGoalLaunchForGoal: vi.fn(async () => ({ effective: {}, refusal: null })),
+  resolveGoalLaunchForGoal: (input: unknown) => goalLaunchMocks.resolve(input),
 }));
 
 type OkSpawn = Extract<SpawnConsoleResult, { status: 'ok' }>;
@@ -143,6 +159,10 @@ const pendingReadiness = (): Readiness => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  goalLaunchMocks.buildBrief.mockImplementation(
+    (o: { goalId: string; portfolio?: unknown }) => `kickoff for ${o.goalId}`,
+  );
+  goalLaunchMocks.resolve.mockResolvedValue({ effective: {}, refusal: null, goalBrief: null });
   order.length = 0;
   sqlLog.length = 0;
   setModeCalls.length = 0;
@@ -169,6 +189,19 @@ beforeEach(() => {
 });
 
 describe('goal-auto-start — blocked-by edge wiring (P-004)', () => {
+  it('threads the resolver portfolio into the canonical first-turn brief', async () => {
+    const portfolio = { schemaVersion: 1, goal: { id: 'goal-portfolio' } };
+    goalLaunchMocks.resolve.mockResolvedValue({
+      effective: {},
+      refusal: null,
+      goalBrief: { portfolio },
+    });
+
+    await call();
+
+    expect(goalLaunchMocks.buildBrief).toHaveBeenCalledWith(expect.objectContaining({ portfolio }));
+  });
+
   it('no blockedBy ⇒ no edge write and no readiness read — the pre-P-004 path unchanged', async () => {
     const res = await call();
     expect(res.goalId).toBeTruthy();

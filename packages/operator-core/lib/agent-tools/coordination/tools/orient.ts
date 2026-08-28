@@ -60,6 +60,7 @@ import { announcementVisibleTo } from '../../../events/await/announce-key';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { getModes } from '../../../modes/store';
 import { modeById } from '../../../modes/registry';
+import { goalIdFromModes } from '../../../modes/goal-session';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { fixedCohortIds } from '../../../scheduler/claim-spec';
@@ -627,6 +628,12 @@ export interface OrientResult {
    * unavailable row is kept explicit instead of reading as an all-clear. */
   fleetSummaries?: OrientFleetSummary[] | null;
   fleetSummariesTruncated?: { total: number; shown: number; more: string };
+  /** P-012 (goal-mode-hardening-2026-08-10): the authoritative, timestamped
+   *  portfolio snapshot for a caller that holds GOAL mode with a subject. The
+   *  handler resolves the mode subject and performs the canonical read; this
+   *  composition only folds the injected result. Absent for a non-GOAL caller;
+   *  null means the caller is a GOAL holder but the portfolio read degraded. */
+  goalPortfolio?: import('../../../goal-launch-settings').GoalPortfolioBrief | null;
   /** EI-18731216945970087 / EI-20201050911711528: present ONLY when composeOrient
    *  caught a presence/registry leadership DRIFT — the caller's presence projection
    *  showed no fleet or a non-leader role, but `agent_fleets.leader_owner_id` says
@@ -736,6 +743,8 @@ export type OrientFleetSummariesFold = (
   homeFleetSlug: string,
   homeBrief: unknown | null | undefined,
 ) => Promise<OrientFleetSummary[] | null>;
+
+export type OrientGoalPortfolioFold = () => Promise<import('../../../goal-launch-settings').GoalPortfolioBrief | null>;
 
 /**
  * Overlay the effective membership onto the caller's own fleet-assignment row.
@@ -907,6 +916,11 @@ export async function composeOrient(
   /** EI-21589715378243224: report useful snapshots to the handler-owned aggregate
    *  timeout fallback. The callback is best-effort and never load-bearing. */
   progress?: (snapshot: OrientResult) => void,
+  /** P-012: the GOAL-holder portfolio read. The handler resolves the caller's
+   *  mode subject, starts the canonical DB projection before composition, and
+   *  injects this closure over that in-flight promise. Undefined means the
+   *  caller is not a resolved GOAL holder. */
+  goalPortfolioFold?: OrientGoalPortfolioFold,
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   const reportProgress = (snapshot: OrientResult): void => {
@@ -1348,6 +1362,19 @@ export async function composeOrient(
     ...(presenceDrift !== undefined ? { presenceDrift } : {}),
     ...(recoveredFleetScope !== undefined ? { recoveredFleetScope } : {}),
   };
+  // P-012: this is a CORE orientation leg for a resolved GOAL holder, not an
+  // optional advisory. The handler already started the IO before composeOrient;
+  // awaiting the injected promise here keeps this function IO-free and lets the
+  // portfolio overlap the core assignments/backlog/inbox reads above. A failure
+  // is explicit null rather than a silent absence that reads as "not a holder".
+  if (goalPortfolioFold) {
+    const portfolio = await withBoundedTimeout(goalPortfolioFold(), {
+      fallback: null,
+      timeoutMs: ORIENT_CORE_LEG_TIMEOUT_MS,
+      label: 'orient:goalPortfolio',
+    });
+    result.goalPortfolio = portfolio.value;
+  }
   // EI-21589715378243224: preserve the core assignment/backlog/inbox snapshot
   // before the optional folds below can consume the aggregate budget.
   reportProgress(result);
@@ -2893,6 +2920,15 @@ export default defineTool({
     } catch {
       ownerId = undefined;
     }
+    // P-012: start the caller's canonical mode read at the first point identity
+    // exists. The same promise is reused after composition for the modes contract
+    // fold, so adding the GOAL portfolio does not add a second agent_modes query.
+    const orientWorkspaceId = resolveConcreteWorkspaceId(
+      (ctx as { workspaceId?: string | null }).workspaceId,
+    );
+    const runtimeModesPromise = ownerId
+      ? getModes(orientWorkspaceId, ownerId).catch(() => null)
+      : Promise.resolve(null);
     // P-002 / D-001: resolve the caller's drive mode so an OWNER-DIRECTED
     // (responsive: su/sentinel/planner) caller doesn't get queen-loop steering
     // pushed as binding facts/recall. Best-effort + fail-open (an su-… id resolves
@@ -3082,6 +3118,25 @@ export default defineTool({
         },
       };
     }
+    // P-012: only a session whose GOAL mode carries a concrete subject receives
+    // the portfolio. Derivation reuses the board/session canonical predicate;
+    // ordinary AUTO/fleet/plan agents therefore pay no portfolio projection.
+    // Start before composeOrient so the DB work overlaps its sequential folds.
+    const runtimeModeRows = await runtimeModesPromise;
+    const goalSubject = goalIdFromModes(runtimeModeRows);
+    const goalPortfolioPromise = goalSubject
+      ? (async () => {
+          try {
+            const { readGoalPortfolioBrief } = await import('../../../goal-launch-settings');
+            return await readGoalPortfolioBrief({
+              workspaceId: orientWorkspaceId,
+              goalId: goalSubject,
+            });
+          } catch {
+            return null;
+          }
+        })()
+      : undefined;
     // WI-4533 (P-006): START the pipeline-health read HERE — before composeOrient's sequential
     // legs — and hand composeOrient a closure over the in-flight promise. Its latency therefore
     // overlaps reads that were happening anyway (orient p50 1.75s; this leg is cached and usually
@@ -3254,6 +3309,7 @@ export default defineTool({
       fleetSummariesFold,
       recoveredFleetScopePromise ? () => recoveredFleetScopePromise : undefined,
       (snapshot) => snapshotOrientAggregate(aggregateFallback, snapshot),
+      goalPortfolioPromise ? () => goalPortfolioPromise : undefined,
     );
     // Await the already-running recovery only after composeOrient completes;
     // this preserves the existing fold output while keeping the two budgets
@@ -3304,28 +3360,22 @@ export default defineTool({
     // Best-effort: a mode-read failure never breaks orientation.
     let modes: { active: Array<Record<string, unknown>>; contracts: string } | undefined;
     let runtimeModeIds: string[] | null = null;
-    if (ownerId) {
-      try {
-        const ws = (ctx as { workspaceId?: string | null }).workspaceId ?? 'default';
-        const rows = await getModes(ws, ownerId);
-        runtimeModeIds = rows.map((row) => row.mode);
-        if (rows.length) {
-          modes = {
-            active: rows.map((r) => ({
-              mode: r.mode,
-              reason: r.reason,
-              setBy: r.setBy,
-              ownerDirected: r.ownerDirected,
-              setAt: r.setAt,
-            })),
-            contracts: rows
-              .map((r) => modeById(r.mode)?.contract)
-              .filter(Boolean)
-              .join('\n\n'),
-          };
-        }
-      } catch {
-        /* fail-soft */
+    if (runtimeModeRows) {
+      runtimeModeIds = runtimeModeRows.map((row) => row.mode);
+      if (runtimeModeRows.length) {
+        modes = {
+          active: runtimeModeRows.map((r) => ({
+            mode: r.mode,
+            reason: r.reason,
+            setBy: r.setBy,
+            ownerDirected: r.ownerDirected,
+            setAt: r.setAt,
+          })),
+          contracts: runtimeModeRows
+            .map((r) => modeById(r.mode)?.contract)
+            .filter(Boolean)
+            .join('\n\n'),
+        };
       }
     }
     // P-022: the structured counterpart of the prose mode contracts. Resolve

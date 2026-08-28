@@ -18,6 +18,7 @@ import {
 } from './orient';
 import orientTool from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
+import type { GoalPortfolioBrief } from '../../../goal-launch-settings';
 import { lookupByMcpName } from '@papercusp/agent-mcp';
 import { MCP_TRANSPORT_CAP_MS } from '../../capability/foreground-transport-cap';
 
@@ -100,6 +101,23 @@ describe('executable continuity output assembly', () => {
     });
     expect(out.continuityProbes).toBe(continuityProbes);
     expect(Object.keys(out).indexOf('continuityProbes')).toBeLessThan(Object.keys(out).indexOf('memory'));
+  });
+
+  it('keeps the GOAL portfolio in the non-evictable core ahead of optional folds', () => {
+    const goalPortfolio = { schemaVersion: 1, goal: { id: 'goal-1' } };
+    const out = assembleOrientOutput({
+      result: {
+        ok: true,
+        me: { summary: {} },
+        claimable: [],
+        inbox: {},
+        goalPortfolio,
+        memory: { query: 'x', hits: [] },
+      },
+    });
+
+    expect(out.goalPortfolio).toBe(goalPortfolio);
+    expect(Object.keys(out).indexOf('goalPortfolio')).toBeLessThan(Object.keys(out).indexOf('memory'));
   });
 });
 
@@ -298,6 +316,18 @@ describe('coord:orient args', () => {
     expect(assignmentsRead).toBeGreaterThan(recoveredScopeAwait);
   });
 
+  it('starts the handler-owned GOAL portfolio read before composeOrient', () => {
+    const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
+    const modesStart = source.indexOf('const runtimeModesPromise =');
+    const portfolioStart = source.indexOf('const goalPortfolioPromise =');
+    const composeStart = source.indexOf('const result = await composeOrient(');
+
+    expect(modesStart).toBeGreaterThanOrEqual(0);
+    expect(portfolioStart).toBeGreaterThan(modesStart);
+    expect(source.slice(portfolioStart, composeStart)).toContain('readGoalPortfolioBrief');
+    expect(composeStart).toBeGreaterThan(portfolioStart);
+  });
+
   it('does not retain the ambient workspace transaction across coordination folds', () => {
     expect((orientTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
@@ -486,7 +516,100 @@ const CORE = {
   'coord:glance': () => ({ bees: { running: 0, working: 0 } }),
 };
 
+const GOAL_PORTFOLIO: GoalPortfolioBrief = {
+  schemaVersion: 1,
+  assembledAt: '2026-08-28T02:30:00.000Z',
+  goal: {
+    id: 'goal-1',
+    title: 'Keep the portfolio moving',
+    status: 'active',
+    body: null,
+    killCriterion: null,
+    standing: true,
+    parentId: null,
+  },
+  worklist: [],
+  pots: [{ harness: 'papercusp', role: 'owner', note: null }],
+  drainFleet: {
+    slug: 'goal-1-drain',
+    exists: true,
+    controlState: 'active',
+    leaderOwnerId: 'su-drain-leader',
+    live: 2,
+    working: 1,
+  },
+  queue: {
+    total: 4,
+    terminal: 1,
+    inFlight: 1,
+    blocked: 0,
+    needsHuman: 0,
+    claimable: 2,
+    claimabilityScope: 'issue-family',
+  },
+  launch: {
+    settings: null,
+    ceilings: { maxAgents: 12, maxPerFleet: 5 },
+    headcount: { total: 3, fleet: 2 },
+  },
+  budget: { budgetCents: null, spentCents: null, spentCentsAt: null, budgetWindowSec: null },
+  tripwires: [],
+  pending: { blenderIdeas: 0, acceptanceRubric: null },
+  continuity: { checkpoint: null, lastOwnerReportAt: null },
+  priorities: ['Place the next plan item with an independent fleet.'],
+  degradedReasons: [],
+};
+
+function composeGoalOrient(
+  args: Parameters<typeof composeOrient>[0],
+  call: InnerCall,
+  fold: NonNullable<Parameters<typeof composeOrient>[18]>,
+): ReturnType<typeof composeOrient> {
+  return composeOrient(
+    args,
+    call,
+    'me',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    fold,
+  );
+}
+
 describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
+  it('folds the handler-injected GOAL portfolio on full and monitor orientations', async () => {
+    for (const args of [{}, { mode: 'monitor' as const }]) {
+      const { call } = fakeCall({ ...CORE });
+      const fold = vi.fn(async () => GOAL_PORTFOLIO);
+      const result = await composeGoalOrient(args, call, fold);
+
+      expect(result.goalPortfolio).toBe(GOAL_PORTFOLIO);
+      expect(fold).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it('distinguishes a degraded GOAL portfolio read from a non-GOAL caller', async () => {
+    const { call } = fakeCall({ ...CORE });
+    const degraded = await composeGoalOrient({}, call, async () => null);
+    expect(degraded.goalPortfolio).toBeNull();
+
+    const { call: ordinaryCall } = fakeCall({ ...CORE });
+    const ordinary = await composeOrient({}, ordinaryCall, 'me');
+    expect(ordinary.goalPortfolio).toBeUndefined();
+  });
+
   it('folds assignments + claimable + inbox + plan-events into one result (no intent)', async () => {
     const { call, calls } = fakeCall({ ...CORE });
     const r = await composeOrient({ harness: 'h' }, call, 'me');

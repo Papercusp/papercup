@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { GoalLaunchResolution } from '../../goal-launch-settings';
+import type { GoalLaunchResolution, GoalPortfolioBrief } from '../../goal-launch-settings';
 import {
   launchGoalHolderSession,
   runGoalHolderLaunchAction,
@@ -26,6 +26,52 @@ function resolution(overrides: Partial<GoalLaunchResolution> = {}): GoalLaunchRe
     degraded: false,
     degradedReasons: [],
     ...overrides,
+  };
+}
+
+function portfolio(): GoalPortfolioBrief {
+  return {
+    schemaVersion: 1,
+    assembledAt: '2026-08-28T02:30:00.000Z',
+    goal: {
+      id: 'goal-1',
+      title: 'Keep the queue moving',
+      status: 'active',
+      body: null,
+      killCriterion: null,
+      standing: true,
+      parentId: null,
+    },
+    worklist: [],
+    pots: [],
+    drainFleet: {
+      slug: null,
+      exists: null,
+      controlState: null,
+      leaderOwnerId: null,
+      live: null,
+      working: null,
+    },
+    queue: {
+      total: 1,
+      terminal: 0,
+      inFlight: 0,
+      blocked: 0,
+      needsHuman: 0,
+      claimable: 1,
+      claimabilityScope: 'issue-family',
+    },
+    launch: {
+      settings: null,
+      ceilings: { maxAgents: 12, maxPerFleet: 5 },
+      headcount: { total: 1, fleet: null },
+    },
+    budget: { budgetCents: 1_000, spentCents: 0, spentCentsAt: null, budgetWindowSec: 604_800 },
+    tripwires: [],
+    pending: { blenderIdeas: 0, acceptanceRubric: null },
+    continuity: { checkpoint: null, lastOwnerReportAt: null },
+    priorities: ['Delegate the next item.'],
+    degradedReasons: [],
   };
 }
 
@@ -93,6 +139,21 @@ describe('goal holder system launch (goal-live-holder-guarantee P-007)', () => {
       d,
     );
     expect(d.launch).toHaveBeenCalledWith(expect.objectContaining({ kickoffPrompt: 'first-turn brief' }));
+  });
+
+  it('appends the canonical portfolio to an explicit recovery kickoff exactly once', async () => {
+    const base = resolution().goalBrief!;
+    const d = deps(resolution({ goalBrief: { ...base, portfolio: portfolio() } }));
+
+    await launchGoalHolderSession(
+      { workspaceId: 'workspace-1', goalId: 'goal-1', harnessSlug: 'hive-1', kickoffPrompt: 'recovery context' },
+      d,
+    );
+
+    const kickoff = d.launch.mock.calls[0]?.[0]?.kickoffPrompt as string;
+    expect(kickoff).toContain('recovery context');
+    expect(kickoff).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z');
+    expect(kickoff.match(/GOAL PORTFOLIO SNAPSHOT —/g)).toHaveLength(1);
   });
 
   it('refuses to launch a mute holder when neither an override nor stored goal brief is available', async () => {

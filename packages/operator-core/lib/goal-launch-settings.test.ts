@@ -29,6 +29,15 @@ import type { Sql } from 'postgres';
 // vi.hoisted so the factory closures survive hoisting.
 const budgetGateFlag = vi.hoisted(() => ({ value: true, throws: false }));
 const escalated = vi.hoisted(() => ({ calls: [] as Array<Record<string, unknown>> }));
+const goalHoldersMock = vi.hoisted(() =>
+  vi.fn(async (_sql: unknown, opts: { workspaceId: string; goalId: string }) => ({
+    workspaceId: opts.workspaceId,
+    goalId: opts.goalId,
+    holders: [],
+    live: [{ ownerId: 'su-live-goal-holder' }],
+    liveness: 'held' as const,
+  })),
+);
 vi.mock('@papercusp/flags/server', () => ({
   getFlag: async () => {
     if (budgetGateFlag.throws) throw new Error('flag infra down');
@@ -41,6 +50,10 @@ vi.mock('./agent-tools/coordination/escalations', () => ({
     return {};
   },
 }));
+vi.mock('./goals/holder', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./goals/holder')>()),
+  resolveGoalHolders: goalHoldersMock,
+}));
 import {
   GOAL_LAUNCH_DEFAULTS,
   UNLIMITED_CEILING,
@@ -49,10 +62,13 @@ import {
   foldLaunchProfile,
   GOAL_LAUNCH_ROLES,
   isGoalLaunchRole,
+  readGoalPortfolioBrief,
   readGoalLaunchSettings,
+  renderGoalPortfolioBrief,
   writeGoalLaunchSettings,
   resolveCeiling,
   resolveGoalLaunch,
+  resolveGoalLaunchForGoal,
   goalHolderPolicySchema,
   goalHolderPolicyProblem,
   resolveGoalHolderPolicy,
@@ -86,6 +102,8 @@ interface MockOpts {
   >;
   /** headcount fixture by goal id. */
   headcount?: Record<string, { total: number; fleet: number }>;
+  /** P-012 canonical portfolio projection row by goal id. */
+  portfolio?: Record<string, Record<string, unknown>>;
   /** Force a hard failure on any statement matching this. */
   failOn?: RegExp;
   /** Statements the mock actually saw, for structural assertions. */
@@ -131,6 +149,13 @@ function mockSql(opts: MockOpts = {}): Sql {
         },
       ]);
     }
+    if (text.includes('WITH goal_row AS')) {
+      const goalId = (vals as unknown[]).find(
+        (value) => typeof value === 'string' && value in (opts.portfolio ?? {}),
+      ) as string | undefined;
+      const row = goalId ? opts.portfolio?.[goalId] : undefined;
+      return Promise.resolve(row ? [row] : []);
+    }
     if (text.includes('FROM harness_shared.session_briefs b')) {
       // Located by VALUE, not by index. A positional lookup here silently
       // returns the zero fixture if the query's parameter order ever changes,
@@ -149,6 +174,10 @@ function mockSql(opts: MockOpts = {}): Sql {
 }
 
 const WS = 'ws-1';
+
+beforeEach(() => {
+  goalHoldersMock.mockClear();
+});
 
 describe('goalLaunchSettingsSchema', () => {
   it('accepts a full document', () => {
@@ -728,6 +757,169 @@ describe('resolveGoalLaunch — the D-005 ceilings', () => {
       }),
     });
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(false);
+  });
+});
+
+describe('P-012 authoritative GOAL portfolio brief', () => {
+  const NOW = new Date('2026-08-28T02:30:00.000Z');
+  const launch = {
+    goalBrief: {
+      title: 'Keep the portfolio moving',
+      body: 'Supervise the ordered worklist without implementing it personally.',
+      killCriterion: 'the owner stops the standing goal',
+      budgetCents: 5_000,
+      budgetWindowSec: 604_800,
+      standing: true,
+    },
+    settings: null,
+    budget: { budgetCents: 5_000, spentCents: 1_250, spentCentsAt: '2026-08-28T02:00:00Z' },
+    ceilings: { maxAgents: 12, maxPerFleet: 5 },
+    headcount: { total: 3, fleet: 2 },
+    degradedReasons: [],
+  };
+  const portfolioRow = {
+    status: 'active',
+    parent_id: null,
+    tripwires: [{ metric: 'queue_age', label: 'Queue age', threshold: 60, current: 12, unit: 'minutes' }],
+    properties: { worklist: { value: ['plan:papercusp/alpha'] } },
+    metadata: { drainFleet: 'goal-1-drain' },
+    pots: [{ harness: 'papercusp', role: 'owner', note: 'canonical pot' }],
+    plans: [
+      {
+        ref: 'plan:papercusp/alpha',
+        ordinal: 1,
+        harness: 'papercusp',
+        slug: 'alpha',
+        title: 'Alpha plan',
+        status: 'active',
+        ambiguousMatches: 1,
+        items: [
+          { id: 'P-001', text: 'Done', status: 'done', phase: 'Build', blockedBy: [], seq: 1 },
+          { id: 'P-002', text: 'Place next', status: 'todo', phase: 'Build', blockedBy: [], seq: 2 },
+          { id: 'P-003', text: 'Wait', status: 'todo', phase: 'Verify', blockedBy: ['P-002'], seq: 3 },
+        ],
+      },
+    ],
+    queue: {
+      total: 7,
+      terminal: 2,
+      inFlight: 2,
+      blocked: 1,
+      needsHuman: 1,
+      issueCandidates: [],
+    },
+    drain_fleet: {
+      slug: 'goal-1-drain',
+      controlState: 'active',
+      leaderOwnerId: 'su-drain',
+      live: 2,
+      working: 1,
+    },
+    checkpoint: {
+      workItemId: 'WI-42',
+      updatedAtMs: Date.parse('2026-08-28T02:15:00.000Z'),
+      note: 'Placed P-001; P-002 is next.',
+    },
+    last_owner_report_at: '2026-08-28T02:20:00Z',
+    blender_pending: 2,
+    acceptance_rubric: {
+      id: 'goal-mode-e2e',
+      status: 'active',
+      latestScorecardAt: '2026-08-28T01:28:33Z',
+    },
+  };
+
+  it('assembles ordered plan state, queue/fleet truth, continuity, and actionable priorities', async () => {
+    const brief = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({ portfolio: { 'goal-1': portfolioRow } }),
+      now: NOW,
+      launch,
+    });
+
+    expect(brief).not.toBeNull();
+    expect(brief).toMatchObject({
+      schemaVersion: 1,
+      assembledAt: NOW.toISOString(),
+      goal: { id: 'goal-1', title: 'Keep the portfolio moving', status: 'active', standing: true },
+      worklist: [
+        {
+          ref: 'plan:papercusp/alpha',
+          next: { id: 'P-002', text: 'Place next', phase: 'Build', blockedBy: [] },
+          counts: { todo: 2, wip: 0, blocked: 0, needsHuman: 0, done: 1 },
+        },
+      ],
+      drainFleet: { slug: 'goal-1-drain', exists: true, live: 2, working: 1 },
+      queue: { total: 7, terminal: 2, inFlight: 2, blocked: 1, needsHuman: 1, claimable: 0 },
+      continuity: {
+        checkpoint: { workItemId: 'WI-42', updatedAt: '2026-08-28T02:15:00.000Z' },
+        lastOwnerReportAt: '2026-08-28T02:20:00Z',
+      },
+    });
+    expect(brief?.priorities).toEqual([
+      'Report 1 owner-walled queue item(s) with exact asks.',
+      'Place plan:papercusp/alpha#P-002 with an independently led plan fleet.',
+      'Triage 1 blocked/cursed queue item(s) and remove stranded blockers.',
+      'Grade or route 2 pending Blender idea(s).',
+    ]);
+    expect(goalHoldersMock).toHaveBeenCalledWith(expect.anything(), {
+      workspaceId: WS,
+      goalId: 'goal-1',
+    });
+
+    const rendered = renderGoalPortfolioBrief(brief!);
+    expect(rendered).toContain(`GOAL PORTFOLIO SNAPSHOT — assembled ${NOW.toISOString()}`);
+    expect(rendered).toContain('1. plan:papercusp/alpha [active] next=P-002');
+    expect(rendered).toContain('Queue: total=7; terminal=2; in-flight=2; blocked=1; needs-human=1');
+    expect(rendered).toContain('CURRENT ACTION PRIORITIES');
+  });
+
+  it('returns an explicit degraded snapshot instead of dropping a failed canonical read', async () => {
+    const brief = await readGoalPortfolioBrief({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      sql: mockSql({ failOn: /WITH goal_row AS/ }),
+      now: NOW,
+      launch,
+    });
+
+    expect(brief).not.toBeNull();
+    expect(brief?.goal).toMatchObject({ id: 'goal-1', title: 'Keep the portfolio moving', status: null });
+    expect(brief?.degradedReasons).toEqual([expect.stringContaining('portfolio read failed: boom')]);
+    expect(brief?.priorities).toEqual(['Re-read the goal portfolio before any placement or write.']);
+  });
+
+  it('assembles the portfolio only for the GOAL-holder launch slot', async () => {
+    const goalSeen: string[] = [];
+    const goal = await resolveGoalLaunchForGoal({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      goalRole: 'goal',
+      sql: mockSql({
+        brief: { 'goal-1': { title: 'Keep the portfolio moving', standing: true } },
+        headcount: { 'goal-1': { total: 1, fleet: 0 } },
+        portfolio: { 'goal-1': portfolioRow },
+        seen: goalSeen,
+      }),
+    });
+    expect(goal.goalBrief?.portfolio?.goal.id).toBe('goal-1');
+    expect(goalSeen.some((sql) => sql.includes('WITH goal_row AS'))).toBe(true);
+
+    const childSeen: string[] = [];
+    const child = await resolveGoalLaunchForGoal({
+      workspaceId: WS,
+      goalId: 'goal-1',
+      goalRole: 'plan-fleet-leader',
+      sql: mockSql({
+        brief: { 'goal-1': { title: 'Keep the portfolio moving', standing: true } },
+        headcount: { 'goal-1': { total: 1, fleet: 0 } },
+        portfolio: { 'goal-1': portfolioRow },
+        seen: childSeen,
+      }),
+    });
+    expect(child.goalBrief?.portfolio).toBeUndefined();
+    expect(childSeen.some((sql) => sql.includes('WITH goal_row AS'))).toBe(false);
   });
 });
 

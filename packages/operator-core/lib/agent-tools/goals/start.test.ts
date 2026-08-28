@@ -18,6 +18,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpawnConsoleResult } from '../../console-spawn';
+import type { GoalPortfolioBrief } from '../../goal-launch-settings';
 
 vi.mock('@papercusp/db-org', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
@@ -425,6 +426,58 @@ describe('the pre-pin this tool depends on', () => {
 });
 
 describe('the kickoff brief', () => {
+  const portfolio: GoalPortfolioBrief = {
+    schemaVersion: 1,
+    assembledAt: '2026-08-28T02:30:00.000Z',
+    goal: {
+      id: 'g-1',
+      title: 't',
+      status: 'active',
+      body: null,
+      killCriterion: null,
+      standing: true,
+      parentId: null,
+    },
+    worklist: [],
+    pots: [],
+    drainFleet: {
+      slug: null,
+      exists: null,
+      controlState: null,
+      leaderOwnerId: null,
+      live: null,
+      working: null,
+    },
+    queue: {
+      total: 3,
+      terminal: 1,
+      inFlight: 1,
+      blocked: 0,
+      needsHuman: 0,
+      claimable: 1,
+      claimabilityScope: 'issue-family',
+    },
+    launch: {
+      settings: null,
+      ceilings: { maxAgents: 12, maxPerFleet: 5 },
+      headcount: { total: 2, fleet: null },
+    },
+    budget: { budgetCents: null, spentCents: null, spentCentsAt: null, budgetWindowSec: null },
+    tripwires: [],
+    pending: { blenderIdeas: 0, acceptanceRubric: null },
+    continuity: { checkpoint: null, lastOwnerReportAt: null },
+    priorities: ['Delegate the next worklist item.'],
+    degradedReasons: [],
+  };
+
+  it('embeds the server-composed portfolio snapshot in the first-turn brief', () => {
+    const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't', portfolio });
+
+    expect(brief).toContain('GOAL PORTFOLIO SNAPSHOT — assembled 2026-08-28T02:30:00.000Z');
+    expect(brief).toContain('Queue: total=3; terminal=1; in-flight=1');
+    expect(brief).toContain('1. Delegate the next worklist item.');
+  });
+
   it('states the outcome, the kill criterion, the ceiling and spend visibility boundary', () => {
     const brief = buildGoalKickoffBrief({
       goalId: 'ship-paid-app-3f9a1c',

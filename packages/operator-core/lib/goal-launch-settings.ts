@@ -450,6 +450,498 @@ export interface GoalBudgetTruth {
 }
 
 /**
+ * P-012 (goal-mode-hardening-2026-08-10): the ONE compact portfolio snapshot
+ * handed to a GOAL holder at launch and on every coord:orient. It is a read
+ * projection over the canonical goal/plan/pot/fleet/work-item/learning stores;
+ * none of these fields is a second ledger.
+ */
+export interface GoalPortfolioBrief {
+  schemaVersion: 1;
+  assembledAt: string;
+  goal: {
+    id: string;
+    title: string;
+    status: string | null;
+    body: string | null;
+    killCriterion: string | null;
+    standing: boolean;
+    parentId: string | null;
+  };
+  worklist: Array<{
+    ref: string;
+    ordinal: number;
+    harness: string | null;
+    slug: string;
+    title: string | null;
+    status: string | null;
+    next: { id: string; text: string; phase: string | null; blockedBy: string[] } | null;
+    counts: { todo: number; wip: number; blocked: number; needsHuman: number; done: number };
+    ambiguousMatches: number;
+  }>;
+  pots: Array<{ harness: string; role: 'owner' | 'contributing'; note: string | null }>;
+  drainFleet: {
+    slug: string | null;
+    exists: boolean | null;
+    controlState: string | null;
+    leaderOwnerId: string | null;
+    live: number | null;
+    working: number | null;
+  };
+  queue: {
+    total: number;
+    terminal: number;
+    inFlight: number;
+    blocked: number;
+    needsHuman: number;
+    claimable: number | null;
+    claimabilityScope: 'issue-family' | 'none' | 'unknown';
+  };
+  launch: {
+    settings: GoalLaunchSettings | null;
+    ceilings: { maxAgents: number | null; maxPerFleet: number | null };
+    headcount: GoalHeadcount;
+  };
+  budget: GoalBudgetTruth & { budgetWindowSec: number | null };
+  tripwires: Array<{ metric: string; label?: string; threshold?: number; current?: number; unit?: string }>;
+  pending: {
+    blenderIdeas: number | null;
+    acceptanceRubric: { id: string; status: string | null; latestScorecardAt: string | null } | null;
+  };
+  continuity: {
+    checkpoint: { workItemId: string; updatedAt: string; note: string } | null;
+    lastOwnerReportAt: string | null;
+  };
+  priorities: string[];
+  degradedReasons: string[];
+}
+
+type GoalPortfolioSourceRow = {
+  status?: unknown;
+  parent_id?: unknown;
+  tripwires?: unknown;
+  properties?: unknown;
+  metadata?: unknown;
+  pots?: unknown;
+  plans?: unknown;
+  queue?: unknown;
+  drain_fleet?: unknown;
+  checkpoint?: unknown;
+  last_owner_report_at?: unknown;
+  blender_pending?: unknown;
+  acceptance_rubric?: unknown;
+};
+
+const portfolioObject = (value: unknown): Record<string, unknown> | null =>
+  value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+const portfolioArray = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
+const portfolioString = (value: unknown): string | null =>
+  typeof value === 'string' && value.trim() ? value : null;
+const portfolioNumber = (value: unknown): number => {
+  const n = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0;
+  return Number.isFinite(n) ? n : 0;
+};
+
+function parsePortfolioWorklist(raw: unknown): GoalPortfolioBrief['worklist'] {
+  return portfolioArray(raw).flatMap((value) => {
+    const row = portfolioObject(value);
+    const ref = portfolioString(row?.ref);
+    const slug = portfolioString(row?.slug);
+    if (!row || !ref || !slug) return [];
+    const items = portfolioArray(row.items)
+      .map(portfolioObject)
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .sort((a, b) => portfolioNumber(a.seq) - portfolioNumber(b.seq));
+    const counts = { todo: 0, wip: 0, blocked: 0, needsHuman: 0, done: 0 };
+    for (const item of items) {
+      const status = portfolioString(item.status) ?? 'todo';
+      if (status === 'wip') counts.wip += 1;
+      else if (status === 'blocked') counts.blocked += 1;
+      else if (status === 'needs-human' || status === 'needs_human') counts.needsHuman += 1;
+      else if (status === 'done' || status === 'dropped') counts.done += 1;
+      else counts.todo += 1;
+    }
+    const nextRow = items.find((item) => {
+      const status = portfolioString(item.status) ?? 'todo';
+      const blockedBy = portfolioArray(item.blockedBy).map(String).filter(Boolean);
+      return status === 'todo' && blockedBy.length === 0;
+    });
+    return [{
+      ref,
+      ordinal: portfolioNumber(row.ordinal),
+      harness: portfolioString(row.harness),
+      slug,
+      title: portfolioString(row.title),
+      status: portfolioString(row.status),
+      next: nextRow
+        ? {
+            id: portfolioString(nextRow.id) ?? 'unknown',
+            text: portfolioString(nextRow.text) ?? '',
+            phase: portfolioString(nextRow.phase),
+            blockedBy: portfolioArray(nextRow.blockedBy).map(String).filter(Boolean),
+          }
+        : null,
+      counts,
+      ambiguousMatches: portfolioNumber(row.ambiguousMatches),
+    }];
+  });
+}
+
+/** Render the compact snapshot for a prompt without creating a second prose contract. */
+export function renderGoalPortfolioBrief(brief: GoalPortfolioBrief): string {
+  const plans = brief.worklist.length
+    ? brief.worklist
+        .map((p) => `${p.ordinal}. ${p.ref} [${p.status ?? 'missing'}]${p.next ? ` next=${p.next.id}` : ''}`)
+        .join('; ')
+    : 'none declared';
+  const priorities = brief.priorities.length ? brief.priorities.map((p, i) => `${i + 1}. ${p}`).join('\n') : '1. Re-read the goal before any write.';
+  return [
+    `GOAL PORTFOLIO SNAPSHOT — assembled ${brief.assembledAt} (schema v${brief.schemaVersion})`,
+    `Goal: ${brief.goal.status ?? 'unknown'}; worklist: ${plans}`,
+    `Pots: ${brief.pots.map((p) => `${p.harness}:${p.role}`).join(', ') || 'none'}`,
+    `Drain fleet: ${brief.drainFleet.slug ?? 'not declared'}; live=${brief.drainFleet.live ?? 'unknown'}; working=${brief.drainFleet.working ?? 'unknown'}; control=${brief.drainFleet.controlState ?? 'unknown'}`,
+    `Queue: total=${brief.queue.total}; terminal=${brief.queue.terminal}; in-flight=${brief.queue.inFlight}; blocked=${brief.queue.blocked}; needs-human=${brief.queue.needsHuman}; claimable=${brief.queue.claimable ?? 'unknown'} (${brief.queue.claimabilityScope})`,
+    `Launch: headcount=${brief.launch.headcount.total}; maxAgents=${brief.launch.ceilings.maxAgents ?? 'unlimited'}; maxPerFleet=${brief.launch.ceilings.maxPerFleet ?? 'unlimited'}`,
+    `Budget: spent=${brief.budget.spentCents ?? 'unknown'}c / ${brief.budget.budgetCents ?? 'undeclared'}c${brief.budget.spentCentsAt ? ` at ${brief.budget.spentCentsAt}` : ''}`,
+    `Pending: Blender=${brief.pending.blenderIdeas ?? 'unknown'}; rubric=${brief.pending.acceptanceRubric ? `${brief.pending.acceptanceRubric.id}:${brief.pending.acceptanceRubric.status ?? 'unknown'}` : 'none'}`,
+    `Continuity: checkpoint=${brief.continuity.checkpoint ? `${brief.continuity.checkpoint.workItemId}@${brief.continuity.checkpoint.updatedAt}` : 'none'}; last-owner-report=${brief.continuity.lastOwnerReportAt ?? 'none'}`,
+    ...(brief.degradedReasons.length ? [`DEGRADED — ${brief.degradedReasons.join('; ')}`] : []),
+    'CURRENT ACTION PRIORITIES',
+    priorities,
+    'This snapshot is orientation, not write authority: refresh the targeted canonical read immediately before each mutation.',
+  ].join('\n');
+}
+
+/**
+ * Assemble the authoritative GOAL portfolio projection. The launch-policy row is
+ * supplied by resolveGoalLaunchForGoal so a holder launch does not re-read it;
+ * coord:orient omits it and pays the same canonical read here.
+ */
+export async function readGoalPortfolioBrief(args: {
+  workspaceId: string;
+  goalId: string;
+  sql?: Sql;
+  now?: Date;
+  launch?: {
+    goalBrief: GoalLaunchBrief;
+    settings: GoalLaunchSettings | null;
+    budget: GoalBudgetTruth | null;
+    ceilings: { maxAgents: number | null; maxPerFleet: number | null };
+    headcount: GoalHeadcount;
+    degradedReasons?: string[];
+  };
+}): Promise<GoalPortfolioBrief | null> {
+  const degradedReasons = [...(args.launch?.degradedReasons ?? [])];
+  let launch = args.launch;
+  if (!launch) {
+    const policy = await readGoalLaunchSettings(args.goalId, args.sql);
+    if (!policy.brief) return null;
+    if (policy.error) degradedReasons.push(`launch policy read degraded: ${policy.error}`);
+    const ceilings = {
+      maxAgents: resolveCeiling(policy.settings?.maxAgents, GOAL_LAUNCH_DEFAULTS.maxAgents),
+      maxPerFleet: resolveCeiling(policy.settings?.maxPerFleet, GOAL_LAUNCH_DEFAULTS.maxPerFleet),
+    };
+    const counted = await goalHeadcount({ workspaceId: args.workspaceId, goalId: args.goalId, fleetSlug: policy.drainFleetSlug, sql: args.sql });
+    if (counted.error) degradedReasons.push(`headcount degraded: ${counted.error}`);
+    launch = { goalBrief: policy.brief, settings: policy.settings, budget: policy.budget, ceilings, headcount: counted.headcount };
+  }
+  const sql = pg(args.sql);
+  let liveHolderOwnerIds: string[] = [];
+  try {
+    // A durable GOAL mode row is not evidence that its session is still alive.
+    // Reuse the canonical holder+liveness fold before attributing current
+    // reports or Blender work; otherwise a dead holder's stale row keeps both
+    // counters attached to it indefinitely.
+    const { resolveGoalHolders } = await import('./goals/holder');
+    const holders = await resolveGoalHolders(sql, {
+      workspaceId: args.workspaceId,
+      goalId: args.goalId,
+    });
+    liveHolderOwnerIds = holders.live.map((holder) => holder.ownerId);
+    if (holders.liveness === 'unknown') {
+      degradedReasons.push('goal holder liveness unavailable; holder-scoped report and Blender counts may be incomplete');
+    }
+  } catch (error) {
+    degradedReasons.push(
+      `goal holder liveness read failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  try {
+    const rows = await sql<GoalPortfolioSourceRow[]>`
+      WITH goal_row AS (
+        SELECT * FROM harness_shared.goals
+         WHERE workspace_id = ${args.workspaceId} AND id = ${args.goalId}
+         LIMIT 1
+      )
+      SELECT g.status, g.parent_id, g.tripwires, g.properties, g.metadata,
+             (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+                       'harness', gp.harness_slug, 'role', gp.role, 'note', gp.note
+                     ) ORDER BY (gp.role = 'owner') DESC, gp.added_at), '[]'::jsonb)
+                FROM harness_shared.goal_pots gp
+               WHERE gp.workspace_id = g.workspace_id AND gp.goal_id = g.id AND gp.removed_at IS NULL) AS pots,
+             (SELECT COALESCE(jsonb_agg(plan_row ORDER BY (plan_row->>'ordinal')::int), '[]'::jsonb)
+                FROM (
+                  SELECT jsonb_build_object(
+                           'ref', wr.ref, 'ordinal', wr.ordinality,
+                           'harness', p.harness_slug,
+                           'slug', regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', ''),
+                           'title', p.title, 'status', COALESCE(p.op_status, p.status),
+                           'ambiguousMatches', (
+                             SELECT count(*) FROM harness_shared.harness_plans matches
+                              WHERE matches.workspace_id = g.workspace_id
+                                AND matches.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                           ),
+                           'items', COALESCE((
+                             SELECT jsonb_agg(jsonb_build_object(
+                                      'id', pi.item_id, 'text', pi.item_text, 'status', pi.status,
+                                      'phase', pi.phase, 'blockedBy', pi.blocked_by, 'seq', pi.seq
+                                    ) ORDER BY pi.seq)
+                               FROM harness_shared.plan_items pi
+                              WHERE pi.workspace_id = p.workspace_id
+                                AND pi.harness_slug = p.harness_slug
+                                AND pi.plan_slug = p.plan_slug
+                           ), '[]'::jsonb)
+                         ) AS plan_row
+                    FROM jsonb_array_elements_text(COALESCE(g.properties->'worklist'->'value', '[]'::jsonb))
+                         WITH ORDINALITY AS wr(ref, ordinality)
+                    LEFT JOIN LATERAL (
+                      SELECT hp.* FROM harness_shared.harness_plans hp
+                       WHERE hp.workspace_id = g.workspace_id
+                         AND hp.plan_slug = regexp_replace(wr.ref, '^plan:(?:[^/]+/)?', '')
+                         AND (
+                           position('/' in regexp_replace(wr.ref, '^plan:', '')) = 0
+                           OR hp.harness_slug = split_part(regexp_replace(wr.ref, '^plan:', ''), '/', 1)
+                         )
+                       ORDER BY hp.updated_at DESC NULLS LAST
+                       LIMIT 1
+                    ) p ON true
+                ) plans) AS plans,
+             (SELECT jsonb_build_object(
+                       'total', count(*),
+                       'terminal', count(*) FILTER (WHERE wi.status = ANY(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])),
+                       'inFlight', count(*) FILTER (WHERE wi.taken_by IS NOT NULL AND wi.status <> ALL(ARRAY['done','passed','resolved','closed','deprecated','dropped']::text[])),
+                       'blocked', count(*) FILTER (WHERE wi.status IN ('blocked','cursed')),
+                       'needsHuman', count(*) FILTER (WHERE wi.status IN ('needs-human','needs_human') OR COALESCE((wi.payload->>'needsHuman')::boolean, false)),
+                       'issueCandidates', COALESCE(jsonb_agg(jsonb_build_object('id', wi.feature_id, 'harness', wi.harness_slug))
+                         FILTER (WHERE wi.item_kind IN ('bug','change','task') AND wi.taken_by IS NULL AND wi.status IN ('open','failing','todo')), '[]'::jsonb)
+                     )
+                FROM harness_shared.work_items wi
+               WHERE wi.workspace_id = g.workspace_id AND wi.goal_id = g.id) AS queue,
+             (SELECT jsonb_build_object(
+                       'slug', af.fleet_slug, 'controlState', af.control_state,
+                       'leaderOwnerId', af.leader_owner_id,
+                       'live', count(cp.owner_id) FILTER (WHERE cp.heartbeat_at >= now() - interval '10 minutes'),
+                       'working', count(cp.owner_id) FILTER (WHERE cp.heartbeat_at >= now() - interval '10 minutes' AND EXISTS (
+                         SELECT 1 FROM harness_shared.work_items wi2 WHERE wi2.workspace_id = g.workspace_id AND wi2.goal_id = g.id AND wi2.taken_by = cp.owner_id
+                       ))
+                     )
+                FROM harness_shared.agent_fleets af
+                LEFT JOIN harness_shared.coord_presence cp
+                  ON cp.workspace_id = af.workspace_id AND cp.fleet_slug = af.fleet_slug
+               WHERE af.workspace_id = g.workspace_id AND af.fleet_slug = g.metadata->>'drainFleet'
+               GROUP BY af.fleet_slug, af.control_state, af.leader_owner_id) AS drain_fleet,
+             (SELECT jsonb_build_object(
+                       'workItemId', wi3.feature_id, 'updatedAtMs', cn.updated_ts, 'note', cn.note
+                     )
+                FROM harness_shared.work_items wi3
+                JOIN harness_shared.carry_notes cn
+                  ON cn.workspace_id = wi3.workspace_id
+                 AND cn.scope = 'workitem:' || COALESCE(NULLIF(wi3.harness_slug, ''), '*') || ':' || wi3.feature_id
+               WHERE wi3.workspace_id = g.workspace_id AND wi3.goal_id = g.id
+               ORDER BY cn.updated_ts DESC LIMIT 1) AS checkpoint,
+             (SELECT to_char(max(report_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                FROM (
+                  SELECT max(e.ts) AS report_at FROM harness_shared.coord_event_log e
+                   WHERE e.workspace_id = g.workspace_id AND e.surface = 'escalations'
+                     AND e.body->>'from' = ANY(${liveHolderOwnerIds}::text[])
+                  UNION ALL
+                  SELECT max(a.created_at) FROM harness_shared.attention_notifications a
+                   WHERE a.workspace_id = g.workspace_id AND a.data->>'goalId' = g.id
+                ) reports) AS last_owner_report_at,
+             (SELECT count(*) FROM harness_shared.scout_routed_ideas sri
+               WHERE sri.workspace_id = g.workspace_id AND sri.origin = 'su-ideate'
+                 AND sri.created_by = ANY(${liveHolderOwnerIds}::text[])
+                 AND (sri.outcome IS NULL OR sri.outcome = 'pending')) AS blender_pending,
+             (SELECT jsonb_build_object(
+                       'id', hp.plan_slug, 'status', hp.status,
+                       'latestScorecardAt', (
+                         SELECT to_char(max(sc.created_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                           FROM harness_shared.engineer_issues sc
+                          WHERE sc.workspace_id = g.workspace_id
+                            AND sc.payload->'observation'->>'rubricRef' = hp.plan_slug
+                            AND sc.payload->'observation'->'subject'->>'ref' = g.id
+                       )
+                     )
+                FROM harness_shared.harness_plans hp
+               WHERE hp.workspace_id = g.workspace_id AND hp.template = 'rubric'
+                 AND hp.template_slug IS NULL
+                 AND hp.template_data->>'kind' = 'acceptance'
+                 AND hp.template_data->>'subjectGoal' = g.id
+               ORDER BY hp.updated_at DESC LIMIT 1) AS acceptance_rubric
+        FROM goal_row g`;
+    const row = rows[0];
+    if (!row) return null;
+
+    const queueRaw = portfolioObject(row.queue) ?? {};
+    const candidates = portfolioArray(queueRaw.issueCandidates)
+      .map(portfolioObject)
+      .filter((candidate): candidate is Record<string, unknown> => candidate !== null);
+    let claimable: number | null = candidates.length === 0 ? 0 : null;
+    let claimabilityScope: GoalPortfolioBrief['queue']['claimabilityScope'] = candidates.length === 0 ? 'none' : 'unknown';
+    if (candidates.length > 0) {
+      try {
+        const { explainIssueClaimFloors } = await import('./work-items');
+        let admissible = 0;
+        const byHarness = new Map<string, string[]>();
+        for (const candidate of candidates) {
+          const id = portfolioString(candidate.id);
+          const harness = portfolioString(candidate.harness);
+          if (!id || !harness) continue;
+          byHarness.set(harness, [...(byHarness.get(harness) ?? []), id]);
+        }
+        for (const [harness, ids] of byHarness) {
+          const floors = await explainIssueClaimFloors(harness, ids);
+          admissible += floors.filter((floor) => floor.admissible).length;
+        }
+        claimable = admissible;
+        claimabilityScope = 'issue-family';
+      } catch (error) {
+        degradedReasons.push(`goal-scoped claimability unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+
+    const worklist = parsePortfolioWorklist(row.plans);
+    for (const plan of worklist) {
+      if (!plan.title) degradedReasons.push(`worklist ref ${plan.ref} does not resolve`);
+      if (plan.ambiguousMatches > 1 && !plan.ref.slice('plan:'.length).includes('/')) {
+        degradedReasons.push(`worklist ref ${plan.ref} is ambiguous across ${plan.ambiguousMatches} harnesses`);
+      }
+    }
+    const pots = portfolioArray(row.pots).flatMap((value) => {
+      const pot = portfolioObject(value);
+      const harness = portfolioString(pot?.harness);
+      if (!pot || !harness) return [];
+      return [{ harness, role: pot.role === 'owner' ? ('owner' as const) : ('contributing' as const), note: portfolioString(pot.note) }];
+    });
+    const fleetRaw = portfolioObject(row.drain_fleet);
+    const declaredFleet = portfolioString(portfolioObject(row.metadata)?.drainFleet);
+    const checkpointRaw = portfolioObject(row.checkpoint);
+    const rubricRaw = portfolioObject(row.acceptance_rubric);
+    const tripwires = portfolioArray(row.tripwires).flatMap((value) => {
+      const tripwire = portfolioObject(value);
+      const metric = portfolioString(tripwire?.metric);
+      if (!tripwire || !metric) return [];
+      return [{
+        metric,
+        ...(portfolioString(tripwire.label) ? { label: portfolioString(tripwire.label)! } : {}),
+        ...(tripwire.threshold != null ? { threshold: portfolioNumber(tripwire.threshold) } : {}),
+        ...(tripwire.current != null ? { current: portfolioNumber(tripwire.current) } : {}),
+        ...(portfolioString(tripwire.unit) ? { unit: portfolioString(tripwire.unit)! } : {}),
+      }];
+    });
+    const queue = {
+      total: portfolioNumber(queueRaw.total),
+      terminal: portfolioNumber(queueRaw.terminal),
+      inFlight: portfolioNumber(queueRaw.inFlight),
+      blocked: portfolioNumber(queueRaw.blocked),
+      needsHuman: portfolioNumber(queueRaw.needsHuman),
+      claimable,
+      claimabilityScope,
+    };
+    const priorities: string[] = [];
+    if (!declaredFleet) priorities.push('Declare and delegate the standing drain fleet.');
+    else if (!fleetRaw || portfolioNumber(fleetRaw.live) === 0) priorities.push(`Restore delegated leadership and live coverage for drain fleet ${declaredFleet}.`);
+    if (queue.needsHuman > 0) priorities.push(`Report ${queue.needsHuman} owner-walled queue item(s) with exact asks.`);
+    const nextPlan = worklist.find((plan) => plan.next);
+    if (nextPlan?.next) priorities.push(`Place ${nextPlan.ref}#${nextPlan.next.id} with an independently led plan fleet.`);
+    if ((claimable ?? 0) > 0) priorities.push(`Place ${claimable} goal-scoped claimable issue(s) without implementing them yourself.`);
+    if (queue.blocked > 0) priorities.push(`Triage ${queue.blocked} blocked/cursed queue item(s) and remove stranded blockers.`);
+    if (portfolioNumber(row.blender_pending) > 0) priorities.push(`Grade or route ${portfolioNumber(row.blender_pending)} pending Blender idea(s).`);
+    if (priorities.length === 0) priorities.push('Refresh the worklist and queue, then continue supervision; do not self-implement.');
+
+    return {
+      schemaVersion: 1,
+      assembledAt: (args.now ?? new Date()).toISOString(),
+      goal: {
+        id: args.goalId,
+        title: launch.goalBrief.title,
+        status: portfolioString(row.status),
+        body: launch.goalBrief.body,
+        killCriterion: launch.goalBrief.killCriterion,
+        standing: launch.goalBrief.standing,
+        parentId: portfolioString(row.parent_id),
+      },
+      worklist,
+      pots,
+      drainFleet: {
+        slug: declaredFleet,
+        exists: declaredFleet ? Boolean(fleetRaw) : null,
+        controlState: portfolioString(fleetRaw?.controlState),
+        leaderOwnerId: portfolioString(fleetRaw?.leaderOwnerId),
+        live: fleetRaw ? portfolioNumber(fleetRaw.live) : null,
+        working: fleetRaw ? portfolioNumber(fleetRaw.working) : null,
+      },
+      queue,
+      launch: { settings: launch.settings, ceilings: launch.ceilings, headcount: launch.headcount },
+      budget: {
+        budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
+        spentCents: launch.budget?.spentCents ?? null,
+        spentCentsAt: launch.budget?.spentCentsAt ?? null,
+        budgetWindowSec: launch.goalBrief.budgetWindowSec,
+      },
+      tripwires,
+      pending: {
+        blenderIdeas: row.blender_pending == null ? null : portfolioNumber(row.blender_pending),
+        acceptanceRubric: rubricRaw && portfolioString(rubricRaw.id)
+          ? { id: portfolioString(rubricRaw.id)!, status: portfolioString(rubricRaw.status), latestScorecardAt: portfolioString(rubricRaw.latestScorecardAt) }
+          : null,
+      },
+      continuity: {
+        checkpoint: checkpointRaw && portfolioString(checkpointRaw.workItemId)
+          ? {
+              workItemId: portfolioString(checkpointRaw.workItemId)!,
+              updatedAt: new Date(portfolioNumber(checkpointRaw.updatedAtMs)).toISOString(),
+              note: portfolioString(checkpointRaw.note) ?? '',
+            }
+          : null,
+        lastOwnerReportAt: portfolioString(row.last_owner_report_at),
+      },
+      priorities: priorities.slice(0, 6),
+      degradedReasons: [...new Set(degradedReasons)],
+    };
+  } catch (error) {
+    return {
+      schemaVersion: 1,
+      assembledAt: (args.now ?? new Date()).toISOString(),
+      goal: {
+        id: args.goalId,
+        title: launch.goalBrief.title,
+        status: null,
+        body: launch.goalBrief.body,
+        killCriterion: launch.goalBrief.killCriterion,
+        standing: launch.goalBrief.standing,
+        parentId: null,
+      },
+      worklist: [],
+      pots: [],
+      drainFleet: { slug: null, exists: null, controlState: null, leaderOwnerId: null, live: null, working: null },
+      queue: { total: 0, terminal: 0, inFlight: 0, blocked: 0, needsHuman: 0, claimable: null, claimabilityScope: 'unknown' },
+      launch: { settings: launch.settings, ceilings: launch.ceilings, headcount: launch.headcount },
+      budget: {
+        budgetCents: launch.budget?.budgetCents ?? launch.goalBrief.budgetCents,
+        spentCents: launch.budget?.spentCents ?? null,
+        spentCentsAt: launch.budget?.spentCentsAt ?? null,
+        budgetWindowSec: launch.goalBrief.budgetWindowSec,
+      },
+      tripwires: [],
+      pending: { blenderIdeas: null, acceptanceRubric: null },
+      continuity: { checkpoint: null, lastOwnerReportAt: null },
+      priorities: ['Re-read the goal portfolio before any placement or write.'],
+      degradedReasons: [...new Set([...degradedReasons, `portfolio read failed: ${error instanceof Error ? error.message : String(error)}`])],
+    };
+  }
+}
+
+/**
  * The goal-owned fields needed to brief a freshly launched holder.
  *
  * This rides the SAME row read as launch settings and budget truth. A holder
@@ -464,6 +956,8 @@ export interface GoalLaunchBrief {
   budgetCents: number | null;
   budgetWindowSec: number | null;
   standing: boolean;
+  /** P-012: the same authoritative snapshot coord:orient folds on every wake. */
+  portfolio?: GoalPortfolioBrief | null;
 }
 
 export interface GoalLaunchResolution {
@@ -981,7 +1475,13 @@ export async function resolveGoalLaunchForGoal(args: {
     };
   }
 
-  const { settings, budget, brief: goalBrief, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
+  const {
+    settings,
+    budget,
+    brief: rawGoalBrief,
+    error: settingsError,
+  } = await readGoalLaunchSettings(goalId, args.sql);
+  let goalBrief = rawGoalBrief;
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
 
   // P-006 (D-001/D-003): goals.budget_cents is a BINDING ceiling over the
@@ -1089,6 +1589,27 @@ export async function resolveGoalLaunchForGoal(args: {
           `counts against maxAgents).`,
       };
     }
+  }
+
+  // P-012: only the goal-holder slot pays for the portfolio read. Ordinary
+  // descendant launches still use this resolver for policy/ceilings, but their
+  // kickoff is not a portfolio-manager kickoff and must not assemble the whole
+  // goal on every child spawn.
+  if (args.goalRole === 'goal' && goalBrief) {
+    const portfolio = await readGoalPortfolioBrief({
+      workspaceId: args.workspaceId,
+      goalId,
+      sql: args.sql,
+      launch: {
+        goalBrief,
+        settings,
+        budget,
+        ceilings,
+        headcount,
+        degradedReasons,
+      },
+    });
+    if (portfolio) goalBrief = { ...goalBrief, portfolio };
   }
 
   return {
