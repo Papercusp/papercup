@@ -45,6 +45,10 @@ describe('verify-tauri-headless tauri-agent-tools dependency', () => {
       env: {
         ...process.env,
         PAPERCUSP_SID: 'test-agent-tools-preflight',
+        // The test is exercising the script's own dependency preflight, not
+        // capability:bash's task-lifetime guard.  Clear the managed-task marker
+        // inherited when this suite runs through a detached verifier.
+        PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
         TMPDIR: dir,
         VERIFY_TAURI_AGENT_TOOLS_BIN: missing,
       },

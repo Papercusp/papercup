@@ -71,7 +71,7 @@ describe('papercup-bg-host bundled-entry file contract (EI-21434335931587523)', 
     expect(execLines).toEqual([
       `ExecStartPre=${BUNDLE_HOST_UNIT_PATH}`,
       'ExecStart=',
-      'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; set +a; exec env \\',
+      'ExecStart=/usr/bin/bash -c "set -a; [ -f .env.local ] && . ./.env.local; PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH=$${PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH:-$$GOOGLE_APPLICATION_CREDENTIALS}; unset GOOGLE_APPLICATION_CREDENTIALS; set +a; exec env \\',
     ]);
     expect(dropIn.indexOf('ExecStartPre=')).toBeLessThan(dropIn.indexOf('ExecStart=\n'));
     expect(dropIn.indexOf('ExecStart=\n')).toBeLessThan(dropIn.indexOf('ExecStart=/usr/bin/bash'));

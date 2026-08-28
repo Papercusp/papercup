@@ -52,6 +52,10 @@ describe('EI-21107555111779921 — verifier detects install-safe transitions', (
           ...process.env,
           PAPERCUSP_REPO_DIR: ROOT,
           PAPERCUSP_SID: 'test-install-preflight',
+          // Keep this unit test on the install/dependency preflight path; a
+          // detached capability:bash marker would intentionally stop --boot-only
+          // first with the task-lifetime guard (exit 2).
+          PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
           PAPERCUSP_FS_MUTEX_LOCK_DIR: lockRoot,
           TMPDIR: scratch,
           VERIFY_TAURI_AGENT_TOOLS_BIN: missingTool,

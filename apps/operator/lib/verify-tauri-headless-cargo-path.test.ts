@@ -89,6 +89,9 @@ describe('EI-21281971092880743 — verify-tauri-headless cargo preflight', () =>
           ...process.env,
           PAPERCUSP_REPO_DIR: ROOT,
           PAPERCUSP_SID: 'test-cargo-preflight',
+          // Exercise cargo resolution itself rather than the managed-task
+          // --boot-only lifetime refusal inherited from capability:inspect.
+          PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
           TMPDIR: dir,
           VERIFY_TAURI_AGENT_TOOLS_BIN: fakeAgentTools,
           VERIFY_TAURI_CARGO_BIN: missingCargo,

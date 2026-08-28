@@ -648,7 +648,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   });
 
   it('EI-21681983105634595: refuses an explicit claim-held item without touching its governor lease', async () => {
-    getWiM.mockResolvedValue({
+    mockResolvedTyped(getWiM, {
       id: 'WI-333195',
       state: 'open',
       assignee: null,
@@ -657,8 +657,8 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
         claim_hold_by: 'system:resource-governor',
         claim_hold_reason: 'durable resource-governor queue; only governor lease transitions may select',
       },
-    } as never);
-    claimM.mockResolvedValue(claimedRow as never);
+    });
+    mockResolvedTyped(claimM, claimedRow);
 
     const b = body(await call({ workItem: 'WI-333195' }));
 
@@ -677,13 +677,13 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
 
   it('EI-21681983105634595: refuses a claim-held item auto-detected from a COLD goal', async () => {
     detectM.mockReturnValue('WI-333195');
-    getWiM.mockResolvedValue({
+    mockResolvedTyped(getWiM, {
       id: 'WI-333195',
       state: 'open',
       assignee: null,
       payload: { _claimHold: 'true', claim_hold_by: 'system:resource-governor' },
-    } as never);
-    claimM.mockResolvedValue(claimedRow as never);
+    });
+    mockResolvedTyped(claimM, claimedRow);
 
     const b = body(await call({ carry: 'cold', goal: 'retune the loop for WI-333195' }));
 
