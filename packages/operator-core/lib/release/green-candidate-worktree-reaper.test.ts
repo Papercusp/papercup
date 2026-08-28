@@ -205,6 +205,67 @@ describe('executeCandidateWorktreeReap', () => {
     expect(result.prunedAdmin).toBe(false);
   });
 
+  // EI-21714994180505750: the plan is a SNAPSHOT. A gate worktree went dirtyTracked 0 -> 14
+  // in four minutes when a repair agent began editing inside it, and the age floor cannot
+  // see that (editing files deep in a tree never touches the top-level directory mtime).
+  describe('at-delete re-check', () => {
+    it('spares a tree a peer entered between the scan and the delete', async () => {
+      const d = deps({ confirmStillAbandoned: vi.fn(async () => false) });
+      const target = entry('green-candidate-papercusp-228840fcdc13');
+      const result = await executeCandidateWorktreeReap(plan([target]), d);
+
+      expect(d.gitWorktreeRemove).not.toHaveBeenCalled();
+      expect(d.removeDirectory).not.toHaveBeenCalled();
+      expect(result.removed).toEqual([]);
+      expect(result.preserved).toContainEqual({
+        path: target.path,
+        reason: 'became-active-since-scan',
+      });
+    });
+
+    it('CONTROL: the identical entry IS removed when the re-check says abandoned', async () => {
+      // Without this, the test above would pass against a reaper that never deletes anything.
+      const d = deps({ confirmStillAbandoned: vi.fn(async () => true) });
+      const result = await executeCandidateWorktreeReap(
+        plan([entry('green-candidate-papercusp-228840fcdc13')]),
+        d,
+      );
+      expect(result.removed).toHaveLength(1);
+      expect(result.preserved).toEqual([]);
+    });
+
+    it('re-checks EVERY entry, not just the first', async () => {
+      const confirmStillAbandoned = vi.fn(async (p: string) => !p.endsWith('bbbbbbbbbbbb'));
+      const d = deps({ confirmStillAbandoned });
+      const result = await executeCandidateWorktreeReap(
+        plan([
+          entry('green-candidate-papercusp-aaaaaaaaaaaa'),
+          entry('green-candidate-papercusp-bbbbbbbbbbbb'),
+          entry('green-candidate-papercusp-cccccccccccc'),
+        ]),
+        d,
+      );
+      expect(confirmStillAbandoned).toHaveBeenCalledTimes(3);
+      expect(result.removed).toHaveLength(2);
+      expect(result.preserved).toEqual([
+        {
+          path: path.join(ROOT, 'green-candidate-papercusp-bbbbbbbbbbbb'),
+          reason: 'became-active-since-scan',
+        },
+      ]);
+    });
+
+    it('still reaps when no re-check seam is supplied', async () => {
+      const d = deps();
+      delete (d as { confirmStillAbandoned?: unknown }).confirmStillAbandoned;
+      const result = await executeCandidateWorktreeReap(
+        plan([entry('green-candidate-papercusp-aaaaaaaaaaaa')]),
+        d,
+      );
+      expect(result.removed).toHaveLength(1);
+    });
+  });
+
   it('does not prune when nothing was removed', async () => {
     const live = entry('green-candidate-papercusp-f369131625d4');
     const d = deps();

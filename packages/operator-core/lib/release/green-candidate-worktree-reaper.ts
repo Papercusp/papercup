@@ -53,14 +53,19 @@ export interface CandidateWorktreeEntry {
   mtimeMs: number;
 }
 
-/** Why the planner refused to reap an entry. Reported, never silent. */
+/** Why the reaper refused to reap an entry. Reported, never silent. */
 export type CandidateWorktreePreserveReason =
   /** Name is not a `green-candidate-<pipeline>-<sha12>` directory — not ours to delete. */
   | 'unrecognized-name'
   /** The caller named this tree as belonging to a live candidate/queue. */
   | 'active-candidate'
   /** Younger than the age floor; a run may still be using it. */
-  | 'too-young';
+  | 'too-young'
+  /**
+   * It was reapable when the directory was SCANNED and is not any more — a peer began
+   * working inside it in between. Raised only by the executor's at-delete re-check.
+   */
+  | 'became-active-since-scan';
 
 export interface CandidateWorktreeReapPlan {
   reap: CandidateWorktreeEntry[];
@@ -164,6 +169,24 @@ export interface CandidateWorktreeReapDeps {
   log(message: string): void;
   /** Defaults to a real `existsSync` check for the worktree's `.git`. */
   hasGitDir?(worktreePath: string): boolean;
+  /**
+   * Last-moment re-check, run IMMEDIATELY before each removal. Return false to spare the
+   * tree.
+   *
+   * WHY THIS EXISTS AND WHY THE AGE FLOOR DOES NOT REPLACE IT (measured 2026-08-28,
+   * EI-21714994180505750): worktree `green-candidate-papercusp-228840fcdc13` read
+   * dirtyTracked=0 at 16:21Z and dirtyTracked=14 at 16:25Z — a repair agent had begun
+   * editing 16 source files inside it. A plan is a SNAPSHOT, and for a destructive action
+   * four minutes of staleness is enough to destroy live work.
+   *
+   * Critically, the `minAgeMs` floor CANNOT catch this: a directory's mtime only changes
+   * when its own entries are added or removed, so a peer editing files deep inside a tree
+   * leaves the top-level mtime untouched and the tree still reads as old. Age answers "when
+   * was this created", never "is somebody in it right now". Only a content re-check does.
+   *
+   * Omitted ⇒ no re-check (correct for a caller that has already frozen the directory).
+   */
+  confirmStillAbandoned?(worktreePath: string): Promise<boolean>;
 }
 
 export interface CandidateWorktreeReapResult {
@@ -192,6 +215,14 @@ export async function executeCandidateWorktreeReap(
 
   for (const entry of plan.reap) {
     try {
+      // Re-verify at the MOMENT of deletion, never on the scan. See confirmStillAbandoned.
+      if (deps.confirmStillAbandoned && !(await deps.confirmStillAbandoned(entry.path))) {
+        result.preserved.push({ path: entry.path, reason: 'became-active-since-scan' });
+        deps.log(
+          `preserved ${entry.name}: a peer began working in it between the scan and the delete`,
+        );
+        continue;
+      }
       let removed = false;
       if (hasGitDir(entry.path)) {
         const outcome = await deps.gitWorktreeRemove(entry.path);

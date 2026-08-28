@@ -13405,6 +13405,21 @@ export function realCheckpointDeps(
               { timeoutMs: SETUP_TREE_TIMEOUT_MS },
             );
           },
+          // EI-21714994180505750: re-check at the MOMENT of deletion, not on the scan. A
+          // gate worktree went dirtyTracked 0 -> 14 in four minutes when a repair agent
+          // started editing inside it; the age floor cannot see that, because editing files
+          // deep in a tree never touches the top-level directory mtime.
+          async confirmStillAbandoned(worktreePath: string) {
+            if (!existsSync(path.join(worktreePath, ".git"))) return true;
+            const status = await exec(
+              "git",
+              ["-C", worktreePath, "status", "--porcelain"],
+              { timeoutMs: SETUP_TREE_TIMEOUT_MS, allowNonZero: true },
+            );
+            // Fail CLOSED: an unreadable tree is one we cannot prove is abandoned.
+            if (status.code !== 0) return false;
+            return status.stdout.trim().length === 0;
+          },
           log,
         },
       });
