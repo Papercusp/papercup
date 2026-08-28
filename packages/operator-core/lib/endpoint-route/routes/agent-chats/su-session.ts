@@ -1,22 +1,28 @@
 /** P-003: typed SU-session attachment on the existing agent-chats transport. */
 import { defineTool } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../../workspace-registry';
-import { SuSessionHostError, createSuSessionEventResponse, getRegisteredSuSessionHost } from '../../../su-session-host';
+import {
+  SuSessionHostError,
+  createSuSessionEventResponse,
+  getRegisteredSuSessionHost,
+  rehydrateRegisteredSuSessionHost,
+} from '../../../su-session-host';
 
-function hostFor(slug: string, chatId: string) {
-  return getRegisteredSuSessionHost({
+async function hostFor(slug: string, chatId: string) {
+  const input = {
     workspaceId: activeWorkspaceId(),
     harnessSlug: slug,
     agentChatId: chatId,
-  });
+  };
+  return getRegisteredSuSessionHost(input) ?? (await rehydrateRegisteredSuSessionHost(input));
 }
 
 const snapshotRoute = defineTool({
   method: 'GET',
   path: '/harness/:slug/agent-chats/:chatId/su-session',
   auth: 'public',
-  handler(_request, context) {
-    const host = hostFor(context.params.slug, context.params.chatId);
+  async handler(_request, context) {
+    const host = await hostFor(context.params.slug, context.params.chatId);
     if (!host) {
       return Response.json(
         {
@@ -34,8 +40,8 @@ const eventsRoute = defineTool({
   method: 'GET',
   path: '/harness/:slug/agent-chats/:chatId/su-session/events',
   auth: 'public',
-  handler(request, context) {
-    const host = hostFor(context.params.slug, context.params.chatId);
+  async handler(request, context) {
+    const host = await hostFor(context.params.slug, context.params.chatId);
     if (!host) {
       return Response.json(
         {
@@ -54,7 +60,7 @@ const commandRoute = defineTool({
   path: '/harness/:slug/agent-chats/:chatId/su-session/commands',
   auth: 'loopback',
   async handler(request, context) {
-    const host = hostFor(context.params.slug, context.params.chatId);
+    const host = await hostFor(context.params.slug, context.params.chatId);
     if (!host) {
       return Response.json(
         {

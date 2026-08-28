@@ -23,6 +23,10 @@ import {
 } from '@papercusp/chat-protocol';
 import { pinModuleState } from '@papercusp/module-singleton';
 import { dropChannel, getChannel, parseLastEventId, sseResponse, type BusChannel } from '@papercusp/sse';
+import {
+  persistSuSessionDescriptor,
+  readPersistedSuSessionDescriptor,
+} from './su-session-persistence';
 
 type EventEnvelopeKey = 'schema' | 'protocolVersion' | 'eventId' | 'sequence' | 'at' | 'session';
 
@@ -64,6 +68,10 @@ interface StoredCommand<B extends SuSessionBackend> {
 export interface SuSessionHostOptions<B extends SuSessionBackend> {
   descriptor: SuSessionDescriptor<B>;
   executeCommand?: SuSessionCommandExecutor<B>;
+  /** Persist the descriptor after every identity/lifecycle mutation. The
+   * callback is deliberately fire-and-forget so a PG outage never blocks the
+   * live event stream; the adv row remains the authoritative identity. */
+  persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   /** Retained events available to Last-Event-ID reconnects. Default 1024. */
   replaySize?: number;
   /** Per-live-client queue before the shared SSE layer closes/replays. */
@@ -186,6 +194,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
   private readonly channel: BusChannel<SuSessionEvent<B>>;
   private readonly now: () => Date;
   private readonly executeCommand?: SuSessionCommandExecutor<B>;
+  private readonly persistDescriptor?: (descriptor: SuSessionDescriptor<B>) => void | Promise<void>;
   private readonly commands = new Map<string, StoredCommand<B>>();
   private descriptorValue: SuSessionDescriptor<B>;
   private activeCommands = 0;
@@ -196,6 +205,7 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
     this.descriptorValue = jsonClone(options.descriptor);
     this.now = options.now ?? (() => new Date());
     this.executeCommand = options.executeCommand;
+    this.persistDescriptor = options.persistDescriptor;
     this.channelKey = hostChannelKey(this.descriptorValue.identity);
     this.channel = getChannel<SuSessionEvent<B>>(this.channelKey, {
       ringSize: options.replaySize ?? 1024,
@@ -285,6 +295,18 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
         ...this.descriptorValue,
         backendExtension: jsonClone(event.extension),
       } as SuSessionDescriptor<B>;
+    }
+
+    // Descriptor persistence is intentionally after local validation and
+    // before publication. A failed best-effort write cannot make the stream
+    // disappear, while a successful write means a restart can rehydrate the
+    // same agent-chat/adv/native identity and runtime generation.
+    try {
+      const persist = this.persistDescriptor;
+      if (persist) void Promise.resolve(persist(this.descriptor())).catch(() => undefined);
+    } catch {
+      // A persistence callback is bookkeeping, never a reason to drop a live
+      // session event or command acknowledgement.
     }
 
     const id = this.channel.publish(event);
@@ -529,6 +551,41 @@ export function getRegisteredSuSessionHost(input: {
     ownerId: '',
   });
   return registry().get(key) ?? null;
+}
+
+/**
+ * Rehydrate a host after an operator/PUI runtime restart. The descriptor is
+ * loaded from the same `adv_sessions` row that owns the native identity; no
+ * new adv row or native id is minted. A rehydrated host has no runtime
+ * executor until the backend adapter reattaches, so command POSTs fail closed
+ * with the existing retryable adapter-unavailable refusal.
+ */
+export async function rehydrateRegisteredSuSessionHost(input: {
+  workspaceId: string;
+  harnessSlug: string | null;
+  agentChatId: string;
+}): Promise<RegisteredHost | null> {
+  const existing = getRegisteredSuSessionHost(input);
+  if (existing) return existing;
+  const descriptor = await readPersistedSuSessionDescriptor(input.agentChatId, input.workspaceId);
+  if (!descriptor) return null;
+  if (
+    descriptor.identity.agentChatId !== input.agentChatId ||
+    descriptor.identity.workspaceId !== input.workspaceId ||
+    (descriptor.identity.harnessSlug !== null && descriptor.identity.harnessSlug !== input.harnessSlug)
+  ) return null;
+  try {
+    const host = new SuSessionHost({
+      descriptor,
+      persistDescriptor: async (next) => {
+        await persistSuSessionDescriptor(next.identity.advSessionId, next);
+      },
+    });
+    registerSuSessionHost(host);
+    return host as unknown as RegisteredHost;
+  } catch {
+    return getRegisteredSuSessionHost(input);
+  }
 }
 
 export type SuSessionSseEvents = Record<'session_event', SuSessionEvent> & Record<string, unknown>;

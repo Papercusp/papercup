@@ -36,6 +36,7 @@ import {
   type PuiSuSessionResult,
 } from './launch-agent';
 import { nativeSessionHandleForAdvSession, type CodexNativeSessionHandle } from './native-session-handles';
+import { bindSuSessionToAdvSession, persistSuSessionDescriptor } from './su-session-persistence';
 import { findCodexRolloutPath } from './session-transcript-resolvers';
 import { createCodexTimelineParser, type TimelineLineParser } from './session-timeline-parsers';
 import {
@@ -375,7 +376,19 @@ export class CodexSuSessionAdapter {
     this.host = new SuSessionHost({
       descriptor: descriptorFor(binding, runtime, options),
       executeCommand: (command, context) => this.execute(command, context),
+      persistDescriptor: async (descriptor) => {
+        await persistSuSessionDescriptor(binding.advSessionId, descriptor);
+      },
     });
+    // The deferred PUI create writes the adv row before the native pane boots.
+    // Bind the chat id once the native adapter exists; the unique index makes
+    // a duplicate adapter converge without creating a second identity.
+    void bindSuSessionToAdvSession({
+      advSessionId: binding.advSessionId,
+      agentChatId: options.agentChatId,
+      descriptor: this.host.descriptor(),
+      workspaceId: binding.workspaceId ?? undefined,
+    }).catch(() => undefined);
     this.unregister = options.register === false ? null : registerSuSessionHost(this.host);
     this.host.transition('ready', 'Codex native runtime attached');
   }
