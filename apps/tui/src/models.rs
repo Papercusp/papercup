@@ -4174,7 +4174,7 @@ mod tests {
 
         let knowledge_pack: CupboardListing =
             serde_json::from_str(r#"{"id":"knowledge-1","listing_kind":"knowledge-pack"}"#)
-        .unwrap();
+                .unwrap();
         assert_eq!(knowledge_pack.action_label(), Some("stage"));
 
         let legacy_pack: CupboardListing =
@@ -4184,7 +4184,7 @@ mod tests {
 
         let bundle: CupboardListing =
             serde_json::from_str(r#"{"id":"app-1","listing_kind":"app","delivery_type":"bundle"}"#)
-        .unwrap();
+                .unwrap();
         assert_eq!(bundle.action_label(), Some("install"));
 
         let standalone_without_release: CupboardListing = serde_json::from_str(
