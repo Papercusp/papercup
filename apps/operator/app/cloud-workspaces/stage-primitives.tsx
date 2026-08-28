@@ -9,7 +9,7 @@
  * way it stays true across three files.
  */
 
-import { useId } from "react";
+import { useEffect, useId, useRef } from "react";
 import {
   formatSignal,
   isLifecycleState,
@@ -17,6 +17,63 @@ import {
   type ConnectionStatus,
 } from "./workspace-view-model";
 import styles from "./cloud-workspaces.module.css";
+
+type FocusTargetResolver = () => HTMLElement | null | undefined;
+
+/**
+ * Focus an element only while it is still mounted in this document.
+ *
+ * Cloud Workspaces renders panels and menus conditionally, so a close action
+ * can race a render that removes the element that held focus. Keeping this
+ * guard in one place prevents every caller from accidentally focusing a stale
+ * node (or throwing during server rendering) and preserves the user's scroll
+ * position when focus is restored.
+ */
+export function focusSafely(target: HTMLElement | null | undefined): boolean {
+  if (
+    !target ||
+    typeof document === "undefined" ||
+    !document.contains(target)
+  ) {
+    return false;
+  }
+
+  target.focus({ preventScroll: true });
+  return document.activeElement === target;
+}
+
+/**
+ * Shared open/close focus contract for transient Cloud Workspaces surfaces.
+ *
+ * The resolvers run after the state transition commits, when the open target
+ * exists and the close target is back in the DOM. They are kept in refs so a
+ * caller can resolve dynamic provider/row triggers without retriggering the
+ * lifecycle effect on every render.
+ */
+export function useFocusLifecycle({
+  open,
+  onOpenFocus,
+  onCloseFocus,
+}: {
+  open: boolean;
+  onOpenFocus?: FocusTargetResolver;
+  onCloseFocus?: FocusTargetResolver;
+}): void {
+  const previousOpenRef = useRef(false);
+  const resolversRef = useRef({ onOpenFocus, onCloseFocus });
+  resolversRef.current = { onOpenFocus, onCloseFocus };
+
+  useEffect(() => {
+    const wasOpen = previousOpenRef.current;
+    previousOpenRef.current = open;
+    if (open === wasOpen) return;
+
+    const resolve = open
+      ? resolversRef.current.onOpenFocus
+      : resolversRef.current.onCloseFocus;
+    if (resolve) focusSafely(resolve());
+  }, [open]);
+}
 
 export function SignalList({
   items,
