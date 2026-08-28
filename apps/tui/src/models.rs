@@ -17,6 +17,33 @@ pub struct ConversationContextProjectionTarget {
     pub harness: Option<String>,
 }
 
+/// What the Sessions destination currently knows about an indexed transcript.
+/// `Unknown` is deliberately distinct from `Unavailable`: the initial
+/// `sessions:search` seed is bounded, so absence from that page cannot prove
+/// that a roster session has no indexed turns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionTranscriptAvailability {
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+impl Default for SessionTranscriptAvailability {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+/// Canonical result of resolving one exact roster session through
+/// `sessions:search`. The ref is passed unchanged to `sessions:read`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionTranscriptResolution {
+    pub reference: String,
+    pub excerpt: Option<String>,
+    pub transcript_at: Option<String>,
+}
+
 impl ConversationContextProjectionTarget {
     pub fn new(
         source_kind: impl Into<String>,
@@ -520,6 +547,12 @@ pub struct RosterEntry {
     /// reconstructs a backend-specific session address locally.
     #[serde(default)]
     pub transcript_ref: Option<String>,
+    /// Whether transcript presence has actually been established. The roster
+    /// payload does not carry this field, so rows begin `unknown`; bounded seed
+    /// hits promote them to `available`, and only an exact lazy lookup may mark
+    /// them `unavailable`.
+    #[serde(default)]
+    pub transcript_availability: SessionTranscriptAvailability,
     /// Search-result excerpt used as the immediate preview while the canonical
     /// transcript tail is loading.
     #[serde(default)]

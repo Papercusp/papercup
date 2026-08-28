@@ -1003,6 +1003,13 @@ async fn run<B: Backend>(
                 tokio::spawn(fetch_session_browser(query, tx.clone()));
                 terminal.draw(|f| ui::draw(f, &app))?;
             }
+            Action::ResolveSessionTranscript {
+                session_key,
+                target,
+            } => {
+                tokio::spawn(resolve_session_transcript(session_key, target, tx.clone()));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
             Action::FetchSessionTranscript {
                 session_key,
                 reference,
@@ -3212,6 +3219,24 @@ async fn fetch_session_browser(query: String, tx: UnboundedSender<Event>) {
         Err(error) => Err(error.to_string()),
     };
     let _ = tx.send(Event::SessionBrowser { query, result });
+}
+
+async fn resolve_session_transcript(
+    session_key: String,
+    target: models::ConversationContextProjectionTarget,
+    tx: UnboundedSender<Event>,
+) {
+    let result = match OperatorClient::from_discovery().await {
+        Ok(client) => client
+            .resolve_session_transcript(&target)
+            .await
+            .map_err(|error| error.to_string()),
+        Err(error) => Err(error.to_string()),
+    };
+    let _ = tx.send(Event::SessionTranscriptResolved {
+        session_key,
+        result,
+    });
 }
 
 async fn fetch_session_transcript(

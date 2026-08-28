@@ -6,7 +6,8 @@ use crate::app::{
     SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
 };
 use crate::models::{
-    contribution_count, contribution_names, tier_glyph, tier_label, Notif, ToolOutcome, INBOX_TIERS,
+    contribution_count, contribution_names, tier_glyph, tier_label, Notif,
+    SessionTranscriptAvailability, ToolOutcome, INBOX_TIERS,
 };
 use crate::semantic_tool_cards::SemanticTone;
 use crate::theme::Theme;
@@ -771,6 +772,11 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
                 .or(row.heartbeat_at.as_deref())
                 .and_then(|value| value.get(..10))
                 .unwrap_or("—");
+            let transcript = match row.transcript_availability {
+                SessionTranscriptAvailability::Available => "TX AVAILABLE",
+                SessionTranscriptAvailability::Unknown => "TX UNKNOWN",
+                SessionTranscriptAvailability::Unavailable => "TX UNAVAILABLE",
+            };
             ListItem::new(Line::from(vec![
                 Span::raw(format!("{marker} ")),
                 Span::styled(
@@ -780,6 +786,7 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw(format!(" {:<8} {:<8} ", state, trunc(agent, 8))),
                 Span::styled(format!("{:<24}", trunc(lane, 24)), Theme::dim()),
                 Span::styled(format!(" {when}"), Theme::dim()),
+                Span::styled(format!("  {transcript}"), Theme::dim()),
             ]))
         })
         .collect();
@@ -820,6 +827,13 @@ fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw(turn.text.clone()),
             ]));
         }
+    } else if app.selected_browser_session().is_some_and(|row| {
+        row.transcript_availability == SessionTranscriptAvailability::Unavailable
+    }) {
+        preview.push(Line::from(Span::styled(
+            "Transcript unavailable (exact session lookup returned no indexed turns).",
+            Theme::dim(),
+        )));
     } else if let Some(excerpt) = app
         .selected_browser_session()
         .and_then(|row| row.transcript_excerpt.as_ref())

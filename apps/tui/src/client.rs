@@ -17,12 +17,13 @@ use crate::ipc::{CallEvent, CallFrame, IpcClient};
 use crate::models;
 use crate::models::{
     ActivityRecentPayload, ActivityRow, AgentConfigResponse, AttentionItem, AttentionResponse,
-    BeeAssignment, BeeMailEntry, BeeMailPayload, BeeMailSide, ConvDetail, ConvListResponse,
-    ConvSummary, ConversationLoad, CoordFeedPayload, CoordInboxResponse, CoordMsg, CrewMember,
-    CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload, FlagsResponse,
-    FleetAssignmentsPayload, HarnessFeature, HarnessIssue, HarnessRef, IssuesResponse, LayoutRow,
-    LayoutSummary, LayoutsResponse, LexiconPackPayload, Notif, OperatorConfig, PlanItemStates,
-    PlanSummary, PlansResponse, ProjectsResponse, RosterEntry, RosterResponse,
+    BeeAssignment, BeeMailEntry, BeeMailPayload, BeeMailSide, ConvDetail, ConvGetResponse,
+    ConvListResponse, ConvSummary, ConversationLoad, CoordFeedPayload, CoordInboxResponse,
+    CoordMsg, CrewMember, CrewRow, CrewSummary, CrewsResponse, DocsResponse, FeaturesPayload,
+    FlagsResponse, FleetAssignmentsPayload, HarnessFeature, HarnessIssue, HarnessRef,
+    IssuesResponse, LayoutRow, LayoutSummary, LayoutsResponse, LexiconPackPayload, Notif,
+    OperatorConfig, PlanItemStates, PlanSummary, PlansResponse, ProjectsResponse, RosterEntry,
+    RosterResponse, SessionTranscriptAvailability, SessionTranscriptResolution,
     SessionTranscriptTurn, TestingDomain, TestingResponse, ToastsResponse, TuiPanesPayload,
     TurnsPage, ViewState, ViewStateResponse, WorkFrontier, WorkItem, WorkItemsPayload,
 };
@@ -282,6 +283,7 @@ fn merge_session_switcher_rows(
             let row = &mut rows[index];
             if transcript_ref.is_some() {
                 row.transcript_ref = transcript_ref;
+                row.transcript_availability = SessionTranscriptAvailability::Available;
             }
             if transcript_excerpt.is_some() {
                 row.transcript_excerpt = transcript_excerpt;
@@ -331,12 +333,50 @@ fn merge_session_switcher_rows(
             session_state: Some("recorded".to_string()),
             native_session,
             transcript_ref,
+            transcript_availability: SessionTranscriptAvailability::Available,
             transcript_excerpt,
             transcript_at,
             ..RosterEntry::default()
         });
     }
     rows
+}
+
+/// Parse the first hit from an exact-session `sessions:search`. A true empty
+/// page is `Ok(None)`; a malformed hit is an error so it can never be rendered
+/// as proof that the transcript is unavailable.
+fn session_transcript_resolution(
+    inner: &serde_json::Value,
+) -> Result<Option<SessionTranscriptResolution>> {
+    let Some(hit) = inner
+        .get("results")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|results| results.first())
+    else {
+        return Ok(None);
+    };
+    let reference = hit
+        .get("readMore")
+        .and_then(|value| value.get("args"))
+        .and_then(|value| value.get("ref"))
+        .or_else(|| hit.get("ref"))
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("exact sessions:search hit omitted its canonical ref")?
+        .to_string();
+    Ok(Some(SessionTranscriptResolution {
+        reference,
+        excerpt: hit
+            .get("excerpt")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        transcript_at: hit
+            .get("provenance")
+            .and_then(|value| value.get("ts"))
+            .or_else(|| hit.get("ts"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+    }))
 }
 
 /// Normalize the structured `sessions:read` response into the browser's shared
@@ -1062,6 +1102,30 @@ impl OperatorClient {
         Ok(merge_session_switcher_rows(rows, &inner))
     }
 
+    /// Resolve transcript availability for one exact roster-native session.
+    /// This is the lazy second leg for rows outside the bounded 20-hit seed;
+    /// an empty exact result is the only client-side evidence for `unavailable`.
+    pub async fn resolve_session_transcript(
+        &self,
+        target: &models::ConversationContextProjectionTarget,
+    ) -> Result<Option<SessionTranscriptResolution>> {
+        let env = self
+            .run_tool(
+                "sessions:search",
+                serde_json::json!({
+                    "query": "%",
+                    "mode": "verbatim",
+                    "limit": 1,
+                    "context": 0,
+                    "session": target.session_id,
+                    "source_kind": target.source_kind,
+                }),
+            )
+            .await?;
+        let inner = run_tool_inner_json(&env)?;
+        session_transcript_resolution(&inner)
+    }
+
     /// Read a canonical transcript reference returned by `sessions:search` and
     /// normalize every backend onto one preview shape.
     pub async fn session_transcript(&self, reference: &str) -> Result<Vec<SessionTranscriptTurn>> {
@@ -1296,7 +1360,7 @@ impl OperatorClient {
         let env = self
             .post_json(
                 "/api/agent-tools/conversations/get",
-                serde_json::json!({ "conversation_id": id }),
+                serde_json::json!({ "id": id }),
             )
             .await?;
         let text = env
@@ -1305,7 +1369,7 @@ impl OperatorClient {
             .and_then(|c| c.get("text"))
             .and_then(|t| t.as_str())
             .context("conversations:get: missing content[0].text")?;
-        serde_json::from_str::<ConvDetail>(text).context("parse conversation detail")
+        parse_conversation_get_payload(text, id)
     }
 
     /// Promote a conversation into an engineer issue (carries its thread). Returns
@@ -2673,6 +2737,40 @@ pub fn run_tool_inner_json(v: &serde_json::Value) -> Result<serde_json::Value> {
     serde_json::from_str(text).with_context(|| "run-tool: inner payload is not JSON")
 }
 
+/// Decode the standardized keyed-array `conversations:get` payload for one
+/// requested conversation. The endpoint stays bulk-shaped even for the
+/// single-id shorthand, so correlate by id and preserve the per-item error.
+fn parse_conversation_get_payload(text: &str, requested_id: &str) -> Result<ConvDetail> {
+    let payload: ConvGetResponse =
+        serde_json::from_str(text).context("parse conversations:get payload")?;
+    let result = payload
+        .results
+        .into_iter()
+        .find(|result| result.id == requested_id)
+        .ok_or_else(|| {
+            anyhow!("conversations:get: response omitted requested id {requested_id}")
+        })?;
+
+    if !result.ok {
+        anyhow::bail!(
+            "conversations:get {requested_id}: {}",
+            result.error.as_deref().unwrap_or("request failed")
+        );
+    }
+
+    let detail = result.detail;
+    match detail.conversation.as_ref() {
+        Some(conversation) if conversation.id == requested_id => Ok(detail),
+        Some(conversation) => anyhow::bail!(
+            "conversations:get {requested_id}: payload conversation id mismatch ({})",
+            conversation.id
+        ),
+        None => anyhow::bail!(
+            "conversations:get {requested_id}: successful result omitted conversation"
+        ),
+    }
+}
+
 /// Parse a `coord:wake-queue {action:'list'}` run-tool response into the staged
 /// wakes (hive-agent-tabs P-009). Pure — unit-tested.
 pub fn parse_wake_queue_list(v: &serde_json::Value) -> Result<Vec<crate::models::PendingWake>> {
@@ -2809,6 +2907,48 @@ mod tests {
             transport,
             MemoryLoadState::TransportFailure { .. }
         ));
+    }
+
+    #[test]
+    fn conversation_get_parser_selects_the_requested_keyed_result() {
+        let payload = r#"{"ok":true,"results":[
+            {"ok":true,"id":"conv-other","conversation":{"id":"conv-other"}},
+            {"ok":true,"id":"conv-target","conversation":{"id":"conv-target","body":"seed"},
+             "topics":["coord"],"posts":[],"subscriber_count":2}],
+            "counts":{"ok":2,"failed":0}}"#;
+
+        let detail = parse_conversation_get_payload(payload, "conv-target").unwrap();
+        let conversation = detail.conversation.expect("conversation present");
+        assert_eq!(conversation.id, "conv-target");
+        assert_eq!(conversation.body, "seed");
+        assert_eq!(detail.topics, vec!["coord"]);
+        assert_eq!(detail.subscriber_count, 2);
+    }
+
+    #[test]
+    fn conversation_get_parser_preserves_per_item_errors() {
+        let payload = r#"{"ok":true,"results":[
+            {"ok":false,"id":"conv-missing","error":"not_found"}],
+            "counts":{"ok":0,"failed":1}}"#;
+
+        let error = parse_conversation_get_payload(payload, "conv-missing").unwrap_err();
+        assert!(error.to_string().contains("not_found"), "{error:#}");
+    }
+
+    #[test]
+    fn conversation_get_parser_rejects_omitted_or_mismatched_results() {
+        let omitted = r#"{"ok":true,"results":[],"counts":{"ok":0,"failed":0}}"#;
+        let error = parse_conversation_get_payload(omitted, "conv-target").unwrap_err();
+        assert!(
+            error.to_string().contains("omitted requested id"),
+            "{error:#}"
+        );
+
+        let mismatched = r#"{"ok":true,"results":[
+            {"ok":true,"id":"conv-target","conversation":{"id":"conv-other"}}],
+            "counts":{"ok":1,"failed":0}}"#;
+        let error = parse_conversation_get_payload(mismatched, "conv-target").unwrap_err();
+        assert!(error.to_string().contains("id mismatch"), "{error:#}");
     }
 
     #[test]
@@ -2958,17 +3098,29 @@ mod tests {
         assert_eq!(rows.len(), 3, "both duplicate forms must be suppressed");
         assert_eq!(rows[0].session_state.as_deref(), Some("live"));
         assert_eq!(
+            rows[0].transcript_availability,
+            SessionTranscriptAvailability::Available
+        );
+        assert_eq!(
             rows[0].transcript_ref.as_deref(),
             Some("session_turn:codex:rollout-live:7")
         );
         assert_eq!(rows[0].transcript_excerpt.as_deref(), Some("live preview"));
         assert_eq!(rows[1].session_state.as_deref(), Some("ended"));
         assert_eq!(
+            rows[1].transcript_availability,
+            SessionTranscriptAvailability::Available
+        );
+        assert_eq!(
             rows[1].transcript_ref.as_deref(),
             Some("session_turn:claude:ended-transcript:9")
         );
         assert_eq!(rows[2].owner_id, "su-recorded");
         assert_eq!(rows[2].session_state.as_deref(), Some("recorded"));
+        assert_eq!(
+            rows[2].transcript_availability,
+            SessionTranscriptAvailability::Available
+        );
         assert_eq!(
             rows[2].transcript_excerpt.as_deref(),
             Some("recorded preview")
@@ -2985,6 +3137,31 @@ mod tests {
                 ..
             }) if id == "recorded-only"
         ));
+    }
+
+    #[test]
+    fn exact_session_resolution_distinguishes_empty_from_malformed_hits() {
+        assert!(
+            session_transcript_resolution(&serde_json::json!({ "results": [] }))
+                .unwrap()
+                .is_none()
+        );
+
+        let resolved = session_transcript_resolution(&serde_json::json!({ "results": [{
+            "readMore": { "args": { "ref": "session_turn:codex:rollout:8" } },
+            "excerpt": "latest turn",
+            "provenance": { "ts": "2026-08-27T12:00:00Z" }
+        }] }))
+        .unwrap()
+        .unwrap();
+        assert_eq!(resolved.reference, "session_turn:codex:rollout:8");
+        assert_eq!(resolved.excerpt.as_deref(), Some("latest turn"));
+        assert_eq!(
+            resolved.transcript_at.as_deref(),
+            Some("2026-08-27T12:00:00Z")
+        );
+
+        assert!(session_transcript_resolution(&serde_json::json!({ "results": [{}] })).is_err());
     }
 
     #[test]

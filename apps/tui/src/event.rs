@@ -11,7 +11,8 @@ use crate::models::{
     ConvDetail, ConvSummary, DocsResponse, EffectiveClaudeSettings, FlagsResponse,
     FleetLeaderBrief, FleetRateStatus, GoalSummary, HarnessFeature, HarnessIssue, HarnessRef,
     LexiconPackPayload, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkFrontier, WorkItem,
+    SessionTranscriptResolution, SessionTranscriptTurn, TestingDomain, TuiPaneContribution,
+    ViewState, WorkFrontier, WorkItem,
 };
 use crossterm::event::{self, Event as CtEvent, KeyEvent};
 use pui_companion_proto::Topology;
@@ -75,6 +76,12 @@ pub enum Event {
     SessionBrowser {
         query: String,
         result: Result<Vec<RosterEntry>, String>,
+    },
+    /// Result of lazily resolving one selected roster row against its exact
+    /// native session id. `Ok(None)` is the explicit unavailable verdict.
+    SessionTranscriptResolved {
+        session_key: String,
+        result: Result<Option<SessionTranscriptResolution>, String>,
     },
     /// Canonical transcript tail for the currently selected browser row.
     SessionTranscript {
