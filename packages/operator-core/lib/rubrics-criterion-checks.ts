@@ -5,8 +5,10 @@
  * A rubric criterion may carry an optional structured `check`:
  *   - kind:'tests' { files } — a DETERMINISTIC must-pass binding. Two enforcement
  *     points, both here:
- *       PROPOSE time — every named file must RESOLVE against the live tree or the
- *       propose is REFUSED (unlike the advisory replicationSqlCheck, whose subject is
+ *       PROPOSE time — every named file must RESOLVE against the live tree AND be
+ *       RUNNABLE by the router grading will use (WI-369566: resolving is not runnable,
+ *       and a resolving-but-unroutable path made rubrics permanently ungradeable), or
+ *       the propose is REFUSED (unlike the advisory replicationSqlCheck, whose subject is
  *       external moving-target DB state, a file path is fully in-our-control: a check
  *       that can never run is a booby trap, not advice — the same posture as the
  *       plan-audit citation resolver and the acceptance-kind link guards).
@@ -73,10 +75,62 @@ export interface CriterionCheckPathValidation {
 }
 
 /**
+ * WI-369566 — RESOLVING IS NOT RUNNABLE. Path existence was the whole propose-time rule,
+ * so a criterion could bind a file that resolves and that the test router will never
+ * report on. Grading then refuses it (`check_file_not_run`, below) — and because emit's
+ * completeness rule requires EVERY criterion to be rated, no rating value skips the
+ * check, so the rubric is PERMANENTLY ungradeable and its plan can never reach
+ * status:shipped. Measured instance: a criterion naming `scripts/verify-…-rail.sh`;
+ * the router answered TEST_FILE_UNSUPPORTED_INPUT (⚠ NON_TEST … skipped) and then
+ * TEST_FILE_ROUTE_ERROR requested=1 matched=0, and only the GRADER discovered it, at
+ * ship time. This moves that cost to the author, at authoring time.
+ *
+ * WHAT IS CHECKED — the FILENAME SHAPE, which is the leg that catches the measured class.
+ * MEASURED: `scripts/test-files.mjs` filters a non-test input out before route discovery
+ * (`isTestFilePath`, and the NON_TEST refusal above). REASONED, not measured: the external
+ * checkout path `runTestFilesCore` falls back to for a managed Hive runs Vitest against the
+ * named files, whose include contract is `*.{test,spec}.?(c|m)[jt]s?(x)`, so a differently
+ * named file is selected by neither path — if that ever stops holding, the pin below is
+ * where the disagreement should surface first.
+ *
+ * WHAT IS NOT, and why — ROUTE OWNERSHIP ("does a Vitest config own this path"). The
+ * router owns that answer (`discoverTestRoute`) and this module must not IMPORT it:
+ * `scripts/test-files.mjs` is a test-runner CLI that the operator host deliberately
+ * SPAWNS (see `runTestFilesCore`) and never bundles, and `test-executor-runnability.ts`
+ * — the one module that does import it — is reached only from the `lint:tests` script,
+ * never from the host. Importing it here would drag that CLI and its process/watchdog
+ * dependencies into the server bundle to catch a strictly rarer fault that `lint:tests`
+ * already owns from both sides (`findOrphanTests` for a test matching no registry glob,
+ * `findUnrunnableRegistryTests` for a registry-visible test no runner executes).
+ * Grading stays the authority for that last mile.
+ *
+ * DERIVED-TRUTH RUNG 2 (PIN, not copy): the pattern below is a second statement of the
+ * router's `isTestFilePath`, so it is pinned by a divergence test that imports BOTH and
+ * asserts they agree over a corpus (rubrics-criterion-checks.test.ts). A test may import
+ * the .mjs freely — it costs the host bundle nothing — so the check lives there and this
+ * regex cannot silently drift from the router's.
+ */
+const ROUTER_TEST_FILE_SUFFIX_RE = /\.(?:test|spec)\.[cm]?[jt]sx?$/i;
+
+/** @returns a teaching reason when the path can never be RUN, else null. */
+function describeUnroutableTestPath(file: string): string | null {
+  if (ROUTER_TEST_FILE_SUFFIX_RE.test(file.replaceAll('\\', '/'))) return null;
+  return (
+    'resolves, but is not a test file — the router skips a non-test input as NON_TEST ' +
+    '(TEST_FILE_UNSUPPORTED_INPUT) and reports on nothing, so scorecards:emit could never ' +
+    'grade this criterion and the rubric would be permanently ungradeable. Name the ' +
+    'importing *.test.* / *.spec.* file, or drop the check to leave the criterion fuzzy ' +
+    '(the right answer when its method is a human-run procedure)'
+  );
+}
+
+/**
  * PROPOSE-time validation: every kind:'tests' check file must resolve against the live
- * tree. Absolute paths are refused outright — a stored absolute path is machine-specific
- * and escapes the tree the check claims to be about; repo-root-relative (or unambiguous
- * workspace-relative, which is normalized) is the portable contract.
+ * tree AND be runnable by the same router grading will use (see
+ * {@link describeUnroutableTestPath}). Absolute paths are refused outright — a stored
+ * absolute path is machine-specific and escapes the tree the check claims to be about;
+ * repo-root-relative (or unambiguous workspace-relative, which is normalized) is the
+ * portable contract.
  */
 export function validateCriterionCheckPaths(
   criteria: ReadonlyArray<CheckedCriterion>,
@@ -130,6 +184,11 @@ export function validateCriterionCheckPaths(
       checked++;
       if (!existsSync(resolve(root, f))) {
         failures.push({ criterionKey: c.key, path: f, reason: 'does not resolve against the live tree' });
+        continue;
+      }
+      const unroutable = describeUnroutableTestPath(f);
+      if (unroutable) {
+        failures.push({ criterionKey: c.key, path: f, reason: unroutable });
         continue;
       }
       normalized.push(f);
@@ -214,7 +273,8 @@ export function assertCriterionCheckPathsResolve(
   const parts: string[] = [];
   if (v.failures.length > 0) {
     parts.push(
-      `structured tests-check paths must resolve against the live tree ` +
+      `structured tests-check paths must resolve against the live tree AND be runnable by ` +
+        `the test router that grading will use ` +
         `(P-011 / D-006 — a check that can never run is a booby trap, not advice). Against root '${v.root}':\n` +
         v.failures.map((f) => `  • criterion '${f.criterionKey}': ${f.path} — ${f.reason}`).join('\n') +
         `\nFix the path(s) (repo-root-relative), or drop the check to leave the criterion fuzzy.`,

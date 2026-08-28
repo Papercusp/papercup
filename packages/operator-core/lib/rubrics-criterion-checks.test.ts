@@ -10,7 +10,7 @@
  * depends on the rating–run PAIR, not on either alone.
  */
 import { afterAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -26,6 +26,12 @@ import {
 import { REPO_ROOT } from './agent-tools/docs/_repo-paths';
 import { rubricCriterionSchema, rubricTemplateDataSchema, rubricCriterionCheckSchema } from './agent-tools/plans/rubric-template';
 import { effectiveCriterionInstrumentKey, planRowToRubric } from './rubrics';
+// The ROUTER's own admission predicate, imported so WI-369566's restated pattern is
+// pinned to it. A test may import this plain-Node CLI freely; the validator may not
+// (the operator host spawns it and must not bundle it).
+// eslint-disable-next-line import/no-relative-packages
+// @ts-expect-error — plain-Node .mjs router has no declaration file by design.
+import { isTestFilePath } from '../../../scripts/test-files.mjs';
 
 // ── scratch tree ──────────────────────────────────────────────────────────────
 const root = mkdtempSync(join(tmpdir(), 'rubric-checks-test-'));
@@ -161,6 +167,115 @@ describe('validateCriterionCheckPaths / assertCriterionCheckPathsResolve', () =>
     expect(() =>
       assertCriterionCheckPathsResolve([{ key: 'k', check: testsCheck(['packages/x/real.test.ts']) }], { root }),
     ).not.toThrow();
+  });
+});
+
+// ── WI-369566: RESOLVING IS NOT RUNNABLE (the propose-time routability guard) ────
+// The measured shape: a criterion bound a file that EXISTS on disk but that the test
+// router answers TEST_FILE_UNSUPPORTED_INPUT (⚠ NON_TEST … skipped) for, so
+// scorecards:emit reported on nothing and refused the rating — and since emit requires
+// EVERY criterion to be rated, no rating value skipped it and the rubric was
+// permanently ungradeable. The emit-side refusal is CORRECT and must not be weakened
+// (D-006 forbids passing an unjudgeable check); this guard moves the cost to the author.
+//
+// Every case is PAIRED with a positive control, so a guard that simply refused all
+// tests-checks — or one that refused nothing — fails these tests rather than passing them.
+writeFileSync(join(root, 'packages', 'x', 'verify-rail.sh'), '#!/usr/bin/env bash\nexit 0\n');
+
+// The PIN corpus: BOTH verdicts, every entry created on disk so path resolution can
+// never be mistaken for a runnability verdict.
+const ROUTABILITY_CORPUS = [
+  'packages/x/real.test.ts',
+  'packages/x/widget.test.tsx',
+  'packages/x/flow.spec.ts',
+  'packages/x/legacy.spec.jsx',
+  'packages/x/node.test.mjs',
+  'packages/x/node.test.cjs',
+  'packages/x/verify-rail.sh',
+  'packages/x/source.ts',
+  'packages/x/README.md',
+  'packages/x/testing.ts',
+  'packages/x/test-helpers.ts',
+];
+for (const f of ROUTABILITY_CORPUS) {
+  if (!existsSync(join(root, f))) writeFileSync(join(root, f), 'export {};\n');
+}
+
+describe('validateCriterionCheckPaths — routability (WI-369566)', () => {
+  // FALSIFIABILITY CONTROL, kept permanently rather than run once as a mutation: the
+  // PRE-FIX rule was existence-only, so it is reproducible in one line. Same file,
+  // old rule ACCEPTS, new rule REFUSES — which pins the refusal to the new routability
+  // leg and not to a fixture that quietly stopped resolving (a missing file would refuse
+  // for the wrong reason and this test could not tell the difference).
+  const preFixExistenceOnlyRule = (file: string): boolean => existsSync(join(root, file));
+
+  it('REFUSES a resolving non-test path; the same criterion with a real test file passes', () => {
+    expect(preFixExistenceOnlyRule('packages/x/verify-rail.sh')).toBe(true);
+
+    const bad = validateCriterionCheckPaths(
+      [{ key: 'rail', check: testsCheck(['packages/x/verify-rail.sh']) }],
+      { root },
+    );
+    expect(bad.ok).toBe(false);
+    expect(bad.failures.map((f) => f.criterionKey)).toEqual(['rail']);
+    expect(bad.failures[0]?.path).toBe('packages/x/verify-rail.sh');
+    expect(bad.failures[0]?.reason).toContain('NON_TEST');
+    // Not normalized either — an unroutable path must never be persisted as gradeable.
+    expect(bad.normalizedByKey.rail).toBeUndefined();
+
+    // POSITIVE CONTROL: the guard is about runnability, not about refusing tests-checks.
+    const good = validateCriterionCheckPaths(
+      [{ key: 'rail', check: testsCheck(['packages/x/real.test.ts']) }],
+      { root },
+    );
+    expect(good.ok).toBe(true);
+    expect(good.normalizedByKey.rail).toEqual(['packages/x/real.test.ts']);
+  });
+
+  it('assert form refuses it at PROPOSE time, naming the criterion, the path and the way out', () => {
+    expect(() =>
+      assertCriterionCheckPathsResolve(
+        [{ key: 'rail', check: testsCheck(['packages/x/verify-rail.sh']) }],
+        { root },
+      ),
+    ).toThrowError(/invalid_args:.*'rail'.*verify-rail\.sh.*drop the check/s);
+    // POSITIVE CONTROL for this guard: the same call with a runnable path returns.
+    expect(() =>
+      assertCriterionCheckPathsResolve(
+        [{ key: 'rail', check: testsCheck(['packages/x/real.test.ts']) }],
+        { root },
+      ),
+    ).not.toThrow();
+  });
+
+  // DERIVED-TRUTH RUNG 2 (PIN). The validator cannot IMPORT the router — that CLI is
+  // spawned by the host, never bundled into it — so its admission pattern is restated
+  // there and pinned HERE, where importing the .mjs is free. If the router widens or
+  // narrows what it will run, this fails and forces the validator to move with it,
+  // instead of the two sides silently disagreeing about what "runnable" means.
+  it('agrees with the ROUTER about which paths it will run (pins the restated pattern)', () => {
+    // Every corpus entry EXISTS on disk (created above), so the only thing that can
+    // separate the two verdicts is the runnability rule itself — never path resolution.
+    for (const file of ROUTABILITY_CORPUS) {
+      const v = validateCriterionCheckPaths([{ key: 'k', check: testsCheck([file]) }], { root });
+      expect({ file, accepted: v.ok }).toEqual({ file, accepted: isTestFilePath(file) });
+    }
+    // CALIBRATION: the corpus must produce BOTH verdicts, or an always-true predicate on
+    // either side would satisfy the loop above without proving anything.
+    expect(ROUTABILITY_CORPUS.some((f) => isTestFilePath(f))).toBe(true);
+    expect(ROUTABILITY_CORPUS.some((f) => !isTestFilePath(f))).toBe(true);
+
+    // DRIFT CONTROL: three plausible ways the restated pattern could drift, each shown
+    // to DISAGREE with the router somewhere in this corpus. Without this, the loop above
+    // could pass on a corpus too narrow to notice a real drift.
+    const drifted = [
+      /\.test\.[cm]?[jt]sx?$/i, // forgot `spec`
+      /\.(?:test|spec)\.[jt]s$/i, // forgot the jsx/mjs/cjs spellings
+      /(?:test|spec)/i, // matches any path merely containing the word
+    ];
+    for (const pattern of drifted) {
+      expect(ROUTABILITY_CORPUS.some((f) => pattern.test(f) !== isTestFilePath(f))).toBe(true);
+    }
   });
 });
 
