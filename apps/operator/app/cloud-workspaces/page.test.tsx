@@ -247,6 +247,20 @@ describe("CloudWorkspacesPage", () => {
     expect(
       screen.getByRole("heading", { name: "Provider readiness" }),
     ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Validate Google Cloud connection",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", {
+        name: "Connect Amazon Web Services",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Connect Microsoft Azure" }),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^Connect$/ })).toBeNull();
     expect(screen.getByText("Production GCP")).toBeTruthy();
     expect(
       screen.getByRole("combobox", {
@@ -299,7 +313,11 @@ describe("CloudWorkspacesPage", () => {
   it("routes connection and lifecycle actions through the sync mutation seam", async () => {
     render(<CloudWorkspacesPage />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Validate" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Validate Google Cloud connection",
+      }),
+    );
     await waitFor(() =>
       expect(H.mutate).toHaveBeenCalledWith({
         action: "validate-connection",

@@ -768,6 +768,7 @@ export default function CloudWorkspacesPage() {
                   {connection ? (
                     <Button
                       variant="ghost"
+                      aria-label={`Validate ${provider.label} connection`}
                       disabled={busyKey === `validate:${connection.id}`}
                       onClick={() =>
                         void perform(
@@ -785,6 +786,7 @@ export default function CloudWorkspacesPage() {
                   ) : (
                     <Button
                       variant="primary"
+                      aria-label={`Connect ${provider.label}`}
                       onClick={() => void setConnectTarget(provider.target)}
                     >
                       <Plus size={14} aria-hidden="true" /> Connect
