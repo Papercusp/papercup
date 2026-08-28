@@ -272,11 +272,52 @@ function parseTs(v: unknown): Date | null {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
+/**
+ * Claude Code records a prompt sent while a turn is running as a top-level
+ * `attachment` line rather than a normal `user` message. Only the
+ * human-authored prompt variant belongs in the recall index: other queued
+ * commands are client plumbing and must keep the existing skip behavior.
+ */
+function parseClaudeQueuedCommand(obj: Record<string, unknown>): ParsedTurn | null {
+  if (obj.type !== 'attachment') return null;
+  const attachment = obj.attachment as {
+    type?: unknown;
+    commandMode?: unknown;
+    origin?: { kind?: unknown };
+    prompt?: unknown;
+    timestamp?: unknown;
+  } | undefined;
+  if (
+    !attachment ||
+    attachment.type !== 'queued_command' ||
+    attachment.commandMode !== 'prompt' ||
+    attachment.origin?.kind !== 'human' ||
+    typeof attachment.prompt !== 'string'
+  ) {
+    return null;
+  }
+  const text = cleanTurnText(attachment.prompt);
+  if (!text) return null;
+  return {
+    ts: parseTs(attachment.timestamp) ?? parseTs(obj.timestamp),
+    speaker: 'user',
+    text,
+    cwd: typeof obj.cwd === 'string' ? obj.cwd : null,
+    sessionId:
+      typeof obj.sessionId === 'string'
+        ? obj.sessionId
+        : typeof obj.session_id === 'string'
+          ? obj.session_id
+          : null,
+  };
+}
+
 /* ------------------------------------------------------------------ */
 /* Per-client line parsers (exported for unit tests)                    */
 /* ------------------------------------------------------------------ */
 
-/** Claude Code line → turn. Lines: {type:'user'|'assistant', message:{role,content}, timestamp, cwd, sessionId}. */
+/** Claude Code line → turn. Lines include normal user/assistant messages and
+ * the narrowly gated human `attachment.type='queued_command'` prompt shape. */
 export function parseClaudeLine(line: string): ParsedTurn | null {
   let obj: Record<string, unknown>;
   try {
@@ -284,6 +325,8 @@ export function parseClaudeLine(line: string): ParsedTurn | null {
   } catch {
     return null;
   }
+  const queuedCommand = parseClaudeQueuedCommand(obj);
+  if (queuedCommand) return queuedCommand;
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
   const message = obj.message as { role?: string; content?: unknown } | undefined;
   if (!message) return null;
@@ -602,6 +645,7 @@ export function classifyClaudeLine(line: string): LineSignal | null {
   } catch {
     return null;
   }
+  if (parseClaudeQueuedCommand(obj)) return { ...NULL_SIGNAL, isPrompt: true };
   if (obj.type !== 'user' && obj.type !== 'assistant') return null;
   const message = obj.message as { role?: string; content?: unknown; id?: string } | undefined;
   if (!message) return null;

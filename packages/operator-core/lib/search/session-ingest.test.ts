@@ -95,6 +95,61 @@ describe('parseClaudeLine', () => {
     expect(ordinary).toBeNull();
   });
 
+  it('extracts a human mid-turn queued_command attachment as a user turn', () => {
+    const t = parseClaudeLine(
+      JSON.stringify({
+        type: 'attachment',
+        timestamp: '2026-08-28T05:59:14.172Z',
+        sessionId: 'claude-session-1',
+        cwd: '/repo',
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          prompt: 'Please preserve this owner directive in the transcript.',
+          timestamp: '2026-08-28T05:59:14.172Z',
+        },
+      }),
+    );
+    expect(t).toMatchObject({
+      speaker: 'user',
+      text: 'Please preserve this owner directive in the transcript.',
+      cwd: '/repo',
+      sessionId: 'claude-session-1',
+    });
+    expect(t?.ts?.toISOString()).toBe('2026-08-28T05:59:14.172Z');
+  });
+
+  it('does not promote non-human or non-prompt queued command attachments', () => {
+    const base = {
+      type: 'attachment',
+      attachment: {
+        type: 'queued_command',
+        commandMode: 'prompt',
+        origin: { kind: 'human' },
+        prompt: 'keep this out unless the shape is a human prompt',
+      },
+    };
+    expect(
+      parseClaudeLine(JSON.stringify({
+        ...base,
+        attachment: { ...base.attachment, origin: { kind: 'assistant' } },
+      })),
+    ).toBeNull();
+    expect(
+      parseClaudeLine(JSON.stringify({
+        ...base,
+        attachment: { ...base.attachment, commandMode: 'command' },
+      })),
+    ).toBeNull();
+    expect(
+      parseClaudeLine(JSON.stringify({
+        ...base,
+        attachment: { ...base.attachment, type: 'file' },
+      })),
+    ).toBeNull();
+  });
+
   it('returns null for non-turn lines (queue-operation / summary / system)', () => {
     expect(parseClaudeLine(JSON.stringify({ type: 'queue-operation', content: 'ignored' }))).toBeNull();
     expect(parseClaudeLine(JSON.stringify({ type: 'summary', summary: 'ignored' }))).toBeNull();
@@ -174,6 +229,21 @@ describe('classifyClaudeLine (EI-9970)', () => {
       }),
     );
     expect(sig).toMatchObject({ isPrompt: false, isResponsePayload: false });
+  });
+
+  it('counts a human queued_command attachment as a prompt', () => {
+    const sig = classifyClaudeLine(
+      JSON.stringify({
+        type: 'attachment',
+        attachment: {
+          type: 'queued_command',
+          commandMode: 'prompt',
+          origin: { kind: 'human' },
+          prompt: 'continue the implementation from here',
+        },
+      }),
+    );
+    expect(sig).toMatchObject({ isPrompt: true, isResponsePayload: false, toolCallCount: 0 });
   });
 
   it('a pure-thinking-only assistant line is NOT a response payload (the split-response class)', () => {
