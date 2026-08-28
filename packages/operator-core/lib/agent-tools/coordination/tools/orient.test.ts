@@ -389,6 +389,10 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
   });
 
+  it('accepts fleetCatchUpLimit=0 for a narrow fleet-assignment bootstrap', () => {
+    expect(orientTool.args.safeParse({ fleetCatchUpLimit: 0 }).success).toBe(true);
+  });
+
   it('exposes the includePeersKnow opt-out in the transport schema', () => {
     const parsed = orientTool.args.safeParse({ includePeersKnow: false });
     expect(parsed.success).toBe(true);
@@ -1354,6 +1358,17 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       audience: '@fleet:backend',
       limit: 8,
     });
+  });
+
+  it('skips fleet catch-up when fleetCatchUpLimit=0 for a narrow bootstrap', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+      'coord:catch-up': () => ({ total: 1, rows: [{ msg_id: 'unexpected' }] }),
+    });
+    const r = await composeOrient({ fleetCatchUpLimit: 0 }, call, 'me');
+    expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
+    expect(r.fleetCatchUp).toBeUndefined();
   });
 
   it('skips the fleet catch-up for a non-fleet caller (no catch-up call, field absent)', async () => {
