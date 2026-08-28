@@ -6,6 +6,7 @@ import {
   canonicalDispositionForRow,
   classifyLegacySkipped,
   countBulkDispositions,
+  bulkAutomationEligibility,
   isBulkConfidence,
   meetsBulkConfidenceFloor,
   normalizeBulkAutomationPolicy,
@@ -40,6 +41,15 @@ describe('bulk disposition vocabulary', () => {
     expect(meetsBulkConfidenceFloor('high', 'medium')).toBe(true);
     expect(meetsBulkConfidenceFloor('low', 'medium')).toBe(false);
     expect(meetsBulkConfidenceFloor('insufficient', 'high')).toBe(false);
+    expect(
+      bulkAutomationEligibility({ mode: 'review-all', minConfidence: 'high' }, 'high'),
+    ).toEqual({ allowed: false, reason: 'review-all' });
+    expect(
+      bulkAutomationEligibility({ mode: 'safe-high', minConfidence: 'high' }, 'medium'),
+    ).toEqual({ allowed: false, reason: 'confidence-below-floor' });
+    expect(
+      bulkAutomationEligibility({ mode: 'safe-medium-plus', minConfidence: 'medium' }, 'medium'),
+    ).toEqual({ allowed: true, reason: null });
   });
 
   it('classifies owner-authority rows without inventing an action id', () => {

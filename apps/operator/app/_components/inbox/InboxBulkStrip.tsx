@@ -258,7 +258,7 @@ export default function InboxBulkStrip({
   /* ── REVIEW ──────────────────────────────────────────────────────────── */
   if (isReview && run) {
     const elapsed = formatRunElapsed(run.startedAt, run.finishedAt);
-    const pending = recommendations.length;
+    const retryable = unreached.length;
     return (
       <div
         className="op-inbox__bulk op-inbox__bulk--review"
@@ -280,14 +280,64 @@ export default function InboxBulkStrip({
             className="op-inbox__bulk-title"
             data-testid="inbox-bulk-review-headline"
           >
-            {pending} need your call · {counts.resolved} auto-resolved
-            {counts.pending > 0 ? ` · ${counts.pending} not reached` : ""}
-            {counts.skipped > 0 ? ` · ${counts.skipped} skipped` : ""}
-            {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
+            {counts.total} assessed · {counts.resolved} auto-resolved ·{" "}
+            {counts.unresolved} still open
           </span>
           <span className="op-inbox__bulk-spacer" />
           {elapsed ? (
             <span className="op-inbox__bulk-elapsed">run {elapsed}</span>
+          ) : null}
+        </div>
+        <div
+          className="op-inbox__bulk-counts op-inbox__bulk-counts--accounting"
+          data-testid="inbox-bulk-accounting"
+          aria-label="Bulk resolve accounting"
+        >
+          <span className="op-inbox__bulk-count op-inbox__bulk-count--review">
+            <i aria-hidden="true" />
+            {counts.recommendationTotal} recommendations
+          </span>
+          {counts.ownerAction > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.ownerAction} owner action{counts.ownerAction === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {counts.cleanupCandidate > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.cleanupCandidate} cleanup candidate{counts.cleanupCandidate === 1 ? "" : "s"}
+            </span>
+          ) : null}
+          {counts.retryNeeded > 0 || counts.pending > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.retryNeeded + counts.pending} retry needed
+            </span>
+          ) : null}
+          {counts.routed > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.routed} routed
+            </span>
+          ) : null}
+          {counts.investigate > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.investigate} investigate
+            </span>
+          ) : null}
+          {counts.failed > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.failed} failed
+            </span>
+          ) : null}
+          {counts.legacySkipped > 0 ? (
+            <span className="op-inbox__bulk-count op-inbox__bulk-count--left">
+              <i aria-hidden="true" />
+              {counts.legacySkipped} legacy skips classified above
+            </span>
           ) : null}
         </div>
         <div className="op-inbox__bulk-actions">
@@ -295,13 +345,13 @@ export default function InboxBulkStrip({
             type="button"
             className="op-inbox__bulk-accept-all"
             data-testid="inbox-bulk-review-decisions"
-            disabled={pending === 0 || resuming}
+            disabled={counts.unresolved === 0 || resuming}
             onClick={openReview}
           >
-            Review {pending} decision{pending === 1 ? "" : "s"}
+            Review {counts.unresolved} unresolved
             <ChevronRight size={14} aria-hidden="true" />
           </button>
-          {unreached.length > 0 ? (
+          {retryable > 0 ? (
             <button
               type="button"
               className="op-inbox__bulk-continue"
@@ -318,14 +368,15 @@ export default function InboxBulkStrip({
               )}
               {resuming
                 ? "Continuing…"
-                : `Continue ${unreached.length} remaining`}
+                : `Continue ${retryable} retryable`}
             </button>
           ) : null}
         </div>
         <p className="op-inbox__bulk-hint">
-          Review returns to the decisions already prepared for you. Continue
-          retries pending, skipped, and failed rows through the same saved run;
-          recommendations and terminal outcomes stay preserved.
+          Review opens every unresolved row with its proposed next step.
+          Continue retries only rows whose detail was unavailable or whose
+          resolver attempt failed; recommendations, owner actions, cleanup
+          candidates, and terminal outcomes stay preserved.
         </p>
         {notice ? (
           <div className="op-inbox__bulk-notice" role="status">

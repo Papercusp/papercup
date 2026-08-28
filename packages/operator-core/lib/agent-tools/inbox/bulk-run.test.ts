@@ -241,6 +241,31 @@ describe('inbox:bulk-run-report live-action snapshot reuse', () => {
 });
 
 describe('inbox:bulk-run-act authority boundary', () => {
+  it('enforces the run confidence floor before entering the terminal dispatcher', async () => {
+    h.getRun.mockResolvedValue({
+      ...run,
+      automationPolicy: { mode: 'safe-high', minConfidence: 'high' },
+    });
+    const result = body(
+      await bulkRunAct.handler(
+        {
+          runId: run.runId,
+          itemId: item.itemId,
+          actionId: 'ack',
+          rationale: 'Evidence is incomplete.',
+          confidenceLevel: 'medium',
+        },
+        { workspaceId: run.workspaceId } as never,
+      ),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      refused: 'confidence_policy',
+      reason: 'confidence-below-floor',
+    });
+    expect(h.dispatchAttentionTerminalAction).not.toHaveBeenCalled();
+  });
+
   it('dispatches through the shared map and joins the required audit to the store transaction', async () => {
     const tx = { transaction: 'bulk-act' };
     h.executeBulkRunAction.mockImplementation(async (input: ExecuteInput) => {

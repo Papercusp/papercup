@@ -61,6 +61,32 @@ export function meetsBulkConfidenceFloor(
   return confidence != null && CONFIDENCE_RANK[confidence] >= CONFIDENCE_RANK[minimum];
 }
 
+export interface BulkAutomationEligibility {
+  allowed: boolean;
+  reason: 'review-all' | 'confidence-below-floor' | 'confidence-missing' | null;
+}
+
+/**
+ * Apply the owner-selected confidence floor. This helper intentionally knows
+ * nothing about action authority or risk: callers must run the existing
+ * autonomy/dispatcher gate first, then use this as an additional restriction.
+ */
+export function bulkAutomationEligibility(
+  policy: BulkAutomationPolicy,
+  confidence: BulkConfidence | null | undefined,
+): BulkAutomationEligibility {
+  if (policy.mode === 'review-all') {
+    return { allowed: false, reason: 'review-all' };
+  }
+  if (confidence == null) {
+    return { allowed: false, reason: 'confidence-missing' };
+  }
+  if (!meetsBulkConfidenceFloor(confidence, policy.minConfidence)) {
+    return { allowed: false, reason: 'confidence-below-floor' };
+  }
+  return { allowed: true, reason: null };
+}
+
 export function isBulkAutomationMode(value: unknown): value is BulkAutomationMode {
   return typeof value === 'string' && (BULK_AUTOMATION_MODES as readonly string[]).includes(value);
 }

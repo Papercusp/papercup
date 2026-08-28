@@ -26,6 +26,7 @@ import { PERF_INTERACTIONS } from "../perf/perf-marks";
 import { useInteractionSettle } from "../perf/use-interaction-settle";
 import InboxBulkRecommendation from "./InboxBulkRecommendation";
 import {
+  canonicalInboxDisposition,
   deriveRunCounts,
   useBulkRunOps,
   type BulkAcceptResult,
@@ -117,6 +118,7 @@ function actionLabel(
   runItem: BulkRunItem,
 ): string {
   const action = runItem.actionId;
+  if (runItem.recommendationLabel) return runItem.recommendationLabel;
   if (action) {
     return (
       item?.actions?.find((candidate) => candidate.id === action)?.label ??
@@ -148,13 +150,25 @@ function reviewAccounting(
 ): ReviewRowAccounting {
   if (status === "applied") return "handled";
   if (status === "dismissed") return "not-applied";
-  if (runItem.outcome !== "recommended") return "not-applied";
+  if (runItem.outcome !== "recommended" && canonicalInboxDisposition(runItem) !== "recommended") {
+    return "not-applied";
+  }
   if (runItem.actionId === "answer" || !hasAction) return "manual";
   return "ready";
 }
 
 function evidenceLines(runItem: BulkRunItem): string[] {
   const lines: string[] = [];
+  if (runItem.recommendation?.label) lines.push(`next step · ${runItem.recommendation.label}`);
+  if (runItem.recommendation?.responsibility) {
+    lines.push(`responsibility · ${runItem.recommendation.responsibility}`);
+  }
+  if (runItem.recommendation?.confidence) {
+    lines.push(`confidence · ${runItem.recommendation.confidence}`);
+  }
+  if (runItem.evidenceBasis?.length) {
+    lines.push(`evidence · ${runItem.evidenceBasis.join("; ")}`);
+  }
   if (runItem.rationale) lines.push(runItem.rationale);
   if (runItem.consulted) {
     lines.push(
@@ -169,6 +183,16 @@ function evidenceLines(runItem: BulkRunItem): string[] {
 }
 
 function fallbackDetail(runItem: BulkRunItem): ReactNode {
+  if (runItem.recommendation) {
+    return (
+      <>
+        <strong>{runItem.recommendation.label}</strong>: {runItem.recommendation.rationale}
+        {runItem.recommendation.retryCondition ? (
+          <> Retry condition: {runItem.recommendation.retryCondition}</>
+        ) : null}
+      </>
+    );
+  }
   if (runItem.outcome === "pending")
     return "The resolver did not reach this item before the run settled.";
   if (runItem.outcome === "skipped")
@@ -203,13 +227,14 @@ export function buildInboxBulkReviewGroups(
     const item = attentionById.get(runItem.itemId);
     const kind = itemKind(item, runItem);
     const action = actionLabel(item, runItem);
-    const groupId = `${runItem.actionId ?? runItem.outcome}:${kind}`;
+    const disposition = canonicalInboxDisposition(runItem);
+    const groupId = `${runItem.actionId ?? disposition}:${kind}`;
     let group = grouped.get(groupId);
     if (!group) {
       group = {
         id: groupId,
         title: `${action} · ${kindLabel(kind)}`,
-        description: `Run items grouped by the recommended action and source kind.`,
+        description: `Run items grouped by next step and source kind.`,
         rows: [],
       };
       grouped.set(groupId, group);
@@ -709,8 +734,11 @@ export default function InboxBulkReport({
       subtitle={
         <span className="inbox-bulk-report__subtitle">
           <span>
-            {counts.forReview} need your call · {counts.resolved} auto-resolved
-            · {counts.skipped + counts.failed} need manual follow-up
+            {counts.total} assessed · {counts.resolved} auto-resolved · {counts.unresolved} still open
+            <br />
+            {counts.recommendationTotal} recommendations · {counts.ownerAction} owner actions ·{" "}
+            {counts.cleanupCandidate} cleanup · {counts.retryNeeded + counts.pending} retry needed ·{" "}
+            {counts.routed} routed · {counts.investigate} investigate
           </span>
           {notice ? (
             <span role="alert" className="inbox-bulk-report__error">
