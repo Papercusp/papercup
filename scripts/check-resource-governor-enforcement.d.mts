@@ -1,5 +1,6 @@
 export interface ResourceGovernorInventoryRow {
   id: string;
+  migration: string;
   disposition: "govern" | "bypass" | "semantic" | "upstream" | "false-positive";
   enforcement: string;
   paths: readonly string[];
@@ -10,8 +11,20 @@ export interface ResourceGovernorInventoryRow {
   contextAndRelease: string;
   currentCaps: string;
   writerEvidence: string;
+  sites: readonly { path: string; start: string }[];
 }
 export const RESOURCE_GOVERNOR_INVENTORY: readonly ResourceGovernorInventoryRow[];
+export const RESOURCE_GOVERNOR_SCANNER_PATH: string;
+export const P016_REVIEWED_DISPOSITIONS: readonly {
+  path: string;
+  code: string;
+  disposition: ResourceGovernorInventoryRow["disposition"];
+  reason: string;
+}[];
+export const P016_DISPOSITION_REGISTRY: ReadonlyMap<
+  string,
+  { disposition: ResourceGovernorInventoryRow["disposition"]; reason: string }
+>;
 export const BYPASS_REGISTRY: ReadonlyMap<
   string,
   { disposition: ResourceGovernorInventoryRow["disposition"]; reason: string }

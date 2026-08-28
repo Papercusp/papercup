@@ -1906,7 +1906,16 @@ silently re-arms the self-match (measured 2026-08-03: a bracketed `[X]vfb :90`
 probe self-matched because an `echo "== Xvfb :90 =="` label sat earlier in the
 same call).
 
-⚠ **Absence checks need a valid instrument and a positive control.** `pgrep -q` DOES NOT EXIST — quiet mode is `grep`'s flag, so pgrep dies on the invalid option and reports absence via EXIT CODE whatever is running. DISTINCT from the self-match trap above: bracketing the first char cures a self-matching argv, never an unsupported flag. Use `pgrep -cf`, `pgrep -x`, or `kill -0`. Under `pipefail`, `grep -q/-m1` and `head -1` can SIGPIPE a producer and invert a true result: capture then match or consume to EOF. Missing paths are not zero matches—keep stderr/status and run the same query against something known-present (`gitnexus.context` for symbols, `tools:find` for tools). bfs `find -newermt` rejects relative times; use `git status`, UTC `stat`, or ISO-8601. Line grep misses hard-wrapped phrases; flatten newlines or match an unwrappable token, verifying both old and new text for transitions.
+⚠ **Do not use human-relative or absolute timestamp strings with `find -newermt` on this box.**
+`find` resolves to **bfs 4.1.1** here. Human-relative values such as `12 minutes ago`,
+`-10 minutes`, or `America/New_York` are rejected, while absolute strings such as
+`2026-08-28 18:35:00 UTC` can be silently mis-parsed and under-report by hundreds of
+times. If stderr is hidden, either case can look like a valid "nothing changed" result.
+For "files modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%y %n'
+<paths>`; if you must use `find`, pass an epoch predicate such as `@<unix-seconds>`
+or an ISO-8601-like timestamp with `Z`/a numeric offset, keep stderr visible, and
+corroborate the result with a positive control.
+
 The natural next action is to conclude a job died and re-run it. Use
 `proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
 NAME, so argv cannot fool it at all), or `kill -0 <pid>`
