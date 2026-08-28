@@ -27,6 +27,7 @@ import {
   type RailStep,
   type StepId,
 } from "./workspace-view-model";
+import { FocusSafeButton } from "./stage-primitives";
 import styles from "./cloud-workspaces.module.css";
 
 const STEP_ICONS: Record<StepId, typeof Cloud> = {
@@ -76,9 +77,10 @@ export function WorkspaceRail({
                 label={step.reachable ? label : `${label} — ${step.evidence}`}
                 side="right"
               >
-                <button
+                <FocusSafeButton
                   type="button"
                   className={styles.railStep}
+                  unavailable={!step.reachable}
                   data-status={step.status}
                   data-active={active ? "true" : "false"}
                   aria-current={active ? "step" : undefined}
@@ -101,16 +103,13 @@ export function WorkspaceRail({
                    * keyboard user could not discover it either.
                    *
                    * `aria-disabled` keeps the step announced as unavailable
-                   * while leaving it hoverable and focusable; the guard in
-                   * `onClick` is what preserves the original guarantee that a
-                   * click cannot strand the operator in an empty stage.
+                   * while leaving it hoverable and focusable; the
+                   * `FocusSafeButton` click guard preserves the original
+                   * guarantee that a click cannot strand the operator in an
+                   * empty stage.
                    */
-                  aria-disabled={step.reachable ? undefined : true}
                   aria-label={`${label}: ${STATUS_LABELS[step.status]}. ${step.evidence}`}
-                  onClick={() => {
-                    if (!step.reachable) return;
-                    onSelectStep(step.id);
-                  }}
+                  onClick={() => onSelectStep(step.id)}
                 >
                   <span className={styles.railStepIcon} aria-hidden="true">
                     <Icon size={16} />
@@ -129,7 +128,7 @@ export function WorkspaceRail({
                     </span>
                   </span>
                   <span className={styles.railStepDot} aria-hidden="true" />
-                </button>
+                </FocusSafeButton>
               </Tooltip>
             </li>
           );

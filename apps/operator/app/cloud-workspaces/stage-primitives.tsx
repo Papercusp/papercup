@@ -9,7 +9,14 @@
  * way it stays true across three files.
  */
 
-import { useEffect, useId, useRef } from "react";
+import {
+  forwardRef,
+  useEffect,
+  useId,
+  useRef,
+  type ComponentProps,
+} from "react";
+import { Button } from "@/app/harness/Button";
 import {
   formatSignal,
   isLifecycleState,
@@ -41,6 +48,43 @@ export function focusSafely(target: HTMLElement | null | undefined): boolean {
   target.focus({ preventScroll: true });
   return document.activeElement === target;
 }
+
+type FocusSafeButtonProps = Omit<ComponentProps<typeof Button>, "disabled"> & {
+  /** Keep an unavailable control discoverable without allowing activation. */
+  unavailable?: boolean;
+};
+
+/**
+ * A focusable, inert button for controls whose explanation lives in a tooltip.
+ *
+ * Native `disabled` suppresses both focus and pointer events, which makes a
+ * tooltip attached with Radix `Trigger asChild` unreachable. `aria-disabled`
+ * keeps the control in the tab order; the click guard preserves the inert
+ * behavior while still allowing sighted and keyboard users to discover why it
+ * is unavailable.
+ */
+export const FocusSafeButton = forwardRef<
+  HTMLButtonElement,
+  FocusSafeButtonProps
+>(function FocusSafeButton(
+  { unavailable = false, onClick, ...props },
+  ref,
+) {
+  return (
+    <Button
+      ref={ref}
+      {...props}
+      aria-disabled={unavailable ? true : props["aria-disabled"]}
+      onClick={(event) => {
+        if (unavailable) {
+          event.preventDefault();
+          return;
+        }
+        onClick?.(event);
+      }}
+    />
+  );
+});
 
 /**
  * Shared open/close focus contract for transient Cloud Workspaces surfaces.
