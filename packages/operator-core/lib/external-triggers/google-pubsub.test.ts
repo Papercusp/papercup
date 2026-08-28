@@ -279,3 +279,93 @@ describe('Pub/Sub authorization failures name the denied principal', () => {
     expect((error as Error).message).toContain('denied_principal=unresolved');
   });
 });
+
+/**
+ * WI-474688. bg-host is BOTH the DBOS routines primary (where google-gmail-poll runs) and a
+ * workspace-host provisioning host, and provisioning refuses service-account keys — so its unit
+ * unsets GOOGLE_APPLICATION_CREDENTIALS on purpose. Before the dedicated variable existed that
+ * unset also took Pub/Sub's only credential path, and both Gmail sources sat degraded on
+ * `google_pubsub_service_account_path_required` while the topic, its publisher binding and the
+ * pull subscription were all already provisioned.
+ *
+ * The first case below is that exact production shape: ADC absent, dedicated variable present.
+ * It must resolve, and it must resolve to the DEDICATED path — asserting only "did not throw"
+ * would still pass if the fallback silently reached for something else.
+ */
+describe('Pub/Sub credential precedence survives an ADC-free process', () => {
+  /** Run with an exact env shape, restoring whatever the ambient process had. */
+  async function withEnv<T>(
+    env: { adc?: string; dedicated?: string },
+    run: () => Promise<T>,
+  ): Promise<T> {
+    const prior = {
+      adc: process.env.GOOGLE_APPLICATION_CREDENTIALS,
+      dedicated: process.env.PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH,
+    };
+    const apply = (adc?: string, dedicated?: string) => {
+      if (adc === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+      else process.env.GOOGLE_APPLICATION_CREDENTIALS = adc;
+      if (dedicated === undefined) delete process.env.PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH;
+      else process.env.PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH = dedicated;
+    };
+    apply(env.adc, env.dedicated);
+    try {
+      return await run();
+    } finally {
+      apply(prior.adc, prior.dedicated);
+    }
+  }
+
+  /** Resolve the key path the layer actually used, via the token minter that receives it. */
+  async function resolvedPath(input: {
+    workspaceId: string;
+    projectId: string;
+    serviceAccountPath?: string;
+  }): Promise<string | Error> {
+    const seen: string[] = [];
+    const error = await provisionGoogleGmailPubSub(input, {
+      fetch: (async () => json({}, 403)) as unknown as typeof fetch,
+      getAccessToken: async (path: string) => {
+        seen.push(path);
+        return 'access-token';
+      },
+    }).catch((caught: unknown) => caught as Error);
+    // Every call here ends on the 403 double; what is under test is the path that got there.
+    if (seen.length === 0) return error as Error;
+    return seen[0];
+  }
+
+  const base = { workspaceId: INPUT.workspaceId, projectId: INPUT.projectId };
+
+  it('uses the dedicated variable when ADC is unset, as it is on bg-host', async () => {
+    const used = await withEnv({ adc: undefined, dedicated: '/dedicated-pubsub.json' }, () =>
+      resolvedPath(base),
+    );
+    expect(used).toBe('/dedicated-pubsub.json');
+  });
+
+  it('prefers the dedicated variable over ADC when both are set', async () => {
+    const used = await withEnv({ adc: '/adc.json', dedicated: '/dedicated-pubsub.json' }, () =>
+      resolvedPath(base),
+    );
+    expect(used).toBe('/dedicated-pubsub.json');
+  });
+
+  it('still falls back to ADC where no dedicated variable is set', async () => {
+    const used = await withEnv({ adc: '/adc.json', dedicated: undefined }, () => resolvedPath(base));
+    expect(used).toBe('/adc.json');
+  });
+
+  it('lets an explicit caller path win over both variables', async () => {
+    const used = await withEnv({ adc: '/adc.json', dedicated: '/dedicated-pubsub.json' }, () =>
+      resolvedPath({ ...base, serviceAccountPath: '/explicit.json' }),
+    );
+    expect(used).toBe('/explicit.json');
+  });
+
+  it('still refuses when neither variable is set and no path is supplied', async () => {
+    const used = await withEnv({ adc: undefined, dedicated: undefined }, () => resolvedPath(base));
+    expect(used).toBeInstanceOf(Error);
+    expect((used as Error).message).toBe('google_pubsub_service_account_path_required');
+  });
+});

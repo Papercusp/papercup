@@ -23,7 +23,7 @@ export interface GooglePubSubProvisionInput {
   workspaceId: string;
   /** Defaults to project_id in the service-account JSON. */
   projectId?: string;
-  /** Defaults to GOOGLE_APPLICATION_CREDENTIALS. */
+  /** Defaults to PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH, then GOOGLE_APPLICATION_CREDENTIALS. */
   serviceAccountPath?: string;
   topicId?: string;
   subscriptionId?: string;
@@ -94,8 +94,27 @@ export function googleGmailSubscriptionId(workspaceId: string): string {
   return resourceSegment(`papercusp-gmail-pull-${readable}-${digest}`, 'subscription_id');
 }
 
+/**
+ * Resolve the Pub/Sub key file, preferring a credential dedicated to THIS subsystem.
+ *
+ * `GOOGLE_APPLICATION_CREDENTIALS` is the ambient ADC chain for the whole process, and
+ * another subsystem in this same process legitimately needs it ABSENT: workspace-host
+ * provisioning bans service-account keys outright (`gcp-preflight.ts`), so
+ * `papercup-bg-host.service.d/95-bundled-entry.conf` unsets ADC in ExecStart. bg-host is
+ * also the DBOS routines primary (`PAPERCUSP_DBOS_ROUTINES=1`), which is where
+ * `google-gmail-poll` runs — so before this precedence existed, one subsystem's correct
+ * hardening silently stranded another's, and both Gmail sources sat degraded on
+ * `google_pubsub_service_account_path_required` while the topic, its publisher IAM binding
+ * and the pull subscription were all already provisioned (WI-474688, measured 2026-08-28).
+ *
+ * A dedicated variable removes the coupling: Pub/Sub gets an explicit key path and ADC
+ * stays clean for the callers that must refuse a key. Explicit `input` still wins over both.
+ */
 function serviceAccountPath(input?: string): string {
-  const path = input?.trim() || process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
+  const path =
+    input?.trim() ||
+    process.env.PAPERCUSP_GOOGLE_PUBSUB_SERVICE_ACCOUNT_PATH?.trim() ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim();
   if (!path) throw new Error('google_pubsub_service_account_path_required');
   return path;
 }
