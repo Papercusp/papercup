@@ -3,9 +3,10 @@
  * every MCP tool call passes through. It had ZERO coverage.
  *
  * PG is mocked (@papercusp/db-org): getOrgPg().sql returns the token_index
- * row; withWorkspace runs its callback with a tx that returns the principal
- * row. We exercise resolveBearer's branching, NOT the SQL filters (those
- * belong to the live-PG cross-workspace-probe integration test).
+ * row; getOrgPgListener().sql is a separate direct LISTEN client; withWorkspace
+ * runs its callback with a tx that returns the principal row. We exercise
+ * resolveBearer's branching, NOT the SQL filters (those belong to the live-PG
+ * cross-workspace-probe integration test).
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -21,14 +22,17 @@ let sqlCalls = 0;
 // Captured by the mock's sql.listen — lets tests fire NOTIFY payloads.
 let listenChannel: string | null = null;
 let listenCallback: ((payload: string) => void) | null = null;
+let listenerHandleCalls = 0;
 
 vi.mock('@papercusp/db-org', async (orig) => {
   // tagged-template: sql`...` → sql(strings, ...values)
-  const sql = Object.assign((..._args: unknown[]) => {
+  const querySql = Object.assign((..._args: unknown[]) => {
     sqlCalls++;
     return Promise.resolve(tokenIndexRows);
-  }, {
+  });
+  const listenerSql = Object.assign((..._args: unknown[]) => Promise.resolve([]), {
     listen: (channel: string, cb: (payload: string) => void) => {
+      listenerHandleCalls++;
       listenChannel = channel;
       listenCallback = cb;
       return Promise.resolve({ unlisten: () => Promise.resolve() });
@@ -36,7 +40,8 @@ vi.mock('@papercusp/db-org', async (orig) => {
   });
   return {
     ...(await orig<typeof import('@papercusp/db-org')>()),
-    getOrgPg: () => ({ sql }),
+    getOrgPg: () => ({ sql: querySql }),
+    getOrgPgListener: () => ({ sql: listenerSql }),
     withWorkspace: (_ws: string, cb: (tx: unknown) => unknown) => {
       withWorkspaceCalls++;
       const tx = (..._a: unknown[]) => Promise.resolve(principalRows);
@@ -69,6 +74,7 @@ beforeEach(() => {
   sqlCalls = 0;
   listenChannel = null;
   listenCallback = null;
+  listenerHandleCalls = 0;
 });
 
 afterEach(() => vi.clearAllMocks());
@@ -331,6 +337,7 @@ describe('resolveBearer', () => {
       expect(await resolveBearer(bearer)).not.toBeNull();
       expect(listenChannel).toBe(PRINCIPAL_INVALIDATE_CHANNEL);
       expect(listenCallback).not.toBeNull();
+      expect(listenerHandleCalls).toBe(1);
 
       // Revoke: capability source now empty + NOTIFY fires (as provisioning.ts
       // emits on commit).

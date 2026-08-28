@@ -18,7 +18,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { getOrgPg, withWorkspace, withDbCallDeadline } from '@papercusp/db-org';
+import { getOrgPg, getOrgPgListener, withWorkspace, withDbCallDeadline } from '@papercusp/db-org';
 import type { Principal } from '@papercusp/tooldef';
 import { BRAIN_PRINCIPAL_ROLE } from './role-config';
 
@@ -119,7 +119,11 @@ let listenerWarned = false;
 function ensureInvalidationListener(): void {
   if (listenerStarted) return;
   listenerStarted = true;
-  const { sql } = getOrgPg();
+  // LISTEN is session-bound and must stay off getOrgPg(), whose query pool is
+  // intentionally routed through PgBouncer transaction mode on server hosts.
+  // PgBouncer can discard NotificationResponse packets from an unlinked server
+  // connection; the dedicated db-org listener client remains direct and idle-safe.
+  const { sql } = getOrgPgListener();
   // Unit tests (and any non-postgres-js stand-in) mock sql as a bare tagged
   // template without .listen — skip silently there.
   const listen = (sql as unknown as { listen?: unknown }).listen;
