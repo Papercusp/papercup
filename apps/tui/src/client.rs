@@ -29,6 +29,10 @@ use crate::models::{
 };
 use crate::shared_cache;
 use crate::sse::{parse_sse_frames, SseFrame};
+use crate::su_session::{
+    decode_su_session_stream, SuSessionAttachRequest, SuSessionBackend, SuSessionBinding,
+    SuSessionCreateRequest, SuSessionEventStream, SuSessionOpenRequest, SuSessionSnapshot,
+};
 use anyhow::{anyhow, Context, Result};
 use std::sync::Arc;
 use std::time::Duration;
@@ -816,6 +820,132 @@ impl OperatorClient {
         )
         .await?;
         Ok(())
+    }
+
+    // ─── Shared SU-session host (P-008) ─────────────────────────────────────
+
+    /// Create or attach one durable SU session through the canonical launch-su
+    /// door.  Creation is deferred to the existing workbench-pane launcher;
+    /// attach is read-only and never spawns a second runtime.  The explicit
+    /// backend is mandatory on both paths so PUI cannot silently inherit a
+    /// different configured provider after a restart.
+    pub async fn open_su_session(
+        &self,
+        request: &SuSessionOpenRequest,
+    ) -> Result<SuSessionBinding> {
+        let body = match request {
+            SuSessionOpenRequest::Create(request) => serde_json::to_value(request),
+            SuSessionOpenRequest::Attach(request) => serde_json::to_value(request),
+        }
+        .context("encode SU-session open request")?;
+        let value = self
+            .post_json("/api/adv/sessions/launch-su", body)
+            .await
+            .context("open SU session")?;
+        if value.get("status").and_then(|v| v.as_str()) != Some("ok") {
+            let code = value.get("code").and_then(|v| v.as_str()).unwrap_or("launch_failed");
+            let message = value
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("launch-su refused the SU session");
+            anyhow::bail!("{code}: {message}");
+        }
+        let operation = match request {
+            SuSessionOpenRequest::Create(_) => "created",
+            SuSessionOpenRequest::Attach(_) => "attached",
+        };
+        let backend = value
+            .get("agent")
+            .cloned()
+            .map(|v| serde_json::from_value::<SuSessionBackend>(v))
+            .transpose()
+            .context("decode SU-session backend")?
+            .ok_or_else(|| anyhow!("launch-su omitted the resolved backend"))?;
+        let expected_backend = match request {
+            SuSessionOpenRequest::Create(request) => request.agent,
+            SuSessionOpenRequest::Attach(request) => request.agent,
+        };
+        if backend != expected_backend {
+            anyhow::bail!("launch-su returned backend {backend}; expected {expected_backend}");
+        }
+        let adv_session_id = value
+            .get("advSessionId")
+            .and_then(|v| v.as_i64())
+            .ok_or_else(|| anyhow!("launch-su returned no stable advSessionId"))?;
+        Ok(SuSessionBinding {
+            operation: operation.to_string(),
+            backend,
+            adv_session_id,
+            owner_id: value.get("ownerId").and_then(|v| v.as_str()).map(str::to_string),
+            workspace_id: value
+                .get("workspaceId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            harness_slug: value
+                .get("harnessSlug")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            plan_slug: value
+                .get("planSlug")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            native_session: value
+                .get("nativeSession")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .context("decode SU-session native handle")?,
+        })
+    }
+
+    /// Read the canonical descriptor/lifecycle snapshot for one attached chat.
+    pub async fn su_session_snapshot(&self, harness: &str, chat_id: &str) -> Result<SuSessionSnapshot> {
+        let value = self
+            .get_json(&format!(
+                "/api/harness/{}/agent-chats/{}/su-session",
+                encode_segment(harness),
+                encode_segment(chat_id)
+            ))
+            .await?;
+        serde_json::from_value(value).context("decode SU-session snapshot")
+    }
+
+    /// Subscribe to the typed canonical session stream. `Last-Event-ID` is
+    /// handled by the existing transport/SSE layer; the decoder validates the
+    /// contract schema and leaves sequence-gap policy to the reducer.
+    pub async fn subscribe_su_session(
+        &self,
+        harness: &str,
+        chat_id: &str,
+    ) -> Result<SuSessionEventStream> {
+        let frames = self
+            .subscribe_sse(&format!(
+                "/api/harness/{}/agent-chats/{}/su-session/events",
+                encode_segment(harness),
+                encode_segment(chat_id)
+            ))
+            .await?;
+        Ok(decode_su_session_stream(frames))
+    }
+
+    /// Send one typed SU-session command to the real runtime. Commands are
+    /// deliberately opaque JSON here; the protocol module owns the stable
+    /// envelope and backend adapters own command-specific details.
+    pub async fn send_su_session_command(
+        &self,
+        harness: &str,
+        chat_id: &str,
+        command: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        self.post_json(
+            &format!(
+                "/api/harness/{}/agent-chats/{}/su-session/commands",
+                encode_segment(harness),
+                encode_segment(chat_id)
+            ),
+            command,
+        )
+        .await
     }
 
     async fn get_json(&self, path: &str) -> Result<serde_json::Value> {
