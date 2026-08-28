@@ -2,7 +2,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { withNuqsTestingAdapter } from "nuqs/adapters/testing";
-import TriggersClient from "./TriggersClient";
+import TriggersClient, { idleManualReviewRuns } from "./TriggersClient";
 
 const useFlag = vi.fn(() => true);
 const askConfirm = vi.fn(async () => true);
@@ -231,6 +231,40 @@ describe("/admin/triggers client", () => {
     expect(screen.getByText("triage-mail@run-1")).toBeTruthy();
     expect(screen.getByText("done · 2/2 · 1 agent")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Re: Launch review" }).getAttribute("href")).toContain("drafts/draft-1");
+  });
+
+  it("surfaces aged trigger work that is waiting for manual review", async () => {
+    const run = {
+      id: "run-manual-review",
+      bindingId: BINDING_ID,
+      sourceKind: "gmail",
+      eventPattern: "ext:gmail:message.created",
+      planHarnessSlug: "email",
+      planSlug: "triage-mail",
+      status: "succeeded",
+      attempts: 1,
+      triggeredAt: "2026-08-22T18:00:00.000Z",
+      completedAt: "2026-08-22T18:00:01.000Z",
+      planRunRef: "8",
+      error: null,
+      causeSummary: "Manual review",
+      policyDisposition: "ran",
+      policyDetail: "ran",
+      planRun: {
+        id: 8,
+        instancePlanSlug: "triage-mail@run-2",
+        status: "running",
+        workItems: { total: 1, passed: 0, failed: 0, open: 1 },
+        agents: [],
+      },
+      outcomeLinks: [],
+    };
+    expect(
+      idleManualReviewRuns([run] as never, Date.parse("2026-08-23T18:00:00.000Z")),
+    ).toHaveLength(1);
+    (payload.recentRuns as unknown[]).push(run);
+    renderClient("?view=runs");
+    expect(await screen.findByText(/Needs review: 1 trigger run has open work/)).toBeTruthy();
   });
 
   it("renders the flag-off kill-switch without fetching data", () => {

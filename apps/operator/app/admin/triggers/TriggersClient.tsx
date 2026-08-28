@@ -26,6 +26,25 @@ type LoadState = "loading" | "ok" | "error";
 /** Sources view filter. Social sources are the ones with a rate budget worth watching. */
 type SourceScope = "all" | "social";
 
+export const MANUAL_REVIEW_IDLE_MS = 24 * 60 * 60 * 1_000;
+
+/**
+ * Runs with durable open work and no current agent are the manual-review queue.
+ * The progress fraction remains the canonical detail; this ageing projection
+ * makes unattended work visible before it quietly becomes archaeology.
+ */
+export function idleManualReviewRuns(
+  runs: readonly ExternalTriggerRunAdminRow[],
+  nowMs = Date.now(),
+): ExternalTriggerRunAdminRow[] {
+  return runs.filter((run) => {
+    const planRun = run.planRun;
+    if (!planRun || planRun.workItems.open <= 0 || planRun.agents.length > 0) return false;
+    const triggeredAtMs = Date.parse(run.triggeredAt);
+    return Number.isFinite(triggeredAtMs) && nowMs - triggeredAtMs >= MANUAL_REVIEW_IDLE_MS;
+  });
+}
+
 /**
  * Render a cursor-freshness verdict (P-027).
  *
@@ -239,6 +258,10 @@ export default function TriggersClient() {
         sourceScope === "social" ? source.social !== null : true,
       ),
     [payload, sourceScope],
+  );
+  const idleReviewRuns = useMemo(
+    () => idleManualReviewRuns(payload?.recentRuns ?? []),
+    [payload],
   );
 
   useEffect(() => {
@@ -488,6 +511,12 @@ export default function TriggersClient() {
 
           {view === "runs" && (
             <section className="tr-table-wrap" aria-label="Recent trigger runs">
+              {idleReviewRuns.length > 0 && (
+                <div className="tr-state" role="status">
+                  Needs review: {idleReviewRuns.length} trigger run
+                  {idleReviewRuns.length === 1 ? " has" : "s have"} open work and no agent for at least 24h.
+                </div>
+              )}
               {payload.recentRuns.length === 0 ? (
                 <Empty message="No external-trigger runs have fired yet." />
               ) : (

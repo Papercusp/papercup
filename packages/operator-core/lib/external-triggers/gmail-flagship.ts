@@ -7,16 +7,10 @@ import { ensureExternalTriggerBinding, type CreatedExternalTriggerBinding } from
 import { createGoogleGmailDraft, replySubjectFor, type GoogleGmailDraftResult } from './google-gmail';
 import { resolveGoogleWorkspaceAccessToken } from './google-workspace';
 import type { ExternalTriggerSourceRow } from './source-store';
-import type { AgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
 export const GMAIL_RESPOND_DRAFT_HARNESS = 'email';
-export const GMAIL_RESPOND_DRAFT_AGENT_NAME = 'email-agent';
-export const GMAIL_RESPOND_DRAFT_EXECUTION: AgenticPlanExecutionTarget = {
-  appHarnessSlug: GMAIL_RESPOND_DRAFT_HARNESS,
-  agentName: GMAIL_RESPOND_DRAFT_AGENT_NAME,
-};
 /** Google Workspace credentials remain installed in the papercusp host. */
 export const GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS = 'papercusp';
 export const GMAIL_RESPOND_DRAFT_PLAN = 'gmail-respond-with-draft-2026-08-22';
@@ -166,7 +160,8 @@ export interface GmailFlagshipBindingResult {
 }
 
 /**
- * Re-home the pre-agentic built-in binding from the papercusp queue to Email.
+ * Re-home the legacy built-in binding from the papercusp queue to Email and
+ * normalize every surviving binding to durable manual-review execution.
  * Preserve its armed state and id; detach any redundant legacy copies so a
  * reconnect cannot leave both paths firing the same inbound message.
  */
@@ -175,7 +170,7 @@ export async function migrateLegacyGmailRespondDraftBinding(
   workspaceId: string,
   sourceId: string,
 ): Promise<{ migrated: number; detached: number }> {
-  const action = JSON.stringify({ type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION });
+  const action = JSON.stringify({ type: 'launch-plan' });
   const eventFilter = JSON.stringify(GMAIL_RESPOND_DRAFT_EVENT_FILTER);
   return sql.begin(async (tx) => {
     const lockKey = ['gmail-respond-draft-binding', workspaceId, sourceId].join(':');
@@ -208,6 +203,19 @@ export async function migrateLegacyGmailRespondDraftBinding(
                updated_at = now()
          WHERE workspace_id = ${workspaceId} AND id = ${keepLegacyId}::uuid`;
       migrated = 1;
+    }
+    if (current[0]) {
+      // A provider event must remain durable when no named agent session is
+      // resident. The ordinary plan-run queue is the review surface; a future
+      // always-on executor can opt in without changing the provider contract.
+      await tx`
+        UPDATE harness_shared.trigger_bindings
+           SET event_filter = ${eventFilter}::text::jsonb,
+               action = ${action}::text::jsonb,
+               updated_at = now()
+         WHERE workspace_id = ${workspaceId} AND id = ${current[0].id}::uuid
+           AND (event_filter IS DISTINCT FROM ${eventFilter}::text::jsonb
+             OR action IS DISTINCT FROM ${action}::text::jsonb)`;
     }
     let detached = 0;
     for (const row of legacy) {
@@ -245,7 +253,6 @@ export async function ensureGmailRespondDraftBinding(
     planSlug: GMAIL_RESPOND_DRAFT_PLAN,
     eventPattern: GMAIL_RESPOND_DRAFT_EVENT,
     eventFilter: GMAIL_RESPOND_DRAFT_EVENT_FILTER,
-    execution: GMAIL_RESPOND_DRAFT_EXECUTION,
     createdBy,
   });
   return { plan, binding };

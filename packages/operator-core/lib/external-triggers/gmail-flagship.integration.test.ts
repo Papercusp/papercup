@@ -7,13 +7,11 @@ import {
   ensureGmailRespondDraftBinding,
   GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS,
   GMAIL_RESPOND_DRAFT_EVENT,
-  GMAIL_RESPOND_DRAFT_EXECUTION,
   GMAIL_RESPOND_DRAFT_HARNESS,
   GMAIL_RESPOND_DRAFT_PLAN,
 } from './gmail-flagship';
 import { ingestExternalTriggerEvent } from './ingestion';
 import { upsertOwnedExternalTriggerSource } from './source-store';
-import { runScheduledPlanFire } from '../harness/routines/plan-run-action';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as Sql }));
 
@@ -106,10 +104,11 @@ describe('Gmail flagship desktop flow', () => {
     const first = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
     expect(first).toMatchObject({
       plan: { created: true },
-      binding: { armed: false, action: { type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION } },
+      binding: { armed: false, action: { type: 'launch-plan' } },
     });
-    // Upgrade guard: reconnecting an installation provisioned before direct
-    // execution existed updates the one semantic binding instead of duplicating it.
+    // Upgrade guard: reconnecting an installation provisioned with a named
+    // direct executor preserves the semantic binding while moving it to the
+    // durable manual-review queue.
     await sql`
       INSERT INTO harness_shared.harness_plans
         (workspace_id, harness_slug, plan_slug, title, status, content, content_hash, items, input_schema)
@@ -122,7 +121,7 @@ describe('Gmail flagship desktop flow', () => {
     await sql`
       UPDATE harness_shared.trigger_bindings
          SET plan_harness_slug = ${GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS},
-             action = '{"type":"launch-plan"}'::jsonb
+             action = '{"type":"launch-plan","execution":{"appHarnessSlug":"email","agentName":"email-agent"}}'::jsonb
        WHERE workspace_id = ${WS} AND id = ${first.binding.id}::uuid`;
     const second = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
     expect(second).toMatchObject({
@@ -130,7 +129,7 @@ describe('Gmail flagship desktop flow', () => {
       binding: {
         id: first.binding.id,
         armed: false,
-        action: { type: 'launch-plan', execution: GMAIL_RESPOND_DRAFT_EXECUTION },
+        action: { type: 'launch-plan' },
       },
     });
 
@@ -184,42 +183,7 @@ describe('Gmail flagship desktop flow', () => {
         { emit },
       ),
     ).resolves.toMatchObject({ ok: true });
-    const dispatchActionable = vi.fn(async (args: { workItemIds: readonly string[]; targetAgent: string }) => ({
-      ok: true,
-      target: {
-        requested: args.targetAgent,
-        ownerId: 'su-email-live',
-        present: true,
-        sessionState: 'parked',
-        wakeable: true,
-      },
-      assignment: {
-        ok: true,
-        targetAgent: args.targetAgent,
-        requested: [...args.workItemIds],
-        actionable: [...args.workItemIds],
-        assigned: [...args.workItemIds],
-        retained: [],
-        skipped: [],
-        failed: [],
-        executionWorkItemIds: [...args.workItemIds],
-      },
-      wake: {
-        targets: ['su-email-live'],
-        keys: ['coord:inbox-wake:su-email-live'],
-        queued: 1,
-        woken: 1,
-        pickupConfirmed: false,
-        staged: 0,
-        stagedTargets: [],
-        fanoutCapped: [],
-        timedOutTargets: [],
-      },
-    }));
-    const runPlan = (db: Sql, opts: Parameters<typeof runScheduledPlanFire>[1]) =>
-      runScheduledPlanFire(db, opts, { dispatch: dispatchActionable });
     const dispatchResult = await dispatchPendingTriggerRuns(sql, {
-      runPlan,
       announceRunWork: async () => undefined,
     });
     const dispatchRows = await sql<Array<{ error: string | null }>>`
@@ -230,12 +194,11 @@ describe('Gmail flagship desktop flow', () => {
       succeeded: 1,
       failed: 0,
     });
-    expect(dispatchActionable).toHaveBeenCalledWith(
-      expect.objectContaining({
-        targetAgent: 'email-agent',
-        harness: GMAIL_RESPOND_DRAFT_HARNESS,
-      }),
-    );
+    const reviewWork = await sql<Array<{ status: string; takenBy: string | null }>>`
+      SELECT status, taken_by AS "takenBy"
+        FROM harness_shared.work_items
+       WHERE workspace_id = ${WS}`;
+    expect(reviewWork).toEqual([{ status: 'open', takenBy: null }]);
     const runs = await sql<Array<{ planRunId: number }>>`
       SELECT plan_run_ref::bigint::int AS "planRunId"
         FROM harness_shared.trigger_runs

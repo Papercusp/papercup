@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { parsePlan } from '@papercusp/plan-parser';
 import {
   ensureGmailRespondDraftBinding,
-  GMAIL_RESPOND_DRAFT_EXECUTION,
   GMAIL_RESPOND_DRAFT_EVENT,
   GMAIL_RESPOND_DRAFT_EVENT_FILTER,
   GMAIL_RESPOND_DRAFT_INPUT_SCHEMA,
@@ -77,7 +76,6 @@ describe('Gmail flagship respond-with-draft binding', () => {
       planSlug: GMAIL_RESPOND_DRAFT_PLAN,
       eventPattern: GMAIL_RESPOND_DRAFT_EVENT,
       eventFilter: GMAIL_RESPOND_DRAFT_EVENT_FILTER,
-      execution: GMAIL_RESPOND_DRAFT_EXECUTION,
       createdBy: 'owner:fixture',
     });
   });
