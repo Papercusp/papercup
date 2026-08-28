@@ -599,6 +599,57 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(gw.stats().egressAttemptsByAccount).toMatchObject({ 'chatgpt-a': 1 });
   });
 
+  it('keeps the downstream open while a real HTTP non-stream OAuth response aggregates past the ordinary idle window', async () => {
+    const home = await makeCodexHome('chatgpt-a');
+    const cliAccounts = [{ accountId: 'chatgpt-a', home }];
+    const downstreamIdleMs = 60;
+    const delayedCompletionMs = 180;
+
+    openaiUpstream = await startUpstream((_req, res, body) => {
+      const forwarded = JSON.parse(body) as Record<string, unknown>;
+      expect(forwarded.stream).toBe(true);
+      expect(forwarded.store).toBe(false);
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(`data: ${JSON.stringify({ type: 'response.created', response: { id: 'resp_delayed_created' } })}\n\n`);
+      const completionTimer = setTimeout(() => {
+        if (res.destroyed) return;
+        res.end(
+          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_delayed', output: [] } })}\n\n` +
+            'data: [DONE]\n\n',
+        );
+      }, delayedCompletionMs);
+      completionTimer.unref?.();
+    });
+    const fetchImpl = ((url: RequestInfo | URL, init?: RequestInit) => {
+      const upstreamUrl = new URL(typeof url === 'string' ? url : url instanceof URL ? url.href : url.url);
+      return fetch(`${openaiUpstream!.base}${upstreamUrl.pathname}${upstreamUrl.search}`, init);
+    }) as typeof fetch;
+
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool([{ accountId: 'chatgpt-a', token: async () => '' }]),
+      codexOAuthProxy: true,
+      fetchImpl,
+      downstreamIdleMs,
+      upstreamStreamHeadersTimeoutMs: 1_000,
+      upstreamBodyIdleTimeoutMs: 1_000,
+      codexOAuthNonStreamTimeoutMs: 1_000,
+      requestCeilingMs: 2_500,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'wait for the delayed completion', stream: false },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ id: 'resp_delayed', output: [] });
+  });
+
   it('PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0 selects the named temporary CLI fallback', async () => {
     const home = await makeCodexHome('chatgpt-a');
     const cliAccounts = [{ accountId: 'chatgpt-a', home }];

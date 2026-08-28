@@ -5130,6 +5130,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
             attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
           );
           nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
+          // `res.setTimeout` measures DOWNSTREAM socket inactivity, while this adapter
+          // intentionally withholds every downstream byte until the upstream SSE has been
+          // aggregated. The ordinary idle window can therefore destroy a healthy caller before
+          // the longer aggregation deadline fires (four 2-minute socket kills made one staged
+          // bulk action fail after ~8 minutes). Give aggregation its full budget plus one normal
+          // downstream-drain window, then restore the ordinary bound before emitting JSON.
+          const aggregateDownstreamIdleMs = downstreamIdleMs > 0 ? codexOAuthNonStreamTimeoutMs + downstreamIdleMs : 0;
+          res.setTimeout(aggregateDownstreamIdleMs);
           stageSpan?.beginStage('stream');
           try {
             const aggregated = await aggregateCodexNonStreamResponse(nodeStream, {
@@ -5137,11 +5145,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
               maxBytes: codexOAuthNonStreamMaxBytes,
               timeoutMs: codexOAuthNonStreamTimeoutMs,
               signal: reqAbort.signal,
-              onTimeout: () => ac.abort(new Error(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`)),
+              onTimeout: () =>
+                ac.abort(
+                  new Error(`codex OAuth non-stream response timed out after ${codexOAuthNonStreamTimeoutMs}ms`),
+                ),
             });
             stageSpan?.endStage('stream');
+            res.setTimeout(downstreamIdleMs);
             if (reqAbort.signal.aborted || ac.signal.aborted) {
-              try { nodeStream.destroy(); } catch { /* already torn down */ }
+              try {
+                nodeStream.destroy();
+              } catch {
+                /* already torn down */
+              }
               return;
             }
             outHeaders['content-type'] = 'application/json';
@@ -5154,12 +5170,21 @@ export function createInferenceGateway(deps: GatewayDeps) {
             return;
           } catch (e) {
             stageSpan?.endStage('stream');
-            try { nodeStream.destroy(); } catch { /* already torn down */ }
+            res.setTimeout(downstreamIdleMs);
+            try {
+              nodeStream.destroy();
+            } catch {
+              /* already torn down */
+            }
             detach();
             clearStall();
-            const aggregateError = e instanceof CodexNonStreamAggregateError
-              ? e
-              : new CodexNonStreamAggregateError('invalid', `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`);
+            const aggregateError =
+              e instanceof CodexNonStreamAggregateError
+                ? e
+                : new CodexNonStreamAggregateError(
+                    'invalid',
+                    `codex OAuth non-stream response aggregation failed: ${(e as Error).message}`,
+                  );
             // `onTimeout` intentionally aborts this attempt so the fetch/socket is torn down. That
             // abort is an aggregation timeout, not a downstream cancellation, so only the stable
             // request signal (or the helper's explicit aborted code) suppresses a gateway response.
@@ -5168,8 +5193,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
               return;
             }
             codexUpstreamErrors++;
-            recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: `oauth-nonstream-${aggregateError.code}` });
-            log('error', `inference-gateway: codex OAuth non-stream aggregation failed on '${cli.accountId}': ${aggregateError.message}`);
+            recordOwnerOutcome(routing.ownerId, 'upstream_error', {
+              account: cli.accountId,
+              detail: `oauth-nonstream-${aggregateError.code}`,
+            });
+            log(
+              'error',
+              `inference-gateway: codex OAuth non-stream aggregation failed on '${cli.accountId}': ${aggregateError.message}`,
+            );
             if (!res.headersSent) {
               sendJson(
                 res,
