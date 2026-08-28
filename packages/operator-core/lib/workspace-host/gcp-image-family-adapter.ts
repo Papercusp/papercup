@@ -1,0 +1,1236 @@
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { isAbsolute, relative, resolve } from 'node:path';
+
+import {
+  buildWorkspaceHostCleanRoomInstallFixture,
+  validateWorkspaceHostBootstrapAttestation,
+  type WorkspaceHostCleanRoomInstallFixture,
+  type WorkspaceHostImageArtifact,
+} from '@papercusp/deployment-driver';
+import {
+  acquireGcpAdcAuth,
+  createGcpWorkspaceHostAcquireAuth,
+  fetchGcpApiJson,
+  type GcpResolvedAuth,
+} from '../cloud-workspaces/gcp-preflight';
+import {
+  GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
+  GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+  GcpImageFamilyReleaseError,
+  assertGcpImmutableImageId,
+  parseGcpImmutableImageId,
+  type GcpImageCleanBootProof,
+  type GcpImageFamilyPin,
+  type GcpImageFamilyReleaseAdapter,
+  type GcpImageFamilyReleaseContext,
+  type GcpImageInspection,
+  type GcpImageScanEvidence,
+} from './gcp-image-family';
+
+/** A shell-free command invocation used by the image, scanner, and clean-room seams. */
+export interface GcpImageFamilyCommand {
+  command: string;
+  args: readonly string[];
+  cwd?: string;
+  env?: Readonly<Record<string, string | undefined>>;
+  stdin?: string;
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+}
+
+export interface GcpImageFamilyCommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+/**
+ * Injected process boundary. Implementations MUST use an argv array and shell:false.
+ * The broad first argument keeps this seam compatible with small test runners that only
+ * implement `run(command, args)` while the node implementation also accepts one object.
+ */
+export interface GcpImageFamilyCommandRunner {
+  run(
+    command: string | GcpImageFamilyCommand,
+    args?: readonly string[],
+    options?: Omit<GcpImageFamilyCommand, 'command' | 'args'>,
+  ): Promise<GcpImageFamilyCommandResult>;
+  execute?(
+    command: string | GcpImageFamilyCommand,
+    args?: readonly string[],
+    options?: Omit<GcpImageFamilyCommand, 'command' | 'args'>,
+  ): Promise<GcpImageFamilyCommandResult>;
+}
+
+/** Raw, non-secret image metadata returned by Compute Engine. */
+export interface GcpImageFamilyComputeImage {
+  name: string;
+  id?: string | number;
+  selfLink?: string;
+  family?: string;
+  state?: 'ACTIVE' | 'DEPRECATED' | 'OBSOLETE' | 'DELETED' | string;
+  architecture?: string;
+  description?: string;
+  labels?: Readonly<Record<string, string>>;
+  creationTimestamp?: string;
+  sourceImage?: string;
+  deprecated?: {
+    state?: 'DEPRECATED' | 'OBSOLETE' | 'DELETED' | string;
+    replacement?: string;
+  };
+}
+
+export interface GcpImageFamilyComputeImageInsert {
+  name: string;
+  family?: string;
+  sourceImage: string;
+  description: string;
+  labels?: Readonly<Record<string, string>>;
+}
+
+export interface GcpImageFamilyComputeApi {
+  /** Implement one of getImage/getFamilyImage/getImageFamily; all are accepted for test seams. */
+  getImage?(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined>;
+  getFamilyImage?(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined>;
+  getImageFamily?(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined>;
+  getImageByName?(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined>;
+  getFamily?(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined>;
+  /** Implement one of insertImage/createImage. The result may be an operation or image receipt. */
+  insertImage?(
+    projectId: string,
+    input: GcpImageFamilyComputeImageInsert,
+  ): Promise<GcpImageFamilyComputeImage | GcpImageFamilyComputeOperation>;
+  createImage?(
+    projectId: string,
+    input: GcpImageFamilyComputeImageInsert,
+  ): Promise<GcpImageFamilyComputeImage | GcpImageFamilyComputeOperation>;
+  publishImage?(
+    projectId: string,
+    input: GcpImageFamilyComputeImageInsert,
+  ): Promise<GcpImageFamilyComputeImage | GcpImageFamilyComputeOperation>;
+  deprecateImage?(input: {
+    projectId: string;
+    imageName: string;
+    replacementImageId: string;
+    state: 'DEPRECATED';
+  }): Promise<void>;
+  setImageDeprecation?(input: {
+    projectId: string;
+    imageName: string;
+    replacementImageId: string;
+    state: 'DEPRECATED';
+  }): Promise<void>;
+}
+
+export interface GcpImageFamilyComputeOperation {
+  name: string;
+  status?: 'PENDING' | 'RUNNING' | 'DONE';
+  error?: { errors?: readonly { code?: string; message?: string }[] };
+}
+
+export interface GcpImageFamilyScanRunner {
+  run?(input: {
+    projectId: string;
+    imageId: string;
+    buildManifestIdentity: string;
+    releaseSha256: string;
+    artifact?: WorkspaceHostImageArtifact;
+  }): Promise<unknown>;
+  scan?(input: {
+    projectId: string;
+    imageId: string;
+    buildManifestIdentity: string;
+    releaseSha256: string;
+    artifact?: WorkspaceHostImageArtifact;
+  }): Promise<unknown>;
+  scanImage?(input: {
+    projectId: string;
+    imageId: string;
+    buildManifestIdentity: string;
+    releaseSha256: string;
+    artifact?: WorkspaceHostImageArtifact;
+  }): Promise<unknown>;
+}
+
+export interface GcpImageFamilyCleanRoomRunInput {
+  projectId: string;
+  zone: string;
+  serviceAccountEmail: string;
+  subnetwork: string;
+  imageId: string;
+  buildManifestIdentity: string;
+  releaseVersion: string;
+  releaseSha256: string;
+  fixture: WorkspaceHostCleanRoomInstallFixture;
+}
+
+export interface GcpImageFamilyCleanRoomRunResult extends GcpImageCleanBootProof {
+  /** Optional echo used to prove the runner executed the exact deterministic fixture. */
+  fixtureId?: string;
+  bootstrapScriptSha256?: string;
+}
+
+export interface GcpImageFamilyCleanRoomRunner {
+  run?(input: GcpImageFamilyCleanRoomRunInput): Promise<unknown>;
+  execute?(input: GcpImageFamilyCleanRoomRunInput): Promise<unknown>;
+  runCleanRoom?(input: GcpImageFamilyCleanRoomRunInput): Promise<unknown>;
+}
+
+export interface GcpImageFamilyReleaseAdapterOptions {
+  compute?: GcpImageFamilyComputeApi;
+  computeApi?: GcpImageFamilyComputeApi;
+  commandRunner?: GcpImageFamilyCommandRunner;
+  /** Compatibility alias for callers that name the seam `commands`. */
+  commands?: GcpImageFamilyCommandRunner;
+  packerRunner?: GcpImageFamilyCommandRunner;
+  scanRunner?: GcpImageFamilyScanRunner;
+  scanner?: GcpImageFamilyScanRunner;
+  scan?: GcpImageFamilyScanRunner;
+  cleanRoomRunner?: GcpImageFamilyCleanRoomRunner;
+  cleanRoom?: GcpImageFamilyCleanRoomRunner;
+  cleanRoomExecutor?: GcpImageFamilyCleanRoomRunner;
+  repositoryRoot?: string;
+  repoRoot?: string;
+  packerExecutable?: string;
+  packerPath?: string;
+  scanExecutable?: string;
+  scannerExecutable?: string;
+  cleanRoomExecutable?: string;
+  cleanRoomCommand?: string;
+  guestToolVersions?: Readonly<Record<string, string>>;
+  sourceImage?: string;
+  machineType?: string;
+  diskSizeGb?: number;
+  omitExternalIp?: boolean;
+  useIap?: boolean;
+  acquireAuth?: () => Promise<GcpResolvedAuth>;
+  credentialRef?: string;
+  fetch?: typeof fetch;
+  now?: () => string;
+}
+
+export interface GcpImageFamilyComputeApiOptions {
+  acquireAuth?: () => Promise<GcpResolvedAuth>;
+  credentialRef?: string;
+  fetch?: typeof fetch;
+  now?: () => string;
+}
+
+const PROJECT_ID = /^[a-z][a-z0-9-]{4,28}[a-z0-9]$/;
+const RESOURCE_NAME = /^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const MANIFEST_IDENTITY = /^sha256:[a-f0-9]{64}$/;
+const SAFE_EXECUTABLE = /^[A-Za-z0-9_./:+-]+$/;
+const COMPUTE_API = 'https://compute.googleapis.com/compute/v1';
+const DEFAULT_COMMAND_TIMEOUT_MS = 30 * 60 * 1_000;
+const DEFAULT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+
+function fail(message: string): never {
+  throw new GcpImageFamilyReleaseError(message);
+}
+
+function text(value: unknown, path: string): string {
+  if (typeof value !== 'string' || value.trim().length === 0) fail(`${path} must be a non-empty string`);
+  return value.trim();
+}
+
+function project(value: unknown, path = 'projectId'): string {
+  const result = text(value, path);
+  if (!PROJECT_ID.test(result)) fail(`${path} must be a GCP project id`);
+  return result;
+}
+
+function resource(value: unknown, path: string): string {
+  const result = text(value, path);
+  if (!RESOURCE_NAME.test(result)) fail(`${path} must be a GCP resource name`);
+  return result;
+}
+
+function digest(value: unknown, path: string): string {
+  const result = text(value, path);
+  if (!SHA256.test(result)) fail(`${path} must be a lowercase SHA-256 digest`);
+  return result;
+}
+
+function manifest(value: unknown, path: string): string {
+  const result = text(value, path);
+  if (!MANIFEST_IDENTITY.test(result)) fail(`${path} must be sha256:<64 lowercase hex>`);
+  return result;
+}
+
+function safeExecutable(value: string | undefined, fallback: string, path: string): string {
+  const result = text(value ?? fallback, path);
+  if (!SAFE_EXECUTABLE.test(result) || /\s/.test(result)) fail(`${path} must be a shell-free executable path`);
+  return result;
+}
+
+function assertSuccess(result: GcpImageFamilyCommandResult, operation: string): string {
+  if (!Number.isSafeInteger(result.exitCode) || result.exitCode !== 0) {
+    const diagnostic =
+      typeof result.stderr === 'string'
+        ? result.stderr
+            .replace(/(authorization|token|secret|private[_ -]?key|password)\s*[:=]\s*[^\s]+/gi, '$1=[redacted]')
+            .trim()
+            .slice(-2_000)
+        : '';
+    fail(`${operation} failed with exit code ${String(result.exitCode)}${diagnostic ? `; stderr: ${diagnostic}` : ''}`);
+  }
+  return result.stdout;
+}
+
+function canonicalImageUrl(imageId: string): string {
+  return `${COMPUTE_API}/${assertGcpImmutableImageId(imageId)}`;
+}
+
+function imageNameFromId(imageId: string): string {
+  return parseGcpImmutableImageId(imageId, 'imageId').imageName;
+}
+
+function operationError(operation: GcpImageFamilyComputeOperation): string | undefined {
+  const errors = operation.error?.errors ?? [];
+  if (errors.length === 0) return undefined;
+  const codes = errors.map((entry) => entry.code).filter((entry): entry is string => !!entry);
+  return codes.length > 0 ? `GCP image operation failed (${codes.join(', ')})` : 'GCP image operation failed';
+}
+
+function parseJsonObject(value: string, operation: string): Readonly<Record<string, unknown>> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    fail(`${operation} returned invalid JSON`);
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    fail(`${operation} returned a JSON value instead of an object`);
+  }
+  return parsed as Readonly<Record<string, unknown>>;
+}
+
+function findImageId(value: unknown, expectedProject: string, expectedName: string): string | undefined {
+  if (typeof value === 'string') {
+    const full = value.match(/projects\/[^\s/'"]+\/global\/images\/[^\s/'"]+/)?.[0];
+    if (full) {
+      try {
+        const parsed = parseGcpImmutableImageId(full);
+        if (parsed.projectId === expectedProject) return parsed.imageId;
+      } catch {
+        // Continue searching output; Packer occasionally prints a URL-like diagnostic token.
+      }
+    }
+    if (value === `${expectedProject}/${expectedName}` || value === expectedName) {
+      return `projects/${expectedProject}/global/images/${expectedName}`;
+    }
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findImageId(entry, expectedProject, expectedName);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (value && typeof value === 'object') {
+    for (const [key, entry] of Object.entries(value as Readonly<Record<string, unknown>>)) {
+      if (key === 'id' || key === 'imageId' || key === 'selfLink' || key === 'artifactId' || key === 'targetLink') {
+        const found = findImageId(entry, expectedProject, expectedName);
+        if (found) return found;
+      }
+      const nested = findImageId(entry, expectedProject, expectedName);
+      if (nested) return nested;
+    }
+  }
+  return undefined;
+}
+
+function parsePackerImageId(stdout: string, projectId: string, imageName: string): string | undefined {
+  const direct = findImageId(stdout, projectId, imageName);
+  if (direct) return direct;
+  for (const line of stdout.split(/\r?\n/)) {
+    const fields = line.split(',');
+    if (fields[0] === 'artifact' && fields[2] === 'id') {
+      const candidate = fields.slice(3).join(',').trim().replace(/^gce,/, '');
+      const found = findImageId(candidate, projectId, imageName);
+      if (found) return found;
+      const short = candidate.match(
+        new RegExp(
+          `(?:^|:)${projectId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/(${imageName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})$`,
+        ),
+      );
+      if (short) return `projects/${projectId}/global/images/${short[1]}`;
+    }
+    const trimmed = line.trim();
+    if (trimmed.startsWith('{')) {
+      try {
+        const found = findImageId(JSON.parse(trimmed), projectId, imageName);
+        if (found) return found;
+      } catch {
+        // A non-JSON machine-readable line is ignored; the final Compute read is authoritative.
+      }
+    }
+  }
+  return undefined;
+}
+
+function parseProvenance(description: string | undefined): Readonly<Record<string, unknown>> {
+  if (!description?.trim()) fail('GCP image description is missing the release provenance document');
+  const parsed = parseJsonObject(description, 'GCP image provenance');
+  if (parsed.contractVersion !== GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION) {
+    fail(`GCP image provenance contract must be ${GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION}`);
+  }
+  return parsed;
+}
+
+function architecture(value: unknown): string {
+  const normalized = text(value, 'image.architecture').toUpperCase();
+  if (normalized === 'X86_64' || normalized === 'AMD64') return 'x86_64';
+  if (normalized === 'ARM64' || normalized === 'AARCH64') return 'arm64';
+  return normalized.toLowerCase();
+}
+
+function imageState(raw: GcpImageFamilyComputeImage): GcpImageInspection['state'] {
+  const state = String(raw.deprecated?.state ?? raw.state ?? 'ACTIVE').toUpperCase();
+  if (state === 'DEPRECATED' || state === 'OBSOLETE' || state === 'DELETED' || state === 'ACTIVE') return state;
+  fail(`GCP image ${raw.name} has unsupported state ${state}`);
+}
+
+function guestTools(value: unknown): readonly { name: string; version: string }[] {
+  if (!Array.isArray(value)) fail('GCP image provenance is missing guestTools');
+  const result = value.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) fail(`guestTools[${index}] is invalid`);
+    const item = entry as Readonly<Record<string, unknown>>;
+    return {
+      name: text(item.name, `guestTools[${index}].name`),
+      version: text(item.version, `guestTools[${index}].version`),
+    };
+  });
+  const names = new Set(result.map((entry) => entry.name));
+  for (const required of GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS) {
+    if (!names.has(required)) fail(`GCP image provenance is missing guest tool ${required}`);
+  }
+  return result;
+}
+
+function cleanProof(value: unknown, input: GcpImageFamilyCleanRoomRunInput): GcpImageFamilyCleanRoomRunResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('clean-room runner returned an invalid proof');
+  const raw = value as Readonly<Record<string, unknown>>;
+  const proof: GcpImageFamilyCleanRoomRunResult = {
+    evidenceRef: text(raw.evidenceRef, 'cleanRoomProof.evidenceRef'),
+    projectId: text(raw.projectId, 'cleanRoomProof.projectId'),
+    zone: text(raw.zone, 'cleanRoomProof.zone'),
+    imageId: assertGcpImmutableImageId(text(raw.imageId, 'cleanRoomProof.imageId'), 'cleanRoomProof.imageId'),
+    buildManifestIdentity: manifest(raw.buildManifestIdentity, 'cleanRoomProof.buildManifestIdentity'),
+    computeRunning: raw.computeRunning === true,
+    osLoginReady: raw.osLoginReady === true,
+    publicIpv4Assigned: raw.publicIpv4Assigned === true,
+    attestation: raw.attestation as GcpImageCleanBootProof['attestation'],
+    terminated: raw.terminated === true,
+    residualResourceIds: Array.isArray(raw.residualResourceIds)
+      ? raw.residualResourceIds.map((entry, index) => text(entry, `cleanRoomProof.residualResourceIds[${index}]`))
+      : fail('cleanRoomProof.residualResourceIds must be an array'),
+    observedAt: text(raw.observedAt, 'cleanRoomProof.observedAt'),
+    ...(typeof raw.fixtureId === 'string' ? { fixtureId: raw.fixtureId } : {}),
+    ...(typeof raw.bootstrapScriptSha256 === 'string' ? { bootstrapScriptSha256: raw.bootstrapScriptSha256 } : {}),
+  };
+  if (
+    proof.projectId !== input.projectId ||
+    proof.zone !== input.zone ||
+    proof.imageId !== input.imageId ||
+    proof.buildManifestIdentity !== input.buildManifestIdentity ||
+    !Number.isFinite(Date.parse(proof.observedAt))
+  ) {
+    fail('clean-room proof is not bound to the requested project, zone, image, manifest, and timestamp');
+  }
+  if (proof.fixtureId && proof.fixtureId !== input.fixture.fixtureId)
+    fail('clean-room proof fixtureId does not match the submitted fixture');
+  if (proof.bootstrapScriptSha256 && proof.bootstrapScriptSha256 !== input.fixture.bootstrapScriptSha256) {
+    fail('clean-room proof bootstrap digest does not match the submitted fixture');
+  }
+  if (
+    !proof.computeRunning ||
+    !proof.osLoginReady ||
+    proof.publicIpv4Assigned ||
+    !proof.terminated ||
+    proof.residualResourceIds.length > 0
+  ) {
+    fail('clean-room runner did not prove private boot, OS Login, and zero-residue teardown');
+  }
+  if (!proof.attestation || typeof proof.attestation !== 'object' || proof.attestation.status !== 'healthy') {
+    fail('clean-room runner did not return a healthy bootstrap attestation');
+  }
+  const validation = validateWorkspaceHostBootstrapAttestation(proof.attestation, {
+    contractVersion: input.fixture.bootstrapInput.contractVersion,
+    action: input.fixture.bootstrapInput.action,
+    hostId: input.fixture.bootstrapInput.hostId,
+    release: input.fixture.bootstrapInput.release,
+    migrationId: input.fixture.bootstrapInput.migrationId,
+    minimumNodeMajor: input.fixture.bootstrapInput.minimumNodeMajor,
+    service: input.fixture.bootstrapInput.service,
+    ...(input.fixture.bootstrapInput.isolation ? { isolation: input.fixture.bootstrapInput.isolation } : {}),
+    ...(input.fixture.bootstrapInput.entrypoints ? { entrypoints: input.fixture.bootstrapInput.entrypoints } : {}),
+    ...(input.fixture.bootstrapInput.publicMetadata
+      ? { publicMetadata: input.fixture.bootstrapInput.publicMetadata }
+      : {}),
+  });
+  if (!validation.ok) fail(`clean-room bootstrap attestation failed validation: ${validation.errors.join('; ')}`);
+  return proof;
+}
+
+function scanEvidence(
+  value: unknown,
+  input: {
+    imageId: string;
+    buildManifestIdentity: string;
+    releaseSha256: string;
+  },
+): GcpImageScanEvidence {
+  let raw: unknown = value;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'exitCode' in raw) {
+    const command = raw as Partial<GcpImageFamilyCommandResult>;
+    if (command.exitCode !== 0) fail(`GCP image scanner failed with exit code ${String(command.exitCode)}`);
+    raw = parseJsonObject(typeof command.stdout === 'string' ? command.stdout : '', 'GCP image scanner');
+  } else if (typeof raw === 'string') {
+    raw = parseJsonObject(raw, 'GCP image scanner');
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('GCP image scanner returned no structured evidence');
+  const result = raw as Readonly<Record<string, unknown>>;
+  const evidence: GcpImageScanEvidence = {
+    imageId: assertGcpImmutableImageId(text(result.imageId, 'scan.imageId'), 'scan.imageId'),
+    buildManifestIdentity: manifest(result.buildManifestIdentity, 'scan.buildManifestIdentity'),
+    releaseSha256: digest(result.releaseSha256, 'scan.releaseSha256'),
+    trusted: result.trusted === true,
+    sbomSha256: digest(result.sbomSha256, 'scan.sbomSha256'),
+    vulnerabilityFindings: result.vulnerabilityFindings as number,
+    secretFindings: result.secretFindings as number,
+    evidenceRef: text(result.evidenceRef, 'scan.evidenceRef'),
+  };
+  if (
+    evidence.imageId !== input.imageId ||
+    evidence.buildManifestIdentity !== input.buildManifestIdentity ||
+    evidence.releaseSha256 !== input.releaseSha256 ||
+    !Number.isSafeInteger(evidence.vulnerabilityFindings) ||
+    evidence.vulnerabilityFindings < 0 ||
+    !Number.isSafeInteger(evidence.secretFindings) ||
+    evidence.secretFindings < 0 ||
+    !evidence.trusted ||
+    evidence.vulnerabilityFindings !== 0 ||
+    evidence.secretFindings !== 0
+  ) {
+    fail('GCP image scanner evidence is untrusted, non-zero, or bound to a different subject');
+  }
+  return evidence;
+}
+
+function jsonInput(value: unknown): string {
+  return `${JSON.stringify(value)}\n`;
+}
+
+/** Node process runner used by the production adapter and by command-protocol runners. */
+export class NodeGcpImageFamilyCommandRunner implements GcpImageFamilyCommandRunner {
+  async run(
+    commandOrObject: string | GcpImageFamilyCommand,
+    args: readonly string[] = [],
+    options: Omit<GcpImageFamilyCommand, 'command' | 'args'> = {},
+  ): Promise<GcpImageFamilyCommandResult> {
+    const command = typeof commandOrObject === 'string' ? commandOrObject : commandOrObject.command;
+    const actualArgs = typeof commandOrObject === 'string' ? args : commandOrObject.args;
+    const actualOptions = typeof commandOrObject === 'string' ? options : commandOrObject;
+    if (!SAFE_EXECUTABLE.test(command) || /\s/.test(command)) {
+      return { exitCode: 126, stdout: '', stderr: 'executable path is invalid' };
+    }
+    if (actualArgs.some((entry) => typeof entry !== 'string' || entry.includes('\0'))) {
+      return { exitCode: 126, stdout: '', stderr: 'command argument is invalid' };
+    }
+    const timeoutMs = actualOptions.timeoutMs ?? DEFAULT_COMMAND_TIMEOUT_MS;
+    const maxOutputBytes = actualOptions.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
+    if (
+      !Number.isSafeInteger(timeoutMs) ||
+      timeoutMs <= 0 ||
+      !Number.isSafeInteger(maxOutputBytes) ||
+      maxOutputBytes <= 0
+    ) {
+      return { exitCode: 126, stdout: '', stderr: 'command runner limits are invalid' };
+    }
+    return await new Promise<GcpImageFamilyCommandResult>((resolveResult) => {
+      const child = spawn(command, [...actualArgs], {
+        cwd: actualOptions.cwd,
+        env: actualOptions.env ? { ...process.env, ...actualOptions.env } : process.env,
+        shell: false,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      let bytes = 0;
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (result: GcpImageFamilyCommandResult): void => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolveResult(result);
+      };
+      const overLimit = (stream: 'stdout' | 'stderr'): void => {
+        child.kill('SIGKILL');
+        finish({
+          exitCode: 125,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: `${stream} exceeded output limit`,
+        });
+      };
+      child.stdout.on('data', (chunk: Buffer) => {
+        bytes += chunk.byteLength;
+        if (bytes > maxOutputBytes) return overLimit('stdout');
+        stdout.push(chunk);
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        bytes += chunk.byteLength;
+        if (bytes > maxOutputBytes) return overLimit('stderr');
+        stderr.push(chunk);
+      });
+      child.once('error', (error) =>
+        finish({
+          exitCode: 127,
+          stdout: '',
+          stderr: error instanceof Error ? error.message : 'failed to start command',
+        }),
+      );
+      child.once('close', (code) =>
+        finish({
+          exitCode: typeof code === 'number' ? code : 1,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: Buffer.concat(stderr).toString('utf8'),
+        }),
+      );
+      timer = setTimeout(() => {
+        child.kill('SIGKILL');
+        finish({
+          exitCode: 124,
+          stdout: Buffer.concat(stdout).toString('utf8'),
+          stderr: `command timed out after ${timeoutMs}ms`,
+        });
+      }, timeoutMs);
+      timer.unref?.();
+      child.stdin.on('error', () => finish({ exitCode: 125, stdout: '', stderr: 'failed to write command input' }));
+      child.stdin.end(actualOptions.stdin ?? '', 'utf8');
+    });
+  }
+
+  execute(
+    command: string | GcpImageFamilyCommand,
+    args?: readonly string[],
+    options?: Omit<GcpImageFamilyCommand, 'command' | 'args'>,
+  ): Promise<GcpImageFamilyCommandResult> {
+    return this.run(command, args, options);
+  }
+}
+
+/** Scanner protocol runner. The executable must perform a real image scan; no green fallback exists. */
+export class CommandGcpImageFamilyScanRunner implements GcpImageFamilyScanRunner {
+  constructor(
+    private readonly commandRunner: GcpImageFamilyCommandRunner,
+    private readonly executable = 'papercusp-image-scan',
+    private readonly cwd?: string,
+  ) {}
+
+  run(input: Parameters<NonNullable<GcpImageFamilyScanRunner['run']>>[0]): Promise<unknown> {
+    return this.commandRunner.run(this.executable, ['--json-stdin'], {
+      cwd: this.cwd,
+      stdin: jsonInput({
+        projectId: input.projectId,
+        imageId: input.imageId,
+        buildManifestIdentity: input.buildManifestIdentity,
+        releaseSha256: input.releaseSha256,
+      }),
+    });
+  }
+}
+
+/** Clean-room protocol runner. The executable owns VM creation, SSH/IAP boot, and teardown. */
+export class CommandGcpImageFamilyCleanRoomRunner implements GcpImageFamilyCleanRoomRunner {
+  constructor(
+    private readonly commandRunner: GcpImageFamilyCommandRunner,
+    private readonly executable = 'papercusp-gcp-clean-room',
+    private readonly cwd?: string,
+  ) {}
+
+  run(input: GcpImageFamilyCleanRoomRunInput): Promise<unknown> {
+    return this.commandRunner.run(this.executable, ['--json-stdin'], {
+      cwd: this.cwd,
+      stdin: jsonInput(input),
+      timeoutMs: 30 * 60 * 1_000,
+    });
+  }
+}
+
+interface RawComputeImage {
+  name?: string;
+  id?: string | number;
+  selfLink?: string;
+  family?: string;
+  status?: string;
+  architecture?: string;
+  description?: string;
+  labels?: Record<string, string>;
+  creationTimestamp?: string;
+  sourceImage?: string;
+  deprecated?: { state?: string; replacement?: string };
+}
+
+interface RawComputeOperation {
+  name?: string;
+  status?: 'PENDING' | 'RUNNING' | 'DONE';
+  error?: { errors?: readonly { code?: string; message?: string }[] };
+}
+
+function mapComputeImage(raw: RawComputeImage, path = 'GCP image'): GcpImageFamilyComputeImage {
+  const state = raw.deprecated?.state ?? (raw.status === 'READY' ? 'ACTIVE' : raw.status);
+  return {
+    name: resource(raw.name, `${path}.name`),
+    ...(raw.id === undefined ? {} : { id: raw.id }),
+    ...(raw.selfLink ? { selfLink: raw.selfLink } : {}),
+    ...(raw.family ? { family: raw.family } : {}),
+    ...(state ? { state } : {}),
+    ...(raw.architecture ? { architecture: raw.architecture } : {}),
+    ...(raw.description ? { description: raw.description } : {}),
+    ...(raw.labels ? { labels: raw.labels } : {}),
+    ...(raw.creationTimestamp ? { creationTimestamp: raw.creationTimestamp } : {}),
+    ...(raw.sourceImage ? { sourceImage: raw.sourceImage } : {}),
+    ...(raw.deprecated ? { deprecated: raw.deprecated } : {}),
+  };
+}
+
+/** Authenticated raw-REST Compute seam used when a caller does not inject a fake. */
+export class GoogleComputeGcpImageFamilyComputeApi implements GcpImageFamilyComputeApi {
+  private readonly acquireAuth: () => Promise<GcpResolvedAuth>;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(options: GcpImageFamilyComputeApiOptions = {}) {
+    this.acquireAuth =
+      options.acquireAuth ??
+      (options.credentialRef ? createGcpWorkspaceHostAcquireAuth(options.credentialRef) : acquireGcpAdcAuth);
+    this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  private imageUrl(projectId: string, imageName: string): string {
+    return `${COMPUTE_API}/projects/${encodeURIComponent(project(projectId))}/global/images/${encodeURIComponent(resource(imageName, 'imageName'))}`;
+  }
+
+  private async request<T>(url: string, init?: RequestInit): Promise<T> {
+    const auth = await this.acquireAuth();
+    return fetchGcpApiJson<T>(this.fetchImpl, auth.accessToken, url, init);
+  }
+
+  private async readImage(url: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    try {
+      return mapComputeImage(await this.request<RawComputeImage>(url));
+    } catch (error) {
+      if ((error as { status?: number }).status === 404) return undefined;
+      throw error;
+    }
+  }
+
+  async getImage(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.readImage(this.imageUrl(projectId, imageName));
+  }
+
+  async getFamilyImage(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.readImage(
+      `${COMPUTE_API}/projects/${encodeURIComponent(project(projectId))}/global/images/family/${encodeURIComponent(resource(family, 'family'))}`,
+    );
+  }
+
+  async getImageFamily(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.getFamilyImage(projectId, family);
+  }
+
+  private async wait(operation: RawComputeOperation, projectId: string): Promise<void> {
+    const name = resource(operation.name, 'image operation name');
+    const result = await this.request<RawComputeOperation>(
+      `${COMPUTE_API}/projects/${encodeURIComponent(project(projectId))}/global/operations/${encodeURIComponent(name)}/wait`,
+      { method: 'POST' },
+    );
+    const error = operationError({ name, status: result.status, error: result.error });
+    if (error) fail(error);
+  }
+
+  async insertImage(projectId: string, input: GcpImageFamilyComputeImageInsert): Promise<GcpImageFamilyComputeImage> {
+    const body = {
+      name: resource(input.name, 'image.name'),
+      sourceImage: canonicalImageUrl(input.sourceImage),
+      description: text(input.description, 'image.description'),
+      ...(input.family ? { family: resource(input.family, 'image.family') } : {}),
+      ...(input.labels ? { labels: input.labels } : {}),
+    };
+    const raw = await this.request<RawComputeOperation>(
+      `${COMPUTE_API}/projects/${encodeURIComponent(project(projectId))}/global/images`,
+      { method: 'POST', body: JSON.stringify(body) },
+    );
+    if (raw.name) await this.wait(raw, projectId);
+    const result = await this.getImage(projectId, body.name);
+    if (!result) fail(`GCP image ${body.name} was not readable after insert`);
+    return result;
+  }
+
+  async createImage(projectId: string, input: GcpImageFamilyComputeImageInsert): Promise<GcpImageFamilyComputeImage> {
+    return this.insertImage(projectId, input);
+  }
+
+  async getImageByName(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.getImage(projectId, imageName);
+  }
+
+  async getFamily(projectId: string, family: string): Promise<GcpImageFamilyComputeImage | undefined> {
+    return this.getFamilyImage(projectId, family);
+  }
+
+  async publishImage(projectId: string, input: GcpImageFamilyComputeImageInsert): Promise<GcpImageFamilyComputeImage> {
+    return this.insertImage(projectId, input);
+  }
+
+  async deprecateImage(input: {
+    projectId: string;
+    imageName: string;
+    replacementImageId: string;
+    state: 'DEPRECATED';
+  }): Promise<void> {
+    const projectId = project(input.projectId, 'projectId');
+    const imageName = resource(input.imageName, 'imageName');
+    const replacement = canonicalImageUrl(input.replacementImageId);
+    const raw = await this.request<RawComputeOperation>(`${this.imageUrl(projectId, imageName)}/deprecate`, {
+      method: 'POST',
+      body: JSON.stringify({ state: input.state, replacement }),
+    });
+    if (raw.name) await this.wait(raw, projectId);
+  }
+
+  async setImageDeprecation(input: {
+    projectId: string;
+    imageName: string;
+    replacementImageId: string;
+    state: 'DEPRECATED';
+  }): Promise<void> {
+    return this.deprecateImage(input);
+  }
+}
+
+function computeApi(options: GcpImageFamilyReleaseAdapterOptions): GcpImageFamilyComputeApi {
+  return (
+    options.compute ??
+    options.computeApi ??
+    new GoogleComputeGcpImageFamilyComputeApi({
+      acquireAuth: options.acquireAuth,
+      credentialRef: options.credentialRef,
+      fetch: options.fetch,
+    })
+  );
+}
+
+function commandRunner(options: GcpImageFamilyReleaseAdapterOptions): GcpImageFamilyCommandRunner {
+  return options.commandRunner ?? options.commands ?? options.packerRunner ?? new NodeGcpImageFamilyCommandRunner();
+}
+
+function ensureVersion(value: unknown, path: string): string {
+  return text(value, path);
+}
+
+function provenanceDescription(
+  artifact: WorkspaceHostImageArtifact,
+  guestToolVersions: Readonly<Record<string, string>>,
+  sourceCandidateImageId?: string,
+): string {
+  return JSON.stringify({
+    contractVersion: GCP_IMAGE_FAMILY_RELEASE_CONTRACT_VERSION,
+    buildManifestIdentity: artifact.buildManifest.manifestIdentity,
+    releaseVersion: artifact.image.version,
+    releaseSha256: artifact.release.bundleSha256,
+    baseImage: artifact.buildManifest.baseImage,
+    architecture: artifact.buildManifest.baseImage.architecture,
+    guestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => ({ name, version: guestToolVersions[name] })),
+    ...(sourceCandidateImageId ? { sourceCandidateImageId } : {}),
+  });
+}
+
+function labels(artifact: WorkspaceHostImageArtifact, state: 'candidate' | 'active'): Readonly<Record<string, string>> {
+  return {
+    'papercusp-artifact': 'workspace-host',
+    'papercusp-contract': 'gcp-image-family-v1',
+    'papercusp-state': state,
+    'papercusp-release': artifact.image.version
+      .replace(/[^a-z0-9_-]/gi, '-')
+      .toLowerCase()
+      .slice(0, 63),
+  };
+}
+
+function inputMatchesContext(
+  input: {
+    projectId: string;
+    buildManifestIdentity: string;
+    releaseSha256: string;
+    releaseVersion?: string;
+    architecture?: string;
+  },
+  context: GcpImageFamilyReleaseContext,
+): void {
+  const artifact = context.artifact;
+  if (
+    input.projectId !== context.request.projectId ||
+    input.buildManifestIdentity !== artifact.buildManifest.manifestIdentity ||
+    input.releaseSha256 !== artifact.release.bundleSha256 ||
+    (input.releaseVersion !== undefined && input.releaseVersion !== artifact.image.version) ||
+    (input.architecture !== undefined && input.architecture !== artifact.buildManifest.baseImage.architecture)
+  ) {
+    fail('GCP image adapter input is not bound to the release context');
+  }
+}
+
+/** Concrete seven-operation GCP image-family release adapter. */
+export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamilyReleaseAdapter {
+  private readonly compute: GcpImageFamilyComputeApi;
+  private readonly commands: GcpImageFamilyCommandRunner;
+  private readonly options: GcpImageFamilyReleaseAdapterOptions;
+  private boundContext?: GcpImageFamilyReleaseContext;
+  private pinnedGuestToolVersions?: Readonly<Record<string, string>>;
+
+  constructor(options: GcpImageFamilyReleaseAdapterOptions = {}) {
+    this.options = options;
+    this.compute = computeApi(options);
+    this.commands = commandRunner(options);
+    if (
+      options.guestToolVersions &&
+      GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.every((name) => options.guestToolVersions?.[name]?.trim())
+    ) {
+      this.pinnedGuestToolVersions = Object.fromEntries(
+        GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, options.guestToolVersions![name]!.trim()]),
+      );
+    }
+  }
+
+  async bindReleaseContext(context: GcpImageFamilyReleaseContext): Promise<void> {
+    if (!context || !context.request || !context.artifact) fail('GCP release context is required');
+    this.boundContext = context;
+    // Explicit versions supplied at composition time remain valid across a context bind. A
+    // successful build below replaces them with the exact normalized values it used.
+    this.pinnedGuestToolVersions =
+      this.options.guestToolVersions &&
+      GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.every((name) => this.options.guestToolVersions?.[name]?.trim())
+        ? Object.fromEntries(
+            GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, this.options.guestToolVersions![name]!.trim()]),
+          )
+        : undefined;
+  }
+
+  private context(): GcpImageFamilyReleaseContext {
+    if (!this.boundContext) fail('GCP image adapter must be bound to a release context before use');
+    return this.boundContext;
+  }
+
+  private async getImage(projectId: string, imageName: string): Promise<GcpImageFamilyComputeImage> {
+    const getter = this.compute.getImage ?? this.compute.getImageByName;
+    if (!getter) fail('GCP Compute adapter does not implement getImage');
+    const result = await getter.call(this.compute, projectId, imageName);
+    if (!result) fail(`GCP image ${projectId}/${imageName} was not found`);
+    return result;
+  }
+
+  async buildCandidate(
+    input: Parameters<GcpImageFamilyReleaseAdapter['buildCandidate']>[0],
+  ): Promise<{ imageId: string }> {
+    const context = this.context();
+    inputMatchesContext(input, context);
+    const candidateName = resource(input.candidateImageName, 'candidateImageName');
+    const template = text(input.templatePath, 'templatePath');
+    if (
+      isAbsolute(template) ||
+      template.includes('\\') ||
+      template.split('/').some((part) => part === '' || part === '.' || part === '..')
+    ) {
+      fail('templatePath must be a normalized repository-relative POSIX path');
+    }
+    const root = resolve(this.options.repositoryRoot ?? this.options.repoRoot ?? process.cwd());
+    const absoluteTemplate = resolve(root, template);
+    if (relative(root, absoluteTemplate).startsWith('..')) fail('templatePath escapes repositoryRoot');
+    const bytes = await readFile(absoluteTemplate);
+    const templateDigest = createHash('sha256').update(bytes).digest('hex');
+    if (templateDigest !== context.artifact.buildManifest.builder.templateSha256) {
+      fail(
+        `template ${template} digest ${templateDigest} does not match pinned ${context.artifact.buildManifest.builder.templateSha256}`,
+      );
+    }
+    const versions = this.options.guestToolVersions;
+    if (!versions || GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.some((name) => !versions[name]?.trim())) {
+      fail('guestToolVersions must pin every required GCP guest tool');
+    }
+    this.pinnedGuestToolVersions = Object.fromEntries(
+      GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS.map((name) => [name, versions[name]!.trim()]),
+    );
+    const vars: Readonly<Record<string, string | number | boolean>> = {
+      project_id: project(input.projectId, 'projectId'),
+      zone: text(context.request.cleanRoom.zone, 'cleanRoom.zone'),
+      subnetwork: text(context.request.cleanRoom.subnetwork, 'cleanRoom.subnetwork'),
+      service_account_email: text(context.request.cleanRoom.serviceAccountEmail, 'cleanRoom.serviceAccountEmail'),
+      candidate_image_name: candidateName,
+      build_manifest_identity: manifest(input.buildManifestIdentity, 'buildManifestIdentity'),
+      source_image: assertGcpImmutableImageId(
+        text(this.options.sourceImage ?? context.artifact.buildManifest.baseImage.reference, 'baseImage.reference'),
+        'baseImage.reference',
+      ),
+      base_image_sha256: digest(context.artifact.buildManifest.baseImage.sha256, 'baseImage.sha256'),
+      architecture: text(input.architecture, 'architecture'),
+      release_version: ensureVersion(input.releaseVersion, 'releaseVersion'),
+      release_bundle_url: text(context.artifact.release.bundleUrl, 'release.bundleUrl'),
+      release_bundle_sha256: digest(context.artifact.release.bundleSha256, 'release.bundleSha256'),
+      release_signature_url: text(context.artifact.release.signatureUrl, 'release.signatureUrl'),
+      release_signing_public_key: text(context.artifact.release.signingPublicKey, 'release.signingPublicKey'),
+      release_signing_key_sha256: digest(context.artifact.release.signingKeySha256, 'release.signingKeySha256'),
+      guest_tool_versions: JSON.stringify(versions),
+      ...(this.options.machineType ? { machine_type: this.options.machineType } : {}),
+      ...(this.options.diskSizeGb === undefined ? {} : { disk_size_gb: this.options.diskSizeGb }),
+      ...(this.options.omitExternalIp === undefined ? {} : { omit_external_ip: this.options.omitExternalIp }),
+      ...(this.options.useIap === undefined ? {} : { use_iap: this.options.useIap }),
+    };
+    const packer = safeExecutable(
+      this.options.packerExecutable ?? this.options.packerPath,
+      'packer',
+      'packerExecutable',
+    );
+    const init = await this.commands.run(packer, ['init', '--upgrade=false', template], { cwd: root });
+    assertSuccess(init, 'packer init');
+    const buildArgs: string[] = ['build', '-machine-readable', '-color=false'];
+    for (const [key, value] of Object.entries(vars)) buildArgs.push('-var', `${key}=${String(value)}`);
+    buildArgs.push(template);
+    const built = await this.commands.run(packer, buildArgs, { cwd: root, timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS });
+    const stdout = assertSuccess(built, 'packer build');
+    const parsedId = parsePackerImageId(stdout, input.projectId, candidateName);
+    const image = await this.getImage(input.projectId, parsedId ? imageNameFromId(parsedId) : candidateName);
+    const imageId = assertGcpImmutableImageId(
+      `projects/${input.projectId}/global/images/${image.name}`,
+      'buildCandidate.imageId',
+    );
+    if (image.family) fail('Packer candidate must not be assigned to a production image family');
+    return { imageId };
+  }
+
+  async scanImage(input: Parameters<GcpImageFamilyReleaseAdapter['scanImage']>[0]): Promise<GcpImageScanEvidence> {
+    const context = this.context();
+    inputMatchesContext(input, context);
+    const runner =
+      this.options.scanRunner ??
+      this.options.scanner ??
+      this.options.scan ??
+      new CommandGcpImageFamilyScanRunner(
+        this.commands,
+        safeExecutable(
+          this.options.scanExecutable ?? this.options.scannerExecutable,
+          'papercusp-image-scan',
+          'scanExecutable',
+        ),
+        resolve(this.options.repositoryRoot ?? this.options.repoRoot ?? process.cwd()),
+      );
+    const fn = runner.run
+      ? runner.run.bind(runner)
+      : 'scan' in runner && runner.scan
+        ? runner.scan.bind(runner)
+        : 'scanImage' in runner && runner.scanImage
+          ? runner.scanImage.bind(runner)
+          : undefined;
+    if (!fn) fail('GCP image scanner has no run/scan implementation');
+    const result = await fn({ ...input, artifact: context.artifact });
+    return scanEvidence(result, input);
+  }
+
+  async inspectImage(projectId: string, imageId: string): Promise<GcpImageInspection> {
+    const coordinates = parseGcpImmutableImageId(imageId, 'imageId');
+    if (coordinates.projectId !== project(projectId)) fail('imageId project does not match projectId');
+    const raw = await this.getImage(projectId, coordinates.imageName);
+    const provenance = parseProvenance(raw.description);
+    const tools = guestTools(provenance.guestTools);
+    if (this.pinnedGuestToolVersions) {
+      for (const tool of tools) {
+        const expected = this.pinnedGuestToolVersions[tool.name];
+        if (expected && expected !== tool.version) {
+          fail(`GCP image guest tool ${tool.name} is ${tool.version}, not the pinned ${expected}`);
+        }
+      }
+    }
+    return {
+      imageId: coordinates.imageId,
+      ...(raw.family ? { family: raw.family } : {}),
+      state: imageState(raw),
+      architecture: architecture(provenance.architecture ?? raw.architecture),
+      buildManifestIdentity: manifest(provenance.buildManifestIdentity, 'image.buildManifestIdentity'),
+      releaseVersion: text(provenance.releaseVersion, 'image.releaseVersion'),
+      releaseSha256: digest(provenance.releaseSha256, 'image.releaseSha256'),
+      guestTools: tools,
+      ...(typeof provenance.sourceCandidateImageId === 'string'
+        ? {
+            sourceCandidateImageId: assertGcpImmutableImageId(
+              provenance.sourceCandidateImageId,
+              'image.sourceCandidateImageId',
+            ),
+          }
+        : {}),
+    };
+  }
+
+  async launchCleanRoomCanary(
+    input: Parameters<GcpImageFamilyReleaseAdapter['launchCleanRoomCanary']>[0],
+  ): Promise<GcpImageCleanBootProof> {
+    const context = this.context();
+    inputMatchesContext(input, context);
+    const attestation = context.request.releaseGate.cleanRoomReport.attestation;
+    if (!attestation) fail('release gate clean-room attestation is required to build the canonical fixture');
+    const observedAt = this.options.now?.() ?? new Date().toISOString();
+    const fixture = buildWorkspaceHostCleanRoomInstallFixture(context.artifact, {
+      fixtureId: `gcp-image-family-${input.releaseVersion}-${input.imageId.slice(-24)}`,
+      action: 'install',
+      provider: 'gcp',
+      architecture: context.artifact.buildManifest.baseImage.architecture,
+      observedAt,
+      hostId: `gcp-clean-${input.imageId.slice(-32)}`,
+      migrationId: attestation.migration.id,
+      minimumNodeMajor: attestation.runtime.minimumNodeMajor,
+      service: {
+        name: attestation.service.name,
+        port: attestation.service.port,
+        user: attestation.service.user,
+        group: attestation.service.group,
+      },
+      isolation: {
+        workspaceUser: attestation.isolation.workspaceUser,
+        workspaceGroup: attestation.isolation.workspaceGroup,
+      },
+    });
+    const runInput: GcpImageFamilyCleanRoomRunInput = { ...input, fixture };
+    const runner =
+      this.options.cleanRoomRunner ??
+      this.options.cleanRoom ??
+      this.options.cleanRoomExecutor ??
+      new CommandGcpImageFamilyCleanRoomRunner(
+        this.commands,
+        safeExecutable(
+          this.options.cleanRoomExecutable ?? this.options.cleanRoomCommand,
+          'papercusp-gcp-clean-room',
+          'cleanRoomExecutable',
+        ),
+        resolve(this.options.repositoryRoot ?? this.options.repoRoot ?? process.cwd()),
+      );
+    const fn = runner.run
+      ? runner.run.bind(runner)
+      : 'execute' in runner && runner.execute
+        ? runner.execute.bind(runner)
+        : 'runCleanRoom' in runner && runner.runCleanRoom
+          ? runner.runCleanRoom.bind(runner)
+          : undefined;
+    if (!fn) fail('GCP clean-room runner has no run/execute implementation');
+    const result = await fn(runInput);
+    let value = result;
+    if (
+      value &&
+      typeof value === 'object' &&
+      'stdout' in value &&
+      typeof (value as { stdout?: unknown }).stdout === 'string'
+    ) {
+      const command = value as Partial<GcpImageFamilyCommandResult>;
+      if (command.exitCode !== 0) fail(`GCP clean-room runner failed with exit code ${String(command.exitCode)}`);
+      value = parseJsonObject(command.stdout ?? '', 'GCP clean-room runner');
+    }
+    return cleanProof(value, runInput);
+  }
+
+  async publishFamilyVersion(
+    input: Parameters<GcpImageFamilyReleaseAdapter['publishFamilyVersion']>[0],
+  ): Promise<GcpImageFamilyPin & { sourceCandidateImageId: string }> {
+    const context = this.context();
+    inputMatchesContext(input, context);
+    const target = parseGcpImmutableImageId(context.artifact.image.id, 'artifact.image.id');
+    if (
+      input.projectId !== target.projectId ||
+      input.imageName !== target.imageName ||
+      input.family !== context.request.family
+    )
+      fail('publication image identity does not match the release context');
+    const sourceCandidateImageId = assertGcpImmutableImageId(input.sourceCandidateImageId, 'sourceCandidateImageId');
+    if (parseGcpImmutableImageId(sourceCandidateImageId).projectId !== input.projectId)
+      fail('candidate image must belong to the publication project');
+    const insert = this.compute.insertImage ?? this.compute.createImage ?? this.compute.publishImage;
+    if (!insert) fail('GCP Compute adapter does not implement insertImage/createImage');
+    if (!this.pinnedGuestToolVersions) fail('publish requires pinned guest-tool versions from the verified build');
+    const result = await insert.call(this.compute, input.projectId, {
+      name: target.imageName,
+      family: resource(input.family, 'family'),
+      sourceImage: sourceCandidateImageId,
+      description: provenanceDescription(context.artifact, this.pinnedGuestToolVersions, sourceCandidateImageId),
+      labels: labels(context.artifact, 'active'),
+    });
+    const returnedName = 'status' in result || 'error' in result ? target.imageName : result.name;
+    if (returnedName !== target.imageName) fail('Compute publication receipt named a different image');
+    const published = await this.getImage(input.projectId, target.imageName);
+    if (published.family !== input.family) fail(`published image is not a member of family ${input.family}`);
+    return {
+      projectId: input.projectId,
+      family: input.family,
+      imageId: target.imageId,
+      version: input.releaseVersion,
+      sourceCandidateImageId,
+    };
+  }
+
+  async resolveFamily(projectId: string, family: string): Promise<GcpImageFamilyPin> {
+    const getter = this.compute.getFamilyImage ?? this.compute.getImageFamily ?? this.compute.getFamily;
+    if (!getter) fail('GCP Compute adapter does not implement family resolution');
+    const raw = await getter.call(this.compute, project(projectId), resource(family, 'family'));
+    if (!raw) fail(`GCP image family ${projectId}/${family} was not found`);
+    if (raw.family && raw.family !== family)
+      fail(`GCP family resolver returned member of ${raw.family}, expected ${family}`);
+    const imageId = assertGcpImmutableImageId(
+      `projects/${projectId}/global/images/${raw.name}`,
+      'resolvedFamily.imageId',
+    );
+    const provenance = parseProvenance(raw.description);
+    return {
+      projectId,
+      family,
+      imageId,
+      version: text(provenance.releaseVersion ?? raw.name, 'resolvedFamily.version'),
+    };
+  }
+
+  async deprecateImage(input: Parameters<GcpImageFamilyReleaseAdapter['deprecateImage']>[0]): Promise<void> {
+    if (input.state !== 'DEPRECATED') fail('GCP image deprecation only supports the DEPRECATED state');
+    const projectId = project(input.projectId, 'projectId');
+    const imageId = parseGcpImmutableImageId(input.imageId, 'imageId');
+    const replacement = parseGcpImmutableImageId(input.replacementImageId, 'replacementImageId');
+    if (imageId.projectId !== projectId || replacement.projectId !== projectId)
+      fail('deprecation images must belong to projectId');
+    if (imageId.imageId === replacement.imageId) fail('deprecation replacement must differ from imageId');
+    const deprecate = this.compute.deprecateImage ?? this.compute.setImageDeprecation;
+    if (!deprecate) fail('GCP Compute adapter does not implement image deprecation');
+    await deprecate.call(this.compute, {
+      projectId,
+      imageName: imageId.imageName,
+      replacementImageId: replacement.imageId,
+      state: input.state,
+    });
+  }
+}
+
+export function createGcpImageFamilyReleaseAdapter(
+  options: GcpImageFamilyReleaseAdapterOptions = {},
+): GoogleComputeGcpImageFamilyReleaseAdapter {
+  return new GoogleComputeGcpImageFamilyReleaseAdapter(options);
+}
+
+/** Public probes used by focused adapter tests and release diagnostics. */
+export function parseGcpImageFamilyPackerOutput(
+  stdout: string,
+  projectId: string,
+  imageName: string,
+): string | undefined {
+  return parsePackerImageId(stdout, project(projectId), resource(imageName, 'imageName'));
+}
+
+export function parseGcpImageFamilyProvenance(description: string): Readonly<Record<string, unknown>> {
+  return parseProvenance(description);
+}

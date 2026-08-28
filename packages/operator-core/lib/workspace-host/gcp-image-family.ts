@@ -88,7 +88,23 @@ export interface GcpImageFamilyReleaseRequest {
   };
 }
 
+/**
+ * Full release context supplied to a production adapter before its first operation.
+ *
+ * The seven-operation adapter methods intentionally carry only the narrow values each provider
+ * call needs.  Clean-room execution is different: it must run the canonical bootstrap fixture,
+ * which is owned by the complete image artifact and release-gate report.  This optional binding
+ * keeps that context on the adapter without widening every method's wire contract or making a
+ * provider implementation reconstruct signed-release metadata from partial strings.
+ */
+export interface GcpImageFamilyReleaseContext {
+  readonly request: GcpImageFamilyReleaseRequest;
+  readonly artifact: WorkspaceHostImageArtifact;
+}
+
 export interface GcpImageFamilyReleaseAdapter {
+  /** Bind the complete request before build/scan/clean-room operations (production adapters). */
+  bindReleaseContext?(context: GcpImageFamilyReleaseContext): void | Promise<void>;
   /** Build outside the production family so a candidate cannot be selected before it is green. */
   buildCandidate(input: {
     projectId: string;
@@ -376,6 +392,11 @@ export async function executeGcpImageFamilyRelease(
     fail(`GCP project ${projectId} is absent from the canonical build manifest`);
   }
 
+  // Production adapters need the complete artifact to construct the exact clean-room fixture.
+  // Keep this optional so the pure contract fakes (and any external adapter implementation) do
+  // not have to carry context they never use.
+  await adapter.bindReleaseContext?.({ request, artifact });
+
   const previous = request.previousVersion
     ? normalizePin(request.previousVersion, 'previousVersion', projectId, family)
     : undefined;
@@ -509,3 +530,27 @@ export async function rollbackGcpImageFamily(
   const active = validateResolvedPin(await adapter.resolveFamily(projectId, family), rollbackTarget, projectId, family);
   return { active, deprecated: current };
 }
+
+// Keep the production composition discoverable from the contract module while allowing the
+// implementation to live in its own file (and to depend on this module's types/constants).
+export {
+  GoogleComputeGcpImageFamilyReleaseAdapter,
+  createGcpImageFamilyReleaseAdapter,
+  NodeGcpImageFamilyCommandRunner,
+  CommandGcpImageFamilyScanRunner,
+  CommandGcpImageFamilyCleanRoomRunner,
+  GoogleComputeGcpImageFamilyComputeApi,
+  type GcpImageFamilyCommand,
+  type GcpImageFamilyReleaseAdapterOptions,
+  type GcpImageFamilyCommandResult,
+  type GcpImageFamilyCommandRunner,
+  type GcpImageFamilyComputeApi,
+  type GcpImageFamilyComputeApiOptions,
+  type GcpImageFamilyComputeImage,
+  type GcpImageFamilyComputeImageInsert,
+  type GcpImageFamilyComputeOperation,
+  type GcpImageFamilyScanRunner,
+  type GcpImageFamilyCleanRoomRunner,
+  type GcpImageFamilyCleanRoomRunInput,
+  type GcpImageFamilyCleanRoomRunResult,
+} from './gcp-image-family-adapter';
