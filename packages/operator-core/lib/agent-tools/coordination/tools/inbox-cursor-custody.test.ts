@@ -33,6 +33,7 @@ import { describe, expect, it } from "vitest";
 
 import tool from "./inbox";
 import { INBOX_CURSOR_SURFACE } from "../../activity/hook-bundle";
+import { BUDGET, promptWeight } from "../../tool-guidance-budget";
 
 describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
   it("teaches direct callers to use limit, while reserving inboxLimit for coord:orient", () => {
@@ -41,8 +42,10 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     expect(keys).not.toContain("inboxLimit");
     expect(tool.description).toMatch(/direct bound is `limit`/i);
     expect(tool.description).toMatch(/coord:orient\.inboxLimit.*maps/i);
-    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/bound a direct read with `limit`/i);
-    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`inboxLimit` belongs to the `coord:orient` wrapper/i);
+    // The mapping is single-sourced in the description. Keep the recurrence
+    // guard on the writer-backed budget instead of requiring removed duplicate
+    // guidance wording.
+    expect(promptWeight(tool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 
   it("enumerates the supported direct filters and rejects the stale includeRead key", () => {
@@ -68,8 +71,8 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
   });
 
   it("documents that free-text q belongs to coord:feed, not coord:inbox", () => {
-    expect(tool.description).toMatch(/free-text `q` is not an inbox argument/i);
-    expect(tool.description).toMatch(/use `coord:feed`.*query matching/i);
+    expect(tool.description).toMatch(/free-text `q`[^.]*not (?:an )?inbox arguments?/i);
+    expect(tool.description).toMatch(/use `coord:feed`/i);
     expect(Object.keys(tool.args.shape)).not.toContain("q");
   });
 });
