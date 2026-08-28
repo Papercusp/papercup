@@ -46,6 +46,7 @@ import {
   lifecycleActionPlan,
   signalTone,
   type LifecycleAction,
+  type WorkspaceHostConnectionRow,
   type WorkspaceHostControlRow,
 } from "./workspace-view-model";
 import styles from "./cloud-workspaces.module.css";
@@ -54,9 +55,7 @@ export const HOST_TABS = ["overview", "resources", "logs", "cost"] as const;
 export type HostTab = (typeof HOST_TABS)[number];
 
 export function isHostTab(value: unknown): value is HostTab {
-  return (
-    typeof value === "string" && HOST_TABS.includes(value as HostTab)
-  );
+  return typeof value === "string" && HOST_TABS.includes(value as HostTab);
 }
 
 const TAB_LABELS: Record<HostTab, string> = {
@@ -80,7 +79,9 @@ export function OperateStage({
   now,
 }: {
   workspaces: readonly WorkspaceHostControlRow[];
-  connections: readonly unknown[];
+  /** Only its emptiness matters here: it decides whether the empty state can
+   *  offer a route onward to Configure. */
+  connections: readonly WorkspaceHostConnectionRow[];
   busyKeys: ReadonlySet<string>;
   selectedHostId: string | null;
   activeTab: HostTab;
@@ -216,10 +217,32 @@ function HostRow({
 }) {
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
+  const tabButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const chip = hostStateChip(workspace);
   const plan = lifecycleActionPlan(workspace);
   const hostedConnector = readHostedWorkspaceConnector(workspace.tunnel);
   const panelId = `host-panel-${workspace.id}`;
+
+  const onTabKeyDown = (
+    event: React.KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
+      nextIndex = (index + 1) % HOST_TABS.length;
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
+      nextIndex = (index - 1 + HOST_TABS.length) % HOST_TABS.length;
+    } else if (event.key === "Home") {
+      nextIndex = 0;
+    } else if (event.key === "End") {
+      nextIndex = HOST_TABS.length - 1;
+    }
+    if (nextIndex === null) return;
+
+    event.preventDefault();
+    onSelectTab(HOST_TABS[nextIndex]);
+    tabButtonsRef.current[nextIndex]?.focus();
+  };
 
   useEffect(() => {
     if (!overflowOpen) return;
@@ -241,7 +264,10 @@ function HostRow({
 
   return (
     <li className={styles.hostRowItem}>
-      <div className={styles.hostRow} data-expanded={expanded ? "true" : "false"}>
+      <div
+        className={styles.hostRow}
+        data-expanded={expanded ? "true" : "false"}
+      >
         <button
           type="button"
           className={styles.hostRowMain}
@@ -359,7 +385,7 @@ function HostRow({
             role="tablist"
             aria-label={`Detail for ${workspace.name}`}
           >
-            {HOST_TABS.map((tab) => (
+            {HOST_TABS.map((tab, index) => (
               <button
                 key={tab}
                 type="button"
@@ -369,6 +395,10 @@ function HostRow({
                 aria-controls={`${panelId}-${tab}`}
                 tabIndex={activeTab === tab ? 0 : -1}
                 className={styles.hostTab}
+                ref={(node) => {
+                  tabButtonsRef.current[index] = node;
+                }}
+                onKeyDown={(event) => onTabKeyDown(event, index)}
                 onClick={() => onSelectTab(tab)}
               >
                 {TAB_LABELS[tab]}
@@ -535,8 +565,8 @@ function OverviewTab({ workspace }: { workspace: WorkspaceHostControlRow }) {
         <div className={styles.telemetryHeading}>
           <h4>Drift &amp; connectivity</h4>
           <span>
-            attested {formatTimestamp(workspace.health?.attestedAt)} ·
-            bootstrap {workspace.health?.bootstrapVersion ?? "unknown"}
+            attested {formatTimestamp(workspace.health?.attestedAt)} · bootstrap{" "}
+            {workspace.health?.bootstrapVersion ?? "unknown"}
           </span>
         </div>
         <h5>Tunnel status</h5>

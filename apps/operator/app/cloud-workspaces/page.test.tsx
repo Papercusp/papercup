@@ -318,7 +318,9 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
     expect(operateStep.getAttribute("aria-label")).toContain("current step");
     /* A healthy connection reports WHEN it was validated, not just that it is. */
     expect(
-      screen.getByRole("button", { name: /01 Connect/ }).getAttribute("aria-label"),
+      screen
+        .getByRole("button", { name: /01 Connect/ })
+        .getAttribute("aria-label"),
     ).toContain("GCP · validated");
     expect(operateStep.getAttribute("aria-label")).toContain(
       "1 workspace · all aligned",
@@ -328,7 +330,9 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
       screen.getByRole("heading", { name: "Managed workspaces" }),
     ).toBeTruthy();
     /* One stage at a time: Connect's own heading is not on screen. */
-    expect(screen.queryByRole("heading", { name: "Provider readiness" })).toBeNull();
+    expect(
+      screen.queryByRole("heading", { name: "Provider readiness" }),
+    ).toBeNull();
 
     const stats = screen.getByRole("region", { name: "Fleet posture" });
     expect(stats.textContent).toContain("Running1");
@@ -540,10 +544,13 @@ describe("CloudWorkspacesPage — mutation seam", () => {
     });
 
     fetchMock.mockResolvedValueOnce(
-      new Response(JSON.stringify({ ok: false, error: "typed route refusal" }), {
-        status: 422,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({ ok: false, error: "typed route refusal" }),
+        {
+          status: 422,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     await expect(
       workspaceHostActionRest({ action: "repair", workspaceId: "host-1" }),
@@ -556,11 +563,16 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
   it("collects the complete supported GCP connection admission contract", async () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect Google Cloud" }),
+    );
 
-    fireEvent.change(screen.getByRole("textbox", { name: "Connection label" }), {
-      target: { value: "Production GCP" },
-    });
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Connection label" }),
+      {
+        target: { value: "Production GCP" },
+      },
+    );
     fireEvent.change(
       screen.getByRole("textbox", { name: "Injected credential reference" }),
       { target: { value: "adc://default" } },
@@ -577,7 +589,9 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
         },
       },
     );
-    fireEvent.click(screen.getByRole("button", { name: "Connect and validate" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect and validate" }),
+    );
 
     await waitFor(() =>
       expect(H.mutate).toHaveBeenCalledWith({
@@ -595,7 +609,9 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
   it("withholds admission until every contract field is supplied", () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect Google Cloud" }),
+    );
 
     const submit = screen.getByRole("button", {
       name: "Connect and validate",
@@ -624,21 +640,27 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
   it("keeps the connect form beside its provider rather than over them", () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
-    fireEvent.click(screen.getByRole("button", { name: "Connect Google Cloud" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Connect Google Cloud" }),
+    );
 
     /* An inline panel, not a modal: the provider rows stay on screen. */
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(
       screen.getByRole("heading", { name: "Connect Google Cloud" }),
     ).toBeTruthy();
-    expect(screen.getByRole("list", { name: "Provider connections" })).toBeTruthy();
+    expect(
+      screen.getByRole("list", { name: "Provider connections" }),
+    ).toBeTruthy();
   });
 
   it("marks unsupported providers as planned rather than merely disabled", () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
 
-    const providers = screen.getByRole("list", { name: "Provider connections" });
+    const providers = screen.getByRole("list", {
+      name: "Provider connections",
+    });
     expect(providers.querySelectorAll("li")).toHaveLength(3);
     expect(providers.textContent).toContain("planned");
     expect(
@@ -812,7 +834,9 @@ describe("CloudWorkspacesPage — 02 Configure", () => {
     expect((network as HTMLButtonElement).disabled).toBe(true);
     expect(network.textContent).toContain("No networks available");
     expect(
-      screen.getByText("No networks were returned by this provider connection."),
+      screen.getByText(
+        "No networks were returned by this provider connection.",
+      ),
     ).toBeTruthy();
 
     /* The checklist replaces the semicolon-joined blocker sentence: one line
@@ -825,7 +849,9 @@ describe("CloudWorkspacesPage — 02 Configure", () => {
     );
     expect(readiness.querySelectorAll('li[data-ok="false"]').length).toBe(2);
 
-    const provision = screen.getByRole("button", { name: "Provision workspace" });
+    const provision = screen.getByRole("button", {
+      name: "Provision workspace",
+    });
     expect((provision as HTMLButtonElement).disabled).toBe(true);
     expect(provision.getAttribute("aria-describedby")).toBe(
       "provision-readiness",
@@ -836,14 +862,15 @@ describe("CloudWorkspacesPage — 02 Configure", () => {
     H.queryDefaults = { ...onConfigure };
     render(<CloudWorkspacesPage />);
 
-    const size = screen.getByRole("radio", {
-      name: /e2-standard-4/,
-    }) as HTMLInputElement;
-    expect(size.checked).toBe(true);
-    const card = size.closest("label");
-    expect(card?.textContent).toContain("4 vCPU · 16 GiB RAM");
+    const size = screen.getByRole("radio", { name: /e2-standard-4/ });
+    expect(size.getAttribute("aria-checked")).toBe("true");
+    expect(size.textContent).toContain("4 vCPU · 16 GiB RAM");
     /* Each card carries its own price, so sizes can be compared in place. */
-    expect(card?.textContent).toContain("$58.40 / month");
+    expect(size.textContent).toContain("$58.40 / month");
+    /* The shared radiogroup primitive supplies the group's accessible name. */
+    expect(
+      screen.getByRole("radiogroup", { name: "Machine size" }),
+    ).toBeTruthy();
   });
 
   it("associates visible field guidance with the control it describes", () => {
@@ -948,6 +975,37 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     expect(screen.getByRole("tabpanel").textContent).toContain("Agent ready");
   });
 
+  it("supports arrow, Home, and End keyboard navigation across host tabs", () => {
+    H.queryDefaults = { ...onOperate, host: "host-1" };
+    render(<CloudWorkspacesPage />);
+
+    const tabs = screen.getAllByRole("tab") as HTMLButtonElement[];
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([0, -1, -1, -1]);
+
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: "ArrowRight" });
+    expect(document.activeElement).toBe(tabs[1]);
+    expect(tabs[1].getAttribute("aria-selected")).toBe("true");
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, 0, -1, -1]);
+    expect(H.queryUpdates).toContainEqual(["tab", "resources"]);
+
+    fireEvent.keyDown(tabs[1], { key: "End" });
+    expect(document.activeElement).toBe(tabs[3]);
+    expect(tabs[3].getAttribute("aria-selected")).toBe("true");
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, -1, -1, 0]);
+
+    fireEvent.keyDown(tabs[3], { key: "ArrowRight" });
+    expect(document.activeElement).toBe(tabs[0]);
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.keyDown(tabs[0], { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(tabs[3]);
+
+    fireEvent.keyDown(tabs[3], { key: "Home" });
+    expect(document.activeElement).toBe(tabs[0]);
+    expect(H.queryUpdates).toContainEqual(["tab", "overview"]);
+  });
+
   it("keeps the audit export reachable from the expanded host", () => {
     H.queryDefaults = { ...onOperate, host: "host-1" };
     render(<CloudWorkspacesPage />);
@@ -1000,7 +1058,9 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
         .getByRole("radio", { name: /Create a snapshot first/ })
         .getAttribute("aria-checked"),
     ).toBe("true");
-    fireEvent.click(screen.getByRole("radio", { name: /Discard recoverability/ }));
+    fireEvent.click(
+      screen.getByRole("radio", { name: /Discard recoverability/ }),
+    );
 
     const confirmButton = screen.getByRole("button", {
       name: "Confirm destroy",
@@ -1061,9 +1121,10 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(
       screen.getByRole("heading", { name: "Provider readiness" }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: /02 Configure/ }),
-    ).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /02 Configure/ })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 
   it("collapses the rail to an icon strip at narrow widths without losing its labels", () => {
@@ -1079,9 +1140,9 @@ describe("CloudWorkspacesPage — failure and layout", () => {
   });
 
   it("raises the type floor above the pre-redesign 8.5px metadata", () => {
-    const sizes = Array.from(cloudPageCss.matchAll(/font-size:\s*([\d.]+)px/g)).map(
-      (match) => Number(match[1]),
-    );
+    const sizes = Array.from(
+      cloudPageCss.matchAll(/font-size:\s*([\d.]+)px/g),
+    ).map((match) => Number(match[1]));
     expect(sizes.length).toBeGreaterThan(20);
     expect(Math.min(...sizes)).toBeGreaterThanOrEqual(10.5);
   });
