@@ -44,6 +44,7 @@ import { gitPipelineSnapshot } from "../../git-pipeline-stats";
 import { findGreenCheckpointVerdictForCandidate } from "../../harness/git-sync/pipeline-events";
 import { checkpointProducerCertificate } from "../../events/await/checkpoint-verified-wait";
 import type { ProducerHealthCertificate } from "../../events/await/verified-wait";
+import type { TimeoutBehavior } from "../../events/await/types";
 import { activeWorkspaceId } from "../../workspace-registry";
 import {
   harnessArg,
@@ -69,6 +70,14 @@ const timeoutArg = z
   .optional()
   .describe(
     `Deadline in seconds (default ${DEFAULT_TIMEOUT_SEC}); on the deadline you are woken with a TIMEOUT marker.`,
+  );
+
+/** Shared deadline behavior — identical semantics to events:await's. */
+const onTimeoutArg = z
+  .enum(["wake", "expire"])
+  .optional()
+  .describe(
+    "What happens at the deadline without the event: 'wake' (default) = re-invoke with a TIMEOUT marker; 'expire' = lapse silently (visible in events:status).",
   );
 
 // WI-5685: checkpoint:await used to inherit the GENERIC 1800s (30min) default above, which is
@@ -116,6 +125,7 @@ async function armAwaits(
     payloadFilter?: unknown;
     supersedeKeys?: string[];
     producerHealthCertificate?: ProducerHealthCertificate;
+    timeoutBehavior?: TimeoutBehavior;
   } = {},
 ): Promise<{
   ok: true;
@@ -137,6 +147,7 @@ async function armAwaits(
     }
   }
   const { handle } = await captureWakeHandleForOwner(identity.ownerId, {});
+  const timeoutBehavior = opts.timeoutBehavior ?? "wake";
   const awaitIds: number[] = [];
   for (const key of keys) {
     const row = await registerAwait({
@@ -145,7 +156,7 @@ async function armAwaits(
       policy: "wake",
       note: clampText(note, LIMITS.ANNOTATION) ?? null,
       wakeHandle: handle,
-      timeoutBehavior: "wake",
+      timeoutBehavior,
       timeoutSec: timeoutSec ?? DEFAULT_TIMEOUT_SEC,
       payloadFilter: opts.payloadFilter ?? null,
       producerHealthCertificate: opts.producerHealthCertificate ?? null,
@@ -158,7 +169,9 @@ async function armAwaits(
     await_ids: awaitIds,
     ...(superseded != null ? { superseded } : {}),
     advice:
-      "Registered. End your turn now — you are re-invoked when it fires (or at the deadline). Do not poll.",
+      timeoutBehavior === "wake"
+        ? "Registered. End your turn now — you are re-invoked when it fires (or at the deadline). Do not poll."
+        : "Registered. End your turn now — you are re-invoked when it fires; if the deadline passes first, the await expires silently. Do not poll.",
   };
 }
 
@@ -316,6 +329,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     const keys = [
@@ -386,6 +400,7 @@ defineTool({
     // and one deploy produces duplicate wakes.
     const armed = await armAwaits(ctx, keys, note, args.timeout_sec, {
       supersedeKeys: keys,
+      timeoutBehavior: args.on_timeout,
     });
     if (!args.sha) {
       const flight = await withBoundedTimeout(readDeployInFlight(), {
@@ -542,6 +557,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: checkpointTimeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     const pipeline = args.global
@@ -604,6 +620,7 @@ defineTool({
     return reply(
       await armAwaits(ctx, keys, note, timeoutSec, {
         payloadFilter,
+        timeoutBehavior: args.on_timeout,
         // EI-12457: a re-await for this pipeline supersedes any prior pending
         // checkpoint-family wait this same subscriber still holds for it.
         supersedeKeys: keys,
@@ -668,6 +685,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     const state = args.state ?? "any";
@@ -725,6 +743,7 @@ defineTool({
       [key],
       args.note ?? `work-item:await ${args.id} (${state})`,
       args.timeout_sec,
+      { timeoutBehavior: args.on_timeout },
     );
     if (unblockedProbe?.verdict === "blocked" && unblockedProbe.lifecycleState) {
       return reply({
@@ -772,6 +791,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     const event = buildKey("service-up", { name: args.name });
@@ -796,6 +816,7 @@ defineTool({
       [event],
       args.note ?? `service:await-up ${args.name}`,
       args.timeout_sec,
+      { timeoutBehavior: args.on_timeout },
     );
 
     // Close the registration-window race: a service can recover after the
@@ -871,6 +892,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     const scope = gitSyncAwaitScope(args.harness, ctx);
@@ -881,7 +903,9 @@ defineTool({
         [buildKey("git-sync", { sha: args.sha })],
         args.note ?? "git-sync:await — blocked until locally committed",
         args.timeout_sec,
-        scope ? { payloadFilter: scope } : undefined,
+        scope
+          ? { payloadFilter: scope, timeoutBehavior: args.on_timeout }
+          : { timeoutBehavior: args.on_timeout },
       ),
     );
   },
@@ -917,6 +941,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     return reply(
@@ -925,6 +950,7 @@ defineTool({
         [buildKey("plan-item", { slug: args.slug, id: args.id })],
         args.note ?? `plan-item:await ${args.slug}:${args.id}`,
         args.timeout_sec,
+        { timeoutBehavior: args.on_timeout },
       ),
     );
   },
@@ -959,6 +985,7 @@ defineTool({
       .optional()
       .describe("Why you are waiting — echoed into the wake turn."),
     timeout_sec: timeoutArg,
+    on_timeout: onTimeoutArg,
   }),
   async handler(args, ctx) {
     return reply(
@@ -967,6 +994,7 @@ defineTool({
         [buildKey("fleet-drained", { slug: args.slug })],
         args.note ?? `fleet:await-drained ${args.slug}`,
         args.timeout_sec,
+        { timeoutBehavior: args.on_timeout },
       ),
     );
   },

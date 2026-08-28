@@ -774,6 +774,38 @@ describe("git-sync:await harness/workspace scoping (EI-20366619311636764)", () =
   const gitSyncTool = definedTools.find((tool) => tool.name === "git-sync:await");
   if (!gitSyncTool) throw new Error("git-sync:await tool was not registered");
 
+  it("accepts on_timeout and threads expire through the shared await registration (EI-21671694555865156)", async () => {
+    const schema = (
+      gitSyncTool as unknown as {
+        args: { safeParse: (value: unknown) => { success: boolean } };
+      }
+    ).args;
+    expect(
+      schema.safeParse({
+        harness: "harness-a",
+        timeout_sec: 30,
+        on_timeout: "expire",
+      }).success,
+    ).toBe(true);
+
+    const res = await gitSyncTool.handler(
+      { harness: "harness-a", timeout_sec: 30, on_timeout: "expire" } as never,
+      { harnessSlug: "*", workspaceId: "workspace-a" } as never,
+    );
+
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      ok: true,
+      events: ["git-sync:committed"],
+    });
+    expect(registerAwait).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventKey: "git-sync:committed",
+        timeoutSec: 30,
+        timeoutBehavior: "expire",
+      }),
+    );
+  });
+
   it("binds the global commit wait to the caller's concrete harness and workspace", async () => {
     const res = await gitSyncTool.handler(
       {} as never,
