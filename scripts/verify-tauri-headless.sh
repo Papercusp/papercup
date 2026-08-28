@@ -237,6 +237,56 @@
 #                                owner's live desktop.
 set -uo pipefail
 
+# EI-21590235587564636: this wrapper can run for several minutes while a peer
+# edits the shared checkout. Bash reads a script lazily, so an in-place save of
+# this file after boot can splice half of a line into the still-running source
+# and turn a healthy rig into a syntax-error false negative. Freeze the wrapper
+# itself before any argument/resource work and re-exec the frozen copy; the
+# long-lived process then never reads the mutable checkout again.
+VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}"
+cleanup_verifier_source_snapshot() {
+  if [ -n "${VERIFY_TAURI_SOURCE_SNAPSHOT_PATH:-}" ]; then
+    rm -f -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" 2>/dev/null || true
+    VERIFY_TAURI_SOURCE_SNAPSHOT_PATH=""
+  fi
+}
+
+if [ -n "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" ]; then
+  # The re-exec'd copy owns this small file until normal teardown (or an early
+  # preflight failure). The SPA snapshot has its own lifecycle and is cleaned
+  # separately below.
+  trap cleanup_verifier_source_snapshot EXIT
+else
+  VERIFY_TAURI_SOURCE_PATH="${BASH_SOURCE[0]}"
+  VERIFY_TAURI_SOURCE_DIR="$(cd "$(dirname -- "$VERIFY_TAURI_SOURCE_PATH")" 2>/dev/null && pwd -P)" || {
+    echo "FATAL: could not resolve verifier source directory" >&2
+    exit 1
+  }
+  VERIFY_TAURI_ORIGINAL_REPO_DIR="${PAPERCUSP_REPO_DIR:-$(cd "$VERIFY_TAURI_SOURCE_DIR/.." 2>/dev/null && pwd -P)}" || {
+    echo "FATAL: could not resolve verifier repository directory" >&2
+    exit 1
+  }
+  VERIFY_TAURI_SOURCE_SNAPSHOT_PATH="$(mktemp "${TMPDIR:-/tmp}/verify-tauri-headless-source.XXXXXX")" || {
+    echo "FATAL: could not allocate an immutable verifier source snapshot" >&2
+    exit 1
+  }
+  trap cleanup_verifier_source_snapshot EXIT
+  if ! cp -- "$VERIFY_TAURI_SOURCE_PATH" "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH"; then
+    echo "FATAL: could not freeze verifier source before boot" >&2
+    exit 1
+  fi
+  # A concurrent in-place save can also tear the tiny initial copy. Reject that
+  # copy before it gets a chance to allocate a rig; a later invocation can
+  # retry once the source writer has completed its atomic step.
+  if ! bash -n -- "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH"; then
+    echo "FATAL: verifier source changed while its startup snapshot was being captured" >&2
+    echo "       Re-run after the shared scripts/verify-tauri-headless.sh save is complete." >&2
+    exit 1
+  fi
+  export VERIFY_TAURI_SOURCE_SNAPSHOT_PATH VERIFY_TAURI_ORIGINAL_REPO_DIR
+  exec bash "$VERIFY_TAURI_SOURCE_SNAPSHOT_PATH" "$@"
+fi
+
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   cat <<EOF
 Usage:
@@ -299,7 +349,7 @@ case "${1:-}" in
 esac
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_DIR="${PAPERCUSP_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+REPO_DIR="${PAPERCUSP_REPO_DIR:-${VERIFY_TAURI_ORIGINAL_REPO_DIR:-$(cd "$SCRIPT_DIR/.." && pwd)}}"
 DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
 # shellcheck source=papercusp-desktop/bin/lib/federation-asserts.sh
 source "$DESKTOP_DIR/bin/lib/federation-asserts.sh"   # reuse fed_pick_free_port
@@ -1374,6 +1424,7 @@ teardown() {
   # the husk after its TTL, and is also what catches runs that never reach this trap
   # at all (SIGKILL, or a --boot-only caller that never ran the printed stop script).
   rm -rf "$WORK/spa" 2>/dev/null
+  cleanup_verifier_source_snapshot
   exit "$ec"
 }
 
@@ -2545,6 +2596,7 @@ if [ "${1:-}" = "--boot-only" ]; then
 # leaked isolated instance/display starves the next run):
 #   "$WORK/stop.sh"
 EOF
+  cleanup_verifier_source_snapshot
   exit 0
 fi
 
