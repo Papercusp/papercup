@@ -37,6 +37,7 @@
 set -uo pipefail
 
 : "${VERIFY_TAURI_PID:?missing VERIFY_TAURI_PID — run via scripts/verify-tauri-headless.sh}"
+: "${VERIFY_TAURI_POLL:?missing VERIFY_TAURI_POLL — run via scripts/verify-tauri-headless.sh}"
 TOOL="${VERIFY_TAURI_AGENT_TOOLS_BIN:-tauri-agent-tools}"
 command -v "$TOOL" >/dev/null 2>&1 || TOOL="tauri-agent-tools"
 
@@ -49,10 +50,9 @@ fail() { echo "P007_FAIL $*" >&2; FAIL=1; }
 
 echo "=== [1/3] /coord: dashboard shell rendered (title + 4 tab buttons), console clean ==="
 "$TOOL" navigate --pid "$VERIFY_TAURI_PID" /coord --json >/dev/null
-sleep 1.5
-"$TOOL" check --pid "$VERIFY_TAURI_PID" \
+VERIFY_TAURI_DOM_TIMEOUT=30 "$VERIFY_TAURI_POLL" \
   --eval "document.querySelector('h1')?.textContent === 'Coordination' && Array.from(document.querySelectorAll('nav:not([aria-label]) button')).map(b=>b.textContent).join(',') === 'Sessions,Inbox,Plans,History'" \
-  --no-errors --duration 2000 --json \
+  --no-errors \
   | tee "$OUT_DIR/coord-content-check.json" \
   || fail "coord: expected title + 4 tab buttons (Sessions,Inbox,Plans,History) did not render cleanly"
 
