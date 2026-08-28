@@ -67,6 +67,54 @@ const prefsPath = path.join(
 
 console.log(`[voice-stack-check] base=${BASE}\n`);
 
+// ─── 1b. Kokoro service contract ───────────────────────────────────
+// The optional VoiceMode compatibility service must never install packages or download model
+// files on a hot restart. Keep this check at the live-stack boundary because the service lives
+// outside the Papercusp repository and can be replaced by an upstream installer. The focused
+// TypeScript contract test carries the same rules with richer fixtures; this checker makes drift
+// visible before a live voice verdict.
+const kokoroRoot = path.join(homedir(), ".voicemode", "services", "kokoro");
+const kokoroContractPaths = {
+  unit: path.join(homedir(), ".config", "systemd", "user", "voicemode-kokoro.service"),
+  start: path.join(kokoroRoot, "start-gpu.sh"),
+  startCommon: path.join(kokoroRoot, "start-common.sh"),
+  provision: path.join(kokoroRoot, "provision-gpu.sh"),
+  provisionCommon: path.join(kokoroRoot, "provision-common.sh"),
+};
+const kokoroContractMissing = Object.entries(kokoroContractPaths)
+  .filter(([, file]) => !fs.existsSync(file))
+  .map(([name]) => name);
+if (kokoroContractMissing.length > 0) {
+  const detail = `missing ${kokoroContractMissing.join(", ")} under ${kokoroRoot}`;
+  (process.env.PAPERCUSP_VOICE_LIVE === "1" ? fail : warn)("3b. Kokoro service contract", detail);
+} else {
+  const unitText = fs.readFileSync(kokoroContractPaths.unit, "utf8");
+  const startText =
+    fs.readFileSync(kokoroContractPaths.start, "utf8") +
+    "\n" +
+    fs.readFileSync(kokoroContractPaths.startCommon, "utf8");
+  const provisionText =
+    fs.readFileSync(kokoroContractPaths.provision, "utf8") +
+    "\n" +
+    fs.readFileSync(kokoroContractPaths.provisionCommon, "utf8");
+  const violations = [];
+  if (!/^Restart=always\s*$/m.test(unitText)) violations.push("Restart=always");
+  if (!/^RestartPreventExitStatus=.*\b(?:78|127)\b.*$/m.test(unitText)) violations.push("EX_CONFIG restart guard");
+  if (/^\s*(?:Environment=)?(?:.*)?UVICORN_LIMIT_MAX_REQUESTS\s*=/im.test(unitText)) violations.push("25-request recycle knob");
+  if (!/^\s*ConditionPathExists=.*kokoro-v1_0\.pth\s*$/m.test(unitText)) violations.push("model ConditionPathExists");
+  if (/(?:uv\s+pip\s+install|pip(?:3)?\s+install|download_model\.py|\b(?:curl|wget)\b)/i.test(startText)) {
+    violations.push("install/download in hot start");
+  }
+  if (!/\bexec\b[\s\S]*\buvicorn\b/i.test(startText)) violations.push("exec uvicorn");
+  if (!/exit\s+78\b/.test(startText)) violations.push("exit 78 for missing prerequisites");
+  if (!/(?:uv\s+)?pip(?:3)?\s+install/i.test(provisionText) || !/download_model\.py/i.test(provisionText)) {
+    violations.push("explicit provision path");
+  }
+  violations.length === 0
+    ? pass("3b. Kokoro service contract", "offline hot start; explicit provision path; exit-0 restart supervision")
+    : fail("3b. Kokoro service contract", violations.join(", "));
+}
+
 // ─── 1. Local config files (with PG-loopback fallback post round-1 migration) ──
 async function tryLoopbackCreds() {
   for (const port of [process.env.OPERATOR_PORT ?? "3070", "3070", "3055"]) {

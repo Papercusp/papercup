@@ -22,6 +22,9 @@ vi.mock('../../../voice-node/local-voice-provision', () => ({
     whisperModel: { done: true },
   })),
 }));
+vi.mock('../../../voice-node/local-whisper-service', () => ({
+  warmLocalWhisper: vi.fn(async () => ({ ok: true, source: 'managed' })),
+}));
 
 import route from './operator-voice-engine-health';
 import { readElevenLabsKey } from '../../../voice-credentials';
@@ -40,11 +43,36 @@ describe('operator voice engine health', () => {
     expect(await response.json()).toMatchObject({
       kokoro: true,
       voicemode: true,
-      localVoice: { kokoroProvisioned: true, whisperProvisioned: true },
+      localVoice: {
+        kokoroProvisioned: true,
+        whisperProvisioned: true,
+        whisper: { ok: true, source: 'managed' },
+      },
       elevenlabs: false,
       elevenlabsConfigured: true,
       elevenlabsError: expect.stringMatching(/begin with sk_/),
     });
     expect(readElevenLabsKey).toHaveBeenCalledWith({ allowInvalid: true });
+  });
+
+  it('does not call a provisioned Whisper capability healthy when its endpoint cannot warm', async () => {
+    const { warmLocalWhisper } = await import('../../../voice-node/local-whisper-service');
+    vi.mocked(warmLocalWhisper).mockResolvedValueOnce({
+      ok: false,
+      reason: 'unhealthy',
+      detail: 'managed endpoint did not answer /health',
+    });
+
+    const response = await (route as unknown as Route).handler(
+      new Request('http://localhost/api/agent-mcp/operator-voice-engine-health'),
+      { params: {} },
+    );
+    expect(await response.json()).toMatchObject({
+      voicemode: false,
+      localVoice: {
+        whisperProvisioned: true,
+        whisper: { ok: false, reason: 'unhealthy' },
+      },
+    });
   });
 });

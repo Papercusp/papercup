@@ -18,17 +18,27 @@ import { inspectElevenLabsApiKey, readElevenLabsKey, readOpenAiKey, readCartesia
 import { probeKokoroHealth, probeVoicemodeHealth } from './operator-voice-proxy-helpers';
 import { isKokoroLocalProvisioned } from '../../../voice-node/kokoro-local';
 import { getLocalVoiceProvisionStatus } from '../../../voice-node/local-voice-provision';
+import { warmLocalWhisper } from '../../../voice-node/local-whisper-service';
 
 export default defineTool({
   method: 'GET',
   path: '/agent-mcp/operator-voice-engine-health',
   auth: 'loopback',
   async handler() {
-    const [kokoroHttp, voicemodeHttp, kokoroLocal, provision, elKey, oaKey, caKey] = await Promise.all([
+    const [kokoroHttp, voicemodeHttp, kokoroLocal, provision, managedWhisper, elKey, oaKey, caKey] = await Promise.all([
       probeKokoroHealth(),
       probeVoicemodeHealth(),
       isKokoroLocalProvisioned().catch(() => false),
       getLocalVoiceProvisionStatus().catch(() => null),
+      // Capability health must answer whether Whisper can serve NOW, not merely whether a
+      // binary/model marker exists on disk. This is a bounded lifecycle warm: an external
+      // endpoint is adopted, otherwise the provisioned managed child is health-gated once and
+      // cached by local-whisper-service. Failures remain data so the health route never kills boot.
+      warmLocalWhisper().catch((error) => ({
+        ok: false as const,
+        reason: 'warm-threw' as const,
+        detail: error instanceof Error ? error.message : String(error),
+      })),
       // Keep legacy-invalid values visible to the health surface; ordinary
       // outbound callers receive null from the safe default instead.
       readElevenLabsKey({ allowInvalid: true }).catch(() => null),
@@ -41,17 +51,25 @@ export default defineTool({
     ]);
     const elevenLabsStatus = inspectElevenLabsApiKey(elKey);
     const whisperProvisioned = !!(provision?.whisperBinary.done && provision?.whisperModel.done);
+    const whisperReady = voicemodeHttp || managedWhisper.ok;
     return Response.json({
       // Local engines: usable RIGHT NOW — an HTTP server answering, or a provisioned local
       // fallback the routes reach without one (P-009: in-process kokoro-js; the operator-
       // managed whisper-server child spawns on demand from the provisioned cache).
       kokoro: kokoroHttp || kokoroLocal,
-      voicemode: voicemodeHttp || whisperProvisioned,
+      voicemode: whisperReady,
       // The P-009 install surface (settings "Install local voice"): per-leg provisioned
       // state + the in-flight installer status, for the button/progress UI.
       localVoice: {
         kokoroProvisioned: kokoroLocal,
         whisperProvisioned,
+        whisper: managedWhisper.ok
+          ? { ok: true, source: managedWhisper.source ?? 'managed' }
+          : {
+              ok: false,
+              reason: managedWhisper.reason ?? (whisperProvisioned ? 'unhealthy' : 'not-provisioned'),
+              detail: managedWhisper.detail,
+            },
         installer: provision,
       },
       // Cloud engines: local key shape is healthy; reachability is only tested on explicit

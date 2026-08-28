@@ -71,6 +71,12 @@ const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
       'the two guards above both answer "fine" for a paused row, so nothing else asks whether the ' +
       'routines that must be RUNNING are running',
   },
+  {
+    fn: 'reconcileLegacyVoiceServices',
+    module: 'voice-node/legacy-service-reconcile',
+    catches:
+      'a deleted VoiceMode Whisper entrypoint or stale compatibility unit can restart-loop beside the operator-owned local voice lifecycle',
+  },
 ];
 
 describe('host-bootstrap wires every startup guard', () => {

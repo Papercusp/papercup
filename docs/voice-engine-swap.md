@@ -159,21 +159,27 @@ OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
 ## Troubleshooting
 
 **"Local TTS worked, then silently stopped and never came back."**
-kokoro's systemd unit sets `UVICORN_LIMIT_MAX_REQUESTS`, intended to recycle a
-uvicorn *worker* to mitigate an upstream memory leak (hexgrad/kokoro#152). But
-`start-gpu.sh` runs uvicorn with **no `--workers`**, so the limit terminates the
-whole server — with exit code **0**. A unit set to `Restart=on-failure` treats
-that as a clean shutdown and never restarts it, so TTS dies permanently after
-exactly N requests.
+The compatibility Kokoro unit is a **single model-bearing uvicorn process**. Do
+not set `UVICORN_LIMIT_MAX_REQUESTS`: that setting is a worker-pool control, and
+on a single process it turns a small request budget into a full model reload (the
+old `25` setting caused the observed outage). The runtime launcher is now offline
+only; dependency installation and model downloads live in an explicit one-time
+provision command. `Restart=always` remains the process-failure contract, while
+`RestartPreventExitStatus=78` keeps an unprovisioned install from restart-looping.
 
-Fixed 2026-07-09 in `~/.config/systemd/user/voicemode-kokoro.service`:
-`Restart=always` (exit-0 recycles now self-heal) and the limit raised `25 → 1000`
-(a recycle costs a ~2.5 min CUDA model reload, so it should be rare). Check with:
+On a developer host, provision once and then restart the unit:
 
 ```bash
-systemctl --user show voicemode-kokoro.service -p Restart -p NRestarts
-journalctl --user -u voicemode-kokoro.service | grep -i 'Maximum request limit'
+~/.voicemode/services/kokoro/provision-gpu.sh
+systemctl --user daemon-reload
+systemctl --user restart voicemode-kokoro.service
+systemctl --user show voicemode-kokoro.service -p Restart -p RestartPreventExitStatus -p NRestarts
 ```
+
+The service contract is checked by `apps/operator/scripts/voice-stack-check.mjs`
+and by `packages/operator-core/lib/voice-node/kokoro-service-contract.test.ts`:
+the hot path must contain no `uv pip install`, `download_model.py`, `curl`, or
+`wget`, and it must verify the model/config/voice files before `exec`-ing uvicorn.
 
 **Preview returns `502`.** That now means a genuine outage — check
 `curl http://127.0.0.1:8880/health` (kokoro) and `:2022/health` (whisper). A

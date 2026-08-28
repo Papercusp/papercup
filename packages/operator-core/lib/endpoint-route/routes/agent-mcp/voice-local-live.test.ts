@@ -26,6 +26,7 @@ import { transcribeChunk } from '../../../voice-engines/whisper';
 import { DEFAULT_VOICE_PREFS } from '../../../voice-prefs';
 import { decodeWavPcm16, resamplePcm16 } from '../../../voice-node/wav';
 import { VOICE_FRAME_SAMPLES, VOICE_SAMPLE_RATE } from '../../../voice-node/codec';
+import { warmLocalWhisper } from '../../../voice-node/local-whisper-service';
 
 const FORCE = process.env.PAPERCUSP_VOICE_LIVE === '1';
 
@@ -122,7 +123,13 @@ async function kokoroHasVoices(): Promise<boolean> {
 }
 
 const kokoroUp = (await reachable(`${KOKORO_URL}/health`)) && (await kokoroHasVoices());
-const whisperUp = await reachable(`${VOICEMODE_URL}/health`);
+// Exercise the canonical lifecycle as well as the legacy external URL: when the old
+// VoiceMode unit is absent, warmLocalWhisper() health-gates the provisioned managed child and
+// returns its URL. This keeps the live test meaningful after P-003 retires the broken legacy
+// Whisper service instead of silently probing a dead compatibility port.
+const whisperWarm = await warmLocalWhisper().catch(() => ({ ok: false as const }));
+const whisperUrl = whisperWarm.ok ? (whisperWarm.url ?? VOICEMODE_URL) : VOICEMODE_URL;
+const whisperUp = whisperWarm.ok && (await reachable(`${whisperUrl}/health`));
 const RUN = FORCE || (kokoroUp && whisperUp);
 
 /** The sentence we speak and expect back. Pangram: broad phoneme coverage. */
@@ -206,7 +213,7 @@ function peakOf(samples: Int16Array): number {
     // container; whisper sniffs the CONTENT, so a WAV under a .webm name
     // transcribes fine. Pinned here so that quirk can't silently regress.
     const blob = new Blob([synth.audio], { type: 'audio/wav' });
-    const transcript = await transcribeChunk(VOICEMODE_URL, blob);
+    const transcript = await transcribeChunk(whisperUrl, blob);
 
     expect(transcript.length, 'whisper returned an empty transcript').toBeGreaterThan(0);
 
@@ -223,6 +230,6 @@ function peakOf(samples: Int16Array): number {
 
   liveIt('whisper returns empty string (not a throw) for un-decodable audio', async () => {
     const junk = new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/wav' });
-    await expect(transcribeChunk(VOICEMODE_URL, junk)).resolves.toBe('');
+    await expect(transcribeChunk(whisperUrl, junk)).resolves.toBe('');
   }, 30_000);
 });

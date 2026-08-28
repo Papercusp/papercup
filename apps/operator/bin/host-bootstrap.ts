@@ -58,6 +58,7 @@ import {
   registerSidecarShutdownHooks,
 } from '@papercusp/operator-core/lib/process-supervision/sidecar-spawn-shared';
 import { assertDbosWorkItemsImportContract } from '@papercusp/operator-core/lib/dbos/work-items-contract';
+import { reconcileLegacyVoiceServices } from '@papercusp/operator-core/lib/voice-node/legacy-service-reconcile';
 // The proxy's retry window, defined ONCE (WI-6738) and shared with psu-launcher.mjs, which
 // must not give up while the proxy is still retrying on its behalf. Static (unlike the lazy
 // proxy import below, which defers a heavy module used only in a fallback branch): this one
@@ -1304,6 +1305,26 @@ export function runBootstrap(): void {
     console.log(
       '[host] PAPERCUSP_BACKGROUND_WORKERS=0 — secondary host: skipping hyperbee substrate, git-export, and DBOS background machinery (EI-126)',
     );
+  }
+
+  // P-003 / D-006: the operator owns local voice.  Reconcile the old per-user VoiceMode units
+  // once per host (not once per clustered request worker) before background machinery starts.
+  // Whisper's historical unit points at a deleted script and otherwise burns a systemd restart
+  // loop; runtime-masking it makes the repair survive an old default.target symlink.  Kokoro is
+  // retained as a compatibility accelerator and is independently checked by the service
+  // contract/live stack guard.  Non-Linux hosts return an explicit unsupported result, and a
+  // systemctl failure is logged but never wedges operator boot.
+  if (backgroundWorkers && cluster.isPrimary && !utilityHost) {
+    void reconcileLegacyVoiceServices({ maskWhisper: true })
+      .then((result) => {
+        console.log(
+          `[voice-node] legacy service reconciliation: whisper=${result.whisper.action} kokoro=${result.kokoro.action}`,
+        );
+        if (!result.whisper.ok) console.warn(`[voice-node] legacy Whisper reconciliation degraded: ${result.whisper.detail ?? 'unknown error'}`);
+      })
+      .catch((err) => {
+        console.warn('[voice-node] legacy service reconciliation failed (non-fatal):', err instanceof Error ? err.message : String(err));
+      });
   }
 
   // WI-2105: this host WILL decide substrate routing (bootSubstrateWithFallback
