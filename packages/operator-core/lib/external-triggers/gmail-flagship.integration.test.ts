@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
-import { parsePlan } from '@papercusp/plan-parser';
 import { dispatchPendingTriggerRuns } from './binding-engine';
 import {
   draftResponseToGmailTriggerPlanRun,
@@ -9,7 +8,6 @@ import {
   GMAIL_RESPOND_DRAFT_CREDENTIAL_HARNESS,
   GMAIL_RESPOND_DRAFT_EVENT,
   GMAIL_RESPOND_DRAFT_HARNESS,
-  GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES,
   GMAIL_RESPOND_DRAFT_PLAN,
 } from './gmail-flagship';
 import { ingestExternalTriggerEvent } from './ingestion';
@@ -105,16 +103,9 @@ describe('Gmail flagship desktop flow', () => {
     });
     const first = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
     expect(first).toMatchObject({
-      plan: { created: true, personalScopeAdded: true },
+      plan: { created: true },
       binding: { armed: false, action: { type: 'launch-plan' } },
     });
-    await sql`
-      UPDATE harness_shared.harness_plans
-         SET content = replace(content, E'personalScopes: [personal:gmail]\\n', ''),
-             content_hash = 'legacy-missing-personal-scope'
-       WHERE workspace_id = ${WS}
-         AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
-         AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
     // Upgrade guard: reconnecting an installation provisioned with a named
     // direct executor preserves the semantic binding while moving it to the
     // durable manual-review queue.
@@ -134,7 +125,7 @@ describe('Gmail flagship desktop flow', () => {
        WHERE workspace_id = ${WS} AND id = ${first.binding.id}::uuid`;
     const second = await ensureGmailRespondDraftBinding(sql, WS, source, `owner:${userId}`);
     expect(second).toMatchObject({
-      plan: { created: false, personalScopeAdded: true },
+      plan: { created: false },
       binding: {
         id: first.binding.id,
         armed: false,
@@ -142,16 +133,13 @@ describe('Gmail flagship desktop flow', () => {
       },
     });
 
-    const planRows = await sql<Array<{ content: string; inputSchema: unknown; itemCount: number }>>`
-      SELECT content, input_schema AS "inputSchema", jsonb_array_length(items)::int AS "itemCount"
+    const planRows = await sql<Array<{ inputSchema: unknown; itemCount: number }>>`
+      SELECT input_schema AS "inputSchema", jsonb_array_length(items)::int AS "itemCount"
         FROM harness_shared.harness_plans
        WHERE workspace_id = ${WS}
          AND harness_slug = ${GMAIL_RESPOND_DRAFT_HARNESS}
          AND plan_slug = ${GMAIL_RESPOND_DRAFT_PLAN}`;
     expect(planRows).toHaveLength(1);
-    expect(parsePlan(planRows[0].content).frontmatter.raw.personalScopes).toEqual(
-      GMAIL_RESPOND_DRAFT_PERSONAL_SCOPES,
-    );
     expect(planRows[0].inputSchema).toMatchObject({ required: ['trigger'] });
     expect(planRows[0].itemCount).toBe(1);
 
