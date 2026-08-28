@@ -67,6 +67,11 @@ function iso(value: Date | string | null | undefined): string | undefined {
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(value);
 }
 
+function credentialReferenceDisplay(value: string): string {
+  const scheme = value.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase() ?? 'resolver';
+  return `${scheme}://[configured]`;
+}
+
 async function pushControl(): Promise<void> {
   await notifySyncInvalidate(WORKSPACE_HOST_CONTROL_QUERY);
 }
@@ -77,6 +82,8 @@ export interface WorkspaceHostConnectionInput {
   target: string;
   label: string;
   credentialRef: string;
+  /** Non-secret metadata required to resolve the opaque credential reference. */
+  provider?: Readonly<Record<string, unknown>>;
   status: ConnectionStatus;
   statusDetail?: string;
   lastValidatedAt?: string;
@@ -89,15 +96,17 @@ export interface WorkspaceHostConnectionInput {
 }
 
 export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnectionInput): Promise<void> {
+  assertWorkspaceHostSecretIsolation(input.provider, 'workspaceHost.connection.provider');
+  const providerConfig = json(input.provider ?? {});
   await withWorkspace(input.workspaceId, async (tx) => {
     await tx`
       INSERT INTO harness_shared.workspace_host_connections (
-        workspace_id, id, target, label, credential_ref, status, status_detail,
+        workspace_id, id, target, label, credential_ref, provider_config, status, status_detail,
         last_validated_at, scopes, regions, sizes, images, networks,
         disk_price_per_gib_month, updated_at
       ) VALUES (
         ${input.workspaceId}, ${input.id}, ${input.target}, ${input.label},
-        ${input.credentialRef}, ${input.status}, ${input.statusDetail ?? null},
+        ${input.credentialRef}, ${tx.json(providerConfig as never)}, ${input.status}, ${input.statusDetail ?? null},
         ${input.lastValidatedAt ?? null}, ${tx.json(json(input.scopes ?? []) as never)},
         ${tx.json(json(input.regions ?? []) as never)}, ${tx.json(json(input.sizes ?? []) as never)},
         ${tx.json(json(input.images ?? []) as never)}, ${tx.json(json(input.networks ?? []) as never)},
@@ -107,6 +116,7 @@ export async function upsertWorkspaceHostConnection(input: WorkspaceHostConnecti
         target = EXCLUDED.target,
         label = EXCLUDED.label,
         credential_ref = EXCLUDED.credential_ref,
+        provider_config = EXCLUDED.provider_config,
         status = EXCLUDED.status,
         status_detail = EXCLUDED.status_detail,
         last_validated_at = EXCLUDED.last_validated_at,
@@ -140,11 +150,12 @@ export async function readWorkspaceHostConnection(
         id: string;
         target: string;
         credential_ref: string;
+        provider_config: JsonRecord;
         status: ConnectionStatus;
         status_detail: string | null;
       }>
     >`
-      SELECT id, target, credential_ref, status, status_detail
+      SELECT id, target, credential_ref, provider_config, status, status_detail
       FROM harness_shared.workspace_host_connections
       WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
       LIMIT 1
@@ -159,6 +170,7 @@ export async function readWorkspaceHostConnection(
       connection: {
         target: row.target,
         cloudCredentialRef: { kind: 'cloud', ref: row.credential_ref },
+        ...(Object.keys(row.provider_config ?? {}).length > 0 ? { provider: row.provider_config } : {}),
       },
     };
   });
@@ -708,6 +720,7 @@ interface ConnectionDbRow {
   target: string;
   label: string;
   credential_ref: string;
+  provider_config: JsonRecord;
   status: ConnectionStatus;
   status_detail: string | null;
   last_validated_at: Date | string | null;
@@ -815,7 +828,7 @@ function capabilities(state: string): Record<string, boolean> {
 export async function readWorkspaceHostControl(workspaceId: string): Promise<unknown[]> {
   return withWorkspace(workspaceId, async (tx) => {
     const connections = await tx<ConnectionDbRow[]>`
-      SELECT id, target, label, credential_ref, status, status_detail, last_validated_at,
+      SELECT id, target, label, credential_ref, provider_config, status, status_detail, last_validated_at,
              scopes, regions, sizes, images, networks, disk_price_per_gib_month
       FROM harness_shared.workspace_host_connections
       ORDER BY target, label, id
@@ -892,7 +905,8 @@ export async function readWorkspaceHostControl(workspaceId: string): Promise<unk
       target: row.target,
       label: row.label,
       status: row.status,
-      credentialRef: row.credential_ref,
+      credentialRef: credentialReferenceDisplay(row.credential_ref),
+      provider: row.provider_config,
       lastValidatedAt: iso(row.last_validated_at),
       statusDetail: row.status_detail ?? undefined,
       scopes: row.scopes,

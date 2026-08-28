@@ -142,6 +142,32 @@ describe('ADC-backed GCP workspace-host API client', () => {
     ).resolves.toMatchObject({ ok: false });
   });
 
+  it('admits a hosted delegation only when the injected auth supplier is bound to its exact reference', async () => {
+    const hostedRef = 'resolver://workspace-1/gcp/generation-2';
+    const hostedConnection: WorkspaceHostProviderConnection = {
+      ...connection(),
+      cloudCredentialRef: { kind: 'cloud', ref: hostedRef },
+      provider: { projectId: PROJECT, credentialSource: 'hosted-delegation', generation: 2 },
+    };
+    const fetchImpl = vi.fn(async () => json({ name: PROJECT })) as typeof fetch;
+    const acquireAuth = vi.fn(async () => ({ accessToken: TOKEN, projectId: PROJECT, identity: 'delegated' }));
+
+    await expect(
+      new GoogleComputeWorkspaceHostApiClient({ acquireAuth, fetch: fetchImpl, now: () => NOW })
+        .validateConnection(hostedConnection),
+    ).resolves.toMatchObject({ ok: false });
+
+    await expect(
+      new GoogleComputeWorkspaceHostApiClient({
+        acquireAuth,
+        credentialRef: hostedRef,
+        fetch: fetchImpl,
+        now: () => NOW,
+      }).validateConnection(hostedConnection),
+    ).resolves.toMatchObject({ ok: true, identity: 'delegated' });
+    expect(acquireAuth).toHaveBeenCalledTimes(1);
+  });
+
   it('resolves a configured Papercusp family but exposes only its immutable member to consumers', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request) => {
       const url = String(input);

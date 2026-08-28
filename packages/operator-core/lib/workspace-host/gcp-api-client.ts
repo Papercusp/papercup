@@ -139,6 +139,8 @@ interface RawImage extends RawResource {
 
 export interface GcpWorkspaceHostApiClientOptions {
   acquireAuth?: () => Promise<GcpResolvedAuth>;
+  /** Exact hosted resolver reference bound to acquireAuth; never a wildcard scheme grant. */
+  credentialRef?: string;
   fetch?: typeof fetch;
   now?: () => string;
   /** Resolve this family for discovery, but return only its exact immutable member id. */
@@ -181,10 +183,14 @@ function numberValue(value: string | number | undefined): number | undefined {
   return Number.isFinite(result) ? result : undefined;
 }
 
-function projectFromConnection(connection: WorkspaceHostProviderConnection): string {
+function projectFromConnection(
+  connection: WorkspaceHostProviderConnection,
+  boundCredentialRef?: string,
+): string {
   if (connection.target !== 'gcp') throw new Error(`gcp_workspace_host_target_${connection.target}_invalid`);
   const credentialRef = connection.cloudCredentialRef.ref.trim();
-  if (!credentialRef.startsWith('adc://') && credentialRef !== GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF) {
+  const local = credentialRef.startsWith('adc://') || credentialRef === GCP_GCLOUD_ACTIVE_USER_CREDENTIAL_REF;
+  if (!local && credentialRef !== boundCredentialRef) {
     throw new Error('gcp_workspace_host_cloud_credential_ref_must_use_safe_google_chain');
   }
   if (connection.scope && connection.scope.kind !== 'project') {
@@ -336,12 +342,14 @@ function recreateInput(
 /** ADC-backed, raw-REST implementation of the GCP workspace-host client seam. */
 export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiClient {
   private readonly acquireAuth: () => Promise<GcpResolvedAuth>;
+  private readonly boundCredentialRef?: string;
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => string;
   private readonly imageFamily: { project: string; family: string; label?: string };
 
   constructor(options: GcpWorkspaceHostApiClientOptions = {}) {
     this.acquireAuth = options.acquireAuth ?? acquireGcpAdcAuth;
+    this.boundCredentialRef = options.credentialRef?.trim() || undefined;
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? (() => new Date().toISOString());
     const imageFamily = options.imageFamily ?? GCP_DEFAULT_WORKSPACE_HOST_IMAGE;
@@ -395,7 +403,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   async validateConnection(connection: WorkspaceHostProviderConnection): Promise<WorkspaceHostConnectionValidation> {
     const checkedAt = this.now();
     try {
-      const projectId = projectFromConnection(connection);
+      const projectId = projectFromConnection(connection, this.boundCredentialRef);
       const auth = await this.acquireAuth();
       const project = await this.requestWithAuth<{ name?: string }>(auth, `${this.projectBase(projectId)}?fields=name`);
       if (!project.name) throw new Error('gcp_workspace_host_project_unreadable');
@@ -418,7 +426,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
   }
 
   async listScopes(connection: WorkspaceHostProviderConnection): Promise<readonly WorkspaceHostScope[]> {
-    const projectId = projectFromConnection(connection);
+    const projectId = projectFromConnection(connection, this.boundCredentialRef);
     return [{ kind: 'project', id: projectId, label: projectId }];
   }
 
@@ -426,7 +434,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     query: WorkspaceHostCatalogQuery,
     connection: WorkspaceHostProviderConnection,
   ): Promise<readonly WorkspaceHostRegion[]> {
-    const projectId = projectFromConnection(connection);
+    const projectId = projectFromConnection(connection, this.boundCredentialRef);
     assertCatalogProject(query, projectId);
     const base = this.projectBase(projectId);
     const [regions, zones] = await Promise.all([
@@ -455,7 +463,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     query: WorkspaceHostCatalogQuery,
     connection: WorkspaceHostProviderConnection,
   ): Promise<readonly WorkspaceHostSize[]> {
-    const projectId = projectFromConnection(connection);
+    const projectId = projectFromConnection(connection, this.boundCredentialRef);
     assertCatalogProject(query, projectId);
     const result = await this.request<{ items?: Record<string, { machineTypes?: RawMachineType[] }> }>(
       `${this.projectBase(projectId)}/aggregated/machineTypes?maxResults=500&fields=items/*/machineTypes(name,guestCpus,memoryMb,deprecated)`,
@@ -485,7 +493,7 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
     query: WorkspaceHostCatalogQuery,
     connection: WorkspaceHostProviderConnection,
   ): Promise<readonly WorkspaceHostImage[]> {
-    const projectId = projectFromConnection(connection);
+    const projectId = projectFromConnection(connection, this.boundCredentialRef);
     assertCatalogProject(query, projectId);
     const image = await this.request<RawImage>(
       `${COMPUTE_API}/projects/${segment(this.imageFamily.project, 'image_project')}/global/images/family/${segment(this.imageFamily.family, 'image_family')}`,

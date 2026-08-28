@@ -21,6 +21,7 @@ import {
   readWorkspaceHostDestroyTarget,
   readWorkspaceHostResourceCheckpoints,
   redactWorkspaceHostValue,
+  upsertWorkspaceHostConnection,
 } from './observability-store';
 
 function fakeTx(strings: TemplateStringsArray, ..._values: unknown[]): Promise<unknown[]> {
@@ -62,6 +63,7 @@ describe('workspace-host observability store', () => {
         id: 'connection-1',
         target: 'gcp',
         credential_ref: 'adc://controller',
+        provider_config: { projectId: 'project-1', credentialSource: 'hosted-delegation' },
         status: 'connected',
         status_detail: null,
       },
@@ -74,8 +76,24 @@ describe('workspace-host observability store', () => {
       connection: {
         target: 'gcp',
         cloudCredentialRef: { kind: 'cloud', ref: 'adc://controller' },
+        provider: { projectId: 'project-1', credentialSource: 'hosted-delegation' },
       },
     });
+  });
+
+  it('rejects secret-shaped hosted provider metadata before persistence', async () => {
+    await expect(
+      upsertWorkspaceHostConnection({
+        workspaceId: 'ws-1',
+        id: 'connection-1',
+        target: 'azure',
+        label: 'Hosted Azure',
+        credentialRef: 'resolver://workspace-1/azure/generation-1',
+        provider: { tenantId: 'tenant-1', clientSecret: 'never-persist-me' },
+        status: 'connected',
+      }),
+    ).rejects.toThrow(/Secret-shaped field/);
+    expect(H.withWorkspace).not.toHaveBeenCalled();
   });
 
   it('hydrates operation-scoped resource checkpoints for replay', async () => {
@@ -175,6 +193,7 @@ describe('workspace-host observability store', () => {
         target: 'gcp',
         label: 'Production',
         credential_ref: 'env:GCP',
+        provider_config: { projectId: 'project-1' },
         status: 'connected',
         status_detail: null,
         last_validated_at: '2026-08-22T00:00:00Z',
@@ -288,6 +307,12 @@ describe('workspace-host observability store', () => {
     const rows = await readWorkspaceHostControl('ws-1');
     expect(H.withWorkspace).toHaveBeenCalledWith('ws-1', expect.any(Function));
     expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      kind: 'connection',
+      credentialRef: 'env://[configured]',
+      provider: { projectId: 'project-1' },
+    });
+    expect(JSON.stringify(rows[0])).not.toContain('env:GCP_APPLICATION_CREDENTIALS');
     expect(rows[1]).toMatchObject({
       kind: 'workspace',
       id: 'host-1',

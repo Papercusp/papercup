@@ -38,6 +38,7 @@ import {
   readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
+  runBoundedLeaderBriefReads,
   runLeaderBriefReads,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
@@ -71,6 +72,23 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
     expect(result).toEqual(['read-0', 'read-1', 'read-2', 'read-3', 'read-4']);
     expect(peak).toBe(2);
     expect(LEADER_BRIEF_READ_CONCURRENCY).toBe(4);
+  });
+
+  it('degrades a hung optional leg to its fallback within the per-leg deadline', async () => {
+    const startedAt = Date.now();
+    const result = await runBoundedLeaderBriefReads(
+      [
+        () => new Promise<string>(() => {}),
+        async () => 'read-1',
+      ] as const,
+      ['fallback-0', 'fallback-1'],
+      'test',
+      2,
+      20,
+    );
+
+    expect(result).toEqual(['fallback-0', 'read-1']);
+    expect(Date.now() - startedAt).toBeLessThan(250);
   });
 });
 

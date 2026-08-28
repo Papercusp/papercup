@@ -27,7 +27,11 @@ import type {
   WorkspaceHostTransportProfile,
 } from '@papercusp/deployment-driver';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
-import { GCP_CLOUD_PLATFORM_SCOPE, createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
+import {
+  GCP_CLOUD_PLATFORM_SCOPE,
+  createGcpWorkspaceHostAcquireAuth,
+  type GcpResolvedAuth,
+} from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient, type GcpWorkspaceHostApiClientOptions } from './gcp-api-client';
 import { assertGcpImmutableImageId } from './gcp-image-family';
 import {
@@ -2452,16 +2456,31 @@ export function createAdcGcpWorkspaceHostProvider(
 /** Production composition selected by the persisted, non-secret cloud credential reference. */
 export function createConfiguredGcpWorkspaceHostProvider(
   connection: WorkspaceHostProviderConnection,
-  options: Omit<GcpWorkspaceHostApiClientOptions, 'acquireAuth'> = {},
+  options: Omit<GcpWorkspaceHostApiClientOptions, 'acquireAuth' | 'credentialRef'> & {
+    resolveHostedAuth?: (input: {
+      credentialRef: string;
+      provider: Readonly<Record<string, unknown>>;
+    }) => Promise<GcpResolvedAuth>;
+  } = {},
 ): GcpWorkspaceHostProvider {
   if (connection.target !== GCP_WORKSPACE_HOST_TARGET) {
     throw new Error(`GCP workspace-host provider cannot compose target '${connection.target}'`);
   }
+  const credentialRef = connection.cloudCredentialRef.ref.trim();
+  const hosted = /^(?:encrypted|resolver|delegation):\/\//.test(credentialRef);
+  if (hosted && !options.resolveHostedAuth) {
+    throw new Error('gcp_workspace_host_hosted_auth_resolver_required');
+  }
+  const acquireAuth = hosted
+    ? () => options.resolveHostedAuth!({ credentialRef, provider: connection.provider ?? {} })
+    : createGcpWorkspaceHostAcquireAuth(credentialRef);
+  const { resolveHostedAuth: _resolveHostedAuth, ...clientOptions } = options;
   return new GcpWorkspaceHostProvider(
     createGcpWorkspaceHostApiClient({
-      ...options,
-      acquireAuth: createGcpWorkspaceHostAcquireAuth(connection.cloudCredentialRef.ref),
+      ...clientOptions,
+      acquireAuth,
+      credentialRef,
     }),
-    { now: options.now },
+    { now: clientOptions.now },
   );
 }

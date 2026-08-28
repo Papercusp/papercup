@@ -208,6 +208,30 @@ async function boundedLeaderBriefRead<T>(
 }
 
 /**
+ * Run optional reads with both bounded width and a per-leg deadline. The
+ * regular fan-out helper intentionally has no fallback policy because callers
+ * use it for already-bounded reads too; this companion makes the fail-soft
+ * contract explicit at the call site for the broader full brief.
+ */
+export async function runBoundedLeaderBriefReads<T extends readonly (() => Promise<unknown>)[]>(
+  reads: T,
+  fallbacks: readonly unknown[],
+  label: string,
+  concurrency = LEADER_BRIEF_READ_CONCURRENCY,
+  timeoutMs = LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
+): Promise<{ [K in keyof T]: LeaderBriefReadResult<T[K]> }> {
+  if (reads.length !== fallbacks.length) {
+    throw new Error('leader-brief bounded read fallback count mismatch for ' + label);
+  }
+  const boundedReads = reads.map((read, index) =>
+    () => boundedLeaderBriefRead<unknown>(label + ':' + index, read, fallbacks[index], timeoutMs),
+  );
+  return (await runLeaderBriefReads(boundedReads as never, concurrency)) as {
+    [K in keyof T]: LeaderBriefReadResult<T[K]>;
+  };
+}
+
+/**
  * EI-21548894457555139: how long a call must have been in flight before it is worth
  * reporting on a member row (and before it suppresses `dormant` / `benchSuggestion`).
  *
