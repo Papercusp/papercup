@@ -75,20 +75,26 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
   });
 
   it('degrades a hung optional leg to its fallback within the per-leg deadline', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const startedAt = Date.now();
-    const result = await runBoundedLeaderBriefReads(
-      [
-        () => new Promise<string>(() => {}),
-        async () => 'read-1',
-      ] as const,
-      ['fallback-0', 'fallback-1'],
-      'test',
-      2,
-      20,
-    );
+    try {
+      const result = await runBoundedLeaderBriefReads(
+        [
+          () => new Promise<string>(() => {}),
+          async () => 'read-1',
+        ] as const,
+        ['fallback-0', 'fallback-1'],
+        'test',
+        2,
+        20,
+      );
 
-    expect(result).toEqual(['fallback-0', 'read-1']);
-    expect(Date.now() - startedAt).toBeLessThan(250);
+      expect(result).toEqual(['fallback-0', 'read-1']);
+      expect(Date.now() - startedAt).toBeLessThan(250);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('[bounded-timeout] leader-brief:test:0 exceeded'));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -756,11 +762,20 @@ describe('fleet:leader-brief — profile-derived zero-awaiters advisory (P-015)'
   });
 
   it('fails soft by omitting the advisory when the live-awaiter read cannot be established', async () => {
-    await expect(
-      readLeaderMonitoringBlindAdvisory('alpha', async () => {
-        throw new Error('await store unavailable');
-      }),
-    ).resolves.toBeUndefined();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await expect(
+        readLeaderMonitoringBlindAdvisory('alpha', async () => {
+          throw new Error('await store unavailable');
+        }),
+      ).resolves.toBeUndefined();
+      expect(warn).toHaveBeenCalledTimes(expectedKeys.length);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('[bounded-timeout] leader-brief:monitoring-blind-awaiters failed: await store unavailable'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
