@@ -35,6 +35,7 @@ import type { AddressInfo, Socket } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
+import { screenContains, VtScreen } from './vt-screen';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
@@ -331,174 +332,6 @@ class FakeOperator {
 
 // ─── PTY harness ──────────────────────────────────────────────────────────────
 
-// ratatui renders via cursor-jump DIFFS — only CHANGED cells are rewritten —
-// so strip-ANSI-flattening the raw stream drops characters that were already
-// on screen and mangles words ("owned-loop" → "owned-oop"). Maintain a real
-// screen grid instead: interpret cursor positioning + erase sequences and
-// assert against the RENDERED screen, the way a user reads it.
-// ESC written as \x1b escapes on purpose — a raw 0x1b byte in source trips
-// lint:no-control-bytes (a green-checkpoint leg). Runtime-identical.
-const ESC = '\x1b';
-
-class VtScreen {
-  private grid: string[][];
-  private row = 0;
-  private col = 0;
-  private savedRow = 0;
-  private savedCol = 0;
-
-  constructor(
-    private rows: number,
-    private cols: number,
-  ) {
-    this.grid = Array.from({ length: rows }, () => new Array<string>(cols).fill(' '));
-  }
-
-  private clamp(v: number, max: number): number {
-    return Math.max(0, Math.min(v, max));
-  }
-
-  private clearAll(): void {
-    for (const r of this.grid) r.fill(' ');
-  }
-
-  private clearRow(r: number, from: number, to: number): void {
-    for (let c = from; c < to; c++) this.grid[r][c] = ' ';
-  }
-
-  private lineFeed(): void {
-    this.row++;
-    if (this.row >= this.rows) {
-      this.grid.shift();
-      this.grid.push(new Array<string>(this.cols).fill(' '));
-      this.row = this.rows - 1;
-    }
-  }
-
-  private put(ch: string): void {
-    if (this.col >= this.cols) {
-      this.col = 0;
-      this.lineFeed();
-    }
-    this.grid[this.row][this.col] = ch;
-    this.col++;
-  }
-
-  private csi(params: string, final: string): void {
-    const isPrivate = params.startsWith('?');
-    const nums = (isPrivate ? params.slice(1) : params)
-      .split(';')
-      .map((p) => parseInt(p, 10))
-      .map((v) => (Number.isFinite(v) ? v : 0));
-    const p0 = nums[0] ?? 0;
-    switch (final) {
-      case 'H':
-      case 'f':
-        this.row = this.clamp((nums[0] || 1) - 1, this.rows - 1);
-        this.col = this.clamp((nums[1] || 1) - 1, this.cols - 1);
-        break;
-      case 'A':
-        this.row = this.clamp(this.row - (p0 || 1), this.rows - 1);
-        break;
-      case 'B':
-        this.row = this.clamp(this.row + (p0 || 1), this.rows - 1);
-        break;
-      case 'C':
-        this.col = this.clamp(this.col + (p0 || 1), this.cols - 1);
-        break;
-      case 'D':
-        this.col = this.clamp(this.col - (p0 || 1), this.cols - 1);
-        break;
-      case 'G':
-        this.col = this.clamp((p0 || 1) - 1, this.cols - 1);
-        break;
-      case 'd':
-        this.row = this.clamp((p0 || 1) - 1, this.rows - 1);
-        break;
-      case 'J':
-        if (p0 === 2 || p0 === 3) this.clearAll();
-        else if (p0 === 1) {
-          for (let r = 0; r < this.row; r++) this.clearRow(r, 0, this.cols);
-          this.clearRow(this.row, 0, this.col + 1);
-        } else {
-          this.clearRow(this.row, this.col, this.cols);
-          for (let r = this.row + 1; r < this.rows; r++) this.clearRow(r, 0, this.cols);
-        }
-        break;
-      case 'K':
-        if (p0 === 2) this.clearRow(this.row, 0, this.cols);
-        else if (p0 === 1) this.clearRow(this.row, 0, this.col + 1);
-        else this.clearRow(this.row, this.col, this.cols);
-        break;
-      case 'h':
-      case 'l':
-        // Alt-screen enter/leave → fresh screen, home cursor. Every other
-        // mode (cursor visibility, mouse, bracketed paste) has no grid effect.
-        if (isPrivate && nums.includes(1049)) {
-          this.clearAll();
-          this.row = 0;
-          this.col = 0;
-        }
-        break;
-      default:
-        break; // SGR (m), scroll region (r), … — no grid effect
-    }
-  }
-
-  /**
-   * Feed the WHOLE raw stream, parsing from scratch — chunk-split escape
-   * sequences and an incomplete tail then can never be mis-parsed (an
-   * incomplete trailing sequence is simply left for the next parse).
-   */
-  feed(data: string): void {
-    let i = 0;
-    const n = data.length;
-    while (i < n) {
-      const ch = data[i];
-      if (ch === ESC) {
-        const kind = data[i + 1];
-        if (kind === undefined) break; // incomplete tail
-        if (kind === '[') {
-          let j = i + 2;
-          while (j < n && !(data[j] >= '@' && data[j] <= '~')) j++;
-          if (j >= n) break; // incomplete CSI tail
-          this.csi(data.slice(i + 2, j), data[j]);
-          i = j + 1;
-        } else if (kind === ']') {
-          // OSC: consume through BEL or ST (ESC \)
-          let j = i + 2;
-          while (j < n && data[j] !== '\x07' && !(data[j] === ESC && data[j + 1] === '\\')) j++;
-          if (j >= n) break; // incomplete OSC tail
-          i = data[j] === '\x07' ? j + 1 : j + 2;
-        } else if (kind === '7') {
-          this.savedRow = this.row;
-          this.savedCol = this.col;
-          i += 2;
-        } else if (kind === '8') {
-          this.row = this.savedRow;
-          this.col = this.savedCol;
-          i += 2;
-        } else if (kind === '(' || kind === ')') {
-          i += 3; // charset designation: ESC ( X
-        } else {
-          i += 2; // ESC =, ESC >, …
-        }
-        continue;
-      }
-      if (ch === '\n') this.lineFeed();
-      else if (ch === '\r') this.col = 0;
-      else if (ch === '\b') this.col = this.clamp(this.col - 1, this.cols - 1);
-      else if (ch === '\t') this.col = this.clamp((Math.floor(this.col / 8) + 1) * 8, this.cols - 1);
-      else if (ch >= ' ' && ch !== '\x7f') this.put(ch);
-      i++;
-    }
-  }
-
-  text(): string {
-    return this.grid.map((r) => r.join('').trimEnd()).join('\n');
-  }
-}
-
 class PuiPane {
   pty: IPty;
   private raw = '';
@@ -529,11 +362,7 @@ class PuiPane {
    * still matches a single-spaced needle. Needles never span rows.
    */
   contains(needle: string): boolean {
-    const normalized = this.screen()
-      .split('\n')
-      .map((l) => l.replace(/\s+/g, ' ').trim())
-      .join('\n');
-    return normalized.includes(needle.replace(/\s+/g, ' ').trim());
+    return screenContains(this.screen(), needle);
   }
 
   async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {

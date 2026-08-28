@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import type { ModelRequest, ModelStreamEvent } from '../agent-loop/model-port';
 import type { OrgTestDb } from '../../test/_org-test-db';
+import { screenContains, VtScreen } from './vt-screen';
 
 const scriptedProvider = vi.hoisted(() => ({
   mode: 'success' as 'success' | 'hitl' | 'failure' | 'stall',
@@ -147,23 +148,9 @@ function ensurePuiBinary(): string {
   return resolved;
 }
 
-// We match only text that the terminal actually received from a Ratatui draw.
-// Cursor movement is stripped, while row boundaries remain visible enough for
-// bounded substring assertions. This avoids a second UI model in the gate.
-function visibleText(raw: string): string {
-  return raw
-    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
-    .replace(/\x1bP[\s\S]*?\x1b\\/g, '')
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
-    .replace(/\x1b[@-_]/g, '')
-    .replace(/\r/g, '\n')
-    .replace(/[ \t]+/g, ' ');
-}
-
 class PuiPane {
   readonly pty: IPty;
   private raw = '';
-  private mark = 0;
   private exit: Promise<{ exitCode: number; signal?: number }>;
 
   constructor(bin: string, operatorPort: number, home: string) {
@@ -189,12 +176,10 @@ class PuiPane {
     this.exit = new Promise((resolve) => this.pty.onExit(resolve));
   }
 
-  text(sinceMark = false): string {
-    return visibleText(sinceMark ? this.raw.slice(this.mark) : this.raw);
-  }
-
-  markHere(): void {
-    this.mark = this.raw.length;
+  screen(): string {
+    const vt = new VtScreen(44, 150);
+    vt.feed(this.raw);
+    return vt.text();
   }
 
   write(keys: string): void {
@@ -211,16 +196,16 @@ class PuiPane {
     this.pty.write('\x1b[27u');
   }
 
-  async waitFor(needle: string, opts: { timeoutMs?: number; sinceMark?: boolean } = {}): Promise<void> {
+  async waitFor(needle: string, opts: { timeoutMs?: number } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (this.text(opts.sinceMark).includes(needle)) return;
+      if (screenContains(this.screen(), needle)) return;
       await new Promise((resolve) => setTimeout(resolve, 60));
     }
     throw new Error(
-      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)}; terminal tail:\n` +
-      this.text(opts.sinceMark).slice(-8_000),
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)} on the rendered screen:\n` +
+      this.screen(),
     );
   }
 
@@ -394,22 +379,18 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
 
       // Exercise the visible agent/session picker, not a hidden API shortcut.
-      pane.markHere();
       pane.escape(); // leave the composer so `s` owns the picker binding
-      await pane.waitFor('i type · v speak', { sinceMark: true });
-      pane.markHere();
+      await pane.waitFor('i type · v speak');
       pane.write('s');
-      await pane.waitFor('New operator session', { sinceMark: true });
-      pane.markHere();
+      await pane.waitFor('New operator session');
       pane.enter();
-      await pane.waitFor('i type · v speak', { sinceMark: true });
+      await pane.waitFor('i type · v speak');
 
       pane.write('i');
       pane.write(prompt);
-      pane.markHere();
       pane.enter();
-      await pane.waitFor(scriptedProvider.successText, { sinceMark: true, timeoutMs: 30_000 });
-      await pane.waitFor('i type · v speak', { sinceMark: true });
+      await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
+      await pane.waitFor('Message — Enter send');
 
       const [chat] = await persistedChats(db);
       expect(chat?.role).toBe('operator');
@@ -448,7 +429,7 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('capability:bash');
       pane.write('\x19'); // Ctrl+Y — approve the exact pending call
       await pane.waitFor('PUI HITL round-trip complete', { timeoutMs: 30_000 });
-      await pane.waitFor('i type · v speak');
+      await pane.waitFor('Message — Enter send');
 
       const [chat] = await persistedChats(db);
       expect(chat?.transcript.at(-1)).toMatchObject({
@@ -471,7 +452,7 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       pane.write('PUI-E2E provider failure');
       pane.enter();
       await pane.waitFor('PUI-E2E provider stream failed visibly', { timeoutMs: 30_000 });
-      await pane.waitFor('i type · v speak');
+      await pane.waitFor('Message — Enter send');
       const [chat] = await persistedChats(db);
       expect(chat?.transcript.at(-1)).toMatchObject({
         role: 'assistant',
@@ -494,7 +475,7 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('Ctrl+X cancel');
       pane.write('\x18');
       await pane.waitFor('cancelled — ready to retry', { timeoutMs: 10_000 });
-      await pane.waitFor('i type · v speak');
+      await pane.waitFor('Message — Enter send');
 
       scriptedProvider.mode = 'success';
       scriptedProvider.successText = 'PUI retry recovered';
