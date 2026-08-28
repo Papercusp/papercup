@@ -1324,13 +1324,23 @@ const PIPELINE_STATES: Record<PipelineState, { label: string; desc: string }> =
  * EI-18792873324746237 put a permanent "0 shipped" on this tab. Do not copy a
  * state list between this function and a query.
  *
- * In practice only the first three are reachable here: the digest admits
- * ONLY open items into `autoEligible`/`humanQueue` ("Only OPEN items go into
- * the actionable queues" — digest.ts), so a terminal row cannot appear in this
- * list at all and `shipped` is a FUNNEL-only word today. The terminal branches
- * are kept anyway: they are one line each, and the alternative — falling
- * through to `approved` — would label a finished or abandoned item as waiting
- * work if that ever changes.
+ * ⚠⚠ THIS PARAGRAPH USED TO CLAIM that only the first three states are reachable
+ * here — that the digest admits ONLY open items ("Only OPEN items go into the
+ * actionable queues" — digest.ts), so a terminal row "cannot appear in this list
+ * at all" and `shipped` was "a FUNNEL-only word". THAT WAS FALSE, and believing it
+ * is why nobody noticed that every landed item was still being listed on Improve.
+ * The open-only rule governs `autoEligible`/`humanQueue`; this list is a DIFFERENT
+ * corpus — learning-digest-snapshot.ts merges `scoreImprovementCandidates(candidates)`,
+ * the whole candidate set, through `mergeLearningImproveRows`. Terminal rows reached
+ * this function every day. Do not restore the claim from the shape of digest.ts;
+ * check the merge the rows actually come from.
+ *
+ * `shipped` is now unreachable for a REAL and checkable reason instead: the server
+ * merge drops landed rows outright (D-005 — an item leaves Improve exactly when it
+ * arrives on Retain), pinned by learning-improve-view-query.test.ts. `dropped` stays
+ * reachable — Retain never takes abandoned work, so Improve remains its only home.
+ * Both terminal branches are kept: one line each, and falling through to `approved`
+ * would label a finished or abandoned item as waiting work.
  */
 function pipelineState(row: LoopRow): PipelineState {
   const item = row.item;
@@ -2361,7 +2371,15 @@ function ImprovementsView({
         // search, column filters, the live count, then reload. The lane tabs
         // that used to be buried at the end of this row now lead the segmented
         // strip above, with the scope axis they compose with.
-        <div className="pc-advpanel__bar">
+        //
+        // `pc-learning__improvebar` carries no styling. It is the scoping hook the
+        // Retained ledger already gets for free from `.pc-learning__retained`:
+        // sharing the chrome means both tabs now render `.pc-advpanel__count`, so a
+        // verification selector needs to say WHICH one it means. Without it the only
+        // options are an unscoped query (which verify-tauri-headless-quoting.test.ts
+        // forbids, precisely because it can silently match the wrong tab) or a
+        // structural `:has()` that breaks the moment the toolbar is rearranged.
+        <div className="pc-advpanel__bar pc-learning__improvebar">
           <input
             type="text"
             className="pc-advpanel__input"

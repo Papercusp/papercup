@@ -116,4 +116,46 @@ describe('Learning Improve pure merged query', () => {
     );
     expect(severity?.values.map(({ value, count }) => [value, count])).toEqual([['critical', 1]]);
   });
+
+  // D-005 of learning-tab-improve-retain-clarity-2026-08-28: an item leaves Improve
+  // exactly when it arrives on Retain. These three cases pin the whole invariant —
+  // never on both, never on neither — so a future change cannot restore the
+  // double-listing without a red test.
+  it('drops LANDED rows from Improve, because Retain is where they now live', () => {
+    const corpus = mergeLearningImproveRows(
+      [
+        item('EI-open', { state: 'open' }),
+        item('EI-inflight', { state: 'open', assignee: 'su-1' }),
+        item('EI-landed', { state: 'resolved' }),
+      ],
+      [],
+    );
+    expect(corpus.map((row) => row.key).sort()).toEqual(['EI-inflight', 'EI-open']);
+    // The exact matched total and the facets are derived from the same corpus, so
+    // the landed row is gone from the count and the Stage facet too — not merely
+    // hidden from the page-one projection.
+    const summary = summarizeLearningImproveRows(corpus, normalizeLearningImproveViewArgs({}));
+    expect(summary).toMatchObject({ total: 2, matched: 2 });
+    expect(summary.facets.find((facet) => facet.key === 'stage')?.values.map((v) => v.value)).not.toContain(
+      'shipped',
+    );
+  });
+
+  it('KEEPS dropped rows on Improve — Retain never takes them, so excluding them would hide them everywhere', () => {
+    const corpus = mergeLearningImproveRows([item('EI-dropped', { state: 'closed' })], []);
+    expect(corpus.map((row) => ({ key: row.key, stage: row.stage }))).toEqual([
+      { key: 'EI-dropped', stage: 'dropped' },
+    ]);
+  });
+
+  it('does not resurrect a landed item as a bare idea row', () => {
+    // The idea's outcome LANDED; it belongs to the funnel instruments, not to a
+    // table of work still to improve. Regressing this would re-list the same work
+    // under its idea id — the double-listing wearing a different key.
+    const corpus = mergeLearningImproveRows(
+      [item('EI-landed', { state: 'resolved' })],
+      [idea('idea-1', 'wi:EI-landed')],
+    );
+    expect(corpus).toEqual([]);
+  });
 });

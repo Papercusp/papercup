@@ -141,20 +141,41 @@ export function mergeLearningImproveRows(
     if (!previous || (idea.routedAt ?? '') > (previous.routedAt ?? '')) ideaByItem.set(id, idea);
   }
 
+  // An item LEAVES Improve exactly when it arrives on Retain (D-005 of
+  // learning-tab-improve-retain-clarity-2026-08-28). Retain is the keep-ledger of
+  // what LANDED (D-002), so a row that reached a terminal SHIPPED state belongs
+  // there and only there; listing it here too is precisely the double-listing this
+  // plan exists to remove.
+  //
+  // `dropped` / `closed` work deliberately STAYS. Retain is shipped-only and never
+  // takes it, so excluding it here would make it invisible on BOTH tabs. The
+  // invariant is "never on both, never on neither" — not "Improve holds only open
+  // work".
+  //
+  // Applied at this single merge point ON PURPOSE: every row projection, the exact
+  // matched total and every drill-down facet are derived from these rows, so one
+  // exclusion here cannot disagree with itself the way separate per-leg filters can.
+  //
+  // ⚠ `itemIds` is intentionally built from the UNFILTERED input. An idea whose work
+  // item shipped must not resurrect below as a bare `not-ready` idea row — its
+  // outcome landed, and the funnel instruments (not this table) are where that is
+  // counted.
   const itemIds = new Set(items.map((item) => item.id));
-  const rows: LearningImproveMergedRow[] = items.map((item) => {
-    const idea = ideaByItem.get(item.id) ?? null;
-    return {
-      key: item.id,
-      item,
-      idea,
-      lane: item.tier === 'auto' ? 'auto' : 'human',
-      source: item.source ?? null,
-      rail: idea?.rail ?? null,
-      stage: stageOf(item),
-      ageDays: item.ageDays,
-    };
-  });
+  const rows: LearningImproveMergedRow[] = items
+    .filter((item) => stageOf(item) !== 'shipped')
+    .map((item) => {
+      const idea = ideaByItem.get(item.id) ?? null;
+      return {
+        key: item.id,
+        item,
+        idea,
+        lane: item.tier === 'auto' ? 'auto' : 'human',
+        source: item.source ?? null,
+        rail: idea?.rail ?? null,
+        stage: stageOf(item),
+        ageDays: item.ageDays,
+      };
+    });
   for (const idea of ideas) {
     const itemId = idea.routedRef.startsWith('wi:') ? idea.routedRef.slice(3) : null;
     if (itemId && itemIds.has(itemId)) continue;

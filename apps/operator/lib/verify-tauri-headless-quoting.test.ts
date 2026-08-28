@@ -211,11 +211,20 @@ describe('P-014 corpus-count Tauri acceptance recipe', () => {
     expect(countSurfacesSrc).toContain('to: "/cupboard"');
     expect(countSurfacesSrc).toContain('[data-testid=wi-count]');
     expect(countSurfacesSrc).toContain('[data-testid=observations-count]');
+    // The Improve match count moved to the shared `.pc-advpanel__count` chrome that
+    // Retain also renders, so this selector MUST stay scoped to the Improve toolbar.
+    // The previous pin named `.pc-learning__inlinetools .pc-learning__matchcount`,
+    // a selector the rename had already deleted — which made the assert in the
+    // script unsatisfiable and made THIS guard enforce the drift instead of catching
+    // it. A pin on a class that no longer exists is worse than no pin at all.
     expect(countSurfacesSrc).toContain(
-      '.pc-learning__inlinetools .pc-learning__matchcount',
+      '.pc-learning__improvebar .pc-advpanel__count',
     );
+    // Both tabs render `.pc-advpanel__count` now, so an UNSCOPED query can silently
+    // read the wrong tab's number and still pass. This is the live version of the
+    // hazard the old `.pc-learning__matchcount` line was written for.
     expect(countSurfacesSrc).not.toContain(
-      'document.querySelector(".pc-learning__matchcount")',
+      'document.querySelector(".pc-advpanel__count")',
     );
     expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" wait');
     expect(countSurfacesSrc).not.toContain('"$P014_TAURI_TOOL" type');
