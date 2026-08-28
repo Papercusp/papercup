@@ -790,17 +790,35 @@ sync_one_node_modules() {
         # Generation files are immutable and independently owned; a same-device
         # hardlink materialization is therefore safe and fast. The helper falls
         # back to a regular independent copy across filesystems.
+        #
+        # WI-474827: this branch deliberately does NOT fingerprint either tree.
+        # It used to run two full `node_modules_tree_fingerprint` walks per tree
+        # (source + materialized temp) — 188 walks across 94 trees, which
+        # dominated checkpoint launch-to-first-test (11m29s against a <=2min
+        # budget) — and NOTHING on this path consumed them: both values were
+        # written into the marker below and read back only by the non-pinned
+        # reuse test further down this function. A pinned tree's identity IS the
+        # immutable generation id it was materialized from, which is strictly
+        # stronger than re-walking content that was just hardlinked out of that
+        # same generation.
+        #
+        # Fail-safe for a LATER non-pinned run that reads this marker: with no
+        # source=/snapshot= line, `marked_src` reads empty, the reuse test below
+        # cannot match, and that run falls back to the original full independent
+        # copy. The degradation is slower-but-correct — never a mixed snapshot.
         log "materializing pinned dependency generation ${PINNED_DEPENDENCY_GENERATION_ID}"
         dependency_generation_materialize_tree "$src" "$tmp"
-        src_before="$(node_modules_tree_fingerprint "$src" 2>/dev/null || true)"
-        tmp_fingerprint="$(node_modules_tree_fingerprint "$tmp" 2>/dev/null || true)"
-        if [ -z "$src_before" ] || [ -z "$tmp_fingerprint" ]; then
+        # Fail-closed equivalent of the fingerprint guard this replaced: that
+        # guard fired precisely when the materialized tree was not a directory
+        # (dependency_generation_tree_fingerprint returns 1 on a missing root,
+        # which the `|| true` turned into the empty string). Assert the same
+        # property directly, before any swap, without walking the tree.
+        if [ ! -d "$tmp" ]; then
           rm -rf "$tmp"
-          echo "[setup-release] FATAL: could not fingerprint pinned dependency generation materialization" >&2
+          echo "[setup-release] FATAL: pinned dependency generation materialization produced no tree at $tmp" >&2
           return 1
         fi
-        printf 'source=%s\nsnapshot=%s\ngeneration=%s\n' \
-          "$src_before" "$tmp_fingerprint" "$PINNED_DEPENDENCY_GENERATION_ID" \
+        printf 'generation=%s\n' "$PINNED_DEPENDENCY_GENERATION_ID" \
           > "$tmp/.papercusp-isolated-snapshot"
       else
       # EI-21206772578500745 / WI-40774: `cp -a` of the unchanged 12.56 GiB root
@@ -815,7 +833,14 @@ sync_one_node_modules() {
       if [ -d "$dest" ] && [ -f "$marker" ]; then
         marked_src="$(sed -n 's/^source=//p' "$marker" | head -1)"
         marked_dest="$(sed -n 's/^snapshot=//p' "$marker" | head -1)"
-        dest_before="$(node_modules_tree_fingerprint "$dest" 2>/dev/null || true)"
+        # WI-474827: a marker written by a PINNED run carries only generation=,
+        # so both of these read empty and the reuse test below cannot match.
+        # Skip the destination walk rather than compute a value nothing reads —
+        # behaviour-identical, and it keeps the pinned change from adding a new
+        # full walk to the run that follows it.
+        if [ -n "$marked_src" ] && [ -n "$marked_dest" ]; then
+          dest_before="$(node_modules_tree_fingerprint "$dest" 2>/dev/null || true)"
+        fi
       fi
       if [ -n "$src_before" ] && [ "$src_before" = "$marked_src" ] \
         && [ -n "$dest_before" ] && [ "$dest_before" = "$marked_dest" ]; then
