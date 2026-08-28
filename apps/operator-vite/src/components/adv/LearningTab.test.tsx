@@ -13,6 +13,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -1321,6 +1322,86 @@ describe("LearningTab — Improvements view (default)", () => {
       // Assert the merged pane itself rather than a tab that correctly no
       // longer exists.
       expect(screen.getByLabelText("Where these came from")).toBeTruthy();
+    });
+  });
+
+  /** The view-tab strip's clipped-edge fade (P-007) only exists if something is
+   *  WATCHING the strip: the effect at LearningTab.tsx:768 attaches a scroll
+   *  listener and a ResizeObserver, and `viewOverflow` — hence data-of-left /
+   *  data-of-right — can never leave {false,false} without them.
+   *
+   *  That effect is keyed [updateViewOverflow, activeStage], and NEITHER dep can
+   *  see the strip mount. `updateViewOverflow` is useCallback(…,[]), and
+   *  `activeStage` is stageForView(view), which resolves against the STATIC
+   *  STAGES constant. But the strip's gate is `activeStageMeta.views.length > 1`,
+   *  and that view set is FLAG-derived (visibleStages(testingOn)).
+   *
+   *  Improve holds exactly two views — `gym` (the sole TESTING_ONLY_VIEWS member)
+   *  and `improvements` — so it sits exactly on that boundary, and FLAGS.TESTING
+   *  is dark (default OFF) while useFlag seeds from FLAG_DEFAULTS until the async
+   *  loadFlags() resolves. So the real production ordering is: render with one
+   *  view and no strip, THEN gain the strip when the flag lands — with the effect
+   *  skipped, because "improve" is still "improve".
+   *
+   *  These assert on the OBSERVER rather than on layout: jsdom reports every
+   *  scrollWidth/clientWidth as 0, so tabOverflowState would return
+   *  {false,false} for a correctly-wired strip too — asserting the data-attrs
+   *  would pass whether or not the bug is present. Asserting that the element is
+   *  watched is the assertion the bug can actually fail. */
+  describe("view-tab strip overflow wiring (P-007)", () => {
+    const observed: Element[] = [];
+    let priorObserver: unknown;
+
+    beforeEach(() => {
+      observed.length = 0;
+      priorObserver = (globalThis as unknown as { ResizeObserver: unknown })
+        .ResizeObserver;
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
+        class {
+          observe(el: Element) {
+            observed.push(el);
+          }
+          unobserve() {}
+          disconnect() {}
+        };
+    });
+
+    afterEach(() => {
+      (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver =
+        priorObserver;
+      setTestingFlag(false);
+    });
+
+    const strip = () =>
+      document.querySelector<HTMLElement>(".pc-learning__view-list");
+
+    /** CALIBRATION. The flag armed BEFORE render is the one ordering that always
+     *  worked — the strip exists when the effect first runs. Without this, a
+     *  recording-observer that never records would make the real test below pass
+     *  vacuously for the wrong reason. */
+    it("observes the strip when it is already present at first render", () => {
+      setTestingFlag(true);
+      render(<LearningTab />);
+      const list = strip();
+      expect(list).toBeTruthy();
+      expect(observed).toContain(list);
+    });
+
+    it("observes the strip when it mounts AFTER the flag resolves", () => {
+      render(<LearningTab />);
+      // Improve holds ONE visible view while TESTING is off, so there is no
+      // strip yet and nothing for the first effect run to attach to.
+      expect(strip()).toBeNull();
+
+      // loadFlags() landing mid-life — the real sequence for any user whose
+      // server-side TESTING value is on.
+      act(() => {
+        setTestingFlag(true);
+      });
+
+      const list = strip();
+      expect(list).toBeTruthy();
+      expect(observed).toContain(list);
     });
   });
 
