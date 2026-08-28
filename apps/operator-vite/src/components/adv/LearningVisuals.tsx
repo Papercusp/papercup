@@ -265,6 +265,7 @@ export function LearningDisclosure({
   label,
   subtitle,
   count,
+  aside,
   children,
   defaultOpen = false,
 }: {
@@ -276,6 +277,14 @@ export function LearningDisclosure({
    */
   subtitle?: string;
   count?: number;
+  /**
+   * Trailing header content, pinned right and visible while the disclosure is
+   * CLOSED. For the one thing a reader must not have to open the section to
+   * learn: a live warning about what is inside it (P-004 — loop health markers
+   * used to render inside the collapsed body, so a starving loop was silent
+   * until someone thought to expand it).
+   */
+  aside?: ReactNode;
   children: ReactNode;
   defaultOpen?: boolean;
 }) {
@@ -293,6 +302,9 @@ export function LearningDisclosure({
           </span>
         ) : null}
         {count != null ? <em>{count}</em> : null}
+        {aside ? (
+          <span className="pc-learning-visual__disclosure-aside">{aside}</span>
+        ) : null}
       </Collapsible.Trigger>
       <Collapsible.Content className="pc-learning-visual__disclosure-content">
         {children}
@@ -409,6 +421,9 @@ export function LearningVisualStyles() {
       .pc-learning-visual__disclosure-trigger[data-state='open'] svg { transform: rotate(180deg); }
       .pc-learning-visual__disclosure-label { flex: 0 1 auto; font-size: 12px; font-weight: 700; color: var(--fg, #e7eef5); line-height: 1.35; }
       .pc-learning-visual__disclosure-subtitle { min-width: 0; overflow: hidden; color: var(--fg-mute); font-size: 10.5px; font-weight: 500; font-style: italic; text-overflow: ellipsis; white-space: nowrap; }
+      /* P-004: pinned right, so a warning about the contents is legible without
+         opening them. flex:none keeps it from being the thing that ellipsises. */
+      .pc-learning-visual__disclosure-aside { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 5px; }
       .pc-learning-visual__disclosure-trigger em { flex: none; margin-left: auto; min-width: 20px; border-radius: 999px; padding: 1px 7px; background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg-dim, #b9d4e8); font-size: 10px; font-style: normal; font-variant-numeric: tabular-nums; text-align: center; }
       .pc-learning-visual__disclosure-content { padding-top: 8px; }
       .pc-learning-visual__layout > .pc-ekg__wave, .pc-learning-visual__layout > .pc-rq__waterfall { min-height: 92px; }
