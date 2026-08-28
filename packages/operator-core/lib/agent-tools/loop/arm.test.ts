@@ -70,6 +70,10 @@ vi.mock('../../work-items', () => ({
   claimWorkItem: vi.fn(async () => null),
   classifyClaimFailure: vi.fn(() => ({ reason: 'gated', holder: null })),
   getWorkItem: vi.fn(async () => null),
+  isClaimHoldParked: vi.fn((payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return false;
+    return String((payload as Record<string, unknown>)._claimHold) === 'true';
+  }),
 }));
 // EI-20123870155538062: loop:arm shares the by-id fleet-scope admission seam with
 // work_items:claim. Keep the arm tests DB-free while pinning the ordering contract.
@@ -639,6 +643,55 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
       ok: true,
       loop: { workItem: null },
       workItemClaim: { id: 'EI-DONE', claimed: false, reason: 'terminal' },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
+  it('EI-21681983105634595: refuses an explicit claim-held item without touching its governor lease', async () => {
+    getWiM.mockResolvedValue({
+      id: 'WI-333195',
+      state: 'open',
+      assignee: null,
+      payload: {
+        _claimHold: true,
+        claim_hold_by: 'system:resource-governor',
+        claim_hold_reason: 'durable resource-governor queue; only governor lease transitions may select',
+      },
+    } as never);
+    claimM.mockResolvedValue(claimedRow as never);
+
+    const b = body(await call({ workItem: 'WI-333195' }));
+
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: {
+        id: 'WI-333195',
+        claimed: false,
+        reason: 'claim_hold',
+      },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
+  });
+
+  it('EI-21681983105634595: refuses a claim-held item auto-detected from a COLD goal', async () => {
+    detectM.mockReturnValue('WI-333195');
+    getWiM.mockResolvedValue({
+      id: 'WI-333195',
+      state: 'open',
+      assignee: null,
+      payload: { _claimHold: 'true', claim_hold_by: 'system:resource-governor' },
+    } as never);
+    claimM.mockResolvedValue(claimedRow as never);
+
+    const b = body(await call({ carry: 'cold', goal: 'retune the loop for WI-333195' }));
+
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: { id: 'WI-333195', claimed: false, reason: 'claim_hold' },
     });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
   });
