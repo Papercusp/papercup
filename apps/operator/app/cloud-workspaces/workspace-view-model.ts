@@ -338,11 +338,49 @@ export function hostStateChip(workspace: WorkspaceHostControlRow): HostStateChip
   };
 }
 
-/** Hosts whose desired and observed states disagree, worst first. */
+/**
+ * Hosts whose desired and observed states disagree, worst first.
+ *
+ * The order is triage advice, not cosmetics: OperateStage renders this list
+ * directly as the drift banner, so whatever sits at the top is what the
+ * operator reaches for first.
+ *
+ *  - `degraded` outranks every other divergence — it is the one observed state
+ *    `stateTone` already calls "bad", where the rest are merely "warn";
+ *  - within a rank the LONGEST-diverged host leads, which matches the
+ *    "diverged for {elapsed}" the banner prints beside each row;
+ *  - an unknown `observedAt` sorts last within its rank, because not knowing
+ *    how long a host has been drifting is not evidence that it has been
+ *    drifting a long time;
+ *  - equal hosts keep their incoming query order, so the banner cannot
+ *    reshuffle between renders and imply activity that did not happen.
+ */
 export function driftingWorkspaces(
   workspaces: readonly WorkspaceHostControlRow[],
 ): WorkspaceHostControlRow[] {
-  return workspaces.filter((row) => row.desiredState !== row.observedState);
+  const divergenceRank = (row: WorkspaceHostControlRow): number =>
+    row.observedState === "degraded" ? 0 : 1;
+
+  /** Epoch ms of the last observation, or +Infinity when it is unknown. */
+  const divergedSinceMs = (row: WorkspaceHostControlRow): number => {
+    const ms = row.observedAt ? Date.parse(row.observedAt) : Number.NaN;
+    return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
+  };
+
+  return workspaces
+    .filter((row) => row.desiredState !== row.observedState)
+    .map((row, queryOrder) => ({ row, queryOrder }))
+    .sort((a, b) => {
+      const byRank = divergenceRank(a.row) - divergenceRank(b.row);
+      if (byRank !== 0) return byRank;
+      /* Compared, never subtracted: two unknown ages are both +Infinity, and
+         Infinity - Infinity is NaN, which would silently corrupt the sort. */
+      const aSince = divergedSinceMs(a.row);
+      const bSince = divergedSinceMs(b.row);
+      if (aSince !== bSince) return aSince < bSince ? -1 : 1;
+      return a.queryOrder - b.queryOrder;
+    })
+    .map((entry) => entry.row);
 }
 
 /* ── Contextual lifecycle actions ──────────────────────────────────────────── */

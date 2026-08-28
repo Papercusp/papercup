@@ -236,6 +236,83 @@ describe("host state chip", () => {
     ]);
     expect(driftingWorkspaces([])).toEqual([]);
   });
+
+  it("orders drift worst first: degraded above stopped, then longest-diverged", () => {
+    /* The banner renders this list in order, so order IS the triage advice.
+       `degraded` is deliberately given the NEWEST observedAt here: if severity
+       did not outrank duration it would sort last, so a passing result cannot
+       be an accident of the timestamps. */
+    const stoppedRecent = workspace({
+      id: "stopped-recent",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: "2026-08-28T05:00:00.000Z",
+    });
+    const stoppedOld = workspace({
+      id: "stopped-old",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: "2026-08-28T01:00:00.000Z",
+    });
+    const degraded = workspace({
+      id: "degraded",
+      desiredState: "running",
+      observedState: "degraded",
+      observedAt: "2026-08-28T05:30:00.000Z",
+    });
+
+    expect(
+      driftingWorkspaces([stoppedRecent, stoppedOld, degraded]).map(
+        (row) => row.id,
+      ),
+    ).toEqual(["degraded", "stopped-old", "stopped-recent"]);
+  });
+
+  it("keeps query order between hosts of equal severity and equal age", () => {
+    /* Stability matters: without it the banner's list can reshuffle between
+       renders on equally-ranked hosts, which reads as activity that did not
+       happen. */
+    const first = workspace({
+      id: "first",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: "2026-08-28T02:00:00.000Z",
+    });
+    const second = workspace({
+      id: "second",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: "2026-08-28T02:00:00.000Z",
+    });
+
+    expect(
+      driftingWorkspaces([first, second]).map((row) => row.id),
+    ).toEqual(["first", "second"]);
+    expect(
+      driftingWorkspaces([second, first]).map((row) => row.id),
+    ).toEqual(["second", "first"]);
+  });
+
+  it("ranks a host with no observedAt below one whose divergence age is known", () => {
+    /* An unknown age is not evidence of a long divergence, so it must not
+       outrank a host we can actually prove has been drifting for hours. */
+    const unknownAge = workspace({
+      id: "unknown-age",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: undefined,
+    });
+    const knownOld = workspace({
+      id: "known-old",
+      desiredState: "running",
+      observedState: "stopped",
+      observedAt: "2026-08-28T01:00:00.000Z",
+    });
+
+    expect(
+      driftingWorkspaces([unknownAge, knownOld]).map((row) => row.id),
+    ).toEqual(["known-old", "unknown-age"]);
+  });
 });
 
 describe("contextual lifecycle actions", () => {
