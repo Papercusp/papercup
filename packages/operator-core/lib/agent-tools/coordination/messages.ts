@@ -1667,6 +1667,80 @@ export async function resolveMessageRef(ref: string): Promise<MessageRefResoluti
  * `related_msg_id` chain in both directions. Sorted by ts ascending.
  */
 export async function readThread(rootMsgId: string): Promise<CoordEnvelope[]> {
+  // EI-21150596392578187: the old implementation loaded the entire messages
+  // surface and only then folded the related_msg_id graph in JavaScript. On a
+  // cold PG cache that made one rooted thread read pay for every message ever
+  // retained, and the bounded coord:thread tool could yield before the fold
+  // completed. Walk the graph in Postgres instead. Each recursive step can use
+  // the existing (workspace,msg_id) index for parents and the partial
+  // related_msg_id index for children; the final fold remains the authority for
+  // the exact historical semantics (including ordering and duplicate ids).
+  //
+  // This is deliberately a fast path rather than a change to CoordEventLog:
+  // readThread needs a graph-shaped predicate no other surface currently needs,
+  // while InMemoryCoordLog/FsCoordLog retain the portable full-read behavior.
+  if (coordHasPgFastPath()) {
+    try {
+      const sql = coordSql();
+      const rows = await sql<
+        { body: unknown; ts: unknown; msg_id: string; harness_slug: string | null }[]
+      >`
+        WITH RECURSIVE thread_ids(msg_id) AS (
+          SELECT ${rootMsgId}::text
+          UNION
+          SELECT CASE
+                   WHEN e.msg_id = ids.msg_id THEN e.body->>'related_msg_id'
+                   ELSE e.msg_id
+                 END
+            FROM thread_ids AS ids
+            JOIN harness_shared.coord_event_log AS e
+              ON e.workspace_id = ${coordWorkspaceId()}
+             AND e.surface = 'messages'
+             AND (
+               e.msg_id = ids.msg_id
+               OR (
+                 e.body ? 'related_msg_id'
+                 AND e.body->>'related_msg_id' = ids.msg_id
+               )
+             )
+           WHERE e.msg_id <> ids.msg_id
+              OR (
+                e.body ? 'related_msg_id'
+                AND e.body->>'related_msg_id' IS NOT NULL
+              )
+        )
+        SELECT e.body, e.ts, e.msg_id, e.harness_slug
+          FROM harness_shared.coord_event_log AS e
+          JOIN thread_ids AS ids ON ids.msg_id = e.msg_id
+         WHERE e.workspace_id = ${coordWorkspaceId()}
+           AND e.surface = 'messages'
+         ORDER BY e.id ASC
+      `;
+      const all = rows.map((row) => {
+        const parsed = (typeof row.body === 'string' ? JSON.parse(row.body) : row.body) as
+          | Record<string, unknown>
+          | null;
+        const envelope: Record<string, unknown> =
+          parsed && typeof parsed === 'object' ? { ...parsed } : {};
+        // Match PgCoordLog's read boundary: remote/federated rows can have a
+        // malformed body, so the NOT-NULL columns backstop the fold's required
+        // identity/order fields. The normalized scope column is authoritative.
+        if ((typeof envelope.ts !== 'string' || !envelope.ts) && row.ts != null) {
+          envelope.ts = row.ts instanceof Date ? row.ts.toISOString() : String(row.ts);
+        }
+        if ((typeof envelope.msg_id !== 'string' || !envelope.msg_id) && row.msg_id) {
+          envelope.msg_id = row.msg_id;
+        }
+        if (row.harness_slug == null) delete envelope.harness_slug;
+        else envelope.harness_slug = row.harness_slug;
+        return envelope as CoordEnvelope;
+      });
+      return foldThread(all, rootMsgId);
+    } catch {
+      // Fall through to the authoritative log seam for older/dev backends,
+      // unavailable indexes, or a transient query failure.
+    }
+  }
   const all = await coordLog.readLines('messages');
   return foldThread(all, rootMsgId);
 }
