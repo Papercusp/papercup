@@ -824,9 +824,23 @@ export function buildCallToolParams(toolName, callArgs, { outputSchema, idempote
   const objectRooted = outputSchema?.type === 'object' && !projected;
   const meta = objectRooted ? { structured: true } : { format: 'json' };
   if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
+  // EI-21669966698063758: tools:invoke is a second JSON boundary. Keep its
+  // target args as one JSON string so shell-heavy code:run payloads survive
+  // the host/MCP serialization path exactly once. Direct calls must retain
+  // their ordinary object arguments, and an already-stringified nested value
+  // must not be encoded again.
+  const argumentsValue = toolName === 'tools:invoke' &&
+    callArgs &&
+    typeof callArgs === 'object' &&
+    !Array.isArray(callArgs) &&
+    callArgs.args &&
+    typeof callArgs.args === 'object' &&
+    !Array.isArray(callArgs.args)
+    ? { ...callArgs, args: JSON.stringify(callArgs.args) }
+    : callArgs;
   return {
     name: toolName,
-    arguments: callArgs,
+    arguments: argumentsValue,
     _meta: meta,
   };
 }
