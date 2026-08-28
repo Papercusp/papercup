@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { getRun, type RunSnapshot } from '../../testing-run-store';
+import { getRunAsync, type RunSnapshot } from '../../testing-run-store';
 
 export type TestingRunStatusResult =
   | { ok: true; snapshot: RunSnapshot }
@@ -25,12 +25,12 @@ const argsSchema = z.object({
 
 export default defineTool({
   name: 'testing:run-status',
-  // @not-a-cell live state, but a SINGLE DOOR keyed by an ephemeral run id: getRun()
-  // is the one snapshot oracle and the admin route consumes that same function rather than
-  // re-deriving it. A scalar registry cell would require one entry per detached run and add
-  // a read door without removing one; revisit if another implementation derives run state.
+  // @not-a-cell live state, but a SINGLE DOOR keyed by an ephemeral run id: getRunAsync()
+  // is the one local-first/durable snapshot oracle and the admin route consumes that same
+  // function rather than re-deriving it. A scalar registry cell would require one entry per
+  // detached run and add a read door without removing one.
   description:
-    'Read the in-memory snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.',
+    'Read the local-first durable snapshot for a detached testing:run recovery with testing:run-status { runId }. Returns running/pass/fail/cancelled/error status, bounded output, and exit metadata; unknown or expired ids return an explicit unknown_run result.',
   guidance: {
     when: 'Poll the detachedRunId returned by testing:run after a foreground timeout until its snapshot reaches a terminal status.',
     notWhen:
@@ -43,7 +43,7 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: argsSchema,
   async handler(args): Promise<{ data: TestingRunStatusResult }> {
-    const snapshot = getRun(args.runId);
+    const snapshot = await getRunAsync(args.runId);
     if (!snapshot) {
       return {
         data: {

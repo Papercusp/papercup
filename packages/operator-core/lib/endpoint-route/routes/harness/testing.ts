@@ -45,7 +45,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { computePlanItemTestStatus } from '../../../harness-test-rollup';
 import { runGovernedOperation } from '../../../resource-governor/execution';
-import { startRun, getRun, cancelRun } from '../../../testing-run-store';
+import { startRun, getRunAsync, cancelRunAsync } from '../../../testing-run-store';
 
 interface HarnessTestRow {
   id: string;
@@ -418,8 +418,8 @@ const runDetachedStatus = defineTool({
   method: 'GET',
   path: '/harness/:slug/testing/run-detached/:runId',
   auth: 'loopback',
-  handler(_req, ctx) {
-    const snapshot = getRun(ctx.params.runId as string);
+  async handler(_req, ctx) {
+    const snapshot = await getRunAsync(ctx.params.runId as string);
     return snapshot ? Response.json(snapshot) : Response.json({ error: 'unknown runId' }, { status: 404 });
   },
 });
@@ -428,8 +428,8 @@ const runDetachedCancel = defineTool({
   method: 'POST',
   path: '/harness/:slug/testing/run-detached/:runId/cancel',
   auth: 'loopback',
-  handler(_req, ctx) {
-    const ok = cancelRun(ctx.params.runId as string);
+  async handler(_req, ctx) {
+    const ok = await cancelRunAsync(ctx.params.runId as string);
     return ok ? Response.json({ ok: true }) : Response.json({ ok: false, reason: 'not_running_or_unknown' }, { status: 404 });
   },
 });

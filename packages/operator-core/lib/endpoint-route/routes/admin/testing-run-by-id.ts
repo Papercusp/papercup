@@ -6,16 +6,16 @@
  */
 
 import { defineTool } from '@papercusp/agent-mcp';
-import { getRun, cancelRun } from '../../../testing-run-store';
+import { getRunAsync, cancelRunAsync } from '../../../testing-run-store';
 
 export const get = defineTool({
   method: 'GET',
   path: '/admin/testing/run/:runId',
   auth: { trust: ['verified', 'trusted'] },
-  handler(_req, ctx): Response {
+  async handler(_req, ctx): Promise<Response> {
     const runId = ctx.params.runId;
     if (!runId) return new Response('missing runId', { status: 400 });
-    const snap = getRun(runId);
+    const snap = await getRunAsync(runId);
     if (!snap) return new Response('unknown runId', { status: 404 });
     return Response.json(snap);
   },
@@ -25,10 +25,10 @@ export const cancel = defineTool({
   method: 'POST',
   path: '/admin/testing/run/:runId/cancel',
   auth: { trust: ['verified', 'trusted'] },
-  handler(_req, ctx): Response {
+  async handler(_req, ctx): Promise<Response> {
     const runId = ctx.params.runId;
     if (!runId) return new Response('missing runId', { status: 400 });
-    const ok = cancelRun(runId);
+    const ok = await cancelRunAsync(runId);
     if (!ok) {
       return Response.json({ ok: false, reason: 'not_running_or_unknown' }, { status: 404 });
     }
