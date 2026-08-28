@@ -750,6 +750,31 @@ describe("CloudWorkspacesPage — 01 Connect", () => {
     );
   });
 
+  it("control: removing a focused element really does drop focus to <body> here", () => {
+    /* CALIBRATION for the test above, kept permanently rather than run once.
+       `expect(activeElement).not.toBe(document.body)` is only meaningful if
+       this environment actually exhibits the failure it is guarding against —
+       if jsdom retained focus on a detached node, that assertion would pass no
+       matter what ConnectStage did, and the guard would be decorative.
+
+       This reproduces the exact mechanism (remove the element holding focus)
+       with no focus management whatsoever, and asserts the bad outcome. If this
+       control ever stops reporting <body>, the guard above has quietly stopped
+       proving anything and both need revisiting. */
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const button = document.createElement("button");
+    host.appendChild(button);
+
+    button.focus();
+    expect(document.activeElement).toBe(button);
+
+    host.removeChild(button);
+    expect(document.activeElement).toBe(document.body);
+
+    document.body.removeChild(host);
+  });
+
   it("marks unsupported providers as planned rather than merely disabled", () => {
     H.rows = [];
     render(<CloudWorkspacesPage />);
