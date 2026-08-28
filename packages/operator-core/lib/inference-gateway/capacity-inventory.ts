@@ -345,7 +345,7 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     id: 'gateway-admin-config-writer',
     file: GATEWAY,
     symbol: 'GET /admin/config',
-    sourceAnchor: "url === '/admin/config'",
+    sourceAnchor: "requestPath === '/admin/config'",
     sourceKind: 'status-reader',
     dimensions: ['status', 'deployment'],
     units: 'mixed; structured JSON fields',
@@ -865,6 +865,671 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     contextPath: 'computeSystemHealth → gateway health tile/alert',
   }),
 ]);
+
+/**
+ * P-004 compatibility/deletion contract.
+ *
+ * P-001 describes the current writers. This second declarative layer says how
+ * each writer is migrated: legacy input is observed once, the operator gets an
+ * honest warning/readback, a focused release removes or reclassifies the
+ * binding, and rollback turns enforcement off without putting a numeric ceiling
+ * back. Keeping this contract next to the writer census gives P-012/P-015 one
+ * source of truth instead of release-specific checklists.
+ */
+export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_SCHEMA_VERSION =
+  'inference-gateway-capacity-compatibility-v1' as const;
+
+/** Compatibility alias used by migration tooling and older plan notes. */
+export const INFERENCE_GATEWAY_COMPATIBILITY_MATRIX_SCHEMA_VERSION =
+  INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_SCHEMA_VERSION;
+
+export type CapacityCompatibilityDisposition =
+  | 'remove-after-gate'
+  | 'feedback-only'
+  | 'readback-only'
+  | 'retain-semantic-safety'
+  | 'retain-measured-physical-contract';
+
+export type CapacityCompatibilityConsumerKind = 'docs' | 'runbook' | 'api' | 'state' | 'test';
+
+export interface CapacityCompatibilityConsumer {
+  readonly kind: CapacityCompatibilityConsumerKind;
+  /** Repository-relative path, optionally followed by a symbol. */
+  readonly path: string;
+}
+
+export interface InferenceGatewayCapacityCompatibilityGroup {
+  /** Stable family id, for example gateway-concurrency. */
+  readonly id: string;
+  /** Human-readable legacy field family covered by this row. */
+  readonly field: string;
+  /** Every legacy spelling/config key covered by this family. */
+  readonly legacyFields: readonly string[];
+  /** Alias retained for callers that call these keys rather than fields. */
+  readonly legacyKeys: readonly string[];
+  /** P-001 writer ids covered by this family. */
+  readonly writerIds: readonly string[];
+  /** How observe-only mode carries the old value without enforcing it. */
+  readonly observeOnlyMigration: string;
+  /** Warning and readback contract, including unknown/stale handling. */
+  readonly warningReadback: string;
+  /** Focused release/gate after which the binding writer is removed or reclassified. */
+  readonly removalRelease: string;
+  /** Rollback procedure for this family. */
+  readonly rollbackBehavior: string;
+  /** Machine-checkable guard for D-010. */
+  readonly rollbackNeverReinstatesNumericCap: boolean;
+  /** Historical values that rollback must never restore as a productive cap. */
+  readonly rollbackForbiddenValues: readonly number[];
+  /** Exact docs and runbooks that must be updated/read by the migration. */
+  readonly docsRunbookConsumers: readonly string[];
+  /** API/route/tool surfaces that expose or consume the field. */
+  readonly apiConsumers: readonly string[];
+  /** Durable/read-model state surfaces carrying the field or its replacement. */
+  readonly stateConsumers: readonly string[];
+  /** Unified consumer list for generic migration/reporting clients. */
+  readonly consumers: readonly CapacityCompatibilityConsumer[];
+  readonly disposition: CapacityCompatibilityDisposition;
+}
+
+/** One flattened row per exact P-001 writer, suitable for lint/report joins. */
+export interface InferenceGatewayCapacityCompatibility extends InferenceGatewayCapacityCompatibilityGroup {
+  readonly groupId: string;
+  readonly writerId: string;
+}
+
+const INFERENCE_GATEWAY_LEGACY_CAP_VALUES: readonly number[] = Object.freeze([24, 3, 4, 45, 64, 256]);
+export const INFERENCE_GATEWAY_CAPACITY_ROLLBACK_FORBIDDEN_VALUES = INFERENCE_GATEWAY_LEGACY_CAP_VALUES;
+
+const COMPATIBILITY_MATRIX_DOC =
+  'apps/operator-docs/src/content/docs/agent-insights/inference-gateway-compatibility-deletion-matrix-runbook.mdx';
+const CAPACITY_RULE_DOC =
+  'apps/operator-docs/src/content/docs/agent-insights/operational-capacity-is-feedback-not-a-hard-coded-cap.mdx';
+const ADMISSION_LOOP_DOC =
+  'apps/operator-docs/src/content/docs/agent-insights/gateway-admission-control-loop.mdx';
+const COMPATIBILITY_TEST =
+  'packages/operator-core/lib/inference-gateway/capacity-compatibility.test.ts';
+
+function rollbackCompatibilityText(field: string): string {
+  return (
+    'Rollback ' +
+    field +
+    ' to observe-only; preserve durable queue/receipts, state history, and telemetry, ' +
+    'and never reinstate a numeric productive-capacity ceiling.'
+  );
+}
+
+function compatibilityGroup(
+  row: Omit<
+    InferenceGatewayCapacityCompatibilityGroup,
+    'legacyKeys' | 'rollbackNeverReinstatesNumericCap' | 'rollbackForbiddenValues' | 'consumers'
+  >,
+): InferenceGatewayCapacityCompatibilityGroup {
+  const docs = Object.freeze([...row.docsRunbookConsumers]);
+  const api = Object.freeze([...row.apiConsumers]);
+  const state = Object.freeze([...row.stateConsumers]);
+  const consumers = Object.freeze([
+    ...docs.map((path): CapacityCompatibilityConsumer => ({
+      kind: path.endsWith('-runbook.mdx') ? 'runbook' : 'docs',
+      path,
+    })),
+    ...api.map((path): CapacityCompatibilityConsumer => ({ kind: 'api', path })),
+    ...state.map((path): CapacityCompatibilityConsumer => ({ kind: 'state', path })),
+    { kind: 'test' as const, path: COMPATIBILITY_TEST },
+  ]);
+  return Object.freeze({
+    ...row,
+    legacyFields: Object.freeze([...row.legacyFields]),
+    legacyKeys: Object.freeze([...row.legacyFields]),
+    writerIds: Object.freeze([...row.writerIds]),
+    docsRunbookConsumers: docs,
+    apiConsumers: api,
+    stateConsumers: state,
+    rollbackNeverReinstatesNumericCap: true,
+    rollbackForbiddenValues: INFERENCE_GATEWAY_LEGACY_CAP_VALUES,
+    consumers,
+  });
+}
+
+/**
+ * Family-level matrix. The values are prose contracts rather than executable
+ * defaults: P-004 specifies the migration, while P-005 through P-015 implement
+ * and gate each release.
+ */
+export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly InferenceGatewayCapacityCompatibilityGroup[] =
+  Object.freeze([
+    compatibilityGroup({
+      id: 'gateway-concurrency',
+      field: 'PAPERCUSP_GATEWAY_CONCURRENCY / Claude default',
+      legacyFields: ['PAPERCUSP_GATEWAY_CONCURRENCY', 'DEFAULT_CONCURRENCY', 'GatewayServiceOptions.concurrency'],
+      writerIds: [
+        'gateway-claude-default-concurrency',
+        'launch-default-concurrency',
+        'sidecar-concurrency-environment',
+        'systemd-concurrency-environment',
+      ],
+      observeOnlyMigration:
+        'Read the environment, launch option, and legacy seed once as compatibility metadata with source and timestamp; initialize controller desired state only and never pass it as maxConcurrent.',
+      warningReadback:
+        'Warn when the legacy value is present, invalid, or stale. Stats and gateway:status show the raw value, provenance, controller desired/effective window, and boundBy=none or a measured external contract.',
+      removalRelease: 'P-010/P-012 focused parity gate: delete the env/default binding from gateway, launch, sidecar, and systemd.',
+      rollbackBehavior: rollbackCompatibilityText('Claude gateway concurrency'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: createInferenceGateway',
+        'packages/operator-core/lib/inference-gateway/launch.ts :: startGatewayService',
+        'packages/operator-core/lib/inference-gateway/sidecar-main.ts :: runGatewaySidecarMain',
+        'GET /stats and GET /admin/config',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/controller.ts',
+        'packages/operator-core/lib/inference-gateway/admission-ceiling.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/fleet-rate-status.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'gateway-codex-concurrency',
+      field: 'PAPERCUSP_GATEWAY_CODEX_CONCURRENCY / Codex account scaling',
+      legacyFields: [
+        'PAPERCUSP_GATEWAY_CODEX_CONCURRENCY',
+        'CODEX_ADMISSION_SLOTS_PER_ACCOUNT',
+        'accountScaledCodexConcurrency',
+        'GatewayServiceOptions.codexConcurrency',
+      ],
+      writerIds: ['gateway-codex-slots-per-account', 'launch-codex-derived-concurrency'],
+      observeOnlyMigration:
+        'Record the Codex override and account-count calculation as a bootstrap observation with account-pool generation; seed desired state once without deriving a maximum from account count.',
+      warningReadback:
+        'Warn on an override or a missing account pool and report account count, raw calculation, controller desired/effective window, generation, and freshness. Unknown account evidence stays unknown.',
+      removalRelease: 'P-010 focused provider parity gate: delete the override and account-scaled ceiling; retain provider/account observations as feedback.',
+      rollbackBehavior: rollbackCompatibilityText('Codex gateway concurrency'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: accountScaledCodexConcurrency',
+        'packages/operator-core/lib/inference-gateway/launch.ts :: codexConcurrency',
+        'GET /stats :: codexAdmission',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/inference-gateway/observability.ts :: codex admission snapshot',
+        'packages/operator-core/lib/inference-gateway/admission-context.ts',
+        'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'gateway-max-queued',
+      field: 'MAX_QUEUED / resident queue depth',
+      legacyFields: ['PAPERCUSP_GATEWAY_MAX_QUEUED', 'DEFAULT_MAX_QUEUED', 'PriorityAdmissionQueue.maxQueued'],
+      writerIds: ['gateway-max-queued', 'priority-admission-max-queued'],
+      observeOnlyMigration:
+        'Keep the legacy queue-depth value only as a readback annotation while accepted requests move to the durable receipt queue; resident depth is not an admission rejection authority.',
+      warningReadback:
+        'Warn if a caller would have hit the legacy QueueFullError path. Expose durable queue depth/age, persistence health, and the old value as non-binding metadata; missing depth is unknown, never safe zero.',
+      removalRelease: 'P-006/P-014 focused durable-queue gate: remove resident maxQueued rejection and load-shed coupling.',
+      rollbackBehavior: rollbackCompatibilityText('resident queue depth'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: PriorityAdmissionQueue.run',
+        'GET /stats :: maxQueued and queue depth',
+        'GET /admin/config :: queue policy readback',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/queue.ts :: durable receipt queue',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/system-health/compute.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'serviceable-admission',
+      field: 'per-account and minimum serviceable admission',
+      legacyFields: [
+        'PAPERCUSP_GATEWAY_PER_ACCOUNT_ADMISSION',
+        'PAPERCUSP_GATEWAY_MIN_ADMISSION',
+        'SERVICEABLE_CLAMP_ON',
+        'SERVICEABLE_CLAMP_TICK_MS',
+        'serviceableAdmissionCapFn',
+      ],
+      writerIds: [
+        'gateway-serviceable-per-account',
+        'gateway-serviceable-minimum',
+        'gateway-serviceable-clamp-application',
+        'gateway-serviceable-clamp-tick',
+      ],
+      observeOnlyMigration:
+        'Observe serviceable account count, multiplier, minimum, and timer cadence with pool generation; publish the recommendation but do not multiply serviceability into a hard admission cap.',
+      warningReadback:
+        'Warn when serviceability is unknown, stale, or zero and show recommendation versus applied window, clamp mode, observation age, and causal source. Unknown never becomes the minimum floor.',
+      removalRelease: 'P-007 focused serviceability/causal gate: remove the derived clamp and timer-driven application; retain routing evidence.',
+      rollbackBehavior: rollbackCompatibilityText('serviceability admission'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC, ADMISSION_LOOP_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: POST /admin/clamp-mode',
+        'GET /stats :: serviceableAccounts and clamp recommendation/applied',
+        'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/inference-gateway/admission-ceiling.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/inference-gateway/account-failover.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'aimd-floor-and-tuning',
+      field: 'AIMD cap, floor, and response-curve tuning',
+      legacyFields: [
+        'PAPERCUSP_GATEWAY_AIMD_FLOOR',
+        'DEFAULT_AIMD_FLOOR',
+        'DEFAULT_AIMD_DECREASE_THRESHOLD',
+        'DEFAULT_AIMD_INCREASE_EVERY',
+        'AimdConcurrencyController.cap',
+        'AimdConcurrencyController.floor',
+      ],
+      writerIds: [
+        'gateway-aimd-floor',
+        'gateway-aimd-decrease-threshold',
+        'gateway-aimd-increase-every',
+        'aimd-controller-cap-floor',
+      ],
+      observeOnlyMigration:
+        'Record legacy AIMD floor/cap and threshold settings as controller bootstrap metadata. Healthy success probes upward without a configured ceiling; contractions are scoped, causal, and expiring.',
+      warningReadback:
+        'Warn when a legacy floor or cap is binding and report effective/desired windows, decrease reason, recovery streak, generation, and expiry. A stale contraction is shown as stale.',
+      removalRelease: 'P-005/P-009 controller gate: move thresholds and recovery policy into durable CaplessAdaptiveController feedback state.',
+      rollbackBehavior: rollbackCompatibilityText('AIMD tuning'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: AimdConcurrencyController',
+        'GET /stats :: aimd effective/floor/decreases',
+        'GET /admin/config :: admissionCeiling',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/controller.ts',
+        'packages/operator-core/lib/resource-governor/state-snapshot.ts',
+        'packages/operator-core/lib/inference-gateway/admission-ceiling.ts',
+      ],
+      disposition: 'feedback-only',
+    }),
+    compatibilityGroup({
+      id: 'priority-reserve-and-map',
+      field: 'priority tier caps, reserve, map, and absorb factors',
+      legacyFields: [
+        'GATEWAY_PRIORITY_TIERS',
+        'GATEWAY_PRIORITY_MAP',
+        'GATEWAY_T1_RESERVE_FRAC',
+        'tierCaps',
+        'tier1Reserve',
+        'defaultTierCaps',
+        'absorbTierFactor',
+      ],
+      writerIds: [
+        'gateway-priority-absorb-factors',
+        'launch-default-reserve-fraction',
+        'launch-priority-tier-defaults',
+        'priority-admission-tier-caps',
+        'priority-admission-tier1-reserve',
+        'priority-admission-default-tier-caps',
+      ],
+      observeOnlyMigration:
+        'Keep role/tier labels, ordering, aging, and service-objective observations, but treat reserve and tier caps as annotations. Idle productive slots remain borrowable by eligible work.',
+      warningReadback:
+        'Warn when a tier cap or reserve would deny otherwise healthy work. Readback includes tier, wait age, borrowed idle slots, and scheduler generation; a tier share is never physical capacity.',
+      removalRelease: 'P-008 fairness gate: replace hard tier caps/reserve with weighted fair scheduling, aging, and explicit control/recovery bypasses.',
+      rollbackBehavior: rollbackCompatibilityText('priority scheduling'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC, ADMISSION_LOOP_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/launch.ts :: resolvePriorityTiers',
+        'GET /stats :: priorityTiers.byTier and tier1Reserve',
+        'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
+      ],
+      stateConsumers: [
+        'libs/papercusp-shared/src/resilience/priority-admission.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/system-health/compute.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'provider-governor-floors',
+      field: 'provider governor defaults and global rate gate',
+      legacyFields: [
+        'DEFAULT_FLOORS',
+        'globalCap',
+        'globalFloor',
+        'RPM_AIMD_DECREASE',
+        'RPM_AIMD_MIN_FACTOR',
+        'RPM_AIMD_RECOVER_MS',
+      ],
+      writerIds: [
+        'governor-default-floors',
+        'governor-global-cap',
+        'governor-global-floor',
+        'governor-rpm-aimd-decrease',
+        'governor-rpm-aimd-min-factor',
+        'governor-rpm-aimd-recovery',
+      ],
+      observeOnlyMigration:
+        'Treat provider maxConcurrent/rpm and global gate values as cold-start observations only. Fresh provider headers, usage windows, and outcomes feed scoped feedback; absent headers trigger paced probing.',
+      warningReadback:
+        'Warn when a baked provider floor/global cap is the binding term and show provider, account/model key, header source, observation age, penalty scope, and expiry. Missing headers remain unknown.',
+      removalRelease: 'P-009 provider-governor gate: delete baked productive floors/caps and retain only fresh, provider-scoped feedback.',
+      rollbackBehavior: rollbackCompatibilityText('provider governor floors'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'libs/papercusp-shared/src/agent/governor-registry.ts :: governorForBackend',
+        'packages/operator-core/lib/rate-limit-config.ts :: applyCached',
+        'GET /stats :: provider and global admission',
+      ],
+      stateConsumers: [
+        'libs/papercusp-shared/src/resilience/governor.ts',
+        'packages/operator-core/lib/resource-governor/controller.ts',
+        'packages/operator-core/lib/fleet-rate-status.ts',
+      ],
+      disposition: 'feedback-only',
+    }),
+    compatibilityGroup({
+      id: 'operator-rate-limit',
+      field: 'operator rate-limit cap and provider override bounds',
+      legacyFields: ['RATE_LIMIT_MAX_CEILING', 'ProviderFloorConfig.maxConcurrent', 'ProviderFloorConfig.rpm', 'clampProviderFloors'],
+      writerIds: ['rate-limit-maximum-ceiling', 'rate-limit-provider-override-bounds'],
+      observeOnlyMigration:
+        'Accept persisted operator settings for compatibility, record raw value and provenance, and pass them to the controller as non-binding intent; do not clamp healthy desired state to local bounds.',
+      warningReadback:
+        'Warn when a persisted cap or provider override is present, invalid, or stale. The rate-limit route names writer, units, binding term, and freshness and reports unknown rather than a fabricated safe value.',
+      removalRelease: 'P-009/P-012 config gate: remove local maximum/override bounds after route and deployment parity is verified.',
+      rollbackBehavior: rollbackCompatibilityText('operator rate-limit settings'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/endpoint-route/routes/operator/rate-limit-config.ts',
+        'packages/operator-core/lib/rate-limit-config.ts :: clampRateLimitConfig',
+        'operator:rate_limit_config and config:list-overrides',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/operator-state-pg.ts :: operator_rate_limit_config',
+        'packages/operator-core/lib/fleet-rate-status.ts',
+        'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'resource-profile-limits',
+      field: 'resource-profile gateway-facing limits',
+      legacyFields: [
+        'ResourceProfile.maxSimultaneousAgents',
+        'DEFAULT_RATE_LIMIT_CONFIG.maxSimultaneousAgents',
+        'ResourceProfile.dbosQueueConcurrency',
+        'ResourceProfile.pgPoolMax',
+        'ResourceProfile.httpWorkers',
+        'ResourceProfile.processCount',
+      ],
+      writerIds: ['rate-limit-resource-profile-seed', 'resource-profile-agent-cap'],
+      observeOnlyMigration:
+        'Retain host-profile outputs as attribution and bootstrap telemetry with signal provenance. A profile value may seed desired state once, but host formulas never become a gateway productive-capacity ceiling.',
+      warningReadback:
+        'Warn when a profile-derived value binds gateway admission and show cores, memory signal, host class, profile generation, seed age, and controller desired/effective state. Unknown host signals remain unknown.',
+      removalRelease: 'P-004/P-009/P-012 profile gate: detach gateway admission from profile maxima while preserving profile telemetry for placement and diagnostics.',
+      rollbackBehavior: rollbackCompatibilityText('resource-profile gateway limits'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/rate-limit-config.ts :: DEFAULT_RATE_LIMIT_CONFIG',
+        'libs/generic/resource-profile/src/index.ts :: deriveResourceProfile',
+        'GET /admin/config :: profile provenance',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-profile.ts',
+        'packages/operator-core/lib/fleet-rate-status.ts',
+        'packages/operator-core/lib/resource-governor/state-snapshot.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'local-backend-physical-slots',
+      field: 'local-backend maxConcurrent and provisioned parallel slots',
+      legacyFields: ['LocalBackend.maxConcurrent', 'entry.serve.parallelSlots'],
+      writerIds: ['local-backend-max-concurrent', 'local-backend-provisioner-slots'],
+      observeOnlyMigration:
+        'Read registered maxConcurrent and catalog parallelSlots as candidate physical-contract observations. Keep them only when the engine reports matching live slots/context and attach model/hardware evidence.',
+      warningReadback:
+        'Warn when a registered value has no fresh engine/health evidence or is used as gateway policy. Readback names backend id, engine response, observation age, and whether the term is measured physical or merely configured.',
+      removalRelease: 'P-011 local-backend gate: remove duplicate gateway/client policy caps; retain an engine-required partition only as an evidenced physical contract.',
+      rollbackBehavior: rollbackCompatibilityText('local-backend physical-slot policy'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/local-backend-pool.ts :: select',
+        'packages/operator-core/lib/inference-gateway/local-backend-store.ts :: registerLocalBackend',
+        'packages/operator-core/lib/agent-tools/gateway/local-backends.ts',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/inference-gateway/physical-constraints.ts',
+        'packages/operator-core/lib/inference-gateway/local-backend-pool.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+      ],
+      disposition: 'retain-measured-physical-contract',
+    }),
+    compatibilityGroup({
+      id: 'local-backend-client-cap',
+      field: 'local-backend per-client in-flight cap',
+      legacyFields: ['DEFAULT_CLIENT_MAX_IN_FLIGHT', 'ClientCircuitState.maxInFlight'],
+      writerIds: ['local-backend-client-max-in-flight'],
+      observeOnlyMigration:
+        'Record owner demand and client-circuit outcomes while routing fairness through the canonical admission class; the legacy per-client number is advisory telemetry only.',
+      warningReadback:
+        'Warn when a client circuit sheds work below measured backend capacity and show owner, wait age, circuit state, backend evidence, and the canonical scheduler decision.',
+      removalRelease: 'P-011 fairness gate: delete the independent client max-in-flight shed and use owner/class fairness in the shared governor.',
+      rollbackBehavior: rollbackCompatibilityText('local-backend client fairness'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/local-backend-client-circuit.ts',
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: proxyLocal',
+        'GET /stats :: local backend client outcomes',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/admission.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/system-health/compute.ts',
+      ],
+      disposition: 'remove-after-gate',
+    }),
+    compatibilityGroup({
+      id: 'load-shed-retry-after',
+      field: 'load-shed retry-after protocol hint',
+      legacyFields: ['LOADSHED_RETRY_AFTER_SEC'],
+      writerIds: ['gateway-loadshed-retry-after'],
+      observeOnlyMigration:
+        'Keep the retry-after number only as protocol metadata while durable acceptance returns a receipt; it never claims to measure provider or gateway capacity.',
+      warningReadback:
+        'Warn when the hint is emitted for a capacity condition and include actual receipt state/reason. Missing retry information is explicit, never a zero-second safe retry.',
+      removalRelease: 'P-006/P-014 protocol gate: retain only if the client contract still needs a retry hint after durable receipt semantics.',
+      rollbackBehavior: rollbackCompatibilityText('load-shed protocol hint'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: QueueFullError handler',
+        'Anthropic/OpenAI-compatible HTTP response retry-after header',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/queue.ts :: QueueReceipt',
+        'packages/operator-core/lib/inference-gateway/request-stage-telemetry.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+      ],
+      disposition: 'retain-semantic-safety',
+    }),
+    compatibilityGroup({
+      id: 'probe-concurrency',
+      field: 'provider capacity-probe concurrency',
+      legacyFields: ['PROBE_CONCURRENCY'],
+      writerIds: ['capacity-probe-concurrency'],
+      observeOnlyMigration:
+        'Retain probe parallelism as observation-sweep pacing with per-account receipts; it cannot bound productive inference admission.',
+      warningReadback:
+        'Warn when probe evidence is stale or incomplete and report probe count, account, status, timestamp, and external response. No probe result becomes a capacity ceiling.',
+      removalRelease: 'P-003/P-009 evidence gate: move probe pacing to fresh provider health/contracts and keep it separate from productive admission.',
+      rollbackBehavior: rollbackCompatibilityText('provider observation pacing'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/capacity-probe.ts :: probeCapacityForAccounts',
+        'GET /stats :: provider observation freshness',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/inference-gateway/physical-constraints.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/resource-governor/state-snapshot.ts',
+      ],
+      disposition: 'feedback-only',
+    }),
+    compatibilityGroup({
+      id: 'status-and-readiness',
+      field: 'gateway UI/API/state capacity readbacks',
+      legacyFields: [
+        'stats.admission.maxConcurrent',
+        'stats.maxQueued',
+        'stats.clamp.recommendation',
+        'stats.clamp.applied',
+        'stats.priorityTiers',
+        'gateway:status',
+        'admissionMaxQueued',
+        'gateway!.queueDepth',
+      ],
+      writerIds: [
+        'gateway-stats-writer',
+        'gateway-admin-config-writer',
+        'spawn-readiness-max-queued-reader',
+        'gateway-status-tool-reader',
+        'gateway-wedge-status-reader',
+        'system-health-gateway-status-reader',
+      ],
+      observeOnlyMigration:
+        'Keep read models live, annotating every legacy field with exact writer, unit, binding term, generation, observation time, and expiry. Readers never enforce a cap merely because a field exists.',
+      warningReadback:
+        'Warn on missing, stale, or unknown values and preserve that state verbatim. UI/API/alerts distinguish desired, effective, recommendation, applied, queue, and measured physical values instead of collapsing them to zero or safe.',
+      removalRelease: 'P-013 canonical-state gate: update gateway:status, readiness, wedge, health, and runbooks to the one writer-traceable read model.',
+      rollbackBehavior: rollbackCompatibilityText('capacity readback'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC, ADMISSION_LOOP_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: stats and /admin/config',
+        'packages/operator-core/lib/agent-tools/gateway/gateway.ts :: gateway:status',
+        'packages/operator-core/lib/inference-gateway/spawn-readiness.ts :: fetchGatewayReadinessSignals',
+        'packages/operator-core/lib/inference-gateway/gateway-wedge.ts :: normalizeGatewayStats',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+        'packages/operator-core/lib/inference-gateway/admission-ceiling.ts',
+        'packages/operator-core/lib/system-health/compute.ts',
+        'packages/operator-core/lib/resource-governor/state-snapshot.ts',
+      ],
+      disposition: 'readback-only',
+    }),
+  ]);
+
+function flattenCompatibilityGroup(
+  group: InferenceGatewayCapacityCompatibilityGroup,
+  writerId: string,
+): InferenceGatewayCapacityCompatibility {
+  return Object.freeze({
+    ...group,
+    id: writerId,
+    groupId: group.id,
+    writerId,
+    writerIds: Object.freeze([writerId]),
+  });
+}
+
+/** One row for every exact writer in P-001, with its family policy expanded inline. */
+export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX: readonly InferenceGatewayCapacityCompatibility[] =
+  Object.freeze(
+    INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS.flatMap((group) =>
+      group.writerIds.map((writerId) => flattenCompatibilityGroup(group, writerId)),
+    ),
+  );
+
+/** Short aliases used by P-004/P-012 migration and reporting consumers. */
+export const INFERENCE_GATEWAY_COMPATIBILITY_MATRIX = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX;
+export const CAPACITY_COMPATIBILITY_MATRIX = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX;
+
+export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_FIELDS: readonly string[] = Object.freeze(
+  INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS.map((group) => group.field),
+);
+
+/** Return the migration contract for one exact P-001 writer. */
+export function compatibilityForInferenceGatewayWriter(
+  writerId: string,
+): InferenceGatewayCapacityCompatibility | undefined {
+  return INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX.find((row) => row.writerId === writerId);
+}
+
+/**
+ * Validate the P-004 matrix against the P-001 census. This is independent of
+ * the source scanner: an anchor can be present while a release contract is
+ * missing, and that omission must fail before rollout.
+ */
+export function validateInferenceGatewayCapacityCompatibilityMatrix(
+  rows: readonly InferenceGatewayCapacityCompatibility[] = INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_MATRIX,
+  inventory: readonly InferenceGatewayCapacityWriter[] = INFERENCE_GATEWAY_CAPACITY_INVENTORY,
+): string[] {
+  const findings: string[] = [];
+  const inventoryIds = new Set(inventory.map((row) => row.id));
+  const seen = new Set<string>();
+  const covered = new Set<string>();
+  for (const row of rows) {
+    if (seen.has(row.id)) findings.push('duplicate-compatibility:' + row.id);
+    seen.add(row.id);
+    if (!inventoryIds.has(row.writerId)) findings.push('compatibility-unknown-writer:' + row.writerId);
+    covered.add(row.writerId);
+    const required: Array<keyof InferenceGatewayCapacityCompatibility> = [
+      'id',
+      'groupId',
+      'writerId',
+      'field',
+      'observeOnlyMigration',
+      'warningReadback',
+      'removalRelease',
+      'rollbackBehavior',
+    ];
+    for (const field of required) {
+      const value = row[field];
+      if (typeof value !== 'string' || value.trim().length === 0) {
+        findings.push('compatibility-missing:' + row.id + ':' + field);
+      }
+    }
+    for (const [name, values] of [
+      ['legacyFields', row.legacyFields],
+      ['legacyKeys', row.legacyKeys],
+      ['writerIds', row.writerIds],
+      ['docsRunbookConsumers', row.docsRunbookConsumers],
+      ['apiConsumers', row.apiConsumers],
+      ['stateConsumers', row.stateConsumers],
+      ['consumers', row.consumers],
+    ] as const) {
+      if (!Array.isArray(values) || values.length === 0 || values.some((value) => String(value).trim().length === 0)) {
+        findings.push('compatibility-missing:' + row.id + ':' + name);
+      }
+    }
+    if (row.rollbackNeverReinstatesNumericCap !== true) {
+      findings.push('compatibility-rollback-cap-allowed:' + row.id);
+    }
+    if (!/never|without|observe-only/i.test(row.rollbackBehavior)) {
+      findings.push('compatibility-rollback-not-observe-only:' + row.id);
+    }
+    if (!/^P-\d{3}/.test(row.removalRelease)) {
+      findings.push('compatibility-removal-target:' + row.id);
+    }
+    if (!row.docsRunbookConsumers.some((path) => path.endsWith('.mdx') || path.endsWith('.md'))) {
+      findings.push('compatibility-doc-consumer:' + row.id);
+    }
+    if (!row.consumers.some((consumer) => consumer.kind === 'test' && consumer.path === COMPATIBILITY_TEST)) {
+      findings.push('compatibility-test-consumer:' + row.id);
+    }
+  }
+  for (const row of inventory) {
+    if (!covered.has(row.id)) findings.push('compatibility-uncovered-writer:' + row.id);
+  }
+  return findings;
+}
+
+/** Alias for migration callers that use the shorter validator name. */
+export const validateCapacityCompatibilityMatrix = validateInferenceGatewayCapacityCompatibilityMatrix;
 
 /** Backward/short-name aliases for callers that use the census vocabulary. */
 export const INFERENCE_GATEWAY_WRITER_INVENTORY = INFERENCE_GATEWAY_CAPACITY_INVENTORY;
