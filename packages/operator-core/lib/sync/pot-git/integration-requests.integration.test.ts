@@ -56,6 +56,13 @@ function device(): string {
   return generateEd25519KeypairDer().pubkeyBase64;
 }
 
+/** Cheap, unique 32-byte device ids for large set-cardinality fixtures. */
+function fixtureDevice(index: number): string {
+  const bytes = Buffer.alloc(32);
+  bytes.writeUInt32BE(index, bytes.length - 4);
+  return bytes.toString('base64');
+}
+
 /** A tier resolver over a fixed device→tier map; unmapped devices resolve null. */
 function tiersOf(map: Record<string, CommsTier>) {
   return (dev: string): CommsTier | null => map[dev] ?? null;
@@ -249,14 +256,34 @@ describe('pot_integration_requests (G-5c P-035 — queue, don’t integrate)', (
     // OLDEST is the one under test. Pre-fix, gateMemberHeadsForIntegration
     // read only the top-500-newest ratified window, so this oldest head
     // would have fallen out of it and been misreported as `queued`.
-    const oldest = device();
-    await queueIntegrationRequest({ ...SCOPE, devicePubkey: oldest, headSha: SHA(1000), nowMs: 1, cap: 100_000 }, db.sql);
-    expect(await ratifyIntegrationRequest({ ...SCOPE, devicePubkey: oldest, headSha: SHA(1000), nowMs: 1 }, db.sql)).toBe(true);
-    for (let n = 1; n <= 500; n++) {
-      const dev = device();
-      await queueIntegrationRequest({ ...SCOPE, devicePubkey: dev, headSha: SHA(2000 + n), nowMs: 100 + n, cap: 100_000 }, db.sql);
-      expect(await ratifyIntegrationRequest({ ...SCOPE, devicePubkey: dev, headSha: SHA(2000 + n), nowMs: 100 + n }, db.sql)).toBe(true);
-    }
+    //
+    // This is a READER-boundary test, not another queue/ratify writer test
+    // (those production surfaces are exercised above). Seed the cardinality
+    // set-wise so the 30s guard measures the exact-membership lookup instead
+    // of 501 keygens + 1,505 serial fixture statements.
+    const oldest = fixtureDevice(0);
+    const rows = [
+      { devicePubkey: oldest, headSha: SHA(1000), createdTs: 1 },
+      ...Array.from({ length: 500 }, (_, index) => ({
+        devicePubkey: fixtureDevice(index + 1),
+        headSha: SHA(2001 + index),
+        createdTs: 101 + index,
+      })),
+    ];
+    await db.sql`
+      INSERT INTO harness_shared.pot_integration_requests
+        (workspace_id, pot_slug, repo_key, device_pubkey, head_sha,
+         author_github_user_id, reason, state, created_ts, ratified_ts)
+      SELECT
+        ${SCOPE.workspaceId}, ${SCOPE.potSlug}, ${SCOPE.repoKey},
+        seeded.device_pubkey, seeded.head_sha, NULL,
+        'below-steer-tier', 'ratified', seeded.created_ts, seeded.created_ts
+      FROM UNNEST(
+        ${db.sql.array(rows.map((row) => row.devicePubkey))}::text[],
+        ${db.sql.array(rows.map((row) => row.headSha))}::text[],
+        ${db.sql.array(rows.map((row) => row.createdTs))}::bigint[]
+      ) AS seeded(device_pubkey, head_sha, created_ts)
+    `;
     const total = await listIntegrationRequests({ ...SCOPE, state: 'ratified', limit: 500 }, db.sql);
     expect(total).toHaveLength(500); // confirms the window really is full — 501st (oldest) is outside it
 
