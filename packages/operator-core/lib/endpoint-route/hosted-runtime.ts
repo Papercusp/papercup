@@ -43,6 +43,14 @@ import { HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, type HostedRouteAllowlistEntry } 
 import { ALL_ROUTES } from './routes';
 import { createWorkOsWebhookRoute } from './routes/auth/workos-webhook';
 import { HostedWorkspaceConnectorGateway, PostgresHostedWorkspaceConnectorStore } from './hosted-workspace-connector';
+import type { HostedPrincipal } from '../auth/hosted-principal';
+import {
+  HostedProviderDelegationManager,
+  PostgresHostedProviderDelegationStore,
+  type HostedProviderDelegationAdapter,
+  type HostedProviderDelegationRecord,
+} from '../workspace-host/hosted-provider-delegation';
+import { resolveHostedGcpAuth } from '../workspace-host/hosted-gcp-auth';
 
 export const HOSTED_CONTROL_PLANE_DISTRIBUTION_PROFILE = 'hosted-control-plane';
 
@@ -64,6 +72,10 @@ export const HOSTED_RUNTIME_MOUNTED_ROUTE_KEYS = [
   'POST /hosted/connectors/heartbeat',
   'GET /hosted/connectors/events',
   'GET /hosted/connectors/socket',
+  'POST /hosted/workspaces/:workspaceId/provider-delegations/onboard',
+  'POST /hosted/workspaces/:workspaceId/provider-delegations/verify',
+  'POST /hosted/workspaces/:workspaceId/provider-delegations/rotate',
+  'POST /hosted/workspaces/:workspaceId/provider-delegations/revoke',
   'GET /hosted/auth/sign-in',
   'GET /hosted/auth/callback',
   'POST /hosted/auth/logout',
@@ -91,6 +103,7 @@ export interface HostedRuntimeDependencies {
   readonly resolveSecret?: HostedRuntimeSecretResolver;
   readonly runService?: HostedServiceContextRunner;
   readonly runTenant?: HostedTenantContextRunner;
+  readonly providerDelegationAdapters?: Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>>;
 }
 
 interface HostedServiceRoleRow {
@@ -217,6 +230,47 @@ function routeKey(route: { method: string; path: string }): string {
   return `${route.method} ${route.path}`;
 }
 
+function productionProviderDelegationAdapters(): Readonly<Record<'gcp' | 'aws' | 'azure', HostedProviderDelegationAdapter>> {
+  const unavailable = (provider: 'aws' | 'azure'): HostedProviderDelegationAdapter => ({
+    async verify() { throw new Error(`hosted_provider_delegation_${provider}_adapter_unavailable`); },
+    async revoke(record) {
+      return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
+    },
+  });
+  const gcp: HostedProviderDelegationAdapter = {
+    async verify(record: HostedProviderDelegationRecord) {
+      const auth = await resolveHostedGcpAuth({
+        credentialRef: record.credentialRef,
+        provider: { hostedDelegation: { ...record, status: 'verified' } },
+      });
+      return {
+        identity: auth.identity ?? (record.configuration.provider === 'gcp'
+          ? record.configuration.source.serviceAccountEmail
+          : 'gcp:delegated'),
+        evidenceRef: `gcp://projects/${auth.projectId ?? 'unknown'}/delegations/${record.connectionId}/${record.generation}`,
+      };
+    },
+    async revoke(record) {
+      return { evidenceRef: `delegation://${record.workspaceId}/${record.connectionId}/${record.generation}/revoked` };
+    },
+  };
+  return { gcp, aws: unavailable('aws'), azure: unavailable('azure') };
+}
+
+function tenantServerContext(principal: HostedPrincipal): VerifiedTenantServerContext {
+  const selectedWorkspaceId = principal.selectedWorkspaceId;
+  if (!selectedWorkspaceId) throw new Error('hosted_provider_delegation_workspace_required');
+  return {
+    principal: {
+      kind: 'user', profile: 'hosted', authMethod: 'cookie-session', trust: 'verified',
+      slug: principal.userId, workspaceId: principal.workspaceId, userId: principal.userId,
+      activeOrganizationId: principal.activeOrganizationId, selectedWorkspaceId,
+      sessionId: principal.sessionId, sessionVersion: principal.sessionVersion,
+    },
+    selectedWorkspace: { id: selectedWorkspaceId, organizationId: principal.activeOrganizationId },
+  };
+}
+
 export function assertHostedRuntimeMounted(plane: AssembledHostedControlPlane): void {
   const mounted = plane.mounted.map(routeKey);
   if (
@@ -264,6 +318,12 @@ export async function createHostedRuntime(
       runService((sql) => new WorkOsWebhookReceiptStore(sql as never).enqueue(event, options)),
   };
   const connectorGateway = new HostedWorkspaceConnectorGateway(new PostgresHostedWorkspaceConnectorStore(runService));
+  const delegationAdapters = dependencies.providerDelegationAdapters ?? productionProviderDelegationAdapters();
+  const providerDelegationManager = (principal: HostedPrincipal) =>
+    new HostedProviderDelegationManager(
+      new PostgresHostedProviderDelegationStore((fn) => runTenant(tenantServerContext(principal), fn)),
+      delegationAdapters,
+    );
 
   const provider = createWorkOSHostedIdentityProvider({
     configuration: {
@@ -296,6 +356,7 @@ export async function createHostedRuntime(
     membershipAuthority,
     identityDirectory,
     connectorGateway,
+    providerDelegationManager,
     routes: [...ALL_ROUTES, webhookRoute],
     staticAllowlist: [...HOSTED_CONTROL_PLANE_ROUTE_ALLOWLIST, HOSTED_WORKOS_WEBHOOK_ALLOWLIST_ENTRY],
   });

@@ -43,6 +43,11 @@ import type { RouteDefinition } from './define-route';
 import { createHostedControlPlane, type HostedControlPlane, type HostedRouteAllowlistEntry } from './hosted-profile';
 import type { HostedAuthFlowStore } from './routes/hosted-auth/flow';
 import { HostedWorkspaceConnectorGateway } from './hosted-workspace-connector';
+import {
+  createHostedProviderDelegationRoutes,
+  HOSTED_PROVIDER_DELEGATION_ROUTES,
+  type HostedProviderDelegationManagerFactory,
+} from './routes/hosted-provider-delegation';
 import { createHostedWorkspaceConnectorRoutes, HOSTED_WORKSPACE_CONNECTOR_ROUTES } from './routes/hosted-workspace-connector';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
@@ -80,6 +85,7 @@ export interface HostedControlPlaneConfig {
   /** Cryptographic entropy source. Production uses node:crypto; tests may fix it. */
   readonly randomBytes?: (size: number) => Uint8Array;
   readonly connectorGateway?: HostedWorkspaceConnectorGateway;
+  readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
   /** Audit hook for refused sign-ins. Never called on success. */
   readonly onSignInDenied?: (denial: {
     reason: HostedIdentityBindingDenialReason;
@@ -104,6 +110,7 @@ export interface AssembledHostedControlPlane extends HostedControlPlane {
     readonly membershipAuthority: HostedMembershipAuthorityReader;
     readonly identityDirectory: HostedIdentityDirectory;
     readonly connectorGateway?: HostedWorkspaceConnectorGateway;
+    readonly providerDelegationManager?: HostedProviderDelegationManagerFactory;
   };
 }
 
@@ -152,11 +159,19 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       ...(config.randomBytes ? { randomBytes: config.randomBytes } : {}),
     },
     resolvePrincipal,
-    ...(config.routes || config.connectorGateway
-      ? { routes: [...(config.routes ?? []), ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : [])] }
+    ...(config.routes || config.connectorGateway || config.providerDelegationManager
+      ? { routes: [
+          ...(config.routes ?? []),
+          ...(config.connectorGateway ? createHostedWorkspaceConnectorRoutes(config.connectorGateway) : []),
+          ...(config.providerDelegationManager ? createHostedProviderDelegationRoutes(config.providerDelegationManager) : []),
+        ] }
       : {}),
-    ...(config.staticAllowlist || config.connectorGateway
-      ? { staticAllowlist: [...(config.staticAllowlist ?? []), ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : [])] }
+    ...(config.staticAllowlist || config.connectorGateway || config.providerDelegationManager
+      ? { staticAllowlist: [
+          ...(config.staticAllowlist ?? []),
+          ...(config.connectorGateway ? HOSTED_WORKSPACE_CONNECTOR_ROUTES : []),
+          ...(config.providerDelegationManager ? HOSTED_PROVIDER_DELEGATION_ROUTES : []),
+        ] }
       : {}),
   });
 
@@ -168,6 +183,7 @@ export function assembleHostedControlPlane(config: HostedControlPlaneConfig): As
       membershipAuthority,
       identityDirectory,
       ...(config.connectorGateway ? { connectorGateway: config.connectorGateway } : {}),
+      ...(config.providerDelegationManager ? { providerDelegationManager: config.providerDelegationManager } : {}),
     },
   };
 }

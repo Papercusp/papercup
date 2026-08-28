@@ -160,7 +160,10 @@ describe('workspace-host provisioning DBOS admission', () => {
 
     await startWorkspaceHostProvisioningWorkflow(input);
 
-    expect(control.createProvider).toHaveBeenCalledWith(connection);
+    expect(control.createProvider).toHaveBeenCalledWith(
+      connection,
+      expect.objectContaining({ resolveHostedAuth: expect.any(Function) }),
+    );
     expect(control.runProvisioning).toHaveBeenCalledWith(expect.objectContaining({ provider: control.provider }));
   });
 
@@ -214,7 +217,10 @@ describe('workspace-host provisioning DBOS admission', () => {
       queueName: 'workspace-host-provision',
       enqueueOptions: { deduplicationID: 'workspace-host:ws-1:host-1' },
     });
-    expect(control.createProvider).toHaveBeenCalledWith(connection);
+    expect(control.createProvider).toHaveBeenCalledWith(
+      connection,
+      expect.objectContaining({ resolveHostedAuth: expect.any(Function) }),
+    );
     expect(control.runDestroy).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'destroy', provider: control.provider }),
     );

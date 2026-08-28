@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { assertWorkspaceHostSecretIsolation } from '@papercusp/deployment-driver';
+import type { Sql } from 'postgres';
 import { GCP_WORKSPACE_HOST_REQUIRED_PERMISSIONS } from '../cloud-workspaces/gcp-preflight';
 import {
   AWS_WORKSPACE_HOST_PERMISSION_ACTIONS,
@@ -108,6 +109,92 @@ export interface HostedProviderDelegationAdapter {
 export interface HostedProviderDelegationStore {
   read(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null>;
   save(record: HostedProviderDelegationRecord, expectedGeneration?: number): Promise<void>;
+}
+
+export type HostedProviderDelegationSqlRunner = <T>(fn: (sql: Sql) => Promise<T>) => Promise<T>;
+
+type DelegationRow = { provider_config: Record<string, unknown> };
+
+function storedDelegation(value: unknown): HostedProviderDelegationRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Partial<HostedProviderDelegationRecord>;
+  return record.schemaVersion === HOSTED_PROVIDER_DELEGATION_VERSION &&
+    typeof record.workspaceId === 'string' &&
+    typeof record.connectionId === 'string' &&
+    typeof record.generation === 'number'
+    ? record as HostedProviderDelegationRecord
+    : null;
+}
+
+function connectionStatus(record: HostedProviderDelegationRecord): 'connected' | 'degraded' | 'invalid' {
+  if (record.status === 'verified') return 'connected';
+  if (record.status === 'revoked') return 'invalid';
+  return 'degraded';
+}
+
+function connectionProviderConfig(record: HostedProviderDelegationRecord): Record<string, unknown> {
+  const gcp = record.configuration.provider === 'gcp' ? record.configuration.source : undefined;
+  const config = {
+    hostedDelegation: record,
+    ...(gcp ? { projectId: gcp.projectId, serviceAccountEmail: gcp.serviceAccountEmail } : {}),
+  };
+  assertWorkspaceHostSecretIsolation(config, 'hostedProviderDelegation.providerConfig');
+  return config;
+}
+
+/** Tenant-context Postgres store over the existing workspace-host connection root. */
+export class PostgresHostedProviderDelegationStore implements HostedProviderDelegationStore {
+  constructor(private readonly run: HostedProviderDelegationSqlRunner) {}
+
+  read(workspaceId: string, connectionId: string): Promise<HostedProviderDelegationRecord | null> {
+    return this.run(async (sql) => {
+      const rows = await sql<DelegationRow[]>`
+        SELECT provider_config
+        FROM harness_shared.workspace_host_connections
+        WHERE workspace_id = ${workspaceId} AND id = ${connectionId}
+        LIMIT 1
+      `;
+      const record = storedDelegation(rows[0]?.provider_config?.hostedDelegation);
+      if (!record) return null;
+      if (record.workspaceId !== workspaceId || record.connectionId !== connectionId) {
+        throw new Error('hosted_provider_delegation_storage_binding_mismatch');
+      }
+      return record;
+    });
+  }
+
+  save(record: HostedProviderDelegationRecord, expectedGeneration?: number): Promise<void> {
+    assertWorkspaceHostSecretIsolation(record, 'hostedProviderDelegation.record');
+    const providerConfig = connectionProviderConfig(record);
+    const expected = expectedGeneration ?? null;
+    return this.run(async (sql) => {
+      const rows = await sql<Array<{ id: string }>>`
+        INSERT INTO harness_shared.workspace_host_connections
+          (workspace_id, id, target, label, credential_ref, provider_config, status, status_detail,
+           last_validated_at, updated_at)
+        VALUES
+          (${record.workspaceId}, ${record.connectionId}, ${record.provider}, ${record.label},
+           ${record.credentialRef}, ${sql.json(providerConfig as never)}, ${connectionStatus(record)},
+           ${record.status}, ${record.verifiedAt ?? null}, now())
+        ON CONFLICT (workspace_id, id) DO UPDATE SET
+          target = EXCLUDED.target,
+          label = EXCLUDED.label,
+          credential_ref = EXCLUDED.credential_ref,
+          provider_config = EXCLUDED.provider_config,
+          status = EXCLUDED.status,
+          status_detail = EXCLUDED.status_detail,
+          last_validated_at = EXCLUDED.last_validated_at,
+          updated_at = now()
+        WHERE
+          (${expected}::integer IS NULL AND
+             harness_shared.workspace_host_connections.provider_config->'hostedDelegation' IS NULL)
+          OR
+          (NULLIF(harness_shared.workspace_host_connections.provider_config->'hostedDelegation'->>'generation', '')::integer = ${expected})
+        RETURNING id
+      `;
+      if (!rows[0]) throw new Error('hosted_provider_delegation_generation_conflict');
+    });
+  }
 }
 
 const SAFE_ID = /^[a-z0-9][a-z0-9._:-]{0,159}$/i;

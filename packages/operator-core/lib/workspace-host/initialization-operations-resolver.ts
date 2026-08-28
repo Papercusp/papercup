@@ -33,6 +33,7 @@ import {
 } from '@papercusp/deployment-driver';
 import { createGcpWorkspaceHostAcquireAuth } from '../cloud-workspaces/gcp-preflight';
 import { createGcpWorkspaceHostApiClient } from './gcp-api-client';
+import { isHostedProviderCredentialRef, resolveHostedGcpAuth } from './hosted-gcp-auth';
 import {
   GcpIapWorkspaceHostInitializationOperations,
   gcpIapHostKeyAlias,
@@ -525,6 +526,10 @@ export interface ResolveOperationsForHostInput {
   readDesiredSpec?: typeof readWorkspaceHostDesiredSpec;
   /** Test seam; production uses the persisted cloud credential reference. */
   gcpClient?: Pick<GcpWorkspaceHostApiClient, 'getInstanceGuestAttributes'>;
+  /** Test seam for the real GCP client path. */
+  gcpFetch?: typeof fetch;
+  /** Test seam; production resolves only verified hosted delegation metadata to a short-lived token. */
+  resolveHostedAuth?: typeof resolveHostedGcpAuth;
   /** Test seam; production atomically updates the controller-owned trust store. */
   enrollHostKeys?: (input: GcpIapHostKeyEnrollmentInput) => Promise<void>;
 }
@@ -547,16 +552,28 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   if (!lookup.desired) {
     throw new WorkspaceHostDesiredSpecUnavailableError(input.hostId, lookup.miss ?? 'no-recorded-spec');
   }
+  const desired = lookup.desired;
 
   // Keep the provider boundary ahead of the GCP-only trust enrollment. Unsupported targets must
   // refuse without making a cloud call (or attempting to interpret an AWS/Azure spec as GCP).
-  const operations = resolveWorkspaceHostInitializationOperations(lookup.desired, input.controller);
-  const identity = resolveGcpWorkspaceHostInstanceIdentity(lookup.desired);
+  const operations = resolveWorkspaceHostInitializationOperations(desired, input.controller);
+  const identity = resolveGcpWorkspaceHostInstanceIdentity(desired);
+  const credentialRef = desired.credentials.cloudCredentialRef.ref;
   const client =
     input.gcpClient ??
-    createGcpWorkspaceHostApiClient({
-      acquireAuth: createGcpWorkspaceHostAcquireAuth(lookup.desired.credentials.cloudCredentialRef.ref),
-    });
+    (() => {
+      const acquireAuth = isHostedProviderCredentialRef(credentialRef)
+        ? () => (input.resolveHostedAuth ?? resolveHostedGcpAuth)({
+            credentialRef,
+            provider: desired.provider ?? {},
+          })
+        : createGcpWorkspaceHostAcquireAuth(credentialRef);
+      return createGcpWorkspaceHostApiClient({
+        acquireAuth,
+        credentialRef,
+        ...(input.gcpFetch ? { fetch: input.gcpFetch } : {}),
+      });
+    })();
   const attributes = await client.getInstanceGuestAttributes(
     identity.projectId,
     identity.zone,
@@ -570,7 +587,7 @@ export async function resolveWorkspaceHostInitializationOperationsForHost(
   });
 
   return {
-    desired: lookup.desired,
+    desired,
     operations,
   };
 }
