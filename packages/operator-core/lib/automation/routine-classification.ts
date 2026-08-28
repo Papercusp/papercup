@@ -327,6 +327,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     spend: 'llm',
     why: 'Runs one guarded full-corpus strong-model cluster digest after a completed bulk stage',
   },
+  'system:acceptance-grading-sweep': {
+    spend: 'llm',
+    why: 'Recruits or re-dispatches an independent grader, which can launch a model session',
+  },
 
   // ── free system work ─────────────────────────────────────────────────────
   'system:git-sync': { spend: 'none', why: 'Commits and pushes the tree' },
@@ -345,6 +349,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:personal-vault-import': {
     spend: 'none',
     why: 'Advances one bounded, checkpointed local archive-import batch; no agent or model call',
+  },
+  'system:work-item-durable-park-audit': {
+    spend: 'none',
+    why: 'Runs a report-only durable-park audit and publishes evidence; no model call or dispatch',
   },
   'system:work-item-admission-fail-open': {
     spend: 'none',
