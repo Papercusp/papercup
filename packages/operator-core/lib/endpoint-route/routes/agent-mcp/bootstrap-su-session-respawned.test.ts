@@ -197,7 +197,7 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
     expect(clearContextAnchorMock).toHaveBeenCalledWith('su-interactive-owner');
   });
 
-  it('falls back to the owner-keyed path when the adv-id re-anchor touched no row', async () => {
+  it('does not redirect a supplied-but-missing adv id through owner-keyed fallback', async () => {
     reanchorMock.mockResolvedValue({ reanchored: false, owner: null });
     const res = await postRespawned({
       advSessionId: 42,
@@ -205,9 +205,9 @@ describe('owner-keyed fallback — the interactive/`psu --resume` cohort (no adv
       sessionId: FRESH_ID,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, reanchored: true });
+    expect(await res.json()).toEqual({ ok: true, reanchored: false });
     expect(reanchorMock).toHaveBeenCalledWith(42, FRESH_ID);
-    expect(reanchorByOwnerMock).toHaveBeenCalledWith('su-interactive-owner', FRESH_ID);
+    expect(reanchorByOwnerMock).not.toHaveBeenCalled();
   });
 
   it('a no-op fallback keeps the adv path’s resolved owner for the gauge clears', async () => {

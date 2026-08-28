@@ -3393,10 +3393,9 @@ const optionsForSessionResumed = defineTool({
  * at every retry-grace expiry (the 2026-07-15/16 kill loop).
  *
  * Keyed by `advSessionId` when the launch env carried one (the adv-spawned
- * cohort), FALLING BACK to `coordOwnerId` (newest row for the owner) — an
- * interactive `psu` / `psu --resume` launch has NO adv id in its env, and
- * requiring one silently exempted that whole cohort from the re-anchor (the
- * 2026-07-18 su-57b6247d successor-kill loop). At least one key is required.
+ * cohort). Only reports with NO adv id use the legacy `coordOwnerId` fallback;
+ * a supplied-but-missing id must never be redirected to a sibling row, because
+ * the row id is also the Codex home key (WI-42507). At least one key is required.
  *
  * Best-effort + idempotent like its ended/resumed siblings: re-anchoring to the
  * already-recorded id is a no-op, and the launcher swallows any failure.
@@ -3441,10 +3440,11 @@ const sessionRespawned = defineTool({
       if (advSessionId != null && advSessionId > 0) {
         ({ reanchored, owner } = await reanchorAdvSessionNativeId(advSessionId, sessionId));
       }
-      // Owner-keyed fallback: the interactive/resumed cohort has no adv id, and a
-      // stale/mismatched adv id that touched no row heals through the same path.
-      // Both updates are idempotent per native id, so chaining cannot double-write.
-      if (!reanchored && coordOwnerId) {
+      // Owner-keyed fallback is reserved for legacy reports that genuinely carry
+      // no adv id. A supplied id that touches no row is NOT permission to choose
+      // a different row by owner; that is the numeric-home identity split this
+      // route is responsible for preventing.
+      if (advSessionId == null && coordOwnerId) {
         const fallback = await reanchorAdvSessionNativeIdByOwner(coordOwnerId, sessionId);
         reanchored = fallback.reanchored;
         owner = fallback.owner ?? owner;
