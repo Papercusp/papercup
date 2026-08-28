@@ -332,6 +332,18 @@ describe('immutable dependency generation', () => {
       });
       expect(fullSummary.source).toMatch(/^[0-9a-f]{64}$/);
       expect(fullSummary.identity).toBe(`v1-${fullSummary.source}`);
+      const fullPath = publishedPath(full.stdout);
+      const fullIdentity = publishedIdentity(full.stdout);
+      const fullMarker = readFileSync(
+        join(fullPath, '.papercusp-dependency-generation'),
+        'utf8',
+      );
+      expect(fullMarker).toContain('tree_manifest_schema=1\n');
+      expect(fullMarker).toMatch(/tree_manifest_sha256=[0-9a-f]{64}\n/);
+      expect(fullMarker).toContain('predecessor=none\n');
+      expect(readFileSync(join(fullPath, '.tree-manifest'), 'utf8')).toBe(
+        readFileSync(join(fullPath, '.source-after'), 'utf8'),
+      );
       const fullPhases = telemetryRecords(full.stderr, 'PHASE');
       expect(fullPhases.map(({ phase }) => phase)).toEqual(
         expect.arrayContaining([
@@ -376,22 +388,114 @@ describe('immutable dependency generation', () => {
         DEPENDENCY_GENERATION_WALK_JOBS: '1',
       });
       expect(oneChanged.status, oneChanged.stderr).toBe(0);
-      // P-001 freezes the baseline: before incremental predecessor reuse, a
-      // one-tree change rebuilds all three trees. P-002 deliberately changes this
-      // expectation to reused=2/copied=1 while preserving the same source identity.
+      const oneChangedPath = publishedPath(oneChanged.stdout);
+      const oneChangedIdentity = publishedIdentity(oneChanged.stdout);
       expect(lastSummary(oneChanged)).toMatchObject({
         result: 'published',
+        predecessor: fullIdentity,
         trees_total: '3',
-        trees_reused: '0',
-        trees_copied: '3',
+        trees_reused: '2',
+        trees_copied: '1',
         trees_removed: '0',
       });
-      expect(publishedIdentity(oneChanged.stdout)).not.toBe(
-        publishedIdentity(full.stdout),
+      expect(oneChangedIdentity).not.toBe(fullIdentity);
+      expect(
+        statSync(join(oneChangedPath, 'tree/node_modules/pkg/index.js')).ino,
+      ).toBe(statSync(join(fullPath, 'tree/node_modules/pkg/index.js')).ino);
+      expect(
+        statSync(
+          join(oneChangedPath, 'tree/packages/b/node_modules/other/index.js'),
+        ).ino,
+      ).toBe(
+        statSync(join(fullPath, 'tree/packages/b/node_modules/other/index.js')).ino,
       );
+      expect(
+        statSync(
+          join(oneChangedPath, 'tree/packages/a/node_modules/local/index.js'),
+        ).ino,
+      ).not.toBe(
+        statSync(join(fullPath, 'tree/packages/a/node_modules/local/index.js')).ino,
+      );
+
+      rmSync(join(integration, 'packages/b/node_modules'), {
+        recursive: true,
+        force: true,
+      });
+      const oneRemoved = publish(integration, {
+        DEPENDENCY_GENERATION_WALK_JOBS: '1',
+      });
+      expect(oneRemoved.status, oneRemoved.stderr).toBe(0);
+      expect(lastSummary(oneRemoved)).toMatchObject({
+        result: 'published',
+        predecessor: oneChangedIdentity,
+        trees_total: '2',
+        trees_reused: '2',
+        trees_copied: '0',
+        trees_removed: '1',
+      });
+      expect(
+        existsSync(
+          join(
+            publishedPath(oneRemoved.stdout),
+            'tree/packages/b/node_modules',
+          ),
+        ),
+      ).toBe(false);
     },
     NATIVE_SHELL_TIMEOUT_MS,
   );
+
+  it('P-002: rejects corrupt reuse metadata and full-rebuilds from a valid legacy generation', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const generation = publishedPath(first.stdout);
+    const identity = publishedIdentity(first.stdout);
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    const marker = join(generation, '.papercusp-dependency-generation');
+    const manifest = join(generation, '.tree-manifest');
+
+    writeFileSync(manifest, `${readFileSync(manifest, 'utf8')}corrupt\tmetadata\n`);
+    const corrupt = selectGeneration(generationRoot, identity);
+    expect(corrupt.status).toBe(74);
+    expect(corrupt.stderr).toContain('is missing or invalid');
+
+    rmSync(manifest);
+    writeFileSync(
+      marker,
+      readFileSync(marker, 'utf8')
+        .split('\n')
+        .filter(
+          (line) =>
+            !line.startsWith('tree_manifest_') &&
+            !line.startsWith('predecessor=') &&
+            !line.startsWith('trees_'),
+        )
+        .join('\n'),
+    );
+    const legacy = selectGeneration(generationRoot, identity);
+    expect(legacy.status, legacy.stderr).toBe(0);
+
+    writeFileSync(
+      join(integration, 'packages/a/node_modules/local/index.js'),
+      'legacy-fallback-change\n',
+    );
+    const rebuilt = publish(integration, {
+      DEPENDENCY_GENERATION_WALK_JOBS: '1',
+    });
+    expect(rebuilt.status, rebuilt.stderr).toBe(0);
+    expect(lastSummary(rebuilt)).toMatchObject({
+      result: 'published',
+      predecessor: 'none',
+      trees_total: '3',
+      trees_reused: '0',
+      trees_copied: '3',
+      trees_removed: '0',
+    });
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('WI-41491: selects a prewarmed input by immutable identity without a generation walk', () => {
     const integration = makeIntegration();
@@ -712,6 +816,47 @@ describe('immutable dependency generation', () => {
     expect(entries.filter((entry) => entry.startsWith('v1-'))).toEqual([]);
     expect(entries.filter((entry) => entry.startsWith('.build-'))).toEqual([]);
   });
+
+  it('P-002: refuses a torn incremental build and releases its predecessor lease', () => {
+    const integration = makeIntegration();
+    const first = publish(integration);
+    expect(first.status, first.stderr).toBe(0);
+    const firstIdentity = publishedIdentity(first.stdout);
+    writeFileSync(
+      join(integration, 'packages/a/node_modules/local/index.js'),
+      'changed-before-incremental-build\n',
+    );
+    const source = join(integration, 'node_modules/pkg/index.js');
+
+    const result = publish(integration, {
+      DG_TEST_SOURCE: source,
+      DEPENDENCY_GENERATION_AFTER_COPY_HOOK:
+        'printf "mutated-during-incremental-build\\n" >> "$DG_TEST_SOURCE"',
+    });
+
+    expect(result.status).toBe(75);
+    expect(result.stderr).toContain('refusing a torn snapshot');
+    expect(lastSummary(result)).toMatchObject({
+      result: 'torn-source',
+      predecessor: firstIdentity,
+      trees_total: '3',
+      trees_reused: '2',
+      trees_copied: '1',
+      trees_removed: '0',
+    });
+    const generationRoot = join(
+      integration,
+      '.papercusp/dependency-generations',
+    );
+    expect(
+      readdirSync(generationRoot).filter((entry) => entry.startsWith('v1-')),
+    ).toEqual([firstIdentity]);
+    const leases = join(generationRoot, '.leases');
+    expect(!existsSync(leases) || readdirSync(leases).length === 0).toBe(true);
+    expect(
+      readdirSync(generationRoot).filter((entry) => entry.startsWith('.build-')),
+    ).toEqual([]);
+  }, NATIVE_SHELL_TIMEOUT_MS);
 
   it('ignores and prunes npm/Astro/Vitest/Storybook cache churn without weakening dependency drift detection', () => {
     const integration = makeIntegration();

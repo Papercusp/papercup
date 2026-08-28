@@ -357,8 +357,9 @@ dependency_generation_manifest_fingerprint() {
 
 dependency_generation_source_fingerprint() {
   local manifest="$1"
+  local closure="${2:-$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT}"
   {
-    printf 'closure\t%s\n' "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"
+    printf 'closure\t%s\n' "$closure"
     cat "$manifest"
   } | dependency_generation_sha256
 }
@@ -394,10 +395,69 @@ dependency_generation_read_field() {
   sed -n "s/^${key}=//p" "$file" | head -1
 }
 
+# A reusable tree manifest is deliberately stricter than the historical source
+# diagnostic. Every record names exactly one safe product-owned node_modules
+# path, is globally sorted/unique, carries one sha256 fingerprint, and resolves
+# beneath the supplied tree root. A legacy or exotic-path manifest that cannot
+# satisfy this contract remains valid for a full rebuild but is never trusted as
+# an incremental-copy map.
+dependency_generation_manifest_records_are_reusable() {
+  local manifest="$1" tree_root="$2"
+  local rel fingerprint extra previous=''
+  local LC_ALL=C
+  [ -f "$manifest" ] || return 1
+  while IFS=$'\t' read -r rel fingerprint extra; do
+    [ -z "$extra" ] || return 1
+    [ -n "$rel" ] && [[ "$fingerprint" =~ ^[0-9a-f]{64}$ ]] || return 1
+    case "$rel" in
+      /*|.|..|../*|*/../*|*/..|*//*|*$'\n'*|*$'\r'*) return 1 ;;
+    esac
+    case "$rel" in
+      node_modules|*/node_modules) ;;
+      *) return 1 ;;
+    esac
+    if [ -n "$previous" ] && [[ "$rel" == "$previous" || "$rel" < "$previous" ]]; then
+      return 1
+    fi
+    [ -d "$tree_root/$rel" ] || return 1
+    previous="$rel"
+  done < "$manifest"
+}
+
+dependency_generation_reuse_manifest_is_valid() {
+  local generation="$1" marker manifest schema expected_digest actual_digest
+  local source closure actual_source
+  marker="$generation/.papercusp-dependency-generation"
+  manifest="$generation/.tree-manifest"
+  [ -f "$marker" ] && [ -f "$manifest" ] || return 1
+  schema="$(dependency_generation_read_field "$marker" tree_manifest_schema)"
+  expected_digest="$(dependency_generation_read_field "$marker" tree_manifest_sha256)"
+  [ "$schema" = '1' ] && [[ "$expected_digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  actual_digest="$(dependency_generation_manifest_fingerprint "$manifest" 2>/dev/null || true)"
+  [ "$actual_digest" = "$expected_digest" ] || return 1
+  dependency_generation_manifest_records_are_reusable "$manifest" "$generation/tree" || return 1
+  source="$(dependency_generation_read_field "$marker" source)"
+  closure="$(dependency_generation_read_field "$marker" closure)"
+  actual_source="$(dependency_generation_source_fingerprint "$manifest" "$closure" 2>/dev/null || true)"
+  [ -n "$source" ] && [ "$actual_source" = "$source" ]
+}
+
+dependency_generation_manifest_lookup() {
+  local manifest="$1" wanted="$2" rel fingerprint extra
+  while IFS=$'\t' read -r rel fingerprint extra; do
+    if [ "$rel" = "$wanted" ]; then
+      printf '%s\n' "$fingerprint"
+      return 0
+    fi
+  done < "$manifest"
+  return 1
+}
+
 dependency_generation_is_valid() {
   local generation="$1" expected_identity="${2:-}" expected_closure="${3:-}"
   local marker="$generation/.papercusp-dependency-generation"
   local identity source closure scope expected_snapshot actual_snapshot
+  local tree_manifest_schema tree_manifest_sha256 tree_manifest
   # Test-only tracing proves that the publish-lock fast path does not silently
   # reintroduce the full tree walk. It is deliberately fail-open and has no
   # effect unless a test supplies the opt-in path.
@@ -415,6 +475,12 @@ dependency_generation_is_valid() {
   [ -z "$expected_closure" ] || [ "$closure" = "$expected_closure" ] || return 1
   scope="$(dependency_generation_read_field "$marker" scope)"
   case "$scope" in full|selected) ;; *) return 1 ;; esac
+  tree_manifest="$generation/.tree-manifest"
+  tree_manifest_schema="$(dependency_generation_read_field "$marker" tree_manifest_schema)"
+  tree_manifest_sha256="$(dependency_generation_read_field "$marker" tree_manifest_sha256)"
+  if [ -e "$tree_manifest" ] || [ -n "$tree_manifest_schema" ] || [ -n "$tree_manifest_sha256" ]; then
+    dependency_generation_reuse_manifest_is_valid "$generation" || return 1
+  fi
   expected_snapshot="$(dependency_generation_read_field "$marker" snapshot)"
   [ -n "$expected_snapshot" ] || return 1
   actual_snapshot="$(dependency_generation_set_fingerprint "$generation/tree" 2>/dev/null || true)"
@@ -692,6 +758,70 @@ dependency_generation_release_selector_lease() {
   rm -f -- "$lease"
   rmdir "$(dirname "$lease")" 2>/dev/null || true
   DEPENDENCY_GENERATION_SELECTOR_LEASE=''
+}
+
+DEPENDENCY_GENERATION_PREDECESSOR_ID=''
+DEPENDENCY_GENERATION_PREDECESSOR_PATH=''
+DEPENDENCY_GENERATION_PREDECESSOR_TREE=''
+DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST=''
+
+# Select and lease the newest compatible generation that carries the durable
+# per-tree reuse contract. The lease prevents retention from pruning it while
+# the build seeds hardlinks/reflinks. Deep validation plus an unchanged O(1)
+# object token proves that the exact immutable predecessor we inspected is still
+# the one we copy. Legacy generations deliberately miss this path and retain the
+# historical full-copy fallback.
+dependency_generation_find_reusable_predecessor() {
+  local generation_root="$1" target_identity="$2"
+  local generation identity marker created record token_before token_after
+  local ranked=()
+  DEPENDENCY_GENERATION_PREDECESSOR_ID=''
+  DEPENDENCY_GENERATION_PREDECESSOR_PATH=''
+  DEPENDENCY_GENERATION_PREDECESSOR_TREE=''
+  DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST=''
+
+  mapfile -t ranked < <(
+    for generation in "$generation_root"/v1-*; do
+      [ -d "$generation" ] || continue
+      identity="$(basename "$generation")"
+      [[ "$identity" =~ ^v1-[0-9a-f]{64}$ ]] || continue
+      [ "$identity" != "$target_identity" ] || continue
+      marker="$generation/.papercusp-dependency-generation"
+      [ "$(dependency_generation_read_field "$marker" closure)" \
+          = "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" ] || continue
+      [ "$(dependency_generation_read_field "$marker" scope)" \
+          = "$DEPENDENCY_GENERATION_SCOPE_MODE" ] || continue
+      created="$(dependency_generation_read_field "$marker" created)"
+      case "$created" in ''|*[!0-9]*) created=0 ;; esac
+      printf '%020d %s\n' "$created" "$identity"
+    done | sort -k1,1nr -k2,2r
+  )
+
+  for record in "${ranked[@]}"; do
+    identity="${record#* }"
+    generation="$generation_root/$identity"
+    [ -f "$generation/.tree-manifest" ] || continue
+    if ! dependency_generation_acquire_selector_lease "$generation_root" "$identity"; then
+      continue
+    fi
+    token_before="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+    if [ -n "$token_before" ] \
+      && dependency_generation_is_valid \
+        "$generation" "$identity" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT"; then
+      token_after="$(dependency_generation_generation_token "$generation" 2>/dev/null || true)"
+      if [ "$token_after" = "$token_before" ]; then
+        DEPENDENCY_GENERATION_PREDECESSOR_ID="$identity"
+        DEPENDENCY_GENERATION_PREDECESSOR_PATH="$generation"
+        DEPENDENCY_GENERATION_PREDECESSOR_TREE="$generation/tree"
+        DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST="$generation/.tree-manifest"
+        dependency_generation_log "selected reusable immutable predecessor $identity"
+        return 0
+      fi
+    fi
+    dependency_generation_log "skipping invalid or replaced predecessor $identity"
+    dependency_generation_release_selector_lease
+  done
+  return 1
 }
 
 dependency_generation_write_pin_locked() {
@@ -986,11 +1116,12 @@ dependency_generation_ensure() {
   local integration_root="$1"
   local generation_root="${2:-$integration_root/.papercusp/dependency-generations}"
   local source_before source_after identity generation build tree nm rel snapshot marker
-  local quarantine before_manifest after_manifest
+  local quarantine before_manifest after_manifest tree_manifest tree_manifest_digest=''
   local incumbent_token_before incumbent_token_after incumbent_token
   local current_incumbent_token publish_replacement publish_rc
   local total_started_ms phase_started_ms tree_total=0 tree_reused=0 tree_copied=0 tree_removed=0
   local predecessor_identity='none'
+  local predecessor_fingerprint record_fingerprint extra reuse_manifest_eligible='false'
   total_started_ms="$(dependency_generation_now_ms)"
   if [ -z "${DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT:-}" ]; then
     dependency_generation_configure_workspace_dirs "$integration_root" || return $?
@@ -1017,6 +1148,12 @@ dependency_generation_ensure() {
     return 1
   }
   tree_total="$(awk 'END { print NR + 0 }' "$before_manifest")"
+  if dependency_generation_manifest_records_are_reusable "$before_manifest" "$integration_root"; then
+    reuse_manifest_eligible='true'
+  else
+    dependency_generation_log \
+      'live dependency manifest is not safe for incremental reuse; retaining full-copy compatibility'
+  fi
   dependency_generation_log \
     "captured live dependency manifest (before copy): trees=$tree_total source=$source_before"
   identity="v1-$source_before"
@@ -1075,23 +1212,72 @@ dependency_generation_ensure() {
     incumbent_token=''
   fi
 
+  if [ "$reuse_manifest_eligible" = 'true' ] \
+    && dependency_generation_find_reusable_predecessor "$generation_root" "$identity"; then
+    predecessor_identity="$DEPENDENCY_GENERATION_PREDECESSOR_ID"
+  fi
+
   dependency_generation_log "building $identity from a stable live dependency snapshot"
   phase_started_ms="$(dependency_generation_now_ms)"
-  while IFS= read -r nm; do
-    rel="${nm#"$integration_root"/}"
-    dependency_generation_log "copying dependency tree: $rel"
-    if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
-      dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
-        "trees_copied=$tree_copied"
-      dependency_generation_remove_build "$build"
-      return 1
-    fi
-    dependency_generation_prune_ephemeral "$tree/$rel"
-    tree_copied=$((tree_copied + 1))
-    dependency_generation_log "copied dependency tree: $rel"
-  done < <(dependency_generation_enumerate_node_modules "$integration_root")
+  if [ "$predecessor_identity" != 'none' ]; then
+    while IFS=$'\t' read -r rel record_fingerprint extra; do
+      nm="$integration_root/$rel"
+      predecessor_fingerprint="$(
+        dependency_generation_manifest_lookup \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST" "$rel" 2>/dev/null || true
+      )"
+      if [ -n "$predecessor_fingerprint" ] \
+        && [ "$predecessor_fingerprint" = "$record_fingerprint" ]; then
+        dependency_generation_log "reusing dependency tree from $predecessor_identity: $rel"
+        if ! dependency_generation_materialize_tree \
+          "$DEPENDENCY_GENERATION_PREDECESSOR_TREE/$rel" "$tree/$rel"; then
+          dependency_generation_release_selector_lease
+          dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
+            "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
+          dependency_generation_remove_build "$build"
+          return 1
+        fi
+        dependency_generation_prune_ephemeral "$tree/$rel"
+        tree_reused=$((tree_reused + 1))
+        dependency_generation_log \
+          "reused dependency tree from $predecessor_identity: $rel mode=$DEPENDENCY_GENERATION_MATERIALIZE_MODE"
+      else
+        dependency_generation_log "copying changed dependency tree: $rel"
+        if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+          dependency_generation_release_selector_lease
+          dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
+            "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
+          dependency_generation_remove_build "$build"
+          return 1
+        fi
+        dependency_generation_prune_ephemeral "$tree/$rel"
+        tree_copied=$((tree_copied + 1))
+        dependency_generation_log "copied changed dependency tree: $rel"
+      fi
+    done < "$before_manifest"
+    while IFS=$'\t' read -r rel record_fingerprint extra; do
+      if ! dependency_generation_manifest_lookup "$before_manifest" "$rel" >/dev/null; then
+        tree_removed=$((tree_removed + 1))
+      fi
+    done < "$DEPENDENCY_GENERATION_PREDECESSOR_MANIFEST"
+    dependency_generation_release_selector_lease
+  else
+    while IFS= read -r nm; do
+      rel="${nm#"$integration_root"/}"
+      dependency_generation_log "copying dependency tree: $rel"
+      if ! dependency_generation_copy_independent "$nm" "$tree/$rel"; then
+        dependency_generation_emit_phase tree-copy "$phase_started_ms" failed \
+          "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
+        dependency_generation_remove_build "$build"
+        return 1
+      fi
+      dependency_generation_prune_ephemeral "$tree/$rel"
+      tree_copied=$((tree_copied + 1))
+      dependency_generation_log "copied dependency tree: $rel"
+    done < <(dependency_generation_enumerate_node_modules "$integration_root")
+  fi
   dependency_generation_emit_phase tree-copy "$phase_started_ms" ok \
-    "trees_copied=$tree_copied"
+    "trees_reused=$tree_reused trees_copied=$tree_copied trees_removed=$tree_removed predecessor=$predecessor_identity"
 
   if [ -n "${DEPENDENCY_GENERATION_AFTER_COPY_HOOK:-}" ]; then
     bash -c "$DEPENDENCY_GENERATION_AFTER_COPY_HOOK"
@@ -1116,6 +1302,22 @@ dependency_generation_ensure() {
     dependency_generation_remove_build "$build"
     return 75
   fi
+  if [ "$reuse_manifest_eligible" = 'true' ]; then
+    dependency_generation_manifest_records_are_reusable "$after_manifest" "$integration_root" || {
+      dependency_generation_log 'FATAL: verified source manifest lost the incremental-reuse contract'
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+    tree_manifest="$build/.tree-manifest"
+    cp -- "$after_manifest" "$tree_manifest" || {
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+    tree_manifest_digest="$(dependency_generation_manifest_fingerprint "$tree_manifest")" || {
+      dependency_generation_remove_build "$build"
+      return 1
+    }
+  fi
   # Freeze file contents before recording the snapshot identity because mode is
   # part of the metadata fingerprint. Recording first would make every freshly
   # published generation invalidate itself on its next read.
@@ -1133,9 +1335,17 @@ dependency_generation_ensure() {
   dependency_generation_emit_phase snapshot-fingerprint "$phase_started_ms" ok
   dependency_generation_log "fingerprinted immutable copied dependency snapshot: snapshot=$snapshot"
   marker="$build/.papercusp-dependency-generation"
-  printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n%s\n' \
-    "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
-    "$snapshot" "$(date +%s)" "$DEPENDENCY_GENERATION_SCOPE_RECORD" > "$marker"
+  {
+    printf 'schema=1\nidentity=%s\nsource=%s\nclosure=%s\nsnapshot=%s\ncreated=%s\n' \
+      "$identity" "$source_after" "$DEPENDENCY_GENERATION_CLOSURE_FINGERPRINT" \
+      "$snapshot" "$(date +%s)"
+    if [ -n "$tree_manifest_digest" ]; then
+      printf 'tree_manifest_schema=1\ntree_manifest_sha256=%s\npredecessor=%s\ntrees_reused=%s\ntrees_copied=%s\ntrees_removed=%s\n' \
+        "$tree_manifest_digest" "$predecessor_identity" \
+        "$tree_reused" "$tree_copied" "$tree_removed"
+    fi
+    printf '%s\n' "$DEPENDENCY_GENERATION_SCOPE_RECORD"
+  } > "$marker"
 
   phase_started_ms="$(dependency_generation_now_ms)"
   dependency_generation_acquire_publish_lock "$generation_root" || {
