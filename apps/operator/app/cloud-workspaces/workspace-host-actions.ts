@@ -51,6 +51,28 @@ export interface WorkspaceHostActionResponse {
   error?: string;
 }
 
+/**
+ * Treat the browser/server boundary as untrusted input. In particular, a
+ * truthy string or number in `ok` must never be allowed to masquerade as the
+ * literal success boolean the mutation seam promises to its callers.
+ */
+function isWorkspaceHostActionResponse(
+  value: unknown,
+): value is WorkspaceHostActionResponse {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.ok === "boolean" &&
+    (record.operationId === undefined ||
+      typeof record.operationId === "string") &&
+    (record.message === undefined || typeof record.message === "string") &&
+    (record.error === undefined || typeof record.error === "string")
+  );
+}
+
 export const PROVIDERS: readonly {
   target: ProviderTarget;
   label: string;
@@ -131,9 +153,8 @@ export async function workspaceHostActionRest(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(payload),
   });
-  const body = (await response
-    .json()
-    .catch(() => null)) as WorkspaceHostActionResponse | null;
+  const parsedBody = await response.json().catch(() => null);
+  const body = isWorkspaceHostActionResponse(parsedBody) ? parsedBody : null;
   if (!response.ok || !body?.ok) {
     throw new Error(
       body?.message ||
