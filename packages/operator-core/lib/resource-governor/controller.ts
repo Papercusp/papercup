@@ -13,6 +13,8 @@ import type { AdmissionClass, ResourceDemand } from './admission';
 import type { HealthResource, HealthSeverity, HealthVerdict } from './health-analysis';
 
 export const CAPLESS_CONTROLLER_SCHEMA_VERSION = 'resource-governor-controller-v1' as const;
+/** Version of the durable controller-internal state (distinct from a decision's wire schema). */
+export const CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION = 'resource-governor-controller-state-v1' as const;
 
 const PROGRESS_LOSS_SIGNALS = new Set([
   'progress.heartbeatLagMs',
@@ -42,6 +44,8 @@ export interface CaplessControllerOptions {
   readonly severePauseMs?: number;
   readonly severePauseMinimumShare?: number;
   readonly protectedClasses?: ReadonlySet<AdmissionClass>;
+  /** Optional durable state restored before the first control step. */
+  readonly state?: CaplessControllerState;
 }
 
 export interface ResourceClassFeedback {
@@ -56,6 +60,33 @@ export interface ResourceClassFeedback {
   readonly observedAtMs: number;
   readonly expiresAtMs: number;
   readonly reason: string;
+}
+
+/**
+ * Durable representation of one class' feedback memory. This is a snapshot,
+ * not a limit configuration: it deliberately has no `cap` or upper-bound
+ * field, so a restored window remains transient feedback rather than a new
+ * productive-capacity ceiling.
+ */
+export interface CaplessControllerClassState {
+  readonly admissionClass: AdmissionClass;
+  readonly desiredWindow: number;
+  /** Effective window at `evaluatedAtMs`; derived from the expiring pause state. */
+  readonly effectiveWindow?: number;
+  readonly healthySamples: number;
+  readonly pauseUntilMs: number;
+  readonly feedback: readonly ResourceClassFeedback[];
+  readonly lastContractionAtMs: readonly {
+    readonly resource: HealthResource;
+    readonly atMs: number;
+  }[];
+}
+
+export interface CaplessControllerState {
+  readonly schemaVersion: typeof CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION;
+  readonly generation: number;
+  readonly evaluatedAtMs?: number;
+  readonly classes: readonly CaplessControllerClassState[];
 }
 
 export interface ClassAdmissionDecision {
@@ -204,6 +235,77 @@ export class CaplessAdaptiveController {
     this.severePauseMs = Math.max(1, Math.floor(options.severePauseMs ?? 5_000));
     this.severePauseMinimumShare = clampUnit(options.severePauseMinimumShare ?? 0.5);
     this.protectedClasses = new Set(options.protectedClasses ?? ['control']);
+    if (options.state) this.restore(options.state);
+  }
+
+  /**
+   * Restore controller feedback after a process restart.
+   *
+   * Invalid rows are ignored class-by-class. The next `step` evaluates fresh
+   * health and expires stale feedback before exposing a decision, so a damaged
+   * or old snapshot can never become an admission ceiling.
+   */
+  restore(state: CaplessControllerState): void {
+    if (!state || state.schemaVersion !== CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION) return;
+    if (!Number.isFinite(state.generation) || state.generation < 0) return;
+    this.#classes.clear();
+    this.#generation = Math.max(0, Math.floor(state.generation));
+    for (const row of state.classes ?? []) {
+      const admissionClass = typeof row?.admissionClass === 'string' ? row.admissionClass.trim() : '';
+      if (!admissionClass) continue;
+      const desiredWindow = Number(row.desiredWindow);
+      if (!Number.isFinite(desiredWindow) || desiredWindow < this.minimumWindow) continue;
+      const healthySamples = Number(row.healthySamples);
+      const pauseUntilMs = Number(row.pauseUntilMs);
+      const feedback = new Map<HealthResource, ResourceClassFeedback>();
+      for (const item of row.feedback ?? []) {
+        if (!item || typeof item.resource !== 'string' || !Number.isFinite(item.expiresAtMs)) continue;
+        feedback.set(item.resource as HealthResource, Object.freeze({ ...item }));
+      }
+      const lastContractionAtMs = new Map<HealthResource, number>();
+      for (const item of row.lastContractionAtMs ?? []) {
+        if (!item || typeof item.resource !== 'string' || !Number.isFinite(item.atMs)) continue;
+        lastContractionAtMs.set(item.resource as HealthResource, Math.max(0, Math.floor(item.atMs)));
+      }
+      this.#classes.set(admissionClass, {
+        desiredWindow: Math.min(Number.MAX_SAFE_INTEGER, Math.floor(desiredWindow)),
+        healthySamples: Number.isFinite(healthySamples) ? Math.max(0, Math.floor(healthySamples)) : 0,
+        pauseUntilMs: Number.isFinite(pauseUntilMs) ? Math.max(0, Math.floor(pauseUntilMs)) : 0,
+        feedback,
+        lastContractionAtMs,
+      });
+    }
+  }
+
+  /** Return a stable, JSON-safe snapshot for a durable state writer. */
+  snapshot(evaluatedAtMs = Date.now()): CaplessControllerState {
+    const atMs = Number.isFinite(evaluatedAtMs) ? Math.max(0, Math.floor(evaluatedAtMs)) : Date.now();
+    this.#expire(atMs);
+    const classes = [...this.#classes.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([admissionClass, state]) => Object.freeze({
+        admissionClass,
+        desiredWindow: state.desiredWindow,
+        effectiveWindow: this.protectedClasses.has(admissionClass) || state.pauseUntilMs <= atMs
+          ? state.desiredWindow
+          : 0,
+        healthySamples: state.healthySamples,
+        pauseUntilMs: state.pauseUntilMs,
+        feedback: Object.freeze(
+          [...state.feedback.values()].sort((a, b) => a.resource.localeCompare(b.resource)),
+        ),
+        lastContractionAtMs: Object.freeze(
+          [...state.lastContractionAtMs.entries()]
+            .sort(([a], [b]) => a.localeCompare(b))
+            .map(([resource, atMs]) => Object.freeze({ resource, atMs })),
+        ),
+      }));
+    return Object.freeze({
+      schemaVersion: CAPLESS_CONTROLLER_STATE_SCHEMA_VERSION,
+      generation: this.#generation,
+      evaluatedAtMs: atMs,
+      classes: Object.freeze(classes),
+    });
   }
 
   #state(admissionClass: AdmissionClass): MutableClassState {
