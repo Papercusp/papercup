@@ -2200,6 +2200,55 @@ impl OperatorClient {
         serde_json::from_value::<models::TestRunResult>(v).context("decode test run result")
     }
 
+    /// Start one test file through the observable detached harness lifecycle.
+    /// The returned run id is used by the status poller and cancellation route.
+    pub async fn testing_run_detached(
+        &self,
+        slug: &str,
+        file: &str,
+    ) -> Result<models::TestRunSnapshot> {
+        let v = self
+            .post_json(
+                &format!("/api/harness/{slug}/testing/run-detached"),
+                serde_json::json!({ "filePath": file }),
+            )
+            .await?;
+        serde_json::from_value::<models::TestRunSnapshot>(v)
+            .context("decode detached test run start")
+    }
+
+    /// Read the current rolling snapshot for one detached test run.
+    pub async fn testing_run_status(
+        &self,
+        slug: &str,
+        run_id: &str,
+    ) -> Result<models::TestRunSnapshot> {
+        let v = self
+            .get_json(&format!(
+                "/api/harness/{slug}/testing/run-detached/{}",
+                urlencode(run_id)
+            ))
+            .await?;
+        serde_json::from_value::<models::TestRunSnapshot>(v)
+            .context("decode detached test run status")
+    }
+
+    /// Request cancellation of one detached test run.  A false response means
+    /// the run was already terminal (or evicted), so the status poller remains
+    /// the authority for the final UI state.
+    pub async fn testing_run_cancel(&self, slug: &str, run_id: &str) -> Result<bool> {
+        let v = self
+            .post_json(
+                &format!(
+                    "/api/harness/{slug}/testing/run-detached/{}/cancel",
+                    urlencode(run_id)
+                ),
+                serde_json::json!({}),
+            )
+            .await?;
+        Ok(v.get("ok").and_then(serde_json::Value::as_bool).unwrap_or(false))
+    }
+
     /// The effective Config-tab view (D-013): Claude Code defaults overlaid by
     /// the harness's `.claude/settings.json`, plus the raw file body for edits.
     pub async fn claude_settings_effective(

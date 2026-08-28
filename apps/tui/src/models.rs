@@ -1535,6 +1535,38 @@ pub struct TestRunResult {
     pub output: String,
 }
 
+/// Snapshot returned by the detached harness-testing lifecycle.  The shape is
+/// shared by the start and status endpoints, so the TUI can paint rolling
+/// output without holding a request open and can address cancellation by the
+/// stable `run_id`.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TestRunSnapshot {
+    #[serde(default)]
+    pub run_id: String,
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub command: Vec<String>,
+    /// running | pass | fail | cancelled | error.
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub exit_code: Option<i32>,
+    #[serde(default)]
+    pub started_at: i64,
+    #[serde(default)]
+    pub finished_at: Option<i64>,
+    #[serde(default)]
+    pub output: String,
+    #[serde(default)]
+    pub truncated: bool,
+}
+
 /// `/api/harness/:slug/claude-settings/effective` → the editable Config-tab
 /// view (D-013): the raw file body (`content` — what `:set`/`:unset` edit and
 /// PUT back), the *effective* settings (Claude Code defaults overlaid by the
