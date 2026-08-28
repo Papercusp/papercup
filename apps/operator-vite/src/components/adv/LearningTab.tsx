@@ -2415,7 +2415,28 @@ function ImprovementsView({
                 : isFiltered
                   ? "The paired exact summary is updating; no page-local denominator is substituted."
                   : digest?.windowed
-                    ? `${isFiltered ? "Rows matching the current filter / search, out of those loaded." : "Rows loaded — ideas and the work they became."} The list holds the most recent ${digest.returned} of ${digest.total} captured; filters and counts here see the loaded rows.`
+                    ? // D-003 again, one level out: this tooltip ANNOTATES a number,
+                      // so it may not describe a different population than the one
+                      // rendered beside it. It used to say "the list holds the most
+                      // recent {returned} of {total} captured", which is false here:
+                      // `digest.returned` counts the work items the read projected
+                      // (learning-digest-snapshot.ts `digest.returned =
+                      // projectedItems.length`, and buildDigest's `returned =
+                      // candidates.length` on the unfiltered path — either way it
+                      // equals autoEligible + humanQueue on the wire), while `rows`
+                      // ALSO carries the routed ideas not yet filed as work that
+                      // `allRows` appends when lane === 'all'.
+                      //
+                      // ⚠ This branch is reachable ONLY when `isFiltered` is false —
+                      // and `serverPredicateActive` is true for any lane, source,
+                      // rail, search or column selection. So every NARROWING path
+                      // renders one of the two filtered tooltips above, never this
+                      // one, and the divergence here is one-directional: the listed
+                      // count can only be >= the window figure. An earlier draft of
+                      // this very string claimed "the lane, source and rail
+                      // selections narrow that set" — false about the branch it sits
+                      // in, which is the same defect it was written to fix.
+                      `Rows listed: the ${digest.returned} most recent of ${digest.total} captured work items, plus any routed ideas not yet filed as work — so this count can exceed ${digest.returned}. Filters and counts here see only the loaded rows.`
                     : "Rows in scope — ideas and the work they became."
             }
           >
@@ -2423,7 +2444,11 @@ function ImprovementsView({
               ? improveSummary && !summarySync.loading
                 ? `${visibleRows.length} of ${improveSummary.matched}`
                 : "updating"
-              : `${rows.length}${digest?.windowed ? " loaded" : " items"}`}
+              : // "listed", not "loaded": on this branch `rows.length` is the loaded
+                // work items PLUS the idea-only rows the read never loaded as work,
+                // so calling it "loaded" made the visible number itself assert the
+                // tooltip's false claim.
+                `${rows.length}${digest?.windowed ? " listed" : " items"}`}
           </span>
           <Tooltip label="Reload the improve feed">
             <button

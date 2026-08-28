@@ -1069,6 +1069,56 @@ describe("LearningTab — Improvements view (default)", () => {
     });
   });
 
+  // WI-386679. The count element's tooltip may not describe a different
+  // population than the number it annotates. It used to say "the list holds the
+  // most recent {returned} of {total} captured", but `digest.returned` counts
+  // only the WORK ITEMS the read projected (== autoEligible + humanQueue on the
+  // wire), while the rendered set also carries the routed ideas not yet filed as
+  // work that `allRows` appends when lane === 'all'. Same defect class as D-003,
+  // one level out from the rail chips.
+  //
+  // The lane is deliberately left at its 'all' default: `serverPredicateActive`
+  // is true for ANY lane/source/rail/search/column selection, so a narrowed view
+  // renders one of the two filtered tooltips instead and can never reach this
+  // branch. This is the only shape in which the windowed tooltip is visible at
+  // all, which is why the divergence it must not misdescribe is one-directional.
+  it("never claims the list holds the read's window, which excludes unfiled ideas", () => {
+    improvementsResult = {
+      data: [
+        {
+          ...improvementsDigest,
+          // Realistic: `returned` equals autoEligible + humanQueue (1 + 1). The
+          // fixture's two routed ideas are unfiled (`plan:` / `gym:` refs, not
+          // `wi:`), so they are listed too — 4 rows under a "2" window.
+          returned: 2,
+          windowed: true,
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+
+    render(<LearningTab />);
+
+    const count = screen.getByText("4 listed");
+    const title = count.getAttribute("title") ?? "";
+    // The window figure survives — as a fact about the READ, and explicitly as
+    // a floor rather than a description of the list.
+    expect(title).toContain(
+      "the 2 most recent of 135 captured work items, plus any routed ideas not yet filed as work",
+    );
+    // ...but never as a claim about the list, which holds 4.
+    expect(title).not.toContain("The list holds");
+    // Nor may it repeat the earlier wrong repair, which blamed the narrowing
+    // selections that cannot be active on this branch at all.
+    expect(title).not.toContain("selections narrow");
+    // And the visible suffix must not call this count "loaded": two of the four
+    // rows are ideas the read never loaded as work.
+    expect(screen.queryByText("4 loaded")).toBeNull();
+  });
+
   it("preserves a server-classified auto-row whose only search hit was raw tierReason", () => {
     nuqsState.impq = "no protected path";
     improvementsResult = {
