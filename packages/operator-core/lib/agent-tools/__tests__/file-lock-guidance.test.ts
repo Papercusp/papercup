@@ -27,12 +27,27 @@ const canonicalSources = [
   'packages/operator-core/lib/agent-tools/coordination/tools/presence.ts',
 ].map((relative) => resolve(repoRoot, relative));
 
+const manualLockGuidanceSources = [
+  'apps/operator/prompts/papercusp-su-engineer.tools.md',
+  'apps/operator/prompts/papercusp-su-power.tools.md',
+  'libs/papercusp/packages/harness/blueprints/base/prompts/su.md',
+].map((relative) => resolve(repoRoot, relative));
+
 describe('canonical file-lock guidance', () => {
   it('routes file-holder reads to locks:queue and reserves locks:list for resources', () => {
     for (const path of canonicalSources) {
       const source = readFileSync(path, 'utf8');
       expect(source, path).not.toContain('who holds a file → `locks:list`');
       expect(source, path).toContain('locks:queue');
+    }
+  });
+
+  it('documents the repository-relative and external path domains for manual locks', () => {
+    for (const path of manualLockGuidanceSources) {
+      const source = readFileSync(path, 'utf8');
+      expect(source, path).toContain('repository-relative POSIX');
+      expect(source, path).toContain('InvalidPathError');
+      expect(source, path).toContain('external_paths');
     }
   });
 });

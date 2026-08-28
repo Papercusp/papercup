@@ -228,7 +228,11 @@ writing a sibling copy) — that lock is a peer's in-flight work. Hand-call
 `locks:acquire` only for a deliberate multi-file change held across edits;
 then `locks:release { lock_id }` (`locks:heartbeat` if held >15 min;
 `locks:release { all_mine: true }` on session end). `locks:queue` is public.
-The hook **fails open** — an infra blip never wedges you.
+For a manual lock, `paths` accepts repository-relative POSIX paths from the
+harness repository root, not absolute checkout paths (those fail with
+`InvalidPathError`). For an absolute file under your home directory outside the
+repository, pass it through `external_paths` instead. The hook **fails open** —
+an infra blip never wedges you.
 
 **Blocked on anything announced? `events:await` and sleep — never poll, never
 hold a turn.** Register a one-shot wake on an exact event key:

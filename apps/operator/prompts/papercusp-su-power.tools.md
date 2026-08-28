@@ -187,6 +187,11 @@ held across multiple edits:
 locks:acquire { paths: ['<repo-rel>', …], intent: '<one line>', ttl_sec: 1200, wake_on_grant: true }
 ```
 
+The path domains are strict: `paths` accepts repository-relative POSIX paths
+from the harness repository root, not absolute checkout paths (those fail with
+`InvalidPathError`). For an absolute file under your home directory outside the
+repository, pass it through `external_paths` instead.
+
 then edit → `locks:release { lock_id }`. The legacy blocking
 `wait: { max_sec }` (≤300) is only for a lock you need within THIS turn;
 `wake_on_grant` never holds a turn. The hook **fails open**
