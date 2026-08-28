@@ -2411,6 +2411,7 @@ impl App {
         {
             state.error = Some("SU-session snapshot identity mismatch".into());
             state.stale = true;
+            state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
             return;
         }
         let previous_native = state
@@ -2474,6 +2475,7 @@ impl App {
         {
             state.error = Some("SU-session event identity mismatch".into());
             state.stale = true;
+            state.reconciliation = crate::su_session::SuSessionReconciliation::FailedOrphaned;
             return Action::Render;
         }
         if envelope.sequence <= state.last_sequence {
@@ -10002,6 +10004,10 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("identity mismatch"));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::FailedOrphaned
+        );
     }
 
     #[test]

@@ -3732,12 +3732,12 @@ async fn agent_chat_load(
             .cloned()
     };
     let Some(summary) = selected else {
-    let _ = tx.send(Event::AgentChatLoaded {
-        harness,
-        chat_id: None,
-        role: "operator".to_string(),
-        load_token,
-        summaries,
+        let _ = tx.send(Event::AgentChatLoaded {
+            harness,
+            chat_id: None,
+            role: "operator".to_string(),
+            load_token,
+            summaries,
             messages: Vec::new(),
             approvals: Vec::new(),
         });
