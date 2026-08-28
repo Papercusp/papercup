@@ -17,6 +17,10 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { resourceLockDomain } from './coordination-domain';
+import {
+  findCrossDomainResourceConflicts,
+  CROSS_DOMAIN_CONFLICT_HINT,
+} from './cross-domain-conflict';
 import { broadcastResourceDrainStart } from './resource-broadcast';
 import { hardText, LIMITS } from '../limits';
 
@@ -74,6 +78,39 @@ export default defineTool({
     const coordinationDomain = resourceLockDomain(args.resource);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
     const reason = args.reason ?? '';
+
+    // WI-562584: the domain above is INFERRED from the resource name, and a
+    // wrong inference used to fail OPEN — granting over a live hold that the
+    // holder could not see (git-sync's `extra_lock_resources` are the live
+    // case: it holds them all under the workspace domain, they advertise no
+    // family, so this acquire lands in the caller-tree domain). Refuse instead
+    // of granting an exclusivity that does not hold. Read cannot see another
+    // checkout's domain, so this adds no cross-tree false conflicts.
+    let crossDomain;
+    try {
+      crossDomain = await findCrossDomainResourceConflicts({
+        resource: args.resource,
+        targetDomain: coordinationDomain,
+        requestedMode: args.mode,
+        owner: ownerId,
+      });
+    } catch (err) {
+      // Fail CLOSED: an unanswered exclusivity question is not permission.
+      return json({
+        ok: false,
+        reason: 'cross_domain_check_failed',
+        error: err instanceof Error ? err.message : String(err),
+        hint: 'Could not read the sibling lock coordination domains, so it is unknown whether a peer holds this resource. Retry; if it persists, check the locks store with locks:list.',
+      });
+    }
+    if (crossDomain.length > 0) {
+      return json({
+        ok: false,
+        reason: 'held_in_other_domain',
+        holders: crossDomain,
+        hint: CROSS_DOMAIN_CONFLICT_HINT,
+      });
+    }
 
     if (args.mode === 'shared') {
       const r = await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
