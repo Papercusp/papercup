@@ -54,6 +54,7 @@ import {
   buildPopulationSummary,
   buildSourceHealth,
   buildSuggestionChips,
+  collapseNeedsYou,
   filterLedgerRows,
   sortLedgerRows,
   type KindFacet,
@@ -68,6 +69,16 @@ import WorkflowDetailView from './WorkflowDetailView';
 import './adv-workflows.css';
 
 type Mode = 'workflows' | 'activity';
+
+/**
+ * How many ledger rows are put in the DOM at once.
+ *
+ * Measured in the desktop shell against the real workspace: the unbounded ledger rendered
+ * 4,441 rows and 99,597 DOM nodes. The facets, the search and the sort are the instruments
+ * for finding a row; a five-figure DOM is not. What is held back is always DISCLOSED — a
+ * silently truncated ledger would be a worse lie than a slow one.
+ */
+const ROW_RENDER_CAP = 200;
 
 const STATE_FACETS: ReadonlyArray<{ id: StateFacet; label: string }> = [
   { id: 'all', label: 'All' },
@@ -268,7 +279,7 @@ export default function AdvWorkflowsTab() {
   const sourceHealth = useMemo(() => buildSourceHealth(sources), [sources]);
   const landingSources = external?.sources ?? [];
   const needsYou = useMemo(
-    () => buildNeedsYou({ sources: landingSources, rows }),
+    () => collapseNeedsYou(buildNeedsYou({ sources: landingSources, rows })),
     [landingSources, rows],
   );
   const chips = useMemo(() => buildSuggestionChips(landingSources), [landingSources]);
@@ -518,8 +529,15 @@ export default function AdvWorkflowsTab() {
       openComposer(`${entry.message}. Check the connection and tell me what it needs to be restored.`);
       return;
     }
+    // The collapsed aggregate stands for N workflows, so its action is the attention FACET —
+    // the list of the very rows it counted — not the run feed.
+    if (entry.id === 'needs-you:workflows-attention') {
+      void setStateFacet('attention');
+      void setMode('workflows');
+      return;
+    }
     void setMode('activity');
-  }, [openComposer, setMode]);
+  }, [openComposer, setMode, setStateFacet]);
 
   const submitComposer = useCallback((event: FormEvent) => {
     event.preventDefault();
@@ -664,12 +682,13 @@ export default function AdvWorkflowsTab() {
         ) : null}
       </section>
 
-      {/* D-018, preserved by D-004: rendered ONLY when non-empty. No empty-state branch. */}
-      {needsYou.length > 0 ? (
+      {/* D-018, preserved by D-004: rendered ONLY when non-empty. No empty-state branch.
+          Bounded by collapseNeedsYou so it stays an interrupt rather than a wall. */}
+      {needsYou.rows.length > 0 ? (
         <section className="pc-wf__needs" aria-label="Needs you" data-testid="workflows-needs-you">
           <span className="pc-wf__needs-lead">Needs you</span>
           <ul className="pc-wf__needs-list">
-            {needsYou.map((entry) => (
+            {needsYou.rows.map((entry) => (
               <li key={entry.id} className="pc-wf__needs-item" data-severity={entry.severity}>
                 <i className="pc-wf__dot" data-state={entry.severity === 'bad' ? 'attention' : 'paused'} aria-hidden />
                 <span className="pc-wf__needs-msg">{entry.message}</span>
@@ -679,6 +698,15 @@ export default function AdvWorkflowsTab() {
               </li>
             ))}
           </ul>
+          {needsYou.hiddenCount > 0 ? (
+            <button
+              type="button"
+              className="pc-wf__btn pc-wf__btn--sm pc-wf__btn--ghost"
+              onClick={() => { void setStateFacet('attention'); void setMode('workflows'); }}
+            >
+              <span className="pc-wf__btn-inner">{needsYou.hiddenCount} more</span>
+            </button>
+          ) : null}
         </section>
       ) : null}
 
@@ -753,12 +781,14 @@ export default function AdvWorkflowsTab() {
       <div className="pc-wf__body">
         {mode === 'activity' ? (
           <ActivityList
-            activity={activity}
+            activity={activity.slice(0, ROW_RENDER_CAP)}
+            hiddenCount={Math.max(0, activity.length - ROW_RENDER_CAP)}
             onOpen={(entry) => { if (entry.automationId) void setSelectedId(entry.automationId); }}
           />
         ) : (
           <WorkflowsLedger
-            rows={visibleRows}
+            rows={visibleRows.slice(0, ROW_RENDER_CAP)}
+            hiddenCount={Math.max(0, visibleRows.length - ROW_RENDER_CAP)}
             selectedId={selectedRow?.id ?? null}
             loading={loading}
             emptyLabel={filtered

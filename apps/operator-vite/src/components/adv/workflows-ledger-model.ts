@@ -319,17 +319,40 @@ function sourceConnected(source: Pick<LedgerSourceInput, 'status' | 'lastError'>
  * control, which is what keeps them from disagreeing.
  */
 export function buildSourceHealth(sources: readonly AutomationSourceItem[]): SourceHealth[] {
-  return sources.map((source) => ({
-    id: source.id,
-    label: sentenceCase(source.label),
-    token: source.kind === 'schedule' ? 'schedule' : source.label,
-    armedCount: source.armedCount,
-    bindingCount: source.bindingCount,
-    status: source.status,
-    // A schedule source is internal plumbing and has no connection to lose; only an
-    // external source can be "not connected", so only it can read bad.
-    tone: source.kind === 'schedule' || source.status === 'connected' ? 'ok' : 'bad',
-  }));
+  // DEDUPED BY TOKEN. A workspace routinely holds several source rows of the same kind (two
+  // Gmail accounts, two Calendars), and one pill per ROW rendered the legend as "Gmail 0/1"
+  // beside "Gmail 0/2" — two controls with the same name that filter identically, because
+  // the token is the kind. Observed live before this was fixed. One pill per kind, counts
+  // summed, and the tone degrades if ANY row of that kind is unhealthy: a legend that reads
+  // "ok" while one of its two accounts is disconnected is the failure worth avoiding.
+  const byToken = new Map<string, SourceHealth>();
+  for (const source of sources) {
+    const token = source.kind === 'schedule' ? 'schedule' : source.label;
+    const healthy = source.kind === 'schedule' || source.status === 'connected';
+    const existing = byToken.get(token);
+    if (!existing) {
+      byToken.set(token, {
+        id: source.id,
+        label: sentenceCase(source.label),
+        token,
+        armedCount: source.armedCount,
+        bindingCount: source.bindingCount,
+        status: source.status,
+        // A schedule source is internal plumbing and has no connection to lose; only an
+        // external source can be "not connected", so only it can read bad.
+        tone: healthy ? 'ok' : 'bad',
+      });
+      continue;
+    }
+    existing.armedCount += source.armedCount;
+    existing.bindingCount += source.bindingCount;
+    if (!healthy) {
+      existing.tone = 'bad';
+      // Surface the unhealthy row's own status — "connected" would hide the broken one.
+      existing.status = source.status;
+    }
+  }
+  return [...byToken.values()];
 }
 
 /** Prompt text per source kind — the vocabulary the composer suggests in. */
@@ -405,6 +428,67 @@ export function buildNeedsYou(input: {
   }
 
   return items;
+}
+
+export interface CollapsedNeedsYou {
+  rows: NeedsYouItem[];
+  /** How many raised items are not represented by a row — 0 when everything fits. */
+  hiddenCount: number;
+}
+
+/**
+ * Bound the needs-you strip so it stays an INTERRUPT rather than a wall.
+ *
+ * Measured on the real workspace: `buildNeedsYou` raised 55 items, and 55 stacked lines
+ * defeat D-018 exactly as thoroughly as an always-present "all good" card does — nobody
+ * reads the region, so it fails on the day it matters. The rule is that the strip must be
+ * scannable in one glance.
+ *
+ * Two moves, in this order:
+ *   1. SOURCE problems stay individual. There are only ever a handful, they name different
+ *      connections, and each needs a different fix.
+ *   2. Per-workflow attention items COLLAPSE into one counted row once there is more than
+ *      one, because "12 workflows need attention" is the actionable sentence — the twelve
+ *      names are what the attention FACET is for, which is where the row's action goes.
+ *
+ * Anything still over `maxRows` is dropped from the rows and reported as `hiddenCount`, so
+ * the strip never silently under-reports what it is holding back.
+ */
+export function collapseNeedsYou(
+  items: readonly NeedsYouItem[],
+  opts: { maxRows?: number } = {},
+): CollapsedNeedsYou {
+  const maxRows = Math.max(1, opts.maxRows ?? 4);
+  const workflowItems = items.filter((item) => item.id.startsWith('needs-you:workflow:'));
+  const sourceItems = items.filter((item) => !item.id.startsWith('needs-you:workflow:'));
+
+  // Severity order: a dead connection outranks a failing run, because nothing the failing
+  // run needs can even be attempted while the source is down.
+  const ordered = [...sourceItems].sort((a, b) => Number(b.severity === 'bad') - Number(a.severity === 'bad'));
+
+  const rows: NeedsYouItem[] = [...ordered];
+  if (workflowItems.length === 1) {
+    rows.push(workflowItems[0]);
+  } else if (workflowItems.length > 1) {
+    rows.push({
+      id: 'needs-you:workflows-attention',
+      kind: 'review-runs',
+      message: `${workflowItems.length} workflows need attention`,
+      actionLabel: 'Review',
+      severity: 'warn',
+    });
+  }
+
+  if (rows.length <= maxRows) return { rows, hiddenCount: 0 };
+  const kept = rows.slice(0, maxRows);
+  // The dropped rows may include the collapsed aggregate, so count the ITEMS it stood for
+  // rather than the row — otherwise a strip hiding one row could be hiding fifty problems.
+  const droppedRows = rows.slice(maxRows);
+  const hiddenCount = droppedRows.reduce(
+    (total, row) => total + (row.id === 'needs-you:workflows-attention' ? workflowItems.length : 1),
+    0,
+  );
+  return { rows: kept, hiddenCount };
 }
 
 /**

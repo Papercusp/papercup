@@ -94,8 +94,24 @@ describe('Workflows legibility contract', () => {
       '.pc-wf__run-when',
       '.pc-wf__run-what',
       '.pc-wf__run-cost',
+      '.pc-wf__more',
     ];
     for (const selector of metadataSelectors) expectFontFloor(selector, 12);
+  });
+
+  it('gives both panes a definite height budget so neither can render at zero height', () => {
+    // Measured in the desktop shell: with only `flex: 1` against a min-height page, the
+    // ledger had clientHeight 0 while holding a 199,890px scrollHeight — in the DOM and
+    // invisible on screen. A flex chain is not a height; an explicit budget is.
+    for (const selector of ['.pc-wf__ledger', '.pc-wf__insp']) {
+      const declared = [...CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+        .filter((match) => selectorsOf(match[1]).includes(selector))
+        .map((match) => match[2])
+        .join('\n');
+      expect(declared, `${selector} must declare a min-height`).toMatch(/min-height:/);
+      expect(declared, `${selector} must declare a max-height it can scroll inside`).toMatch(/max-height:/);
+      expect(declared, `${selector} must scroll inside that budget`).toMatch(/overflow-y:\s*auto/);
+    }
   });
 
   it('uses the stronger dim foreground token for secondary production copy', () => {

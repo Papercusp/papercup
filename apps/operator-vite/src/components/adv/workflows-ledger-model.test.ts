@@ -7,6 +7,7 @@ import {
   buildPopulationSummary,
   buildSourceHealth,
   buildSuggestionChips,
+  collapseNeedsYou,
   filterLedgerRows,
   sortLedgerRows,
   spendToken,
@@ -297,6 +298,29 @@ describe('buildSourceHealth', () => {
   it('reads bad only for a disconnected external source', () => {
     expect(buildSourceHealth(sources).map((entry) => entry.tone)).toEqual(['ok', 'ok', 'bad']);
   });
+
+  it('emits ONE pill per kind, summing several accounts of that kind', () => {
+    // Observed live: two Gmail source rows rendered "Gmail 0/1" beside "Gmail 0/2" — two
+    // controls with the same name that filter identically, because the token is the kind.
+    const health = buildSourceHealth([
+      ...sources,
+      { id: 'source:gmail-a', kind: 'external', label: 'gmail', status: 'connected', detail: '', bindingCount: 1, armedCount: 1 },
+      { id: 'source:gmail-b', kind: 'external', label: 'gmail', status: 'connected', detail: '', bindingCount: 2, armedCount: 0 },
+    ]);
+    const gmail = health.filter((entry) => entry.token === 'gmail');
+    expect(gmail).toHaveLength(1);
+    expect(gmail[0]).toMatchObject({ armedCount: 1, bindingCount: 3, tone: 'ok' });
+  });
+
+  it('degrades a kind to bad when ANY account of that kind is unhealthy', () => {
+    // A legend reading "ok" while one of its two accounts is dead is the failure to avoid.
+    const health = buildSourceHealth([
+      { id: 'source:gmail-a', kind: 'external', label: 'gmail', status: 'connected', detail: '', bindingCount: 1, armedCount: 1 },
+      { id: 'source:gmail-b', kind: 'external', label: 'gmail', status: 'token expired', detail: '', bindingCount: 1, armedCount: 0 },
+    ]);
+    expect(health).toHaveLength(1);
+    expect(health[0]).toMatchObject({ tone: 'bad', status: 'token expired', armedCount: 1, bindingCount: 2 });
+  });
 });
 
 describe('buildNeedsYou (D-018, preserved by D-004)', () => {
@@ -347,6 +371,75 @@ describe('buildNeedsYou (D-018, preserved by D-004)', () => {
       message: 'Invoice filing needs attention',
       severity: 'warn',
     });
+  });
+});
+
+describe('collapseNeedsYou', () => {
+  const workflowItem = (n: number) => ({
+    id: `needs-you:workflow:plan:${n}`,
+    kind: 'review-runs' as const,
+    message: `Workflow ${n} needs attention`,
+    actionLabel: 'Review runs',
+    severity: 'warn' as const,
+  });
+  const sourceItem = (id: string, severity: 'bad' | 'warn' = 'bad') => ({
+    id: `needs-you:source:${id}`,
+    kind: 'reconnect' as const,
+    message: `${id} is disconnected`,
+    actionLabel: 'Reconnect',
+    severity,
+  });
+
+  it('keeps the empty case empty — collapsing must not manufacture a row', () => {
+    expect(collapseNeedsYou([])).toEqual({ rows: [], hiddenCount: 0 });
+  });
+
+  it('collapses many per-workflow items into one counted row', () => {
+    // The measured real workspace raised 55 items; 55 stacked lines is not an interrupt.
+    const { rows, hiddenCount } = collapseNeedsYou(
+      Array.from({ length: 12 }, (_, i) => workflowItem(i)),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'needs-you:workflows-attention',
+      message: '12 workflows need attention',
+      severity: 'warn',
+    });
+    expect(hiddenCount).toBe(0);
+  });
+
+  it('leaves a lone workflow item as itself rather than counting it', () => {
+    const { rows } = collapseNeedsYou([workflowItem(1)]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].message).toBe('Workflow 1 needs attention');
+  });
+
+  it('keeps source problems individual and orders a dead connection first', () => {
+    const { rows } = collapseNeedsYou([
+      { ...sourceItem('slack', 'warn'), id: 'needs-you:dead-letter:slack', kind: 'review-runs' },
+      sourceItem('webhook'),
+    ]);
+    expect(rows.map((row) => row.severity)).toEqual(['bad', 'warn']);
+  });
+
+  it('caps the rows and reports what it held back', () => {
+    const { rows, hiddenCount } = collapseNeedsYou(
+      [sourceItem('a'), sourceItem('b'), sourceItem('c'), sourceItem('d'), sourceItem('e')],
+      { maxRows: 3 },
+    );
+    expect(rows).toHaveLength(3);
+    expect(hiddenCount).toBe(2);
+  });
+
+  it('counts the ITEMS a dropped aggregate stood for, not the row', () => {
+    // A strip hiding "one row" must not be hiding fifty problems silently.
+    const items = [
+      sourceItem('a'), sourceItem('b'), sourceItem('c'),
+      ...Array.from({ length: 9 }, (_, i) => workflowItem(i)),
+    ];
+    const { rows, hiddenCount } = collapseNeedsYou(items, { maxRows: 3 });
+    expect(rows).toHaveLength(3);
+    expect(hiddenCount).toBe(9);
   });
 });
 

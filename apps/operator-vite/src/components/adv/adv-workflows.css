@@ -372,7 +372,31 @@
   overflow: hidden;
 }
 
-.pc-wf__ledger { overflow-y: auto; }
+/* A DEFINITE height budget, not a flex chain.
+   Measured in the desktop shell: with only `flex: 1` against a `min-height` page, the ledger
+   resolved to clientHeight 0 while holding a 199,890px scrollHeight — present in the DOM and
+   invisible on screen. Both panes therefore get their own min/max height and scroll inside
+   it, which is the idiom the previous sheet used and this one dropped. */
+.pc-wf__ledger,
+.pc-wf__insp {
+  min-height: 360px;
+  max-height: calc(100vh - 300px);
+  overflow-y: auto;
+}
+
+/* The ledger scrolls SIDEWAYS too. Observed live: in the ~980px pane the Armed control sat
+   entirely off-screen and the Spend values were cut mid-word, with no way to reach them.
+   A dense table narrower than its columns must be scrollable, not silently truncated. */
+.pc-wf__ledger { overflow-x: auto; }
+.pc-wf__table { min-width: 720px; }
+
+.pc-wf__more {
+  margin: 0;
+  padding: 9px 12px;
+  border-top: 1px solid var(--border-muted, rgba(125, 211, 252, 0.08));
+  color: var(--fg-dim, #b9d4e8);
+  font-size: 12px;
+}
 
 .pc-wf__empty {
   margin: 0;
@@ -491,7 +515,6 @@
 .pc-wf__insp {
   display: flex;
   flex-direction: column;
-  overflow-y: auto;
 }
 
 .pc-wf__insp-sec {
@@ -661,14 +684,18 @@
 /* The tab shares the viewport with two independently resizable rails, so a viewport media
    query cannot see when those rails leave this panel too narrow. Key the collapse to the
    container as well. */
+/* Stacked panes each keep their own scroll box; without an explicit budget the stacked grid
+   rows collapse and the ledger renders at zero height. */
 @container (max-width: 1000px) {
   .pc-wf__body { grid-template-columns: minmax(0, 1fr); }
-  .pc-wf__insp { max-height: 520px; }
+  .pc-wf__ledger { min-height: 320px; max-height: 60vh; }
+  .pc-wf__insp { min-height: 260px; max-height: 520px; }
 }
 
 @media (max-width: 1000px) {
   .pc-wf__body { grid-template-columns: minmax(0, 1fr); }
-  .pc-wf__insp { max-height: 520px; }
+  .pc-wf__ledger { min-height: 320px; max-height: 60vh; }
+  .pc-wf__insp { min-height: 260px; max-height: 520px; }
 }
 
 @container (max-width: 680px) {

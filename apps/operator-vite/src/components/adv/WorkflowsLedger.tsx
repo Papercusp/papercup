@@ -50,6 +50,8 @@ function withLegibleStyles<Row>(columns: TableColumn<Row>[]): TableColumn<Row>[]
 
 export interface WorkflowsLedgerProps {
   rows: readonly LedgerRow[];
+  /** Matching rows the caller did NOT pass, held back by the render cap. Always disclosed. */
+  hiddenCount?: number;
   selectedId: string | null;
   loading: boolean;
   /** Rendered when `rows` is empty — the caller says WHY it is empty. */
@@ -62,6 +64,7 @@ export interface WorkflowsLedgerProps {
 
 export default function WorkflowsLedger({
   rows,
+  hiddenCount = 0,
   selectedId,
   loading,
   emptyLabel,
@@ -141,6 +144,11 @@ export default function WorkflowsLedger({
         rowTestId={(row) => `wf-row:${row.id}`}
         emptyLabel={emptyLabel}
       />
+      {hiddenCount > 0 ? (
+        <p className="pc-wf__more" data-testid="wf-ledger-more">
+          {hiddenCount} more match these filters. Narrow with a facet or the search box to see them.
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -178,6 +186,8 @@ function ArmCell({ row, busy, onToggle }: { row: LedgerRow; busy: boolean; onTog
 
 export interface ActivityListProps {
   activity: readonly AutomationActivityItem[];
+  /** Entries the caller did NOT pass, held back by the same render cap as the ledger. */
+  hiddenCount?: number;
   nowMs?: number;
   onOpen: (item: AutomationActivityItem) => void;
 }
@@ -189,7 +199,7 @@ export interface ActivityListProps {
  * cost column is rendered: an all-em-dash column would only advertise a measurement we do
  * not take.
  */
-export function ActivityList({ activity, nowMs, onOpen }: ActivityListProps) {
+export function ActivityList({ activity, hiddenCount = 0, nowMs, onOpen }: ActivityListProps) {
   const columns: TableColumn<AutomationActivityItem>[] = [
     {
       key: 'workflow',
@@ -217,6 +227,11 @@ export function ActivityList({ activity, nowMs, onOpen }: ActivityListProps) {
         rowTestId={(row) => `wf-activity:${row.id}`}
         emptyLabel="No workflow activity has been recorded yet."
       />
+      {hiddenCount > 0 ? (
+        <p className="pc-wf__more" data-testid="wf-activity-more">
+          {hiddenCount} older {hiddenCount === 1 ? 'entry is' : 'entries are'} not shown. The feed is newest first.
+        </p>
+      ) : null}
     </div>
   );
 }

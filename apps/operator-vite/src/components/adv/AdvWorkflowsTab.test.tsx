@@ -19,6 +19,22 @@ const H = vi.hoisted(() => ({
   invalidates: [] as string[],
   queries: [] as Array<{ queryName: string; args: unknown }>,
   emptyData: false,
+  /** Reproduces the real workspace's scale, which is where the strip and the DOM blew up. */
+  manyPlans: false,
+}));
+
+/** 230 triggered plans, 12 of them urgent — the shape measured in the desktop shell. */
+const BULK_PLANS = Array.from({ length: 230 }, (_, i) => ({
+  slug: `bulk-${i}`,
+  title: `Bulk workflow ${i}`,
+  harness: 'papercusp',
+  status: 'ready',
+  nextAction: 'Does a bulk thing',
+  triggered: true,
+  triggerSources: ['schedule'],
+  scheduled: true,
+  scheduleActive: true,
+  ...(i < 12 ? { maxImportance: 'urgent' } : {}),
 }));
 
 function routine(): AutomationRoutine {
@@ -65,6 +81,7 @@ vi.mock('@papercusp/sync', () => ({
     if (H.emptyData) return { data: [], loading: false, invalidate };
     if (queryName === 'automation.catalog') return { data: [catalog], loading: false, invalidate };
     if (queryName === 'harnessProjects.lite') return { data: [{ slug: 'papercusp' }], loading: false, invalidate };
+    if (queryName === 'plans.list' && H.manyPlans) return { data: BULK_PLANS, loading: false, invalidate };
     if (queryName === 'plans.list') return { data: [
       { slug: 'customer-digest', title: 'Customer feedback digest', harness: 'papercusp', status: 'ready', nextAction: 'Turns feedback into a prioritized brief', triggered: true, triggerSources: ['schedule', 'external', 'manual'], scheduled: true, scheduleActive: true },
       { slug: 'rubric-ratification', title: 'Rubric ratification', harness: 'papercusp', status: 'ready', nextAction: 'Wait for independent review', triggered: true, triggerSources: ['manual'], scheduled: false, scheduleActive: false },
@@ -146,6 +163,7 @@ beforeEach(() => {
   H.invalidates.length = 0;
   H.queries.length = 0;
   H.emptyData = false;
+  H.manyPlans = false;
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
     if (init?.method === 'POST' && String(_input).includes('/agent-chats')) {
       return new Response(JSON.stringify({ id: 'workflow-composer-chat-1' }), { status: 200 });
@@ -157,9 +175,20 @@ beforeEach(() => {
       }
       return new Response(JSON.stringify({ ok: true, binding: { id: request.id } }), { status: 200 });
     }
-    return new Response(JSON.stringify(H.emptyData
-      ? { enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }
-      : external), { status: 200 });
+    if (H.emptyData) {
+      return new Response(JSON.stringify({ enabled: true, counts: { sources: 0, bindings: 0, armed: 0, recentFailures: 0 }, sources: [], bindings: [], recentRuns: [] }), { status: 200 });
+    }
+    if (H.manyPlans) {
+      // 230 recent runs, so the Activity feed is over the render cap the ledger already has.
+      const recentRuns = Array.from({ length: 230 }, (_, i) => ({
+        ...external.recentRuns[0],
+        id: `run-bulk-${i}`,
+        planSlug: `bulk-${i}`,
+        triggeredAt: new Date(Date.parse('2026-08-22T19:00:00.000Z') - i * 60_000).toISOString(),
+      }));
+      return new Response(JSON.stringify({ ...external, recentRuns }), { status: 200 });
+    }
+    return new Response(JSON.stringify(external), { status: 200 });
   }));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
@@ -204,6 +233,40 @@ describe('<AdvWorkflowsTab> — one frame (D-001)', () => {
     await screen.findByRole('heading', { name: 'Workflows', level: 1 });
     // The rule this preserves: no "all clear" card, no empty frame — absence IS the state.
     expect(screen.queryByTestId('workflows-needs-you')).toBeNull();
+  });
+
+  /**
+   * The scale regression the desktop shell exposed and the fixtures could not: on the real
+   * workspace this surface raised 55 needs-you items and put 4,441 rows / 99,597 nodes in
+   * the DOM. Both are now bounded, and both disclose what they hold back.
+   */
+  it('keeps the needs-you strip an interrupt, not a wall, at real scale', async () => {
+    H.manyPlans = true;
+    renderTab();
+    const strip = await screen.findByTestId('workflows-needs-you');
+    const rows = within(strip).getAllByRole('listitem');
+    expect(rows.length).toBeLessThanOrEqual(4);
+    // 12 urgent plans collapse into one counted row rather than twelve stacked lines.
+    expect(within(strip).getByText('12 workflows need attention')).toBeTruthy();
+  });
+
+  it('bounds the rendered ledger and says how many it is holding back', async () => {
+    H.manyPlans = true;
+    renderTab();
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    const rendered = screen.getAllByTestId(/^wf-row:/);
+    expect(rendered).toHaveLength(200);
+    // 230 plans + 1 routine = 231 matching rows, so 31 are held back — and said so.
+    expect(screen.getByTestId('wf-ledger-more').textContent).toContain('31 more match these filters');
+  });
+
+  it('bounds the Activity feed by the same cap — it is the same frame, not a second surface', async () => {
+    // Found live: the ledger was capped but Activity was not, and rendered 4,238 rows.
+    H.manyPlans = true;
+    renderTab({ wfMode: 'activity' });
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    expect(screen.getAllByTestId(/^wf-activity:/).length).toBeLessThanOrEqual(200);
+    expect(screen.getByTestId('wf-activity-more').textContent).toMatch(/not shown/);
   });
 
   it('filters by state and kind facets over one ledger instead of switching views', async () => {
