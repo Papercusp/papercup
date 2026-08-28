@@ -1615,6 +1615,18 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.work_items');
   });
 
+  it('redirects the compatibility state name to the canonical work-item status column', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT state FROM harness_shared.work_items WHERE workspace_id = 'ws'",
+      'column "state" does not exist',
+    );
+    expect(out).toContain('canonical work-item lifecycle column');
+    expect(out).toContain('status');
+    expect(out).toContain('engineer_issues');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_shared.work_items');
+  });
+
   it('redirects substrate_outbox table_tag to the physical table_name column', () => {
     const out = buildSchemaColumnRedirect(
       "SELECT table_tag FROM harness_shared.substrate_outbox WHERE workspace_id = 'ws'",

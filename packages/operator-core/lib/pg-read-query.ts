@@ -756,6 +756,12 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       'the public work-item id maps to the canonical `feature_id` column; include `workspace_id` in the predicate',
   },
   {
+    relation: 'work_items',
+    missing: 'state',
+    message:
+      'the canonical work-item lifecycle column is `status`; `state` belongs to the compatibility `engineer_issues` projection. Retry with `status` and include `workspace_id` in the predicate',
+  },
+  {
     relation: 'substrate_outbox',
     missing: 'table_tag',
     message:
