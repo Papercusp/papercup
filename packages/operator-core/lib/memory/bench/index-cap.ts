@@ -378,7 +378,12 @@ export async function runRealProjectorDryRun(
         MEMORY_MAX_ENTRY_CHARS: '',
       },
     },
-    async (_context, childEnv) =>
+    // `scripts/lib/governed-test-process.d.mts` declares the runner as
+    // `run: any`, so this callback inherits NO contextual parameter types and
+    // both params land as implicit `any` under noImplicitAny. Annotate them at
+    // the consumer: with an `any` seam there is no inference to defer to, and
+    // `childEnv` is load-bearing — it is what gets handed to `spawn`.
+    async (_context: unknown, childEnv: NodeJS.ProcessEnv) =>
       await new Promise<{ stdout: string; stderr: string; code: number | null; signal: NodeJS.Signals | null }>(
         (resolve, reject) => {
           const child = spawn(process.execPath, [scriptPath, '--dry-run', '--memory-dir', memoryDir], {
