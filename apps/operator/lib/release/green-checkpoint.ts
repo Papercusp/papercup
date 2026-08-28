@@ -9086,6 +9086,17 @@ async function runGreenCheckpointInner(
     // through so re-triage and prefix salvage can still run, and this note is what keeps
     // the queue/fixer detail in the final summary instead of being lost with that return.
     let repairDispatchNote = "";
+    // WI-479091 / EI-208045 — the dispatched arm falls through to reach BACKWARD prefix
+    // salvage, but must NOT also re-enable FORWARD moving-tip re-triage. Those are opposite
+    // motions and only one of them is safe while a fixer holds the frozen candidate:
+    //   - salvage advances `main` to a prefix ALREADY proven green BEHIND the candidate. It
+    //     never moves the frozen candidate, so it cannot contradict the red verdict.
+    //   - re-triage/auto-refire moves the target FORWARD onto a newer tip. EI-208045 exists
+    //     precisely because that produces one self-contradictory verdict: a candidate-framed
+    //     "real break" isolation note emitted beside `retriage.classification=stale-candidate`.
+    // Pre-fix, the early return suppressed BOTH. Gating only re-triage on this flag restores
+    // that half exactly and leaves salvage as the single deliberate behaviour change.
+    let repairFixerDispatchedThisPass = false;
     // D-001 / WI-39944 — a real code red enters (or advances) the ONE frozen repair
     // queue before any stale-tip re-triage, auto-refire, or backward prefix salvage can
     // move the target. Infra reds returned above and never enter this path.
@@ -9211,6 +9222,8 @@ async function runGreenCheckpointInner(
         // stampJudgedRed, so emitting here as well would DOUBLE-emit rather than lose anything —
         // the in-flight marker is retired for every terminal path at the outer CLI seam.
         // stampPromotion is likewise left to the ordinary exit.
+        // Suppresses moving-tip re-triage below (EI-208045); prefix salvage still runs.
+        repairFixerDispatchedThisPass = true;
         repairDispatchNote =
           `\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
           `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
@@ -9538,7 +9551,7 @@ async function runGreenCheckpointInner(
     // WI-7290: hoisted out of the rescue block below so the skip-reason synthesis after it
     // can name WHICH non-test gates (if any) were in play.
     let gateIds: string[] = [];
-    if (tip && tip !== candidate) {
+    if (tip && tip !== candidate && !repairFixerDispatchedThisPass) {
       // EI-19992136440423793 path (a): the file rescue and its LINT/TYPECHECK sibling COMPOSE —
       // they used to EXCLUDE each other. A gate red (lint:tsc / lint:migrations /
       // lint:identity-leak / lint:design-primitives) never populates `failingFiles` (that list is
@@ -9739,7 +9752,10 @@ async function runGreenCheckpointInner(
     // already the classifier's word for "could not localize ⇒ treat as real", so this changes no
     // decision anywhere (the only two consumers branch on `=== 'stale-candidate'`) — it only
     // stops the record from being silent about what was never measured.
-    if (!retriage) {
+    // WI-479091: `repairFixerDispatchedThisPass` means re-triage was deliberately SKIPPED, not
+    // merely unmeasured. Synthesizing an `unknown` verdict here would defeat EI-208045's
+    // `retriage === undefined` guarantee and re-attach a triage claim to a frozen-queue red.
+    if (!retriage && !repairFixerDispatchedThisPass) {
       retriage = {
         classification: "unknown",
         autoRefire: false,
