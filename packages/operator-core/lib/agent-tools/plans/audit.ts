@@ -181,7 +181,7 @@ export default defineTool({
   guidance: {
     when: "Before ready/active, read the COMPLETE source conversation (never memory/summary), map every requirement, boundary, constraint, correction, rejection, decision, dependency, sequence, acceptance condition, open question, and follow-up; repair omissions, then use `activation`. Before shipped, use `completion` and compare items to ACTUAL CODE.",
     returns:
-      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved }. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }.",
+      "Activation returns { ok, phase:'activation', auditSeq, auditedPlanRevision:{id,seq,contentHash}, mappings, sourceRefsResolved }. Completion returns { ok, auditSeq, itemsAuditedThisPass, itemsCarriedForward, coverage, uncoveredItems }; when item-scoped validation problems occur in a mixed batch, valid entries are recorded and the result adds partial:true, problems, and rejectedItemIds so the caller can retry only those items. Batch-wide problems remain no-record.",
     notWhen:
       "Using completion phase mid-implementation. Grading against an acceptance rubric — scorecards:emit. Recording a decision — plans:add-decision. Activation auditing with unresolved/open mappings — repair the plan first.",
     chaining:
