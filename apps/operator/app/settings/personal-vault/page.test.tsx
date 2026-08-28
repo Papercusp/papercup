@@ -432,9 +432,10 @@ describe("PersonalVaultSettingsPage", () => {
   it("streams an archive body to the 202 job endpoint with the selected account", async () => {
     const { container } = render(<PersonalVaultSettingsPage />);
     await screen.findByRole("heading", { name: "Import archives" });
-    fireEvent.change(screen.getByLabelText("Archive account"), {
-      target: { value: "owner@example.com" },
-    });
+    fireEvent.click(screen.getByLabelText("Archive account"));
+    fireEvent.click(
+      await screen.findByRole("option", { name: "Google · owner@example.com" }),
+    );
     const file = new File(["mail"], "takeout.mbox", {
       type: "application/mbox",
     });
@@ -475,6 +476,32 @@ describe("PersonalVaultSettingsPage", () => {
     expect(screen.getByText("12")).toBeTruthy();
   });
 
+  it("leads with a guided setup summary and one recommended next action", async () => {
+    render(<PersonalVaultSettingsPage />);
+
+    expect(
+      await screen.findByRole("heading", { name: "Your setup" }),
+    ).toBeTruthy();
+    const progress = screen.getByRole("list", {
+      name: "Personal Vault setup progress",
+    });
+    expect(within(progress).getByText("Connect accounts")).toBeTruthy();
+    expect(within(progress).getByText("Bring in history")).toBeTruthy();
+    expect(within(progress).getByText("Confirm progress")).toBeTruthy();
+    expect(within(progress).getByText("3 accounts connected")).toBeTruthy();
+    expect(within(progress).getByText("16 records stored")).toBeTruthy();
+
+    const summary = screen.getByLabelText("Personal Vault summary");
+    expect(within(summary).getByText("Connected accounts")).toBeTruthy();
+    expect(within(summary).getByText("3")).toBeTruthy();
+    expect(within(summary).getByText("Records stored")).toBeTruthy();
+    expect(within(summary).getByText("16")).toBeTruthy();
+    expect(
+      screen.getByText(/Your vault is healthy. Add another account/i),
+    ).toBeTruthy();
+    expect(screen.getAllByText("Manage synced services").length).toBe(1);
+  });
+
   it("uses the owner kill-switch endpoint without deleting data", async () => {
     render(<PersonalVaultSettingsPage />);
     const toggle = await screen.findByRole("checkbox", {
@@ -495,6 +522,9 @@ describe("PersonalVaultSettingsPage", () => {
 
   it("renders duplicate source labels as account rows and purges only the selected account", async () => {
     render(<PersonalVaultSettingsPage />);
+    fireEvent.click(
+      await screen.findByText("Advanced privacy and access controls"),
+    );
     const sourceSection = (
       await screen.findByRole("heading", { name: "Imported sources" })
     ).closest("section");
@@ -792,6 +822,9 @@ describe("PersonalVaultSettingsPage", () => {
 
   it("previews the plan declaration before the owner can approve it", async () => {
     render(<PersonalVaultSettingsPage />);
+    fireEvent.click(
+      await screen.findByText("Advanced privacy and access controls"),
+    );
     fireEvent.change(await screen.findByLabelText("Plan slug"), {
       target: { value: "meeting-prep-brief" },
     });

@@ -201,6 +201,11 @@ class PuiPane {
     this.pty.write(keys);
   }
 
+  /** Crossterm's raw-mode Enter encoding (its parser fixture: CSI 13 u). */
+  enter(): void {
+    this.pty.write('\x1b[13u');
+  }
+
   async waitFor(needle: string, opts: { timeoutMs?: number; sinceMark?: boolean } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const deadline = Date.now() + timeoutMs;
@@ -305,6 +310,7 @@ beforeAll(async () => {
     'DATABASE_URL',
     'PAPERCUSP_SKIP_PG_DISCOVERY',
     'PAPERCUSP_PGBOUNCER',
+    'PAPERCUSP_LISTEN_HUB',
     'PAPERCUSP_WORKSPACE_ID',
     'PAPERCUSP_WORKSPACES_ROOT',
     'PAPERCUSP_SERVE_UI',
@@ -316,6 +322,7 @@ beforeAll(async () => {
     DATABASE_URL: db.adminDsn,
     PAPERCUSP_SKIP_PG_DISCOVERY: '1',
     PAPERCUSP_PGBOUNCER: '0',
+    PAPERCUSP_LISTEN_HUB: '0',
     PAPERCUSP_WORKSPACE_ID: WORKSPACE,
     PAPERCUSP_WORKSPACES_ROOT: path.join(home, '.papercusp-workspaces'),
     PAPERCUSP_SERVE_UI: '0',
@@ -384,20 +391,20 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       // Exercise the visible agent/session picker, not a hidden API shortcut.
       pane.markHere();
       pane.write('\x1b'); // leave the composer so `s` owns the picker binding
-      await pane.waitFor('Composer — i type', { sinceMark: true });
+      await pane.waitFor('i type · v speak', { sinceMark: true });
       pane.markHere();
       pane.write('s');
       await pane.waitFor('New operator session', { sinceMark: true });
       pane.markHere();
-      pane.write('\r');
-      await pane.waitFor('Composer — i type', { sinceMark: true });
+      pane.enter();
+      await pane.waitFor('i type · v speak', { sinceMark: true });
 
       pane.write('i');
       pane.write(prompt);
       pane.markHere();
-      pane.write('\r');
+      pane.enter();
       await pane.waitFor(scriptedProvider.successText, { sinceMark: true, timeoutMs: 30_000 });
-      await pane.waitFor('Composer — i type', { sinceMark: true });
+      await pane.waitFor('i type · v speak', { sinceMark: true });
 
       const [chat] = await persistedChats(db);
       expect(chat?.role).toBe('operator');
@@ -431,12 +438,12 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
       pane.write('o');
       pane.write('PUI-E2E request a gated capability');
-      pane.write('\r');
+      pane.enter();
       await pane.waitFor('pui-e2e-call-1', { timeoutMs: 30_000 });
       await pane.waitFor('capability:bash');
       pane.write('\x19'); // Ctrl+Y — approve the exact pending call
       await pane.waitFor('PUI HITL round-trip complete', { timeoutMs: 30_000 });
-      await pane.waitFor('Composer — i type');
+      await pane.waitFor('i type · v speak');
 
       const [chat] = await persistedChats(db);
       expect(chat?.transcript.at(-1)).toMatchObject({
@@ -457,9 +464,9 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
       pane.write('o');
       pane.write('PUI-E2E provider failure');
-      pane.write('\r');
+      pane.enter();
       await pane.waitFor('PUI-E2E provider stream failed visibly', { timeoutMs: 30_000 });
-      await pane.waitFor('Composer — i type');
+      await pane.waitFor('i type · v speak');
       const [chat] = await persistedChats(db);
       expect(chat?.transcript.at(-1)).toMatchObject({
         role: 'assistant',
@@ -478,17 +485,17 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
       await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
       pane.write('o');
       pane.write('PUI-E2E stalled turn');
-      pane.write('\r');
+      pane.enter();
       await pane.waitFor('Ctrl+X cancel');
       pane.write('\x18');
       await pane.waitFor('cancelled — ready to retry', { timeoutMs: 10_000 });
-      await pane.waitFor('Composer — i type');
+      await pane.waitFor('i type · v speak');
 
       scriptedProvider.mode = 'success';
       scriptedProvider.successText = 'PUI retry recovered';
       pane.write('i');
       pane.write('PUI-E2E retry after cancel');
-      pane.write('\r');
+      pane.enter();
       await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
 
       const [chat] = await persistedChats(db);

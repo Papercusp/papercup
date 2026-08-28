@@ -3261,7 +3261,7 @@ describe('evaluateServing: process truth, never a git inference', () => {
       codeAsOfMs: 1,
       codeAsOfSource: 'deploy',
     });
-    expect(sv.unit).toBe('papercup-dev-api.service');
+    expect(sv.unit).toBe('papercusp-dev-api.service');
   });
 
   it('serving restart advice includes the audited enablement gate', () => {
@@ -3337,7 +3337,7 @@ describe('evaluateServing: process truth, never a git inference', () => {
       codeAsOfMs: 1_000_000 + 10 * 60_000,
       codeAsOfSource: 'file-mtime',
     });
-    expect(sv.unit).toBe('papercup-bg-host.service');
+    expect(sv.unit).toBe('papercusp-bg-host.service');
     expect(sv.startedSinceCodeChange).toBe(false);
     expect(sv.restartLever).toContain('bg-host');
   });

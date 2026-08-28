@@ -11,7 +11,6 @@ import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
-// @ts-expect-error — the guard is a pure JavaScript script with no declaration file.
 import {
   CANONICAL_PROMPT_PATH,
   GENERATED_PROMPT_PATHS,

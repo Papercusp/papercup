@@ -1019,6 +1019,7 @@ export default function CloudWorkspacesPage() {
             </div>
             <div
               className={styles.estimate}
+              role="group"
               aria-label="Estimated workspace cost"
             >
               <span className={styles.estimateIcon}>

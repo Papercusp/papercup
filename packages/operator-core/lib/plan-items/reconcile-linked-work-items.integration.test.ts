@@ -69,14 +69,26 @@ const h4 = vi.hoisted(() => ({
     }
     return wi ?? null;
   }),
-  setWorkItemClaimHold: vi.fn(async (id: string, hold: boolean) => {
-    const wi = h2.items.get(id);
-    if (wi?.payload && !hold) {
-      const { held_open_by, held_open_at, held_open_reason, _claimHold, ...rest } = wi.payload;
-      wi.payload = rest;
-    }
-    return wi ? { id, harness: wi.harness, hold, applicable: true } : null;
-  }),
+  setWorkItemClaimHold: vi.fn(
+    async (id: string, hold: boolean, opts?: { leaseOnly?: boolean; expectedLeaseHolder?: string }) => {
+      const wi = h2.items.get(id);
+      if (wi?.payload && !hold) {
+        const next = { ...wi.payload };
+        const hasDurablePark = typeof next.claim_hold_by === 'string' && next.claim_hold_by.length > 0;
+        delete next.held_open_by;
+        delete next.held_open_at;
+        delete next.held_open_reason;
+        if (!(opts?.leaseOnly && hasDurablePark)) {
+          delete next._claimHold;
+          delete next.claim_hold_by;
+          delete next.claim_hold_at;
+          delete next.claim_hold_reason;
+        }
+        wi.payload = next;
+      }
+      return wi ? { id, harness: wi.harness, hold, applicable: true } : null;
+    },
+  ),
 }));
 vi.mock('../work-items', async () => {
   const actual = await vi.importActual<typeof import('../work-items')>('../work-items');
@@ -103,10 +115,19 @@ const h3 = vi.hoisted(() => ({
   getPlanRow: vi.fn(
     async (_slug: string, _opts?: unknown) =>
       null as {
-        items: { id: string; status: string; blockedBy?: string[] }[];
+        planSlug?: string;
+        content?: string;
+        items: {
+          id: string;
+          status: string;
+          blockedBy?: string[];
+          text?: string;
+          decisionRefs?: string[];
+        }[];
         // EI-19319970920449941: optional in every pre-existing test (defaults to
         // undefined -> the reconciler treats a missing field as "no decisions").
         decisions?: { id: string; title: string; body: string; date: string | null; itemRefs: string[] }[];
+        nowNext?: string | null;
       } | null,
   ),
 }));
@@ -131,6 +152,7 @@ const {
 const { getFeatureBlockers, syncFeatureBlockEdges } = await import('../dbos/feature-blockers-edges');
 const { fireBuiltinReactionAction, PLAN_ITEM_LANE_RESYNC_ACTION } = await import('../events/builtin-actions');
 const { updateExternalBlockerHistory } = await import('../external-blockers');
+const { isClaimHoldParked } = await import('../work-items');
 
 const WS = DEFAULT_COORD_WORKSPACE;
 let rootSql: postgres.Sql;
@@ -1067,7 +1089,12 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       state: 'blocked',
       family: 'issue',
       lastProgressAt: null,
-      payload: { externalBlockers: blockers },
+      payload: {
+        _claimHold: true,
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        externalBlockers: blockers,
+      },
     });
     h3.getPlanRow.mockResolvedValue({
       items: [
@@ -1083,7 +1110,109 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
       'WI-6096',
       false,
-      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+      expect.objectContaining({
+        by: 'system:plan-item-lane-sync',
+        leaseOnly: true,
+        expectedLeaseHolder: 'system:plan-item-lane-sync',
+      }),
+    );
+  });
+
+  it('blocked → actionable clears the dependency-derived P-068 durable park and restores exact-plan width', async () => {
+    const plan = 'byoc-cloud-workspaces-gcp-aws-azure-2026-08-22';
+    const itemId = 'P-068';
+    const ref = planLaneBlockerRef(plan, itemId);
+    await edge({ plan, item: itemId, srcRef: 'WI-40822' });
+    const { blockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const gatedAt = Date.parse(blockers[0]!.createdAt);
+    const row = stub({
+      id: 'WI-40822',
+      harness: 'papercusp',
+      state: 'blocked',
+      family: 'feature',
+      lastProgressAt: null,
+      payload: {
+        _claimHold: true,
+        claim_hold_by: 'su-former-owner',
+        claim_hold_at: new Date(gatedAt + 1_000).toISOString(),
+        claim_hold_reason:
+          'P-068 requires production hosted auth/transport integration and an independent black-box security review',
+        planLaneParkedFrom: 'todo',
+        externalBlockers: blockers,
+      },
+    });
+    h3.getPlanRow.mockResolvedValue({
+      planSlug: plan,
+      items: [{ id: itemId, status: 'todo', blockedBy: [] }],
+      decisions: [],
+    });
+
+    const otherExactPlanRows = [{}, {}];
+    expect([...otherExactPlanRows, row.payload].filter((payload) => !isClaimHoldParked(payload)).length).toBe(2);
+
+    const result = await resyncPlanItemLaneNow(plan, itemId, 'papercusp');
+
+    expect(result?.ungated).toEqual(['WI-40822']);
+    expect(row.state).toBe('todo');
+    expect(isClaimHoldParked(row.payload)).toBe(false);
+    expect(row.payload).not.toHaveProperty('claim_hold_by');
+    expect(row.payload).not.toHaveProperty('claim_hold_reason');
+    expect([...otherExactPlanRows, row.payload].filter((payload) => !isClaimHoldParked(payload)).length).toBe(3);
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-40822',
+      false,
+      expect.objectContaining({
+        parkedBy: 'system:plan-item-lane-sync',
+        parkedReason: expect.stringContaining(`${plan}#${itemId} cleared`),
+      }),
+    );
+  });
+
+  it('blocked → actionable preserves an explicit manual durable park and suppresses claimable dispatch', async () => {
+    const plan = 'p-manual-park';
+    const itemId = 'P-068';
+    const ref = planLaneBlockerRef(plan, itemId);
+    await edge({ plan, item: itemId, srcRef: 'WI-manual-park' });
+    const { blockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const gatedAt = Date.parse(blockers[0]!.createdAt);
+    const row = stub({
+      id: 'WI-manual-park',
+      state: 'blocked',
+      family: 'feature',
+      payload: {
+        _claimHold: true,
+        claim_hold_by: 'su-owner',
+        claim_hold_at: new Date(gatedAt + 1_000).toISOString(),
+        claim_hold_reason: 'P-068 is owner-directed paused until a new authorization',
+        planLaneParkedFrom: 'todo',
+        externalBlockers: blockers,
+      },
+    });
+    h3.getPlanRow.mockResolvedValue({
+      planSlug: plan,
+      items: [{ id: itemId, status: 'todo', blockedBy: [] }],
+      decisions: [],
+    });
+
+    const result = await resyncPlanItemLaneNow(plan, itemId, null);
+
+    expect(result?.ungated).toEqual(['WI-manual-park']);
+    expect(row.state).toBe('todo');
+    expect(isClaimHoldParked(row.payload)).toBe(true);
+    expect(row.payload).toHaveProperty('claim_hold_by', 'su-owner');
+    expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'WI-manual-park',
+      'todo',
+      expect.objectContaining({ announceClaimable: false }),
     );
   });
 
@@ -1185,7 +1314,12 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     const ready = stub({
       id: 'WI-ready',
       state: 'blocked',
-      payload: { externalBlockers: readyBlockers },
+      payload: {
+        _claimHold: true,
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        externalBlockers: readyBlockers,
+      },
     });
     const stillBlocked = stub({
       id: 'WI-still-blocked',
@@ -1235,7 +1369,12 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       state: 'blocked',
       family: 'issue',
       lastProgressAt: null,
-      payload: { externalBlockers: blockers },
+      payload: {
+        _claimHold: true,
+        held_open_by: 'system:plan-item-lane-sync',
+        held_open_at: new Date().toISOString(),
+        externalBlockers: blockers,
+      },
     });
     h3.getPlanRow.mockResolvedValue({
       items: [{ id: 'P-011', status: 'todo', blockedBy: [] }],
@@ -1281,6 +1420,46 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
       'blocked',
       expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
     );
+  });
+
+  it('does not park a linked work-item named by its gated lane exit condition [WI-131638]', async () => {
+    await edge({ plan: 'pcircular', item: 'P-007', srcRef: 'WI-41764' });
+    const row = stub({
+      id: 'WI-41764',
+      state: 'todo',
+      family: 'issue',
+      payload: {},
+    });
+    h3.getPlanRow.mockResolvedValue({
+      planSlug: 'pcircular',
+      items: [
+        { id: 'P-006', status: 'todo', blockedBy: [] },
+        {
+          id: 'P-007',
+          status: 'todo',
+          blockedBy: ['P-006'],
+          text: 'require WI-41764 terminal proof before this lane can clear',
+          decisionRefs: [],
+        },
+      ],
+      nowNext: 'require WI-41764 terminal proof with status=passed',
+      decisions: [],
+    });
+
+    const result = await resyncPlanItemLaneNow('pcircular', 'P-007', null);
+
+    expect(result?.gated).toEqual([]);
+    expect(result?.circularPrerequisites).toEqual([
+      {
+        kind: 'circular-prerequisite',
+        planSlug: 'pcircular',
+        itemId: 'P-007',
+        workItemId: 'WI-41764',
+        sources: ['lane-item-text', 'plan-now-next'],
+      },
+    ]);
+    expect(row.state).toBe('todo');
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 
   it('D-050: replaces only plan-authored blocker edges while preserving an unrelated live blocker', async () => {
@@ -1363,6 +1542,55 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
 
     expect(result).toBeNull();
     expect(h4.setWorkItemClaimHold).not.toHaveBeenCalled();
+    expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+  });
+});
+
+describe('reconcileOrphanedPlanItemWorkItems — circular prerequisite census [WI-131638]', () => {
+  it('aggregates typed circular-prerequisite findings without parking the candidate', async () => {
+    await insertWorkItemRow({
+      id: 'WI-periodic-cycle',
+      kind: 'bug',
+      status: 'todo',
+      planSlug: 'pperiodic-cycle',
+      itemId: 'P-007',
+    });
+    await edge({ plan: 'pperiodic-cycle', item: 'P-007', srcRef: 'WI-periodic-cycle' });
+    const row = stub({
+      id: 'WI-periodic-cycle',
+      state: 'todo',
+      family: 'issue',
+      payload: {},
+    });
+    h3.getPlanRow.mockResolvedValue({
+      planSlug: 'pperiodic-cycle',
+      items: [
+        {
+          id: 'P-007',
+          status: 'todo',
+          blockedBy: ['P-006'],
+          text: 'WI-periodic-cycle must reach terminal proof',
+          decisionRefs: [],
+        },
+        { id: 'P-006', status: 'todo', blockedBy: [] },
+      ],
+      nowNext: null,
+      decisions: [],
+    });
+
+    const result = await reconcileOrphanedPlanItemWorkItems();
+
+    expect(result.circularPrerequisites).toEqual([
+      {
+        kind: 'circular-prerequisite',
+        planSlug: 'pperiodic-cycle',
+        itemId: 'P-007',
+        workItemId: 'WI-periodic-cycle',
+        sources: ['lane-item-text'],
+      },
+    ]);
+    expect(result.gated).toEqual([]);
+    expect(row.state).toBe('todo');
     expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
   });
 });

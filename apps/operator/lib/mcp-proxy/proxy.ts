@@ -1836,6 +1836,21 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         !waiter.granted &&
         waiter.tools.some((tool) => coordSendContinuationTools.has(tool)),
     );
+  // EI-21646782269636565 — improvements:capture is the required incident/bug record for a
+  // failed tool call. Preserve one bounded priority waiter when the ordinary continuation FIFO
+  // is full, so the capture of the saturation failure is not itself shed at the point where the
+  // system most needs the evidence. Keep this slot separate from coordination handoffs: both
+  // may be needed during one recovery turn.
+  const improvementsCaptureContinuationTools = new Set(["improvements:capture"]);
+  const hasQueuedImprovementsCapture = (): boolean =>
+    criticalContinuationQueue.some(
+      (waiter) =>
+        !waiter.cancelled &&
+        !waiter.granted &&
+        waiter.tools.some((tool) =>
+          improvementsCaptureContinuationTools.has(tool),
+        ),
+    );
   // EI-21567903270684307 — loop:end is the cleanup action that stops a worker's wake source
   // after a blocked or drained turn. Expiring it at a finite queue dwell boundary leaves the
   // loop running while its caller has already lost the outcome. EI-21582773337412658 extends
@@ -2349,13 +2364,18 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             criticalContinuationTools.some((tool) =>
               coordSendContinuationTools.has(tool),
             ) && !hasQueuedCoordSend();
+          const improvementsCapturePriority =
+            criticalContinuationTools.some((tool) =>
+              improvementsCaptureContinuationTools.has(tool),
+            ) && !hasQueuedImprovementsCapture();
           if (
             maxCriticalContinuationQueue <= criticalContinuationQueueLength() &&
             !compactionPriority &&
             !loopCheckpointPriority &&
             !workItemCheckpointPriority &&
             !completionPriority &&
-            !coordSendPriority
+            !coordSendPriority &&
+            !improvementsCapturePriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
               criticalContinuationInFlight,
@@ -2417,7 +2437,8 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               loopCheckpointPriority ||
               workItemCheckpointPriority ||
               completionPriority ||
-              coordSendPriority
+              coordSendPriority ||
+              improvementsCapturePriority
             ) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
             } else {

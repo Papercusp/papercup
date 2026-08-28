@@ -255,6 +255,7 @@ describe("CloudWorkspacesPage", () => {
     ).toContain("papercusp-prod");
     const estimate = screen.getByLabelText("Estimated workspace cost");
     expect(estimate.tagName).toBe("DIV");
+    expect(estimate.getAttribute("role")).toBe("group");
     expect(estimate.textContent).toContain("$72.90");
     expect(
       screen.getByLabelText("Desired running; observed running"),

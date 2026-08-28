@@ -30,8 +30,25 @@ const MAX_CATALOG_LIMIT = 200;
 const CATALOG_SCOPE_NOTE =
   'Scope comes from request context; installed families use the call\'s harness, and announced gates use the reader\'s fleet/plan/harness visibility. Do not pass `scope`, `pot`, or `harness` as JSON filters; narrow with `q`/`pattern`/`family`.';
 
+function escapeRegExp(value: string): string {
+  let escaped = '';
+  for (const char of value) {
+    if ('\\^$.*+?()[]{}|'.includes(char)) escaped += '\\';
+    escaped += char;
+  }
+  return escaped;
+}
+
+function keyTemplateMatchesQuery(keyTemplate: string, query: string): boolean {
+  const pattern = keyTemplate
+    .split(/(<[^<>]+>)/g)
+    .map((part) => (/^<[^<>]+>$/.test(part) ? '[^:]+' : escapeRegExp(part)))
+    .join('');
+  return new RegExp('^' + pattern + '$', 'i').test(query);
+}
+
 function catalogRowMatches(row: CatalogRow, query: string): boolean {
-  return [
+  const matchesField = [
     row.family,
     row.key,
     row.await_example,
@@ -41,6 +58,7 @@ function catalogRowMatches(row: CatalogRow, query: string): boolean {
     row.replaces_poll,
     row.sugar,
   ].some((value) => typeof value === 'string' && value.toLowerCase().includes(query));
+ return matchesField || keyTemplateMatchesQuery(row.key, query);
 }
 
 export default defineTool({

@@ -910,82 +910,200 @@ export default function PersonalVaultSettingsPage() {
 
   if (loading || !status) {
     return (
-      <main className="pc-settings-page">
+      <main className="pc-settings-page pc-personal-vault">
         <h1>Personal Vault</h1>
         <p role="status">Loading…</p>
       </main>
     );
   }
 
+  const googleAccounts = (status.integrations?.google.accounts ??
+    []) as GoogleAccountStatus[];
+  const facebookAccounts = (status.integrations?.facebook?.accounts ??
+    []) as FacebookAccountStatus[];
+  const connectedAccounts = [...googleAccounts, ...facebookAccounts].filter(
+    (account) => account.connected,
+  );
+  const totalDocuments = status.stats.sources.reduce(
+    (total, source) => total + source.documents,
+    0,
+  );
+  const activeImports = importJobs.filter(
+    (job) => job.status === "queued" || job.status === "running",
+  );
+  const failedImports = importJobs.filter((job) => job.status === "failed");
+  const setupSteps = [
+    {
+      number: 1,
+      title: "Connect accounts",
+      detail: connectedAccounts.length
+        ? `${connectedAccounts.length.toLocaleString()} account${connectedAccounts.length === 1 ? "" : "s"} connected`
+        : "Connect Google or Facebook",
+      complete: connectedAccounts.length > 0,
+    },
+    {
+      number: 2,
+      title: "Bring in history",
+      detail: totalDocuments
+        ? `${totalDocuments.toLocaleString()} records stored`
+        : "Import a provider archive",
+      complete: totalDocuments > 0,
+    },
+    {
+      number: 3,
+      title: "Confirm progress",
+      detail: failedImports.length
+        ? `${failedImports.length.toLocaleString()} import${failedImports.length === 1 ? "" : "s"} need attention`
+        : activeImports.length
+          ? `${activeImports.length.toLocaleString()} import${activeImports.length === 1 ? "" : "s"} in progress`
+          : totalDocuments
+            ? "Everything looks healthy"
+            : "Progress appears here",
+      complete: totalDocuments > 0 && failedImports.length === 0,
+    },
+  ];
+  const recommendedAction = !status.enabled
+    ? "Enable the Personal Vault to resume imports and live sync."
+    : failedImports.length
+      ? "Review the failed archive import below, then retry it."
+      : connectedAccounts.length === 0
+        ? "Connect your first Google or Facebook account."
+        : totalDocuments === 0 && activeImports.length === 0
+          ? "Choose the account that owns your archive, then import its history."
+          : activeImports.length
+            ? "Your archive is importing in the background. You can leave this page."
+            : "Your vault is healthy. Add another account or import another archive when ready.";
+
   return (
-    <main className="pc-settings-page">
-      <header>
-        <h1>Personal Vault</h1>
+    <main className="pc-settings-page pc-personal-vault">
+      <header className="pc-vault-hero">
+        <div>
+          <span className="pc-vault-eyebrow">Private data hub</span>
+          <h1>Personal Vault</h1>
+        </div>
+        <span
+          className={`pc-vault-health ${status.enabled ? "is-ready" : "is-paused"}`}
+          role="status"
+        >
+          <span aria-hidden="true">{status.enabled ? "●" : "○"}</span>
+          {status.enabled ? "Vault on" : "Vault paused"}
+        </span>
         <p className="pc-settings-intro">
-          Import your Gmail, Calendar, Contacts, Facebook, Instagram, and X
-          archives into a private, owner-local search corpus. Personal content
-          is never part of normal agent recall and its vectors are produced only
-          by the local EmbeddingGemma model.
+          Connect accounts, bring in your history, and see what is safely stored
+          on this device. Personal content stays outside normal agent recall and
+          its vectors are produced only by the local EmbeddingGemma model.
         </p>
       </header>
 
       <section
-        className="pc-settings-section"
-        aria-labelledby="vault-control-heading"
+        className="pc-settings-section pc-vault-overview"
+        aria-labelledby="vault-setup-heading"
       >
-        <h2 id="vault-control-heading">Privacy control</h2>
-        <label
-          style={{
-            display: "flex",
-            alignItems: "flex-start",
-            gap: 10,
-            maxWidth: 760,
-          }}
-        >
-          <Checkbox
-            checked={status.enabled}
-            onChange={(value) => void setEnabled(value)}
-            disabled={busy === "enabled"}
-            ariaLabel="Enable Personal Vault imports and granted recall"
-          />
-          <span>
-            <strong>Enable Personal Vault</strong>
-            <span className="pc-settings-note" style={{ display: "block" }}>
-              Turning this off immediately blocks imports, live ingestion,
-              search, and granted recall. It does not delete anything; use the
-              purge controls below for verified deletion.
+        <div className="pc-vault-section-heading">
+          <div>
+            <span className="pc-vault-eyebrow">Start here</span>
+            <h2 id="vault-setup-heading">Your setup</h2>
+          </div>
+          <label className="pc-vault-enable-control">
+            <Checkbox
+              checked={status.enabled}
+              onChange={(value) => void setEnabled(value)}
+              disabled={busy === "enabled"}
+              ariaLabel="Enable Personal Vault imports and granted recall"
+            />
+            <span>
+              <strong>{status.enabled ? "Enabled" : "Paused"}</strong>
+              <span className="pc-settings-note">
+                {status.enabled
+                  ? "Local sync and imports are running"
+                  : "Your data is retained"}
+              </span>
             </span>
+          </label>
+        </div>
+        <p className="pc-settings-note pc-vault-pause-note">
+          Pausing immediately blocks imports, live ingestion, search, and
+          granted recall. It does not delete anything.
+        </p>
+
+        <ol
+          className="pc-vault-steps"
+          aria-label="Personal Vault setup progress"
+        >
+          {setupSteps.map((step) => (
+            <li
+              key={step.number}
+              className={step.complete ? "is-complete" : ""}
+            >
+              <span className="pc-vault-step-number" aria-hidden="true">
+                {step.complete ? "✓" : step.number}
+              </span>
+              <span>
+                <strong>{step.title}</strong>
+                <span>{step.detail}</span>
+              </span>
+            </li>
+          ))}
+        </ol>
+
+        <div className="pc-vault-next-action" role="note">
+          <span className="pc-vault-next-icon" aria-hidden="true">
+            →
           </span>
-        </label>
-        <dl className="pc-settings-status" style={{ marginTop: 16 }}>
+          <span>
+            <strong>Recommended next step</strong>
+            <span>{recommendedAction}</span>
+          </span>
+        </div>
+
+        <dl className="pc-vault-summary" aria-label="Personal Vault summary">
           <div>
-            <dt>Workspace</dt>
-            <dd>{status.workspaceId}</dd>
+            <dt>Connected accounts</dt>
+            <dd>{connectedAccounts.length.toLocaleString()}</dd>
+            <span>
+              {googleAccounts.length} Google · {facebookAccounts.length}{" "}
+              Facebook
+            </span>
           </div>
           <div>
-            <dt>Embedding</dt>
-            <dd>EmbeddingGemma · local only</dd>
+            <dt>Records stored</dt>
+            <dd>{totalDocuments.toLocaleString()}</dd>
+            <span>
+              {status.stats.unembedded.toLocaleString()} awaiting local
+              embedding
+            </span>
           </div>
           <div>
-            <dt>Awaiting embedding</dt>
-            <dd>{status.stats.unembedded.toLocaleString()}</dd>
+            <dt>Import activity</dt>
+            <dd>
+              {activeImports.length ? `${activeImports.length} active` : "Idle"}
+            </dd>
+            <span>
+              {failedImports.length
+                ? `${failedImports.length} need attention`
+                : "No failures"}
+            </span>
           </div>
           <div>
-            <dt>Active grants</dt>
-            <dd>{liveGrants.length.toLocaleString()}</dd>
+            <dt>Privacy</dt>
+            <dd>Local only</dd>
+            <span>
+              {liveGrants.length.toLocaleString()} active agent grant
+              {liveGrants.length === 1 ? "" : "s"}
+            </span>
           </div>
         </dl>
       </section>
 
       <section
-        className="pc-settings-section"
+        className="pc-settings-section pc-vault-step-section"
         aria-labelledby="vault-integrations-heading"
       >
+        <span className="pc-vault-step-kicker">Step 1</span>
         <h2 id="vault-integrations-heading">Live integrations</h2>
         <p className="pc-settings-note">
-          Live connections keep new provider records flowing into the same
-          owner-local vault. OAuth tokens remain server-side and are never
-          returned to this page.
+          Add each account once. Use Reconnect only to repair an account that is
+          already listed. OAuth tokens stay server-side.
         </p>
         <div
           className="pc-settings-note"
@@ -1014,6 +1132,7 @@ export default function PersonalVaultSettingsPage() {
           const accounts = (google.accounts ?? []) as GoogleAccountStatus[];
           return (
             <article
+              className="pc-vault-provider-card"
               aria-labelledby="vault-google-heading"
               style={{
                 marginTop: 16,
@@ -1055,6 +1174,7 @@ export default function PersonalVaultSettingsPage() {
                     );
                     return (
                       <section
+                        className="pc-vault-account-card"
                         key={account.providerAccountId}
                         aria-labelledby={accountHeadingId}
                         style={{
@@ -1091,76 +1211,77 @@ export default function PersonalVaultSettingsPage() {
                             {integrationStatusLabel(account.status)}
                           </strong>
                         </div>
-                        <fieldset
-                          style={{ border: 0, padding: 0, margin: "14px 0 0" }}
-                        >
-                          <legend style={{ fontWeight: 600, marginBottom: 8 }}>
-                            Account capabilities
-                          </legend>
-                          <div style={{ display: "grid", gap: 10 }}>
-                            {account.capabilities.map((capability) => {
-                              const meta =
-                                GOOGLE_CAPABILITY_META[capability.id];
-                              return (
-                                <label
-                                  key={capability.id}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "flex-start",
-                                    gap: 10,
-                                  }}
-                                >
-                                  <Checkbox
-                                    checked={capability.enabled}
-                                    disabled={
-                                      !account.connected || busy !== null
-                                    }
-                                    onChange={(enabled) =>
-                                      void setGoogleCapability(
-                                        account.providerAccountId,
-                                        capability.id,
-                                        enabled,
-                                      )
-                                    }
-                                    ariaLabel={`Enable ${meta.label} live sync for ${account.displayName}`}
-                                  />
-                                  <span style={{ flex: 1 }}>
-                                    <span
-                                      style={{
-                                        display: "flex",
-                                        gap: 8,
-                                        justifyContent: "space-between",
-                                      }}
-                                    >
-                                      <strong>{meta.label}</strong>
+                        <details className="pc-vault-account-details">
+                          <summary>Manage synced services</summary>
+                          <fieldset>
+                            <legend className="pc-vault-visually-hidden">
+                              Account capabilities
+                            </legend>
+                            <div style={{ display: "grid", gap: 10 }}>
+                              {account.capabilities.map((capability) => {
+                                const meta =
+                                  GOOGLE_CAPABILITY_META[capability.id];
+                                return (
+                                  <label
+                                    key={capability.id}
+                                    style={{
+                                      display: "flex",
+                                      alignItems: "flex-start",
+                                      gap: 10,
+                                    }}
+                                  >
+                                    <Checkbox
+                                      checked={capability.enabled}
+                                      disabled={
+                                        !account.connected || busy !== null
+                                      }
+                                      onChange={(enabled) =>
+                                        void setGoogleCapability(
+                                          account.providerAccountId,
+                                          capability.id,
+                                          enabled,
+                                        )
+                                      }
+                                      ariaLabel={`Enable ${meta.label} live sync for ${account.displayName}`}
+                                    />
+                                    <span style={{ flex: 1 }}>
                                       <span
-                                        aria-label={`${meta.label} capability status for ${account.displayName}: ${capability.status}`}
+                                        style={{
+                                          display: "flex",
+                                          gap: 8,
+                                          justifyContent: "space-between",
+                                        }}
                                       >
-                                        {capabilityStatusLabel(
-                                          capability.status,
-                                        )}
+                                        <strong>{meta.label}</strong>
+                                        <span
+                                          aria-label={`${meta.label} capability status for ${account.displayName}: ${capability.status}`}
+                                        >
+                                          {capabilityStatusLabel(
+                                            capability.status,
+                                          )}
+                                        </span>
+                                      </span>
+                                      <span
+                                        className="pc-settings-note"
+                                        style={{ display: "block" }}
+                                      >
+                                        {meta.detail}
                                       </span>
                                     </span>
-                                    <span
-                                      className="pc-settings-note"
-                                      style={{ display: "block" }}
-                                    >
-                                      {meta.detail}
-                                    </span>
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                          <p
-                            className="pc-settings-note"
-                            style={{ marginBottom: 0 }}
-                          >
-                            Turning off one capability affects only this account
-                            and surface. Its other live syncs and settled Vault
-                            documents remain available.
-                          </p>
-                        </fieldset>
+                                  </label>
+                                );
+                              })}
+                            </div>
+                            <p
+                              className="pc-settings-note"
+                              style={{ marginBottom: 0 }}
+                            >
+                              Turning off one capability affects only this
+                              account and surface. Its other live syncs and
+                              settled Vault documents remain available.
+                            </p>
+                          </fieldset>
+                        </details>
                         {calendar?.status === "needs-consent" ? (
                           <div
                             className="pc-settings-note"
@@ -1278,6 +1399,7 @@ export default function PersonalVaultSettingsPage() {
           const accounts = (facebook.accounts ?? []) as FacebookAccountStatus[];
           return (
             <article
+              className="pc-vault-provider-card"
               aria-labelledby="vault-facebook-heading"
               style={{
                 marginTop: 16,
@@ -1427,14 +1549,14 @@ export default function PersonalVaultSettingsPage() {
       </section>
 
       <section
-        className="pc-settings-section"
+        className="pc-settings-section pc-vault-step-section"
         aria-labelledby="vault-import-heading"
       >
+        <span className="pc-vault-step-kicker">Step 2</span>
         <h2 id="vault-import-heading">Import archives</h2>
         <p className="pc-settings-note">
-          Supported: Google Takeout mail (.mbox), Calendar (.ics), Contacts
-          (.vcf), Facebook/Instagram message exports, and X archive ZIP/JSON/JS.
-          Files are parsed on this machine.
+          First choose which account owns the archive, then choose or drop the
+          file. Imports continue safely in the background.
         </p>
         <label style={{ display: "block", maxWidth: 520, marginTop: 16 }}>
           <span style={{ display: "block", marginBottom: 4 }}>
@@ -1486,97 +1608,101 @@ export default function PersonalVaultSettingsPage() {
             "Storage forecast unavailable until the operator sidecar finishes updating."
           )}
         </p>
-        <div
-          className="pc-settings-note"
-          aria-labelledby="vault-archive-help-heading"
-          style={{
-            marginTop: 16,
-            padding: 16,
-            border: "1px solid var(--border)",
-            borderRadius: 10,
-          }}
-        >
-          <h3 id="vault-archive-help-heading" style={{ marginTop: 0 }}>
-            How to get an archive
-          </h3>
-          <ol
+        <details className="pc-vault-disclosure">
+          <summary>How to get an archive from each provider</summary>
+          <div
+            className="pc-settings-note"
+            aria-labelledby="vault-archive-help-heading"
             style={{
-              display: "grid",
-              gap: 14,
-              marginBottom: 0,
-              paddingLeft: 22,
+              marginTop: 16,
+              padding: 16,
+              border: "1px solid var(--border)",
+              borderRadius: 10,
             }}
           >
-            <li>
-              <strong>Gmail, Google Calendar, and Google Contacts:</strong> open{" "}
-              <a
-                href={ARCHIVE_HELP.googleTakeout}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                Google Takeout
-              </a>
-              , choose only <em>Mail</em>, <em>Calendar</em>, and{" "}
-              <em>Contacts</em>, keep ZIP as the delivery format, create the
-              export, then download every ZIP part to this computer.
-              Google&apos;s{" "}
-              <a
-                href={ARCHIVE_HELP.google}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                official download guide
-              </a>{" "}
-              explains the export and delivery choices.
-            </li>
-            <li>
-              <strong>Facebook:</strong> follow Meta&apos;s{" "}
-              <a
-                href={ARCHIVE_HELP.facebook}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                Export your information guide
-              </a>
-              : Settings &amp; privacy → Accounts Center → Your information and
-              permissions → Export your information → Create export → Export to
-              device. Choose <em>Messages</em>, all time, and <em>JSON</em>,
-              then import the downloaded ZIP here. Meta keeps a prepared
-              download available for a limited time.
-            </li>
-            <li>
-              <strong>Instagram:</strong> use the same Accounts Center flow and
-              select the Instagram profile. Choose <em>Messages</em> and{" "}
-              <em>JSON</em>; see Meta&apos;s{" "}
-              <a
-                href={ARCHIVE_HELP.instagram}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                Instagram export guide
-              </a>
-              .
-            </li>
-            <li>
-              <strong>X:</strong> Settings and privacy → Your account → Download
-              an archive of your data → Request archive. When X notifies you,
-              download the ZIP and import it here. See the{" "}
-              <a
-                href={ARCHIVE_HELP.x}
-                target="_blank"
-                rel="noreferrer noopener"
-              >
-                official X archive guide
-              </a>
-              .
-            </li>
-          </ol>
-          <p style={{ marginBottom: 0 }}>
-            Archive files can contain highly private information. Keep them on
-            this machine and delete the downloaded copies when you no longer
-            need them.
-          </p>
-        </div>
+            <h3 id="vault-archive-help-heading" style={{ marginTop: 0 }}>
+              How to get an archive
+            </h3>
+            <ol
+              style={{
+                display: "grid",
+                gap: 14,
+                marginBottom: 0,
+                paddingLeft: 22,
+              }}
+            >
+              <li>
+                <strong>Gmail, Google Calendar, and Google Contacts:</strong>{" "}
+                open{" "}
+                <a
+                  href={ARCHIVE_HELP.googleTakeout}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  Google Takeout
+                </a>
+                , choose only <em>Mail</em>, <em>Calendar</em>, and{" "}
+                <em>Contacts</em>, keep ZIP as the delivery format, create the
+                export, then download every ZIP part to this computer.
+                Google&apos;s{" "}
+                <a
+                  href={ARCHIVE_HELP.google}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  official download guide
+                </a>{" "}
+                explains the export and delivery choices.
+              </li>
+              <li>
+                <strong>Facebook:</strong> follow Meta&apos;s{" "}
+                <a
+                  href={ARCHIVE_HELP.facebook}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  Export your information guide
+                </a>
+                : Settings &amp; privacy → Accounts Center → Your information
+                and permissions → Export your information → Create export →
+                Export to device. Choose <em>Messages</em>, all time, and{" "}
+                <em>JSON</em>, then import the downloaded ZIP here. Meta keeps a
+                prepared download available for a limited time.
+              </li>
+              <li>
+                <strong>Instagram:</strong> use the same Accounts Center flow
+                and select the Instagram profile. Choose <em>Messages</em> and{" "}
+                <em>JSON</em>; see Meta&apos;s{" "}
+                <a
+                  href={ARCHIVE_HELP.instagram}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  Instagram export guide
+                </a>
+                .
+              </li>
+              <li>
+                <strong>X:</strong> Settings and privacy → Your account →
+                Download an archive of your data → Request archive. When X
+                notifies you, download the ZIP and import it here. See the{" "}
+                <a
+                  href={ARCHIVE_HELP.x}
+                  target="_blank"
+                  rel="noreferrer noopener"
+                >
+                  official X archive guide
+                </a>
+                .
+              </li>
+            </ol>
+            <p style={{ marginBottom: 0 }}>
+              Archive files can contain highly private information. Keep them on
+              this machine and delete the downloaded copies when you no longer
+              need them.
+            </p>
+          </div>
+        </details>
         <div
           role="button"
           tabIndex={0}
@@ -1635,6 +1761,7 @@ export default function PersonalVaultSettingsPage() {
           }
         />
         <div aria-live="polite" style={{ marginTop: 20 }}>
+          <span className="pc-vault-step-kicker">Step 3</span>
           <h3>Archive activity</h3>
           {importJobsQuery.error ? (
             <p role="alert">
@@ -1656,109 +1783,131 @@ export default function PersonalVaultSettingsPage() {
         </div>
       </section>
 
-      <section
-        className="pc-settings-section"
-        aria-labelledby="vault-sources-heading"
-      >
-        <h2 id="vault-sources-heading">Imported sources</h2>
-        {status.stats.sources.length ? (
-          <div style={{ overflowX: "auto" }}>
-            <Table
-              columns={sourceColumns}
-              rows={status.stats.sources}
-              getRowKey={(source) =>
-                JSON.stringify([
-                  source.source,
-                  source.source_id,
-                  source.provider_account_id,
-                ])
-              }
-            />
-          </div>
-        ) : (
-          <p className="pc-settings-note">No personal records imported yet.</p>
-        )}
-        <div className="pc-settings-actions" style={{ marginTop: 16 }}>
-          <Button
-            variant="destructive"
-            onClick={() =>
-              setPurgeTarget({
-                source: null,
-                sourceId: null,
-                providerAccountId: null,
-              })
-            }
-            disabled={busy !== null}
+      <details className="pc-vault-advanced-disclosure">
+        <summary>
+          <span>
+            <strong>Advanced privacy and access controls</strong>
+            <span>
+              Inspect source attribution, delete data, or manage agent grants
+            </span>
+          </span>
+        </summary>
+        <div className="pc-vault-advanced-content">
+          <section
+            className="pc-settings-section pc-vault-advanced-section"
+            aria-labelledby="vault-sources-heading"
           >
-            Purge entire vault
-          </Button>
-        </div>
-      </section>
+            <span className="pc-vault-eyebrow">Advanced</span>
+            <h2 id="vault-sources-heading">Imported sources</h2>
+            {status.stats.sources.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <Table
+                  columns={sourceColumns}
+                  rows={status.stats.sources}
+                  getRowKey={(source) =>
+                    JSON.stringify([
+                      source.source,
+                      source.source_id,
+                      source.provider_account_id,
+                    ])
+                  }
+                />
+              </div>
+            ) : (
+              <p className="pc-settings-note">
+                No personal records imported yet.
+              </p>
+            )}
+            <div className="pc-settings-actions" style={{ marginTop: 16 }}>
+              <Button
+                variant="destructive"
+                onClick={() =>
+                  setPurgeTarget({
+                    source: null,
+                    sourceId: null,
+                    providerAccountId: null,
+                  })
+                }
+                disabled={busy !== null}
+              >
+                Purge entire vault
+              </Button>
+            </div>
+          </section>
 
-      <section
-        className="pc-settings-section"
-        aria-labelledby="vault-plan-grant-heading"
-      >
-        <h2 id="vault-plan-grant-heading">Approve plan access</h2>
-        <p className="pc-settings-note">
-          A plan template must declare <code>personalScopes</code> in its
-          frontmatter. Preview reads that declaration from the canonical plan;
-          approval cannot add scopes the template did not declare.
-        </p>
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "minmax(220px, 2fr) minmax(160px, 1fr) auto",
-            gap: 10,
-            alignItems: "end",
-            maxWidth: 840,
-          }}
-        >
-          <label>
-            <span style={{ display: "block", marginBottom: 4 }}>Plan slug</span>
-            <input
-              value={planSlug}
-              onChange={(event) => setPlanSlug(event.target.value)}
-              placeholder="meeting-prep-brief"
-            />
-          </label>
-          <label>
-            <span style={{ display: "block", marginBottom: 4 }}>Harness</span>
-            <input
-              value={harnessSlug}
-              onChange={(event) => setHarnessSlug(event.target.value)}
-              placeholder="papercusp"
-            />
-          </label>
-          <Button
-            variant="primary"
-            onClick={() => void previewPlanGrant()}
-            disabled={!planSlug.trim() || busy !== null}
+          <section
+            className="pc-settings-section pc-vault-advanced-section"
+            aria-labelledby="vault-plan-grant-heading"
           >
-            {busy === "grant-preview" ? "Inspecting…" : "Review access"}
-          </Button>
-        </div>
-      </section>
+            <span className="pc-vault-eyebrow">Advanced</span>
+            <h2 id="vault-plan-grant-heading">Approve plan access</h2>
+            <p className="pc-settings-note">
+              A plan template must declare <code>personalScopes</code> in its
+              frontmatter. Preview reads that declaration from the canonical
+              plan; approval cannot add scopes the template did not declare.
+            </p>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns:
+                  "minmax(220px, 2fr) minmax(160px, 1fr) auto",
+                gap: 10,
+                alignItems: "end",
+                maxWidth: 840,
+              }}
+            >
+              <label>
+                <span style={{ display: "block", marginBottom: 4 }}>
+                  Plan slug
+                </span>
+                <input
+                  value={planSlug}
+                  onChange={(event) => setPlanSlug(event.target.value)}
+                  placeholder="meeting-prep-brief"
+                />
+              </label>
+              <label>
+                <span style={{ display: "block", marginBottom: 4 }}>
+                  Harness
+                </span>
+                <input
+                  value={harnessSlug}
+                  onChange={(event) => setHarnessSlug(event.target.value)}
+                  placeholder="papercusp"
+                />
+              </label>
+              <Button
+                variant="primary"
+                onClick={() => void previewPlanGrant()}
+                disabled={!planSlug.trim() || busy !== null}
+              >
+                {busy === "grant-preview" ? "Inspecting…" : "Review access"}
+              </Button>
+            </div>
+          </section>
 
-      <section
-        className="pc-settings-section"
-        aria-labelledby="vault-grants-heading"
-      >
-        <h2 id="vault-grants-heading">Grant history</h2>
-        {status.grants.length ? (
-          <div style={{ overflowX: "auto" }}>
-            <Table
-              columns={grantColumns}
-              rows={status.grants}
-              getRowKey={(grant) => grant.id}
-            />
-          </div>
-        ) : (
-          <p className="pc-settings-note">
-            No Personal Vault grants have been approved.
-          </p>
-        )}
-      </section>
+          <section
+            className="pc-settings-section pc-vault-advanced-section"
+            aria-labelledby="vault-grants-heading"
+          >
+            <span className="pc-vault-eyebrow">Advanced</span>
+            <h2 id="vault-grants-heading">Grant history</h2>
+            {status.grants.length ? (
+              <div style={{ overflowX: "auto" }}>
+                <Table
+                  columns={grantColumns}
+                  rows={status.grants}
+                  getRowKey={(grant) => grant.id}
+                />
+              </div>
+            ) : (
+              <p className="pc-settings-note">
+                No Personal Vault grants have been approved.
+              </p>
+            )}
+          </section>
+        </div>
+      </details>
 
       <Modal
         open={purgeTarget !== null}

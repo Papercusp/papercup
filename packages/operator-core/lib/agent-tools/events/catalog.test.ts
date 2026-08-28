@@ -62,6 +62,21 @@ describe('events:catalog — live_awaiters', () => {
     expect(alias.families).toEqual(canonical.families);
   });
 
+  it('matches a concrete key against its templated family row', async () => {
+    const out = await call({
+      q: 'release:deployed:549f75596e666c7ea60731b055e550d484924511',
+      announced: false,
+      installed: false,
+      liveAwaiters: false,
+    });
+    expect(out.families).toEqual([
+      expect.objectContaining({
+        family: 'deploy',
+        key: 'release:deployed:<sha>',
+      }),
+    ]);
+  });
+
   it('attaches live_awaiters per row by default, keyed via familyKeyPrefix', async () => {
     countMock.mockImplementation(async (prefixes: string[]) => {
       const m = new Map(prefixes.map((p) => [p, 0]));

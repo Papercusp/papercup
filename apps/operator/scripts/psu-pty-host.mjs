@@ -4373,19 +4373,32 @@ export function hostThroughPty(o) {
           },
         });
         if (!proof.persisted) {
+          const proofUnavailable =
+            proof.reason === 'missing-leading-turn-origin' ||
+            proof.reason === 'unsupported-backend';
           appendHostEvent(ownerId, 'launch-kickoff-turn-start-unverified', {
             reason: proof.reason,
             retried: proof.retried,
+            proofUnavailable,
           });
           try {
             process.stderr.write(
-              `psu: kickoff DROPPED — the exact provenance marker never entered the native transcript ` +
-                `(${proof.reason ?? 'native marker timeout'}).\n`,
+              proofUnavailable
+                ? `psu: kickoff submitted but UNVERIFIED — native execution proof is unavailable ` +
+                  `(${proof.reason}); never claiming delivered.\n`
+                : `psu: kickoff DROPPED — the exact provenance marker never entered the native transcript ` +
+                  `(${proof.reason ?? 'native marker timeout'}).\n`,
             );
           } catch {
             /* diagnostics are best-effort */
           }
-          try { child.kill(); } catch { /* already exited */ }
+          // Plain hostThroughPty callers predate provenance tagging. Preserve
+          // their submitted session without making a false delivery claim.
+          // Production scripted fleet kickoffs are tagged; a missing marker
+          // there is authoritative and the fresh, workless child is terminated.
+          if (!proofUnavailable) {
+            try { child.kill(); } catch { /* already exited */ }
+          }
           return;
         }
         try {
