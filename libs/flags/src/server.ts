@@ -213,12 +213,19 @@ async function loadStoredOverrides(): Promise<Partial<Record<FlagKey, boolean>>>
     return hit.flags;
   }
   try {
-    const flags = await overrideStore.load();
+    // Bounded like every other flag-backend call in this file. The override store
+    // is a DATABASE read, so it can HANG, not merely reject — and the catch below
+    // only ever covered rejection. An unsettled load() therefore parked getFlag()
+    // FOREVER, and because getFlag awaits this BEFORE its own try/catch, every
+    // caller in the process inherited that hang: no CPU, no libuv request, no PG
+    // session and no log line to attribute it to. Same helper, same fallback, so a
+    // hung store now degrades exactly like an unreachable one (EI-21733487918833986).
+    const flags = await withFlagBackendTimeout(overrideStore.load());
     overrideCache.set(ck, { flags, ts: t });
     return flags;
   } catch {
-    // Store unreachable — serve the last good map for THIS scope (or none);
-    // never block flag evaluation on the override layer.
+    // Store unreachable OR too slow — serve the last good map for THIS scope (or
+    // none); never block flag evaluation on the override layer.
     return overrideCache.get(ck)?.flags ?? {};
   }
 }

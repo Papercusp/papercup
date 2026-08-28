@@ -47,6 +47,9 @@ beforeEach(() => {
   setFlagOverridesForTest(null);
   delete process.env[ENV_KEY];
   delete process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS;
+  // The hanging-store test drops this to 1ms; leaking it would silently shorten
+  // every later backend call in this file.
+  delete process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS;
 });
 
 afterEach(() => {
@@ -54,6 +57,9 @@ afterEach(() => {
   setFlagOverridesForTest(null);
   delete process.env[ENV_KEY];
   delete process.env.PAPERCUSP_FLAG_OVERRIDE_CACHE_TTL_MS;
+  // The hanging-store test drops this to 1ms; leaking it would silently shorten
+  // every later backend call in this file.
+  delete process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS;
 });
 
 describe('flag override store', () => {
@@ -238,6 +244,38 @@ describe('flag override store', () => {
     expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]);
     const r = await setFlagOverride(KEY, true);
     expect(r.ok).toBe(false);
+  });
+
+  /**
+   * EI-21733487918833986 — the sibling of the test above, and the one that was
+   * missing. A store that REJECTS was always handled; a store that simply never
+   * SETTLES was not: `loadStoredOverrides()` awaited `overrideStore.load()`
+   * unbounded, and `getFlag()` awaits that BEFORE its own try/catch, so a hung
+   * store parked every caller in the process forever — with no CPU, no libuv
+   * request and no PG session, i.e. invisible to every instrument an
+   * investigator reaches for.
+   *
+   * The `timeout` here is the assertion: without the fix this test does not
+   * fail on a bad value, it HANGS, so a short bound is what makes the red legible.
+   */
+  it('a HANGING store falls back to defaults instead of blocking forever', { timeout: 5_000 }, async () => {
+    // CALIBRATION CONTROL — prove the store is actually consulted on this path.
+    // Without it, "returns the default" would also be true if the override layer
+    // were never reached at all, and a dead instrument would read as a pass.
+    const { store: healthy } = makeFakeStore({ [KEY]: !FLAG_DEFAULTS[KEY] });
+    initFlagOverrideStore(healthy);
+    expect(await getFlag(KEY, 'u')).toBe(!FLAG_DEFAULTS[KEY]);
+
+    // Now the real subject. initFlagOverrideStore() clears the read-cache, so the
+    // next getFlag MUST consult load() — it cannot be served the primed value,
+    // which would make this pass for the wrong reason.
+    process.env.PAPERCUSP_FLAG_BACKEND_TIMEOUT_MS = '1';
+    initFlagOverrideStore({
+      load: () => new Promise(() => {}), // never settles
+      async set() {},
+    });
+
+    expect(await getFlag(KEY, 'u')).toBe(FLAG_DEFAULTS[KEY]);
   });
 });
 
