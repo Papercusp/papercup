@@ -93,14 +93,11 @@ import type { RetainExtrasSnapshot } from "@papercusp/operator-core/lib/sync-res
 // VALUE import — deliberately from the pure types module, never from
 // learning-retain-read (node:fs would enter the browser bundle).
 import {
-  RETAIN_FEED_FILTERS,
   RETAIN_FEED_TABS,
   RETAIN_KIND_FOR_TAB,
-  RETAIN_STATUSFUL_KINDS,
   type RetainDetail,
   type RetainFeedCounts,
   type RetainFeedColumnFilters,
-  type RetainFeedFilter,
   type RetainFeedKind,
   type RetainFeedPage,
   type RetainFeedQueryArgs,
@@ -5941,12 +5938,6 @@ const RETAIN_TAB_LABELS: Record<RetainFeedTab, string> = {
   recipes: "Recipes",
 };
 
-const RETAIN_FILTER_LABELS: Record<RetainFeedFilter, string> = {
-  all: "All",
-  shipped: "Shipped",
-  inflight: "In flight",
-};
-
 const RETAIN_KIND_ICON: Record<RetainFeedKind, typeof GitBranch> = {
   memory: Brain,
   plan: GitBranch,
@@ -6385,12 +6376,8 @@ function RetainedLedgerCard({
     "rtab",
     parseAsStringEnum<RetainFeedTab>([...RETAIN_FEED_TABS]).withDefault("all"),
   );
-  const [rship, setRship] = useQueryState(
-    "rship",
-    parseAsStringEnum<RetainFeedFilter>([...RETAIN_FEED_FILTERS]).withDefault(
-      "all",
-    ),
-  );
+  // (`rship` — the Shipped ∕ In-flight param — is gone with its control, D-001.
+  //  A stale `?rship=` in an old link is now simply ignored.)
   const [rplanOpen, setRplanOpen] = useQueryState("rplan", parseAsString);
   // WI-39534: the selected row (`<kind>:<id>`) — nuqs so agents and shared
   // links see the same selection (CLAUDE.md: user-meaningful state → URL).
@@ -6435,22 +6422,20 @@ function RetainedLedgerCard({
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [degraded, setDegraded] = useState<string[]>([]);
 
-  // Which kinds the CURRENT tab can show, and therefore whether a shipped /
-  // in-flight outcome means anything here at all. Derived from the SAME
-  // `RETAIN_STATUSFUL_KINDS` the server narrows by, so the control and the
-  // query can never disagree about what a click will yield (WI-39900).
-  const tabHasOutcomes =
-    rtab === "all" ||
-    RETAIN_STATUSFUL_KINDS.includes(RETAIN_KIND_FOR_TAB[rtab]);
-  // Owner report 2026-08-19: "for runbooks im seeing 706 but both filters of
-  // shipped and in flight are showing 0 … this is an issue with all the tabs
-  // except plans and work items". `rship` is a nuqs param, so a filter set on
-  // Plans followed the reader to Runbooks and emptied a 706-row ledger with no
-  // explanation. A filter the tab cannot honour is now simply NOT APPLIED —
-  // the chips disable themselves below and say why, and the reader's choice is
-  // preserved for when they return to a tab that has outcomes, rather than
-  // being silently reset or silently obeyed into an empty list.
-  const effectiveFilter: RetainFeedFilter = tabHasOutcomes ? rship : "all";
+  // The Shipped ∕ In-flight axis is GONE (D-001, owner 2026-08-28: "we can just
+  // remove the in flight status"). Retain now means one thing — what LANDED —
+  // so the server applies the shipped population rule to the two statusful
+  // kinds and retains the other four unconditionally. There is no per-tab
+  // outcome state left to compute, and therefore no control that can disagree
+  // with the query about what a click will yield.
+  //
+  // This supersedes WI-39900's fix rather than reverting it. That fix answered
+  // the owner's 2026-08-19 report ("for runbooks im seeing 706 but both filters
+  // of shipped and in flight are showing 0 … this is an issue with all the tabs
+  // except plans and work items") by DISABLING the control where it could not
+  // apply. Removing the axis removes the condition that made it inapplicable,
+  // so the disabled state, the explanatory note and the cross-tab leak of a
+  // stale `?rship=` all go with it.
   const retainPredicateActive =
     Boolean((search ?? "").trim()) ||
     Boolean(retainServerFilters.title) ||
@@ -6459,14 +6444,13 @@ function RetainedLedgerCard({
   const retainBaseArgs = useMemo<RetainFeedQueryArgs & Record<string, unknown>>(
     () => ({
       tab: rtab,
-      filter: effectiveFilter,
       ...((search ?? "").trim() ? { q: (search ?? "").trim() } : {}),
       ...(Object.keys(retainServerFilters).length > 0
         ? { filters: retainServerFilters }
         : {}),
       ...(hive ? { hive } : {}),
     }),
-    [effectiveFilter, hive, retainServerFilters, rtab, search],
+    [hive, retainServerFilters, rtab, search],
   );
   const retainPredicateKey = JSON.stringify(retainBaseArgs);
 
@@ -6755,52 +6739,13 @@ function RetainedLedgerCard({
             );
           })}
         </div>
-        <div
-          className="pc-learning__retainedseg pc-learning__retainedseg--filters"
-          role="group"
-          aria-label="Outcome filter"
-        >
-          {RETAIN_FEED_FILTERS.map((f) => {
-            // Only plans and work items carry a shipped/in-flight outcome. On
-            // every other tab these two would return an empty ledger BY
-            // CONSTRUCTION, so they are disabled rather than clickable — the
-            // Work Queue's `deriveEnumOptions` invariant, stated for a control
-            // whose options are fixed: never offer a filter that cannot yield a
-            // row. "All" stays live everywhere; it is the state such a tab is
-            // already in.
-            const inert = !tabHasOutcomes && f !== "all";
-            return (
-              <Tooltip
-                key={f}
-                label={
-                  inert
-                    ? `${RETAIN_TAB_LABELS[rtab]} have no shipped ∕ in-flight outcome — only plans and work items do.`
-                    : null
-                }
-              >
-                <button
-                  type="button"
-                  aria-pressed={!inert && rship === f}
-                  disabled={inert}
-                  className={`pc-learning__retainedtab${!inert && rship === f ? " is-on" : ""}${inert ? " is-inert" : ""}`}
-                  onClick={() => void setRship(f)}
-                >
-                  {RETAIN_FILTER_LABELS[f]}
-                </button>
-              </Tooltip>
-            );
-          })}
-        </div>
-        {!tabHasOutcomes && rship !== "all" ? (
-          // The reader ASKED for a filter this tab cannot apply. Saying so is
-          // the whole point: the old behaviour honoured it server-side and
-          // showed an empty list under a "706" badge.
-          <p className="pc-learning__retainedfilternote" role="status">
-            Showing all {RETAIN_TAB_LABELS[rtab].toLowerCase()} —{" "}
-            {RETAIN_FILTER_LABELS[rship].toLowerCase()} only applies to plans
-            and work items.
-          </p>
-        ) : null}
+        {/* The Shipped ∕ In-flight segment stood here (D-001). It is replaced
+            by a STATEMENT rather than another control: the boundary is now a
+            property of the tab, not a choice the reader has to make and then
+            reason about per kind. Said once, where the population is decided. */}
+        <p className="pc-learning__retainedfilternote">
+          Everything here landed — in-flight work lives in Improve.
+        </p>
       </div>
       <div className="pc-advpanel__bar">
         <input

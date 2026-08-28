@@ -25,7 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { Sql } from 'postgres';
 import type { CompanionSummaryAggregateRow, FacetSelection } from '@papercusp/facets';
-import { ISSUE_ABANDONED_STATUSES, ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
+import { ISSUE_SHIPPED_STATUSES } from '../work-item-blocking';
 import { createReadDeadline, type WithinBudget } from './read-deadline';
 import {
   compareRetainRows,
@@ -624,7 +624,6 @@ export async function readRetainFeed(
 
   const degraded: string[] = [];
   const shippedArr = [...ISSUE_SHIPPED_STATUSES];
-  const abandonedArr = [...ISSUE_ABANDONED_STATUSES];
 
   // ONE deadline for the WHOLE read — the rows fan-out and then the counts
   // fan-out share it, so the two phases can never sum past it. Anything still

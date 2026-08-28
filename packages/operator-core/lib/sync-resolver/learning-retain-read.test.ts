@@ -21,6 +21,7 @@ import {
   readRetainExtras,
   readRetainFeed,
   readRetainPlanChildren,
+  retainFeedKindsForArgs,
   readRetainSummaryAggregateRows,
   RETAIN_FEED_PAGE_SIZE,
   retainFeedSummarySelection,
@@ -528,9 +529,16 @@ describe('readRetainFeed', () => {
     });
   });
 
-  it('a non-all filter narrows the feed to statusful kinds (plan, wi) — no rubric/runbook/recipe reads', async () => {
+  // D-001 (learning-tab-improve-retain-clarity-2026-08-28). The shipped-only
+  // rule is a per-leg PREDICATE on the two statusful kinds, never a narrowing
+  // of the kind set. This test replaces one that pinned the opposite —
+  // "a non-all filter narrows the feed to statusful kinds (plan, wi)" — which
+  // described the removed Shipped ∕ In-flight filter. That narrowing is
+  // precisely why the filter emptied four of the six tabs and had to be
+  // disabled on them (WI-39900); pinning its ABSENCE is what stops the
+  // behaviour returning.
+  it('the shipped-only rule does NOT drop statusless kinds — the all tab still reads runbooks and recipes', async () => {
     const deps = emptyFeedDeps();
-    const listRubrics = vi.fn(deps.listRubrics);
     const listRunbooksPage = vi.fn(deps.listRunbooksPage);
     const listRecipesPage = vi.fn(deps.listRecipesPage);
     const sql = sqlStub((t) => {
@@ -538,17 +546,30 @@ describe('readRetainFeed', () => {
       if (isWiLeg(t)) return [wiRow('EI-1', '2026-08-16T00:00:00.000Z')];
       return [{ n: 0 }];
     });
-    const page = await readRetainFeed(
-      sql,
-      'ws-1',
-      { ...deps, listRubrics, listRunbooksPage, listRecipesPage },
-      { filter: 'shipped' },
-    );
-    expect(page.rows.map((r) => r.kind).sort()).toEqual(['plan', 'wi']);
-    expect(listRubrics).not.toHaveBeenCalled(); // counts are their own read now (WI-39900) — nothing touches it
-    expect(listRunbooksPage).not.toHaveBeenCalled(); // never the row legs
-    expect(listRecipesPage).not.toHaveBeenCalled();
+    await readRetainFeed(sql, 'ws-1', { ...deps, listRunbooksPage, listRecipesPage }, { tab: 'all' });
+    expect(listRunbooksPage).toHaveBeenCalled();
+    expect(listRecipesPage).toHaveBeenCalled();
   });
+
+  it('every kind survives kind selection — the outcome rule never narrows the kind set', () => {
+    // The unit under the leg fan-out above: whatever else changes, selecting
+    // the `all` tab must yield all six kinds.
+    expect(retainFeedKindsForArgs(normalizeRetainFeedArgs({ tab: 'all' })).sort()).toEqual([
+      'memory',
+      'plan',
+      'recipe',
+      'rubric',
+      'runbook',
+      'wi',
+    ]);
+  });
+
+  // NOTE: the other half of D-001 — that the plan/wi legs are actually
+  // shipped-SCOPED, not merely un-narrowed — CANNOT be asserted in this file:
+  // the composed `sql` fragment from retainOutcomeSql never appears in the
+  // stub's template text, and the stub returns whatever rows the case hands
+  // it, so a predicate regression to TRUE would pass here unnoticed. It needs
+  // real Postgres; see learning-retain-query.integration.test.ts.
 
   it('the legacy full-corpus fallback is read ONCE per page even when both its leg and counts consume it', async () => {
     // A pluggable backend without the optional bounded/exact capabilities
