@@ -11,6 +11,13 @@
 # This file is both a sourceable library and a small standalone publisher:
 #   dependency-generation.sh --integration <repo> [--generation-root <dir>]
 
+# ── Self-read guard (WI-322485): this script can spend tens of minutes
+# fingerprinting and copying dependency trees while peers keep editing the
+# shared checkout. Parse the whole body as one compound command before running
+# it, so a mid-run file rewrite cannot shift Bash's read offset into mixed old
+# and new bytes. Matching } at EOF; this preserves sourced and executed modes.
+{
+
 dependency_generation_log() {
   printf '[dependency-generation] %s\n' "$*" >&2
 }
@@ -1710,3 +1717,5 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   set -euo pipefail
   dependency_generation_main "$@"
 fi
+
+}  # ── end self-read guard (WI-322485) ──

@@ -308,6 +308,29 @@ afterEach(() => {
 });
 
 describe('immutable dependency generation', () => {
+  it('WI-322485: parses the whole long-running script before executing it', () => {
+    const source = readFileSync(SCRIPT, 'utf8');
+    const guardOpen = source.indexOf(
+      '# ── Self-read guard (WI-322485):',
+    );
+    const firstFunction = source.indexOf('dependency_generation_log()');
+    const mainCall = source.lastIndexOf('dependency_generation_main "$@"');
+    const guardClose = source.lastIndexOf(
+      '}  # ── end self-read guard (WI-322485) ──',
+    );
+
+    expect(guardOpen).toBeGreaterThan(source.indexOf('#!/usr/bin/env bash'));
+    expect(firstFunction).toBeGreaterThan(guardOpen);
+    expect(mainCall).toBeGreaterThan(firstFunction);
+    expect(guardClose).toBeGreaterThan(mainCall);
+    expect(source.slice(guardClose).trim()).toBe(
+      '}  # ── end self-read guard (WI-322485) ──',
+    );
+
+    const syntax = spawnSync('bash', ['-n', SCRIPT], { encoding: 'utf8' });
+    expect(syntax.status, syntax.stderr).toBe(0);
+  });
+
   it('publishes the whole product dependency set atomically and reuses its identity', () => {
     const integration = makeIntegration();
     const first = publish(integration);
