@@ -42,7 +42,7 @@ function cfg(): AbConfig {
       { variantId: 'baseline', label: 'baseline', overlay: { promptOverrides: {} } },
       { variantId: 'cand-1', label: 'candidate', overlay: { promptOverrides: { worker: '# w2' } } },
     ],
-    tasks: [{ taskId: 'task-a', pool: 'train', repoUrl: '/repos/sub', repoCommit: COMMIT, spec: 'Add /health', intent: 'liveness', projectContext: 'a Hono API' }],
+    tasks: [{ taskId: 'task-a', pool: 'train', repoUrl: '/repos/sub', repoCommit: COMMIT, spec: 'Add /health', intent: 'liveness', projectContext: 'a Hono API', corpus: 'real' }],
     repeats: 2,
     rubric: GYM_JUDGE_RUBRIC_V1,
     harnessCommit: COMMIT,
@@ -87,6 +87,9 @@ describe('runAbEvaluation over the real gym store (live PG)', () => {
     expect(scoreCount[0].n).toBe(4);
     const variantCount = await sql<{ n: number }[]>`SELECT count(*)::int AS n FROM harness_gym.gym_variants`;
     expect(variantCount[0].n).toBe(2);
+    const taskCorpus = await sql<{ corpus: string }[]>`
+      SELECT corpus FROM harness_gym.gym_tasks WHERE task_id = 'task-a'`;
+    expect(taskCorpus[0].corpus).toBe('real');
 
     // Comparison comes from the REAL compareVariants over the real PG (max composite per variant×task).
     expect(res.comparison).toEqual([{ taskId: 'task-a', aComposite: 8, bComposite: 9, delta: 1 }]);

@@ -49,6 +49,7 @@ export function createGymStore(sql: Sql): AbStore {
         repoCommit: t.repoCommit,
         spec: t.spec,
         intent: t.intent,
+        corpus: t.corpus,
       });
     },
     async startRun(r) {
