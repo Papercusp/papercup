@@ -423,6 +423,9 @@ pub enum Event {
     /// usable, but the error remains explicit instead of silently falling back
     /// to the owned-loop-only path.
     SuSessionError(String),
+    /// Immediate acknowledgement from a SU-session control POST. Terminal
+    /// completion/refusal still arrives on the ordered session stream.
+    SuSessionCommandResult(String),
     /// Snapshot from the one shared conversations.contextProjection query.
     /// `None` is an honest capability-tier absence for the requested target.
     ConversationContextProjectionLoaded {

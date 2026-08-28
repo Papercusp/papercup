@@ -195,6 +195,13 @@ pub enum Action {
     },
     /// Deliver one owner turn through the already-bound SU-session host.
     SendSuSessionTurn(String),
+    /// Dispatch an interrupt/resume/fork/focus/end command through the typed
+    /// SU-session host. The target identity is already embedded in `command`.
+    SendSuSessionCommand {
+        harness: String,
+        chat_id: String,
+        command: serde_json::Value,
+    },
     /// Reattach a previously created SU session by its stable advSessionId.
     AttachSuSession {
         harness: String,
@@ -1917,6 +1924,7 @@ pub struct App {
     pub su_backend: Option<crate::su_session::SuSessionBackend>,
     /// Durable SU-session binding + canonical lifecycle/sequence read-model.
     pub su_session: Option<crate::su_session::SuSessionState>,
+    pub su_command_counter: u64,
     pub chat_has_more_earlier: bool,
     /// The lowest `seq` currently loaded — the cursor for paginating older turns
     /// (`GET …/turns?beforeSeq=<this>`). `None` when the transcript is empty.
@@ -2218,6 +2226,7 @@ impl App {
             pending_approvals: Vec::new(),
             su_backend: None,
             su_session: None,
+            su_command_counter: 0,
             chat_has_more_earlier: false,
             chat_oldest_seq: None,
             chat_loading_earlier: false,
@@ -2517,6 +2526,8 @@ impl App {
                         .unwrap_or_else(|| "SU-session command refused".into());
                     state.error = Some(message.clone());
                     self.last_error = Some(message);
+                } else if status == "accepted" || status == "completed" {
+                    self.session_note = Some(format!("SU-session command {status}"));
                 }
             }
             crate::su_session::SuSessionEvent::Backend { extension, .. } => {
@@ -2528,10 +2539,38 @@ impl App {
                 state.error = Some(message.clone());
                 self.last_error = Some(format!("SU-session: {message}"));
             }
-            crate::su_session::SuSessionEvent::Card { .. } => {
-                // Card payloads are intentionally retained by the shared card
-                // state channel; this stream event still advances identity and
-                // sequence so a reconnect cannot replay it as fresh.
+            crate::su_session::SuSessionEvent::Card {
+                envelope,
+                phase,
+                turn_id,
+                card,
+                correlation_id,
+                ..
+            } => {
+                // Reuse the existing CardSpec renderer/state channel.  The
+                // SU-session card event carries the same OpenCardSnapshot
+                // payload; wrapping it in a local VersionedSnapshot keeps one
+                // card implementation instead of a second PUI-specific UI.
+                let open_cards = if phase == "opened" {
+                    card.map(|card| vec![card]).unwrap_or_default()
+                } else {
+                    Vec::new()
+                };
+                let snapshot = json!({
+                    "runId": turn_id,
+                    "version": envelope.sequence,
+                    "workspaceId": envelope.session.workspace_id,
+                    "snapshot": {"openCards": open_cards}
+                });
+                if let Some(snapshot) = crate::card_view::SnapshotEnvelope::from_json(&snapshot.to_string()) {
+                    self.card_state.apply_snapshot(snapshot);
+                }
+                if phase == "closed" {
+                    self.session_note = Some(format!(
+                        "SU card {} resolved",
+                        correlation_id.unwrap_or_else(|| "unknown".into())
+                    ));
+                }
             }
         }
         Action::Render
@@ -2545,6 +2584,56 @@ impl App {
             }
             label
         })
+    }
+
+    /// Build a capability-checked command action for an owner control.  An
+    /// unsupported capability is an explicit UI refusal (with the backend's
+    /// reason) rather than a no-op or a provider-specific guess.
+    pub fn su_session_control(
+        &mut self,
+        control: crate::su_session::SuSessionControl,
+    ) -> Action {
+        let Some(state) = self.su_session.as_ref() else {
+            self.session_note = Some("no SU session is attached".into());
+            return Action::Render;
+        };
+        let command_type = control.command_type();
+        if let Some(capability) = state
+            .descriptor
+            .as_ref()
+            .and_then(|descriptor| descriptor.capabilities.commands.get(command_type))
+        {
+            if capability.state == "unsupported" {
+                let reason = capability
+                    .reason
+                    .as_deref()
+                    .filter(|reason| !reason.is_empty())
+                    .unwrap_or("backend does not support this control");
+                self.session_note = Some(format!("{command_type} unsupported: {reason}"));
+                return Action::Render;
+            }
+        }
+        let Some(identity) = state.identity.as_ref() else {
+            self.session_note = Some("SU session identity is not ready; retry after attach".into());
+            return Action::Render;
+        };
+        self.su_command_counter = self.su_command_counter.saturating_add(1);
+        let command_id = format!(
+            "pui-{}-{}-{}",
+            identity.adv_session_id,
+            command_type,
+            self.su_command_counter
+        );
+        let command = control.command_json(identity, &command_id, "pui");
+        let Some(chat_id) = self.agent_chat_id.clone() else {
+            self.session_note = Some("SU session has no agent-chat identity".into());
+            return Action::Render;
+        };
+        Action::SendSuSessionCommand {
+            harness: self.harness.clone(),
+            chat_id,
+            command,
+        }
     }
 
     /// Clear a decided HITL request: drop it from the pending set and stop its
@@ -7163,6 +7252,10 @@ impl App {
                 self.last_error = Some(format!("SU-session: {error}"));
                 Action::Render
             }
+            Event::SuSessionCommandResult(status) => {
+                self.session_note = Some(format!("SU-session command {status}"));
+                Action::Render
+            }
             Event::ConversationContextProjectionLoaded { target, projection } => {
                 // A slow response for the previously focused native session is
                 // discarded rather than repainting Context with the wrong agent.
@@ -7916,6 +8009,11 @@ impl App {
             && code == KeyCode::Char('x')
             && mods.contains(KeyModifiers::CONTROL)
         {
+            if self.su_session.is_some() {
+                return self.su_session_control(crate::su_session::SuSessionControl::Interrupt {
+                    reason: Some("owner interrupt".into()),
+                });
+            }
             self.chat_retry_after_cancel = true;
             return Action::CancelChat;
         }
@@ -8168,6 +8266,27 @@ impl App {
             KeyCode::Char('a') if self.tab == Tab::Operator => {
                 self.open_account_picker();
                 Action::Render
+            }
+            // P-009 controls use uppercase keys so they remain discoverable
+            // without stealing ordinary composer/navigation bindings.
+            KeyCode::Char('R') if self.tab == Tab::Operator && self.su_session.is_some() => {
+                self.su_session_control(crate::su_session::SuSessionControl::Resume {
+                    cause: "owner".into(),
+                })
+            }
+            KeyCode::Char('K') if self.tab == Tab::Operator && self.su_session.is_some() => {
+                let sequence = self.su_session.as_ref().map(|state| state.last_sequence);
+                self.su_session_control(crate::su_session::SuSessionControl::Fork {
+                    from_sequence: (sequence != Some(0)).then_some(sequence.unwrap_or(0)),
+                })
+            }
+            KeyCode::Char('F') if self.tab == Tab::Operator && self.su_session.is_some() => {
+                self.su_session_control(crate::su_session::SuSessionControl::Focus)
+            }
+            KeyCode::Char('E') if self.tab == Tab::Operator && self.su_session.is_some() => {
+                self.su_session_control(crate::su_session::SuSessionControl::End {
+                    reason: Some("owner ended session".into()),
+                })
             }
             // Push-to-talk (voice-mode-tui-port-2026-06-05 P2). `v` on the
             // Operator tab (outside compose): Idle → start recording; Recording
@@ -10365,6 +10484,33 @@ mod tests {
             Some(crate::su_session::SuSessionBackend::Codex)
         );
         assert_eq!(a.agent_chat_role, "operator");
+    }
+
+    #[test]
+    fn su_controls_are_capability_checked_and_target_the_bound_identity() {
+        let mut a = App::new();
+        a.agent_chat_id = Some("chat-1".into());
+        a.set_su_session_binding(su_binding());
+        a.su_session.as_mut().unwrap().identity = Some(serde_json::from_value(json!({
+            "agentChatId":"chat-1", "advSessionId":7, "backend":"claude",
+            "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+        })).unwrap());
+        a.su_session.as_mut().unwrap().descriptor = Some(serde_json::from_value(json!({
+            "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+            "lifecycle":"ready", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+            "capabilities": {"commands": {"resume":{"state":"supported","implementation":"native"}, "fork":{"state":"unsupported","reason":"provider does not expose fork"}}, "features": {}},
+            "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+        })).unwrap());
+        match a.su_session_control(crate::su_session::SuSessionControl::Resume { cause: "owner".into() }) {
+            Action::SendSuSessionCommand { command, .. } => {
+                assert_eq!(command["type"], "resume");
+                assert_eq!(command["target"]["advSessionId"], 7);
+                assert_eq!(command["target"]["backend"], "claude");
+            }
+            other => panic!("expected typed SU command, got {other:?}"),
+        }
+        assert_eq!(a.su_session_control(crate::su_session::SuSessionControl::Fork { from_sequence: None }), Action::Render);
+        assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
     }
 
     #[test]

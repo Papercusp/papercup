@@ -2640,6 +2640,10 @@ fn draw_chat(f: &mut Frame, app: &App, area: Rect) {
             }
         );
         lines.push(Line::from(Span::styled(lifecycle, Theme::notify())));
+        lines.push(Line::from(Span::styled(
+            "  Ctrl+X interrupt · R resume · K fork · F focus · E end",
+            Theme::dim(),
+        )));
         if let Some(error) = session.error.as_deref() {
             lines.push(Line::from(Span::styled(
                 format!("  {}", error),

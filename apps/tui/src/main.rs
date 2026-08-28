@@ -1342,7 +1342,7 @@ async fn run<B: Backend>(
                     ));
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::SendSuSessionTurn(text) => {
+            Action::SendSuSessionTurn(text) => {
                     if let Some(state) = app.su_session.as_ref() {
                         if let Some(chat_id) = app.agent_chat_id.clone() {
                             tokio::spawn(send_su_session_turn_task(
@@ -1359,9 +1359,22 @@ async fn run<B: Backend>(
                             ));
                         }
                     }
-                    terminal.draw(|f| ui::draw(f, &app))?;
-                }
-                Action::AttachSuSession {
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::SendSuSessionCommand {
+                harness,
+                chat_id,
+                command,
+            } => {
+                tokio::spawn(send_su_session_command_task(
+                    harness,
+                    chat_id,
+                    command,
+                    tx.clone(),
+                ));
+                terminal.draw(|f| ui::draw(f, &app))?;
+            }
+            Action::AttachSuSession {
                     harness,
                     chat_id,
                     adv_session_id,
@@ -3998,6 +4011,43 @@ async fn send_su_session_turn_task(
         .await
     {
         let _ = tx.send(Event::SuSessionError(format!("owner turn: {error}")));
+    }
+}
+
+async fn send_su_session_command_task(
+    harness: String,
+    chat_id: String,
+    command: serde_json::Value,
+    tx: UnboundedSender<Event>,
+) {
+    let client = match OperatorClient::from_discovery().await {
+        Ok(client) => client,
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!("SU-session control: {error}")));
+            return;
+        }
+    };
+    match client
+        .send_su_session_command(&harness, &chat_id, command)
+        .await
+    {
+        Ok(response) => {
+            let status = response
+                .get("accepted")
+                .and_then(|accepted| accepted.get("status"))
+                .and_then(|status| status.as_str())
+                .unwrap_or_else(|| {
+                    if response.get("ok").and_then(|ok| ok.as_bool()) == Some(true) {
+                        "accepted"
+                    } else {
+                        "refused"
+                    }
+                });
+            let _ = tx.send(Event::SuSessionCommandResult(status.to_string()));
+        }
+        Err(error) => {
+            let _ = tx.send(Event::SuSessionError(format!("SU-session control: {error}")));
+        }
     }
 }
 

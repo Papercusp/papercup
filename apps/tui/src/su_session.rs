@@ -268,6 +268,62 @@ pub struct SuSessionRefusal {
     pub retryable: bool,
 }
 
+/// Owner-facing controls exposed by P-009.  The common command envelope is
+/// built here so every control targets the exact durable identity selected by
+/// the reducer; callers cannot accidentally substitute a chat id or provider
+/// default from another session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuSessionControl {
+    Interrupt { reason: Option<String> },
+    Resume { cause: String },
+    Fork { from_sequence: Option<u64> },
+    Focus,
+    End { reason: Option<String> },
+}
+
+impl SuSessionControl {
+    pub fn command_type(&self) -> &'static str {
+        match self {
+            Self::Interrupt { .. } => "interrupt",
+            Self::Resume { .. } => "resume",
+            Self::Fork { .. } => "fork",
+            Self::Focus => "focus",
+            Self::End { .. } => "end",
+        }
+    }
+
+    pub fn command_json(
+        &self,
+        identity: &SuSessionIdentity,
+        command_id: &str,
+        issued_at: &str,
+    ) -> Value {
+        let mut body = serde_json::json!({
+            "schema": SU_SESSION_SCHEMA,
+            "protocolVersion": SU_SESSION_PROTOCOL_VERSION,
+            "type": self.command_type(),
+            "commandId": command_id,
+            "issuedAt": issued_at,
+            "target": identity,
+        });
+        match self {
+            Self::Interrupt { reason } | Self::End { reason } => {
+                if let Some(reason) = reason {
+                    body["reason"] = Value::String(reason.clone());
+                }
+            }
+            Self::Resume { cause } => body["cause"] = Value::String(cause.clone()),
+            Self::Fork { from_sequence } => {
+                if let Some(sequence) = from_sequence {
+                    body["fromSequence"] = serde_json::json!(sequence);
+                }
+            }
+            Self::Focus => {}
+        }
+        body
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SuSessionEventEnvelope {
@@ -585,5 +641,24 @@ mod tests {
         }).unwrap();
         assert_eq!(attach["attach_adv_session_id"], 42);
         assert!(attach.get("attachAdvSessionId").is_none());
+    }
+
+    #[test]
+    fn controls_preserve_target_identity_and_explicit_refusal_shape() {
+        let identity: SuSessionIdentity = serde_json::from_value(json!({
+            "agentChatId":"chat-1", "advSessionId":7, "backend":"omp",
+            "nativeSessionId":"thread-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"
+        })).unwrap();
+        let command = SuSessionControl::Resume { cause: "pui-restart".into() }
+            .command_json(&identity, "cmd-1", "2026-08-28T00:00:00Z");
+        assert_eq!(command["type"], "resume");
+        assert_eq!(command["cause"], "pui-restart");
+        assert_eq!(command["target"]["advSessionId"], 7);
+        assert_eq!(command["target"]["backend"], "omp");
+
+        let fork = SuSessionControl::Fork { from_sequence: Some(12) }
+            .command_json(&identity, "cmd-2", "2026-08-28T00:00:00Z");
+        assert_eq!(fork["fromSequence"], 12);
+        assert_eq!(SuSessionControl::End { reason: None }.command_type(), "end");
     }
 }
