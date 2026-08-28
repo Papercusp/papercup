@@ -66,38 +66,46 @@ export interface AgentChatLockHandle {
 export async function acquireAgentChatLock(
   chatId: string,
   workspaceId: string | null,
-  opts: { sql?: Sql; ttlMs?: number } = {},
+  opts: { sql?: Sql; ttlMs?: number; waitMs?: number; retryMs?: number } = {},
 ): Promise<AgentChatLockHandle | null> {
   if (!chatId?.trim()) return null;
   const ttlMs = Math.max(0, opts.ttlMs ?? AGENT_CHAT_LOCK_TTL_MS);
   const ttlSec = Math.max(0, Math.round(ttlMs / 1000));
-  const token = randomUUID();
-  try {
-    const sql = opts.sql ?? getOrgPg().sql;
-    // ON CONFLICT ... DO UPDATE ... WHERE <stale> is the atomic "steal only if
-    // abandoned" upsert: the WHERE clause gates the UPDATE itself, so at most
-    // one concurrent acquirer's UPDATE (and therefore RETURNING row) ever
-    // fires for a chat with a live holder. A fresh chat (no conflict) always
-    // inserts and wins.
-    const rows = await sql<Array<{ token: string }>>`
-      INSERT INTO harness_shared.agent_chat_locks (chat_id, workspace_id, token, started_at)
-      VALUES (${chatId}, ${workspaceId}, ${token}, now())
-      ON CONFLICT (chat_id) DO UPDATE
-        SET workspace_id = EXCLUDED.workspace_id,
-            token = EXCLUDED.token,
-            started_at = now()
-        WHERE harness_shared.agent_chat_locks.started_at < now() - make_interval(secs => ${ttlSec})
-      RETURNING token`;
-    const row = rows[0];
-    if (!row || row.token !== token) return null;
-    return { chatId, token };
-  } catch (e) {
-    console.warn(
-      `[agent-chat-lock] acquire failed for chat ${chatId} — failing CLOSED (treated as locked) to avoid a duplicate spawn: ${
-        e instanceof Error ? e.message : e
-      }`,
-    );
-    return null;
+  const waitMs = Math.max(0, opts.waitMs ?? 0);
+  const retryMs = Math.max(10, opts.retryMs ?? 50);
+  const deadline = Date.now() + waitMs;
+
+  while (true) {
+    const token = randomUUID();
+    try {
+      const sql = opts.sql ?? getOrgPg().sql;
+      // ON CONFLICT ... DO UPDATE ... WHERE <stale> is the atomic "steal only if
+      // abandoned" upsert: the WHERE clause gates the UPDATE itself, so at most
+      // one concurrent acquirer's UPDATE (and therefore RETURNING row) ever
+      // fires for a chat with a live holder. A fresh chat (no conflict) always
+      // inserts and wins.
+      const rows = await sql<Array<{ token: string }>>`
+        INSERT INTO harness_shared.agent_chat_locks (chat_id, workspace_id, token, started_at)
+        VALUES (${chatId}, ${workspaceId}, ${token}, now())
+        ON CONFLICT (chat_id) DO UPDATE
+          SET workspace_id = EXCLUDED.workspace_id,
+              token = EXCLUDED.token,
+              started_at = now()
+          WHERE harness_shared.agent_chat_locks.started_at < now() - make_interval(secs => ${ttlSec})
+        RETURNING token`;
+      const row = rows[0];
+      if (row?.token === token) return { chatId, token };
+    } catch (e) {
+      console.warn(
+        `[agent-chat-lock] acquire failed for chat ${chatId} — failing CLOSED (treated as locked) to avoid a duplicate spawn: ${
+          e instanceof Error ? e.message : e
+        }`,
+      );
+    }
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) return null;
+    await new Promise((resolve) => setTimeout(resolve, Math.min(retryMs, remainingMs)));
   }
 }
 

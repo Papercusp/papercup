@@ -75,6 +75,12 @@ export interface ApprovalDecision {
 
 /** P-008 bridges this to the TUI permission round-trip (card system). */
 export interface ApprovalPort {
+  /**
+   * Persist any state the decision surface needs before the approval-required
+   * tool call is emitted to that surface. A rejected preparation fails the
+   * turn visibly instead of rendering a prompt that cannot be resolved.
+   */
+  prepareApproval?(req: ApprovalRequest): Promise<void>;
   requestApproval(req: ApprovalRequest): Promise<ApprovalDecision>;
 }
 
@@ -123,18 +129,12 @@ export interface StepOverrides {
   tools?: LoopTool[];
 }
 
-export type PrepareStep = (
-  args: PrepareStepArgs,
-) => StepOverrides | undefined | Promise<StepOverrides | undefined>;
+export type PrepareStep = (args: PrepareStepArgs) => StepOverrides | undefined | Promise<StepOverrides | undefined>;
 
 // ---------------------------------------------------------------------------
 // Loop events — the embryo of the native session protocol's wire vocabulary.
 
-export type LoopStopReason =
-  | 'complete'
-  | 'stop-condition'
-  | 'aborted'
-  | 'error';
+export type LoopStopReason = 'complete' | 'stop-condition' | 'aborted' | 'error';
 
 export type LoopEvent =
   | { type: 'step_start'; stepIndex: number }
@@ -279,9 +279,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
       return;
     }
 
-    const overrides = opts.prepareStep
-      ? await opts.prepareStep({ stepIndex, steps, messages })
-      : undefined;
+    const overrides = opts.prepareStep ? await opts.prepareStep({ stepIndex, steps, messages }) : undefined;
     const stepModel = overrides?.model ?? opts.model;
     const stepSystem = overrides?.system ?? opts.system;
     const stepMessages = overrides?.messages ?? messages;
@@ -357,10 +355,7 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             (error) => ({ kind: 'error' as const, error }),
           );
         const result = abortPromise
-          ? await Promise.race([
-              nextResult,
-              abortPromise.then(() => ({ kind: 'aborted' as const })),
-            ])
+          ? await Promise.race([nextResult, abortPromise.then(() => ({ kind: 'aborted' as const }))])
           : await nextResult;
 
         if (result.kind === 'aborted') {
@@ -390,11 +385,15 @@ export async function* runAgentLoop(opts: RunAgentLoopOptions): AsyncGenerator<L
             const call: ToolCallRecord = { id: ev.id, name: ev.name, input: ev.input };
             toolCalls.push(call);
             const tool = stepTools.find((t) => t.name === ev.name);
+            const needsApproval = tool ? toolNeedsApproval(tool, ev.input) : false;
+            if (needsApproval) {
+              await opts.approvals?.prepareApproval?.({ call, stepIndex });
+            }
             yield {
               type: 'tool_call',
               stepIndex,
               call,
-              needsApproval: tool ? toolNeedsApproval(tool, ev.input) : false,
+              needsApproval,
             };
             break;
           }

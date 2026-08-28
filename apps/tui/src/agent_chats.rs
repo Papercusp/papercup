@@ -33,6 +33,7 @@ pub struct AgentChatTurnRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
     pub account: Option<String>,
+    pub retry_after_cancel: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -612,6 +613,9 @@ pub(crate) fn loop_message_body(request: &AgentChatTurnRequest) -> Value {
     if let Some(account) = &request.account {
         body["account"] = Value::String(account.clone());
     }
+    if request.retry_after_cancel {
+        body["retryAfterCancel"] = Value::Bool(true);
+    }
     body
 }
 
@@ -907,6 +911,7 @@ mod tests {
             model: Some("claude-sonnet-4-6".to_string()),
             effort: Some("high".to_string()),
             account: Some("pool-a".to_string()),
+            retry_after_cancel: true,
         });
         assert_eq!(
             body,
@@ -915,7 +920,8 @@ mod tests {
                 "engine": "loop",
                 "model": "claude-sonnet-4-6",
                 "effort": "high",
-                "account": "pool-a"
+                "account": "pool-a",
+                "retryAfterCancel": true
             })
         );
         let without_model = loop_message_body(&AgentChatTurnRequest {
@@ -923,6 +929,7 @@ mod tests {
             model: None,
             effort: None,
             account: None,
+            retry_after_cancel: false,
         });
         assert_eq!(
             without_model,

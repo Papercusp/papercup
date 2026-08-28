@@ -50,12 +50,8 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
   getOrgPg: () => ({ sql: h.sql }),
 }));
 
-const {
-  AGENT_CHAT_LOCK_TTL_MS,
-  acquireAgentChatLock,
-  releaseAgentChatLock,
-  isAgentChatLocked,
-} = await import('./agent-chat-lock');
+const { AGENT_CHAT_LOCK_TTL_MS, acquireAgentChatLock, releaseAgentChatLock, isAgentChatLocked } =
+  await import('./agent-chat-lock');
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 let db: OrgTestDb;
@@ -155,6 +151,25 @@ describe('agent-chat-lock — real Postgres (migration 740)', () => {
     expect(await rowCount('chat-b')).toBe(1);
   });
 
+  it('a bounded post-cancel waiter acquires only after the prior token-scoped release', async () => {
+    const first = await acquireAgentChatLock('chat-cancelled-retry', 'ws-1', { sql });
+    expect(first).not.toBeNull();
+
+    const waiting = acquireAgentChatLock('chat-cancelled-retry', 'ws-1', {
+      sql,
+      waitMs: 1_000,
+      retryMs: 10,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await rowCount('chat-cancelled-retry')).toBe(1);
+    await releaseAgentChatLock(first, { sql });
+
+    const second = await waiting;
+    expect(second).not.toBeNull();
+    expect(second?.token).not.toBe(first?.token);
+    expect(await tokenOf('chat-cancelled-retry')).toBe(second?.token);
+  });
+
   /**
    * `ttlMs` on acquire/isLocked is the STALENESS THRESHOLD applied to an
    * EXISTING row at check time — it does not backdate the row this call
@@ -189,7 +204,7 @@ describe('agent-chat-lock — real Postgres (migration 740)', () => {
     expect(await tokenOf('chat-fresh')).toBe(first?.token);
   });
 
-  it('releasing a STOLEN (superseded) handle is a NO-OP — it must never delete the new holder\'s row', async () => {
+  it("releasing a STOLEN (superseded) handle is a NO-OP — it must never delete the new holder's row", async () => {
     // This is the failure mode token-scoping exists to prevent: worker A's
     // original `finally` release runs AFTER its lock was stolen for
     // staleness and must not clobber worker B's live lock.

@@ -118,10 +118,7 @@ describe('runAgentLoop', () => {
   });
 
   it('stopWhen ends the loop even when the model keeps calling tools', async () => {
-    const { port } = scriptedPort([
-      callTool('c1', 'echo', { value: 1 }),
-      callTool('c2', 'echo', { value: 2 }),
-    ]);
+    const { port } = scriptedPort([callTool('c1', 'echo', { value: 1 }), callTool('c2', 'echo', { value: 2 })]);
     const events = await collect({
       port,
       model: 'm1',
@@ -169,6 +166,39 @@ describe('runAgentLoop', () => {
     expect(events.find((e) => e.type === 'tool_result')).toMatchObject({
       result: { echoed: { value: 'y' } },
     });
+    expect(doneEvent(events).stopReason).toBe('complete');
+  });
+
+  it('prepares approval state before yielding the visible gated tool call', async () => {
+    const gated: LoopTool = { ...echoTool, needsApproval: true };
+    const order: string[] = [];
+    const approvals: ApprovalPort = {
+      async prepareApproval(req) {
+        order.push(`prepared:${req.call.id}`);
+      },
+      async requestApproval(req) {
+        order.push(`requested:${req.call.id}`);
+        return { approved: true };
+      },
+    };
+    const { port } = scriptedPort([callTool('c-prepared', 'echo', { value: 'y' }), textStop('ok')]);
+    const events: LoopEvent[] = [];
+
+    for await (const event of runAgentLoop({
+      port,
+      model: 'm1',
+      messages: [textMessage('user', 'go')],
+      tools: [gated],
+      approvals,
+    })) {
+      if (event.type === 'tool_call') {
+        order.push(`yielded:${event.call.id}`);
+        expect(order).toEqual(['prepared:c-prepared', 'yielded:c-prepared']);
+      }
+      events.push(event);
+    }
+
+    expect(order).toEqual(['prepared:c-prepared', 'yielded:c-prepared', 'requested:c-prepared']);
     expect(doneEvent(events).stopReason).toBe('complete');
   });
 
@@ -321,17 +351,13 @@ describe('runAgentLoop', () => {
 
   it('prepareStep overrides model and tools for that step only', async () => {
     const altTool: LoopTool = { ...echoTool, name: 'alt' };
-    const { port, requests } = scriptedPort([
-      callTool('c1', 'alt', {}),
-      textStop('finished'),
-    ]);
+    const { port, requests } = scriptedPort([callTool('c1', 'alt', {}), textStop('finished')]);
     const events = await collect({
       port,
       model: 'base-model',
       messages: [textMessage('user', 'go')],
       tools: [echoTool],
-      prepareStep: ({ stepIndex }) =>
-        stepIndex === 0 ? { model: 'step0-model', tools: [altTool] } : undefined,
+      prepareStep: ({ stepIndex }) => (stepIndex === 0 ? { model: 'step0-model', tools: [altTool] } : undefined),
     });
     expect(requests[0].model).toBe('step0-model');
     expect(requests[0].tools?.map((t) => t.name)).toEqual(['alt']);
@@ -343,9 +369,7 @@ describe('runAgentLoop', () => {
 
   it('default stop condition caps a runaway tool loop at DEFAULT_MAX_STEPS', async () => {
     // Every step calls a tool — the model never stops on its own.
-    const scripts: ModelStreamEvent[][] = Array.from({ length: 100 }, (_, i) =>
-      callTool(`c${i}`, 'echo', { i }),
-    );
+    const scripts: ModelStreamEvent[][] = Array.from({ length: 100 }, (_, i) => callTool(`c${i}`, 'echo', { i }));
     const { port } = scriptedPort(scripts);
     const events = await collect({
       port,
