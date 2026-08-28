@@ -34,6 +34,11 @@ import {
   setAdvSessionPid,
 } from '../../../adv-sessions';
 import { nativeSessionHandleForAdvSession } from '../../../native-session-handles';
+import {
+  bindSuSessionToAdvSession,
+  readDurableSuSession,
+  suppressDuplicateSuLaunch,
+} from '../../../su-session-persistence';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { checkInteractiveSafetyFloor } from '../../../interactive-safety-floor';
 import { isLaunchAccountValue } from '../../../agent-config-constants';
@@ -122,6 +127,8 @@ const launchSu = defineTool({
       // Values come from the modes registry (LAUNCHABLE_MODE_IDS), never a
       // literal list — see the mapping note at the argv push below.
       mode?: string | null;
+      /** PUI's existing chat id; bind it to the deferred adv row. */
+      agent_chat_id?: string | null;
     } = {};
     try {
       const text = await req.text();
@@ -194,6 +201,10 @@ const launchSu = defineTool({
     const carry = body.carry?.trim() || null;
     if (carry && carry !== 'warm' && carry !== 'cold') {
       return json({ status: 'error', error: 'carry must be warm|cold' }, 400);
+    }
+    const agentChatId = body.agent_chat_id?.trim() || null;
+    if (agentChatId && !/^[A-Za-z0-9._:-]{1,200}$/.test(agentChatId)) {
+      return json({ status: 'error', error: 'invalid agent chat id' }, 400);
     }
 
     // PUI attach is intentionally a READ on the canonical session row, not a
@@ -424,6 +435,26 @@ const launchSu = defineTool({
     // terminal. The pui reactively opens a work-area pane that RUNS `launch_argv`
     // (the single launcher), then marks the row launched. No process starts here.
     if (body.defer_spawn) {
+      // A retried PUI create must not mint a second adv row for the same chat.
+      // The durable unique index is the final arbiter; this read makes the
+      // common replay path return the original identity immediately.
+      if (agentChatId) {
+        const existing = await readDurableSuSession({ agentChatId });
+        if (suppressDuplicateSuLaunch(existing, { agentChatId })) {
+          return json({
+            status: 'ok',
+            duplicate: true,
+            attached: true,
+            advSessionId: existing!.advSessionId,
+            ...(existing!.ownerId ? { ownerId: existing!.ownerId } : {}),
+            agent: existing!.backend ?? agent,
+            workspaceId: existing!.workspaceId,
+            harnessSlug: existing!.harnessSlug,
+            planSlug: plan,
+            nativeSession: null,
+          });
+        }
+      }
       const label = plan ? `${agent} · ${plan}` : agent;
       const advSessionId = await recordAdvSession({
         planSlug: plan,
@@ -443,6 +474,29 @@ const launchSu = defineTool({
       });
       if (advSessionId == null) {
         return json({ status: 'error', error: 'failed to record session' }, 500);
+      }
+      if (agentChatId) {
+        const binding = await bindSuSessionToAdvSession({ advSessionId, agentChatId }).catch(() => null);
+        if (binding?.status === 'conflict') {
+          // A concurrent creator may have won the unique chat index between
+          // the duplicate read and this row insert. Close this loser before it
+          // can become a second pending pane, then return the winner's stable
+          // identity to the caller.
+          await markAdvSessionEnded(advSessionId, null, 'cleanup').catch(() => undefined);
+          const winner = await readDurableSuSession({ agentChatId });
+          if (winner) {
+            return json({
+              status: 'ok', duplicate: true, attached: true,
+              advSessionId: winner.advSessionId,
+              ...(winner.ownerId ? { ownerId: winner.ownerId } : {}),
+              agent: winner.backend ?? agent,
+              workspaceId: winner.workspaceId,
+              harnessSlug: winner.harnessSlug,
+              planSlug: plan,
+              nativeSession: null,
+            });
+          }
+        }
       }
       // Wake the pui dock-driver NOW so it reactively panes this pending
       // workbench launch deterministically, instead of waiting for the general

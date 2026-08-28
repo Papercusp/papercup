@@ -49,6 +49,8 @@ import type { SuAgent, SuContextSize } from './su-agents';
 export const OWNER_LAUNCH_HEADLESS = true;
 
 export interface LaunchAgentOpts extends LaunchOpts {
+  /** Existing agent-chat id to bind when PUI creates a durable SU session. */
+  agentChatId?: string | null;
   /** Which backend to launch. Omitted → the configured backend
    *  (/settings/agent, resolved server-side by launch-su). */
   agent?: SuAgent;
@@ -189,6 +191,8 @@ export type CreatePuiSuSessionInput = {
   backend: SuSessionBackend;
   /** Carry is an explicit launch choice on the PUI contract. */
   carry: 'warm' | 'cold';
+  /** Existing agent-chat id to bind to the created adv-session row. */
+  agentChatId?: string | null;
 } & Omit<
   LaunchAgentOpts,
   'agent' | 'carry' | 'deferSpawn' | 'attachAdvSessionId' | 'resumeSessionId' | 'fork' | 'runPsu'
@@ -266,6 +270,7 @@ export async function launchAgent(opts: LaunchAgentOpts): Promise<LaunchAgentRes
     // P-042 / D-067. Null-safe like the options above: omitted is "not
     // supplied", which launch-su treats as the default ask-first posture.
     mode: opts.mode ?? null,
+    ...(opts.agentChatId ? { agent_chat_id: opts.agentChatId } : {}),
   });
   let lastError = 'no spawn path available';
   for (const url of launchSuEndpoints()) {
