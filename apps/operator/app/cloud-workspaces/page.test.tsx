@@ -146,6 +146,7 @@ import CloudWorkspacesPage, {
   workspaceHostActionRest,
   workspaceHostIdFromName,
 } from "./page";
+import { focusSafely } from "./stage-primitives";
 
 const cloudPageCss = readFileSync(
   "app/cloud-workspaces/cloud-workspaces.module.css",
@@ -1077,11 +1078,28 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
     const menu = screen.getByRole("menu", {
       name: "More actions for research-control",
     });
+    expect(document.activeElement).toBe(
+      screen.getByRole("menuitem", { name: "Repair" }),
+    );
     expect(
       Array.from(menu.querySelectorAll('[role="menuitem"]')).map(
         (item) => item.textContent,
       ),
     ).toEqual(["Repair", "Snapshot", "Destroy"]);
+  });
+
+  it("does not focus a detached lifecycle target", () => {
+    const host = document.createElement("div");
+    const button = document.createElement("button");
+    host.appendChild(button);
+    document.body.appendChild(host);
+    button.focus();
+    host.removeChild(button);
+
+    expect(focusSafely(button)).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+
+    document.body.removeChild(host);
   });
 
   it("hands focus back to the overflow trigger when the menu closes", () => {
