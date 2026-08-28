@@ -163,6 +163,11 @@ vi.mock('./run-git-sync', () => ({
   DEFAULT_MAX_COMMIT_TOTAL_BYTES: 250 * 1024 * 1024,
 }));
 
+const runDependencyGenerationPrebuildMock = vi.fn(async () => 'ready');
+vi.mock('../../release/dependency-generation-prebuild', () => ({
+  runDependencyGenerationPrebuild: (request: Record<string, unknown>) => runDependencyGenerationPrebuildMock(request),
+}));
+
 // EI-438 content-guard kill-switch flag — default ON; a test can flip it to exercise
 // the OFF (empty-detector) path. Only '@papercusp/flags/server' (the network getFlag)
 // is mocked; '@papercusp/flags' (the FLAGS constants) imports for real.
@@ -483,6 +488,8 @@ beforeEach(() => {
   liveLockHoldingsStrictMock.mockReset();
   liveLockHoldingsStrictMock.mockResolvedValue([]);
   runGitSyncMock.mockReset();
+  runDependencyGenerationPrebuildMock.mockReset();
+  runDependencyGenerationPrebuildMock.mockResolvedValue('ready');
   appendPipelineEventMock.mockReset();
   emitGitSyncLockRetryEventMock.mockReset();
   emitGitSyncCommittedEventMock.mockReset();
@@ -574,6 +581,52 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
       'papercup',
       expect.objectContaining({ repoPath: ambientSibling }),
     );
+  });
+});
+
+describe('P-004 dependency-generation prebuild handoff', () => {
+  it('queues the exact published candidate only after the whole git-sync action is terminal', async () => {
+    const candidate = 'a'.repeat(40);
+    runGitSyncMock.mockResolvedValue({ ...syncedOutcome, headSha: candidate });
+    const priorToolingRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = tmpRoot;
+    try {
+      await action(ctx);
+    } finally {
+      if (priorToolingRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorToolingRoot;
+    }
+
+    expect(gitSyncActivityPatches().at(-1)).toMatchObject({
+      active: false,
+      phase: 'complete',
+      outcome_status: 'synced',
+    });
+    expect(runDependencyGenerationPrebuildMock).toHaveBeenCalledOnce();
+    expect(runDependencyGenerationPrebuildMock).toHaveBeenCalledWith({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      candidate,
+      integrationRoot: repoDir,
+      toolingRoot: tmpRoot,
+      queuedAtMs: expect.any(Number),
+    });
+  });
+
+  it('does not queue a candidate after a conflict outcome', async () => {
+    runGitSyncMock.mockResolvedValue(conflictOutcome);
+    const priorToolingRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = tmpRoot;
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await action(ctx);
+    } finally {
+      warn.mockRestore();
+      if (priorToolingRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+      else process.env.PAPERCUSP_INTEGRATION_ROOT = priorToolingRoot;
+    }
+
+    expect(runDependencyGenerationPrebuildMock).not.toHaveBeenCalled();
   });
 });
 

@@ -191,6 +191,7 @@ import {
 } from './git-sync-events';
 import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttributionRow } from '../../edit-attribution';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { runDependencyGenerationPrebuild } from '../../release/dependency-generation-prebuild';
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
@@ -1924,10 +1925,7 @@ async function computeConflictAuthorship(
  * (see GitSyncStepRunner in run-git-sync.ts): a re-run commit is `nothing to commit`,
  * a re-run push is `Everything up-to-date` — no double-commit.
  */
-async function handleGitSync(
-  ctx: SystemActionCtx,
-  repoPathOverride?: string | null,
-): Promise<GitSyncFireOutcome> {
+async function handleGitSync(ctx: SystemActionCtx, repoPathOverride?: string | null): Promise<GitSyncFireOutcome> {
   const { installSlug: slug, workspaceId } = ctx;
   const { config: cfg, extraLockResources } = configFromTrigger(ctx.triggerConfig);
   const cd = workspaceId || '*';
@@ -1958,7 +1956,7 @@ async function handleGitSync(
       // a routine re-seed (the seeded trigger_config.push predates the flip). Only
       // resolved for hive members (hive_slug) / self_repo hive homes; getPotGitMode
       // is fail-open: absent/junk/store-error all read 'legacy' (today's behavior).
-      const potHomeSlug = entry ? entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined) : undefined;
+      const potHomeSlug = entry ? (entry.hive_slug ?? (entry.self_repo ? entry.slug : undefined)) : undefined;
       if (potHomeSlug && workspaceId) {
         const mode = await getPotGitMode(workspaceId, potHomeSlug);
         if (mode !== 'legacy') return { ...g, hiveGitMode: mode, ...(entry?.path ? { repoPath: entry.path } : {}) };
@@ -1974,9 +1972,10 @@ async function handleGitSync(
   // that ONE path through the entire tick; only the fail-open unreadable-registry
   // case needs a final workspace-scoped lookup. Explicit null from a manual fire
   // remains authoritative and must not fall back to ambient state.
-  const repoPath = repoPathOverride !== undefined
-    ? repoPathOverride
-    : gate.repoPath ?? await (await import('../../operator-notes')).projectDirForSlug(slug, workspaceId);
+  const repoPath =
+    repoPathOverride !== undefined
+      ? repoPathOverride
+      : (gate.repoPath ?? (await (await import('../../operator-notes')).projectDirForSlug(slug, workspaceId)));
   // github-bridge P-003: on a bridged/p2p-only hive, member git-sync is COMMIT-ONLY —
   // the bridge writer (integrator lease holder) is the sole origin pusher (S-1).
   // The local commit still runs; the dedicated GitHub-ingress/admission and P2P
@@ -1996,7 +1995,9 @@ async function handleGitSync(
     // and must not fetch one opportunistically.
     cfg.bridgeContainedReleaseMainOnCommitOnly = gate.hiveGitMode === 'bridged';
     if (cfg.push) {
-      console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
+      console.log(
+        `[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`,
+      );
       cfg.push = false;
       // EI-18689553108460319 + WI-6016: the bridge writer owns the
       // SUPERPROJECT's canonical refs — NOT an independently-hosted submodule
@@ -2056,7 +2057,8 @@ async function handleGitSync(
     } else if (lock.blockedReason === 'unknown_resource') {
       console.warn(
         `[git-sync] ${slug}: lock resource "${lock.blockedOn}" is not registered in agent_resource_registry — ` +
-        'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.');
+          'skipping this tick. Register it or remove it from trigger_config.extra_lock_resources.',
+      );
     } else {
       console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
     }
@@ -2080,9 +2082,8 @@ async function handleGitSync(
   // several awaits before the local pipeline starts, and a six-hundred-second
   // lease can otherwise expire while those reads are still in flight.
   const activityStartedAt = Date.now();
-  const stopLockHeartbeat = lock.state === 'acquired'
-    ? startLockHeartbeat(cd, slug, [...acquired], lockOwner)
-    : async () => {};
+  const stopLockHeartbeat =
+    lock.state === 'acquired' ? startLockHeartbeat(cd, slug, [...acquired], lockOwner) : async () => {};
   let outcome: GitSyncOutcome;
   // These values are consumed by the post-pipeline escalation/recording tail;
   // the surrounding catch rethrows every setup failure before that tail runs.
@@ -2139,9 +2140,7 @@ async function handleGitSync(
       // make the reason visible; the outer finally owns lease cleanup.
       const detail = error instanceof Error ? error.message : String(error);
       const skippedAt = Date.now();
-      console.error(
-        `[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`,
-      );
+      console.error(`[git-sync] ${slug}: live lock read failed (fail-closed) — skipping this tick: ${detail}`);
       try {
         await patchRoutineMetadata(slug, workspaceId, {
           last_status: 'skipped',
@@ -2250,7 +2249,8 @@ async function handleGitSync(
         maxCommitTotalBytes: cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES,
         attributionOn,
         pushMode: effectivePushMode,
-      }));
+      }),
+    );
 
     // `recordOutcome` writes the local stage's status before any GitHub bridge or
     // P2P post-leg runs. Keep that local result visible, but explicitly mark the
@@ -2264,102 +2264,103 @@ async function handleGitSync(
       outcome_status: outcome.status,
     });
 
-  // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
-  // edit a local git commit yet". Remote origin/staging egress is a distinct,
-  // later git-sync:egressed event emitted by runGithubBridgeLeg.
-  // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
-  // fire-and-forget, never gates the tick, benign to replay past the record step.
-  if (outcome.status === 'synced') {
-    await reconcileProposedCompletionsAtCommit(outcome.headSha, { installSlug: slug, workspaceId }).catch((error) => {
-      console.warn(`[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
-    emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
-  }
+    // event-await-… P-102: git-sync:committed[:<sha>] — wake anyone awaiting "is my
+    // edit a local git commit yet". Remote origin/staging egress is a distinct,
+    // later git-sync:egressed event emitted by runGithubBridgeLeg.
+    // Only on a real commit (status 'synced' ⇒ something moved + headSha is set);
+    // fire-and-forget, never gates the tick, benign to replay past the record step.
+    if (outcome.status === 'synced') {
+      await reconcileProposedCompletionsAtCommit(outcome.headSha, { installSlug: slug, workspaceId }).catch((error) => {
+        console.warn(
+          `[git-sync] ${slug}: completion settlement reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+      emitGitSyncCommittedEvent(outcome.headSha, { scope: { installSlug: slug, workspaceId } });
+    }
 
-  // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
-  // one bridge pass per tick — ingress origin → admission → egress canonical →
-  // divergence verdict (all FF-only; origin never forced). Its own checkpoint so
-  // a resumed fire that already bridged never re-runs the pass. Kill-switch:
-  // FLAGS.GITHUB_BRIDGE (default ON; the per-hive `hiveGit.mode` setting is the
-  // real activation — this leg only exists when the gate resolved 'bridged').
-  if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
-    await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
-  }
+    // github-bridge P-008 (D-003: piggyback, no new scheduler): on a BRIDGED hive,
+    // one bridge pass per tick — ingress origin → admission → egress canonical →
+    // divergence verdict (all FF-only; origin never forced). Its own checkpoint so
+    // a resumed fire that already bridged never re-runs the pass. Kill-switch:
+    // FLAGS.GITHUB_BRIDGE (default ON; the per-hive `hiveGit.mode` setting is the
+    // real activation — this leg only exists when the gate resolved 'bridged').
+    if (gate.hiveGitMode === 'bridged' && (await getFlag(FLAGS.GITHUB_BRIDGE, slug))) {
+      await runCheckpointedStep('git-sync:github-bridge', () => runGithubBridgeLeg(slug, workspaceId));
+    }
 
-  // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
-  // bootstrap-tick pass per git-sync tick, BEFORE ref-announce (P-202) — a
-  // genuinely cold local mirror (zero `refs/namespaces/*` yet) has nothing for
-  // ref-announce/integrator/worktree-bridge to read; seeding it first lets
-  // this SAME tick's later legs already see the seeded heads. Self-gates as a
-  // fast no-op the moment ANY namespace exists locally (runBootstrapLeg's own
-  // `listNamespaces` check) — this is what makes G-8 safe across a
-  // legacy→bridged→p2p-only→legacy→bridged mode cycle with NO re-seed: once a
-  // repo has been seeded (by this leg or by normal own-work commits), no
-  // later tick — regardless of how many times mode flips — ever re-attempts
-  // it, per bootstrap.ts's own re-run contract (bootstrap.integration.test.ts
-  // "a re-run seeds only namespaces NEW on the peer; existing ones are
-  // skipped untouched"). Own checkpoint so a resumed fire never re-attempts
-  // past it.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId));
-  }
+    // p2p-git-live-activation P-205 (WI-3591, G-8): on ANY non-legacy hive, one
+    // bootstrap-tick pass per git-sync tick, BEFORE ref-announce (P-202) — a
+    // genuinely cold local mirror (zero `refs/namespaces/*` yet) has nothing for
+    // ref-announce/integrator/worktree-bridge to read; seeding it first lets
+    // this SAME tick's later legs already see the seeded heads. Self-gates as a
+    // fast no-op the moment ANY namespace exists locally (runBootstrapLeg's own
+    // `listNamespaces` check) — this is what makes G-8 safe across a
+    // legacy→bridged→p2p-only→legacy→bridged mode cycle with NO re-seed: once a
+    // repo has been seeded (by this leg or by normal own-work commits), no
+    // later tick — regardless of how many times mode flips — ever re-attempts
+    // it, per bootstrap.ts's own re-run contract (bootstrap.integration.test.ts
+    // "a re-run seeds only namespaces NEW on the peer; existing ones are
+    // skipped untouched"). Own checkpoint so a resumed fire never re-attempts
+    // past it.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:bootstrap', () => runBootstrapLeg(slug, workspaceId));
+    }
 
-  // G-2a (WI-5146): on ANY non-legacy hive, publish THIS device's own worktree
-  // branch head into its own namespace in the bare store — the `git push rad`
-  // analogue and the FIRST link every leg below consumes. MUST run after the
-  // bootstrap leg (own-head-first would warm a genuinely cold store and
-  // permanently skip G-8's one-shot cold-join) and before ref-announce (so the
-  // same tick that ingests a new head signs + announces it). The G-10 publish
-  // guard runs INSIDE the tick, before the ref write makes objects servable.
-  // Own checkpoint so a resumed fire never re-publishes past it.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch));
-  }
+    // G-2a (WI-5146): on ANY non-legacy hive, publish THIS device's own worktree
+    // branch head into its own namespace in the bare store — the `git push rad`
+    // analogue and the FIRST link every leg below consumes. MUST run after the
+    // bootstrap leg (own-head-first would warm a genuinely cold store and
+    // permanently skip G-8's one-shot cold-join) and before ref-announce (so the
+    // same tick that ingests a new head signs + announces it). The G-10 publish
+    // guard runs INSIDE the tick, before the ref write makes objects servable.
+    // Own checkpoint so a resumed fire never re-publishes past it.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:own-head-publish', () => runOwnHeadPublishLeg(slug, workspaceId, cfg.branch));
+    }
 
-  // p2p-git-live-activation P-202: on ANY non-legacy hive (bridged OR
-  // p2p-only), one ref-announce-tick pass per git-sync tick — publish this
-  // device's own namespace advance (if any) hive-wide, then process any
-  // pending peer ref-announcements into the local mirror. Runs BEFORE the
-  // integrator leg (P-203) so it reads freshly-fetched member heads this
-  // same tick, not last tick's. Own checkpoint so a resumed fire never
-  // re-announces/re-receives past it.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:ref-announce', () => runRefAnnounceLeg(slug, workspaceId));
-  }
+    // p2p-git-live-activation P-202: on ANY non-legacy hive (bridged OR
+    // p2p-only), one ref-announce-tick pass per git-sync tick — publish this
+    // device's own namespace advance (if any) hive-wide, then process any
+    // pending peer ref-announcements into the local mirror. Runs BEFORE the
+    // integrator leg (P-203) so it reads freshly-fetched member heads this
+    // same tick, not last tick's. Own checkpoint so a resumed fire never
+    // re-announces/re-receives past it.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:ref-announce', () => runRefAnnounceLeg(slug, workspaceId));
+    }
 
-  // p2p-git-live-activation P-203: on ANY non-legacy hive (bridged OR
-  // p2p-only), one integrator-tick pass per git-sync tick — the lock-authority
-  // lease holder merges member namespace heads into staging + announces the
-  // advance hive-wide; every other member's tick is a fast, correct no-op
-  // (`skipped: 'not-integrator'`). Own checkpoint so a resumed fire never
-  // re-integrates/re-announces past it.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
-  }
+    // p2p-git-live-activation P-203: on ANY non-legacy hive (bridged OR
+    // p2p-only), one integrator-tick pass per git-sync tick — the lock-authority
+    // lease holder merges member namespace heads into staging + announces the
+    // advance hive-wide; every other member's tick is a fast, correct no-op
+    // (`skipped: 'not-integrator'`). Own checkpoint so a resumed fire never
+    // re-integrates/re-announces past it.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:integrator', () => runIntegratorLeg(slug, workspaceId));
+    }
 
-  // P-302/Leg A: the integrator may advance refs/hive/staging and publish its
-  // handoff token after the normal ref-announce pass above has already signed
-  // this device's namespace. Refresh the signed snapshot immediately after the
-  // integrator so those integrator-authored refs are announced in the SAME
-  // git-sync tick. This pass is publish-only: receiving the same pending peer
-  // announcements twice would double-drive fetch failures and their budgets.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:ref-announce-post-integrator', () =>
-      runRefAnnounceLeg(slug, workspaceId, { receive: false }),
-    );
-  }
+    // P-302/Leg A: the integrator may advance refs/hive/staging and publish its
+    // handoff token after the normal ref-announce pass above has already signed
+    // this device's namespace. Refresh the signed snapshot immediately after the
+    // integrator so those integrator-authored refs are announced in the SAME
+    // git-sync tick. This pass is publish-only: receiving the same pending peer
+    // announcements twice would double-drive fetch failures and their budgets.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:ref-announce-post-integrator', () =>
+        runRefAnnounceLeg(slug, workspaceId, { receive: false }),
+      );
+    }
 
-  // p2p-git-live-activation P-204: on ANY non-legacy hive (bridged OR
-  // p2p-only), one worktree-bridge-tick pass per git-sync tick — process any
-  // pending `hive-git:staging-advance` announcements this device hasn't
-  // consumed yet and ff-advance the local worktree (G-7c/G-7b). Every
-  // member's tick runs this (including the integrator's own — its worktree
-  // follows staging too). Own checkpoint so a resumed fire never re-processes
-  // past it.
-  if (gate.hiveGitMode) {
-    await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
-  }
-
+    // p2p-git-live-activation P-204: on ANY non-legacy hive (bridged OR
+    // p2p-only), one worktree-bridge-tick pass per git-sync tick — process any
+    // pending `hive-git:staging-advance` announcements this device hasn't
+    // consumed yet and ff-advance the local worktree (G-7c/G-7b). Every
+    // member's tick runs this (including the integrator's own — its worktree
+    // follows staging too). Own checkpoint so a resumed fire never re-processes
+    // past it.
+    if (gate.hiveGitMode) {
+      await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
+    }
   } catch (error) {
     await writeGitSyncActivity(slug, workspaceId, {
       active: false,
@@ -2382,6 +2383,56 @@ async function handleGitSync(
     outcome_status: outcome.status,
   });
 
+  // P-004 / WI-305952: hand the FINAL published candidate to the existing
+  // immutable dependency-generation producer only after every Git post-leg has
+  // settled and the activity marker is terminal. This is deliberately
+  // fire-and-forget: git-sync publishes source; dependency prebuild is advisory
+  // early work whose building/ready/failed lifecycle persists on this same
+  // routine row. Green-checkpoint consumes the exact ready marker or joins the
+  // existing install-safe publisher before taking its own run lock.
+  let dependencyPrebuildCandidate: string | null = null;
+  if (outcome.status === 'synced' && FULL_COMMIT_SHA.test(outcome.headSha)) {
+    dependencyPrebuildCandidate = outcome.headSha;
+  }
+  if (gate.hiveGitMode && repoPath && (outcome.status === 'synced' || outcome.status === 'nothing')) {
+    // A bridged/P2P post-leg can advance the worktree AFTER runGitSync returns.
+    // Resolve HEAD now so the producer follows the exact candidate the gate will
+    // see, not merely this device's earlier local commit. A failed final probe
+    // retains the proven full local head above; the next git-sync tick retries.
+    const finalHead = await runGitBounded(
+      ['rev-parse', '--verify', 'HEAD^{commit}'],
+      repoPath,
+      gitTimeoutMsFor(['rev-parse']),
+    ).catch(() => null);
+    const resolved = finalHead?.code === 0 ? finalHead.stdout.trim() : '';
+    if (FULL_COMMIT_SHA.test(resolved) && (outcome.status === 'synced' || !prevHeadSha || resolved !== prevHeadSha)) {
+      dependencyPrebuildCandidate = resolved;
+    }
+  }
+  const dependencyPrebuildToolingRoot = process.env.PAPERCUSP_INTEGRATION_ROOT?.trim();
+  if (dependencyPrebuildCandidate && repoPath && dependencyPrebuildToolingRoot) {
+    const request = {
+      workspaceId,
+      installSlug: slug,
+      candidate: dependencyPrebuildCandidate,
+      integrationRoot: repoPath,
+      toolingRoot: dependencyPrebuildToolingRoot,
+      queuedAtMs: Date.now(),
+    };
+    void runDependencyGenerationPrebuild(request)
+      .then((prebuildOutcome) => {
+        console.log(`[git-sync] ${slug}: dependency prebuild ${prebuildOutcome} for ${request.candidate.slice(0, 12)}`);
+      })
+      .catch((error) => {
+        // The gate's fail-closed fallback remains authoritative. Observable but
+        // never allowed to turn a successful Git publication into a failed tick.
+        console.warn(
+          `[git-sync] ${slug}: dependency prebuild enqueue/run failed for ${request.candidate.slice(0, 12)}: ` +
+            `${error instanceof Error ? error.message : String(error)}`,
+        );
+      });
+  }
+
   // P-003/D-004: documentation freshness is advisory follow-up work, not part of
   // Git publication. A 983-record Papercusp corpus sweep updated 175 rows over
   // ~8m17s while this call sat inside `git-sync:record`, delaying the GitHub bridge
@@ -2390,7 +2441,7 @@ async function handleGitSync(
   // write; its per-harness single-flight coalesces later commits while it runs.
   if (outcome.status === 'synced') {
     try {
-      const docs = docFreshnessModule ?? await import('../docs/sweep-after-sync');
+      const docs = docFreshnessModule ?? (await import('../docs/sweep-after-sync'));
       docs.enqueueDocFreshnessSweepAfterSync({
         harnessSlug: slug,
         workspaceId,
