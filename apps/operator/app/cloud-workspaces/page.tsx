@@ -528,7 +528,11 @@ export default function CloudWorkspacesPage() {
           onSelectStep={goToStep}
         />
 
-        <main className={styles.stageArea}>
+        {/* NOT a <main> landmark: the router already renders the document's single
+            <main data-route-transition-page> (operator-vite/src/routes/__root.tsx),
+            and nesting a second one is invalid + degrades screen-reader navigation.
+            Pinned by "contributes no nested <main> landmark" in page.test.tsx. */}
+        <div className={styles.stageArea}>
           {activeStep === "connect" ? (
             <ConnectStage
               connections={connections}
@@ -599,7 +603,7 @@ export default function CloudWorkspacesPage() {
               onGoToConfigure={() => void setStepParam("configure")}
             />
           ) : null}
-        </main>
+        </div>
       </div>
 
       <Modal
