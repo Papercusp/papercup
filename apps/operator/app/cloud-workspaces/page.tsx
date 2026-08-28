@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useId, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -202,6 +202,28 @@ const PROVIDERS: readonly {
     label: "Microsoft Azure",
     scope: "Subscription",
     accent: "AZURE",
+  },
+];
+
+const DESTROY_DISPOSITIONS: readonly {
+  value: DestroyDisposition;
+  label: string;
+  detail: string;
+}[] = [
+  {
+    value: "snapshot",
+    label: "Create a snapshot first",
+    detail: "Block deletion until a fresh provider snapshot is durable.",
+  },
+  {
+    value: "backup",
+    label: "Use an existing backup",
+    detail: "Record the current durable backup as the recovery point.",
+  },
+  {
+    value: "discard",
+    label: "Discard recoverability",
+    detail: "Permanently accept that no snapshot or backup will be created.",
   },
 ];
 
@@ -468,6 +490,7 @@ export default function CloudWorkspacesPage() {
   const [connectionLabel, setConnectionLabel] = useState("");
   const [destroyConfirm, setDestroyConfirm] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const dispositionButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
 
   const selectedConnection =
     connections.find((row) => row.id === connectionParam) ??
@@ -572,6 +595,29 @@ export default function CloudWorkspacesPage() {
     void setDisposition("snapshot");
     setDestroyConfirm("");
   }, [setDestroyId, setDisposition]);
+
+  const handleDispositionKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>, index: number) => {
+      let nextIndex: number | null = null;
+      if (event.key === "ArrowDown" || event.key === "ArrowRight") {
+        nextIndex = (index + 1) % DESTROY_DISPOSITIONS.length;
+      } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
+        nextIndex =
+          (index - 1 + DESTROY_DISPOSITIONS.length) %
+          DESTROY_DISPOSITIONS.length;
+      } else if (event.key === "Home") {
+        nextIndex = 0;
+      } else if (event.key === "End") {
+        nextIndex = DESTROY_DISPOSITIONS.length - 1;
+      }
+      if (nextIndex === null) return;
+
+      event.preventDefault();
+      void setDisposition(DESTROY_DISPOSITIONS[nextIndex].value);
+      dispositionButtonsRef.current[nextIndex]?.focus();
+    },
+    [setDisposition],
+  );
 
   const canProvision = Boolean(
     selectedConnection?.status === "connected" &&
@@ -1620,25 +1666,7 @@ export default function CloudWorkspacesPage() {
             role="radiogroup"
             aria-label="Recoverability disposition"
           >
-            {(
-              [
-                [
-                  "snapshot",
-                  "Create a snapshot first",
-                  "Block deletion until a fresh provider snapshot is durable.",
-                ],
-                [
-                  "backup",
-                  "Use an existing backup",
-                  "Record the current durable backup as the recovery point.",
-                ],
-                [
-                  "discard",
-                  "Discard recoverability",
-                  "Permanently accept that no snapshot or backup will be created.",
-                ],
-              ] as const
-            ).map(([value, label, detail]) => (
+            {DESTROY_DISPOSITIONS.map(({ value, label, detail }, index) => (
               <button
                 type="button"
                 role="radio"
@@ -1646,7 +1674,12 @@ export default function CloudWorkspacesPage() {
                 className={styles.disposition}
                 data-selected={disposition === value ? "true" : "false"}
                 key={value}
+                ref={(node) => {
+                  dispositionButtonsRef.current[index] = node;
+                }}
+                tabIndex={disposition === value ? 0 : -1}
                 onClick={() => void setDisposition(value)}
+                onKeyDown={(event) => handleDispositionKeyDown(event, index)}
               >
                 <strong>{label}</strong>
                 <span>{detail}</span>

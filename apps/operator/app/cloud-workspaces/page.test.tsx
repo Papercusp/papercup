@@ -373,6 +373,29 @@ describe("CloudWorkspacesPage", () => {
     );
   });
 
+  it("uses one tab stop and arrow-key selection in the recoverability radiogroup", () => {
+    render(<CloudWorkspacesPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Destroy" }));
+    const radios = screen.getAllByRole("radio") as HTMLButtonElement[];
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([0, -1, -1]);
+
+    radios[0].focus();
+    fireEvent.keyDown(radios[0], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(radios[1]);
+    expect(radios[1].getAttribute("aria-checked")).toBe("true");
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, 0, -1]);
+
+    fireEvent.keyDown(radios[1], { key: "End" });
+    expect(document.activeElement).toBe(radios[2]);
+    expect(radios[2].getAttribute("aria-checked")).toBe("true");
+    expect(radios.map((radio) => radio.tabIndex)).toEqual([-1, -1, 0]);
+
+    fireEvent.keyDown(radios[2], { key: "ArrowDown" });
+    expect(document.activeElement).toBe(radios[0]);
+    expect(radios[0].getAttribute("aria-checked")).toBe("true");
+  });
+
   it("fails closed when the sync control-plane read is unavailable", () => {
     H.rows = [];
     H.error = new Error("workspaceHosts.control is not registered");

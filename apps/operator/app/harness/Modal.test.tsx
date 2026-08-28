@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { Modal } from './Modal';
 import {
   MODAL_FLOOR_Z,
@@ -126,6 +127,37 @@ describe('Modal', () => {
     await waitFor(() => {
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
+  });
+
+  it('restores focus to the invoker when a controlled modal closes', async () => {
+    function ProgrammaticModal() {
+      const [open, setOpen] = useState(false);
+      return (
+        <>
+          <button type="button" onClick={() => setOpen(true)}>
+            Open modal
+          </button>
+          <Modal open={open} onOpenChange={setOpen} title="Programmatic modal">
+            <button type="button">Inside action</button>
+          </Modal>
+        </>
+      );
+    }
+
+    render(<ProgrammaticModal />);
+    const trigger = screen.getByRole('button', { name: 'Open modal' });
+    trigger.focus();
+    fireEvent.click(trigger);
+
+    const inside = await screen.findByRole('button', { name: 'Inside action' });
+    await waitFor(() => expect(document.activeElement).toBe(inside));
+    fireEvent.keyDown(screen.getByRole('dialog'), {
+      key: 'Escape',
+      code: 'Escape',
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(document.activeElement).toBe(trigger);
   });
 
   it('does not close on escape when closeOnEscape=false', async () => {

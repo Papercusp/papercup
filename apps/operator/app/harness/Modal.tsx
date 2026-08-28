@@ -1,7 +1,7 @@
 'use client';
 
 import * as Dialog from '@radix-ui/react-dialog';
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { MODAL_FLOOR_Z, clampModalZ, nextModalZ, registerOpenModalZ } from './popper-z';
 import './Modal.css';
 
@@ -94,6 +94,7 @@ export function Modal({
   modal = true,
   nonDismissableOutsideSelector,
   onOpenAutoFocus,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -132,6 +133,12 @@ export function Modal({
    * itself tabbable).
    */
   onOpenAutoFocus?: (event: Event) => void;
+  /**
+   * Runs before the default return-focus behavior. Prevent the event when a
+   * caller needs to move focus somewhere other than the element that opened
+   * the dialog.
+   */
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   /*
    * Layer allocation (WI-35969). This used to be a flat `zIndex ?? 100`, chosen
@@ -164,6 +171,35 @@ export function Modal({
     if (!open) return;
     return registerOpenModalZ(z);
   }, [open, z]);
+  // Radix can restore focus through <Dialog.Trigger>, but this wrapper is used
+  // as a controlled primitive and intentionally exposes no Trigger. Capture
+  // the active invoker immediately before Radix moves focus into the content,
+  // then restore it after the dismissable layer has torn down. The same
+  // requestAnimationFrame timing is used by useConfirmDialog/usePromptDialog.
+  const restoreFocusTargetRef = useRef<HTMLElement | null>(null);
+  const handleOpenAutoFocus = (event: Event) => {
+    const active =
+      typeof document === 'undefined' ? null : document.activeElement;
+    restoreFocusTargetRef.current =
+      active instanceof HTMLElement && active !== document.body ? active : null;
+    onOpenAutoFocus?.(event);
+  };
+  const handleCloseAutoFocus = (event: Event) => {
+    onCloseAutoFocus?.(event);
+    const target = restoreFocusTargetRef.current;
+    restoreFocusTargetRef.current = null;
+    if (
+      event.defaultPrevented ||
+      !target ||
+      typeof requestAnimationFrame === 'undefined'
+    ) {
+      return;
+    }
+    event.preventDefault();
+    requestAnimationFrame(() => {
+      if (document.contains(target)) target.focus({ preventScroll: true });
+    });
+  };
   const overlay = { ...OVERLAY_STYLE, zIndex: z, ...overlayStyle };
   const wrap = { ...CONTENT_WRAP_STYLE, zIndex: z + 1, ...wrapStyle };
   const content = { ...CONTENT_STYLE, ...contentStyle };
@@ -208,7 +244,8 @@ export function Modal({
             className={contentClassName ? `pc-modal-content ${contentClassName}` : 'pc-modal-content'}
             data-anim="pop"
             style={content}
-            onOpenAutoFocus={onOpenAutoFocus}
+            onOpenAutoFocus={handleOpenAutoFocus}
+            onCloseAutoFocus={handleCloseAutoFocus}
             onEscapeKeyDown={closeOnEscape ? undefined : (e) => e.preventDefault()}
             onPointerDownOutside={keepAllowedOutsideInteractionOpen}
             onInteractOutside={keepAllowedOutsideInteractionOpen}
