@@ -464,7 +464,7 @@ export function completionTreeStampForEvidence(
   });
 }
 
-export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable';
+export type CompletionFreshnessVerdict = 'fresh' | 'stale' | 'unavailable' | 'not-applicable';
 
 export interface CompletionFreshness {
   verdict: CompletionFreshnessVerdict;
@@ -529,10 +529,24 @@ export function completionFreshnessForEvidence(
   probe: CompletionFreshnessProbe = {},
 ): CompletionFreshness | undefined {
   if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) return undefined;
-  const stored = storedTreeStamp((evidence as Record<string, unknown>).treeStamp);
+  const record = evidence as Record<string, unknown>;
+  const stored = storedTreeStamp(record.treeStamp);
   if (!stored) return undefined;
 
   if (!stored.contentIdentity?.length) {
+    // Pathless verification is a valid, measured completion shape (`already-passing`,
+    // investigation, duplicate, or other no-file work). There is no content identity
+    // to compare, so calling it "unavailable" falsely blames the observer for a signal
+    // that is not applicable. Older writers dropped an explicit `filesChanged: []`, so
+    // an omitted path list is included here; a non-empty list remains unavailable below.
+    const filesChanged = record.filesChanged;
+    if (filesChanged === undefined || (Array.isArray(filesChanged) && filesChanged.length === 0)) {
+      return {
+        verdict: 'not-applicable',
+        storedTreeStamp: stored,
+        reason: `No changed files were declared for ${stored.repositoryRoot}; completion freshness is not applicable.`,
+      };
+    }
     return {
       verdict: 'unavailable',
       storedTreeStamp: stored,
