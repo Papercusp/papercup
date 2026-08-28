@@ -3893,14 +3893,27 @@ async fn stream_su_session_events(
         return;
     };
 
+    let mut terminal_seen = false;
     while let Some(next) = stream.recv().await {
         let event = match next {
             Ok(event) => event,
             Err(error) => {
-                let _ = tx.send(Event::SuSessionError(error.to_string()));
+                if !terminal_seen {
+                    let _ = tx.send(Event::SuSessionError(error.to_string()));
+                }
                 return;
             }
         };
+        if matches!(
+            event,
+            crate::su_session::SuSessionEvent::Lifecycle {
+                state: crate::su_session::SuSessionLifecycleState::Ended
+                    | crate::su_session::SuSessionLifecycleState::Failed,
+                ..
+            }
+        ) {
+            terminal_seen = true;
+        }
         let is_session = matches!(event, crate::su_session::SuSessionEvent::Session { .. });
         if is_session {
             if let Some(text) = initial_turn.take() {
@@ -3930,7 +3943,9 @@ async fn stream_su_session_events(
         }
         let _ = tx.send(Event::SuSessionEvent(event));
     }
-    let _ = tx.send(Event::SuSessionError("SU-session stream closed".into()));
+    if !terminal_seen {
+        let _ = tx.send(Event::SuSessionError("SU-session stream closed".into()));
+    }
 }
 
 async fn send_su_session_turn_task(
