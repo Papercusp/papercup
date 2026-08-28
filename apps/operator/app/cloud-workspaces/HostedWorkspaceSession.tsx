@@ -117,9 +117,14 @@ export function HostedWorkspaceSession({
    * that handler reads straight from render scope is therefore frozen at its
    * connect-time value — which for `path` meant every post-operation refresh
    * re-listed the root and dragged the operator out of their directory. Same
-   * reason `roleRef` exists for the terminal callbacks.
+   * reason `roleRef` exists for the terminal callbacks. `pathRef` now carries
+   * the last directory confirmed by a successful list; `draftPathRef` keeps
+   * the editable input separate so a failed request cannot make the UI claim
+   * that an unlisted directory is current.
    */
   const pathRef = useRef(".");
+  const draftPathRef = useRef(".");
+  const pendingListPathsRef = useRef(new Map<string, string>());
   const connectEpochRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement | null>(null);
 
@@ -139,7 +144,7 @@ export function HostedWorkspaceSession({
   }, [role]);
 
   useEffect(() => {
-    pathRef.current = path;
+    draftPathRef.current = path;
   }, [path]);
 
   const send = useCallback((payload: unknown): boolean => {
@@ -157,6 +162,7 @@ export function HostedWorkspaceSession({
     connectEpochRef.current += 1;
     const socket = socketRef.current;
     socketRef.current = null;
+    pendingListPathsRef.current.clear();
     if (socket && notify && socket.readyState === WebSocket.OPEN) {
       try {
         socket.send(JSON.stringify({ type: "session.detach" }));
@@ -236,13 +242,11 @@ export function HostedWorkspaceSession({
   }, [send]);
 
   const listFiles = useCallback(
-    (target = pathRef.current) => {
-      if (
-        send({ type: "file.list", requestId: requestId("list"), path: target })
-      ) {
-        pathRef.current = target;
-        setPath(target);
-        setNotice(`Listing ${target}`);
+    (target = draftPathRef.current) => {
+      const listRequestId = requestId("list");
+      if (send({ type: "file.list", requestId: listRequestId, path: target })) {
+        pendingListPathsRef.current.set(listRequestId, target);
+        setNotice(`Listing ${target}…`);
       }
     },
     [send],
@@ -307,14 +311,29 @@ export function HostedWorkspaceSession({
         return;
       }
       if (event.kind === "operation-error") {
+        if (event.operation === "list") {
+          if (event.requestId) pendingListPathsRef.current.delete(event.requestId);
+          /* A failed list never confirms the editable path. Restore the last
+             directory whose entries we actually received. */
+          draftPathRef.current = pathRef.current;
+          setPath(pathRef.current);
+        }
         setNotice(`${event.operation} failed: ${event.code}`);
         return;
       }
       if (event.kind === "file-result") {
         if (event.operation === "list") {
+          const listedPath =
+            pendingListPathsRef.current.get(event.requestId) ??
+            event.path ??
+            pathRef.current;
+          pendingListPathsRef.current.delete(event.requestId);
+          pathRef.current = listedPath;
+          draftPathRef.current = listedPath;
+          setPath(listedPath);
           setEntries(event.entries ?? []);
           setNotice(
-            `Listed ${event.entries?.length ?? 0} entries in ${pathRef.current}.`,
+            `Listed ${event.entries?.length ?? 0} entries in ${listedPath}.`,
           );
         } else if (event.operation === "read" && event.data !== undefined) {
           try {
