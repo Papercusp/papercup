@@ -269,6 +269,14 @@ function HostRow({
     event: React.KeyboardEvent<HTMLButtonElement>,
     index: number,
   ) => {
+    if (event.key === "Tab") {
+      /* Let the browser move focus to the next document control; only close
+         the popup so it cannot remain visually open after focus leaves. */
+      skipRestoreFocusRef.current = true;
+      setOverflowOpen(false);
+      return;
+    }
+
     const enabledIndices = plan.overflow.reduce<number[]>(
       (indices, action, actionIndex) => {
         if (

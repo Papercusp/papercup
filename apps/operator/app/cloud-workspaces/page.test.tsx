@@ -1111,6 +1111,9 @@ describe("CloudWorkspacesPage — 03 Operate", () => {
         (item) => item.textContent,
       ),
     ).toEqual(["Repair", "Snapshot", "Destroy"]);
+
+    fireEvent.keyDown(repairItem, { key: "Tab" });
+    expect(screen.queryByRole("menu")).toBeNull();
   });
 
   it("does not focus a detached lifecycle target", () => {
