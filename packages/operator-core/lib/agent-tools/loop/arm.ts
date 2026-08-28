@@ -37,7 +37,7 @@ import {
   type PriorLoopFacts,
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
-import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, getWorkItem, isClaimHoldParked } from '../../work-items';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { hasLiveExactAwaitForSubscriberKey, listWakeAwaitsForSubscriber } from '../../events/await/store';
@@ -1015,6 +1015,19 @@ export default defineTool({
           const beforeClaim = await getWorkItem(drivenCandidate, harness);
           if (beforeClaim && ANY_FAMILY_TERMINAL_STATES.includes(String(beforeClaim.state))) {
             workItemClaim = { id: drivenCandidate, claimed: false, reason: 'terminal' };
+          } else if (beforeClaim && isClaimHoldParked(beforeClaim.payload)) {
+            // A loop's by-id claim is intentionally allowed to bypass the generic
+            // self-select `_claimHold` floor, but loop:arm is an automatic binding
+            // path, not an operator's deliberate claim. In particular, synthetic
+            // resource-governor receipts carry this hold and must remain owned by the
+            // governor; never let cold goal detection or an explicit loop pin consume
+            // that lease (EI-21681983105634595).
+            workItemClaim = {
+              id: drivenCandidate,
+              claimed: false,
+              reason: 'claim_hold',
+              hint: 'work-item is claim-held for an existing system/governor lease; loop binding was skipped',
+            };
           } else {
             const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
             if (wi) {
