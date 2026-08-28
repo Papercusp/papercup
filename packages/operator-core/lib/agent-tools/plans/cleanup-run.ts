@@ -32,6 +32,10 @@ import {
   type CleanupFindingOutcomeReport,
 } from '../../plan-cleanup/run-store';
 import { dispatchCleanupFindingAction } from '../../plan-cleanup/action-dispatch';
+import {
+  BULK_CONFIDENCE_LEVELS,
+  BULK_RECOMMENDATION_KINDS,
+} from '../../attention/bulk-dispositions';
 
 async function cleanupEnabled(): Promise<boolean> {
   return await getFlag(FLAGS.PLAN_CLEANUP, 'system:plan-cleanup-run').catch(() => false);
@@ -107,6 +111,15 @@ export const cleanupManifest = defineTool({
       const current = currentById.get(row.findingId);
       return {
         ...row,
+        disposition: row.disposition,
+        recommendation: row.recommendation,
+        recommendationKind: row.recommendationKind,
+        recommendationLabel: row.recommendationLabel,
+        recommendationRationale: row.recommendationRationale,
+        evidenceBasis: row.evidenceBasis,
+        responsibility: row.responsibility,
+        confidenceLevel: row.confidenceLevel,
+        retryCondition: row.retryCondition,
         autoApply: current?.autoApply === true,
         autoApplyBlockedBy: current ? current.autoApplyBlockedBy : 'stale-finding',
         current: Boolean(current),
@@ -126,6 +139,7 @@ export const cleanupManifest = defineTool({
         failed: run.failed,
         heartbeatAt: run.heartbeatAt,
         resolverOwner: run.resolverOwner,
+        automationPolicy: run.automationPolicy,
       },
       findings,
       remaining: rows.filter((row) => row.outcome === 'pending').length,
@@ -261,17 +275,45 @@ const OutcomeItem = z
   .object({
     findingId: z.string().min(1),
     outcome: z.enum(['recommended', 'skipped', 'failed']),
+    disposition: z
+      .enum(['recommended', 'owner_action', 'cleanup_candidate', 'retry_needed', 'routed', 'investigate', 'failed', 'legacy_skipped'])
+      .optional(),
     rationale: softText(LIMITS.ANNOTATION).optional(),
     error: softText(LIMITS.ANNOTATION).optional(),
+    recommendationKind: z.enum(BULK_RECOMMENDATION_KINDS).optional(),
+    recommendationLabel: softText(LIMITS.ANNOTATION).optional(),
+    recommendationRationale: softText(LIMITS.ANNOTATION).optional(),
+    evidenceBasis: z.array(softText(LIMITS.ANNOTATION)).max(20).optional(),
+    responsibility: z.enum(['owner', 'agent', 'system', 'engineering', 'unknown']).optional(),
+    confidenceLevel: z.enum(BULK_CONFIDENCE_LEVELS).optional(),
+    retryCondition: softText(LIMITS.ANNOTATION).optional(),
   })
-  .refine((item) => item.outcome !== 'recommended' || Boolean(item.rationale?.trim()), {
-    message: 'rationale is required for recommended findings',
+  .refine((item) => item.outcome !== 'recommended' || Boolean(item.rationale?.trim()) || Boolean(item.recommendationKind), {
+    message: 'rationale or recommendationKind is required for recommended findings',
     path: ['rationale'],
   })
   .refine(
     (item) => item.outcome === 'recommended' || Boolean(item.error?.trim()),
     { message: 'error is required for skipped/failed findings', path: ['error'] },
-  );
+  )
+  .superRefine((item, ctx) => {
+    if (!item.recommendationKind) return;
+    if (!item.recommendationLabel?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['recommendationLabel'], message: 'recommendationLabel is required with a typed recommendation' });
+    }
+    if (!item.recommendationRationale?.trim() && !item.rationale?.trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['recommendationRationale'], message: 'recommendationRationale or rationale is required with a typed recommendation' });
+    }
+    if (!item.confidenceLevel) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['confidenceLevel'], message: 'confidenceLevel is required with a typed recommendation' });
+    }
+    if (!item.responsibility) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['responsibility'], message: 'responsibility is required with a typed recommendation' });
+    }
+    if (item.disposition && item.disposition !== item.recommendationKind && item.disposition !== 'recommended') {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['disposition'], message: 'disposition must match recommendationKind' });
+    }
+  });
 
 export const cleanupReport = defineTool({
   name: 'plans:cleanup-report',
@@ -289,8 +331,18 @@ export const cleanupReport = defineTool({
       runId: z.string().min(1).optional(),
       findingId: z.string().min(1).optional(),
       outcome: z.enum(['recommended', 'skipped', 'failed']).optional(),
+      disposition: z
+        .enum(['recommended', 'owner_action', 'cleanup_candidate', 'retry_needed', 'routed', 'investigate', 'failed', 'legacy_skipped'])
+        .optional(),
       rationale: softText(LIMITS.ANNOTATION).optional(),
       error: softText(LIMITS.ANNOTATION).optional(),
+      recommendationKind: z.enum(BULK_RECOMMENDATION_KINDS).optional(),
+      recommendationLabel: softText(LIMITS.ANNOTATION).optional(),
+      recommendationRationale: softText(LIMITS.ANNOTATION).optional(),
+      evidenceBasis: z.array(softText(LIMITS.ANNOTATION)).max(20).optional(),
+      responsibility: z.enum(['owner', 'agent', 'system', 'engineering', 'unknown']).optional(),
+      confidenceLevel: z.enum(BULK_CONFIDENCE_LEVELS).optional(),
+      retryCondition: softText(LIMITS.ANNOTATION).optional(),
       items: z.array(OutcomeItem).min(1).max(100).optional(),
     })
     .refine((args) => Boolean(args.items?.length) || (Boolean(args.findingId) && Boolean(args.outcome)), {
@@ -333,6 +385,14 @@ export const cleanupReport = defineTool({
           outcome: args.outcome!,
           rationale: args.rationale,
           error: args.error,
+          disposition: args.disposition,
+          recommendationKind: args.recommendationKind,
+          recommendationLabel: args.recommendationLabel,
+          recommendationRationale: args.recommendationRationale,
+          evidenceBasis: args.evidenceBasis,
+          responsibility: args.responsibility,
+          confidenceLevel: args.confidenceLevel,
+          retryCondition: args.retryCondition,
         } as z.infer<typeof OutcomeItem>];
     const rows = await getRunFindings(runId);
     const byId = new Map(rows.map((row) => [row.findingId, row]));
@@ -355,6 +415,15 @@ export const cleanupReport = defineTool({
           findingId: report.findingId,
           outcome: report.outcome,
           error,
+          disposition: report.disposition,
+          recommendationKind: report.recommendationKind,
+          recommendationLabel: clampText(report.recommendationLabel, LIMITS.ANNOTATION)?.trim() ?? null,
+          recommendationRationale:
+            clampText(report.recommendationRationale, LIMITS.ANNOTATION)?.trim() || rationale || null,
+          evidenceBasis: report.evidenceBasis ?? null,
+          responsibility: report.responsibility,
+          confidenceLevel: report.confidenceLevel ?? null,
+          retryCondition: clampText(report.retryCondition, LIMITS.ANNOTATION)?.trim() ?? null,
           ...(evidence ? { evidence } : {}),
         });
         return { ok: true as const, findingId: report.findingId, outcome: report.outcome };

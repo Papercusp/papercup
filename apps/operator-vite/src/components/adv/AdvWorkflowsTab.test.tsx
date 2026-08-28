@@ -348,6 +348,30 @@ describe('<AdvWorkflowsTab> — ledger controls and activity', () => {
     expect(H.queries.some(({ queryName }) => queryName === 'harnessProjects.lite')).toBe(false);
   });
 
+  /**
+   * The URL-state contract the agent control surface (ui:get_state / ui:dispatch) drives this
+   * tab through. Clicking a facet would still pass if it had been moved to useState, so each
+   * param is asserted by SEEDING it — that is the assertion a useState regression fails.
+   */
+  it.each([
+    ['wfState', { wfState: 'running' }, 'routine:git-sync:papercusp', DIGEST],
+    ['wfKind', { wfKind: 'triggered' }, DIGEST, 'routine:git-sync:papercusp'],
+    ['wfSource', { wfSource: 'slack' }, DIGEST, 'routine:git-sync:papercusp'],
+  ])('drives %s from the URL, not from component state', async (_param, params, kept, dropped) => {
+    renderTab(params as Record<string, string>);
+    expect(await screen.findByTestId(`wf-row:${kept}`)).toBeTruthy();
+    expect(screen.queryByTestId(`wf-row:${dropped}`)).toBeNull();
+  });
+
+  it('drives wfSort from the URL, not from component state', async () => {
+    // `name` is the one sort whose order is independent of the fixtures' timing fields.
+    renderTab({ wfSort: 'name' });
+    await screen.findByRole('heading', { name: 'Workflows', level: 1 });
+    const names = screen.getAllByTestId(/^wf-row:/).map((row) => row.getAttribute('data-testid'));
+    expect(names).toEqual([`wf-row:${DIGEST}`, 'wf-row:routine:git-sync:papercusp']);
+    expect((screen.getByLabelText('Sort workflows') as HTMLSelectElement).value).toBe('name');
+  });
+
   it('excludes a plan with no automatic trigger — manual launch is not a trigger', async () => {
     renderTab();
     await screen.findByRole('heading', { name: 'Workflows', level: 1 });

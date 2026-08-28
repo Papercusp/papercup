@@ -43,6 +43,12 @@ import {
   GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID,
 } from './flag-override-store';
 
+// Keep the failure-mode assertions below anchored to a flag that is intentionally
+// default-off. CODEX_GATEWAY_OAUTH_PROXY graduated on 2026-08-27, so its derived
+// FLAG_DEFAULTS entry is now true and cannot prove that an absent store falls back
+// to an off default.
+const DEFAULT_OFF_FLAG = FLAGS.CLOUDFLARE_PUBLISH;
+
 describe('installFlagOverrideStore', () => {
   beforeEach(() => {
     readOperatorState.mockReset();
@@ -76,8 +82,8 @@ describe('installFlagOverrideStore', () => {
     // The store is never installed, so the same PG row is never read: getFlag falls through to
     // the baked default. This asserts the FAILURE MODE so a future refactor that drops the
     // install() call is caught here rather than by a dark flag that mysteriously won't turn on.
-    readOperatorState.mockResolvedValue({ [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true });
-    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(false);
+    readOperatorState.mockResolvedValue({ [DEFAULT_OFF_FLAG]: true });
+    await expect(getFlag(DEFAULT_OFF_FLAG, 'system')).resolves.toBe(false);
     expect(readOperatorState).not.toHaveBeenCalled();
   });
 
@@ -111,14 +117,14 @@ describe('installFlagOverrideStore', () => {
   it('an empty global row is a cutover marker and does not resurrect legacy values after clear', async () => {
     readOperatorState.mockImplementation(async (_table: string, workspace?: string) => {
       if (workspace === GLOBAL_FLAG_OVERRIDES_WORKSPACE_ID) return {};
-      return { [FLAGS.CODEX_GATEWAY_OAUTH_PROXY]: true };
+      return { [DEFAULT_OFF_FLAG]: true };
     });
     installFlagOverrideStore();
 
     activeWorkspace = 'ws-a';
-    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(false);
+    await expect(getFlag(DEFAULT_OFF_FLAG, 'system')).resolves.toBe(false);
     activeWorkspace = 'ws-b';
-    await expect(getFlag(FLAGS.CODEX_GATEWAY_OAUTH_PROXY, 'system')).resolves.toBe(false);
+    await expect(getFlag(DEFAULT_OFF_FLAG, 'system')).resolves.toBe(false);
   });
 
   it('is idempotent — installing twice leaves a working store', async () => {

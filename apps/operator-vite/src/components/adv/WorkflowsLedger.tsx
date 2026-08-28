@@ -17,7 +17,6 @@
  *    a `__btn-inner` span, and the span is what carries the layout.
  */
 
-import type { ReactNode } from 'react';
 import { Table, type TableColumn } from '@/app/harness/Table';
 import type { AutomationActivityItem } from './workflows-model';
 import { relativeTime } from './workflows-model';
@@ -37,8 +36,8 @@ const KIND_CHIP: Record<LedgerRow['kind'], string | null> = {
  * primitive's own per-column style hooks, rather than with an `!important` in the CSS.
  * `adv-workflows.legibility.test.ts` pins both numbers.
  */
-export const LEDGER_HEADER_STYLE = { fontSize: 12, color: 'var(--fg-dim)', opacity: 1 } as const;
-export const LEDGER_CELL_STYLE = { padding: '9px 10px' } as const;
+const LEDGER_HEADER_STYLE = { fontSize: 12, color: 'var(--fg-dim)', opacity: 1 } as const;
+const LEDGER_CELL_STYLE = { padding: '9px 10px' } as const;
 
 /** Apply the floors to every column, so a new column cannot quietly ship below them. */
 function withLegibleStyles<Row>(columns: TableColumn<Row>[]): TableColumn<Row>[] {
@@ -229,9 +228,4 @@ function activityState(status: string): LedgerRow['state'] {
   if (normalized.includes('running')) return 'running';
   if (normalized.includes('paused') || normalized.includes('disarmed')) return 'paused';
   return 'ready';
-}
-
-/** Shared by the ledger and the inspector so a chip never renders two ways. */
-export function StateChip({ state, children }: { state: LedgerRow['state']; children: ReactNode }) {
-  return <span className="pc-wf__pill" data-state={state}>{children}</span>;
 }

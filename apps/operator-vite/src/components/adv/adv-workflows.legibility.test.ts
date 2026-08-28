@@ -137,6 +137,27 @@ describe('Workflows legibility contract', () => {
     expect(CSS).toContain('.pc-wf__btn-inner');
   });
 
+  it('never backgrounds coloured text with a raw rgba token — that ships contrast-UNCHECKED', () => {
+    // The repo contrast lint cannot statically composite a raw rgba() function, so a rule
+    // declaring BOTH a colour and such a background lands in its "could NOT verify" snapshot
+    // and the pair ships unchecked — a silent false green. color-mix() composites fine.
+    // This is the drift marker that actually bit while building this surface, so it gets a
+    // local detector rather than relying on a repo-wide lint to notice for us.
+    const ALPHA_TOKENS = ['--bg-2', '--bg-3', '--bg-4', '--warn-bg', '--good-bg', '--bad-bg'];
+    const offenders: string[] = [];
+    for (const match of CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const body = match[2];
+      if (!/(?:^|;)\s*color:/.test(body)) continue;
+      const background = body.match(/(?:^|;)\s*background:\s*([^;]+)/)?.[1] ?? '';
+      if (!background) continue;
+      const rawAlpha = ALPHA_TOKENS.some((token) => background.includes(`var(${token}`))
+        || /\brgba\(/.test(background)
+        || /\brgb\([^)]*\/\s*0?\.\d/.test(background);
+      if (rawAlpha) offenders.push(`${selectorsOf(match[1]).join(', ')} -> background: ${background.trim()}`);
+    }
+    expect(offenders).toEqual([]);
+  });
+
   it('declares no nonzero letter-spacing', () => {
     const tracking = [...CSS.matchAll(/letter-spacing:\s*([^;]+);/g)].map((match) => match[1].trim());
     expect(tracking.filter((value) => value !== '0' && value !== 'normal')).toEqual([]);

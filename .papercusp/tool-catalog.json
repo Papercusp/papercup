@@ -14456,7 +14456,7 @@
           "POST"
         ]
       },
-      "description": "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, the owner's filter provenance) plus every item in it with the LIVE options that item currently offers. Omit `runId` to get the workspace's active run. Each item carries `actions:[{ id, label, terminal }]` — `terminal:true` options RESOLVE the item, `terminal:false` ones only open a sub-surface and resolve nothing. You may only report an action id that appears in that list. An item whose `actions` come back EMPTY is not resolvable right now (its detail has not loaded, or it left the feed) — report it `skipped` with that reason rather than guessing.",
+      "description": "Read the BULK RESOLVE run you were launched for: the run row (phase, counters, automation policy, and the owner's filter provenance) plus every item with its LIVE options and any persisted typed recommendation. Omit `runId` for the workspace's active run. Each item carries `actions:[{ id, label, terminal }]`; terminal:false only opens a sub-surface. You may only report an action id that appears in that list. If actions are empty, report a typed `retry_needed` recommendation with evidence and confidence rather than silently skipping.",
       "capabilities": [
         "coord:read"
       ],
@@ -14491,7 +14491,7 @@
           "POST"
         ]
       },
-      "description": "Report non-action outcomes for a BULK RESOLVE run: `recommended` = pre-select an option for the owner's review list with a ≤2-sentence why; `skipped` / `failed` = record the reason, never a blank. This verb CANNOT claim `auto_resolved`; terminal effects must go through inbox:bulk-run-act so run authority, dispatch, audit, outcome and counters are serialized. An `actionId` that the item does not actually offer is rejected for that item alone — the rest still land. Re-reporting the same item overwrites it; counters are derived from rows, never incremented.",
+      "description": "Report non-action outcomes for a BULK RESOLVE run. Every item must carry a typed disposition/recommendation: `recommended` may pre-select a real offered action, while `owner_action`, `cleanup_candidate`, `retry_needed`, `routed`, and `investigate` may omit actionId but require a label, rationale/evidence, responsibility, and confidence. `skipped` is legacy compatibility only and must include its reason. This verb cannot claim `auto_resolved`; terminal effects use inbox:bulk-run-act. Re-reporting overwrites the row and counters remain derived.",
       "capabilities": [
         "coord:write"
       ],

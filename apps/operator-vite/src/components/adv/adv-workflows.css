@@ -773,18 +773,18 @@
 .pc-workflows-create__plan-mode button:disabled { opacity: .45; cursor: not-allowed; }
 .pc-workflows-create__new-plan-grid .is-full { grid-column: 1 / -1; margin-top: 0; }
 .pc-workflows-create__scope-note { grid-column: 1 / -1; margin: 0; color: var(--fg-dim, #b9d4e8); font-size: 12px; }
-.pc-workflows-create__created-plan { display: grid; gap: 4px; margin-top: 11px; padding: 11px 12px; border: 1px solid color-mix(in oklab, var(--good, #34d399), transparent 60%); border-radius: 8px; background: var(--good-bg, rgba(52, 211, 153, 0.1)); }
+.pc-workflows-create__created-plan { display: grid; gap: 4px; margin-top: 11px; padding: 11px 12px; border: 1px solid color-mix(in oklab, var(--good, #34d399), transparent 60%); border-radius: 8px; background: color-mix(in oklab, var(--good, #34d399), transparent 92%); }
 .pc-workflows-create__created-plan strong,
 .pc-workflows-create__created-plan span { font-size: 13px; }
 .pc-workflows-create__created-plan small { color: var(--fg-dim, #b9d4e8); font-size: 12px; }
 .pc-workflows-create__truth-note { margin-top: 18px; padding: 11px 12px; border: 1px solid color-mix(in oklab, var(--accent, #38bdf8), transparent 70%); border-radius: 8px; color: var(--fg-dim, #b9d4e8); background: color-mix(in oklab, var(--accent, #38bdf8), transparent 92%); font-size: 13px; line-height: 1.5; }
 .pc-workflows-create__truth-note strong { color: var(--fg, #e7f7ff); }
-.pc-workflows-create__error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 11px 12px; border: 1px solid color-mix(in oklab, var(--bad, #fb7185), transparent 48%); border-radius: 8px; background: var(--bad-bg, rgba(251, 113, 133, 0.1)); }
+.pc-workflows-create__error { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; padding: 11px 12px; border: 1px solid color-mix(in oklab, var(--bad, #fb7185), transparent 48%); border-radius: 8px; background: color-mix(in oklab, var(--bad, #fb7185), transparent 92%); }
 .pc-workflows-create__error strong,
 .pc-workflows-create__error p { font-size: 13px; }
 .pc-workflows-create__error p { margin: 4px 0 0; color: var(--fg-dim, #b9d4e8); line-height: 1.45; }
 .pc-workflows-create__error button { flex: 0 0 auto; min-height: 36px; padding: 7px 10px; border: 1px solid var(--bad, #fb7185); border-radius: 8px; color: var(--fg, #e7f7ff); background: transparent; font-size: 13px; cursor: pointer; }
-.pc-workflows-create__foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 22px; border-top: 1px solid var(--border, rgba(125, 211, 252, 0.15)); background: var(--bg-2, rgba(255, 255, 255, 0.045)); }
+.pc-workflows-create__foot { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 22px; border-top: 1px solid var(--border, rgba(125, 211, 252, 0.15)); background: color-mix(in srgb, var(--bg-raised, #112235), white 3%); }
 .pc-workflows-create__foot > span { color: var(--fg-dim, #b9d4e8); font-size: 12px; }
 .pc-workflows-create__foot > div { display: flex; gap: 8px; }
 .pc-workflows-create__foot button,
