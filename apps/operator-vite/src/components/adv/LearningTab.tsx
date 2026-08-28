@@ -800,7 +800,7 @@ export default function LearningTab() {
       list.removeEventListener("scroll", updateViewOverflow);
       ro?.disconnect();
     };
-  }, [updateViewOverflow, activeStage]);
+  }, [updateViewOverflow, viewList, activeStage, viewTabCount]);
   // Only scroll the selected view tab into view when it is actually clipped
   // (e.g. a URL-restored view on a narrow pane) — never scroll away from
   // fully-visible tabs.
@@ -911,7 +911,7 @@ export default function LearningTab() {
             onValueChange={(next) => void setLview(next as LView)}
           >
             <Tabs.List
-              ref={viewListRef}
+              ref={attachViewList}
               className="pc-learning__view-list"
               aria-label={`${activeStageMeta.label} views`}
             >
