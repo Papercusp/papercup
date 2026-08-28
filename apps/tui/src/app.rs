@@ -520,10 +520,9 @@ pub enum WakeFilter {
 }
 
 /// Apply a [`WakeFilter`] to assembled wake groups. Queen resolution prefers
-/// the roster (`agent_pane_kind == "queen"` → that owner's groups); a queen
-/// missing from the roster falls back to groups the assemble step already
-/// kinded "queen" (label/kind ride the same roster join, so this only fires
-/// for a stale roster read). Pure — unit-tested.
+/// the roster's canonical Mug pane-kind (`mug`, with `queen` retained as a
+/// legacy alias) → that owner's groups; a Mug missing from the roster falls
+/// back to groups the assemble step already kinded as Mug. Pure — unit-tested.
 pub fn filter_wake_groups(
     groups: Vec<crate::models::WakeGroup>,
     filter: &WakeFilter,
@@ -538,13 +537,20 @@ pub fn filter_wake_groups(
         WakeFilter::Queen => {
             let queen_owner = roster
                 .iter()
-                .find(|r| r.agent_pane_kind.as_deref() == Some("queen"))
+                .find(|r| {
+                    r.agent_pane_kind
+                        .as_deref()
+                        .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
+                })
                 .map(|r| r.owner_id.clone());
             groups
                 .into_iter()
                 .filter(|g| match &queen_owner {
                     Some(owner) => &g.agent == owner,
-                    None => g.kind.as_deref() == Some("queen"),
+                    None => g
+                        .kind
+                        .as_deref()
+                        .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire),
                 })
                 .collect()
         }
@@ -10382,7 +10388,7 @@ mod tests {
         let roster = vec![RosterEntry {
             owner_id: "su-q".into(),
             label: "the queen".into(),
-            agent_pane_kind: Some("queen".into()),
+            agent_pane_kind: Some("mug".into()),
             ..Default::default()
         }];
 
@@ -10403,6 +10409,28 @@ mod tests {
         let o = filter_wake_groups(groups(), &WakeFilter::Owner("su-gone".into()), &roster);
         assert_eq!(o.len(), 1);
         assert_eq!(o[0].agent, "su-gone");
+
+        // Legacy `queen` remains accepted for rows/groups written before the
+        // Mug wire rename.
+        let legacy_roster = vec![RosterEntry {
+            owner_id: "su-q".into(),
+            label: "the queen".into(),
+            agent_pane_kind: Some("queen".into()),
+            ..Default::default()
+        }];
+        assert_eq!(
+            filter_wake_groups(groups(), &WakeFilter::Queen, &legacy_roster)[0].agent,
+            "su-q"
+        );
+        let canonical_groups = vec![
+            mk("su-q", Some("mug")),
+            mk("su-b", Some("cup")),
+            mk("su-gone", None),
+        ];
+        assert_eq!(
+            filter_wake_groups(canonical_groups, &WakeFilter::Queen, &[])[0].agent,
+            "su-q"
+        );
     }
 
     fn plan(slug: &str) -> PlanSummary {

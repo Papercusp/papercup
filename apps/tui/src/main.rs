@@ -3045,10 +3045,15 @@ async fn fetch_agent_ctx(
             .unwrap_or_default();
         let entry = match &scope {
             app::WakeFilter::Owner(id) => roster.iter().find(|r| &r.owner_id == id),
-            // Queen (and the never-used All fallback): the roster's queen-kind row.
+            // Queen (and the never-used All fallback): the roster's canonical
+            // Mug-kind row (`queen` remains a legacy alias).
             _ => roster
                 .iter()
-                .find(|r| r.agent_pane_kind.as_deref() == Some("queen")),
+                .find(|r| {
+                    r.agent_pane_kind
+                        .as_deref()
+                        .is_some_and(crate::agent_pane_kind::AgentPaneKind::is_mug_wire)
+                }),
         };
         let owner = match (&scope, entry) {
             (app::WakeFilter::Owner(id), None) => Some(id.clone()), // gone but addressable
@@ -3072,7 +3077,7 @@ async fn fetch_agent_ctx(
                     None
                 } else {
                     entry.and_then(|r| r.agent_pane_kind.clone()).or_else(|| {
-                        matches!(scope, app::WakeFilter::Queen).then(|| "queen".to_string())
+                        matches!(scope, app::WakeFilter::Queen).then(|| "mug".to_string())
                     })
                 };
                 let v = client
