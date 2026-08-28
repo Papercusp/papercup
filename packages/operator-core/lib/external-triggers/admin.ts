@@ -8,7 +8,12 @@
  */
 import { randomUUID } from 'node:crypto';
 import type postgres from 'postgres';
-import { parseStormPolicy } from './binding-engine';
+import {
+  EMAIL_DRAFT_PROPOSAL_HARNESS,
+  EMAIL_DRAFT_PROPOSAL_KIND,
+  parseStormPolicy,
+} from './binding-engine';
+import { getDatatype } from '../datatype-registry-store';
 import { defaultSocialStormPolicyForSourceKind, socialStormPolicyFor } from './social/storm-policy';
 import { getSocialPlatform, isSocialPlatformVerified } from './social/platform-registry';
 import { socialCursorFreshness, type SocialCursorFreshness } from './social/cursor-freshness';
@@ -50,8 +55,11 @@ export interface CreateExternalTriggerBindingInput {
    * Goal target (work-on-everything-goal-2026-08-23 P-020): the binding's
    * matches ACTIVATE this goal (action type `start-goal`, dispatched through
    * `startGoalById`) instead of launching a plan.
-   */
+  */
   goalId?: string | null;
+  /** Direct bounded work-item target (P-018). Both fields are required together. */
+  workItemHarnessSlug?: string | null;
+  workItemKind?: string | null;
   eventPattern: string;
   eventFilter?: Record<string, unknown>;
   stormPolicy?: Record<string, unknown>;
@@ -68,6 +76,8 @@ export interface CreatedExternalTriggerBinding {
   planHarnessSlug: string | null;
   planSlug: string | null;
   goalId: string | null;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -152,6 +162,8 @@ export interface ExternalTriggerBindingAdminRow {
   sourceStatus: string;
   planHarnessSlug: string;
   planSlug: string;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -203,6 +215,8 @@ export interface ExternalTriggerRunVisibility {
   eventPattern: string;
   planHarnessSlug: string;
   planSlug: string;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   status: string;
   attempts: number;
   dedupeKey: string;
@@ -239,6 +253,8 @@ type ExternalTriggerRunAdminBase = Pick<
   | 'eventPattern'
   | 'planHarnessSlug'
   | 'planSlug'
+  | 'workItemHarnessSlug'
+  | 'workItemKind'
   | 'status'
   | 'attempts'
   | 'triggeredAt'
@@ -325,6 +341,8 @@ interface BindingDbRow {
   sourceStatus: string;
   planHarnessSlug: string;
   planSlug: string;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -350,6 +368,8 @@ interface RunVisibilityDbRow {
   stormPolicy: Record<string, unknown>;
   planHarnessSlug: string;
   planSlug: string;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   status: string;
   attempts: number;
   dedupeKey: string;
@@ -582,6 +602,8 @@ function mapRunVisibility(row: RunVisibilityDbRow): ExternalTriggerRunVisibility
     eventPattern: row.eventPattern,
     planHarnessSlug: row.planHarnessSlug,
     planSlug: row.planSlug,
+    workItemHarnessSlug: row.workItemHarnessSlug,
+    workItemKind: row.workItemKind,
     status: row.status,
     attempts: Number(row.attempts),
     dedupeKey: row.dedupeKey,
@@ -626,6 +648,8 @@ export async function loadExternalTriggerRunVisibilities(
            b.storm_policy AS "stormPolicy",
            b.plan_harness_slug AS "planHarnessSlug",
            b.plan_slug AS "planSlug",
+           b.work_item_harness_slug AS "workItemHarnessSlug",
+           b.work_item_kind AS "workItemKind",
            tr.status,
            tr.attempts,
            tr.dedupe_key AS "dedupeKey",
@@ -765,13 +789,20 @@ export async function createExternalTriggerBinding(
   const ws = required(workspaceId, 'workspace_id');
   const sourceId = required(input.sourceId, 'source_id');
   const goalId = input.goalId?.trim() || null;
-  // Exactly one target (mirrors migration 921's CHECK, refused here so the
+  const workItemHarnessSlug = input.workItemHarnessSlug?.trim() || null;
+  const workItemKind = input.workItemKind?.trim() || null;
+  const directGiven = Boolean(workItemHarnessSlug || workItemKind);
+  // Exactly one target (mirrors migration 1016's CHECK, refused here so the
   // caller gets a named error instead of a constraint violation).
   const planGiven = Boolean(input.planSlug?.trim() || input.planHarnessSlug?.trim());
-  if (goalId && planGiven) throw new Error('external_trigger_binding_both_targets');
-  if (!goalId && !planGiven) throw new Error('external_trigger_binding_no_target');
-  const planHarnessSlug = goalId ? null : required(input.planHarnessSlug, 'plan_harness_slug');
-  const planSlug = goalId ? null : required(input.planSlug, 'plan_slug');
+  const targetCount = Number(planGiven) + Number(Boolean(goalId)) + Number(directGiven);
+  if (targetCount > 1) throw new Error('external_trigger_binding_both_targets');
+  if (targetCount === 0) throw new Error('external_trigger_binding_no_target');
+  if (directGiven && (!workItemHarnessSlug || !workItemKind)) {
+    throw new Error('external_trigger_direct_target_incomplete');
+  }
+  const planHarnessSlug = goalId || directGiven ? null : required(input.planHarnessSlug, 'plan_harness_slug');
+  const planSlug = goalId || directGiven ? null : required(input.planSlug, 'plan_slug');
   const eventPattern = required(input.eventPattern, 'event_pattern');
   const sources = await sql<Array<{ kind: string }>>`
     SELECT kind FROM harness_shared.trigger_sources
@@ -782,7 +813,23 @@ export async function createExternalTriggerBinding(
   if (!eventPattern.startsWith(expectedPrefix)) {
     throw new Error(`external_trigger_pattern_source_mismatch:${expectedPrefix}`);
   }
-  if (goalId) {
+  if (directGiven) {
+    if (workItemHarnessSlug !== EMAIL_DRAFT_PROPOSAL_HARNESS || workItemKind !== EMAIL_DRAFT_PROPOSAL_KIND) {
+      throw new Error(`external_trigger_unsupported_direct_target:${workItemHarnessSlug}/${workItemKind}`);
+    }
+    if (sources[0].kind !== 'gmail') {
+      throw new Error(`external_trigger_direct_source_mismatch:gmail:${sources[0].kind}`);
+    }
+    const datatype = await getDatatype(sql, ws, EMAIL_DRAFT_PROPOSAL_KIND);
+    if (
+      !datatype ||
+      datatype.status !== 'active' ||
+      datatype.tier !== 'generic-kind' ||
+      datatype.workItemKind !== EMAIL_DRAFT_PROPOSAL_KIND
+    ) {
+      throw new Error(`external_trigger_unknown_work_item_kind:${EMAIL_DRAFT_PROPOSAL_KIND}`);
+    }
+  } else if (goalId) {
     const goals = await sql<Array<{ exists: boolean }>>`
       SELECT EXISTS (
         SELECT 1 FROM harness_shared.goals
@@ -802,9 +849,9 @@ export async function createExternalTriggerBinding(
 
   const eventFilter = JSON.stringify(input.eventFilter ?? {});
   const execution = parseAgenticPlanExecutionTarget(input.execution);
-  if (goalId && execution) throw new Error('external_trigger_goal_binding_execution_unsupported');
+  if ((goalId || directGiven) && execution) throw new Error('external_trigger_non_plan_binding_execution_unsupported');
   const action = JSON.stringify({
-    type: goalId ? 'start-goal' : 'launch-plan',
+    type: directGiven ? 'create-work-item' : goalId ? 'start-goal' : 'launch-plan',
     ...(execution ? { execution } : {}),
   });
   // A binding with no explicit storm policy is UNBOUNDED under the landed
@@ -826,10 +873,12 @@ export async function createExternalTriggerBinding(
     >
   >`
     INSERT INTO harness_shared.trigger_bindings
-      (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id, event_pattern,
-       event_filter, action, armed, storm_policy, created_by)
+      (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id,
+       work_item_harness_slug, work_item_kind, event_pattern, event_filter,
+       action, armed, storm_policy, created_by)
     VALUES (
-      ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${goalId}, ${eventPattern},
+      ${ws}, ${sourceId}::uuid, ${planHarnessSlug}, ${planSlug}, ${goalId},
+      ${workItemHarnessSlug}, ${workItemKind}, ${eventPattern},
       ${eventFilter}::text::jsonb, ${action}::text::jsonb, FALSE,
       ${stormPolicyJson}::text::jsonb, ${input.createdBy?.trim() || null}
     )
@@ -838,6 +887,8 @@ export async function createExternalTriggerBinding(
               plan_harness_slug AS "planHarnessSlug",
               plan_slug AS "planSlug",
               goal_id AS "goalId",
+              work_item_harness_slug AS "workItemHarnessSlug",
+              work_item_kind AS "workItemKind",
               event_pattern AS "eventPattern",
               event_filter AS "eventFilter",
               action,
@@ -901,6 +952,8 @@ export async function ensureExternalTriggerBinding(
              b.plan_harness_slug AS "planHarnessSlug",
              b.plan_slug AS "planSlug",
              b.goal_id AS "goalId",
+             b.work_item_harness_slug AS "workItemHarnessSlug",
+             b.work_item_kind AS "workItemKind",
              b.event_pattern AS "eventPattern",
              b.event_filter AS "eventFilter",
              b.action,
@@ -941,6 +994,8 @@ export async function ensureExternalTriggerBinding(
                   b.plan_harness_slug AS "planHarnessSlug",
                   b.plan_slug AS "planSlug",
                   b.goal_id AS "goalId",
+                  b.work_item_harness_slug AS "workItemHarnessSlug",
+                  b.work_item_kind AS "workItemKind",
                   b.event_pattern AS "eventPattern",
                   b.event_filter AS "eventFilter",
                   b.action,
@@ -1061,6 +1116,8 @@ export async function loadExternalTriggerAdminSnapshot(
              s.status AS "sourceStatus",
              b.plan_harness_slug AS "planHarnessSlug",
              b.plan_slug AS "planSlug",
+             b.work_item_harness_slug AS "workItemHarnessSlug",
+             b.work_item_kind AS "workItemKind",
              b.event_pattern AS "eventPattern",
              b.event_filter AS "eventFilter",
              b.action,
@@ -1118,6 +1175,8 @@ export async function loadExternalTriggerAdminSnapshot(
       sourceStatus: row.sourceStatus,
       planHarnessSlug: row.planHarnessSlug,
       planSlug: row.planSlug,
+      workItemHarnessSlug: row.workItemHarnessSlug,
+      workItemKind: row.workItemKind,
       eventPattern: row.eventPattern,
       eventFilter: row.eventFilter,
       action: row.action,

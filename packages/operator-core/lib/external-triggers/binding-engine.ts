@@ -20,6 +20,9 @@ import { startGoalById, type StartGoalByIdResult } from '../goals/start-goal-by-
 import { parseAgenticPlanExecutionTarget } from '../agentic-plan-execution-target';
 import { openEscalation, resolveEscalation } from '../agent-tools/coordination/escalations';
 import type { AgentIdentity } from '../agent-tools/coordination/identity';
+import { createWorkItem, type CreateWorkItemInput, type WorkItem } from '../work-items';
+import { getDatatype } from '../datatype-registry-store';
+import { validateDatatypePayload } from '../datatype-payload-validation';
 
 type Db = postgres.Sql | postgres.TransactionSql;
 
@@ -66,9 +69,30 @@ const EXTERNAL_TRIGGER_IDENTITY: AgentIdentity = {
  * The action vocabulary (work-on-everything-goal-2026-08-23 P-020, D-006).
  * `launch-plan` mints a plan run; `start-goal` ACTIVATES the binding's target
  * goal through the one goal-activation primitive (`startGoalById`) — never a
- * second spawn path.
+ * second spawn path; `create-work-item` writes one bounded item through the
+ * canonical work_items facade.
  */
-const SUPPORTED_TRIGGER_ACTIONS: ReadonlySet<string> = new Set(['launch-plan', 'start-goal']);
+const SUPPORTED_TRIGGER_ACTIONS: ReadonlySet<string> = new Set(['launch-plan', 'start-goal', 'create-work-item']);
+
+/** The Email direct-ingress contract owned by the registered datatype. */
+export const EMAIL_DRAFT_PROPOSAL_KIND = 'email-draft-proposal';
+export const EMAIL_DRAFT_PROPOSAL_HARNESS = 'email';
+export const EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION = 'email-draft-proposal/v1';
+
+interface DirectWorkItemTarget {
+  harnessSlug: string;
+  kind: string;
+}
+
+interface DirectWorkItemProvenance {
+  schemaVersion: string;
+  eventKey: string;
+  triggerRef: string;
+  dedupeKey: string;
+  sourceId: string;
+  externalId: string;
+  triggerRunId: string;
+}
 
 interface BindingRow {
   id: string;
@@ -77,6 +101,8 @@ interface BindingRow {
   planHarnessSlug: string | null;
   planSlug: string | null;
   goalId: string | null;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   eventPattern: string;
   eventFilter: Record<string, unknown>;
   action: Record<string, unknown>;
@@ -91,6 +117,8 @@ interface ClaimedTriggerRun {
   planHarnessSlug: string | null;
   planSlug: string | null;
   goalId: string | null;
+  workItemHarnessSlug: string | null;
+  workItemKind: string | null;
   args: TriggerRunArgs;
   action: Record<string, unknown>;
   attempts: number;
@@ -158,6 +186,8 @@ export interface TriggerDispatchDeps {
   announceRunWork?: (sql: postgres.Sql, workspaceId: string, runId: number) => Promise<void>;
   openEscalation?: typeof openEscalation;
   resolveEscalation?: typeof resolveEscalation;
+  /** Canonical work-item writer for direct bindings; injectable for isolated tests. */
+  createWorkItem?: typeof createWorkItem;
   batchSize?: number;
   staleAfterSeconds?: number;
 }
@@ -300,6 +330,120 @@ function actionType(action: Record<string, unknown>): string {
   return type || 'launch-plan';
 }
 
+function directWorkItemTarget(row: Pick<BindingRow, 'workItemHarnessSlug' | 'workItemKind'>): DirectWorkItemTarget | null {
+  const harnessSlug = row.workItemHarnessSlug?.trim() || null;
+  const kind = row.workItemKind?.trim() || null;
+  if ((harnessSlug === null) !== (kind === null)) {
+    throw new Error('external_trigger_direct_target_incomplete');
+  }
+  return harnessSlug && kind ? { harnessSlug, kind } : null;
+}
+
+/** Stable reference written into the strict Email payload and used for retry lookup. */
+export function directWorkItemTriggerRef(triggerRunId: string, bindingId: string): string {
+  return `external-trigger:${bindingId}:${triggerRunId}`;
+}
+
+function requiredEmailPayloadString(payload: Record<string, unknown>, field: string): string {
+  const value = payload[field];
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    throw new Error(`external_trigger_email_draft_${field}_required`);
+  }
+  return value;
+}
+
+function requiredEmailPayloadStringArray(payload: Record<string, unknown>, field: string): string[] {
+  const value = payload[field];
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string' || entry.trim().length === 0)) {
+    throw new Error(`external_trigger_email_draft_${field}_array_required`);
+  }
+  return value.map((entry) => entry as string);
+}
+
+/**
+ * Map the normalized Gmail event into the registered, versioned Email kind.
+ * Event key and provider dedupe remain immutable trigger-run fields; only the
+ * stable trigger reference is admitted by the strict work-item payload schema.
+ */
+async function directEmailWorkItem(
+  sql: postgres.Sql,
+  row: ClaimedTriggerRun,
+  target: DirectWorkItemTarget,
+): Promise<{ input: CreateWorkItemInput; provenance: DirectWorkItemProvenance }> {
+  if (target.harnessSlug !== EMAIL_DRAFT_PROPOSAL_HARNESS || target.kind !== EMAIL_DRAFT_PROPOSAL_KIND) {
+    throw new Error(`external_trigger_unsupported_direct_target:${target.harnessSlug}/${target.kind}`);
+  }
+  const trigger = row.args.trigger;
+  if (trigger.key !== 'ext:gmail:message.received' || trigger.source !== 'gmail' || trigger.event !== 'message.received') {
+    throw new Error('external_trigger_email_event_mismatch');
+  }
+  const datatype = await getDatatype(sql, row.workspaceId, EMAIL_DRAFT_PROPOSAL_KIND);
+  if (
+    !datatype ||
+    datatype.status !== 'active' ||
+    datatype.tier !== 'generic-kind' ||
+    datatype.workItemKind !== EMAIL_DRAFT_PROPOSAL_KIND
+  ) {
+    throw new Error(`external_trigger_unknown_work_item_kind:${EMAIL_DRAFT_PROPOSAL_KIND}`);
+  }
+  const triggerRef = directWorkItemTriggerRef(row.id, row.bindingId);
+  const sourcePayload = trigger.payload;
+  const payload: Record<string, unknown> = {
+    messageId: requiredEmailPayloadString(sourcePayload, 'messageId'),
+    threadId: requiredEmailPayloadString(sourcePayload, 'threadId'),
+    from: requiredEmailPayloadString(sourcePayload, 'from'),
+    to: requiredEmailPayloadStringArray(sourcePayload, 'to'),
+    subject: requiredEmailPayloadString(sourcePayload, 'subject'),
+    text: requiredEmailPayloadString(sourcePayload, 'text'),
+    policy: { draftOnly: true },
+    triggerRef,
+  };
+  const validation = validateDatatypePayload(datatype.payloadSchema, payload);
+  if (!validation.ok) {
+    throw new Error(`external_trigger_invalid_work_item_payload:${validation.errors.join('; ')}`);
+  }
+  const subject = String(payload.subject);
+  const provenance: DirectWorkItemProvenance = {
+    schemaVersion: EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION,
+    eventKey: trigger.key,
+    triggerRef,
+    dedupeKey: trigger.dedupeKey,
+    sourceId: trigger.sourceId,
+    externalId: trigger.externalId,
+    triggerRunId: row.id,
+  };
+  return {
+    input: {
+      kind: EMAIL_DRAFT_PROPOSAL_KIND as CreateWorkItemInput['kind'],
+      title: `Draft reply: ${subject}`,
+      summary: `Prepare a draft-only reply for Gmail message ${payload.messageId} in thread ${payload.threadId}.`,
+      harness: target.harnessSlug,
+      workspaceId: row.workspaceId,
+      payload,
+      createdBy: EXTERNAL_TRIGGER_IDENTITY.ownerId,
+    },
+    provenance,
+  };
+}
+
+async function existingDirectWorkItemId(
+  sql: postgres.Sql,
+  row: ClaimedTriggerRun,
+  target: DirectWorkItemTarget,
+  triggerRef: string,
+): Promise<string | null> {
+  const rows = await sql<Array<{ id: string }>>`
+    SELECT feature_id AS id
+      FROM harness_shared.harness_features_consolidated
+     WHERE workspace_id = ${row.workspaceId}
+       AND harness_slug = ${target.harnessSlug}
+       AND item_kind = ${target.kind}
+       AND payload ->> 'triggerRef' = ${triggerRef}
+     ORDER BY created_ts, feature_id
+     LIMIT 1`;
+  return rows[0]?.id ?? null;
+}
+
 async function loadBindingForUpdate(tx: Db, workspaceId: string, id: string): Promise<BindingRow | null> {
   const rows = await tx<BindingRow[]>`
     SELECT id,
@@ -307,6 +451,8 @@ async function loadBindingForUpdate(tx: Db, workspaceId: string, id: string): Pr
            plan_harness_slug AS "planHarnessSlug",
            plan_slug AS "planSlug",
            goal_id AS "goalId",
+           work_item_harness_slug AS "workItemHarnessSlug",
+           work_item_kind AS "workItemKind",
            event_pattern AS "eventPattern",
            event_filter AS "eventFilter",
            action,
@@ -552,6 +698,8 @@ async function claimPendingTriggerRuns(
            b.plan_harness_slug AS "planHarnessSlug",
            b.plan_slug AS "planSlug",
            b.goal_id AS "goalId",
+           b.work_item_harness_slug AS "workItemHarnessSlug",
+           b.work_item_kind AS "workItemKind",
            c.args,
            b.action,
            c.attempts,
@@ -641,6 +789,7 @@ export async function dispatchPendingTriggerRuns(
   const runPlan = deps.runPlan ?? runScheduledPlanFire;
   const startGoal = deps.startGoal ?? startGoalById;
   const announce = deps.announceRunWork ?? announceRunWork;
+  const create = deps.createWorkItem ?? createWorkItem;
   const escalate = deps.openEscalation ?? openEscalation;
   const resolveEscalationFn = deps.resolveEscalation ?? resolveEscalation;
   const result: TriggerDispatchResult = {
@@ -657,6 +806,41 @@ export async function dispatchPendingTriggerRuns(
       const type = actionType(row.action);
       if (!SUPPORTED_TRIGGER_ACTIONS.has(type)) {
         throw new Error(`external_trigger_unsupported_action:${type}`);
+      }
+
+      // ── create-work-item (P-018): direct Email ingress ───────────────────
+      // The trigger receipt/outbox remains the idempotency boundary. A retry
+      // after a successful canonical create but a failed status update finds
+      // the same triggerRef and adopts that item instead of minting a sibling.
+      if (type === 'create-work-item') {
+        const target = directWorkItemTarget(row);
+        if (!target) throw new Error('external_trigger_missing_direct_target');
+        const direct = await directEmailWorkItem(sql, row, target);
+        const existingId = await existingDirectWorkItemId(sql, row, target, direct.provenance.triggerRef);
+        let workItemId = existingId;
+        let created: WorkItem | null = null;
+        if (!workItemId) {
+          created = await create(direct.input);
+          workItemId = created?.id ?? null;
+          if (!workItemId) throw new Error('external_trigger_direct_work_item_create_missing_id');
+        }
+        await sql`
+          UPDATE harness_shared.trigger_runs
+             SET status = 'succeeded', plan_run_ref = NULL,
+                 outcome = outcome || ${JSON.stringify({
+                   directWorkItemId: workItemId,
+                   directWorkItem: {
+                     ...direct.provenance,
+                     workItemId,
+                     harnessSlug: target.harnessSlug,
+                     kind: target.kind,
+                   },
+                 })}::text::jsonb,
+                 error = NULL, completed_at = now(), updated_at = now()
+           WHERE workspace_id = ${row.workspaceId} AND id = ${row.id}`;
+        result.succeeded += 1;
+        await resolveRetryEscalationIfRecovered(sql, row, resolveEscalationFn).catch(() => undefined);
+        continue;
       }
 
       // ── start-goal (P-020): activate the binding's target goal ──────────

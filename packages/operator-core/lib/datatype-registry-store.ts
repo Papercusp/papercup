@@ -292,7 +292,7 @@ export async function upsertDatatype(
 
 /** Fetch one datatype by id within a workspace. Null when absent. */
 export async function getDatatype(
-  sql: postgres.Sql,
+  sql: postgres.Sql | postgres.TransactionSql,
   workspaceId: string,
   id: string,
 ): Promise<DatatypeRow | null> {

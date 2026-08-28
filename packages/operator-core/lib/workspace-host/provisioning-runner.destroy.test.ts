@@ -10,7 +10,10 @@ import {
   type WorkspaceHostResourceRef,
 } from '@papercusp/deployment-driver';
 import type { GcpWorkspaceHostInventorySnapshot } from './gcp-provider';
-import { GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS } from './gcp-safety';
+import {
+  GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS,
+  type GcpManagedWorkspaceHostResourceObservation,
+} from './gcp-safety';
 import {
   runWorkspaceHostDestroy,
   type RunWorkspaceHostDestroyInput,
@@ -108,7 +111,7 @@ function providerHarness(options: { inventoryError?: Error } = {}) {
       },
     };
   });
-  const inventoryManagedResources = vi.fn(async () => {
+  const inventoryManagedResources = vi.fn<() => Promise<GcpWorkspaceHostInventorySnapshot>>(async () => {
     if (options.inventoryError) throw options.inventoryError;
     return {
       complete: true as const,
@@ -205,18 +208,20 @@ function storeHarness(targetDesired: WorkspaceHostDesiredSpec = desired) {
 }
 
 function legacyInventorySnapshot(
-  observed: readonly GcpWorkspaceHostInventorySnapshot['observed'][number][] = resources.map((resource) => ({
-    resource,
-    labels: ['vm', 'disk'].includes(resource.kind)
-      ? {
-          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
-          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-1',
-          [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: WORKSPACE_ID,
-          purpose: 'legacy-canary',
-        }
-      : {},
-    observedAt: NOW,
-  })),
+  observed: readonly GcpManagedWorkspaceHostResourceObservation[] = resources.map(
+    (resource): GcpManagedWorkspaceHostResourceObservation => ({
+      resource,
+      labels: ['vm', 'disk'].includes(resource.kind)
+        ? {
+            [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.managed]: 'true',
+            [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.hostId]: 'host-1',
+            [GCP_WORKSPACE_HOST_MANAGED_LABEL_KEYS.workspaceId]: WORKSPACE_ID,
+            purpose: 'legacy-canary',
+          }
+        : {},
+      observedAt: NOW,
+    }),
+  ),
 ): GcpWorkspaceHostInventorySnapshot {
   const names = (kind: string) =>
     resources.filter((resource) => resource.kind === kind).map((resource) => resource.providerId);

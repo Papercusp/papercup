@@ -10938,7 +10938,11 @@ mod tests {
         // Digit keys follow Tab::switch_key (D-002 reorder): 1 Operator, 2 Inbox,
         // 3 Plans, 4 Fleet, 5 Pots (Harnesses).
         let mut a = App::new();
-        assert_eq!(a.update(key('2', KeyModifiers::NONE)), Action::Render);
+        assert!(matches!(
+            a.update(key('2', KeyModifiers::NONE)),
+            Action::FetchConversations { state, kind }
+                if state == "open" && kind == "all"
+        ));
         assert_eq!(a.tab, Tab::Inbox);
         a.update(key('3', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Plans);

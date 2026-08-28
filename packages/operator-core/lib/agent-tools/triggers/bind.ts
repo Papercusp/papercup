@@ -8,9 +8,9 @@ export default defineTool({
   name: 'triggers:bind',
   profile: 'engineer',
   description:
-    'Install a disarmed external-event binding from one source to one target — a plan (launched per match) or a goal (ACTIVATED per match) — with an optional payload filter and storm policy.',
+    'Install a disarmed external-event binding from one source to one target — a plan, a goal, or the canonical Email direct work-item kind — with an optional payload filter and storm policy.',
   guidance: {
-    when: 'Attach an existing external source event pattern (ext:<source>:<event>) to a plan ({ harness, plan }) or to a goal ({ goal } — matches activate the goal through startGoalById; an already-held or non-active goal refuses idempotently). The new binding is installed but DISARMED.',
+    when: 'Attach an existing external source event pattern (ext:<source>:<event>) to a plan ({ harness, plan }), a goal ({ goal }), or Email direct work-item ingress ({ workItemHarnessSlug:"email", workItemKind:"email-draft-proposal" }). The new binding is installed but DISARMED.',
     notWhen:
       'To activate it use triggers:arm separately. For schedules use plans:set-schedule then plans:arm-schedule. For manual starts use plans:run-now.',
     chaining:
@@ -30,6 +30,18 @@ export default defineTool({
       .max(200)
       .optional()
       .describe('target GOAL id (P-020) — matches ACTIVATE this goal instead of launching a plan; exactly one of plan/goal'),
+    workItemHarnessSlug: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('direct work-item target harness (P-018; currently `email`, with workItemKind)'),
+    workItemKind: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe('direct work-item target kind (P-018; currently `email-draft-proposal`, with workItemHarnessSlug)'),
     eventPattern: z.string().min(5).max(500).describe('ext:<source>:<event> key or anchored glob'),
     filter: dataConditionSchema.optional().describe('payload condition using the shared rules vocabulary'),
     stormPolicy: z
@@ -51,6 +63,8 @@ export default defineTool({
       planHarnessSlug: args.harness ?? null,
       planSlug: args.plan ?? null,
       goalId: args.goal ?? null,
+      workItemHarnessSlug: args.workItemHarnessSlug ?? null,
+      workItemKind: args.workItemKind ?? null,
       eventPattern: args.eventPattern,
       eventFilter: args.filter as Record<string, unknown> | undefined,
       stormPolicy: args.stormPolicy,
