@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   RESOURCE_GOVERNOR_INVENTORY,
+  BYPASS_REGISTRY,
+  P016_DISPOSITION_REGISTRY,
+  RESOURCE_GOVERNOR_SCANNER_PATH,
   type ResourceGovernorInventoryRow,
   inspectGovernorSource,
   scanActiveInventory,
@@ -27,9 +30,9 @@ describe('resource governor enforcement lint', () => {
       'governor-core',
     ]);
     expect(validateInventory()).toEqual([]);
-    expect(
-      RESOURCE_GOVERNOR_INVENTORY.find((row) => row.id === 'mcp-http-operator-transport')?.enforcement,
-    ).toBe('active');
+    expect(RESOURCE_GOVERNOR_INVENTORY.find((row) => row.id === 'mcp-http-operator-transport')?.enforcement).toBe(
+      'active',
+    );
   });
 
   it('rejects a resource start outside Governor.admit or a valid lease', () => {
@@ -116,6 +119,45 @@ describe('resource governor enforcement lint', () => {
     expect(scanActiveInventory(sourceFiles)).toEqual([]);
   });
 
+  it('requires an explicit reviewed disposition for every active P-016 finding and excludes only scanner self-code', () => {
+    const { files } = listTrackedFiles(ROOT);
+    const p016Rows = RESOURCE_GOVERNOR_INVENTORY.filter((row) => row.migration === 'P-016');
+    const p016Files: Array<[string, string]> = [];
+    for (const path of files) {
+      if (!/\.(?:ts|tsx|mts|mjs)$/.test(path) || /\.(?:test|spec)\./.test(path) || path.includes('/_retired/'))
+        continue;
+      if (!p016Rows.some((row) => row.paths.some((prefix) => path.startsWith(prefix)))) continue;
+      p016Files.push([path, readFileSync(`${ROOT}${path}`, 'utf8')]);
+    }
+    const observed = new Set<string>();
+    for (const [path, source] of p016Files) {
+      if (path === RESOURCE_GOVERNOR_SCANNER_PATH) continue;
+      for (const code of inspectGovernorSource(source)) observed.add(`${path}::${code}`);
+    }
+    expect(observed.size).toBeGreaterThan(100);
+    expect(P016_DISPOSITION_REGISTRY.size).toBe(observed.size);
+    expect(new Set([...P016_DISPOSITION_REGISTRY.values()].map((entry) => entry.reason)).size).toBe(
+      P016_DISPOSITION_REGISTRY.size,
+    );
+    for (const key of observed) {
+      const entry = P016_DISPOSITION_REGISTRY.get(key);
+      expect(entry).toBeDefined();
+      expect(['bypass', 'semantic', 'upstream']).toContain(entry?.disposition);
+      expect(entry?.reason).toMatch(/P-016 reviewed/);
+      expect(BYPASS_REGISTRY.has(key)).toBe(true);
+    }
+    expect(
+      scanInventory([[RESOURCE_GOVERNOR_SCANNER_PATH, `if (receipt.state === 'queued') retryAgain();`]], {
+        migrations: ['P-016'],
+      }),
+    ).toEqual([]);
+    expect(
+      scanInventory([['packages/operator-core/lib/p2p/new-unreviewed.ts', `spawn('worker', []);`]], {
+        migrations: ['P-016'],
+      }),
+    ).toEqual(['packages/operator-core/lib/p2p/new-unreviewed.ts:resource-start-outside-admission']);
+  }, 60_000);
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [
@@ -138,14 +180,9 @@ describe('resource governor enforcement lint', () => {
 
   it('rejects a stale exact bypass entry once its registered path no longer has that finding', () => {
     const files: Array<[string, string]> = [
-      [
-        'packages/operator-core/lib/agent-tools/plans/audit.ts',
-        `export const head = 'already supplied';`,
-      ],
+      ['packages/operator-core/lib/agent-tools/plans/audit.ts', `export const head = 'already supplied';`],
     ];
-    expect(
-      scanInventory(files, { migrations: ['P-014'], validateRegistry: true }),
-    ).toContain(
+    expect(scanInventory(files, { migrations: ['P-014'], validateRegistry: true })).toContain(
       'stale-bypass-registry:packages/operator-core/lib/agent-tools/plans/audit.ts::resource-start-outside-admission:finding-absent',
     );
   });
