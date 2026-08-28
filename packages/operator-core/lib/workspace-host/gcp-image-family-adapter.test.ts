@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+
+/**
+ * The repository root, derived from this module's own location rather than process.cwd().
+ * Vitest runs this file with the workspace package as cwd, so both the fixture read and
+ * the adapter's `repositoryRoot` must be anchored here or the repo-relative template path
+ * resolves under packages/operator-core/ and fails with ENOENT.
+ */
+const REPO_ROOT_URL = new URL('../../../../', import.meta.url);
+const REPO_ROOT = fileURLToPath(REPO_ROOT_URL);
 
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
@@ -232,7 +242,7 @@ describe('GCP image-family production adapter', () => {
   });
 
   it('pins the template, runs Packer without a shell, scans real evidence, and inspects the candidate', async () => {
-    const template = await readFile('infra/images/workspace-host.pkr.hcl');
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
     const templateHash = createHash('sha256').update(template).digest('hex');
     const candidateArtifact = artifact(templateHash);
     const context = {
@@ -274,7 +284,7 @@ describe('GCP image-family production adapter', () => {
     };
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
       baseOptions(compute, {
-        repositoryRoot: process.cwd(),
+        repositoryRoot: REPO_ROOT,
         commandRunner,
         scanRunner,
       }),

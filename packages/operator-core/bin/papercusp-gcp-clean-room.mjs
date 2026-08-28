@@ -1,0 +1,298 @@
+#!/usr/bin/env node
+/**
+ * papercusp-gcp-clean-room — boot a candidate workspace-host image in an isolated,
+ * private GCP instance, run the release fixture's exact bootstrap script, capture the
+ * host's own attestation, and tear the whole thing down leaving zero residue.
+ *
+ * Invoked by CommandGcpImageFamilyCleanRoomRunner as:
+ *     papercusp-gcp-clean-room --json-stdin        (payload on stdin)
+ *
+ * INPUT  GcpImageFamilyCleanRoomRunInput: { projectId, zone, imageId,
+ *          buildManifestIdentity, releaseVersion, releaseSha256, fixture }
+ *        where fixture = { fixtureId, bootstrapInput, bootstrapScript,
+ *          bootstrapScriptSha256, ... } built by
+ *          buildWorkspaceHostCleanRoomInstallFixture.
+ *
+ * OUTPUT GcpImageCleanBootProof, validated by cleanProof()
+ *        (gcp-image-family-adapter.ts:415), which REQUIRES:
+ *          computeRunning === true
+ *          osLoginReady === true
+ *          publicIpv4Assigned === false   <-- a public IP FAILS the gate
+ *          terminated === true
+ *          residualResourceIds.length === 0
+ *          attestation.status === 'healthy' and validating against fixture.bootstrapInput
+ *
+ * WHY PRIVATE-ONLY: the gate asserts the image boots and self-attests WITHOUT any public
+ * ingress path, so the instance is created with --no-address and reached exclusively over
+ * IAP. This is the property the canary exists to prove; it is not a hardening nicety.
+ *
+ * TRUST RULE: every boolean in the proof is an OBSERVED value read back from GCP or from
+ * the host's own attestation. Nothing is asserted because we intended it — in particular
+ * `terminated` and `residualResourceIds` are computed from the teardown's real outcome,
+ * so a leaked VM can never be reported as a clean run.
+ */
+import { createHash } from 'node:crypto';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  ResourceLedger,
+  describeImage,
+  ephemeralSuffix,
+  fail,
+  gcloudJson,
+  main,
+  parseImmutableImageId,
+  parseJsonObject,
+  requireText,
+  run,
+  runOrThrow,
+} from './gcp-ephemeral.mjs';
+
+/** Must match WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX in the deployment driver. */
+const ATTESTATION_PREFIX = 'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
+const MACHINE_TYPE = process.env.PAPERCUSP_CLEAN_ROOM_MACHINE_TYPE?.trim() || 'e2-standard-2';
+const BOOT_BUDGET_MS = 12 * 60 * 1000;
+const BOOTSTRAP_BUDGET_MS = 20 * 60 * 1000;
+
+/**
+ * Decode the attestation the bootstrap script prints as its final marker line.
+ * A missing marker is a hard failure: an unattested boot is exactly the thing the
+ * clean-room exists to catch, so it must never degrade into "no attestation found, assume ok".
+ */
+function extractAttestation(stdout) {
+  const lines = String(stdout).split(/\r?\n/);
+  let encoded;
+  // Scan from the end: the marker is emitted last, and a rerun would append a newer one.
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (lines[index].startsWith(ATTESTATION_PREFIX)) {
+      encoded = lines[index].slice(ATTESTATION_PREFIX.length).trim();
+      break;
+    }
+  }
+  if (!encoded) fail('bootstrap produced no attestation marker; the image did not self-attest');
+  let decoded;
+  try {
+    decoded = Buffer.from(encoded, 'base64').toString('utf8');
+  } catch (error) {
+    fail(`bootstrap attestation was not valid base64: ${error.message}`);
+  }
+  return parseJsonObject(decoded, 'bootstrap attestation');
+}
+
+/** Wait until the instance reports RUNNING, or throw. */
+async function awaitRunning(projectId, instance, zone, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  let lastStatus = 'UNKNOWN';
+  while (Date.now() < deadline) {
+    const described = await gcloudJson([
+      'compute',
+      'instances',
+      'describe',
+      instance,
+      `--project=${projectId}`,
+      `--zone=${zone}`,
+    ]).catch(() => null);
+    if (described?.status) {
+      lastStatus = described.status;
+      if (lastStatus === 'RUNNING') return described;
+      if (lastStatus === 'TERMINATED' || lastStatus === 'SUSPENDED') {
+        fail(`clean-room instance entered ${lastStatus} before it could be exercised`);
+      }
+    }
+    await new Promise((r) => setTimeout(r, 10_000));
+  }
+  fail(`clean-room instance did not reach RUNNING within ${budgetMs}ms (last status ${lastStatus})`);
+}
+
+/**
+ * Read back whether GCP actually assigned a public IPv4. This is READ FROM THE API rather
+ * than inferred from the --no-address flag we passed: the gate is about what exists, not
+ * about what we asked for.
+ */
+function hasPublicIpv4(instance) {
+  const interfaces = Array.isArray(instance?.networkInterfaces) ? instance.networkInterfaces : [];
+  return interfaces.some((nic) =>
+    (Array.isArray(nic?.accessConfigs) ? nic.accessConfigs : []).some(
+      (config) => typeof config?.natIP === 'string' && config.natIP.trim() !== '',
+    ),
+  );
+}
+
+/** Poll IAP SSH until it answers, proving OS Login is usable over the private path. */
+async function awaitOsLogin(projectId, instance, zone, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  let lastError = 'not-attempted';
+  while (Date.now() < deadline) {
+    const probe = await run(
+      'gcloud',
+      [
+        'compute',
+        'ssh',
+        instance,
+        `--project=${projectId}`,
+        `--zone=${zone}`,
+        '--tunnel-through-iap',
+        '--quiet',
+        '--command',
+        'echo papercusp-oslogin-ready',
+      ],
+      { timeoutMs: 3 * 60 * 1000 },
+    ).catch((error) => ({ exitCode: -1, stdout: '', stderr: String(error?.message ?? error) }));
+
+    if (probe.exitCode === 0 && probe.stdout.includes('papercusp-oslogin-ready')) return true;
+    lastError = probe.stderr.slice(-300);
+    await new Promise((r) => setTimeout(r, 15_000));
+  }
+  fail(`OS Login over IAP did not become ready within ${budgetMs}ms`, { lastError });
+}
+
+async function cleanRoom(input) {
+  const requested = parseImmutableImageId(input.imageId, 'imageId');
+  const projectId = requireText(input.projectId, 'projectId');
+  const zone = requireText(input.zone, 'zone');
+  const buildManifestIdentity = requireText(input.buildManifestIdentity, 'buildManifestIdentity');
+
+  if (projectId !== requested.projectId) fail('projectId does not match the project embedded in imageId');
+
+  const fixture = input.fixture;
+  if (!fixture || typeof fixture !== 'object') fail('fixture is required to run a clean-room canary');
+  const bootstrapScript = requireText(fixture.bootstrapScript, 'fixture.bootstrapScript');
+  const fixtureId = requireText(fixture.fixtureId, 'fixture.fixtureId');
+
+  // The submitted script must match its own advertised digest before we execute it.
+  const actualDigest = createHash('sha256').update(bootstrapScript, 'utf8').digest('hex');
+  if (typeof fixture.bootstrapScriptSha256 === 'string' && fixture.bootstrapScriptSha256 !== actualDigest) {
+    fail('fixture.bootstrapScript does not match fixture.bootstrapScriptSha256');
+  }
+
+  // The candidate must exist and be READY before we spend money booting it.
+  await describeImage(projectId, requested.imageName);
+
+  const ledger = new ResourceLedger(projectId);
+  const suffix = ephemeralSuffix();
+  const instanceName = `pc-cleanroom-${suffix}`;
+  const observedAt = new Date().toISOString();
+
+  let scriptDir;
+  let attestation;
+  let computeRunning = false;
+  let osLoginReady = false;
+  let publicIpv4Assigned = false;
+  let residualResourceIds = [];
+
+  try {
+    scriptDir = await mkdtemp(join(tmpdir(), 'pc-clean-room-'));
+    const scriptPath = join(scriptDir, 'bootstrap.sh');
+    await writeFile(scriptPath, bootstrapScript, { mode: 0o700 });
+
+    // Private-only instance: no external address, IAP is the sole ingress.
+    await runOrThrow(
+      'gcloud',
+      [
+        'compute',
+        'instances',
+        'create',
+        instanceName,
+        `--project=${projectId}`,
+        `--zone=${zone}`,
+        `--machine-type=${MACHINE_TYPE}`,
+        `--image=${requested.imageName}`,
+        `--image-project=${projectId}`,
+        '--no-address',
+        '--no-service-account',
+        '--no-scopes',
+        '--metadata=enable-oslogin=TRUE',
+        `--labels=papercusp-artifact=workspace-host,papercusp-role=clean-room,papercusp-fixture=${fixtureId
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]/g, '-')
+          .slice(0, 63)}`,
+        '--quiet',
+      ],
+      { timeoutMs: 8 * 60 * 1000 },
+    );
+    ledger.track('instance', instanceName, zone);
+
+    // Observed, not assumed.
+    const running = await awaitRunning(projectId, instanceName, zone, BOOT_BUDGET_MS);
+    computeRunning = running.status === 'RUNNING';
+    publicIpv4Assigned = hasPublicIpv4(running);
+    if (publicIpv4Assigned) {
+      fail('clean-room instance was assigned a public IPv4; the private-boot property does not hold');
+    }
+
+    osLoginReady = await awaitOsLogin(projectId, instanceName, zone, BOOT_BUDGET_MS);
+
+    // Run the fixture's exact script and capture the host's self-attestation.
+    await runOrThrow(
+      'gcloud',
+      [
+        'compute',
+        'scp',
+        scriptPath,
+        `${instanceName}:/tmp/papercusp-bootstrap.sh`,
+        `--project=${projectId}`,
+        `--zone=${zone}`,
+        '--tunnel-through-iap',
+        '--quiet',
+      ],
+      { timeoutMs: 5 * 60 * 1000 },
+    );
+
+    const bootstrapStdout = await runOrThrow(
+      'gcloud',
+      [
+        'compute',
+        'ssh',
+        instanceName,
+        `--project=${projectId}`,
+        `--zone=${zone}`,
+        '--tunnel-through-iap',
+        '--quiet',
+        '--command',
+        'sudo bash /tmp/papercusp-bootstrap.sh',
+      ],
+      { timeoutMs: BOOTSTRAP_BUDGET_MS },
+    );
+
+    attestation = extractAttestation(bootstrapStdout);
+  } finally {
+    // Teardown always runs, including on the failure paths above: a failed canary must
+    // not leave a billable instance behind.
+    residualResourceIds = await ledger.destroyAll();
+    if (scriptDir) await rm(scriptDir, { recursive: true, force: true }).catch(() => {});
+  }
+
+  if (!attestation) fail('clean-room produced no attestation');
+  if (attestation.status !== 'healthy') {
+    fail(`clean-room attestation status is ${String(attestation.status)}, not healthy`);
+  }
+
+  const evidenceRef = `gcp-clean-room:${instanceName}:${createHash('sha256')
+    .update(`${requested.imageId}|${buildManifestIdentity}|${fixtureId}|${observedAt}`)
+    .digest('hex')
+    .slice(0, 32)}`;
+
+  return {
+    evidenceRef,
+    projectId,
+    zone,
+    imageId: requested.imageId,
+    buildManifestIdentity,
+    computeRunning,
+    osLoginReady,
+    publicIpv4Assigned,
+    attestation,
+    // Terminated is true only when teardown actually left nothing behind.
+    terminated: residualResourceIds.length === 0,
+    residualResourceIds,
+    observedAt,
+    fixtureId,
+    ...(typeof fixture.bootstrapScriptSha256 === 'string'
+      ? { bootstrapScriptSha256: fixture.bootstrapScriptSha256 }
+      : {}),
+  };
+}
+
+await main('papercusp-gcp-clean-room', cleanRoom);
