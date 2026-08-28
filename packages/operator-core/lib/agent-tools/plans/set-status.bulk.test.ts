@@ -41,9 +41,18 @@ vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }
 const laneSync = vi.hoisted(() => ({
   item: vi.fn(async () => null),
   dependents: vi.fn(async () => [] as string[]),
+  terminal: vi.fn(async () => ({
+    planSlug: 'plan-a',
+    itemId: 'P-001',
+    reconciled: [],
+    skippedInFlight: [],
+    skippedAlreadyTerminal: [],
+    skippedUnprovenLink: [],
+  })),
 }));
 vi.mock('../../plan-items/reconcile-linked-work-items', () => ({
   findAllLinkedWorkItems: vi.fn(async () => []),
+  reconcileLinkedWorkItemsForPlanItem: laneSync.terminal,
   resyncPlanItemLaneNow: laneSync.item,
   resyncDependentPlanItemLanesNow: laneSync.dependents,
 }));
@@ -120,10 +129,39 @@ describe('plans:set-status handler (bulk keyed-array)', () => {
     expect(b.counts).toEqual({ ok: 2, failed: 0 });
     expect(b.results.map((r: { itemId: string }) => r.itemId)).toEqual(['P-001', 'P-002']);
     expect(b.results.every((r: { newStatus: string }) => r.newStatus === 'done')).toBe(true);
-    expect(laneSync.item).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null);
-    expect(laneSync.item).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null);
+    expect(laneSync.item).not.toHaveBeenCalled();
+    expect(laneSync.terminal).toHaveBeenNthCalledWith(
+      1,
+      { planSlug: 'plan-a', itemId: 'P-001', harnessSlug: null },
+      { knownTerminalStatus: 'done' },
+    );
+    expect(laneSync.terminal).toHaveBeenNthCalledWith(
+      2,
+      { planSlug: 'plan-a', itemId: 'P-002', harnessSlug: null },
+      { knownTerminalStatus: 'done' },
+    );
     expect(laneSync.dependents).toHaveBeenNthCalledWith(1, 'plan-a', 'P-001', null);
     expect(laneSync.dependents).toHaveBeenNthCalledWith(2, 'plan-a', 'P-002', null);
+  });
+
+  it('awaits terminal reconciliation for dropped before returning', async () => {
+    lockReturnsMutatorValue(new Set(['P-003']));
+    const b = await body({
+      slug: 'plan-a',
+      item: 'P-003',
+      status: 'dropped',
+      note: 'Synthetic verification run is intentionally abandoned.',
+    });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(laneSync.terminal).toHaveBeenCalledWith(
+      { planSlug: 'plan-a', itemId: 'P-003', harnessSlug: null },
+      { knownTerminalStatus: 'dropped' },
+    );
+    expect(laneSync.item).not.toHaveBeenCalled();
+    expect(laneSync.terminal.mock.invocationCallOrder[0]).toBeLessThan(
+      laneSync.dependents.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('items:[…] heterogeneous; per-item status overrides the batch default', async () => {

@@ -44,6 +44,7 @@ import {
 } from '../../plan-items/convert';
 import {
   findAllLinkedWorkItems,
+  reconcileLinkedWorkItemsForPlanItem,
   resyncDependentPlanItemLanesNow,
   resyncPlanItemLaneNow,
 } from '../../plan-items/reconcile-linked-work-items';
@@ -1114,7 +1115,21 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
   // readiness changed on a terminality edge.
   if (result.value.oldStatus !== it.status) {
     try {
-      await resyncPlanItemLaneNow(it.slug, it.itemId, harnessSlug ?? null);
+      const terminalStatus = it.status === 'done' || it.status === 'dropped' ? it.status : null;
+      if (terminalStatus) {
+        // EI-21662817593464724: a terminal plan-item edge must settle its linked
+        // work-items before this write returns. The event reaction + periodic orphan
+        // sweep remain backstops, but leaving the only direct call on the non-terminal
+        // lane synchronizer created a deterministic stale-open window after every
+        // plans:set-status →done/→dropped. Reuse the canonical reconciler so its
+        // current-assignee and proof guards remain the single safety policy.
+        await reconcileLinkedWorkItemsForPlanItem(
+          { planSlug: it.slug, itemId: it.itemId, harnessSlug: harnessSlug ?? null },
+          { knownTerminalStatus: terminalStatus },
+        );
+      } else {
+        await resyncPlanItemLaneNow(it.slug, it.itemId, harnessSlug ?? null);
+      }
       const oldTerminal = result.value.oldStatus !== null && isTerminalStatus(result.value.oldStatus);
       if (oldTerminal !== isTerminalStatus(it.status)) {
         await resyncDependentPlanItemLanesNow(it.slug, it.itemId, harnessSlug ?? null);
