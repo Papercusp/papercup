@@ -82,7 +82,13 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
   };
 
   async function boot(): Promise<void> {
-    handle = createEmbedSidecarServer({ port: 0, builders: fakeBuilders, warmAtBoot: false, log: () => {} });
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: fakeBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      concurrency: 1,
+    });
     const port = await handle.listening;
     baseUrl = `http://127.0.0.1:${port}`;
   }
@@ -161,6 +167,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       builders: fakeBuilders,
       warmAtBoot: false,
       log: () => {},
+      concurrency: 1,
       workerStates: {
         embedder: () => ({ alive: true, disabled: false, pendingCount: 11, keepAlive: true }),
         reranker: () => ({ alive: false, disabled: true, pendingCount: 22, keepAlive: false }),
@@ -364,6 +371,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       port: 0,
       warmAtBoot: false,
       log: () => {},
+      concurrency: 1,
       builders: {
         gemma: async () => async () => {
           throw new Error('worker exploded');
@@ -396,6 +404,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       port: 0,
       warmAtBoot: false,
       log: () => {},
+      concurrency: 1,
       builders: {
         gemma: async () => async (text: string) => {
           embedCalls++;
@@ -462,6 +471,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
         warmAtBoot: false,
         log: () => {},
         cacheMax,
+        concurrency: 1,
         builders: {
           gemma: async () => async (text: string) => {
             embedCalls++;
@@ -497,6 +507,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
       port: 0,
       warmAtBoot: false,
       log: () => {},
+      concurrency: 1,
       builders: {
         gemma: async () => async (text: string) => {
           attempts++;
@@ -535,6 +546,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
         local: fakeBuilders.local,
         harrier: fakeBuilders.harrier,
       },
+      concurrency: 1,
     });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;
     const post = (text: string) =>
@@ -815,7 +827,13 @@ describe('rerank sidecar HTTP surface (fake rerankers, ephemeral port)', () => {
   };
 
   async function bootRerank(rerankBuilders: RerankerBuilders = fakeRerankBuilders): Promise<void> {
-    handle = createEmbedSidecarServer({ port: 0, rerankBuilders, warmAtBoot: false, log: () => {} });
+    handle = createEmbedSidecarServer({
+      port: 0,
+      rerankBuilders,
+      warmAtBoot: false,
+      log: () => {},
+      concurrency: 1,
+    });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;
   }
 
