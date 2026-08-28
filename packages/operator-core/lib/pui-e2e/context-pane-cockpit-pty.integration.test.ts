@@ -963,6 +963,12 @@ describe('pui context-pane cockpit (installed binary, real PTY, fake canonical o
       // and sessionState=ended wins even when heartbeatFresh=true.
       pane.write('4');
       await pane.waitFor('Agents (2)');
+      // The leader cockpit is an explicitly selected-leader view. Enter the
+      // roster, move off and back onto the leader row, and let the selection
+      // publish before asserting the leader brief replaces WORK FRONTIER.
+      pane.write('\r');
+      pane.write('j');
+      pane.write('k');
       await pane.waitFor('leader members');
       await pane.waitFor('hud-fleet');
       await pane.waitFor('Finished the prior lane');
