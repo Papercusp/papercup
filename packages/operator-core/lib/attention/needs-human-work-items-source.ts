@@ -22,6 +22,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
+import { observationLaneExclusionSql } from '../work-items';
 
 /** One raw needs-human work-item row, as the attention mapper consumes it. */
 export interface NeedsHumanWorkItemRow {
@@ -91,6 +92,18 @@ export async function readNeedsHumanWorkItems(opts?: {
        -- units as phantom failures. The 'needs-human' status is not terminal, so
        -- the feature-family leg below is unaffected.
        AND NOT (status = ANY(${[...ANY_FAMILY_TERMINAL_STATES]}::text[]))
+       -- EI-21675115869134466: an agent's own end-of-turn NOTE is not an owner
+       -- decision. D-005 makes payload.lane = 'observation' "never work-queue
+       -- material", and migration 864 -- which retired this very payload.needsHuman
+       -- dialect -- already carries a lane IS DISTINCT FROM 'observation' conjunct
+       -- in its cohort. This read did not, so the rows 864 was RIGHT to skip were
+       -- re-admitted here and sat in the owner's inbox indefinitely: measured live
+       -- 2026-08-28, 3 of the 7 non-needs-human rows this source returned
+       -- (EI-11718, EI-6512, EI-7149) were observation notes. DERIVE the predicate
+       -- from observationLaneExclusionSql -- the same SSOT the claim path and
+       -- diagnoseClaimNextMiss share -- never a hand-copied lane literal; a
+       -- hand-copied union is exactly how EI-18653071581558556 drifted.
+       AND ${observationLaneExclusionSql(sql, 'payload')}
        AND (
          ${stateChangedBefore}::timestamptz IS NULL
          OR (state_changed_at IS NOT NULL AND state_changed_at <= ${stateChangedBefore}::timestamptz)
