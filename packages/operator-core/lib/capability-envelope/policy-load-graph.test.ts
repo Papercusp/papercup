@@ -7,9 +7,17 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('@papercusp/agent-mcp', () => ({
-  testingFullAccess: () => false,
-}));
+vi.mock('@papercusp/agent-mcp', async (importOriginal) => {
+  const mock = {
+    ...(await importOriginal<typeof import('@papercusp/agent-mcp')>()),
+    testingFullAccess: () => false,
+  } as Record<string, unknown>;
+  // Keep this fixture's purpose: policy must source AGENT_ROLES from the dedicated leaf,
+  // not accidentally from the barrel. The import-actual spread still protects the mock
+  // from future barrel exports stranding it at collection time.
+  delete mock.AGENT_ROLES;
+  return mock;
+});
 
 describe('capability policy import graph', () => {
   it('loads with an incomplete agent-mcp barrel mock', async () => {

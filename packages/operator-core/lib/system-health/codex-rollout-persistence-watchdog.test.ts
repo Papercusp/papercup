@@ -12,7 +12,10 @@ const lifecycleMocks = vi.hoisted(() => ({
   notifyAttention: vi.fn(async () => undefined),
 }));
 
-vi.mock('../adv-sessions', () => ({ markAdvSessionEnded: lifecycleMocks.endSession }));
+vi.mock('../adv-sessions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../adv-sessions')>()),
+  markAdvSessionEnded: lifecycleMocks.endSession,
+}));
 vi.mock('../events/await/store', () => ({
   cancelInboxWakeAwaits: lifecycleMocks.cancelInboxWake,
   cancelClaimableAwaits: lifecycleMocks.cancelClaimable,
