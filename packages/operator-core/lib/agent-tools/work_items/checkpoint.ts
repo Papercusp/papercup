@@ -800,6 +800,14 @@ export default defineTool({
     const env = await runBulk(
       items,
       async (it) => {
+        // `checkpointBodySpec` accepts the structured compatibility object as an
+        // input shape, then its preprocess normalizes a valid object to the stored
+        // string before this handler runs. `defineTool` types handler arguments from
+        // the schema input (so the object union remains visible here); narrow to the
+        // parser's output contract before applying string operations below. Invalid
+        // structured objects cannot reach the handler because the post-preprocess
+        // union rejects them.
+        const checkpoint = it.checkpoint as string | null | undefined;
         // EI-8805: KEY the checkpoint by the ITEM's OWN harness so the write agrees
         // with the read (work_items:get keys by the resolved item.harness). A
         // harness-null item — an issue-family EI filed from an unscoped su session —
@@ -868,12 +876,12 @@ export default defineTool({
         const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const wantsConfirmRetire = it.confirmRetire ?? args.confirmRetire ?? false;
         const rawSuppliedChecks = it.checks ?? args.checks;
-        const isChecksOnlyPatch = it.checkpoint === undefined && rawSuppliedChecks !== undefined;
+        const isChecksOnlyPatch = checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
         // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
         // key when the caller actually supplied one.
         const declaredDeps = it.dependsOn ?? args.dependsOn;
-        if (wantsAppend && !(it.checkpoint && it.checkpoint.length > 0) && !isChecksOnlyPatch) {
+        if (wantsAppend && !(checkpoint && checkpoint.length > 0) && !isChecksOnlyPatch) {
           return {
             ok: false as const,
             id: it.id,
@@ -887,13 +895,13 @@ export default defineTool({
         // shrink_blocked refusal or tempts them to confirm a destructive rewrite.
         // Omitted checkpoint is therefore a dependency-only PATCH, just like the
         // checks-only PATCH below; explicit null/'' remains a deliberate clear.
-        const isDependencyOnlyPatch = it.checkpoint === undefined && declaredDeps !== undefined && !wantsAppend;
-        const hasCheckpointBody = typeof it.checkpoint === 'string' && it.checkpoint.trim().length > 0;
+        const isDependencyOnlyPatch = checkpoint === undefined && declaredDeps !== undefined && !wantsAppend;
+        const hasCheckpointBody = typeof checkpoint === 'string' && checkpoint.trim().length > 0;
         const hasMetadataPatch =
-          it.checkpoint === undefined && (rawSuppliedChecks !== undefined || declaredDeps !== undefined);
+          checkpoint === undefined && (rawSuppliedChecks !== undefined || declaredDeps !== undefined);
         const hasChecksWithExplicitClear =
-          typeof it.checkpoint === 'string' &&
-          it.checkpoint.trim().length === 0 &&
+          typeof checkpoint === 'string' &&
+          checkpoint.trim().length === 0 &&
           (rawSuppliedChecks?.length ?? 0) > 0;
         const isActiveCheckpointWrite = hasCheckpointBody || hasMetadataPatch || hasChecksWithExplicitClear;
         // EI-21035020852712365: a terminal item with no live claim can look like an
@@ -929,7 +937,7 @@ export default defineTool({
             },
           };
         }
-        let checkpointToStore = it.checkpoint;
+        let checkpointToStore = checkpoint;
         // WI-7190: this pre-read is a SEPARATE call (getWorkItemCheckpoint) from the
         // authoritative prior the write transaction reads a few lines below (inside
         // setWorkItemCheckpointWithPrior's own SELECT ... FOR UPDATE). Track what it
@@ -951,7 +959,7 @@ export default defineTool({
         // the destructive replace this guard exists to prevent.
         // Holds the addendum being joined (and narrows it to `string` for the join
         // below); `null` IS the "no join attempted" signal the guard reads.
-        const joinAddendum = wantsAppend && it.checkpoint ? it.checkpoint : null;
+        const joinAddendum = wantsAppend && checkpoint ? checkpoint : null;
         const didAttemptJoin = joinAddendum !== null;
         if (joinAddendum !== null) {
           try {
@@ -1044,7 +1052,7 @@ export default defineTool({
         // transform below; those are separated at the response boundary as
         // retainedProvenance instead of being misreported as current activity.
         const currentProvenanceText = (() => {
-          const submittedBody = splitCarryNoteChecks(it.checkpoint ?? '').body;
+          const submittedBody = splitCarryNoteChecks(checkpoint ?? '').body;
           return suppliedChecks !== undefined ? withCarryNoteChecks(submittedBody, suppliedChecks) : submittedBody;
         })();
         const isClear = !(checkpointToStore && checkpointToStore.length > 0);
@@ -1461,7 +1469,7 @@ export default defineTool({
           const hasOwnCode = /^[a-z][a-z0-9_]*\s+—\s/.test(blockedReason);
           const errorCode = hasOwnCode ? blockedReason.split(' — ', 1)[0] : 'shrink_blocked';
           const bodyRecoveryArg =
-            typeof it.checkpoint === 'string' && it.checkpoint.length > 0 ? { checkpoint: it.checkpoint } : {};
+            typeof checkpoint === 'string' && checkpoint.length > 0 ? { checkpoint } : {};
           return {
             ok: false as const,
             id: it.id,
