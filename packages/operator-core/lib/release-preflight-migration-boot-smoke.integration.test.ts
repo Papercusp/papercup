@@ -190,8 +190,8 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
 
     const seededUrl = new URL(adminUri);
     seededUrl.pathname = `/${seededDb}`;
-    let client: postgres.Sql | undefined;
-    let stageDir = '';
+  let client: postgres.Sql | undefined;
+  let stageDir = '';
 
     try {
       const setup = postgres(seededUrl.toString(), { max: 1, onnotice: () => {} });
@@ -317,6 +317,7 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
     depUrl.pathname = `/${depDb}`;
     let client: postgres.Sql | undefined;
     let stageDir = '';
+    let prereqDir = '';
 
     try {
       const setup = postgres(depUrl.toString(), { max: 1, onnotice: () => {} });
@@ -359,6 +360,31 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
       // already-recorded files, so this applies exactly the incremental set with the
       // dependent view now in place — replaying the real boot-order shape a migration
       // like 678 actually ships into.
+      //
+      // First advance this same virgin database through the work-items cutover
+      // (migration 374). This lets us seed a second synthetic dependent that
+      // points directly at work_items — the malformed shape repaired by 1021 —
+      // while retaining the first dependent above for the DROP/CASCADE guard.
+      prereqDir = await mkdtemp(join(tmpdir(), 'papercusp-mig-prereq-stage-'));
+      for (const filename of await readdir(sqlDir!)) {
+        const match = /^(\d+)-.*\.sql$/.exec(filename);
+        if (!match) continue;
+        const number = Number(match[1]);
+        if (number > 0 && number <= 374) {
+          await copyFile(join(sqlDir!, filename), join(prereqDir, filename));
+        }
+      }
+      await applyPendingMigrations({ client, sqlDir: prereqDir, log: () => {} });
+
+      const directSchema = 'harness_preflight_direct_guard';
+      await client.unsafe(`
+        CREATE SCHEMA IF NOT EXISTS ${directSchema};
+        CREATE OR REPLACE VIEW ${directSchema}.harness_features AS
+          SELECT * FROM harness_shared.work_items
+          WHERE harness_slug = '${slug}'
+          WITH CHECK OPTION;
+      `);
+
       const { failed } = await applyPendingMigrations({
         client,
         sqlDir: sqlDir!,
@@ -385,9 +411,18 @@ describe('release preflight: cold-seed migration boot-smoke (P-001)', () => {
           'a migration that CASCADE-dropped it without recreating would pass the check above ' +
           'and fail silently here instead',
       ).resolves.not.toThrow();
+
+      const repairedDef = (
+        await client.unsafe<{ def: string }>(
+          `SELECT pg_get_viewdef('${directSchema}.harness_features'::regclass, true) AS def`,
+        )
+      )[0]?.def ?? '';
+      expect(repairedDef).toMatch(/harness_features_consolidated/i);
+      expect(repairedDef).not.toMatch(/FROM\s+harness_shared\.work_items/i);
     } finally {
       await client?.end({ timeout: 5 }).catch(() => {});
       if (stageDir) await rm(stageDir, { recursive: true, force: true }).catch(() => {});
+      if (prereqDir) await rm(prereqDir, { recursive: true, force: true }).catch(() => {});
       const cleanup = postgres(adminUri, { max: 1, onnotice: () => {} });
       try {
         await cleanup
