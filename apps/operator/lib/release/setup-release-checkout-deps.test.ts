@@ -343,12 +343,25 @@ describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross
  * invariant), and temp cleanup.
  */
 describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modules swap', () => {
-  function syncOne(src: string, dest: string, copyMode = 'hardlink'): number {
+  interface SyncOneOptions {
+    /** Sets PINNED_DEPENDENCY_GENERATION_ID → the pinned sub-branch of `copy` mode. */
+    generationId?: string;
+    /** Replace the materializer with a no-op, so it "succeeds" leaving no tree. */
+    stubMaterializeToNoop?: boolean;
+  }
+
+  function runSyncOne(
+    src: string,
+    dest: string,
+    copyMode = 'hardlink',
+    opts: SyncOneOptions = {},
+  ): { status: number | null; stdout: string; stderr: string } {
     const wrapper = [
       'set -euo pipefail',
       'log() { :; }',
       'source "$GENERATION_SCRIPT"',
       'source <(sed -n "/^node_modules_tree_fingerprint()/,/^}/p; /^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
+      ...(opts.stubMaterializeToNoop ? ['dependency_generation_materialize_tree() { return 0; }'] : []),
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
     const r = spawnSync('bash', ['-c', wrapper], {
@@ -359,9 +372,15 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
         SRC: src,
         DEST: dest,
         NODE_MODULES_COPY_MODE: copyMode,
+        ...(opts.generationId ? { PINNED_DEPENDENCY_GENERATION_ID: opts.generationId } : {}),
       },
       encoding: 'utf8',
     });
+    return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+  }
+
+  function syncOne(src: string, dest: string, copyMode = 'hardlink', opts: SyncOneOptions = {}): number {
+    const r = runSyncOne(src, dest, copyMode, opts);
     if (r.status !== 0) throw new Error(`sync_one_node_modules failed (${r.status}): ${r.stderr || r.stdout}`);
     return r.status ?? -1;
   }
@@ -473,6 +492,69 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
 
     expect(syncOne(vanished, dest)).toBe(0);
     expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('STABLE');
+  });
+
+  /**
+   * WI-474827. The pinned sub-branch of `copy` mode used to run two full
+   * node_modules_tree_fingerprint walks per tree — 188 walks across 94 trees on a
+   * real checkpoint, which dominated launch-to-first-test. Neither value was ever
+   * read back on that path: both went into the marker, whose only readers are the
+   * non-pinned reuse test in the same function. These pin the replacement contract:
+   * the marker carries the immutable generation id alone, a later non-pinned run
+   * degrades to a full independent copy rather than trusting an absent fingerprint,
+   * and a materialization that yields no tree still fails closed before the swap.
+   */
+  it('pinned copy mode writes a generation-only marker (no full-content fingerprint walks)', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'PINNED');
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy', { generationId: 'gen-abc123' });
+
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('PINNED');
+    expect(readFileSync(join(dest, '.papercusp-isolated-snapshot'), 'utf8')).toBe('generation=gen-abc123\n');
+    // Same-device materialization hardlinks out of the immutable generation, so
+    // the identity of this tree IS that generation id — not a re-walk of content
+    // that was just hardlinked from it.
+    expect(statSync(join(dest, 'marker.txt')).ino).toBe(statSync(join(src, 'marker.txt')).ino);
+  });
+
+  it('a later non-pinned run over a pinned marker falls back to a full independent copy', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'CANONICAL');
+    const dest = join(work, 'dest');
+
+    syncOne(src, dest, 'copy', { generationId: 'gen-abc123' });
+    const pinnedInode = statSync(join(dest, 'marker.txt')).ino;
+
+    // No source=/snapshot= line → marked_src reads empty → the reuse test cannot
+    // match → the original full independent copy. Slower, never a mixed snapshot.
+    syncOne(src, dest, 'copy');
+
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('CANONICAL');
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(pinnedInode);
+    expect(statSync(join(dest, 'marker.txt')).ino).not.toBe(statSync(join(src, 'marker.txt')).ino);
+    expect(readFileSync(join(dest, '.papercusp-isolated-snapshot'), 'utf8')).toMatch(
+      /^source=[0-9a-f]{64}\nsnapshot=[0-9a-f]{64}\n$/,
+    );
+  });
+
+  it('pinned materialization that produces no tree fails closed before the swap', () => {
+    const src = join(work, 'src');
+    mkdirSync(src, { recursive: true });
+    writeFileSync(join(src, 'marker.txt'), 'NEW');
+    const dest = join(work, 'dest');
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, 'marker.txt'), 'PREVIOUS-CHECKPOINT');
+
+    const r = runSyncOne(src, dest, 'copy', { generationId: 'gen-abc123', stubMaterializeToNoop: true });
+
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/FATAL: pinned dependency generation materialization produced no tree/);
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('PREVIOUS-CHECKPOINT');
+    expect(readdirSync(work).filter((n) => n.includes('deploy-tmp') || n.includes('deploy-old'))).toEqual([]);
   });
 });
 

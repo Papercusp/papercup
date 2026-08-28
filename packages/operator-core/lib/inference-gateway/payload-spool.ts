@@ -1,0 +1,337 @@
+/**
+ * Pre-acceptance request-body spool for the inference gateway.
+ *
+ * D-004 requires that bodies are spooled BEFORE the gateway accepts work, so
+ * that queue depth never scales resident memory and a durable receipt can own
+ * execution after the originating socket — or the whole process — is gone. The
+ * admission contract has always carried a bounded `payloadRef` string
+ * (resource-governor/admission.ts) and the queue has always persisted it; what
+ * was missing is anything that stores the bytes it refers to. This is that.
+ *
+ * Per D-011 the POLICY here is not new: hash-verify on write, idempotent dedupe,
+ * visibility-gated read and refcounted GC all come from the generic
+ * `@papercusp/artifact-registry` BlobStore port. This module contributes only the
+ * gateway-shaped facade over it plus a Postgres backend, because a request body
+ * is exactly the "bytes addressed by their hash" the port was built for.
+ *
+ * The ref IS the content hash, which is load-bearing rather than cosmetic: a
+ * retried request carrying an identical body hashes to the same key and dedupes
+ * onto the same row, so a retry cannot spawn a second stored payload.
+ */
+import { getOrgPg } from '@papercusp/db-org';
+import {
+  HEX_SHA256_RE,
+  getContentAddressed,
+  memoryBlobStore,
+  putContentAddressed,
+  sha256Hex,
+  type BlobStore,
+  type ContentAddressing,
+} from '@papercusp/artifact-registry';
+import { activeWorkspaceId } from '../workspace-registry';
+
+type SqlClient = ReturnType<typeof getOrgPg>['sql'];
+
+/**
+ * An IDENTITY content-addressing scheme: the storage key is the bare 64-char hex
+ * digest, with no prefix and no extension.
+ *
+ * Deliberately not `contentAddressing({ prefix: '' })` — that helper always joins
+ * with a separator, so an empty prefix yields the key `/<hash>`. A leading slash
+ * would then travel as the admission payloadRef and violate the
+ * `blob_key ~ '^[0-9a-f]{64}$'` constraint in migration 1022. Keeping key === hash
+ * is what lets any holder of the bytes recompute the ref, and keeps it well inside
+ * ADMISSION_PAYLOAD_REF_MAX_CHARS.
+ */
+export const GATEWAY_PAYLOAD_ADDRESSING: ContentAddressing = {
+  prefix: '',
+  ext: '',
+  key: (hash) => hash,
+  matches: (key, hash) => key === hash,
+  parse: (key) => (HEX_SHA256_RE.test(key) ? key : null),
+};
+
+/** 32 MiB. An inference request body above this is a client error, not a spool candidate. */
+export const DEFAULT_MAX_SPOOL_BYTES = 32 * 1024 * 1024;
+
+export interface GatewayPayloadSpoolOptions {
+  /** Storage backend. Defaults to the Postgres-backed store. */
+  readonly store?: BlobStore<{ body: Uint8Array; size: number }>;
+  readonly maxBytes?: number;
+  /** Retention backstop for an accepted receipt that never executes. */
+  readonly ttlMs?: number;
+  readonly now?: () => number;
+}
+
+export interface SpoolResult {
+  /** The admission payloadRef, or null when there was nothing worth spooling. */
+  readonly payloadRef: string | null;
+  readonly bytes: number;
+  /** True when identical bytes were already stored — the retry/idempotency path. */
+  readonly deduped: boolean;
+}
+
+/**
+ * Raised when a body cannot be persisted. It is deliberately distinct from the
+ * admission errors: D-003 permits a request to fail for "inability to persist
+ * truthfully", and this is the type that says so. It must never be swallowed
+ * into a successful receipt.
+ */
+export class PayloadSpoolPersistenceError extends Error {
+  readonly status: number;
+  constructor(message: string, status = 500) {
+    super(message);
+    this.name = 'PayloadSpoolPersistenceError';
+    this.status = status;
+  }
+}
+
+/** Raised for a body the gateway refuses to spool at all (oversize). */
+export class PayloadTooLargeError extends Error {
+  readonly maxBytes: number;
+  constructor(maxBytes: number) {
+    super(`inference-gateway: request body exceeds the ${maxBytes}-byte spool limit`);
+    this.name = 'PayloadTooLargeError';
+    this.maxBytes = maxBytes;
+  }
+}
+
+export interface GatewayPayloadSpool {
+  /**
+   * Persist `body` and return its ref. An empty body yields a null ref rather
+   * than an error: there is nothing to replay, so admission simply carries no
+   * payloadRef and the downstream contract is unchanged.
+   */
+  spool(body: Buffer, options?: { readonly contentType?: string }): Promise<SpoolResult>;
+  /** Read spooled bytes back, or null when the ref no longer resolves. */
+  read(payloadRef: string): Promise<Buffer | null>;
+  /** Pin the payload while a receipt names it. */
+  retain(payloadRef: string): Promise<void>;
+  /** Unpin. Does NOT delete: a retry arriving before the sweep can still resurrect it. */
+  release(payloadRef: string): Promise<void>;
+  /** Reclaim unreferenced/expired blobs. Returns how many rows it removed. */
+  sweep(options?: { readonly limit?: number }): Promise<number>;
+}
+
+class BlobStoreGatewayPayloadSpool implements GatewayPayloadSpool {
+  readonly #store: BlobStore<{ body: Uint8Array; size: number }>;
+  readonly #maxBytes: number;
+  readonly #refcount: RefcountPort | null;
+
+  constructor(
+    store: BlobStore<{ body: Uint8Array; size: number }>,
+    maxBytes: number,
+    refcount: RefcountPort | null,
+  ) {
+    this.#store = store;
+    this.#maxBytes = maxBytes;
+    this.#refcount = refcount;
+  }
+
+  async spool(body: Buffer, options: { readonly contentType?: string } = {}): Promise<SpoolResult> {
+    if (body.byteLength === 0) return { payloadRef: null, bytes: 0, deduped: false };
+    if (body.byteLength > this.#maxBytes) throw new PayloadTooLargeError(this.#maxBytes);
+
+    const hash = await sha256Hex(body);
+    const result = await putContentAddressed(this.#store, {
+      hash,
+      scheme: GATEWAY_PAYLOAD_ADDRESSING,
+      readBody: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength) as ArrayBuffer,
+      declaredLength: body.byteLength,
+      maxBytes: this.#maxBytes,
+      ...(options.contentType ? { contentType: options.contentType } : {}),
+    });
+
+    if (!result.ok) {
+      // 413 is the client's fault and keeps its own type; everything else is a
+      // failure to persist, which D-003 says must surface rather than become a
+      // receipt the gateway cannot honour.
+      if (result.status === 413) throw new PayloadTooLargeError(this.#maxBytes);
+      throw new PayloadSpoolPersistenceError(
+        `inference-gateway: could not spool request body (${result.error})`,
+        result.status,
+      );
+    }
+    return { payloadRef: result.key, bytes: result.bytes, deduped: result.deduped };
+  }
+
+  async read(payloadRef: string): Promise<Buffer | null> {
+    const got = await getContentAddressed(this.#store, {
+      hash: payloadRef,
+      scheme: GATEWAY_PAYLOAD_ADDRESSING,
+    });
+    if (!got.ok) return null;
+    return Buffer.from(got.object.body);
+  }
+
+  async retain(payloadRef: string): Promise<void> {
+    await this.#refcount?.retain(GATEWAY_PAYLOAD_ADDRESSING.key(payloadRef));
+  }
+
+  async release(payloadRef: string): Promise<void> {
+    await this.#refcount?.release(GATEWAY_PAYLOAD_ADDRESSING.key(payloadRef));
+  }
+
+  async sweep(options: { readonly limit?: number } = {}): Promise<number> {
+    return (await this.#refcount?.sweep(options.limit ?? 100)) ?? 0;
+  }
+}
+
+/** The refcount/GC half, which the pure BlobStore port deliberately does not own. */
+interface RefcountPort {
+  retain(key: string): Promise<void>;
+  release(key: string): Promise<void>;
+  sweep(limit: number): Promise<number>;
+}
+
+export interface PgGatewayPayloadStoreOptions {
+  readonly sql?: SqlClient;
+  readonly workspaceId?: string;
+  readonly ttlMs?: number;
+  readonly now?: () => number;
+}
+
+/**
+ * Postgres backend for the spool: the 4-method BlobStore port plus the refcount
+ * operations, over harness_shared.gateway_payload_blobs (migration 1022).
+ */
+export class PgGatewayPayloadStore implements BlobStore<{ body: Uint8Array; size: number }>, RefcountPort {
+  readonly #sql: SqlClient;
+  readonly #workspaceId: string;
+  readonly #ttlMs: number | null;
+  readonly #now: () => number;
+
+  constructor(options: PgGatewayPayloadStoreOptions = {}) {
+    this.#sql = options.sql ?? getOrgPg().sql;
+    this.#workspaceId = options.workspaceId?.trim() || activeWorkspaceId();
+    this.#ttlMs = options.ttlMs ?? null;
+    this.#now = options.now ?? (() => Date.now());
+  }
+
+  async head(key: string): Promise<{ size: number } | null> {
+    const rows = await this.#sql<{ byte_length: string | number }[]>`
+      SELECT byte_length
+        FROM harness_shared.gateway_payload_blobs
+       WHERE workspace_id = ${this.#workspaceId}
+         AND blob_key = ${key}
+       LIMIT 1`;
+    const row = rows[0];
+    return row ? { size: Number(row.byte_length) } : null;
+  }
+
+  async put(key: string, body: ArrayBuffer | Uint8Array, opts?: { contentType?: string }): Promise<void> {
+    const bytes = body instanceof Uint8Array ? Buffer.from(body) : Buffer.from(new Uint8Array(body));
+    const expiresAt = this.#ttlMs ? new Date(this.#now() + this.#ttlMs) : null;
+    // ON CONFLICT DO NOTHING, not DO UPDATE: the key is the content hash, so a
+    // conflicting row already holds byte-identical content. Overwriting it would
+    // reset another receipt's refcount for no gain.
+    await this.#sql`
+      INSERT INTO harness_shared.gateway_payload_blobs
+        (workspace_id, blob_key, bytes, byte_length, content_type, expires_at)
+      VALUES
+        (${this.#workspaceId}, ${key}, ${bytes}, ${bytes.byteLength}, ${opts?.contentType ?? null}, ${expiresAt})
+      ON CONFLICT (workspace_id, blob_key) DO NOTHING`;
+  }
+
+  async get(key: string): Promise<{ body: Uint8Array; size: number } | null> {
+    const rows = await this.#sql<{ bytes: Buffer; byte_length: string | number }[]>`
+      UPDATE harness_shared.gateway_payload_blobs
+         SET last_accessed_at = now()
+       WHERE workspace_id = ${this.#workspaceId}
+         AND blob_key = ${key}
+      RETURNING bytes, byte_length`;
+    const row = rows[0];
+    if (!row) return null;
+    return { body: new Uint8Array(row.bytes), size: Number(row.byte_length) };
+  }
+
+  async delete(key: string): Promise<void> {
+    await this.#sql`
+      DELETE FROM harness_shared.gateway_payload_blobs
+       WHERE workspace_id = ${this.#workspaceId}
+         AND blob_key = ${key}`;
+  }
+
+  async retain(key: string): Promise<void> {
+    await this.#sql`
+      UPDATE harness_shared.gateway_payload_blobs
+         SET ref_count = ref_count + 1, last_accessed_at = now()
+       WHERE workspace_id = ${this.#workspaceId}
+         AND blob_key = ${key}`;
+  }
+
+  async release(key: string): Promise<void> {
+    // GREATEST(…, 0) rather than an unguarded decrement: a double-release from a
+    // retried settle path must not drive the count negative and make a live blob
+    // look collectable.
+    await this.#sql`
+      UPDATE harness_shared.gateway_payload_blobs
+         SET ref_count = GREATEST(ref_count - 1, 0), last_accessed_at = now()
+       WHERE workspace_id = ${this.#workspaceId}
+         AND blob_key = ${key}`;
+  }
+
+  async sweep(limit: number): Promise<number> {
+    const rows = await this.#sql<{ blob_key: string }[]>`
+      DELETE FROM harness_shared.gateway_payload_blobs
+       WHERE (workspace_id, blob_key) IN (
+         SELECT workspace_id, blob_key
+           FROM harness_shared.gateway_payload_blobs
+          WHERE workspace_id = ${this.#workspaceId}
+            AND ref_count = 0
+            AND (expires_at IS NOT NULL AND expires_at <= now())
+          ORDER BY last_accessed_at
+          LIMIT ${Math.max(1, Math.floor(limit))}
+       )
+      RETURNING blob_key`;
+    return rows.length;
+  }
+}
+
+/** Production spool: Postgres-backed, content-addressed, refcounted. */
+export function createGatewayPayloadSpool(options: GatewayPayloadSpoolOptions & PgGatewayPayloadStoreOptions = {}): GatewayPayloadSpool {
+  const pg =
+    options.store === undefined
+      ? new PgGatewayPayloadStore({
+          ...(options.sql ? { sql: options.sql } : {}),
+          ...(options.workspaceId ? { workspaceId: options.workspaceId } : {}),
+          ...(options.ttlMs ? { ttlMs: options.ttlMs } : {}),
+          ...(options.now ? { now: options.now } : {}),
+        })
+      : null;
+  const store = options.store ?? pg!;
+  return new BlobStoreGatewayPayloadSpool(store, options.maxBytes ?? DEFAULT_MAX_SPOOL_BYTES, pg);
+}
+
+/**
+ * In-memory spool for hermetic tests and for direct startGatewayService callers
+ * that must not acquire a Postgres dependency.
+ */
+export function memoryGatewayPayloadSpool(options: { readonly maxBytes?: number } = {}): GatewayPayloadSpool & {
+  readonly data: Map<string, Uint8Array>;
+} {
+  const store = memoryBlobStore();
+  const refs = new Map<string, number>();
+  const refcount: RefcountPort = {
+    retain: async (key) => {
+      refs.set(key, (refs.get(key) ?? 0) + 1);
+    },
+    release: async (key) => {
+      refs.set(key, Math.max(0, (refs.get(key) ?? 0) - 1));
+    },
+    sweep: async (limit) => {
+      let removed = 0;
+      for (const key of [...store.data.keys()]) {
+        if (removed >= limit) break;
+        if ((refs.get(key) ?? 0) === 0) {
+          store.data.delete(key);
+          refs.delete(key);
+          removed += 1;
+        }
+      }
+      return removed;
+    },
+  };
+  const spool = new BlobStoreGatewayPayloadSpool(store, options.maxBytes ?? DEFAULT_MAX_SPOOL_BYTES, refcount);
+  return Object.assign(spool, { data: store.data });
+}
