@@ -2315,6 +2315,14 @@ describe('fleet:launch-on-plan handler — spawn failures surface failed[], neve
 describe('fleet:launch-on-plan handler — verified canary-first transaction (P-003 / D-001)', () => {
   beforeEach(async () => {
     spawnConsoleMock.mockReset();
+    spawnHeadlessMock.mockReset();
+    spawnHeadlessMock.mockImplementation(() => ({
+      status: 'ok',
+      terminal: `headless-${spawnHeadlessMock.mock.calls.length}`,
+      pid: 200 + spawnHeadlessMock.mock.calls.length,
+      taskId: `task-${spawnHeadlessMock.mock.calls.length}`,
+      logPath: `/tmp/fleet-${spawnHeadlessMock.mock.calls.length}.log`,
+    }));
     spawnConsoleMock.mockImplementation((_opts) => ({
       status: 'ok',
       terminal: `term-${spawnConsoleMock.mock.calls.length}`,
@@ -2521,6 +2529,7 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       const responsePromise = invokeLaunchHandler(
         { name: 'Bounded Response Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
         {} as never,
+        null,
       );
       // The handler performs several asynchronous preflight steps before it calls the verifier.
       // Let that promise chain reach the response race first; otherwise advancing the fake clock
