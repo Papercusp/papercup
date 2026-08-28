@@ -156,6 +156,30 @@ export function duplicateNumberGroups(filenames: any, enforcedFrom?: number): {
     files: any;
 }[];
 /**
+ * `ALTER TABLE … DISABLE/ENABLE TRIGGER` acquires an ACCESS EXCLUSIVE lock on the
+ * target table. On a hot table that is not merely slow: a PENDING exclusive
+ * request queues every subsequent READER behind it, so an attempt that only
+ * waits still stalls the fleet. Migrations auto-apply at boot, so an armed file
+ * carrying this can fail — or stall — during startup, precisely when the box is
+ * busiest. Measured on 1020 under live fleet load: five attempts, all
+ * `canceling statement due to lock timeout`.
+ *
+ * Comments AND string literals are masked (`maskLiveBodies`) while `$$` body CODE
+ * stays live: a DISABLE TRIGGER inside a DO block really executes, whereas
+ * 1020's `-- NOTE: deliberately NO ALTER TABLE ... DISABLE TRIGGER USER` prose
+ * must read clean. Both directions are pinned in
+ * migration-exclusive-lock-guard.test.ts.
+ *
+ * @param {string} sqlText raw migration text
+ * @returns {{ table: string, action: string, target: string, hot: boolean }[]}
+ */
+export function findUnacknowledgedExclusiveLock(sqlText: string): {
+    table: string;
+    action: string;
+    target: string;
+    hot: boolean;
+}[];
+/**
  * The migration-461/689 class: DROPPING a table's unique index in the SAME
  * migration that creates its replacement.
  *
@@ -326,3 +350,23 @@ export const FROZEN_INDEX_SWAP_EXEMPTIONS: Map<string, string>;
  * safe, use the documented pragma instead (see findUniqueIndexShapeSwap).
  */
 export const INDEX_SWAP_ENFORCED_FROM: 691;
+/**
+ * ACCESS EXCLUSIVE acknowledgment boundary (EI-21698566084995732).
+ *
+ * Its OWN boundary, above every migration on disk when the guard landed, for the
+ * usual reason: 17 historical files carry `DISABLE TRIGGER` (295, 325, 360, 361,
+ * 374, 382, 391, 638, 649, 656, 864, 865, 867, 868, 870, 950), they are applied
+ * and ledgered, and the runner verifies each by sha256 — editing one now would
+ * break its recorded checksum. This stops a NEW migration from copying the shape
+ * unexamined.
+ */
+export const EXCLUSIVE_LOCK_ENFORCED_FROM: 1022;
+/**
+ * The acknowledgment token. Same shape and same contract as
+ * check-migration-forward-compat's ACK_MARKER: it matches ANY non-whitespace
+ * after the colon, so it is satisfied by a placeholder. That is deliberate — the
+ * guard's job is to force the author to ANSWER the question at authoring time,
+ * not to grade the answer. For the same reason scripts/next-migration.mjs must
+ * never seed a line matching this, or every migration is rubber-stamped.
+ */
+export const EXCLUSIVE_LOCK_ACK: RegExp;
