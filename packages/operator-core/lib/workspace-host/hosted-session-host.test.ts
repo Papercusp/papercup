@@ -30,19 +30,46 @@ class FakePty extends EventEmitter implements HostedHostPty {
   sizes: Array<[number, number]> = [];
   signals: string[] = [];
   killed = false;
-  write(data: Buffer) { this.writes.push(data); return !this.killed; }
-  resize(cols: number, rows: number) { this.sizes.push([cols, rows]); return !this.killed; }
-  signal(signal: string) { this.signals.push(signal); return !this.killed; }
-  kill() { this.killed = true; }
-  snapshot() { return Promise.resolve('restored-screen'); }
-  onData(listener: (data: Buffer) => void) { this.on('data', listener); return () => this.off('data', listener); }
-  onExit(listener: (code: number, signal: number) => void) { this.on('exit', listener); return () => this.off('exit', listener); }
-  output(value: string) { this.emit('data', Buffer.from(value)); }
+  write(data: Buffer) {
+    this.writes.push(data);
+    return !this.killed;
+  }
+  resize(cols: number, rows: number) {
+    this.sizes.push([cols, rows]);
+    return !this.killed;
+  }
+  signal(signal: string) {
+    this.signals.push(signal);
+    return !this.killed;
+  }
+  kill() {
+    this.killed = true;
+  }
+  snapshot() {
+    return Promise.resolve('restored-screen');
+  }
+  onData(listener: (data: Buffer) => void) {
+    this.on('data', listener);
+    return () => this.off('data', listener);
+  }
+  onExit(listener: (code: number, signal: number) => void) {
+    this.on('exit', listener);
+    return () => this.off('exit', listener);
+  }
+  output(value: string) {
+    this.emit('data', Buffer.from(value));
+  }
 }
 
 const binding: HostedConnectorBinding = {
-  controlPlaneWorkspaceId: 'control-1', organizationId: 'org-1', customerWorkspaceId: 'workspace-1',
-  hostId: 'host-1', routeLabel: 'alpha', generation: 4, transport: 'websocket', state: 'active',
+  controlPlaneWorkspaceId: 'control-1',
+  organizationId: 'org-1',
+  customerWorkspaceId: 'workspace-1',
+  hostId: 'host-1',
+  routeLabel: 'alpha',
+  generation: 4,
+  transport: 'websocket',
+  state: 'active',
 };
 
 function harness(root: string) {
@@ -50,12 +77,25 @@ function harness(root: string) {
   const ptys: FakePty[] = [];
   const audit = vi.fn();
   const adapter = new HostedWorkspaceHostSessionAdapter({
-    binding, workspaceRoot: root, send: (message) => sent.push(message), onAudit: audit,
-    createPty: () => { const pty = new FakePty(); ptys.push(pty); return pty; },
+    binding,
+    workspaceRoot: root,
+    send: (message) => sent.push(message),
+    onAudit: audit,
+    createPty: () => {
+      const pty = new FakePty();
+      ptys.push(pty);
+      return pty;
+    },
   });
-  const open = (channelId: string, userId = 'user-1', hostedSessionId = 'session-1') => adapter.accept({
-    type: 'relay.open', channelId, userId, hostedSessionId, audience: 'workspace-operator', role: 'controller',
-  });
+  const open = (channelId: string, userId = 'user-1', hostedSessionId = 'session-1') =>
+    adapter.accept({
+      type: 'relay.open',
+      channelId,
+      userId,
+      hostedSessionId,
+      audience: 'workspace-operator',
+      role: 'controller',
+    });
   const relay = (channelId: string, payload: unknown) => adapter.accept({ type: 'relay', channelId, payload });
   return { adapter, sent, ptys, audit, open, relay };
 }
@@ -76,9 +116,21 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
     expect(ptys[0].writes.map((data) => data.toString())).toEqual(['hello']);
     expect(ptys[0].sizes).toEqual([[90, 24]]);
     expect(ptys[0].signals).toEqual(['SIGINT']);
-    expect(sent).toContainEqual({ type: 'relay', channelId: 'channel-1', payload: { type: 'pty.output', data: Buffer.from('world').toString('base64') } });
-    expect(sent).toContainEqual({ type: 'relay', channelId: 'channel-2', payload: { type: 'pty.ready', resumed: true, role: 'controller' } });
-    expect(sent).toContainEqual({ type: 'relay', channelId: 'channel-2', payload: { type: 'pty.snapshot', data: Buffer.from('restored-screen').toString('base64') } });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'channel-1',
+      payload: { type: 'pty.output', data: Buffer.from('world').toString('base64') },
+    });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'channel-2',
+      payload: { type: 'pty.ready', resumed: true, role: 'controller' },
+    });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'channel-2',
+      payload: { type: 'pty.snapshot', data: Buffer.from('restored-screen').toString('base64') },
+    });
   });
 
   it('isolates different users and hosted sessions even on one connector', async () => {
@@ -97,11 +149,26 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
     const pty = new FakePty();
     const audit = vi.fn();
     const adapter = new HostedWorkspaceHostSessionAdapter({
-      binding, workspaceRoot: root, send: (message) => sent.push(message), createPty: () => pty,
-      idleMs: 100, onAudit: audit,
+      binding,
+      workspaceRoot: root,
+      send: (message) => sent.push(message),
+      createPty: () => pty,
+      idleMs: 100,
+      onAudit: audit,
     });
-    await adapter.accept({ type: 'relay.open', channelId: 'one', userId: 'user', hostedSessionId: 'session', audience: 'workspace-operator', role: 'controller' });
-    await adapter.accept({ type: 'relay', channelId: 'one', payload: { type: 'pty.input', data: Buffer.from('TERMINAL_CANARY').toString('base64') } });
+    await adapter.accept({
+      type: 'relay.open',
+      channelId: 'one',
+      userId: 'user',
+      hostedSessionId: 'session',
+      audience: 'workspace-operator',
+      role: 'controller',
+    });
+    await adapter.accept({
+      type: 'relay',
+      channelId: 'one',
+      payload: { type: 'pty.input', data: Buffer.from('TERMINAL_CANARY').toString('base64') },
+    });
     await adapter.accept({ type: 'relay.close', channelId: 'one' });
     vi.advanceTimersByTime(101);
     expect(pty.killed).toBe(true);
@@ -113,13 +180,79 @@ describe('HostedWorkspaceHostSessionAdapter', () => {
     const { sent, open, relay } = harness(root);
     await open('one');
     await relay('one', { type: 'file.read', requestId: 'read-1', path: 'src/index.ts' });
-    await relay('one', { type: 'file.write', requestId: 'write-1', path: 'src/new.ts', encoding: 'utf8', data: 'hello\n' });
-    await relay('one', { type: 'file.write', requestId: 'write-1', path: 'src/new.ts', encoding: 'utf8', data: 'hello\n' });
-    await relay('one', { type: 'file.write', requestId: 'write-1', path: 'src/new.ts', encoding: 'utf8', data: 'changed\n' });
+    await relay('one', {
+      type: 'file.write',
+      requestId: 'write-1',
+      path: 'src/new.ts',
+      encoding: 'utf8',
+      data: 'hello\n',
+    });
+    await relay('one', {
+      type: 'file.write',
+      requestId: 'write-1',
+      path: 'src/new.ts',
+      encoding: 'utf8',
+      data: 'hello\n',
+    });
+    await relay('one', {
+      type: 'file.write',
+      requestId: 'write-1',
+      path: 'src/new.ts',
+      encoding: 'utf8',
+      data: 'changed\n',
+    });
 
     expect(await readFile(join(root, 'src', 'new.ts'), 'utf8')).toBe('hello\n');
-    expect(sent.filter((message) => message.type === 'relay' && (message.payload as any)?.requestId === 'write-1')).toHaveLength(3);
-    expect(sent).toContainEqual({ type: 'relay', channelId: 'one', payload: expect.objectContaining({ type: 'operation.error', code: 'idempotency_conflict' }) });
+    expect(
+      sent.filter((message) => message.type === 'relay' && (message.payload as any)?.requestId === 'write-1'),
+    ).toHaveLength(3);
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: expect.objectContaining({ type: 'operation.error', code: 'idempotency_conflict' }),
+    });
+  });
+
+  it('round-trips zero-byte uploads while rejecting a missing payload', async () => {
+    const root = await projectRoot();
+    const { sent, open, relay } = harness(root);
+    await open('one');
+    await relay('one', {
+      type: 'file.upload',
+      requestId: 'upload-empty',
+      path: 'src/empty.txt',
+      encoding: 'base64',
+      data: '',
+    });
+    await relay('one', {
+      type: 'file.upload',
+      requestId: 'upload-missing',
+      path: 'src/missing.txt',
+      encoding: 'base64',
+    });
+
+    expect((await readFile(join(root, 'src', 'empty.txt'))).byteLength).toBe(0);
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: expect.objectContaining({
+        type: 'file.result',
+        requestId: 'upload-empty',
+        operation: 'upload',
+        bytes: 0,
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    });
+    expect(sent).toContainEqual({
+      type: 'relay',
+      channelId: 'one',
+      payload: {
+        type: 'operation.error',
+        requestId: 'upload-missing',
+        operation: 'file.upload',
+        code: 'invalid_file_data',
+      },
+    });
   });
 });
 
