@@ -1,7 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
-import { bulkDedupOwnerId, makeWorkItemAdmissionBulkDedupAction } from './work-item-admission-bulk-dedup-action';
+import { getSystemActionEntry } from './system-actions';
+import {
+  BULK_DEDUP_ROUTINE_FIRE_TIMEOUT_MS,
+  bulkDedupOwnerId,
+  makeWorkItemAdmissionBulkDedupAction,
+} from './work-item-admission-bulk-dedup-action';
 
 describe('work-item admission bulk dedup system action', () => {
+  it('registers a bounded long-running routine deadline without changing the generic default', () => {
+    expect(getSystemActionEntry('work-item-admission-bulk-dedup')).toMatchObject({
+      routineTimeoutMs: BULK_DEDUP_ROUTINE_FIRE_TIMEOUT_MS,
+    });
+    expect(BULK_DEDUP_ROUTINE_FIRE_TIMEOUT_MS).toBe(24 * 60 * 60_000);
+  });
+
   it('derives a stable, run-scoped gateway owner id', () => {
     expect(bulkDedupOwnerId('run-1')).toBe('system:work-item-admission-bulk-dedup:run-1');
     expect(bulkDedupOwnerId('run-1')).toBe(bulkDedupOwnerId('run-1'));
