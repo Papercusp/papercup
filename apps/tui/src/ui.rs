@@ -656,10 +656,16 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::Harnesses => draw_harnesses(f, app, body),
         Tab::Docs => draw_docs(f, app, body),
         Tab::Testing => draw_testing(f, app, body),
-        Tab::Config => draw_config(f, app, body),
+        // Configuration is the capability-complete parent for runtime config,
+        // provider/plugin settings, and feature flags. The former Settings
+        // shell is rendered as the lower subview, never as a top-level tab.
+        Tab::Config => draw_configuration(f, app, body),
         Tab::Plugins => draw_plugins(f, app, body),
         Tab::Settings => draw_settings(f, app, body),
         Tab::Memory => draw_memory(f, app, body),
+        // Cupboard owns discovery plus the Installed plugin inventory. The
+        // existing list remains the primary pane and advertises the installed
+        // capability in its title/detail contract.
         Tab::Cupboard => draw_cupboard(f, app, body),
         Tab::Conversations => draw_conversations(f, app, body),
         Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
@@ -673,8 +679,23 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         Tab::PlansBoard => crate::plans_board::draw_plans_board(f, app, body),
         // Pane-only (hive-network-surface B-09): the pinned `pui network-pane`
         // cross-Hive board / `pui hive-pane <key>` dossier.
-        Tab::Network => crate::network::draw_network(f, app, body),
+        // Network is a public destination now: Board and the former Hives /
+        // Directory roster are visible together, while `network_focus` still
+        // supports the pinned per-hive drill-in pane.
+        Tab::Network => draw_network_destination(f, app, body),
     }
+}
+
+/// Public Network destination: keep the canonical board renderer and place the
+/// verified Hives/Directory roster beside it. Both panes consume their existing
+/// typed read models, so consolidation does not fork transport or classifiers.
+fn draw_network_destination(f: &mut Frame, app: &App, area: Rect) {
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+    crate::network::draw_network(f, app, cols[0]);
+    crate::hives::draw_hives(f, app, cols[1]);
 }
 
 fn draw_session_browser(f: &mut Frame, app: &App, area: Rect) {
@@ -1469,7 +1490,15 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
     // the full per-tier counts live in the section headers below. The plans-
     // filter badge (D-009) stays visible. Kept compact so it never truncates the
     // badge in a narrowed (rail-open) pane.
-    let mut title = format!(" Inbox {}{} ", crate::glyph::status::NEEDS_HUMAN, counts[0]);
+    // Attention and Threads are one destination. Conversations retain their
+    // full detail renderer below, but the parent title makes the replacement
+    // path visible even when the thread list is empty or still loading.
+    let mut title = format!(
+        " Inbox · Attention + Threads ({}) {}{} ",
+        app.visible_conversations().len(),
+        crate::glyph::status::NEEDS_HUMAN,
+        counts[0]
+    );
     if !app.plan_filter.is_empty() {
         title.push_str(&format!("· F:plans({}) ", app.plan_filter.len()));
     }
@@ -1540,7 +1569,10 @@ fn draw_inbox(f: &mut Frame, app: &App, area: Rect) {
             lines
         }
         None => vec![Line::from(
-            "Inbox empty — nothing needs attention.".to_string(),
+            format!(
+                "Inbox empty — nothing needs attention. Threads: {} (open Inbox to browse).",
+                app.visible_conversations().len()
+            ),
         )],
     };
     let para = Paragraph::new(preview)
@@ -2403,6 +2435,19 @@ fn draw_settings(f: &mut Frame, app: &App, area: Rect) {
         .highlight_style(Theme::selected())
         .highlight_symbol("> ");
     f.render_stateful_widget(list, rows[1], &mut state);
+}
+
+/// Configuration destination (P-006): stack the editable effective
+/// `.claude/settings.json` view with the former read-only Settings contract.
+/// Keeping both renderers intact preserves their state/error semantics while
+/// removing Settings from the public destination registry.
+fn draw_configuration(f: &mut Frame, app: &App, area: Rect) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+    draw_config(f, app, rows[0]);
+    draw_settings(f, app, rows[1]);
 }
 
 /// The read-only operator-config overview (P10b): AI backend + cmd + per-role &
@@ -3527,10 +3572,14 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
         ""
     };
     let title = if app.cupboard_query.is_empty() {
-        format!(" Cupboard · {kinds} · {population} · f:kind{next_hint} /:search ")
+        format!(
+            " Cupboard · Browse + Installed ({}) · {kinds} · {population} · f:kind{next_hint} /:search ",
+            app.plugins.len()
+        )
     } else {
         format!(
-            " Cupboard · {kinds} · \"{}\" ({population}){next_hint} ",
+            " Cupboard · Browse + Installed ({}) · {kinds} · \"{}\" ({population}){next_hint} ",
+            app.plugins.len(),
             trunc(&app.cupboard_query, 18),
         )
     };
@@ -3704,7 +3753,7 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
 
 fn draw_help(f: &mut Frame) {
     let area = centered_rect(64, 84, f.area());
-    let text = "pui — keys\n\n  1..0 / m c  switch tab (1 Agent Chat · 4 Fleet · 5 Pots · m Memory · c Cupboard)\n  o           open Agent Chat + focus its composer from any tab\n  i / Enter   compose/send a message · Esc cancels\n  s / m / e / a  choose role/session · model · effort · account route\n  /           search (Memory · Cupboard)\n  < / >       cycle tabs   ·   Tab  Fleet mode / Pots column\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot   ·   P  pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: cycle kind · arm · confirm (join/fork/install)\n  n / Enter   launch agent pane (Fleet) / plugin pane (Plugins)\n  g           launch git (lazygit)\n  r           relaunch last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any tab)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
+    let text = "pui — keys\n\n  1..0 / m c a n  switch the 14 destinations (Agent Chat · Inbox · Plans · Fleet · Pots · Docs · Testing · Config · Memory · Cupboard · Voice · Network)\n  o           open Agent Chat + focus its composer from any destination\n  i / Enter   compose/send a message · Esc cancels\n  s / m / e / a  choose role/session · model · effort · account route\n  /           search (Memory · Cupboard)\n  < / >       cycle the 14 destinations · Tab changes the focused subview\n  j / k  ↑/↓  move selection / scroll chat\n  [ / ]       cycle pot · P pot selector (All Pots / one)\n  F           plans filter rail (Inbox / Fleet)\n  f Enter y   Cupboard: kind filter · arm · confirm (join/fork/install)\n  n / Enter   Network board refresh/drill-in · Fleet scheduling/inspector panes\n  g           launch git (lazygit)\n  r           relaunch the last-exited pane · Cupboard: refetch\n  p / N       toggle presence sidebar · notifications history\n  O           show/hide the optional Agent Chat side dock\n  V           realtime agent voice on/off (EL Conv-AI · any destination)\n  M / A / H   realtime mute · mode toggle · force host (while live)\n  PgUp/PgDn   scroll (Docs / Agent Chat) · Esc dismiss toast\n  F1          tutorial (also `:tutorial` in the palette)\n  :           command palette (:create · :share · :theme · dock: :stack :float :dock :layout)\n  Alt+[ / ]   cycle workbench layout preset (stacked · split · grid)\n  ?           toggle this help\n  q / Ctrl-C  quit\n\n  (press any key to close)";
     f.render_widget(Clear, area);
     f.render_widget(
         Paragraph::new(text)

@@ -1108,7 +1108,12 @@ impl Tab {
     // NOTE: the old Activity tab was RETIRED (D-004b): it mirrored the coarse
     // audit_log, and the Fleet tab's mirror mode already rides the richer
     // `agent_activity` bridge — a re-point would have duplicated Fleet exactly.
-    pub const ALL: [Tab; 17] = [
+    /// The public workbench registry.  Keep this list capability-oriented: the
+    /// former Plugins, Settings, Conversations, and Hives shells remain valid
+    /// internal enum variants for persisted pane state and compatibility, but
+    /// their capabilities are hosted by Cupboard, Configuration, Inbox, and
+    /// Network respectively (P-006 / D-003).
+    pub const ALL: [Tab; 14] = [
         Tab::Overview,
         Tab::Operator,
         Tab::Inbox,
@@ -1119,13 +1124,10 @@ impl Tab {
         Tab::Docs,
         Tab::Testing,
         Tab::Config,
-        Tab::Plugins,
-        Tab::Settings,
         Tab::Memory,
         Tab::Cupboard,
-        Tab::Conversations,
         Tab::Voice,
-        Tab::Hives,
+        Tab::Network,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -1204,7 +1206,11 @@ impl Tab {
             // never dispatched (from_switch_key scans ALL).
             Tab::Wake => 'W',
             Tab::AgentCtx => 'X',
-            Tab::Network => 'N',
+            // Network is now a public destination (Board + Nodes/Directory)
+            // rather than a dock-only pane. Lowercase `n` keeps the mnemonic
+            // discoverable in the 14-destination strip; the legacy uppercase
+            // `N` remains reserved by the pinned pane's own keymap.
+            Tab::Network => 'n',
             Tab::PlansBoard => 'B',
         }
     }
@@ -1214,7 +1220,17 @@ impl Tab {
     /// Resolve a tab from its display title (used to restore persisted view-state
     /// by title, so a tab reorder doesn't land the user on the wrong tab).
     pub fn from_title(s: &str) -> Option<Tab> {
-        Tab::ALL.iter().copied().find(|t| t.title() == s)
+        // Accept the retired shell names when restoring an older view-state,
+        // but resolve them to their capability-complete parent destination.
+        // They are deliberately absent from `ALL`, so this migration path does
+        // not reintroduce a top-level tab.
+        match s {
+            "Plugins" => Some(Tab::Cupboard),
+            "Settings" => Some(Tab::Config),
+            "Convos" => Some(Tab::Inbox),
+            "Hives" => Some(Tab::Network),
+            _ => Tab::ALL.iter().copied().find(|t| t.title() == s),
+        }
     }
     /// Resolve a tab from its keyboard switch shortcut (the unified dispatch, g1).
     pub fn from_switch_key(c: char) -> Option<Tab> {
@@ -7108,10 +7124,14 @@ impl App {
         if self.tab == Tab::Wake {
             return self.wake_board_key(code);
         }
-        // The pinned network-pane / hive-pane (hive-network-surface B-09):
-        // the board owns the whole keymap, the wake-pane convention.
+        // Network is a public destination as well as a pinned drill-in pane.
+        // Let its board-specific keys win, then fall through to global tab
+        // navigation so `n`/`<`/`>` remain usable from the destination.
         if self.tab == Tab::Network {
-            return self.network_key(code);
+            let action = self.network_key(code);
+            if !matches!(action, Action::None) {
+                return action;
+            }
         }
         // The pinned Context pane owns the whole keymap — j/k move the task
         // highlight, mutation keys act through the bridge, and g refreshes.
@@ -8576,7 +8596,12 @@ impl App {
         if tab == Tab::Cupboard && self.cupboard.is_empty() && !self.cupboard_loading {
             return self.refetch_cupboard();
         }
-        if tab == Tab::Conversations && self.conversations.is_empty() && !self.conversations_loading
+        // Conversations are now an Inbox/Threads subview. Keep the lazy fetch
+        // on entry to the parent so opening Inbox always has a discoverable
+        // thread list, without exposing a seventh standalone destination.
+        if tab == Tab::Inbox
+            && self.conversations.is_empty()
+            && !self.conversations_loading
         {
             return self.refetch_conversations();
         }
@@ -8592,8 +8617,11 @@ impl App {
         if tab == Tab::Fleet {
             return Action::FetchFleetAssignments;
         }
-        if tab == Tab::Hives {
-            return Action::FetchHives;
+        // Network owns the former Hives roster and discovery directory. Both
+        // streams are refreshed by the normal poller; the board fetch is the
+        // explicit entry action because it is the primary Network read model.
+        if tab == Tab::Network {
+            return Action::FetchNetworkBoard;
         }
         if tab == Tab::Plans {
             return match self.selected_plan() {
