@@ -276,10 +276,14 @@ export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
   description:
-    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` — the deliberate-pause record { reason, by, at } when one exists, so a deliberate hold is distinguishable from a stall. Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
+    'List the scheduled system routines in this workspace (git-sync, green-checkpoint, release-trigger, improvement-watchdog, …): name, install slug, cron, target role, active flag, next/last fire, group, and `paused` (a deliberate hold, so it is distinguishable from a stall). Read-only. Pass `installSlug` (or the compatibility alias `harness`) to scope one install, `group` to filter one routine group, or `rollup:true` for a per-group aggregate (count/active/pausedCount/last-fire) instead of raw rows (WI-5018 — the routines table is unbounded, so a flat list stops scaling; group first).',
   capability: 'operator:read',
   guidance: {
-    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass installSlug (or harness as its compatibility alias) to scope one install, or rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.',
+    // Arg guidance and the `paused` semantics are deliberately NOT restated here:
+    // `description` already carries the args and `returns` carries `paused` in full.
+    // Those two fields are the same words a third time, and `when` is prompt-weight
+    // budgeted while `returns` is free — which is what put this tool 184 over the cap.
+    when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Before calling a routine stalled, read `paused` and `health` — see returns.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
     chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). The routines:list compatibility alias is harness; routines:list { rollup:true } returns group metadata + review-due status.',
     // P-002: response documentation lives HERE, not in `when`/`description` —
