@@ -356,4 +356,112 @@ describe("HostedWorkspaceSession", () => {
     expect(status?.textContent).toContain("controller");
     expect(screen.queryByText(/stale/)).toBeNull();
   });
+
+  /*
+   * The relay's message listener is registered ONCE inside connect(), so every
+   * frame is handled by whatever `handleMessage` existed at connect time. Any
+   * state that handler reads through its closure — `path` in particular — is
+   * frozen at its connect-time value unless it is mirrored into a ref. These
+   * two pin the consequence rather than the mechanism: what the operator sees
+   * after acting inside a subdirectory.
+   */
+  it("re-lists the directory the operator is in after an upload, not the root", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+      }),
+    });
+    await waitFor(() => {
+      const status = screen.getByText("live", { exact: true }).parentElement;
+      expect(status?.textContent).toContain("controller");
+    });
+
+    /* Navigate out of the root, exactly as the file toolbar does. */
+    fireEvent.change(screen.getByLabelText("Workspace file path"), {
+      target: { value: "logs" },
+    });
+    socket.send.mockClear();
+
+    /*
+     * An upload result takes the catch-all branch of the file-result handler,
+     * whose job is to refresh the listing. It must refresh the directory the
+     * upload went into.
+     */
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "file.result",
+        requestId: "upload-1",
+        operation: "upload",
+        path: "logs/notes.txt",
+        bytes: 0,
+      }),
+    });
+
+    await waitFor(() => expect(socket.send).toHaveBeenCalled());
+    expect(
+      JSON.parse(socket.send.mock.calls.at(-1)?.[0] as string),
+    ).toMatchObject({ type: "file.list", path: "logs" });
+  });
+
+  it("keeps the operator in the directory they navigated to after an upload", async () => {
+    render(
+      <HostedWorkspaceSession
+        hostId="host-1"
+        routeLabel="workspace-relay"
+        workspaceName="research-control"
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    await waitFor(() => expect(M.sockets).toHaveLength(1));
+    const socket = M.sockets[0];
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "pty.ready",
+        role: "controller",
+        resumed: false,
+      }),
+    });
+    await waitFor(() => {
+      const status = screen.getByText("live", { exact: true }).parentElement;
+      expect(status?.textContent).toContain("controller");
+    });
+
+    const pathInput = screen.getByLabelText("Workspace file path");
+    fireEvent.change(pathInput, { target: { value: "logs" } });
+    socket.send.mockClear();
+
+    socket.emit("message", {
+      data: JSON.stringify({
+        type: "file.result",
+        requestId: "upload-2",
+        operation: "upload",
+        path: "logs/notes.txt",
+        bytes: 0,
+      }),
+    });
+
+    /*
+     * Wait for the refresh to actually be issued FIRST. Asserting the input
+     * directly would race: waitFor succeeds on its first attempt, which can run
+     * before the buggy setPath(".") has flushed — so it passes while the defect
+     * is present. Sequencing on the send makes the check deterministic, because
+     * listFiles only calls setPath once the frame has gone out.
+     */
+    await waitFor(() => expect(socket.send).toHaveBeenCalled());
+    expect((pathInput as HTMLInputElement).value).toBe("logs");
+  });
 });
