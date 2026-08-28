@@ -839,7 +839,7 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: 'Do not re-claim a ping-ponging item',
-    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of your next `scheduler:get_next` pull and you loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
+    body: 'Releasing an item bumps its `updated_at`, so it can re-surface at the top of next `scheduler:get_next` pull and loop on it. If an item reappears right after you release it, sink it (work_items:set_priority) or set it `blocked` with a reason — do not re-claim.',
   },
   {
     head: 'Completion evidence is mandatory',
@@ -847,11 +847,11 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
   },
   {
     head: '"Not available" means DEFERRED, not missing',
-    body: 'An InputValidationError / "not available" on a tool means load it (ToolSearch / tools:find) and continue — never stop or report a tool as unavailable.',
+    body: 'InputValidationError/"not available" means load the tool (ToolSearch/tools:find) and continue; never report it missing.',
   },
   {
     head: 'Edit only the staging tree; git-sync owns commit + push',
-    body: 'Never git add / commit / push. If a file-lock blocks an edit, pivot to the next item rather than routing around the lock.',
+    body: 'Never git add/commit/push. If a file lock blocks an edit, pivot rather than route around it.',
   },
   {
     head: 'A hive pause is a Mug-loop signal, not a self-drain order',
