@@ -25,6 +25,7 @@ import {
   ACCOUNT_PIN_HEADER,
   PIN_YIELDED_HEADER,
   ROUTED_ACCOUNT_HEADER,
+  resolveCodexOAuthNonStreamTimeoutMs,
 } from './gateway';
 import type { ActiveAccount } from './provider-contracts';
 import { createFailoverPool } from './account-failover';
@@ -99,10 +100,13 @@ async function makeCodexHome(accountId: string, withAuth = true): Promise<string
   const home = await fs.mkdtemp(path.join(os.tmpdir(), `gateway-chatgpt-${accountId}-`));
   tempCodexHomes.push(home);
   if (withAuth) {
-    await fs.writeFile(path.join(home, 'auth.json'), JSON.stringify({
-      auth_mode: 'chatgpt',
-      tokens: { access_token: freshJwt(), refresh_token: `refresh-${accountId}`, account_id: accountId },
-    }));
+    await fs.writeFile(
+      path.join(home, 'auth.json'),
+      JSON.stringify({
+        auth_mode: 'chatgpt',
+        tokens: { access_token: freshJwt(), refresh_token: `refresh-${accountId}`, account_id: accountId },
+      }),
+    );
   }
   return home;
 }
@@ -172,7 +176,7 @@ describe('proxyOpenAi — happy path + header discipline', () => {
       { 'x-api-key': 'sk-strip-me', authorization: 'Bearer client-replace-me', 'anthropic-beta': 'fine-grained-2025' },
     );
     expect(res.status).toBe(200);
-    expect((await res.json() as { ok?: boolean }).ok).toBe(true);
+    expect(((await res.json()) as { ok?: boolean }).ok).toBe(true);
 
     const h = openaiUpstream!.last.headers;
     // codex OAuth bearer injected (NOT the client's), client api-key stripped
@@ -215,7 +219,9 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     });
     const res = await ask('/v1/models', { method: 'GET', headers: { [ACCOUNT_HEADER]: 'cdx-2' } });
     expect(res.status).toBe(200);
-    expect((await res.json() as { models?: Array<{ slug: string }> }).models?.some((m) => m.slug === 'gpt-5.5')).toBe(true);
+    expect(((await res.json()) as { models?: Array<{ slug: string }> }).models?.some((m) => m.slug === 'gpt-5.5')).toBe(
+      true,
+    );
     expect(openaiUpstream!.last.method).toBeUndefined();
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
   });
@@ -297,7 +303,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     await bootCodex(byBearer);
     const res = await postResponses({ model: 'gpt-x', input: 'hi' });
     expect(res.status).toBe(200);
-    expect((await res.json() as { served_by?: string }).served_by).toBe('cdx-2');
+    expect(((await res.json()) as { served_by?: string }).served_by).toBe('cdx-2');
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
     const s = (await (await ask('/stats')).json()) as { codex: { failovers: number; upstream429: number } };
     expect(s.codex.failovers).toBeGreaterThanOrEqual(1);
@@ -306,10 +312,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
 
   it('a SOFT account pin yields only after its account is throttled and reports the structured divergence', async () => {
     await bootCodex(byBearer);
-    const res = await postResponses(
-      { model: 'gpt-x', input: 'hi' },
-      { [ACCOUNT_HEADER]: 'cdx-1' },
-    );
+    const res = await postResponses({ model: 'gpt-x', input: 'hi' }, { [ACCOUNT_HEADER]: 'cdx-1' });
     expect(res.status).toBe(200);
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('cdx-1->cdx-2');
@@ -360,7 +363,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     const res = await postResponses({ model: 'gpt-x', input: 'hi' });
     expect(res.status).toBe(429);
     // it's the real upstream 429 forwarded (the bee's CLI then backs off), not a synthetic loop
-    expect((await res.json() as { error?: { type?: string } }).error?.type).toBe('rate_limit');
+    expect(((await res.json()) as { error?: { type?: string } }).error?.type).toBe('rate_limit');
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-solo');
   });
 
@@ -436,11 +439,12 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
         const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
         const rawBody = init?.body;
-        const bodyText = typeof rawBody === 'string'
-          ? rawBody
-          : rawBody instanceof Uint8Array
-            ? Buffer.from(rawBody).toString('utf8')
-            : '';
+        const bodyText =
+          typeof rawBody === 'string'
+            ? rawBody
+            : rawBody instanceof Uint8Array
+              ? Buffer.from(rawBody).toString('utf8')
+              : '';
         const forwardedBody = JSON.parse(bodyText) as Record<string, unknown>;
         expect(Array.isArray(forwardedBody.input)).toBe(true);
         expect(forwardedBody.store).toBe(false);
@@ -474,10 +478,12 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
         accountId: 'claude-acct',
         token: async () => 'claude-tok',
         codexCliAccounts: () => cliAccounts,
-        codexCliPool: createFailoverPool(cliAccounts.map((account) => ({
-          accountId: account.accountId,
-          token: async () => '',
-        }))),
+        codexCliPool: createFailoverPool(
+          cliAccounts.map((account) => ({
+            accountId: account.accountId,
+            token: async () => '',
+          })),
+        ),
         codexOAuthProxy: true,
         fetchImpl,
         selfHeal: { enabled: false },
@@ -512,7 +518,8 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_luna_tool', output: [] } })}\n\n` +
       'data: [DONE]\n\n';
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const rawBody = init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
+      const rawBody =
+        init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
       const forwarded = JSON.parse(rawBody) as Record<string, unknown>;
       expect(forwarded).toMatchObject({
         model: 'gpt-5.6-luna',
@@ -531,7 +538,9 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       accountId: 'claude-acct',
       token: async () => 'claude-tok',
       codexCliAccounts: () => cliAccounts,
-      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
       codexCliRun: cliRun,
       codexOAuthProxy: true,
       fetchImpl,
@@ -563,7 +572,8 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     const cliAccounts = [{ accountId: 'chatgpt-a', home }];
     const cliRun = vi.fn(async () => ({ text: 'must not run', inputTokens: 1, outputTokens: 1 }));
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const rawBody = init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
+      const rawBody =
+        init?.body instanceof Uint8Array ? Buffer.from(init.body).toString('utf8') : String(init?.body ?? '');
       const forwarded = JSON.parse(rawBody) as Record<string, unknown>;
       expect(forwarded.stream).toBe(true);
       expect(forwarded.store).toBe(false);
@@ -579,7 +589,9 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       accountId: 'claude-acct',
       token: async () => 'claude-tok',
       codexCliAccounts: () => cliAccounts,
-      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
       codexCliRun: cliRun,
       codexOAuthProxy: true,
       fetchImpl,
@@ -650,6 +662,13 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(await res.json()).toEqual({ id: 'resp_delayed', output: [] });
   });
 
+  it('defaults OAuth non-stream aggregation to the universal request ceiling, not the former five-minute cap', () => {
+    const twentyMinutes = 20 * 60 * 1_000;
+    expect(resolveCodexOAuthNonStreamTimeoutMs(twentyMinutes)).toBe(twentyMinutes);
+    expect(resolveCodexOAuthNonStreamTimeoutMs(twentyMinutes, 7 * 60 * 1_000)).toBe(7 * 60 * 1_000);
+    expect(resolveCodexOAuthNonStreamTimeoutMs(10 * 60 * 1_000, twentyMinutes)).toBe(10 * 60 * 1_000);
+  });
+
   it('PAPERCUSP_GATEWAY_CODEX_OAUTH_NONSTREAM=0 selects the named temporary CLI fallback', async () => {
     const home = await makeCodexHome('chatgpt-a');
     const cliAccounts = [{ accountId: 'chatgpt-a', home }];
@@ -662,7 +681,9 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       accountId: 'claude-acct',
       token: async () => 'claude-tok',
       codexCliAccounts: () => cliAccounts,
-      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
+      codexCliPool: createFailoverPool(
+        cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+      ),
       codexCliRun: cliRun,
       codexOAuthProxy: true,
       codexOAuthNonStream: false,
@@ -682,55 +703,60 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(gw.stats().codex.requests).toBe(1);
   });
 
-  it.each([429, 503] as const)('retries a non-stream OAuth %s before aggregating the healthy account response', async (failureStatus) => {
-    const homeA = await makeCodexHome('chatgpt-a');
-    const homeB = await makeCodexHome('chatgpt-b');
-    const cliAccounts = [
-      { accountId: 'chatgpt-a', home: homeA },
-      { accountId: 'chatgpt-b', home: homeB },
-    ];
-    const routed: string[] = [];
-    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
-      const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
-      routed.push(account);
-      if (account === 'chatgpt-a') {
-        return new Response(JSON.stringify({ error: { message: 'try another account' } }), {
-          status: failureStatus,
-          headers: { 'content-type': 'application/json' },
-        });
-      }
-      return new Response(
-        `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_after_retry', output: [] } })}\n\ndata: [DONE]\n\n`,
-        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  it.each([429, 503] as const)(
+    'retries a non-stream OAuth %s before aggregating the healthy account response',
+    async (failureStatus) => {
+      const homeA = await makeCodexHome('chatgpt-a');
+      const homeB = await makeCodexHome('chatgpt-b');
+      const cliAccounts = [
+        { accountId: 'chatgpt-a', home: homeA },
+        { accountId: 'chatgpt-b', home: homeB },
+      ];
+      const routed: string[] = [];
+      const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+        routed.push(account);
+        if (account === 'chatgpt-a') {
+          return new Response(JSON.stringify({ error: { message: 'try another account' } }), {
+            status: failureStatus,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        return new Response(
+          `data: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_after_retry', output: [] } })}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { 'content-type': 'text/event-stream' } },
+        );
+      }) as typeof fetch;
+
+      gw = createInferenceGateway({
+        accountId: 'claude-acct',
+        token: async () => 'claude-tok',
+        codexCliAccounts: () => cliAccounts,
+        codexCliPool: createFailoverPool(
+          cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' })),
+        ),
+        codexOAuthProxy: true,
+        fetchImpl,
+        selfHeal: { enabled: false },
+      });
+      port = await gw.listen(0);
+
+      const res = await postResponses(
+        { model: 'gpt-5.5', input: 'retry then aggregate', stream: false },
+        { [ACCOUNT_HEADER]: 'chatgpt-a' },
       );
-    }) as typeof fetch;
-
-    gw = createInferenceGateway({
-      accountId: 'claude-acct',
-      token: async () => 'claude-tok',
-      codexCliAccounts: () => cliAccounts,
-      codexCliPool: createFailoverPool(cliAccounts.map((account) => ({ accountId: account.accountId, token: async () => '' }))),
-      codexOAuthProxy: true,
-      fetchImpl,
-      selfHeal: { enabled: false },
-    });
-    port = await gw.listen(0);
-
-    const res = await postResponses(
-      { model: 'gpt-5.5', input: 'retry then aggregate', stream: false },
-      { [ACCOUNT_HEADER]: 'chatgpt-a' },
-    );
-    expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ id: 'resp_after_retry', output: [] });
-    expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
-    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
-    expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
-    expect(gw.stats().codex).toMatchObject({ requests: 1, failovers: 1 });
-    expect(gw.stats().egressAttemptsByAccount).toMatchObject({
-      'chatgpt-a': 1,
-      'chatgpt-b': 1,
-    });
-  });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ id: 'resp_after_retry', output: [] });
+      expect(routed).toEqual(['chatgpt-a', 'chatgpt-b']);
+      expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+      expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+      expect(gw.stats().codex).toMatchObject({ requests: 1, failovers: 1 });
+      expect(gw.stats().egressAttemptsByAccount).toMatchObject({
+        'chatgpt-a': 1,
+        'chatgpt-b': 1,
+      });
+    },
+  );
 
   it('aborts the OAuth upstream when a non-stream downstream caller disconnects', async () => {
     const home = await makeCodexHome('chatgpt-a');
@@ -738,10 +764,14 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     let upstreamAborted = false;
     const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
       await new Promise<never>((_resolve, reject) => {
-        init?.signal?.addEventListener('abort', () => {
-          upstreamAborted = true;
-          reject(new Error('oauth upstream aborted'));
-        }, { once: true });
+        init?.signal?.addEventListener(
+          'abort',
+          () => {
+            upstreamAborted = true;
+            reject(new Error('oauth upstream aborted'));
+          },
+          { once: true },
+        );
       });
       throw new Error('unreachable');
     }) as typeof fetch;
@@ -792,7 +822,11 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
 
     const before = gw.stats();
     expect(before.codexHealthyAccounts).toBe(1);
-    expect(before.egressProxyHealth).toMatchObject({ configured: true, totalProxyEntries: 1, reachableProxyEntries: 1 });
+    expect(before.egressProxyHealth).toMatchObject({
+      configured: true,
+      totalProxyEntries: 1,
+      reachableProxyEntries: 1,
+    });
     expect(before.edgeThrottleByAccount).toHaveProperty('cdx-1');
 
     const config = (await (await ask('/admin/config')).json()) as {
@@ -806,16 +840,25 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
 
     const readmit = await ask('/admin/readmit?provider=codex&account=cdx-1', { method: 'POST' });
     expect(readmit.status).toBe(200);
-    expect(await readmit.json()).toMatchObject({ ok: true, provider: 'codex', readmitted: ['cdx-1'], healthyAccounts: 2 });
+    expect(await readmit.json()).toMatchObject({
+      ok: true,
+      provider: 'codex',
+      readmitted: ['cdx-1'],
+      healthyAccounts: 2,
+    });
     expect(gw.stats().codexHealthyAccounts).toBe(2);
   });
 
   it('tracks and reclaims a wedged Codex slot against the Codex cap without waiting for Claude saturation', async () => {
     let attempts = 0;
     let firstUpstreamStarted!: () => void;
-    const upstreamStarted = new Promise<void>((resolve) => { firstUpstreamStarted = resolve; });
+    const upstreamStarted = new Promise<void>((resolve) => {
+      firstUpstreamStarted = resolve;
+    });
     await bootCodex(
-      () => { /* fetchImpl below is the upstream seam */ },
+      () => {
+        /* fetchImpl below is the upstream seam */
+      },
       [codexAcct('cdx-solo')],
       {
         codexConcurrency: 1,
@@ -887,7 +930,7 @@ describe('proxyOpenAi — route isolation from the Claude proxy', () => {
     port = await gw.listen(0);
 
     const codexRes = await postResponses({ model: 'gpt-x', input: 'hi' });
-    expect((await codexRes.json() as { from?: string }).from).toBe('openai');
+    expect(((await codexRes.json()) as { from?: string }).from).toBe('openai');
     expect(openaiUpstream.last.headers['authorization']).toBe('Bearer cdx-1-tok');
 
     const claudeRes = await ask('/v1/messages', {
@@ -895,7 +938,7 @@ describe('proxyOpenAi — route isolation from the Claude proxy', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'claude-opus-4', max_tokens: 4, messages: [] }),
     });
-    expect((await claudeRes.json() as { from?: string }).from).toBe('claude');
+    expect(((await claudeRes.json()) as { from?: string }).from).toBe('claude');
     // the Claude path injects the claude bearer + the oauth beta (NOT a codex token)
     expect(claudeUpstream.last.headers['authorization']).toBe('Bearer claude-tok');
     expect(String(claudeUpstream.last.headers['anthropic-beta'])).toContain('oauth-2025-04-20');
@@ -974,10 +1017,14 @@ describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', (
         fetchImpl: (async (_url: RequestInfo | URL, init?: RequestInit) => {
           await new Promise((_resolve, reject) => {
             const signal = init?.signal as AbortSignal | undefined;
-            signal?.addEventListener('abort', () => {
-              upstreamAborted = true;
-              reject(new Error('upstream aborted'));
-            }, { once: true });
+            signal?.addEventListener(
+              'abort',
+              () => {
+                upstreamAborted = true;
+                reject(new Error('upstream aborted'));
+              },
+              { once: true },
+            );
           });
           throw new Error('unreachable');
         }) as typeof fetch,

@@ -31,6 +31,7 @@ import {
   type TurnProvider,
 } from '../agent-chat-stream';
 import { readCredentials } from '../credentials';
+import { loopbackFetch } from '../loopback-fetch';
 
 /** Provider label for classifying a backend's error message (labeling only — rate detection is
     status/regex-based, so this never changes the class). */
@@ -173,25 +174,35 @@ async function llmCallViaCodexGateway(
   if (opts.temperature !== undefined) body.temperature = opts.temperature;
   if (opts.responseFormat === 'json') body.text = { format: { type: 'json_object' } };
 
-  const res = await fetch(codexGatewayUrl(), {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
-      'content-type': 'application/json',
-      ...ownerHeaders(opts.ownerId),
-      // EI-315: an unlabeled llm-testing call used to default to 'scout' (tier 1 — WRONG
-      // direction, falsely elevating batch test traffic ahead of real interactive/Queen
-      // work) here, while the anthropic-direct path below fell to the map's bottom `default`
-      // band (tier 5 — the actual starvation this item reported: 17/17 attempts 429-capped
-      // over 7h). Both are fixed the same way: label unset test traffic 'llm-testing', which
-      // DEFAULT_GATEWAY_PRIORITY_MAP now maps to tier 4 — the same batch band as `gym`/
-      // `benchmark`, high enough to stop being first-shed but never ahead of real interactive
-      // work.
-      'x-papercusp-priority': opts.priority ?? 'llm-testing',
+  const res = await loopbackFetch(
+    codexGatewayUrl(),
+    {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${CODEX_GATEWAY_AUTH}`,
+        'content-type': 'application/json',
+        ...ownerHeaders(opts.ownerId),
+        // EI-315: an unlabeled llm-testing call used to default to 'scout' (tier 1 — WRONG
+        // direction, falsely elevating batch test traffic ahead of real interactive/Queen
+        // work) here, while the anthropic-direct path below fell to the map's bottom `default`
+        // band (tier 5 — the actual starvation this item reported: 17/17 attempts 429-capped
+        // over 7h). Both are fixed the same way: label unset test traffic 'llm-testing', which
+        // DEFAULT_GATEWAY_PRIORITY_MAP now maps to tier 4 — the same batch band as `gym`/
+        // `benchmark`, high enough to stop being first-shed but never ahead of real interactive
+        // work.
+        'x-papercusp-priority': opts.priority ?? 'llm-testing',
+      },
+      body: JSON.stringify(body),
+      signal: opts.signal,
     },
-    body: JSON.stringify(body),
-    signal: opts.signal,
-  });
+    // The OAuth bridge deliberately withholds response HEADERS until it has
+    // aggregated response.completed. Global fetch's five-minute Undici headers
+    // cap therefore kills a healthy long xhigh generation before the gateway's
+    // own request ceiling. Reuse loopbackFetch's existing long-running dispatcher
+    // (`launch` is its historical option name). Keep its retry ladder empty here:
+    // the bulk-dedup caller already owns the bounded transient retry policy.
+    { launch: true, backoffsMs: [] },
+  );
   // The Codex bridge is non-streaming, so response headers arrive with the completed
   // response. Still surface the transport boundary for callers that use one shared seam.
   opts.onResponseStart?.();

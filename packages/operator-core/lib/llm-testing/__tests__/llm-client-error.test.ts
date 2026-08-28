@@ -96,6 +96,10 @@ describe('llmCall backend selection', () => {
       'http://127.0.0.1:8788/v1/responses',
       expect.objectContaining({
         method: 'POST',
+        // OAuth non-stream aggregation intentionally emits no downstream headers
+        // until response.completed, so this call must opt out of Undici's default
+        // five-minute header cap via loopbackFetch's long-running dispatcher.
+        dispatcher: expect.anything(),
         headers: expect.objectContaining({
           authorization: 'Bearer papercusp-gateway',
           'x-papercusp-priority': 'llm-testing',
