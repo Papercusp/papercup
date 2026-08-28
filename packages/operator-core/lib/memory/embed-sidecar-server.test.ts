@@ -9,6 +9,8 @@
 import { getRerankWorkerState, isCoherentTarget } from '@papercusp/rerank';
 import { getWorkerState as getMemoryWorkerState } from '@papercusp/memory';
 import { afterEach, describe, expect, it } from 'vitest';
+import type { AdmissionContext } from '../resource-governor/admission';
+import type { GovernedOperationInput } from '../resource-governor/execution';
 import {
   createEmbedSidecarServer,
   defaultWorkerStates,
@@ -319,6 +321,75 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
     }
   });
 
+  it('production admits each embed/rerank unit through the durable governor with attributable demand', async () => {
+    const admissions: Array<GovernedOperationInput<unknown>> = [];
+    const governedOperation = async <T>(
+      input: GovernedOperationInput<T>,
+      run: (context: AdmissionContext) => Promise<T>,
+    ): Promise<T> => {
+      admissions.push(input as GovernedOperationInput<unknown>);
+      return run({
+        contractVersion: 1,
+        requestId: `test-${admissions.length}`,
+        rootRequestId: `test-${admissions.length}`,
+        parentRequestId: null,
+        idempotencyKey: `test-key-${admissions.length}`,
+        admissionClass: input.admissionClass,
+        priority: 0,
+        demand: input.demand ?? {},
+        depth: 0,
+        createdAtMs: 0,
+        decisionGeneration: 1,
+      });
+    };
+    handle = createEmbedSidecarServer({
+      port: 0,
+      builders: fakeBuilders,
+      rerankBuilders: {
+        rerank: async () => async (_query, texts) => texts.map((text) => text.length),
+        'rerank-fast': async () => async (_query, texts) => texts.map((text) => text.length),
+      },
+      warmAtBoot: false,
+      log: () => {},
+      workspaceId: 'governor-test-workspace',
+      governedOperation,
+    });
+    baseUrl = `http://127.0.0.1:${await handle.listening}`;
+
+    const post = (path: string, body: unknown) =>
+      fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post('/embed', { kind: 'query', texts: ['a', 'bb'] })).status).toBe(200);
+    expect((await post('/rerank', { query: 'q', texts: ['x', 'yy'] })).status).toBe(200);
+
+    expect(admissions).toHaveLength(4);
+    for (const input of admissions.slice(0, 2)) {
+      expect(input).toMatchObject({
+        workspaceId: 'governor-test-workspace',
+        namespace: 'embed-sidecar',
+        admissionClass: 'embedding',
+        metadata: { operation: 'embed', kind: 'query', unit: 'single-text' },
+        demand: { cpuWeight: 1 },
+      });
+    }
+    for (const input of admissions.slice(2)) {
+      expect(input).toMatchObject({
+        workspaceId: 'governor-test-workspace',
+        namespace: 'embed-sidecar',
+        admissionClass: 'inference',
+        metadata: { operation: 'rerank', unit: 'single-text' },
+        demand: { cpuWeight: 1 },
+      });
+    }
+    expect(admissions[0]?.demand?.memoryBytes).toBe(1);
+    expect(admissions[1]?.demand?.memoryBytes).toBe(2);
+    expect(admissions[2]?.demand?.memoryBytes).toBe(2);
+    expect(admissions[3]?.demand?.memoryBytes).toBe(3);
+  });
+
   it('POST /embed returns the D-004 shape, ordered per input text', async () => {
     await boot();
     const res = await fetch(`${baseUrl}/embed`, {
@@ -443,6 +514,7 @@ describe('embed sidecar HTTP surface (fake builders, ephemeral port)', () => {
         local: fakeBuilders.local,
         harrier: fakeBuilders.harrier,
       },
+      concurrency: 1,
     });
     baseUrl = `http://127.0.0.1:${await handle.listening}`;
     const post = (kind: string) =>
