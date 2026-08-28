@@ -10,7 +10,8 @@ use crate::models::{
     ConversationContextProjection, ConversationContextProjectionTarget, CrewMember, DocsResponse,
     EffectiveClaudeSettings, FlagsResponse, FleetRateStatus, HarnessFeature, HarnessIssue,
     HarnessRef, Notif, OperatorConfig, PlanItemStates, PlanSummary, RosterEntry,
-    SessionTranscriptTurn, TestingDomain, TuiPaneContribution, ViewState, WorkItem,
+    SessionTranscriptAvailability, SessionTranscriptTurn,
+    TestingDomain, TuiPaneContribution, ViewState, WorkItem,
 };
 use crate::mux::PaneSpec;
 use crossterm::event::{KeyCode, KeyModifiers};
@@ -67,6 +68,13 @@ pub enum Action {
     /// transcript model as the global switcher.
     FetchSessionBrowser {
         query: String,
+    },
+    /// Resolve one selected roster row against its exact indexed session id.
+    /// This is separate from transcript reading because a bounded seed miss is
+    /// `unknown`, not evidence of unavailability.
+    ResolveSessionTranscript {
+        session_key: String,
+        target: ConversationContextProjectionTarget,
     },
     /// Read the canonical transcript tail for the selected browser row.
     FetchSessionTranscript {
@@ -4478,14 +4486,43 @@ impl App {
         self.session_browser.transcript_key = Some(key.clone());
         self.session_browser.transcript.clear();
         self.session_browser.transcript_error = None;
-        let Some(reference) = row.transcript_ref.filter(|value| !value.is_empty()) else {
-            self.session_browser.transcript_loading = false;
-            return Action::Render;
-        };
-        self.session_browser.transcript_loading = true;
-        Action::FetchSessionTranscript {
-            session_key: key,
-            reference,
+        match row.transcript_availability {
+            SessionTranscriptAvailability::Available => {
+                let Some(reference) = row.transcript_ref.filter(|value| !value.is_empty()) else {
+                    self.session_browser.transcript_loading = false;
+                    self.session_browser.transcript_error = Some(
+                        "Transcript is marked available but has no canonical read reference."
+                            .to_string(),
+                    );
+                    return Action::Render;
+                };
+                self.session_browser.transcript_loading = true;
+                Action::FetchSessionTranscript {
+                    session_key: key,
+                    reference,
+                }
+            }
+            SessionTranscriptAvailability::Unavailable => {
+                self.session_browser.transcript_loading = false;
+                Action::Render
+            }
+            SessionTranscriptAvailability::Unknown => {
+                let Some(target) = row.native_session.as_ref().and_then(|native| {
+                    ConversationContextProjectionTarget::from_native_session(native, None)
+                }) else {
+                    self.session_browser.transcript_loading = false;
+                    self.session_browser.transcript_error = Some(
+                        "Transcript availability is unknown because this row has no exact native session id."
+                            .to_string(),
+                    );
+                    return Action::Render;
+                };
+                self.session_browser.transcript_loading = true;
+                Action::ResolveSessionTranscript {
+                    session_key: key,
+                    target,
+                }
+            }
         }
     }
 
@@ -5850,6 +5887,59 @@ impl App {
                     }
                 }
             }
+            Event::SessionTranscriptResolved {
+                session_key,
+                result,
+            } => {
+                if self.session_browser.transcript_key.as_deref() != Some(&session_key) {
+                    return Action::Render;
+                }
+                match result {
+                    Ok(Some(resolution)) => {
+                        let Some(row) = self
+                            .session_browser
+                            .rows
+                            .iter_mut()
+                            .find(|row| Self::session_key(row) == session_key)
+                        else {
+                            self.session_browser.transcript_loading = false;
+                            return Action::Render;
+                        };
+                        row.transcript_ref = Some(resolution.reference.clone());
+                        row.transcript_excerpt = resolution.excerpt;
+                        row.transcript_at = resolution.transcript_at;
+                        row.transcript_availability = SessionTranscriptAvailability::Available;
+                        self.session_browser.transcript_loading = true;
+                        self.session_browser.transcript_error = None;
+                        Action::FetchSessionTranscript {
+                            session_key,
+                            reference: resolution.reference,
+                        }
+                    }
+                    Ok(None) => {
+                        if let Some(row) = self
+                            .session_browser
+                            .rows
+                            .iter_mut()
+                            .find(|row| Self::session_key(row) == session_key)
+                        {
+                            row.transcript_ref = None;
+                            row.transcript_excerpt = None;
+                            row.transcript_availability =
+                                SessionTranscriptAvailability::Unavailable;
+                        }
+                        self.session_browser.transcript_loading = false;
+                        self.session_browser.transcript_error = None;
+                        Action::Render
+                    }
+                    Err(error) => {
+                        self.session_browser.transcript_loading = false;
+                        self.session_browser.transcript_error =
+                            Some(format!("transcript lookup: {error}"));
+                        Action::Render
+                    }
+                }
+            }
             Event::SessionTranscript {
                 session_key,
                 result,
@@ -5991,14 +6081,14 @@ impl App {
             Event::Features { harness, features } => {
                 if harness == self.harness {
                     self.set_features(features);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
             Event::Issues { harness, issues } => {
                 if harness == self.harness {
                     self.set_issues(issues);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
@@ -6010,14 +6100,14 @@ impl App {
             Event::Docs { harness, docs } => {
                 if harness == self.harness {
                     self.set_docs(docs);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
             Event::Testing { harness, testing } => {
                 if harness == self.harness {
                     self.set_testing(testing);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
@@ -6092,7 +6182,7 @@ impl App {
             Event::Config { harness, config } => {
                 if harness == self.harness {
                     self.set_config(config);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
@@ -6178,7 +6268,7 @@ impl App {
                     Ok(work_items) => {
                         self.fleet.set_work_items(work_items);
                         self.fleet.work_items_error = None;
-                self.last_error = None;
+                        self.last_error = None;
                     }
                     Err(error) => {
                         self.fleet.work_items_error = Some(error);
@@ -6405,7 +6495,7 @@ impl App {
                         // transient legacy page instead of snapping back to the
                         // retired five-kind strip.
                         if !kind_facets.is_empty() {
-                        self.cupboard_kind_facets = kind_facets;
+                            self.cupboard_kind_facets = kind_facets;
                             self.sync_cupboard_kind_index();
                         }
                         self.cupboard_loading = false;
@@ -6451,7 +6541,7 @@ impl App {
             Event::TuiPanes { harness, panes } => {
                 if harness == self.harness {
                     self.set_panes(panes);
-                self.last_error = None;
+                    self.last_error = None;
                 }
                 Action::Render
             }
@@ -7977,9 +8067,9 @@ impl App {
                 if let Some(id) = self.cupboard_confirm.take() {
                     if let Some(l) = self.cupboard.iter().find(|l| l.id == id) {
                         if l.action_label().is_some() {
-                        return Action::CupboardAct { listing: l.clone() };
+                            return Action::CupboardAct { listing: l.clone() };
+                        }
                     }
-                }
                 }
                 Action::Render
             }
@@ -9363,6 +9453,7 @@ mod tests {
         app.session_browser.when_idx = 2; // all time; fixture intentionally omits a timestamp
         let mut row = switcher_entry("migration", "recorded", 7);
         row.transcript_ref = Some("session://seven".into());
+        row.transcript_availability = SessionTranscriptAvailability::Available;
         let action = app.update(Event::SessionBrowser {
             query: "migration".into(),
             result: Ok(vec![row]),
@@ -9392,6 +9483,80 @@ mod tests {
             }]),
         });
         assert_eq!(app.session_browser.transcript[0].text, "right");
+    }
+
+    #[test]
+    fn session_browser_resolves_unknown_availability_by_exact_session() {
+        let mut app = App::new();
+        app.session_browser.when_idx = 2;
+        let mut row = switcher_entry("worker", "ended", 9);
+        row.native_session = Some(crate::models::NativeSessionHandle::Codex {
+            source: "codex".into(),
+            owner_id: Some("su-worker".into()),
+            codex_home: "/tmp/codex".into(),
+            rollout_id: Some("rollout-nine".into()),
+            exact_resume_supported: true,
+            missing_reason: None,
+        });
+
+        let action = app.update(Event::SessionBrowser {
+            query: String::new(),
+            result: Ok(vec![row]),
+        });
+        assert!(matches!(
+            action,
+            Action::ResolveSessionTranscript { ref session_key, ref target }
+                if session_key == "adv:9"
+                    && target.source_kind == "codex"
+                    && target.session_id == "rollout-nine"
+        ));
+        assert!(app.session_browser.transcript_loading);
+
+        let action = app.update(Event::SessionTranscriptResolved {
+            session_key: "adv:9".into(),
+            result: Ok(Some(SessionTranscriptResolution {
+                reference: "session_turn:codex:rollout-nine:4".into(),
+                excerpt: Some("indexed".into()),
+                transcript_at: Some("2026-08-27T12:00:00Z".into()),
+            })),
+        });
+        assert!(matches!(
+            action,
+            Action::FetchSessionTranscript { ref session_key, ref reference }
+                if session_key == "adv:9" && reference.ends_with(":4")
+        ));
+        assert_eq!(
+            app.session_browser.rows[0].transcript_availability,
+            SessionTranscriptAvailability::Available
+        );
+
+        let mut unavailable = App::new();
+        unavailable.session_browser.when_idx = 2;
+        let mut row = switcher_entry("missing", "ended", 10);
+        row.native_session = Some(crate::models::NativeSessionHandle::Codex {
+            source: "codex".into(),
+            owner_id: None,
+            codex_home: String::new(),
+            rollout_id: Some("missing-ten".into()),
+            exact_resume_supported: false,
+            missing_reason: None,
+        });
+        unavailable.update(Event::SessionBrowser {
+            query: String::new(),
+            result: Ok(vec![row]),
+        });
+        assert_eq!(
+            unavailable.update(Event::SessionTranscriptResolved {
+                session_key: "adv:10".into(),
+                result: Ok(None),
+            }),
+            Action::Render
+        );
+        assert_eq!(
+            unavailable.session_browser.rows[0].transcript_availability,
+            SessionTranscriptAvailability::Unavailable
+        );
+        assert!(!unavailable.session_browser.transcript_loading);
     }
 
     #[test]
@@ -12575,13 +12740,7 @@ mod tests {
             };
 
             match (expected, *follow_up) {
-                (
-                    "conversations",
-                    Action::FetchConversations {
-                        state,
-                        kind,
-                    },
-                ) => {
+                ("conversations", Action::FetchConversations { state, kind }) => {
                     assert_eq!(state, "open");
                     assert_eq!(kind, "all");
                     assert!(a.conversations_loading);
@@ -12590,10 +12749,7 @@ mod tests {
                     assert!(query.is_empty());
                     assert!(a.session_browser.loading);
                 }
-                (
-                    "voice",
-                    Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect),
-                ) => {
+                ("voice", Action::VoiceChan(crate::voice_ui::VoiceCmd::Connect)) => {
                     assert!(!a.voice_ui.connected);
                 }
                 ("fleet", Action::FetchFleetAssignments) => {}
