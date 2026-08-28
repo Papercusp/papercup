@@ -16,6 +16,7 @@
  * `validate-connection` argument shapes are exactly what they were.
  */
 
+import { useEffect, useRef } from "react";
 import { Cloud, Plus, ShieldCheck, X } from "lucide-react";
 import { Button } from "@/app/harness/Button";
 import { TextInput } from "@/app/harness/TextInput";
@@ -73,6 +74,44 @@ export function ConnectStage({
 }) {
   const activeProvider =
     PROVIDERS.find((provider) => provider.target === connectTarget) ?? null;
+
+  /*
+   * The panel is a DISCLOSURE, so it owes the disclosure focus contract; it is
+   * conditionally rendered, which is exactly what makes the close direction a
+   * real bug rather than a nicety.
+   *
+   * Closing unmounts the whole <form> — including the Cancel/Close button that
+   * currently holds focus. The browser's fallback for a removed active element
+   * is <body>, so without this a keyboard user is silently dropped to the start
+   * of the document and a screen-reader user loses their place (WCAG 2.4.3).
+   * Restoring focus to the provider row that opened the panel is what puts them
+   * back where they were.
+   *
+   * The open direction is the same contract from the other side: the form
+   * renders elsewhere in the DOM, so without a focus move the user would have
+   * to tab forward through the remaining provider rows to reach the form they
+   * just asked for.
+   */
+  const triggerRefs = useRef(new Map<ProviderTarget, HTMLButtonElement | null>());
+  const panelRef = useRef<HTMLFormElement | null>(null);
+  const previousTarget = useRef<ProviderTarget | null>(null);
+
+  useEffect(() => {
+    const previous = previousTarget.current;
+    previousTarget.current = connectTarget;
+
+    /* Opened: move into the panel. Switching provider A -> B leaves focus
+       alone, since the panel never left the screen. */
+    if (connectTarget && !previous) {
+      panelRef.current?.querySelector<HTMLElement>("input")?.focus();
+      return;
+    }
+
+    /* Closed: hand focus back to the row that opened it. */
+    if (!connectTarget && previous) {
+      triggerRefs.current.get(previous)?.focus();
+    }
+  }, [connectTarget]);
 
   return (
     <section
@@ -159,6 +198,10 @@ export function ConnectStage({
                       </Button>
                     ) : (
                       <Button
+                        /* The close-direction focus restore target. */
+                        ref={(node) => {
+                          triggerRefs.current.set(provider.target, node);
+                        }}
                         variant={provider.supported ? "primary" : "ghost"}
                         aria-label={
                           provider.supported
@@ -181,6 +224,7 @@ export function ConnectStage({
 
         {activeProvider ? (
           <form
+            ref={panelRef}
             className={styles.connectPanel}
             aria-labelledby="connect-panel-heading"
             onSubmit={(event) => {
