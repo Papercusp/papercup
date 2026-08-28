@@ -161,6 +161,23 @@ export interface ReleaseTraceCandidateVerdict {
   reason: string | null;
   detail: string | null;
   observedAtMs: number | null;
+  /**
+   * The re-read addressed to the candidate that actually OWNS this verdict, present only
+   * when `state` is `unknown` because the traced target is a different sha than the gate's
+   * `observedCandidate`.
+   *
+   * Why this field exists rather than leaving the caller to construct it: a PATH trace
+   * resolves `targetSha` to that path's own latest commit, so `classifyCandidateVerdict`
+   * correctly declines to attribute the gate's verdict to it. Read without the candidate in
+   * hand, that `unknown` looks like the gate failing to type its own state -- the exact
+   * opacity class D-067 exists to close -- and it was misread that way by three separate
+   * sessions of stable-candidate-related-gate-2026-08-23, producing two retracted findings
+   * and a false ship blocker. `resync.nextVerb` does not help: it re-reads the SAME target,
+   * which is the subject that produced the confusion. Handing back a handle already
+   * addressed to the right subject is the same remedy `dev:pipeline_position` uses for its
+   * per-path cells, and it makes the fail-closed rail self-correcting instead of alarming.
+   */
+  rereadForCandidate?: { name: 'release:trace'; args: { sha: string } } | null;
 }
 
 function sameSha(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -263,9 +280,18 @@ function classifyCandidateVerdict(input: ReleaseTraceInput): ReleaseTraceCandida
       status: 'unknown',
       green: null,
       candidate: observedCandidate ?? null,
-      reason: targetSha ? 'the gate verdict does not name this exact candidate' : 'target-unresolved',
+      // State WHOSE verdict it is and what to do about it. The bare "does not name this
+      // exact candidate" wording read as a gate defect rather than as the exact-SHA rail
+      // declining to misattribute a verdict, which is what it actually is.
+      reason: !targetSha
+        ? 'target-unresolved'
+        : observedCandidate
+          ? `the gate verdict belongs to candidate ${observedCandidate}, not the traced target ${targetSha.slice(0, 12)} — exact-SHA fail-closed behaviour, NOT an untyped or missing verdict; re-read via rereadForCandidate to see that candidate's own verdict`
+          : 'the gate has recorded no observed candidate to compare this target against',
       detail: null,
       observedAtMs: null,
+      rereadForCandidate:
+        targetSha && observedCandidate ? { name: 'release:trace', args: { sha: observedCandidate } } : null,
     };
   }
   // EI-21440269420198423: `observedCandidate` names the last terminal verdict, while an

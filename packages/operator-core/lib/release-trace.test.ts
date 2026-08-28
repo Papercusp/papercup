@@ -512,6 +512,62 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb).toMatchObject({ name: 'checkpoint:await', args: { pipeline: 'papercusp' } });
   });
 
+  describe("an `unknown` verdict names WHOSE verdict it is and hands back that candidate's re-read", () => {
+    // The false-blocker class this closes: a PATH trace resolves `targetSha` to that path's
+    // own latest commit, so the exact-SHA rail correctly declines to attribute the gate's
+    // verdict to it. Three sessions of stable-candidate-related-gate-2026-08-23 read that
+    // `unknown` as the gate failing to type its own state, producing two retracted findings
+    // and a false ship blocker. `resync.nextVerb` re-reads the SAME target, so it cannot
+    // break the loop; only a handle addressed to `observedCandidate` can.
+    const otherCandidate = 'f369131625d4252f0c8202e75766b272a4abc3c2';
+
+    it('points the caller at the candidate that owns the verdict instead of just refusing', () => {
+      const out = buildReleaseTrace(
+        input({
+          gate: {
+            ...input().gate,
+            state: 'gate-red',
+            authoritative: true,
+            consecutiveReds: 61,
+            recordedVerdict: 'not-green',
+            observedCandidate: otherCandidate,
+          },
+        }),
+      );
+
+      expect(out.gate.candidateVerdict).toMatchObject({
+        state: 'unknown',
+        status: 'unknown',
+        green: null,
+        candidate: otherCandidate,
+      });
+      // The handle must address the OTHER candidate, never the traced target — re-reading
+      // the target is precisely the move that kept three sessions stuck.
+      expect(out.gate.candidateVerdict.rereadForCandidate).toEqual({
+        name: 'release:trace',
+        args: { sha: otherCandidate },
+      });
+      expect(out.gate.candidateVerdict.rereadForCandidate?.args.sha).not.toBe(sha);
+      // and the reason must say it is the rail working, not a missing verdict
+      expect(out.gate.candidateVerdict.reason).toContain(otherCandidate);
+      expect(out.gate.candidateVerdict.reason).toContain('NOT an untyped or missing verdict');
+    });
+
+    it('offers no handle when the gate has recorded no candidate to compare against', () => {
+      // Fail-closed: absent an observedCandidate there is no better subject to point at,
+      // so the field must be null rather than a fabricated self-referential re-read.
+      const out = buildReleaseTrace(
+        input({
+          gate: { ...input().gate, state: 'gate-red', authoritative: true, observedCandidate: null },
+        }),
+      );
+
+      expect(out.gate.candidateVerdict.state).toBe('unknown');
+      expect(out.gate.candidateVerdict.rereadForCandidate).toBeNull();
+      expect(out.gate.candidateVerdict.reason).toContain('no observed candidate');
+    });
+  });
+
   describe('an exact-candidate recorded terminal verdict is immutable history', () => {
     // EI-21432980132792683 / EI-21433072117655298. Candidate 74027d.. was judged authoritative
     // exact RED and ratified terminal by stable-candidate-related-gate-2026-08-23#D-059/#D-060.
