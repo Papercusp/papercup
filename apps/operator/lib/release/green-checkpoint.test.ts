@@ -327,6 +327,107 @@ describe("EI-21228180621817003: safe scoped format writes", () => {
   });
 });
 
+/**
+ * WI-479091 — longest-green-prefix salvage must be REACHABLE, not merely present.
+ *
+ * D-067 promises that a real red reaches longest-proven-green-prefix salvage so `main`
+ * can advance without weakening coverage. It did not. `deferNewRepairDispatch`
+ * (green-checkpoint.ts:9127-9128) gates the ONLY salvage site (:9902) on
+ * `repairQueueCreatedThisPass && !opts.candidate`, and that flag is assigned true only
+ * inside queue-CREATION branches (:8345, :9125). So once a repair queue EXISTS, the red
+ * path returns terminal at :9209 — under a summary that literally reads "Moving-tip
+ * refire and backward prefix salvage were suppressed." — and salvage never runs.
+ *
+ * Measured consequence when this guard was written: `main` frozen 7d19h at the
+ * 2026-08-20 green pin, 6,969 commits behind staging, red streak 50 -> 57, and salvage
+ * had advanced `main` ZERO times. Salvage is default-ON
+ * (`partialGreenGateEnabledFromEnv`, :6505-6513), so the fault was never configuration.
+ *
+ * WHY THIS ASSERTS REACHABILITY AND NOT EXISTENCE: an existence-only assertion — "the
+ * salvage helper is defined", "the partial-green code is present" — passes today against
+ * completely inert code. That is precisely how this survived a 15/15, 48-citation
+ * completion audit and a plan decision (D-108) asserting it was already fixed. The probe
+ * below is the log the salvage DECISION POINT emits, so it can only pass if control flow
+ * actually arrives there.
+ *
+ * The first test is a CALIBRATION CONTROL, not a duplicate: it exercises the one path
+ * that DID reach salvage (a red with no pre-existing queue). If it ever fails, the
+ * harness can no longer observe salvage at all and the second test's failure means
+ * nothing. Keep both — a guard whose instrument is unverified is not a guard.
+ */
+describe("WI-479091: longest-green-prefix salvage reachability", () => {
+  /** The salvage decision point announces itself on every arm — attempt AND each skip. */
+  const reachedSalvageDecision = (logs: readonly string[]): boolean =>
+    logs.some((line) => line.includes("partial-green-gate"));
+
+  it("CALIBRATION: a red with no pre-existing queue reaches the salvage decision point", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    await commit("b", "2", "candidate");
+    const logs: string[] = [];
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.log = (line: string) => {
+      logs.push(line);
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(
+      reachedSalvageDecision(logs),
+      `instrument check failed: no "partial-green-gate" line on the path that is SUPPOSED to salvage. ` +
+        `The probe below cannot be trusted until this passes. Logs seen: ${JSON.stringify(logs)}`,
+    ).toBe(true);
+  });
+
+  it("a red against a PRE-EXISTING repair queue still reaches the salvage decision point", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const now = Date.now();
+    // phase "ready-to-test" yields decision.kind === "test-candidate" (:7993-7995), which
+    // sets initialCandidateVerification and routes the red into the :9100 branch — the
+    // pre-existing-queue arm that leaves repairQueueCreatedThisPass false.
+    let queue: FrozenCandidateRepairQueue | null = {
+      schemaVersion: 3,
+      phase: "ready-to-test",
+      candidate: frozen,
+      base: ready,
+      repairHead: frozen,
+      worktreePath: join(repo, ".papercusp", "worktrees", "repair"),
+      attempts: 1,
+      openedAtMs: now - 1_000,
+      updatedAtMs: now - 500,
+      fixerSpawnId: null,
+      failingTests: ["lib/broken.test.ts"],
+    };
+    const logs: string[] = [];
+    const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
+    deps.log = (line: string) => {
+      logs.push(line);
+    };
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    // All three must be wired or the :9087 repair branch is skipped entirely and this
+    // test would pass for the wrong reason.
+    deps.prepareFrozenRepairWorktree = async () => {};
+    deps.dispatchFrozenRepairFixer = async () => ({
+      spawnId: "fixer",
+      runId: "run",
+    });
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(
+      reachedSalvageDecision(logs),
+      `salvage was never reached on a red against an existing queue — the run returned ` +
+        `terminal upstream of :9902, so main can never advance while a queue is open. ` +
+        `Logs seen: ${JSON.stringify(logs)}`,
+    ).toBe(true);
+  });
+});
+
 describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
   it("persists the immutable candidate before setup or its first suite", async () => {
     const ready = await commit("a", "1", "ready");

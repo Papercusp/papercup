@@ -98,11 +98,17 @@ class MemoryStore implements DurableAdmissionQueueStore {
   }
 
   async complete(receiptId: string, leaseId: string, resultRef: string | undefined, nowMs: number) {
+    // `evidence` is Readonly<Record<string, DecisionValue>> and DecisionValue is
+    // string|number|boolean|null. Written inline, the ternary widens to
+    // `{ resultRef: string } | { resultRef?: undefined }`, and that optional
+    // `undefined` member is what the record type rejects. Naming the value with
+    // its own annotation keeps the empty branch a plain record instead.
+    const evidence: Record<string, string> = resultRef ? { resultRef } : {};
     return this.mutate(receiptId, leaseId, (record) => ({
       ...record,
       state: 'completed',
       updatedAtMs: nowMs,
-      decision: { generation: record.decision.generation + 1, atMs: nowMs, reason: 'execution-completed', evidence: resultRef ? { resultRef } : {} },
+      decision: { generation: record.decision.generation + 1, atMs: nowMs, reason: 'execution-completed', evidence },
       lease: undefined,
       ...(resultRef ? { resultRef } : {}),
     }), nowMs);

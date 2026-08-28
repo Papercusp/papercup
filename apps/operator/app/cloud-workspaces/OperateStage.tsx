@@ -35,7 +35,12 @@ import {
 import { Button } from "@/app/harness/Button";
 import { HostedWorkspaceSession } from "./HostedWorkspaceSession";
 import { readHostedWorkspaceConnector } from "./hosted-workspace-session-protocol";
-import { SignalList, StageHeader } from "./stage-primitives";
+import {
+  focusSafely,
+  SignalList,
+  StageHeader,
+  useFocusLifecycle,
+} from "./stage-primitives";
 import {
   driftingWorkspaces,
   formatElapsed,
@@ -218,6 +223,7 @@ function HostRow({
   const [overflowOpen, setOverflowOpen] = useState(false);
   const overflowRef = useRef<HTMLDivElement | null>(null);
   const overflowTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const skipRestoreFocusRef = useRef(false);
   const tabButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
   const chip = hostStateChip(workspace);
   const plan = lifecycleActionPlan(workspace);
@@ -245,10 +251,27 @@ function HostRow({
     tabButtonsRef.current[nextIndex]?.focus();
   };
 
+  useFocusLifecycle({
+    open: overflowOpen,
+    onOpenFocus: () =>
+      overflowRef.current?.querySelector<HTMLElement>(
+        '[role="menuitem"]:not([disabled])',
+      ),
+    onCloseFocus: () => {
+      if (skipRestoreFocusRef.current) {
+        skipRestoreFocusRef.current = false;
+        return null;
+      }
+      return overflowTriggerRef.current;
+    },
+  });
+
   useEffect(() => {
     if (!overflowOpen) return;
     const onDocumentPointerDown = (event: PointerEvent) => {
       if (!overflowRef.current?.contains(event.target as Node)) {
+        /* Pointer dismissal leaves focus where the pointer chose. */
+        skipRestoreFocusRef.current = true;
         setOverflowOpen(false);
       }
     };
@@ -263,7 +286,6 @@ function HostRow({
        * already following the pointer somewhere the user chose.
        */
       setOverflowOpen(false);
-      overflowTriggerRef.current?.focus();
     };
     document.addEventListener("pointerdown", onDocumentPointerDown);
     document.addEventListener("keydown", onKeyDown);
@@ -346,7 +368,10 @@ function HostRow({
               aria-label={`More actions for ${workspace.name}`}
               aria-expanded={overflowOpen}
               aria-haspopup="menu"
-              onClick={() => setOverflowOpen((open) => !open)}
+              onClick={() => {
+                skipRestoreFocusRef.current = false;
+                setOverflowOpen((open) => !open);
+              }}
             >
               <MoreHorizontal size={15} aria-hidden="true" />
             </Button>
@@ -377,7 +402,10 @@ function HostRow({
                        * free to take focus from the trigger afterwards.
                        */
                       setOverflowOpen(false);
-                      overflowTriggerRef.current?.focus();
+                      /* Keep focus on the trigger before a destroy dialog or
+                         lifecycle mutation takes over; the shared lifecycle
+                         hook also covers state-driven close paths. */
+                      focusSafely(overflowTriggerRef.current);
                       if (action.action === "destroy") {
                         onDestroy(workspace.id);
                         return;

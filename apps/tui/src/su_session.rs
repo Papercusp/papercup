@@ -1,0 +1,479 @@
+//! Typed client-side contract for the shared Papercusp SU-session host.
+//!
+//! The TUI deliberately consumes the backend-neutral `papercusp.su-session/v1`
+//! wire contract instead of scraping provider terminals or inventing a second
+//! conversation engine.  Identity, lifecycle, transcript, tool, card, and
+//! refusal events are retained as typed values so the reducer can render the
+//! same pane for Claude, Codex, and OMP.
+
+use crate::models::NativeSessionHandle;
+use crate::sse::SseFrame;
+use anyhow::{anyhow, bail, Context, Result};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use tokio::sync::mpsc;
+
+pub const SU_SESSION_SCHEMA: &str = "papercusp.su-session/v1";
+pub const SU_SESSION_PROTOCOL_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SuSessionBackend {
+    Claude,
+    Codex,
+    Omp,
+}
+
+impl SuSessionBackend {
+    pub const ALL: [Self; 3] = [Self::Claude, Self::Codex, Self::Omp];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Omp => "omp",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+            Self::Omp => "OMP",
+        }
+    }
+}
+
+impl std::fmt::Display for SuSessionBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SuSessionLifecycleState {
+    Starting,
+    Ready,
+    Running,
+    #[serde(rename = "waiting-for-owner")]
+    WaitingForOwner,
+    Interrupted,
+    Compacting,
+    Resuming,
+    Ended,
+    Failed,
+}
+
+impl SuSessionLifecycleState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Starting => "starting",
+            Self::Ready => "ready",
+            Self::Running => "running",
+            Self::WaitingForOwner => "waiting-for-owner",
+            Self::Interrupted => "interrupted",
+            Self::Compacting => "compacting",
+            Self::Resuming => "resuming",
+            Self::Ended => "ended",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+impl Default for SuSessionLifecycleState {
+    fn default() -> Self {
+        Self::Starting
+    }
+}
+
+impl std::fmt::Display for SuSessionLifecycleState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionIdentity {
+    pub agent_chat_id: String,
+    pub adv_session_id: i64,
+    pub backend: SuSessionBackend,
+    pub native_session_id: String,
+    pub owner_id: String,
+    pub workspace_id: String,
+    pub harness_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "backend", rename_all = "lowercase")]
+pub enum SuSessionBackendExtension {
+    Claude {
+        #[serde(default)]
+        config_dir: Option<String>,
+        #[serde(default)]
+        config_dir_source: Option<String>,
+    },
+    Codex {
+        #[serde(default)]
+        codex_home: Option<String>,
+    },
+    Omp {
+        #[serde(default)]
+        agent_home: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionCapabilitySupport {
+    pub state: String,
+    #[serde(default)]
+    pub implementation: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SuSessionCapabilities {
+    #[serde(default)]
+    pub commands: std::collections::BTreeMap<String, SuSessionCapabilitySupport>,
+    #[serde(default)]
+    pub features: std::collections::BTreeMap<String, SuSessionCapabilitySupport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionDescriptor {
+    pub identity: SuSessionIdentity,
+    pub lifecycle: SuSessionLifecycleState,
+    pub runtime_generation: u64,
+    pub role: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub account_route: Option<String>,
+    pub carry: String,
+    #[serde(default)]
+    pub modes: Vec<String>,
+    pub capabilities: SuSessionCapabilities,
+    pub backend_extension: SuSessionBackendExtension,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionSnapshot {
+    #[serde(default)]
+    pub ok: bool,
+    pub descriptor: SuSessionDescriptor,
+    pub floor_sequence: u64,
+    pub last_sequence: u64,
+    pub terminal: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SuSessionCreateRequest {
+    pub agent: SuSessionBackend,
+    pub harness_slug: Option<String>,
+    pub plan_slug: Option<String>,
+    pub carry: String,
+    pub defer_spawn: bool,
+    pub agent_chat_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SuSessionAttachRequest {
+    pub agent: SuSessionBackend,
+    pub attach_adv_session_id: i64,
+    pub harness_slug: Option<String>,
+    pub plan_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SuSessionOpenRequest {
+    Create(SuSessionCreateRequest),
+    Attach(SuSessionAttachRequest),
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionBinding {
+    pub operation: String,
+    pub backend: SuSessionBackend,
+    pub adv_session_id: i64,
+    #[serde(default)]
+    pub owner_id: Option<String>,
+    #[serde(default)]
+    pub workspace_id: Option<String>,
+    #[serde(default)]
+    pub harness_slug: Option<String>,
+    #[serde(default)]
+    pub plan_slug: Option<String>,
+    #[serde(default)]
+    pub native_session: Option<NativeSessionHandle>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SuSessionState {
+    pub binding: SuSessionBinding,
+    pub identity: Option<SuSessionIdentity>,
+    pub descriptor: Option<SuSessionDescriptor>,
+    pub lifecycle: SuSessionLifecycleState,
+    pub last_sequence: u64,
+    pub stale: bool,
+    pub error: Option<String>,
+}
+
+impl SuSessionState {
+    pub fn from_binding(binding: SuSessionBinding) -> Self {
+        Self {
+            lifecycle: SuSessionLifecycleState::Starting,
+            binding,
+            identity: None,
+            descriptor: None,
+            last_sequence: 0,
+            stale: false,
+            error: None,
+        }
+    }
+
+    pub fn selection_label(&self) -> String {
+        let identity = self.identity.as_ref();
+        let backend = identity
+            .map(|i| i.backend.as_str())
+            .unwrap_or_else(|| self.binding.backend.as_str());
+        let adv = identity
+            .map(|i| i.adv_session_id)
+            .unwrap_or(self.binding.adv_session_id);
+        let chat = identity
+            .map(|i| i.agent_chat_id.as_str())
+            .unwrap_or("");
+        let short_chat: String = chat.chars().take(12).collect();
+        format!("SU · {backend} · adv {adv} · chat {short_chat} · {}", self.lifecycle)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionRefusal {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuSessionEventEnvelope {
+    pub schema: String,
+    pub protocol_version: u32,
+    pub event_id: String,
+    pub sequence: u64,
+    pub at: String,
+    pub session: SuSessionIdentity,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SuSessionEvent {
+    Session {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        descriptor: SuSessionDescriptor,
+    },
+    Lifecycle {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        previous_state: Option<SuSessionLifecycleState>,
+        state: SuSessionLifecycleState,
+        runtime_generation: u64,
+        #[serde(default)]
+        reason: Option<String>,
+    },
+    CommandResult {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        command_id: String,
+        command_type: String,
+        status: String,
+        #[serde(default)]
+        refusal: Option<SuSessionRefusal>,
+    },
+    Transcript {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        phase: String,
+        turn_id: String,
+        role: String,
+        channel: String,
+        #[serde(default)]
+        content: Option<String>,
+    },
+    Tool {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        phase: String,
+        turn_id: String,
+        call_id: String,
+        name: String,
+        #[serde(default)]
+        input: Option<Value>,
+        #[serde(default)]
+        output: Option<Value>,
+        #[serde(default)]
+        is_error: bool,
+    },
+    Card {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        phase: String,
+        turn_id: String,
+        #[serde(default)]
+        card: Option<Value>,
+        #[serde(default)]
+        correlation_id: Option<String>,
+        #[serde(default)]
+        resolution: Option<String>,
+    },
+    Backend {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        extension: SuSessionBackendExtension,
+    },
+    Error {
+        #[serde(flatten)]
+        envelope: SuSessionEventEnvelope,
+        scope: String,
+        code: String,
+        message: String,
+        recoverable: bool,
+        #[serde(default)]
+        command_id: Option<String>,
+        #[serde(default)]
+        details: Option<Value>,
+    },
+}
+
+impl SuSessionEvent {
+    pub fn envelope(&self) -> &SuSessionEventEnvelope {
+        match self {
+            Self::Session { envelope, .. }
+            | Self::Lifecycle { envelope, .. }
+            | Self::CommandResult { envelope, .. }
+            | Self::Transcript { envelope, .. }
+            | Self::Tool { envelope, .. }
+            | Self::Card { envelope, .. }
+            | Self::Backend { envelope, .. }
+            | Self::Error { envelope, .. } => envelope,
+        }
+    }
+}
+
+/// Decode one `session_event` SSE frame.  A mismatched schema/protocol is a
+/// visible error; silently accepting it would make a restarted PUI render a
+/// different contract as though it were the same durable session.
+pub fn decode_su_session_event(frame: &SseFrame) -> Result<SuSessionEvent> {
+    if frame.event != "session_event" && frame.event != "message" {
+        bail!("unsupported SU-session SSE event `{}`", frame.event);
+    }
+    let event: SuSessionEvent = serde_json::from_str(&frame.data)
+        .with_context(|| "decode SU-session SSE payload")?;
+    let envelope = event.envelope();
+    if envelope.schema != SU_SESSION_SCHEMA {
+        return Err(anyhow!(
+            "unsupported SU-session schema `{}` (expected `{SU_SESSION_SCHEMA}`)",
+            envelope.schema
+        ));
+    }
+    if envelope.protocol_version != SU_SESSION_PROTOCOL_VERSION {
+        return Err(anyhow!(
+            "unsupported SU-session protocol {} (expected {})",
+            envelope.protocol_version,
+            SU_SESSION_PROTOCOL_VERSION
+        ));
+    }
+    Ok(event)
+}
+
+pub type SuSessionEventStream = mpsc::UnboundedReceiver<Result<SuSessionEvent>>;
+
+pub fn decode_su_session_stream(
+    mut frames: mpsc::UnboundedReceiver<SseFrame>,
+) -> SuSessionEventStream {
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(frame) = frames.recv().await {
+            if tx.send(decode_su_session_event(&frame)).is_err() {
+                return;
+            }
+        }
+        let _ = tx.send(Err(anyhow!("SU-session SSE stream closed")));
+    });
+    rx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn envelope(kind: &str, extra: Value) -> SseFrame {
+        let mut value = json!({
+            "type": kind,
+            "schema": SU_SESSION_SCHEMA,
+            "protocolVersion": 1,
+            "eventId": "chat-1:1",
+            "sequence": 1,
+            "at": "2026-08-28T00:00:00Z",
+            "session": {
+                "agentChatId": "chat-1", "advSessionId": 7, "backend": "claude",
+                "nativeSessionId": "native-1", "ownerId": "su-1", "workspaceId": "ws-1",
+                "harnessSlug": "papercup"
+            }
+        });
+        if let (Some(dst), Some(src)) = (value.as_object_mut(), extra.as_object()) {
+            dst.extend(src.clone());
+        }
+        SseFrame { event: "session_event".into(), data: value.to_string() }
+    }
+
+    #[test]
+    fn decodes_lifecycle_transcript_tool_and_refusal_events() {
+        let lifecycle = decode_su_session_event(&envelope("lifecycle", json!({
+            "previousState": "starting", "state": "ready", "runtimeGeneration": 2
+        }))).unwrap();
+        assert!(matches!(lifecycle, SuSessionEvent::Lifecycle { state: SuSessionLifecycleState::Ready, .. }));
+
+        let transcript = decode_su_session_event(&envelope("transcript", json!({
+            "phase": "delta", "turnId": "turn-1", "role": "assistant", "channel": "text", "content": "hello"
+        }))).unwrap();
+        assert!(matches!(transcript, SuSessionEvent::Transcript { content: Some(ref c), .. } if c == "hello"));
+
+        let tool = decode_su_session_event(&envelope("tool", json!({
+            "phase": "completed", "turnId": "turn-1", "callId": "call-1", "name": "read", "output": {"ok": true}, "isError": false
+        }))).unwrap();
+        assert!(matches!(tool, SuSessionEvent::Tool { ref call_id, .. } if call_id == "call-1"));
+
+        let refusal = decode_su_session_event(&envelope("command_result", json!({
+            "commandId": "cmd-1", "commandType": "fork", "status": "refused",
+            "refusal": {"code": "unsupported", "message": "not available", "retryable": false}
+        }))).unwrap();
+        assert!(matches!(refusal, SuSessionEvent::CommandResult { refusal: Some(_), .. }));
+    }
+
+    #[test]
+    fn rejects_schema_drift_instead_of_silently_rendering() {
+        let mut frame = envelope("lifecycle", json!({
+            "previousState": null, "state": "starting", "runtimeGeneration": 0
+        }));
+        frame.data = frame.data.replace(SU_SESSION_SCHEMA, "other/v9");
+        let error = decode_su_session_event(&frame).unwrap_err().to_string();
+        assert!(error.contains("unsupported SU-session schema"));
+    }
+
+    #[test]
+    fn backend_and_lifecycle_labels_are_stable() {
+        assert_eq!(SuSessionBackend::ALL.map(SuSessionBackend::as_str), ["claude", "codex", "omp"]);
+        assert_eq!(SuSessionLifecycleState::WaitingForOwner.to_string(), "waiting-for-owner");
+    }
+}

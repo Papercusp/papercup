@@ -362,8 +362,19 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // These tests drive main() as a UNIT, but this suite is itself normally run
+    // BY `npm run test:file`, i.e. under pc-heavy — which exports
+    // PC_HEAVY_PREEMPT_READY_FILE and has ALREADY published that marker for the
+    // outer run. main() publishes it with `wx`, so the inherited path made every
+    // main() call here die with EEXIST and answer TEST_FILE_ROUTE_ERROR instead
+    // of the router verdict under test (10 failures, all from this one cause).
+    // The empty value is the real "not under pc-heavy" shape: publishPreemptMarker
+    // treats a blank path as "no marker to publish" rather than as an error.
+    vi.stubEnv('PC_HEAVY_PREEMPT_READY_FILE', '');
+    vi.stubEnv('PC_HEAVY_PSI_FINALIZATION_FILE', '');
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     logSpy.mockRestore();
     errSpy.mockRestore();
     spawnSyncMock.mockReset();

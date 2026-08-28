@@ -121,6 +121,33 @@ describe('completionFreshnessForEvidence (EI-21259433290500193)', () => {
       { currentStamp: () => stored },
     );
 
+    expect(result?.verdict).toBe('not-applicable');
+    expect(result?.reason).toMatch(/No changed files.*not applicable/);
+  });
+
+  it('reports pathless verification as not-applicable for explicit and legacy-empty path lists', () => {
+    for (const evidence of [
+      { filesChanged: [], treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
+      { treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
+    ]) {
+      const currentStamp = vi.fn(() => current);
+      const result = completionFreshnessForEvidence(evidence, { currentStamp });
+
+      expect(result).toMatchObject({
+        verdict: 'not-applicable',
+        storedTreeStamp: evidence.treeStamp,
+      });
+      expect(result?.reason).toMatch(/No changed files.*not applicable/);
+      expect(currentStamp).not.toHaveBeenCalled();
+    }
+  });
+
+  it('keeps a file-bearing stamp without content identity unavailable', () => {
+    const result = completionFreshnessForEvidence(
+      { filesChanged: ['src/fix.ts'], treeStamp: { repositoryRoot: '/repo', headSha: 'a'.repeat(40) } },
+      { currentStamp: () => current },
+    );
+
     expect(result?.verdict).toBe('unavailable');
     expect(result?.reason).toMatch(/content identity/);
   });

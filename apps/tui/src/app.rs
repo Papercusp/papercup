@@ -191,6 +191,7 @@ pub enum Action {
         role: String,
         backend: crate::su_session::SuSessionBackend,
         carry: String,
+        initial_turn: Option<String>,
     },
     /// Deliver one owner turn through the already-bound SU-session host.
     SendSuSessionTurn(String),
@@ -3342,16 +3343,21 @@ impl App {
         }
         roles.extend(self.agent_chat_summaries.iter().map(|s| s.role.clone()));
 
+        // New rows are explicitly paired with a backend.  The backend is part
+        // of the durable launch request, not a process-local preference that
+        // could silently change when `/settings/agent` changes.
         let mut options: Vec<PickerOption> = roles
             .into_iter()
-            .map(|role| PickerOption {
-                id: format!("new:{role}"),
-                label: format!("New {role} session"),
-                hint: Some(format!(
-                    "Open a fresh {role} chat in pot {} on first send.",
-                    self.harness
-                )),
-                disabled: false,
+            .flat_map(|role| {
+                crate::su_session::SuSessionBackend::ALL.into_iter().map(move |backend| PickerOption {
+                    id: format!("new:{backend}:{role}"),
+                    label: format!("New {role} · {} session", backend.label()),
+                    hint: Some(format!(
+                        "Create a durable {} SU session in pot {} on first send.",
+                        backend.label(), self.harness
+                    )),
+                    disabled: false,
+                })
             })
             .collect();
         options.extend(self.agent_chat_summaries.iter().map(|chat| {
@@ -3435,12 +3441,32 @@ impl App {
             Ok((id, label)) => {
                 match axis {
                     crate::session_config::PickerAxis::Session => {
-                        if let Some(role) = id.strip_prefix("new:") {
+                        if let Some(new_id) = id.strip_prefix("new:") {
+                            let mut parts = new_id.splitn(2, ':');
+                            let (backend, role) = match (parts.next(), parts.next()) {
+                                (Some(backend), Some(role)) => {
+                                    let backend = match backend {
+                                        "claude" => crate::su_session::SuSessionBackend::Claude,
+                                        "codex" => crate::su_session::SuSessionBackend::Codex,
+                                        "omp" => crate::su_session::SuSessionBackend::Omp,
+                                        _ => crate::su_session::SuSessionBackend::Claude,
+                                    };
+                                    (backend, role)
+                                }
+                                // Compatibility with old persisted picker ids.
+                                (Some(role), None) => (
+                                    self.su_backend.unwrap_or(crate::su_session::SuSessionBackend::Claude),
+                                    role,
+                                ),
+                                _ => (crate::su_session::SuSessionBackend::Claude, "operator"),
+                            };
                             self.agent_chat_role = role.to_string();
+                            self.su_backend = Some(backend);
                             self.reset_agent_chat_binding();
+                            self.su_backend = Some(backend);
                             self.session_note = Some(format!(
-                                "new {} session selected in {} — it opens on send",
-                                self.agent_chat_role, self.harness
+                                "new {} {} SU session selected in {} — it opens on send",
+                                backend.label(), self.agent_chat_role, self.harness
                             ));
                         } else if let Some(chat_id) = id.strip_prefix("session:") {
                             let role = self
@@ -7876,7 +7902,20 @@ impl App {
                     self.chat_input.clear();
                     self.chat_history_push(&text);
                     self.begin_user_send(&text);
-                    Action::SendChat(text)
+                    if let Some(state) = self.su_session.as_ref() {
+                        let _ = state;
+                        Action::SendSuSessionTurn(text)
+                    } else if let Some(backend) = self.su_backend {
+                        Action::OpenSuSession {
+                            harness: self.harness.clone(),
+                            role: self.agent_chat_role.clone(),
+                            backend,
+                            carry: "warm".into(),
+                            initial_turn: Some(text),
+                        }
+                    } else {
+                        Action::SendChat(text)
+                    }
                 }
                 // Up/Down recall submitted lines. They were previously inert here
                 // (the composer captures all input, so they fell to Action::None).

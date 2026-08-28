@@ -9081,6 +9081,11 @@ async function runGreenCheckpointInner(
         ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
       };
     }
+    // WI-479091: carries the repair-queue narration to the ORDINARY terminal exit below.
+    // The dispatched arm used to build its own terminal result and return; it now falls
+    // through so re-triage and prefix salvage can still run, and this note is what keeps
+    // the queue/fixer detail in the final summary instead of being lost with that return.
+    let repairDispatchNote = "";
     // D-001 / WI-39944 — a real code red enters (or advances) the ONE frozen repair
     // queue before any stale-tip re-triage, auto-refire, or backward prefix salvage can
     // move the target. Infra reds returned above and never enter this path.
@@ -9182,36 +9187,44 @@ async function runGreenCheckpointInner(
           repairQueue = dispatch.queue ?? repairQueue;
           fired = dispatch.fired;
         }
-        const repairSummary =
-          `${verdictSummary}\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
+        // WI-479091 — DO NOT return a terminal result here.
+        //
+        // D-001 (the comment above) requires the red to enter/advance the ONE frozen
+        // repair queue BEFORE re-triage, refire, or backward prefix salvage can move the
+        // target. That is an ORDERING guarantee, and the queue write + dispatch above
+        // satisfy it. Returning here additionally made it an EXCLUSION — repair-queue XOR
+        // salvage — which D-001 never asked for.
+        //
+        // The cost of that over-application was total, not marginal. `deferNewRepairDispatch`
+        // is `repairQueueCreatedThisPass && !opts.candidate`, and repairQueueCreatedThisPass
+        // is assigned true ONLY inside queue-CREATION branches (:8345 and the one above). So
+        // every red arriving against an ALREADY-EXISTING queue left through here, upstream of
+        // the sole prefix-salvage site — as did every explicit-candidate run, which includes
+        // every auto-refire, since that recursion passes `candidate: tip`. Salvage is default-ON
+        // (partialGreenGateEnabledFromEnv) and had still advanced `main` ZERO times across a
+        // 57-red streak with `main` frozen 7d19h behind staging: the fault was reachability,
+        // never configuration.
+        //
+        // Falling through lets re-triage and salvage evaluate with the queue already durably
+        // written, which is exactly D-001's ordering. Deliberately NOT calling emitTerminalRed:
+        // the ordinary exit below already emits the red (with cancelSiblingKeysFor) and calls
+        // stampJudgedRed, so emitting here as well would DOUBLE-emit rather than lose anything —
+        // the in-flight marker is retired for every terminal path at the outer CLI seam.
+        // stampPromotion is likewise left to the ordinary exit.
+        repairDispatchNote =
+          `\n\nFrozen-candidate repair queue: ${repairQueue.candidate.slice(0, 8)} stays fixed; ` +
           `${fired?.spawnId ? `fixer ${fired.spawnId} dispatched` : "dispatch returned no spawn and will retry"} ` +
-          `from head ${repairQueue.repairHead.slice(0, 8)}. Moving-tip refire and backward prefix salvage were suppressed.`;
-        stampPromotion(false, "not-green");
-        const terminalResult: CheckpointResult = {
-          advanced: false,
-          candidate,
-          from: lastReady,
-          green: false,
-          reason: "not-green",
-          summary: repairSummary,
-          failingTests,
-          ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
-          failingTestNames: extractFailingTestNames(summary),
-          repairQueue,
-          ...(deps.runId ? { runId: deps.runId } : {}),
-          ...(logPath ? { logPath } : {}),
-          ...(isolationNote ? { isolationNote } : {}),
-          ...(retriedTests ? { retriedTests } : {}),
-          ...(typeof cleanGreen === "boolean" ? { cleanGreen } : {}),
-          ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-        };
-        await emitTerminalRed(terminalResult);
-        return terminalResult;
+          `from head ${repairQueue.repairHead.slice(0, 8)}.`;
+        deps.log(
+          `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red persisted and fixer dispatch resolved; ` +
+            "continuing to moving-tip re-triage and prefix salvage",
+        );
+      } else {
+        deps.log(
+          `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red transition persisted; ` +
+            "deferring first fixer dispatch until moving-tip re-triage",
+        );
       }
-      deps.log(
-        `stable-candidate queue ${repairQueue.candidate.slice(0, 8)} red transition persisted; ` +
-          "deferring first fixer dispatch until moving-tip re-triage",
-      );
     }
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
@@ -9999,10 +10012,15 @@ async function runGreenCheckpointInner(
       from: lastReady,
       green: false,
       reason: "not-green",
-      summary: verdictSummary,
+      // WI-479091: the frozen-repair dispatched arm no longer builds its own terminal
+      // result, so its queue/fixer narration and the repairQueue field arrive here instead.
+      // repairDispatchNote is "" on every path that did not dispatch, leaving this exit
+      // byte-identical to its previous behaviour for those callers.
+      summary: `${verdictSummary}${repairDispatchNote}`,
       failingTests,
       failingTestNames: extractFailingTestNames(summary),
       ...(splitSourceTestPairs.length ? { splitSourceTestPairs } : {}),
+      ...(repairQueue ? { repairQueue } : {}),
       ...(retriage ? { retriage } : {}),
       ...(deps.runId ? { runId: deps.runId } : {}),
       ...(logPath ? { logPath } : {}),
