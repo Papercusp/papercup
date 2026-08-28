@@ -5585,6 +5585,59 @@ function CadenceCard({
  * per-tick economics. It lives behind the Improve view's one labelled
  * disclosure: the gauges are on demand, the plain summary is always up top.
  */
+/**
+ * P-004 (owner 2026-08-28: "The how the loop section is also confusing"). One
+ * instrument group, led by the plain-language QUESTION it answers. The section
+ * label is the question; the line beside it is the answer in words, so the
+ * numbers below it are read as evidence for a claim already made rather than as
+ * a wall of chips the reader has to decode into one.
+ *
+ * Nothing is summarised away: every instrument that was in this section before
+ * is still in it, under the question it happens to answer.
+ */
+function LoopSection({
+  label,
+  answer,
+  children,
+}: {
+  label: string;
+  answer: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="pc-learning__loopsec" aria-label={label}>
+      <div className="pc-learning__loopsechead">
+        <span className="pc-learning__loopseclabel">{label}</span>
+        <span className="pc-learning__loopsecanswer">{answer}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
+/**
+ * The loop's health markers, compressed to one line for the disclosure header
+ * (P-004). These used to render ONLY inside the collapsed body, so a starving
+ * loop announced itself to nobody until someone thought to expand the section.
+ * The full list still renders inside; this is the part you cannot miss.
+ */
+function LoopWarningsAside({ snap }: { snap: ScoutSnapshot | undefined }) {
+  const markers = snap?.health?.markers ?? [];
+  if (markers.length === 0) return null;
+  const worst = markers.find((m) => m.severity === "bad") ?? markers[0];
+  return (
+    <span
+      className={`pc-learning__loopwarnaside${worst.severity === "bad" ? " is-bad" : ""}`}
+      title={markers.map((m) => m.summary).join(" · ")}
+    >
+      <AlertTriangle size={11} aria-hidden />
+      {markers.length === 1
+        ? worst.summary
+        : `${markers.length} loop warnings`}
+    </span>
+  );
+}
+
 function LoopEngineInstruments({
   snap,
   scoutWord,
@@ -5599,16 +5652,54 @@ function LoopEngineInstruments({
   const econTicks = snap?.ticks ?? [];
   const health = snap?.health ?? { status: "neutral" as const, markers: [] };
   const cadence = snap?.cadence ?? null;
+  const funnel = snap?.improveFunnel ?? null;
   return (
     <>
-      {/* The idea→work funnel LEADS (owner ask 2026-07-19e): the outcome story
-          first, the machinery below it. */}
+      {health.markers.length > 0 ? (
+        <ul className="pc-learning__warnlist" aria-label="Loop health warnings">
+          {health.markers.map((m) => (
+            <li
+              key={m.key}
+              className={m.severity === "bad" ? "is-bad" : "is-warn"}
+              title={`Instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
+            >
+              <AlertTriangle size={12} aria-hidden />
+              {m.summary}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {/* "Will it fire?" leads (owner-approved board, 2026-08-28). This
+          SUPERSEDES the 2026-07-19e ask that put the funnel first: the reader's
+          first question about a loop turned out to be whether it is going to
+          run at all, not what it has already produced. */}
+      {cadence ? (
+        <LoopSection
+          label="Will it fire?"
+          answer={cadenceAnswer(cadence, scoutWord)}
+        >
+          <CadenceCard cadence={cadence} scoutWord={scoutWord} />
+        </LoopSection>
+      ) : null}
+
       {/* The funnel speaks the SAME vocabulary as the row chips below it
           (P-004) — a reader should not have to translate between the summary
           and the list. Stage 1 is the mouth (every idea); the drop from it to
           `approved` is the "not ready yet" population, so that word needs no
           column of its own here. */}
-      {snap?.improveFunnel ? (
+      {funnel ? (
+        <LoopSection
+          label="What has it made?"
+          answer={
+            // The dropped population is named, not implied: it is excluded from
+            // `shipped` by design, and an unexplained gap between stages reads
+            // as a broken number.
+            funnel.dropped > 0
+              ? `ideas that became work, and how far they got — ${funnel.dropped} dropped along the way, never counted as shipped`
+              : "ideas that became work, and how far they got"
+          }
+        >
         <div className="pc-learning__funnel" aria-label="Idea-to-work funnel">
           <span title="Every idea a cycle routed onto a rail (work item, gym seed, plan, benchmark).">
             <strong>{snap.improveFunnel.routed}</strong>
@@ -5643,31 +5734,27 @@ function LoopEngineInstruments({
             <small>{PIPELINE_STATES.shipped.label}</small>
           </span>
         </div>
+        </LoopSection>
       ) : null}
-      {health.markers.length > 0 ? (
-        <ul className="pc-learning__warnlist" aria-label="Loop health warnings">
-          {health.markers.map((m) => (
-            <li
-              key={m.key}
-              className={m.severity === "bad" ? "is-bad" : "is-warn"}
-              title={`Instruments the '${m.rubricCriterion}' criterion of the blender-release-readiness rubric.`}
-            >
-              <AlertTriangle size={12} aria-hidden />
-              {m.summary}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
-      {/* The LIVE firing state — per-lane pending signal and the weighted score
-          against the volume gate's threshold, from the same reader + score
-          function the gate consumes. Answers "why isn't it firing / what will
-          make it fire" without a PG query. */}
-      {cadence ? <CadenceCard cadence={cadence} scoutWord={scoutWord} /> : null}
 
       {/* Tick economics: each recent tick's stop reason, spend, generated→routed
           funnel and lens mix — the columns where the 17-day WI-4482 lens
-          collapse and the budget-exhausted starvation lived, invisibly. */}
+          collapse and the budget-exhausted starvation lived, invisibly.
+          P-004 gave the rows the column headers they never had: the four
+          positional fields were previously unlabelled, so the reader had to
+          infer from a tooltip what each column meant. */}
+      <LoopSection
+        label="Recent cycles"
+        answer="what each tick generated, routed, and spent — and why it stopped"
+      >
+        {econTicks.length > 0 ? (
+          <div className="pc-learning__tickhead" aria-hidden>
+            <span>when</span>
+            <span>made → routed</span>
+            <span>why it stopped</span>
+            <span>spend</span>
+          </div>
+        ) : null}
       <div
         className="pc-learning__tickstrip pc-learning__tickstrip--rows"
         role="list"
@@ -5727,6 +5814,7 @@ function LoopEngineInstruments({
           })
         )}
       </div>
+      </LoopSection>
     </>
   );
 }
