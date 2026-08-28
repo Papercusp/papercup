@@ -206,6 +206,11 @@ class PuiPane {
     this.pty.write('\x1b[13u');
   }
 
+  /** Crossterm's raw-mode Escape encoding (its parser fixture: CSI 27 u). */
+  escape(): void {
+    this.pty.write('\x1b[27u');
+  }
+
   async waitFor(needle: string, opts: { timeoutMs?: number; sinceMark?: boolean } = {}): Promise<void> {
     const timeoutMs = opts.timeoutMs ?? 25_000;
     const deadline = Date.now() + timeoutMs;
@@ -390,7 +395,7 @@ describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/op
 
       // Exercise the visible agent/session picker, not a hidden API shortcut.
       pane.markHere();
-      pane.write('\x1b'); // leave the composer so `s` owns the picker binding
+      pane.escape(); // leave the composer so `s` owns the picker binding
       await pane.waitFor('i type · v speak', { sinceMark: true });
       pane.markHere();
       pane.write('s');
