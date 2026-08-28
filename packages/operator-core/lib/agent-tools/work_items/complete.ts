@@ -119,6 +119,7 @@ import {
   type SelfReviewLedgerRow,
 } from '../../work-item-self-review.js';
 import { activeWorkspaceId, resolveConcreteWorkspaceId } from '../../workspace-registry';
+import { resolveAdoptedName } from '../../plan-items/agent-names';
 import { itemTestGate } from '../../harness-test-gate';
 import { independentSiblingRepos } from '../../plan-audits';
 import { checkoutRootForPath, discoverKnownHiveCheckoutRoots } from '../testing/run';
@@ -1883,7 +1884,7 @@ const SELF_REVIEW_UNCLAIMED_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 async function completeOne(
   it: CompleteItem,
-  ident: { ownerId: string; ownerLabel?: string },
+  ident: { ownerId: string; ownerLabel?: string; adoptedName?: string | null },
   ctx: UnifiedToolContext,
 ): Promise<BulkItemResult> {
   // EI-20724228359175431: pull the truncation marker off BEFORE anything downstream
@@ -1941,8 +1942,12 @@ async function completeOne(
   // completions still WARN (this tool's record-and-warn contract, EI-24), but a terminal close
   // refuses before any completion/state write when the caller is not the current assignee — a
   // warning alone is too late once it clears the peer's claim.
+  const callerOwnsAssignee =
+    !existing.assignee ||
+    existing.assignee === ident.ownerId ||
+    existing.assignee === ident.adoptedName;
   const assigneeMismatchWarning =
-    existing.assignee && existing.assignee !== ident.ownerId
+    existing.assignee && !callerOwnsAssignee
       ? `completing ${it.id} but it is currently assigned to '${existing.assignee}', not you ('${ident.ownerId}') — ` +
         `if you grabbed this id from a peer's coord broadcast instead of your own claimed/created item, stop and ` +
         `re-check before this lands on someone else's active work.`
@@ -2042,7 +2047,7 @@ async function completeOne(
   // handoff path first. Record-only completions remain available for observations.
   const assigneeMismatchCloseRefusal =
     Boolean(existing.assignee) &&
-    existing.assignee !== ident.ownerId &&
+    !callerOwnsAssignee &&
     Boolean(effectiveState) &&
     CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   if (assigneeMismatchCloseRefusal) {
@@ -3011,7 +3016,7 @@ async function completeOne(
     // structured field without blocking.
     duplicateOfWarning = `this completion's summary/status names another work-item as a duplicate but \`completion.duplicateOf\` was not set — pass the SURVIVING item's id there so a \`duplicates\` link + assignee notification are recorded, not just free text.`;
   }
-  if (duplicateOf && duplicateOf !== it.id && existing.assignee && existing.assignee !== ident.ownerId) {
+  if (duplicateOf && duplicateOf !== it.id && existing.assignee && !callerOwnsAssignee) {
     await subscribeWorkItem(existing.assignee, it.id, 'full', { harness: it.harness }).catch(() => {});
   }
 
@@ -3382,6 +3387,10 @@ export default defineTool({
   },
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
+    const adoptedName = ident.workspaceId
+      ? await resolveAdoptedName(ident.workspaceId, ident.ownerId).catch(() => null)
+      : null;
+    const completionIdent = { ...ident, adoptedName };
     const isBulkForm = Boolean(args.items?.length);
     // EI-18661904412177717: the batch path defaulted `harness` from the top level but SILENTLY
     // DROPPED the top-level `state` — so `{ state:'resolved', items:[…] }` recorded every
@@ -3406,7 +3415,7 @@ export default defineTool({
             assumptions: args.assumptions,
           },
         ];
-    const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
+    const env = await runBulk(list, (it) => completeOne(it, completionIdent, ctx), { keyOf: (it) => ({ id: it.id }) });
     // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see
     // _bulk.ts) — correct for an explicit N-item `items:[…]` batch, where partial failure
     // across items is expected and `counts.failed` is the right signal to check. But the

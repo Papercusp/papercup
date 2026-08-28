@@ -45,6 +45,10 @@ const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
 const linkWorkItem = vi.fn();
 const subscribeWorkItem = vi.fn();
+const resolveAdoptedName = vi.fn();
+vi.mock('../../plan-items/agent-names', () => ({
+  resolveAdoptedName: (...a: unknown[]) => resolveAdoptedName(...a),
+}));
 // EI-19362441037986499: the record-only-completion-of-an-already-terminal-item writer. It
 // MUST be in this wholesale mock — omitting it leaves the import `undefined`, and every
 // existing record-only completion of a resolved/passed item then throws inside the arm that
@@ -190,6 +194,8 @@ function okState(workItem: Record<string, unknown>) {
 }
 
 beforeEach(() => {
+  resolveAdoptedName.mockReset();
+  resolveAdoptedName.mockResolvedValue(null);
   dbMocks.planItemStatusRows.mockReset();
   dbMocks.planItemStatusRows.mockResolvedValue([{ status: 'done' }]);
   getWorkItem.mockReset();
@@ -1806,6 +1812,23 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: 'su-tester' });
       const r = await one({ id: 'F-12', completion: { summary: 'noting it' } });
       expect(r.assigneeMismatchWarning).toBeUndefined();
+    });
+
+    it("accepts the caller's adopted stable agent name as the current assignee", async () => {
+      resolveAdoptedName.mockResolvedValue('calendar-ops');
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'calendar-ops' });
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'closed by the adopting session', tests: 'green' },
+      });
+
+      expect(resolveAdoptedName).toHaveBeenCalledWith('default', 'su-tester');
+      expect(r.ok).toBe(true);
+      expect(r.assigneeMismatchWarning).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
     it('does NOT warn when the item is unclaimed (assignee null)', async () => {
