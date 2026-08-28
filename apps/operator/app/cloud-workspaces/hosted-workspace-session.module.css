@@ -1,0 +1,271 @@
+.shell {
+  margin-top: 13px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-deeper);
+}
+
+.header,
+.status,
+.toolbar,
+.fileToolbar,
+.fileHeader,
+.fileEntry {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.header {
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.header strong,
+.fileHeader strong {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.header small,
+.status,
+.fileHeader span,
+.fileEntry small,
+.empty,
+.previewLabel {
+  color: var(--fg-mute);
+  font-size: 9.5px;
+}
+
+.headerActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(250px, 0.7fr);
+  min-height: 340px;
+}
+
+.terminalPane,
+.filePane {
+  min-width: 0;
+}
+
+.terminalPane {
+  display: flex;
+  min-height: 340px;
+  flex-direction: column;
+}
+
+.status {
+  min-height: 30px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono, monospace);
+}
+
+.status[data-tone="good"] {
+  color: var(--good);
+}
+
+.status[data-tone="bad"] {
+  color: var(--bad);
+}
+
+.terminal {
+  position: relative;
+  flex: 1;
+  min-height: 260px;
+  padding: 8px;
+  background: #101418;
+}
+
+.terminalPlaceholder {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  color: var(--fg-mute);
+  font-size: 11px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.toolbar,
+.fileToolbar {
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-1);
+}
+
+.toolbar button,
+.fileToolbar button,
+.fileEntry button,
+.claimButton {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg-dim);
+  cursor: pointer;
+  font-size: 9.5px;
+}
+
+.toolbar button,
+.fileToolbar button,
+.claimButton {
+  min-height: 27px;
+  padding: 4px 8px;
+}
+
+.toolbar button:disabled,
+.fileToolbar button:disabled,
+.fileEntry button:disabled,
+.claimButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.filePane {
+  display: flex;
+  min-height: 340px;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.fileHeader {
+  justify-content: space-between;
+  padding: 9px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.pathInput {
+  min-width: 0;
+  flex: 1;
+  height: 27px;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--fg);
+  padding: 4px 7px;
+  font: 9.5px/1.2 var(--font-mono, monospace);
+}
+
+.fileList {
+  display: grid;
+  align-content: start;
+  gap: 1px;
+  max-height: 190px;
+  margin: 0;
+  overflow: auto;
+  padding: 0;
+  background: var(--border);
+  list-style: none;
+}
+
+.fileEntry {
+  justify-content: space-between;
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--bg-1);
+}
+
+.fileEntry button {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.empty {
+  margin: 0;
+  padding: 12px;
+}
+
+.preview {
+  display: flex;
+  min-height: 100px;
+  flex: 1;
+  flex-direction: column;
+  padding: 9px;
+  border-top: 1px solid var(--border);
+}
+
+.previewLabel {
+  margin-bottom: 6px;
+  text-transform: uppercase;
+}
+
+.preview pre {
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  color: var(--fg-dim);
+  font: 9.5px/1.45 var(--font-mono, monospace);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.error {
+  color: var(--bad);
+}
+
+.notice {
+  padding: 9px 10px;
+  border-top: 1px solid var(--border);
+  color: var(--fg-mute);
+  font-size: 9.5px;
+}
+
+.uploadInput {
+  display: none;
+}
+
+@container (max-width: 760px) {
+  .body {
+    grid-template-columns: 1fr;
+  }
+
+  .filePane {
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .terminalPane,
+  .filePane {
+    min-height: 300px;
+  }
+}
+
+@media (max-width: 560px) {
+  .header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .headerActions {
+    justify-content: flex-start;
+  }
+
+  .terminal {
+    min-height: 220px;
+  }
+}
+
