@@ -363,6 +363,45 @@ describe("CloudWorkspacesPage", () => {
     );
   });
 
+  it("tracks overlapping mutations until each request settles", async () => {
+    let resolveValidation!: (value: { ok: boolean }) => void;
+    let resolveStop!: (value: { ok: boolean }) => void;
+    const validation = new Promise<{ ok: boolean }>((resolve) => {
+      resolveValidation = resolve;
+    });
+    const stop = new Promise<{ ok: boolean }>((resolve) => {
+      resolveStop = resolve;
+    });
+    H.mutate.mockImplementation((args: { action: string }) =>
+      args.action === "validate-connection" ? validation : stop,
+    );
+    render(<CloudWorkspacesPage />);
+
+    const validateButton = screen.getByRole("button", {
+      name: "Validate Google Cloud connection",
+    }) as HTMLButtonElement;
+    const stopButton = screen.getByRole("button", {
+      name: "Stop",
+    }) as HTMLButtonElement;
+
+    fireEvent.click(validateButton);
+    await waitFor(() => expect(validateButton.disabled).toBe(true));
+    fireEvent.click(stopButton);
+    await waitFor(() => {
+      expect(validateButton.disabled).toBe(true);
+      expect(stopButton.disabled).toBe(true);
+    });
+
+    resolveStop({ ok: true });
+    await waitFor(() => expect(stopButton.disabled).toBe(false));
+    expect(validateButton.disabled).toBe(true);
+    fireEvent.click(validateButton);
+    expect(H.mutate).toHaveBeenCalledTimes(2);
+
+    resolveValidation({ ok: true });
+    await waitFor(() => expect(validateButton.disabled).toBe(false));
+  });
+
   it("builds the canonical persisted desired spec for provisioning", async () => {
     render(<CloudWorkspacesPage />);
 

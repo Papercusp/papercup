@@ -540,7 +540,10 @@ export default function CloudWorkspacesPage() {
   const [projectId, setProjectId] = useState("");
   const [serviceAccountEmail, setServiceAccountEmail] = useState("");
   const [destroyConfirm, setDestroyConfirm] = useState("");
-  const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [busyKeys, setBusyKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  const inFlightKeysRef = useRef(new Set<string>());
   const dispositionButtonsRef = useRef<Array<HTMLButtonElement | null>>([]);
 
   const selectedConnection =
@@ -622,7 +625,14 @@ export default function CloudWorkspacesPage() {
       args: WorkspaceHostActionArgs,
       successMessage: string,
     ) => {
-      setBusyKey(key);
+      if (inFlightKeysRef.current.has(key)) return false;
+
+      inFlightKeysRef.current.add(key);
+      setBusyKeys((current) => {
+        const next = new Set(current);
+        next.add(key);
+        return next;
+      });
       try {
         const response = await mutate(args);
         toast.success(response.message || successMessage);
@@ -636,7 +646,13 @@ export default function CloudWorkspacesPage() {
         );
         return false;
       } finally {
-        setBusyKey(null);
+        inFlightKeysRef.current.delete(key);
+        setBusyKeys((current) => {
+          if (!current.has(key)) return current;
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
       }
     },
     [control, mutate],
@@ -887,7 +903,7 @@ export default function CloudWorkspacesPage() {
                       variant="ghost"
                       aria-label={`Validate ${provider.label} connection`}
                       disabled={
-                        !supported || busyKey === `validate:${connection.id}`
+                        !supported || busyKeys.has(`validate:${connection.id}`)
                       }
                       title={
                         supported
@@ -1231,7 +1247,7 @@ export default function CloudWorkspacesPage() {
                 type="submit"
                 variant="primary"
                 size="lg"
-                disabled={!canProvision || busyKey === "provision"}
+                disabled={!canProvision || busyKeys.has("provision")}
                 aria-describedby={
                   provisionBlockers.length > 0
                     ? "provision-blockers"
@@ -1593,7 +1609,7 @@ export default function CloudWorkspacesPage() {
                       variant="ghost"
                       disabled={
                         !workspace.capabilities.start ||
-                        busyKey === `start:${workspace.id}`
+                        busyKeys.has(`start:${workspace.id}`)
                       }
                       onClick={() =>
                         void perform(
@@ -1609,7 +1625,7 @@ export default function CloudWorkspacesPage() {
                       variant="ghost"
                       disabled={
                         !workspace.capabilities.stop ||
-                        busyKey === `stop:${workspace.id}`
+                        busyKeys.has(`stop:${workspace.id}`)
                       }
                       onClick={() =>
                         void perform(
@@ -1625,7 +1641,7 @@ export default function CloudWorkspacesPage() {
                       variant="ghost"
                       disabled={
                         !workspace.capabilities.repair ||
-                        busyKey === `repair:${workspace.id}`
+                        busyKeys.has(`repair:${workspace.id}`)
                       }
                       onClick={() =>
                         void perform(
@@ -1641,7 +1657,7 @@ export default function CloudWorkspacesPage() {
                       variant="ghost"
                       disabled={
                         !workspace.capabilities.snapshot ||
-                        busyKey === `snapshot:${workspace.id}`
+                        busyKeys.has(`snapshot:${workspace.id}`)
                       }
                       onClick={() =>
                         void perform(
@@ -1741,7 +1757,7 @@ export default function CloudWorkspacesPage() {
                 !credentialRef.trim() ||
                 !projectId.trim() ||
                 !serviceAccountEmail.trim() ||
-                busyKey === "connect"
+                busyKeys.has("connect")
               }
               onClick={() => {
                 if (!connectTarget) return;
