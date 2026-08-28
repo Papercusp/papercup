@@ -113,6 +113,10 @@ async function productionFailOpen(ctx: SystemActionCtx): Promise<FailOpenRunResu
     runId: runId(WORK_ITEM_ADMISSION_FAIL_OPEN),
     tickMinutes: positiveInteger(payload.tickMinutes, DEFAULT_PROMOTER_TICK_MINUTES),
     staleMinutes: positiveInteger(payload.staleMinutes, DEFAULT_PROMOTER_LIVENESS_MINUTES),
+    // Workspace-wide on purpose. This routine is seeded once, for the operator home harness,
+    // by a hand-run script with no callers — so a harness-scoped guard silently guards exactly
+    // one harness while every other one starves forever with no error anywhere.
+    scope: 'workspace',
   });
 }
 
@@ -145,8 +149,13 @@ export function makeWorkItemAdmissionFailOpenAction(overrides: Partial<Admission
     const result = await deps.run(ctx);
     await deps.invalidate();
     if (result.liveness.stale) await deps.alarm(ctx, result);
+    const byHarness = Object.entries(result.autoPromotedByHarness)
+      .map(([harness, ids]) => `${harness}=${ids.length}`)
+      .sort()
+      .join(',');
     deps.log(
-      `${ctx.installSlug}: run=${result.runId} auto-promoted=${result.autoPromoted.length} ` +
+      `${ctx.installSlug}: run=${result.runId} scope=${result.scope} ` +
+        `auto-promoted=${result.autoPromoted.length}${byHarness ? ` [${byHarness}]` : ''} ` +
         `liveness=${result.liveness.stale ? 'STALE' : 'healthy'} (${result.liveness.reason})`,
     );
   };

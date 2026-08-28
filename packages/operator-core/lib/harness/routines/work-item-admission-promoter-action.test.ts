@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const h = vi.hoisted(() => ({ register: vi.fn() }));
+const h = vi.hoisted(() => ({ register: vi.fn(), failOpen: vi.fn() }));
 vi.mock('./system-actions', () => ({ registerSystemAction: h.register }));
+vi.mock('../../work-items-admission-promoter', async (orig) => {
+  const actual = await orig<typeof import('../../work-items-admission-promoter')>();
+  return { ...actual, runWorkItemAdmissionFailOpen: h.failOpen };
+});
 
 const { makeWorkItemAdmissionFailOpenAction, makeWorkItemAdmissionPromoterAction } =
   await import('./work-item-admission-promoter-action');
@@ -80,12 +84,46 @@ describe('work-item admission routine actions', () => {
     expect(alarm).not.toHaveBeenCalled();
   });
 
+  // WIRING GUARD. The core supports both scopes, so the only thing standing between a healthy
+  // fleet and every non-home harness starving forever is this one argument on the production
+  // path. Without this test, deleting it keeps all other tests green and silently restores the
+  // 40.7h starvation measured 2026-08-28 (WI-569147).
+  it('asks for a workspace-wide sweep on the production fail-open path', async () => {
+    h.failOpen.mockResolvedValue({
+      runId: 'f-prod',
+      autoPromoted: [],
+      autoPromotedByHarness: {},
+      scope: 'workspace',
+      liveness: {
+        stale: false,
+        reason: 'healthy',
+        active: true,
+        routineExists: true,
+        lastSuccessAtMs: 1,
+        ageMs: 1,
+        thresholdMs: 90,
+      },
+    });
+
+    // deliberately NOT overriding `run` — this exercises the real productionFailOpen wiring
+    await makeWorkItemAdmissionFailOpenAction({
+      alarm: vi.fn(async () => undefined),
+      invalidate: vi.fn(async () => undefined),
+      log: vi.fn(),
+    })(ctx);
+
+    expect(h.failOpen).toHaveBeenCalledTimes(1);
+    expect(h.failOpen.mock.calls[0]![0]).toMatchObject({ scope: 'workspace', workspaceId: 'ws' });
+  });
+
   it('raises the liveness alarm only on a stale fail-open verdict', async () => {
     const alarm = vi.fn(async () => undefined);
     const invalidate = vi.fn(async () => undefined);
     const stale = {
       runId: 'f1',
       autoPromoted: ['WI-1'],
+      autoPromotedByHarness: { papercusp: ['WI-1'] },
+      scope: 'workspace' as const,
       liveness: {
         stale: true,
         reason: 'no successful tick',

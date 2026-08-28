@@ -144,12 +144,16 @@ async function seedItem(input: {
   createdAtMs?: number;
   vector?: string | null;
   conditionKey?: string | null;
+  /** Defaults to the run's own harness/workspace; set to seed a NEIGHBOUR the sweep may or may not reach. */
+  harness?: string;
+  workspaceId?: string;
 }): Promise<void> {
   await db.sql`
     INSERT INTO harness_shared.work_items
       (workspace_id, harness_slug, feature_id, title, summary, status, item_kind,
        admission, condition_key, lane, payload, created_ts, updated_ts, embedding, embedding_mode)
-    VALUES (${WS}, ${HARNESS}, ${input.id}, ${input.title ?? 'vitest clone failure'},
+    VALUES (${input.workspaceId ?? WS}, ${input.harness ?? HARNESS}, ${input.id},
+            ${input.title ?? 'vitest clone failure'},
             ${input.summary ?? 'same finding and same retry remedy'}, ${input.status ?? 'open'}, 'bug',
             ${input.admission ?? 'pending'}, ${input.conditionKey ?? null}, NULL, '{}'::jsonb,
             ${input.createdAtMs ?? NOW - 10_000}, ${input.createdAtMs ?? NOW - 10_000},
@@ -269,6 +273,107 @@ describe('work-item admission promoter (real Postgres)', () => {
       { feature_id: 'WI-fresh', admission: 'pending' },
       { feature_id: 'WI-old', admission: 'unreviewed' },
     ]);
+  });
+
+  // The promoter is seeded per-harness by a hand-run script that defaults to the operator home
+  // harness, so in practice only ONE harness ever has one. A harness-scoped fail-open therefore
+  // guarantees liveness for that harness and silently starves every other one: measured
+  // 2026-08-28, sb-devboard-hive held pending rows for 40.7h and email for ~2d with zero rows
+  // ever admitted, while papercusp promoted normally throughout and no error was raised anywhere.
+  describe('workspace-scoped fail-open', () => {
+    it('rescues an over-age pending row in a harness that has no promoter of its own', async () => {
+      await seedItem({ id: 'WI-home', createdAtMs: NOW - 61 * 60_000, vector: null });
+      await seedItem({ id: 'WI-neighbour', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-workspace',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.scope).toBe('workspace');
+      expect(result.autoPromoted).toEqual(['WI-home', 'WI-neighbour']);
+      expect(result.autoPromotedByHarness).toEqual({ [HARNESS]: ['WI-home'], email: ['WI-neighbour'] });
+      const rows = await db.sql<Array<{ harness_slug: string; admission: string }>>`
+        SELECT harness_slug, admission FROM harness_shared.work_items ORDER BY harness_slug`;
+      expect(rows).toEqual([
+        { harness_slug: 'email', admission: 'unreviewed' },
+        { harness_slug: HARNESS, admission: 'unreviewed' },
+      ]);
+    });
+
+    // Control: the widening must be the SCOPE doing the work, not the guard having gone blanket.
+    it('leaves the neighbouring harness pending under the default harness scope', async () => {
+      await seedItem({ id: 'WI-home', createdAtMs: NOW - 61 * 60_000, vector: null });
+      await seedItem({ id: 'WI-neighbour', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-harness-scope',
+        sql: db.sql,
+        now: () => NOW,
+      });
+
+      expect(result.scope).toBe('harness');
+      expect(result.autoPromoted).toEqual(['WI-home']);
+      expect(result.autoPromotedByHarness).toEqual({ [HARNESS]: ['WI-home'] });
+      const [neighbour] = await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE harness_slug = 'email'`;
+      expect(neighbour).toEqual({ admission: 'pending' });
+    });
+
+    // A workspace sweep widens across harnesses inside ONE tenant — never across tenants.
+    it('never crosses a workspace boundary', async () => {
+      await seedItem({ id: 'WI-mine', createdAtMs: NOW - 61 * 60_000, vector: null });
+      await seedItem({
+        id: 'WI-other-tenant',
+        createdAtMs: NOW - 61 * 60_000,
+        vector: null,
+        harness: 'email',
+        workspaceId: 'some-other-workspace',
+      });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-tenant-isolation',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual(['WI-mine']);
+      const [foreign] = await db.sql<Array<{ admission: string }>>`
+        SELECT admission FROM harness_shared.work_items WHERE workspace_id = 'some-other-workspace'`;
+      expect(foreign).toEqual({ admission: 'pending' });
+    });
+
+    // Widening the harness axis must not weaken the age floor on the rows it newly reaches.
+    it('still honours the two-tick age floor in the harnesses it newly reaches', async () => {
+      await seedItem({ id: 'WI-neighbour-old', createdAtMs: NOW - 61 * 60_000, vector: null, harness: 'email' });
+      await seedItem({ id: 'WI-neighbour-fresh', createdAtMs: NOW - 59 * 60_000, vector: null, harness: 'email' });
+
+      const result = await runWorkItemAdmissionFailOpen({
+        workspaceId: WS,
+        harnessSlug: HARNESS,
+        runId: 'fail-open-age-floor',
+        sql: db.sql,
+        now: () => NOW,
+        scope: 'workspace',
+      });
+
+      expect(result.autoPromoted).toEqual(['WI-neighbour-old']);
+      const rows = await db.sql<Array<{ feature_id: string; admission: string }>>`
+        SELECT feature_id, admission FROM harness_shared.work_items ORDER BY feature_id`;
+      expect(rows).toEqual([
+        { feature_id: 'WI-neighbour-fresh', admission: 'pending' },
+        { feature_id: 'WI-neighbour-old', admission: 'unreviewed' },
+      ]);
+    });
   });
 
   it('serves the owner snapshot with real SQL filters, percentiles, trend, and latest-rise evidence', async () => {

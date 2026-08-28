@@ -109,9 +109,25 @@ export interface PromoterRunResult {
   censusAfter: number;
 }
 
+/**
+ * Which rows one fail-open tick is allowed to rescue.
+ *
+ * `'harness'` keeps the historical single-harness blast radius. `'workspace'` is what the
+ * production routine runs: the LLM promoter is seeded per-harness (by hand, and in practice
+ * only ever for the operator home harness), but the deterministic fail-open guard exists to
+ * make the stronger promise that NOTHING starves. Scoping the guard to the one harness that
+ * already has a promoter is what made that promise unkeepable everywhere else — measured
+ * 2026-08-28: `sb-devboard-hive` held pending rows for 40.7h and `email` for ~2d, with zero
+ * rows ever admitted in either, while `papercusp` promoted normally the whole time.
+ */
+export type AdmissionFailOpenScope = 'harness' | 'workspace';
+
 export interface FailOpenRunResult {
   runId: string;
   autoPromoted: string[];
+  /** Rescued ids grouped by the harness they belong to — the whole point of a workspace sweep. */
+  autoPromotedByHarness: Record<string, string[]>;
+  scope: AdmissionFailOpenScope;
   liveness: PromoterLiveness;
 }
 
@@ -1360,6 +1376,8 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   now?: () => number;
   tickMinutes?: number;
   staleMinutes?: number;
+  /** Defaults to `'harness'`; the production routine passes `'workspace'`. See AdmissionFailOpenScope. */
+  scope?: AdmissionFailOpenScope;
 }): Promise<FailOpenRunResult> {
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
@@ -1367,10 +1385,13 @@ export async function runWorkItemAdmissionFailOpen(opts: {
   const runId = opts.runId ?? `fail-open-${randomUUID()}`;
   const tickMinutes = opts.tickMinutes ?? DEFAULT_PROMOTER_TICK_MINUTES;
   const staleMinutes = opts.staleMinutes ?? DEFAULT_PROMOTER_LIVENESS_MINUTES;
+  const scope: AdmissionFailOpenScope = opts.scope ?? 'harness';
   await beginRun(sql, { runId, workspaceId: opts.workspaceId, harnessSlug: opts.harnessSlug, mode: 'fail-open' });
   try {
     const cutoffMs = startedAt - 2 * tickMinutes * 60_000;
-    const rows = await sql<Array<{ feature_id: string }>>`
+    // The workspace_id predicate is NEVER dropped: a workspace sweep widens across harnesses
+    // inside one tenant, never across tenants.
+    const rows = await sql<Array<{ feature_id: string; harness_slug: string }>>`
       UPDATE harness_shared.work_items
          SET admission = 'unreviewed', admitted_at = now(), admitted_by = ${FAIL_OPEN_ACTOR},
              payload = COALESCE(payload, '{}'::jsonb) ||
@@ -1378,16 +1399,20 @@ export async function runWorkItemAdmissionFailOpen(opts: {
                  'admissionFailOpen',
                  jsonb_build_object(
                    'actor', ${FAIL_OPEN_ACTOR}::text,
-                   'reason', 'pending-age-exceeded-two-promoter-ticks'
+                   'reason', 'pending-age-exceeded-two-promoter-ticks',
+                   'scope', ${scope}::text
                  )
                ),
              updated_ts = ${startedAt}
        WHERE workspace_id = ${opts.workspaceId}
-         AND harness_slug = ${opts.harnessSlug}
+         ${scope === 'workspace' ? sql`` : sql`AND harness_slug = ${opts.harnessSlug}`}
          AND admission = 'pending'
          AND created_ts < ${cutoffMs}
-       RETURNING feature_id`;
+       RETURNING feature_id, harness_slug`;
     const autoPromoted = rows.map((row) => row.feature_id).sort();
+    const autoPromotedByHarness: Record<string, string[]> = {};
+    for (const row of rows) (autoPromotedByHarness[row.harness_slug] ??= []).push(row.feature_id);
+    for (const ids of Object.values(autoPromotedByHarness)) ids.sort();
     const liveness = await readPromoterLiveness(sql, opts.workspaceId, opts.harnessSlug, now(), staleMinutes);
     await finishRun(sql, {
       runId,
@@ -1402,9 +1427,9 @@ export async function runWorkItemAdmissionFailOpen(opts: {
       tokensIn: 0,
       tokensOut: 0,
       latencyMs: Math.max(0, now() - startedAt),
-      detail: { status: 'complete', mode: 'fail-open', liveness },
+      detail: { status: 'complete', mode: 'fail-open', scope, liveness, autoPromotedByHarness },
     });
-    return { runId, autoPromoted, liveness };
+    return { runId, autoPromoted, autoPromotedByHarness, scope, liveness };
   } catch (error) {
     await failRun(sql, runId, 'fail-open', error, Math.max(0, now() - startedAt));
     throw error;
