@@ -43,9 +43,9 @@
  */
 
 import { z } from 'zod';
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync, type Dirent } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -66,7 +66,13 @@ import { selectUnambiguousEvidenceRoot } from '../../evidence-root-selection';
 import { FOREGROUND_TIMEOUT_CEILING_MS, clampForegroundTimeoutMs } from '../capability/foreground-transport-cap';
 import { ensurePapercuspTmpdir } from '@papercusp/test-config/tmpdir-guard';
 import { activeWorkspaceId } from '../../workspace-registry';
-import { runGovernedOperation } from '../../resource-governor/execution';
+import {
+  admissionContextFromEnvironment,
+  governedExecutionLeaseTtlForTimeout,
+  runGovernedOperation,
+  type GovernedExecutionSettlement,
+} from '../../resource-governor/execution';
+import type { ResourceDemand } from '../../resource-governor/admission';
 
 /** Hard ceiling on a single run, so a wedged suite can never hold a turn open
  *  indefinitely. 21% of corpus commands already hand-wrapped a `timeout`; this
@@ -342,6 +348,282 @@ export function normalizeTestFilePaths(
  *  1 = a refused false-green OR a genuine test failure, 0 = clean pass. */
 const ROUTER_EXIT_ROUTE_ERROR = 2;
 
+/** Resource reservation made for one resident router/Vitest process. */
+export const TEST_PROCESS_DEFAULT_MEMORY_BYTES = 1024 * 1024 * 1024;
+export const TEST_PROCESS_DEFAULT_DISK_BYTES = 256 * 1024 * 1024;
+export const TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS = 16;
+export const TEST_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS = 250;
+
+export interface TestProcessAdmissionDemandOptions {
+  /** Number of exact files in this process' group. */
+  readonly fileCount?: number;
+  /** Allow a caller with a measured workspace profile to tighten the estimate. */
+  readonly memoryBytes?: number;
+  readonly diskBytes?: number;
+  readonly fileDescriptors?: number;
+}
+
+/**
+ * Build the planned resource vector for a test process. The vector is a
+ * reservation (not a host-wide semaphore): it gives the durable governor a
+ * useful shape while the close path records the measured peak. Keep the
+ * process/fd overhead explicit because a Vitest run includes the router,
+ * worker pool, report files, and pipes in addition to the named test file.
+ */
+export function buildTestProcessDemand(
+  options: TestProcessAdmissionDemandOptions = {},
+): ResourceDemand {
+  const fileCount = Number.isFinite(options.fileCount) ? Math.max(1, Math.floor(options.fileCount!)) : 1;
+  const memoryBytes = Number.isFinite(options.memoryBytes) && options.memoryBytes! > 0
+    ? Math.floor(options.memoryBytes!)
+    : TEST_PROCESS_DEFAULT_MEMORY_BYTES;
+  const diskBytes = Number.isFinite(options.diskBytes) && options.diskBytes! > 0
+    ? Math.floor(options.diskBytes!)
+    : TEST_PROCESS_DEFAULT_DISK_BYTES;
+  const fileDescriptors = Number.isFinite(options.fileDescriptors) && options.fileDescriptors! > 0
+    ? Math.floor(options.fileDescriptors!)
+    : TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS + fileCount;
+  return {
+    // CPU weight is relative residency, so one router/Vitest process reserves
+    // one unit regardless of how many exact files it batches.
+    cpuWeight: 1,
+    memoryBytes,
+    diskBytes,
+    fileDescriptors,
+  };
+}
+
+export interface TestProcessResourceSnapshot {
+  /** Aggregate user+system CPU time for the process tree, in microseconds. */
+  readonly cpuMicros: number | null;
+  /** Aggregate resident working set for the process tree, in bytes. */
+  readonly rssBytes: number | null;
+  /** Aggregate open descriptors for the process tree. */
+  readonly fileDescriptors: number | null;
+}
+
+function parseProcField(text: string, field: string): number | null {
+  const match = new RegExp(`^${field}:\\s+([0-9]+)\\s*(?:kB)?$`, 'm').exec(text);
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function procStatus(pid: number): { parentPid: number | null; rssBytes: number | null } | null {
+  try {
+    const text = readFileSync(`/proc/${pid}/status`, 'utf8');
+    const parentRaw = parseProcField(text, 'PPid');
+    const rssKb = parseProcField(text, 'VmHWM') ?? parseProcField(text, 'VmRSS');
+    return {
+      parentPid: parentRaw === null ? null : Math.floor(parentRaw),
+      rssBytes: rssKb === null ? null : rssKb * 1024,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function procCpuMicros(pid: number): number | null {
+  try {
+    const text = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const endOfCommand = text.lastIndexOf(')');
+    if (endOfCommand < 0) return null;
+    const fields = text.slice(endOfCommand + 2).trim().split(/\s+/);
+    // After the comm/state fields, procfs exposes utime at index 11 and stime
+    // at index 12. Linux's user HZ is normally 100; retain the raw tick scale
+    // if a non-standard value cannot be discovered, since the sampler only
+    // uses deltas to derive a relative cpuWeight.
+    const user = Number(fields[11]);
+    const system = Number(fields[12]);
+    if (!Number.isFinite(user) || !Number.isFinite(system)) return null;
+    return (user + system) * 10_000;
+  } catch {
+    return null;
+  }
+}
+
+function processTreePids(rootPid: number): number[] {
+  if (process.platform !== 'linux' || !Number.isInteger(rootPid) || rootPid <= 0) return [rootPid];
+  const children = new Map<number, number[]>();
+  let entries: Dirent<string>[];
+  try {
+    entries = readdirSync('/proc', { withFileTypes: true, encoding: 'utf8' });
+  } catch {
+    return [rootPid];
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d+$/.test(entry.name)) continue;
+    const pid = Number(entry.name);
+    const status = procStatus(pid);
+    if (status?.parentPid !== null && status?.parentPid !== undefined) {
+      const siblings = children.get(status.parentPid) ?? [];
+      siblings.push(pid);
+      children.set(status.parentPid, siblings);
+    }
+  }
+  const result = [rootPid];
+  for (let index = 0; index < result.length; index += 1) {
+    const descendants = children.get(result[index]) ?? [];
+    for (const pid of descendants) if (!result.includes(pid)) result.push(pid);
+  }
+  return result;
+}
+
+/** Read a fail-soft aggregate snapshot for a child and its descendants. */
+export function readTestProcessResourceSnapshot(pid: number): TestProcessResourceSnapshot {
+  const pids = processTreePids(pid);
+  let cpuMicros = 0;
+  let rssBytes = 0;
+  let fileDescriptors = 0;
+  let cpuMeasured = false;
+  let rssMeasured = false;
+  let fdMeasured = false;
+  for (const childPid of pids) {
+    const cpu = procCpuMicros(childPid);
+    if (cpu !== null) {
+      cpuMicros += cpu;
+      cpuMeasured = true;
+    }
+    const status = procStatus(childPid);
+    if (status?.rssBytes !== null && status?.rssBytes !== undefined) {
+      rssBytes += status.rssBytes;
+      rssMeasured = true;
+    }
+    if (process.platform === 'linux') {
+      try {
+        fileDescriptors += readdirSync(`/proc/${childPid}/fd`).length;
+        fdMeasured = true;
+      } catch {
+        /* process can exit between the status and fd reads */
+      }
+    }
+  }
+  return {
+    cpuMicros: cpuMeasured ? cpuMicros : null,
+    rssBytes: rssMeasured ? rssBytes : null,
+    fileDescriptors: fdMeasured ? fileDescriptors : null,
+  };
+}
+
+export interface TestProcessDemandSampler {
+  attach(pid: number | null | undefined): void;
+  sample(): void;
+  stop(extra?: Partial<ResourceDemand>): ResourceDemand;
+}
+
+/**
+ * Sample a process tree while it is alive and turn its peak observations into
+ * an actual demand vector. The reader is injectable so lifecycle tests can
+ * prove accounting without depending on Linux procfs; production falls back
+ * to the planned vector when a platform hides a metric.
+ */
+export function createTestProcessDemandSampler(
+  planned: ResourceDemand,
+  readSnapshot: (pid: number) => TestProcessResourceSnapshot = readTestProcessResourceSnapshot,
+  now: () => number = Date.now,
+): TestProcessDemandSampler {
+  let pid: number | null = null;
+  let timer: ReturnType<typeof setInterval> | null = null;
+  let stopped = false;
+  let peakRss: number | null = null;
+  let peakFds: number | null = null;
+  let firstCpu: number | null = null;
+  let lastCpu: number | null = null;
+  let firstAt: number | null = null;
+  let lastAt: number | null = null;
+  let cpuWeight: number | null = null;
+  let stoppedDemand: ResourceDemand | null = null;
+
+  const sample = (): void => {
+    if (stopped || pid === null) return;
+    let snapshot: TestProcessResourceSnapshot;
+    try {
+      snapshot = readSnapshot(pid);
+    } catch {
+      return;
+    }
+    const at = now();
+    if (snapshot.rssBytes !== null && Number.isFinite(snapshot.rssBytes)) {
+      peakRss = peakRss === null ? snapshot.rssBytes : Math.max(peakRss, snapshot.rssBytes);
+    }
+    if (snapshot.fileDescriptors !== null && Number.isFinite(snapshot.fileDescriptors)) {
+      peakFds = peakFds === null ? snapshot.fileDescriptors : Math.max(peakFds, snapshot.fileDescriptors);
+    }
+    if (snapshot.cpuMicros !== null && Number.isFinite(snapshot.cpuMicros)) {
+      if (firstCpu === null) {
+        firstCpu = snapshot.cpuMicros;
+        firstAt = at;
+      }
+      lastCpu = snapshot.cpuMicros;
+      lastAt = at;
+      if (firstAt !== null && lastAt !== null && lastAt > firstAt && firstCpu !== null && lastCpu !== null) {
+        // CPU weight is CPU-seconds per wall-second, a relative residency
+        // measure rather than an asserted core count.
+        cpuWeight = Math.max(0.01, (lastCpu - firstCpu) / ((lastAt - firstAt) * 1_000));
+      }
+    }
+  };
+
+  return {
+    attach(nextPid: number | null | undefined): void {
+      if (stopped || !Number.isInteger(nextPid) || (nextPid as number) <= 0) return;
+      pid = nextPid as number;
+      sample();
+      timer = setInterval(sample, TEST_PROCESS_RESOURCE_SAMPLE_INTERVAL_MS);
+      timer.unref?.();
+    },
+    sample,
+    stop(extra = {}): ResourceDemand {
+      if (stoppedDemand) return stoppedDemand;
+      if (!stopped) sample();
+      stopped = true;
+      if (timer) clearInterval(timer);
+      timer = null;
+      stoppedDemand = {
+        cpuWeight: extra.cpuWeight ?? cpuWeight ?? planned.cpuWeight ?? 1,
+        memoryBytes: extra.memoryBytes ?? peakRss ?? planned.memoryBytes,
+        diskBytes: extra.diskBytes ?? planned.diskBytes,
+        fileDescriptors: extra.fileDescriptors ?? peakFds ?? planned.fileDescriptors,
+      };
+      return stoppedDemand;
+    },
+  };
+}
+
+/** Public outcome shape used by the settlement classifier and focused tests. */
+export interface TestProcessOutcome {
+  readonly code: number | null;
+  readonly signal?: NodeJS.Signals | null;
+  readonly timedOut: boolean;
+  readonly aborted: boolean;
+  readonly spawnError?: string;
+  readonly output: string;
+  readonly actualDemand?: ResourceDemand;
+}
+
+/**
+ * A process that exited with a real code did run and may have produced a
+ * legitimate red test report, so release its measured residency. A timeout,
+ * caller abort, spawn error, or signal-only exit has no trustworthy verdict and
+ * cancels the receipt; callers surface those as timeout/aborted/route errors,
+ * never as green.
+ */
+export function classifyTestProcessOutcome(outcome: TestProcessOutcome): GovernedExecutionSettlement {
+  if (outcome.timedOut) return { kind: 'cancel', reason: 'test process timed out before a verdict was produced' };
+  if (outcome.aborted) return { kind: 'cancel', reason: 'test process was aborted before a verdict was produced' };
+  if (outcome.spawnError) return { kind: 'cancel', reason: `test process spawn failed: ${outcome.spawnError}` };
+  if (/TEST_FILE_WATCHDOG|TEST_FILE_ROUTE_ERROR|worker\s+(?:exited|crash)|TasksMax|SIG(?:TERM|KILL)/i.test(outcome.output)) {
+    return { kind: 'cancel', reason: 'test worker/route exited without a trustworthy verdict' };
+  }
+  if (outcome.code === null || outcome.signal) {
+    return {
+      kind: 'cancel',
+      reason: `test process exited without a trustworthy verdict (code=${outcome.code ?? 'null'} signal=${outcome.signal ?? 'none'})`,
+    };
+  }
+  return { kind: 'release', actualDemand: outcome.actualDemand };
+}
+
 /** The distilled outcome of one runTestFilesCore invocation — either the bounded
  *  run payload (`ok` reflects the tests; counts always complete; no `error` field) or a
  *  typed refusal naming why nothing could be judged. Discriminate on `error`. */
@@ -373,11 +655,14 @@ export type TestFilesCoreResult =
       detachedRunId?: string;
   };
 
-interface RouterOutcome {
+interface RouterOutcome extends TestProcessOutcome {
   code: number | null;
+  signal: NodeJS.Signals | null;
   timedOut: boolean;
   aborted: boolean;
+  spawnError?: string;
   output: string;
+  actualDemand?: ResourceDemand;
 }
 
 /** Spawn a bounded test process, capturing its diagnostics. */
@@ -389,22 +674,29 @@ function runTestProcess(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal?: AbortSignal,
+  fileCount = 1,
 ): Promise<RouterOutcome> {
   const runGroup = env.PAPERCUSP_TEST_RUN_GROUP ?? 'unattributed';
+  const plannedDemand = buildTestProcessDemand({ fileCount });
   return runGovernedOperation(
     {
       workspaceId: activeWorkspaceId(),
       namespace: 'testing-run-process',
       owner: `testing:run:${runGroup}`,
       admissionClass: 'process',
-      demand: { cpuWeight: 1, memoryBytes: 1024 * 1024 * 1024, fileDescriptors: 4 },
+      demand: plannedDemand,
       payloadRef: `testing:run:${runGroup}`,
-      metadata: { command, timeoutMs },
+      parent: admissionContextFromEnvironment(env.PAPERCUSP_ADMISSION_CONTEXT),
+      leaseTtlMs: governedExecutionLeaseTtlForTimeout(timeoutMs),
+      metadata: { command, timeoutMs, fileCount, processKind: 'test-run' },
+      settle: (outcome) => classifyTestProcessOutcome(outcome),
     },
     async (admissionContext) => new Promise((resolve) => {
     let output = '';
+    let outputBytes = 0;
     let timedOut = false;
     let aborted = false;
+    let spawnError: string | undefined;
     let settled = false;
     // EI-19324351741370770: `scripts/test-files.mjs` launches the REAL vitest run via
     // `spawnSync('npx', ['vitest', 'run', ...])` — synchronously, and WITHOUT its own
@@ -421,12 +713,29 @@ function runTestProcess(
     // group (pgid === its own pid); vitest, spawned without its own `detached`, inherits
     // THAT group. On timeout, signal the NEGATIVE pid — killing the whole process group,
     // router and every child/grandchild it spawned — instead of just the router itself.
-    const child = spawn(command, [...commandArgs, ...args], {
-      cwd,
-      env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      detached: true,
-    });
+    const sampler = createTestProcessDemandSampler(plannedDemand);
+    let child: ChildProcess;
+    try {
+      child = spawn(command, [...commandArgs, ...args], {
+        cwd,
+        env: { ...env, PAPERCUSP_ADMISSION_CONTEXT: JSON.stringify(admissionContext) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        detached: true,
+      });
+    } catch (error) {
+      spawnError = error instanceof Error ? error.message : String(error);
+      resolve({
+        code: null,
+        signal: null,
+        timedOut: false,
+        aborted: false,
+        spawnError,
+        output: `[spawn-error] ${spawnError}`,
+        actualDemand: sampler.stop({ diskBytes: 0 }),
+      });
+      return;
+    }
+    sampler.attach(child.pid);
     const killGroup = (signal: NodeJS.Signals) => {
       if (!child.pid) return;
       try {
@@ -463,21 +772,32 @@ function runTestProcess(
     // Cap retained diagnostics — the router's own output is a fallback for the
     // error paths, never the success path's payload.
     const append = (b: Buffer) => {
+      outputBytes += b.byteLength;
       output = (output + b.toString('utf8')).slice(-8192);
     };
     child.stdout?.on('data', append);
     child.stderr?.on('data', append);
-    const finish = (outcome: RouterOutcome) => {
+    const finish = (outcome: Omit<RouterOutcome, 'actualDemand'>) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
-      resolve(outcome);
+      resolve({
+        ...outcome,
+        actualDemand: sampler.stop({ diskBytes: outputBytes }),
+      });
     };
-    child.on('error', (e) =>
-      finish({ code: null, timedOut, aborted, output: `${output}\n[spawn-error] ${e.message}` }),
-    );
-    child.on('close', (code) => finish({ code, timedOut, aborted, output }));
+    child.on('error', (e) => {
+      spawnError = e.message;
+      finish({ code: null, signal: null, timedOut, aborted, spawnError, output: `${output}\n[spawn-error] ${e.message}` });
+    });
+    child.on('close', (code, closeSignal) => finish({
+      code,
+      signal: closeSignal ?? null,
+      timedOut,
+      aborted,
+      output,
+    }));
     }),
   );
 }
@@ -489,8 +809,18 @@ function runRouter(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal?: AbortSignal,
+  fileCount = 1,
 ): Promise<RouterOutcome> {
-  return runTestProcess(process.execPath, [join(cwd, 'scripts', 'test-files.mjs')], args, cwd, env, timeoutMs, signal);
+  return runTestProcess(
+    process.execPath,
+    [join(cwd, 'scripts', 'test-files.mjs')],
+    args,
+    cwd,
+    env,
+    timeoutMs,
+    signal,
+    fileCount,
+  );
 }
 
 /** Spawn a generic external Vitest checkout through its local npm installation. */
@@ -500,6 +830,7 @@ function runDirectVitest(
   env: NodeJS.ProcessEnv,
   timeoutMs: number,
   signal?: AbortSignal,
+  fileCount = 1,
 ): Promise<RouterOutcome> {
   return runTestProcess(
     process.platform === 'win32' ? 'npx.cmd' : 'npx',
@@ -509,6 +840,7 @@ function runDirectVitest(
     env,
     timeoutMs,
     signal,
+    fileCount,
   );
 }
 
@@ -704,6 +1036,7 @@ export async function runTestFilesCore(opts: {
         childEnv,
         timeoutMs,
         opts.signal,
+        pathResolution.files.length,
       );
     } else {
       const groups = groupDirectVitestRoutes(pathResolution.files, root);
@@ -714,6 +1047,7 @@ export async function runTestFilesCore(opts: {
         if (opts.signal?.aborted) {
           outcomes.push({
             code: null,
+            signal: null,
             timedOut: false,
             aborted: true,
             output: 'caller aborted before direct Vitest group start',
@@ -729,12 +1063,20 @@ export async function runTestFilesCore(opts: {
           ),
           ...group.files,
         ];
-        const groupOutcome = await runDirectVitest(groupArgs, group.cwd, childEnv, remaining, opts.signal);
+        const groupOutcome = await runDirectVitest(
+          groupArgs,
+          group.cwd,
+          childEnv,
+          remaining,
+          opts.signal,
+          group.files.length,
+        );
         outcomes.push(groupOutcome);
         if (groupOutcome.timedOut || groupOutcome.aborted) break;
       }
       outcome = {
         code: outcomes.some((entry) => entry.code === null) ? null : outcomes.some((entry) => entry.code !== 0) ? 1 : 0,
+        signal: outcomes.find((entry) => entry.signal)?.signal ?? null,
         timedOut: outcomes.some((entry) => entry.timedOut),
         aborted: outcomes.some((entry) => entry.aborted),
         output: outcomes
