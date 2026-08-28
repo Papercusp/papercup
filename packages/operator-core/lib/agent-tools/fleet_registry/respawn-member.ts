@@ -241,19 +241,19 @@ function settleRespawnLaunchTransaction(
   if (outcome === 'verified') {
     next.openedMemberIds = addMemberId(next.openedMemberIds, replacementOwnerId);
     next.verifiedMemberIds = addMemberId(next.verifiedMemberIds, replacementOwnerId);
-    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds, replacementOwnerId);
-    next.recovery.retryOwnerIds = removeMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
+    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds ?? [], replacementOwnerId);
+    next.recovery.retryOwnerIds = removeMemberId(next.recovery.retryOwnerIds ?? [], replacementOwnerId);
     next.recovery.nextAction = `respawn replacement ${replacementOwnerId} verified`;
   } else if (outcome === 'unverified') {
     next.openedMemberIds = addMemberId(next.openedMemberIds, replacementOwnerId);
-    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds, replacementOwnerId);
-    next.unconfirmedMemberIds = addMemberId(next.unconfirmedMemberIds, replacementOwnerId);
+    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds ?? [], replacementOwnerId);
+    next.unconfirmedMemberIds = addMemberId(next.unconfirmedMemberIds ?? [], replacementOwnerId);
     next.recovery.retryOwnerIds = addMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
     next.recovery.nextAction = reason ?? `respawn replacement ${replacementOwnerId} launched but remains unverified`;
   } else {
-    next.openedMemberIds = removeMemberId(next.openedMemberIds, replacementOwnerId);
-    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds, replacementOwnerId);
-    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds, replacementOwnerId);
+    next.openedMemberIds = removeMemberId(next.openedMemberIds ?? [], replacementOwnerId);
+    next.verifiedMemberIds = removeMemberId(next.verifiedMemberIds ?? [], replacementOwnerId);
+    next.unconfirmedMemberIds = removeMemberId(next.unconfirmedMemberIds ?? [], replacementOwnerId);
     next.recovery.retryOwnerIds = addMemberId(next.recovery.retryOwnerIds, replacementOwnerId);
     next.recovery.nextAction = reason ?? `respawn replacement ${replacementOwnerId} failed to launch`;
     if (!next.failed.some((failure) => failure.ownerId === replacementOwnerId && failure.phase === 'spawn')) {
