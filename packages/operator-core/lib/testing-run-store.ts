@@ -561,6 +561,7 @@ export function getRun(runId: string): RunSnapshot | null {
  * shared snapshot ledger. Missing/expired/unreadable rows remain `null`.
  */
 export async function getRunAsync(runId: string, sqlOverride?: SqlLike): Promise<RunSnapshot | null> {
+  evictOldRuns();
   const local = getRun(runId);
   if (local) return local;
   return readPersistedRunSnapshot(runId, sqlOverride);
