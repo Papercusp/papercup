@@ -9220,7 +9220,10 @@ fn fuzzy_score(haystack: &str, query: &str) -> Option<i32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::{ActivityRow, NativeSessionHandle, PlanSummary, RosterEntry, WorkItem};
+    use crate::models::{
+        ActivityRow, NativeSessionHandle, PlanSummary, RosterEntry, SessionTranscriptResolution,
+        WorkItem,
+    };
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn live_context_row(
