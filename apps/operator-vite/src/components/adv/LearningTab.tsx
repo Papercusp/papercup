@@ -2262,7 +2262,12 @@ function ImprovementsView({
           heading that says what it is for. */}
       <LearningDisclosure
         label="How the loop is doing"
-        subtitle="five questions, one answer each"
+        // Deliberately NOT "five questions": the "Did it stick?" card
+        // (LearningEfficacyPanel) wraps itself and renders nothing while its
+        // read is cold, so a hard count is wrong on screen exactly when the
+        // loop is quietest. Verified live: four cards rendered against a
+        // cold efficacy read.
+        subtitle="one question per group, each answered in a line"
         aside={<LoopWarningsAside snap={snap} />}
       >
         <LoopEngineInstruments snap={snap} scoutWord={t("scout")} />

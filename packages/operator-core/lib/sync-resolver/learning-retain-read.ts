@@ -457,6 +457,13 @@ function retainFeedPredicateSql(sql: Sql, args: NormalizedRetainFeedArgs, omit?:
  * (D-002, owner 2026-08-28). Applied identically by the row legs, the exact
  * summary and the tab badges, so all three name the same corpus.
  *
+ * `plan` and `wi` are the ONLY two kinds this constrains, because they are the
+ * only ones carrying a shipped/in-flight semantic at all; memories, rubrics,
+ * runbooks and recipes have no outcome and are retained unconditionally. That
+ * asymmetry is why the removed Shipped ∕ In-flight control was worth deleting
+ * rather than defaulting: a non-`all` value dropped every kind NOT in that
+ * pair, so the control was inert-or-empty on four of the six tabs (P-001).
+ *
  * `args` is retained in the signature (unused today) because every other
  * population predicate in this file takes the normalized args, and a caller
  * reaching for this one should not have to learn which of them is the odd one.

@@ -51,19 +51,6 @@ export const RETAIN_KIND_FOR_TAB: Record<Exclude<RetainFeedTab, 'all'>, RetainFe
   recipes: 'recipe',
 };
 
-/** Kinds that carry a shipped/in-flight semantic, and are therefore the ONLY
- *  two the ledger's shipped-only population rule constrains (D-001,
- *  learning-tab-improve-retain-clarity-2026-08-28). Kinds without an outcome —
- *  memories, rubrics, runbooks, recipes — are retained unconditionally.
- *
- *  Exported for the read layer's population predicate and its tests; there is
- *  deliberately no user-facing filter over this axis. It USED to back a
- *  Shipped ∕ In-flight control, which the owner removed on 2026-08-28: because
- *  a non-`all` filter dropped every kind NOT in this list, the control was
- *  inert-or-empty on four of the six tabs, and Retain now simply means "what
- *  landed" (in-flight work lives on the Improve tab alone — D-002). */
-export const RETAIN_STATUSFUL_KINDS: readonly RetainFeedKind[] = ['plan', 'wi'];
-
 export interface RetainFeedRowMeta {
   /** Origin idea (plan/wi rows): the Blender lens + idea that produced it. */
   lens?: string;
