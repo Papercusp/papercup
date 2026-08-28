@@ -9,3 +9,4 @@ export * from './account-resolver';
 export * from './launch';
 export * from './capacity-inventory';
 export * from './admission-context';
+export * from './physical-constraints';
