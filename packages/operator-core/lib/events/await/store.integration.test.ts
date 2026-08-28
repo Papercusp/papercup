@@ -458,6 +458,51 @@ describe('await-event store (PG)', () => {
     `).map((r) => r.bound_to)).toEqual([{ kind: 'fleet-leadership', ref: 'fleet-a' }]);
   });
 
+  it('preserves an unfired announcement when its declarer is reaped', async () => {
+    const owner = 'ended-leader';
+    const binding = { kind: 'role', ref: 'operator' };
+    const eventKey = 'gate:announcement-survives-owner-reap';
+    const announcement = await registerAnnouncement({
+      subscriberId: owner,
+      eventKey,
+      scopeKind: 'global',
+      boundTo: binding,
+    });
+    const ordinary = await registerAwait({
+      subscriberId: owner,
+      eventKey: 'lifecycle:ordinary-watch',
+      once: false,
+      boundTo: binding,
+    });
+
+    await expect(retireLifecycleBoundWatchesForOwners([owner])).resolves.toEqual({
+      awaits: 1,
+      predicateWatches: 0,
+    });
+
+    const stored = await rootSql`
+      SELECT policy, cancelled_at, superseded_at, fired_at
+        FROM harness_shared.event_awaits
+       WHERE id IN (${announcement.id}, ${ordinary.id})
+       ORDER BY id
+    `;
+    expect(stored).toEqual([
+      {
+        policy: 'announce',
+        cancelled_at: null,
+        superseded_at: null,
+        fired_at: null,
+      },
+      {
+        policy: 'wake',
+        cancelled_at: expect.anything(),
+        superseded_at: null,
+        fired_at: null,
+      },
+    ]);
+    expect((await findAnnouncementsForKey(eventKey)).map((row) => row.id)).toEqual([announcement.id]);
+  });
+
   it('retires only the unfired announcement, preserves its waiter, and removes it from discovery', async () => {
     const eventKey = 'gate:announcement-retire';
     const announcement = await registerAnnouncement({

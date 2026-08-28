@@ -446,6 +446,11 @@ export async function retireLifecycleBoundWatches(
              SET cancelled_at = now()
            WHERE bound_to = ${bindingJson}::text::jsonb
              AND subscriber_id = ANY(${owners}::text[])
+             -- Announcements are declaration/latch rows, not lifecycle
+             -- watches.  They intentionally survive declarer death so a
+             -- successor can inherit the exact generation-guarded gate;
+             -- only retireAnnouncement may settle one.
+             AND policy <> 'announce'
              AND cancelled_at IS NULL
              AND (once = false OR fired_at IS NULL)
           RETURNING id`
@@ -453,6 +458,10 @@ export async function retireLifecycleBoundWatches(
           UPDATE harness_shared.event_awaits
              SET cancelled_at = now()
            WHERE bound_to = ${bindingJson}::text::jsonb
+             -- Keep announced gates alive across owner/session lifecycle
+             -- changes.  Their explicit generation-guarded retirement path
+             -- is separate from ordinary lifecycle-watch cleanup.
+             AND policy <> 'announce'
              AND cancelled_at IS NULL
              AND (once = false OR fired_at IS NULL)
           RETURNING id`;
@@ -489,6 +498,10 @@ export async function retireLifecycleBoundWatchesForOwners(
          SET cancelled_at = now()
        WHERE subscriber_id = ANY(${owners}::text[])
          AND bound_to IS NOT NULL
+         -- A declared gate is durable coordination state, not an
+         -- owner-scoped await.  Do not cancel it when the announcer is
+         -- reaped; successor custody is resolved from the declaration.
+         AND policy <> 'announce'
          AND cancelled_at IS NULL
          AND (once = false OR fired_at IS NULL)
       RETURNING id`;
