@@ -366,7 +366,39 @@ describe("CloudWorkspacesPage — rail and step routing", () => {
     const operateStep = screen.getByRole("button", {
       name: /03 Operate/,
     }) as HTMLButtonElement;
-    expect(operateStep.disabled).toBe(true);
+    expect(operateStep.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("keeps an unreachable rail step inert but still able to say why", () => {
+    /* The rail's tooltip is enriched with `evidence` precisely in the
+       unreachable case, and once the container query collapses .railStepBody
+       away (<=1100px) it is the ONLY channel carrying that reason to a sighted
+       pointer user. Tooltip is Radix (Trigger asChild), so it hangs pointer and
+       focus listeners on the trigger — a natively `disabled` button dispatches
+       neither, which made the explanation undeliverable in exactly the state
+       that needed one, and dropped the step out of the tab order too.
+
+       So: inert via aria-disabled, never the native attribute. */
+    H.rows = [];
+    H.queryDefaults = { ...onOperate };
+    render(<CloudWorkspacesPage />);
+
+    const operateStep = screen.getByRole("button", {
+      name: /03 Operate/,
+    }) as HTMLButtonElement;
+
+    expect(operateStep.getAttribute("aria-disabled")).toBe("true");
+    expect(operateStep.disabled).toBe(false);
+
+    /* Reachable by keyboard, which is what lets a keyboard user surface the
+       reason at all. */
+    operateStep.focus();
+    expect(document.activeElement).toBe(operateStep);
+
+    /* ...and still genuinely inert: clicking cannot strand the operator in an
+       empty stage, which is the guarantee the native attribute used to carry. */
+    fireEvent.click(operateStep);
+    expect(H.queryUpdates).not.toContainEqual(["step", "operate"]);
   });
 
   it("navigates between reachable steps from the rail", () => {
@@ -1153,10 +1185,11 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(
       screen.getByRole("heading", { name: "Provider readiness" }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: /02 Configure/ })).toHaveProperty(
-      "disabled",
-      true,
-    );
+    expect(
+      screen
+        .getByRole("button", { name: /02 Configure/ })
+        .getAttribute("aria-disabled"),
+    ).toBe("true");
   });
 
   it("collapses the rail to an icon strip at narrow widths without losing its labels", () => {
@@ -1169,6 +1202,15 @@ describe("CloudWorkspacesPage — failure and layout", () => {
     expect(cloudPageCss).toMatch(
       /@media \(max-width: 1100px\)\s*\{\s*\.shell\s*\{\s*grid-template-columns: 74px/,
     );
+  });
+
+  it("styles an inert rail step off aria-disabled, not :disabled", () => {
+    /* The DOM half of this contract is pinned above ("keeps an unreachable rail
+       step inert but still able to say why"). This is the stylesheet half: a
+       `:disabled` selector here would silently stop matching, so the inert step
+       would lose its affordance the moment the attribute changed. */
+    expect(cloudPageCss).toContain('.railStep[aria-disabled="true"]');
+    expect(cloudPageCss).not.toMatch(/\.railStep[^{]*:disabled/);
   });
 
   it("raises the type floor above the pre-redesign 8.5px metadata", () => {
