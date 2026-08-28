@@ -281,9 +281,9 @@ export default function InboxBulkStrip({
             data-testid="inbox-bulk-review-headline"
           >
             {pending} need your call · {counts.resolved} auto-resolved
-            {/* Items the resolver never reached are named rather than dropped —
-                a run that stopped early must not read as a run that finished. */}
-            {unreached.length > 0 ? ` · ${unreached.length} not reached` : ""}
+            {counts.pending > 0 ? ` · ${counts.pending} not reached` : ""}
+            {counts.skipped > 0 ? ` · ${counts.skipped} skipped` : ""}
+            {counts.failed > 0 ? ` · ${counts.failed} failed` : ""}
           </span>
           <span className="op-inbox__bulk-spacer" />
           {elapsed ? (
@@ -324,8 +324,8 @@ export default function InboxBulkStrip({
         </div>
         <p className="op-inbox__bulk-hint">
           Review returns to the decisions already prepared for you. Continue
-          sends only the untouched remainder back through the same saved run,
-          preserving every earlier outcome.
+          retries pending, skipped, and failed rows through the same saved run;
+          recommendations and terminal outcomes stay preserved.
         </p>
         {notice ? (
           <div className="op-inbox__bulk-notice" role="status">

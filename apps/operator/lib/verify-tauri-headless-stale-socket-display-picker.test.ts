@@ -29,20 +29,20 @@
  * stack, so its display-picker wiring can only be asserted at the wiring site,
  * not by running a live boot in CI.
  */
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { describe, expect, it } from "vitest";
 
-const SCRIPT = resolve(__dirname, '../../../scripts/verify-tauri-headless.sh');
-const src = readFileSync(SCRIPT, 'utf8');
+const SCRIPT = resolve(__dirname, "../../../scripts/verify-tauri-headless.sh");
+const src = readFileSync(SCRIPT, "utf8");
 
-describe('EI-16466 — verify-tauri-headless display picker skips stale leaked Xvfb sockets', () => {
-  it('is the right script (guards a vacuous suite)', () => {
-    expect(src).toContain('verify-tauri-headless');
+describe("EI-16466 — verify-tauri-headless display picker skips stale leaked Xvfb sockets", () => {
+  it("is the right script (guards a vacuous suite)", () => {
+    expect(src).toContain("verify-tauri-headless");
     expect(src).toMatch(/DISPLAY_NUM=90/);
   });
 
-  it('the auto-pick loop treats a stale /tmp/.X11-unix socket file as occupied, not just a live xdpyinfo probe', () => {
+  it("the auto-pick loop treats a stale /tmp/.X11-unix socket file as occupied, not just a live xdpyinfo probe", () => {
     const loop = src.match(
       /while x_display_taken "\$DISPLAY_NUM"; do[\s\S]*?\n\s*done/,
     )?.[0];
@@ -53,17 +53,26 @@ describe('EI-16466 — verify-tauri-headless display picker skips stale leaked X
     expect(src).toContain('[ -S "/tmp/.X11-unix/X$1" ] && return 0');
   });
 
-  it('the pre-fix bug is gone: the loop delegates occupancy to the shared predicate', () => {
-    const loopLine = src.split('\n').find((l) => l.includes('while x_display_taken "$DISPLAY_NUM"'));
+  it("the pre-fix bug is gone: the loop delegates occupancy to the shared predicate", () => {
+    const loopLine = src
+      .split("\n")
+      .find((l) => l.includes('while x_display_taken "$DISPLAY_NUM"'));
     expect(loopLine).toBeTruthy();
-    expect(loopLine).not.toContain('xdpyinfo');
+    expect(loopLine).not.toContain("xdpyinfo");
     const taken = src.match(/x_display_taken\(\)\s*\{[\s\S]*?\n\}/)?.[0];
     expect(taken).toBeTruthy();
-    expect(taken).toContain('xdpyinfo');
+    expect(taken).toContain("xdpyinfo");
     expect(taken).toContain('[ -S "/tmp/.X11-unix/X$1" ] && return 0');
   });
 
-  it('picker still starts at :90 and walks forward past any occupied number', () => {
-    expect(src).toMatch(/DISPLAY_NUM=90\s*\n\s*while[\s\S]*?\n\s*DISPLAY_NUM=\$\(\(DISPLAY_NUM \+ 1\)\)\s*\n\s*done/);
+  it("picker still starts at :90 and walks forward past any occupied number", () => {
+    const floor = src.indexOf("DISPLAY_NUM=90");
+    const loop = src.match(
+      /while x_display_taken "\$DISPLAY_NUM"; do[\s\S]*?\n\s*done/,
+    )?.[0];
+    expect(floor).toBeGreaterThanOrEqual(0);
+    expect(loop).toBeTruthy();
+    expect(src.indexOf(loop!)).toBeGreaterThan(floor);
+    expect(loop).toContain("DISPLAY_NUM=$((DISPLAY_NUM + 1))");
   });
 });

@@ -91,6 +91,7 @@ import InboxBulkRecommendation, {
 import {
   deriveRunCounts,
   isActivePhase,
+  isContinuableBulkRunItem,
   useBulkRunOps,
   type BulkRunItem,
 } from "./use-inbox-bulk-run";
@@ -212,6 +213,20 @@ describe("deriveRunCounts", () => {
     expect(c.percent).toBe(0);
   });
 
+  it("counts pending separately so the review strip can account for every outcome", () => {
+    const c = deriveRunCounts(
+      [
+        mkRec({ itemId: "pending", outcome: "pending" }),
+        mkRec({ itemId: "skipped", outcome: "skipped" }),
+        mkRec({ itemId: "failed", outcome: "failed" }),
+      ],
+      { ...run, totalItems: 3 },
+    );
+    expect(c.pending).toBe(1);
+    expect(c.skipped).toBe(1);
+    expect(c.failed).toBe(1);
+  });
+
   it("never divides by zero on an empty run", () => {
     expect(deriveRunCounts([], null).percent).toBe(0);
   });
@@ -226,6 +241,22 @@ describe("isActivePhase", () => {
       false,
     );
     expect(isActivePhase(null)).toBe(false);
+  });
+});
+
+describe("isContinuableBulkRunItem", () => {
+  it("includes unresolved resolver outcomes but preserves recommendations and terminal rows", () => {
+    const outcomes: BulkRunItem["outcome"][] = [
+      "pending",
+      "skipped",
+      "failed",
+      "recommended",
+      "auto_resolved",
+      "dismissed",
+    ];
+    expect(
+      outcomes.filter((outcome) => isContinuableBulkRunItem({ outcome })),
+    ).toEqual(["pending", "skipped", "failed"]);
   });
 });
 
@@ -370,6 +401,85 @@ describe("InboxBulkStrip review handoff", () => {
       op: "resume",
       runId: "run-partial-127",
       itemIds: unreached.map((item) => item.itemId),
+    });
+  });
+
+  it("surfaces and retries skipped rows in the observed 158-item partition", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        phase: "running",
+        launched: true,
+        preservedOutcomes: 22,
+      }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const recommendations = Array.from({ length: 9 }, (_, position) =>
+      mkRec({ itemId: `review-${position}`, position }),
+    );
+    const resolved = Array.from({ length: 13 }, (_, index) =>
+      mkRec({
+        itemId: `resolved-${index}`,
+        position: recommendations.length + index,
+        outcome: "auto_resolved",
+      }),
+    );
+    const skipped = Array.from({ length: 136 }, (_, index) =>
+      mkRec({
+        itemId: `skipped-${index}`,
+        position: recommendations.length + resolved.length + index,
+        outcome: "skipped",
+        actionId: null,
+      }),
+    );
+    const items = [...recommendations, ...resolved, ...skipped];
+    const continuable = items.filter(isContinuableBulkRunItem);
+    expect(items).toHaveLength(158);
+    expect(continuable).toHaveLength(136);
+
+    render(
+      <InboxBulkStrip
+        visible={[]}
+        filterSnapshot={{ tier: "decision" }}
+        run={{
+          runId: "run-partial-158",
+          phase: "review",
+          totalItems: 158,
+          autoResolved: 13,
+          recommended: 9,
+          skipped: 136,
+          failed: 0,
+          error: null,
+          createdAt: "2026-08-25T00:00:00.000Z",
+          startedAt: "2026-08-25T00:00:00.000Z",
+          finishedAt: "2026-08-25T00:05:00.000Z",
+        }}
+        items={items}
+        recommendations={recommendations}
+        unreached={continuable}
+        isRunning={false}
+        isReview
+        onRunStarted={vi.fn()}
+        onReview={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.getByTestId("inbox-bulk-review-headline").textContent,
+    ).toContain("9 need your call · 13 auto-resolved · 136 skipped");
+    expect(screen.getByTestId("inbox-bulk-continue").textContent).toContain(
+      "Continue 136 remaining",
+    );
+    fireEvent.click(screen.getByTestId("inbox-bulk-continue"));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const body = JSON.parse(fetchMock.mock.calls[0]![1].body as string);
+    expect(body).toEqual({
+      op: "resume",
+      runId: "run-partial-158",
+      itemIds: skipped.map((item) => item.itemId),
     });
   });
 });

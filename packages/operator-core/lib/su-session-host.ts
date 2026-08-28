@@ -21,6 +21,7 @@ import {
   type SuSessionLifecycleState,
   type SuSessionRefusal,
 } from '@papercusp/chat-protocol';
+import { pinModuleState } from '@papercusp/module-singleton';
 import { dropChannel, getChannel, parseLastEventId, sseResponse, type BusChannel } from '@papercusp/sse';
 
 type EventEnvelopeKey = 'schema' | 'protocolVersion' | 'eventId' | 'sequence' | 'at' | 'session';
@@ -485,14 +486,13 @@ export class SuSessionHost<B extends SuSessionBackend = SuSessionBackend> {
 }
 
 type RegisteredHost = SuSessionHost<SuSessionBackend>;
-const HOST_REGISTRY_KEY = '__papercusp_su_session_host_registry__';
+const hostRegistry = pinModuleState(
+  '@papercusp/operator-core.su-session-host-registry',
+  () => new Map<string, RegisteredHost>(),
+);
 
 function registry(): Map<string, RegisteredHost> {
-  const global = globalThis as unknown as {
-    [HOST_REGISTRY_KEY]?: Map<string, RegisteredHost>;
-  };
-  if (!global[HOST_REGISTRY_KEY]) global[HOST_REGISTRY_KEY] = new Map();
-  return global[HOST_REGISTRY_KEY]!;
+  return hostRegistry;
 }
 
 export function registerSuSessionHost<B extends SuSessionBackend>(host: SuSessionHost<B>): () => void {

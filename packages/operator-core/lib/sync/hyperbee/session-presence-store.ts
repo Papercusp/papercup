@@ -110,12 +110,34 @@ export interface SessionPresenceRowOut {
 /** Live (within staleMs) session-presence rows, optionally hive-scoped —
  *  the unified roster's federated session leg (P-006). */
 export async function listLiveSessionPresence(
-  opts: { workspaceId: string; potSlug?: string | null; staleMs: number; nowMs?: number },
+  opts: {
+    workspaceId: string;
+    potSlug?: string | null;
+    staleMs: number;
+    nowMs?: number;
+    ownerIds?: readonly string[];
+  },
   sqlIn?: postgres.Sql,
 ): Promise<SessionPresenceRowOut[]> {
   const sql = sqlIn ?? getOrgPg().sql;
   const now = opts.nowMs ?? Date.now();
   const floor = new Date(now - opts.staleMs);
+  const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
+  const ownerFilter =
+    ownerIds.length === 0
+      ? sql``
+      : sql`
+       AND (
+         owner_id = ANY(${ownerIds}::text[])
+         OR EXISTS (
+           SELECT 1
+             FROM unnest(${ownerIds}::text[]) AS requested(owner)
+            WHERE strpos(owner_id, requested.owner) > 0
+               OR strpos(requested.owner, owner_id) > 0
+               OR strpos(kind || ' · ' || left(owner_id, 8) || ' @ ' || machine_label, requested.owner) > 0
+               OR strpos(requested.owner, kind || ' · ' || left(owner_id, 8) || ' @ ' || machine_label) > 0
+         )
+       )`;
   const rows = await sql<
     Array<Omit<SessionPresenceRowOut, 'last_seen_ms'> & { last_seen_at: Date }>
   >`
@@ -126,9 +148,23 @@ export async function listLiveSessionPresence(
     WHERE workspace_id = ${opts.workspaceId}
       AND last_seen_at > ${floor}
       ${opts.potSlug ? sql`AND pot_slug = ${opts.potSlug}` : sql``}
+      ${ownerFilter}
     ORDER BY last_seen_at DESC
   `;
-  return rows.map((r) => ({
+  const selected = rows.filter(
+    (r) =>
+      ownerIds.length === 0 ||
+      ownerIds.some(
+        (selector) =>
+          r.owner_id === selector ||
+          `${r.kind} · ${r.owner_id.slice(0, 8)} @ ${r.machine_label}` === selector ||
+          r.owner_id.includes(selector) ||
+          selector.includes(r.owner_id) ||
+          `${r.kind} · ${r.owner_id.slice(0, 8)} @ ${r.machine_label}`.includes(selector) ||
+          selector.includes(`${r.kind} · ${r.owner_id.slice(0, 8)} @ ${r.machine_label}`),
+      ),
+  );
+  return selected.map((r) => ({
     workspace_id: r.workspace_id,
     pot_slug: r.pot_slug,
     harness_slug: r.harness_slug,

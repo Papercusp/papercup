@@ -108,6 +108,17 @@ describe('listRecordedLiveSessions (real PG)', () => {
     expect(owners).toEqual(['s-mine']);
   });
 
+  it('pushes a targeted owner selector into the live-session read', async () => {
+    await seedAdv({ coordOwnerId: 's-target', label: 'target label' });
+    await seedAdv({ coordOwnerId: 's-other' });
+
+    const exact = await listRecordedLiveSessions({ workspaceId: WS, ownerIds: ['s-target'] });
+    expect(exact.map((r) => r.coordOwnerId)).toEqual(['s-target']);
+
+    const prefix = await listRecordedLiveSessions({ workspaceId: WS, ownerIds: ['target l'] });
+    expect(prefix.map((r) => r.coordOwnerId)).toEqual(['s-target']);
+  });
+
   it('dedups to the most-recent row per coord_owner_id', async () => {
     await seedAdv({ coordOwnerId: 's-dup', label: 'older', startedAgoSec: 300 });
     await seedAdv({ coordOwnerId: 's-dup', label: 'newer', startedAgoSec: 10 });

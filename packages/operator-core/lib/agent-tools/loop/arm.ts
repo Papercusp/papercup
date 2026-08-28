@@ -961,7 +961,10 @@ export default defineTool({
     // warm-loop behaviour stays byte-identical unless the arming agent opts in. The claim
     // NEVER steals a live peer's item (claimWorkItem's compare-and-claim only takes an
     // unheld/self-held row), so a conflict/not-found is a non-fatal NOTE, never a failed
-    // arm — arming already succeeded; this is best-effort on top.
+    // arm — arming already succeeded; this is best-effort on top. A cold goal's
+    // auto-detected candidate also passes the active scheduler spec before this claim;
+    // an authored per-cup plan lane must not be bypassed merely because the caller is
+    // not a named fleet member (EI-21659493450381888).
     const explicit = explicitWorkItem;
     const drivenCandidate =
       resolvedMode === 'monitor'
@@ -982,15 +985,18 @@ export default defineTool({
     if (drivenCandidate) {
       try {
         // EI-20123870155538062: the direct loop auto-claim is still a claim door. Route it
-        // through the same fleet-scope admission used by work_items:claim before calling the
+        // through the same fleet/scheduler admission used by work_items:claim before calling the
         // lower-level compare-and-claim primitive. Otherwise a member can bind an out-of-spec
         // item to its loop even though the authoritative by-id claim tool refuses it.
-        const { admitWorkItemForFleetTarget } = await import('../../scheduler/fleet-scope-admission');
-        const admission = await admitWorkItemForFleetTarget({
+        // EI-21659493450381888 extends this to non-fleet callers with an authored per-cup spec.
+        const { admitWorkItemForLoopTarget } = await import('../../scheduler/fleet-scope-admission');
+        const schedulerSpecEnabled = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ownerId).catch(() => true);
+        const admission = await admitWorkItemForLoopTarget({
           target: ownerId,
           workItemId: drivenCandidate,
           harness,
           workspaceId,
+          enforceSchedulerSpec: schedulerSpecEnabled && !explicitWorkItem,
         });
         if (!admission.allowed) {
           // The loop itself is useful even when its optional death-resilience anchor is out of

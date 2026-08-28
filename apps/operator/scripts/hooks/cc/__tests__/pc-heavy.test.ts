@@ -694,6 +694,9 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // heartbeat proves that a minutes-long production wait remains visibly
       // alive without weakening that ordering barrier.
       expect(readFileSync(attemptsFile, 'utf8').trim()).toBe('1');
+      expect(retryingErr.text()).toContain('retry materializer progress: elapsed=');
+      expect(retryingErr.text()).toContain('retry materializer intent owner:');
+      expect(retryingErr.text()).toContain('retry materializer writer lock holder:');
 
       killGroup(writerBlocker);
       expect(

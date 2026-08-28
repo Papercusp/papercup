@@ -10,6 +10,7 @@ import {
   PRESENCE_STALE_MS,
   type PresenceIdentity,
   type PresenceInput,
+  type PresenceListOptions,
   type PresenceRecord,
   type PresenceStore,
 } from './types';
@@ -117,14 +118,28 @@ export class InMemoryPresenceStore implements PresenceStore {
   }
 
   async list(
-    opts: { workspaceId?: string | null; potSlug?: string | null } = {},
+    opts: PresenceListOptions = {},
   ): Promise<PresenceRecord[]> {
     const ws = opts.workspaceId ?? null;
     const hive = opts.potSlug ?? null;
+    const ownerSelectors = (opts.ownerIds ?? []).filter((selector) => selector.length > 0);
     const now = this.now();
     return [...this.rows.values()]
       .map((r) => this.toRecord(r, now))
       .filter((r) => (ws == null || r.workspaceId === ws) && (hive == null || r.potSlug === hive))
+      .filter(
+        (r) =>
+          ownerSelectors.length === 0 ||
+          ownerSelectors.some(
+            (selector) =>
+              r.ownerId === selector ||
+              r.ownerLabel === selector ||
+              r.ownerId.includes(selector) ||
+              selector.includes(r.ownerId) ||
+              r.ownerLabel.includes(selector) ||
+              selector.includes(r.ownerLabel),
+          ),
+      )
       // Deterministic ownerId order (presence-v2 P-005 / D-006) — cache- and
       // diff-stable, unlike the old heartbeat-DESC which reorders every read.
       .sort((a, b) => a.ownerId.localeCompare(b.ownerId));

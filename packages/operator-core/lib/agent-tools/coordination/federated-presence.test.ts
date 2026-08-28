@@ -79,6 +79,16 @@ describe('queryFederatedPresenceRows — filtering', () => {
     const r = await queryFederatedPresenceRows(fakeSql(rows), { workspaceId: 'ws-1', harnessSlug: 'a' });
     expect(r.map((x) => x.github_user_id)).toEqual([1]);
   });
+  it('filters by targeted synthetic owner id, label, and prefix', async () => {
+    const byId = await queryFederatedPresenceRows(fakeSql(rows), { ownerIds: ['fed:1@m1'] });
+    expect(byId.map((x) => x.github_user_id)).toEqual([1]);
+
+    const byLabel = await queryFederatedPresenceRows(fakeSql(rows), { ownerIds: ['gh:3 · m3'] });
+    expect(byLabel.map((x) => x.github_user_id)).toEqual([3]);
+
+    const byPrefix = await queryFederatedPresenceRows(fakeSql(rows), { ownerIds: ['fed:2@'] });
+    expect(byPrefix.map((x) => x.github_user_id)).toEqual([2]);
+  });
 });
 
 describe('dedupeSharedPresenceRows — machine roster identity', () => {

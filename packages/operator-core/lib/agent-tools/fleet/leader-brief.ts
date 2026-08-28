@@ -162,13 +162,33 @@ const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
  * serves. Keep the fan-out deterministic and bounded.
  */
 export const LEADER_BRIEF_READ_CONCURRENCY = 4;
-const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 8_000;
+export const LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS = 3_000;
 /**
  * Keep optional leader-brief legs below the MCP transport budget. The roster
  * has its own larger, per-leg budget; everything after it is advisory and can
  * truthfully degrade to an absent/unknown block when the database is slow.
  */
-export const LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS = 2_000;
+export const LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS = 750;
+/**
+ * The MCP clients used by fleet leaders abandon a call at ~30s. Per-leg bounds
+ * protect individual reads, but dependency-ordered phases still add together.
+ * Keep a whole-call backstop with enough margin for serialization/transport so
+ * a slow database yields an explicit degraded brief instead of -32001/no body.
+ */
+export const LEADER_BRIEF_TOTAL_TIMEOUT_MS = 25_000;
+
+export async function runLeaderBriefWithinDeadline<T>(
+  work: () => Promise<T>,
+  fallback: T,
+  timeoutMs = LEADER_BRIEF_TOTAL_TIMEOUT_MS,
+): Promise<T> {
+  const result = await withBoundedTimeout(work, {
+    fallback,
+    timeoutMs,
+    label: 'fleet:leader-brief:total',
+  });
+  return result.value;
+}
 
 type LeaderBriefReadResult<T> = T extends () => Promise<infer R> ? R : never;
 
@@ -2998,17 +3018,29 @@ export default defineTool({
     } catch {
       actorWorkspace = null;
     }
-    return buildLeaderBrief(args, {
-      agentIdentity,
-      ownerId,
-      actorWorkspace,
-      self: resolveSelfRef(ctx),
-      // An AGENT calling its own brief is the case leadership bookkeeping was
-      // written for: a fleet nobody leads is how a whole fleet dies unnoticed,
-      // so the caller is installed when the seat is empty.
-      allowLeadershipWrites: true,
-      resolveCallerMembership: true,
-    });
+    return runLeaderBriefWithinDeadline(
+      () =>
+        buildLeaderBrief(args, {
+          agentIdentity,
+          ownerId,
+          actorWorkspace,
+          self: resolveSelfRef(ctx),
+          // An AGENT calling its own brief is the case leadership bookkeeping was
+          // written for: a fleet nobody leads is how a whole fleet dies unnoticed,
+          // so the caller is installed when the seat is empty.
+          allowLeadershipWrites: true,
+          resolveCallerMembership: true,
+        }),
+      {
+        data: {
+          ok: false,
+          error: 'leader_brief_deadline',
+          hint:
+            'The supervision read exceeded its 25s server budget and returned before the MCP client deadline. ' +
+            'Retry once; persistent deadlines mean a leader-brief dependency is unhealthy, not that the fleet is empty.',
+        },
+      },
+    );
   },
 });
 

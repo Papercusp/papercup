@@ -415,13 +415,23 @@ export async function assemblePresenceSnapshot(
   } = {},
 ): Promise<PresenceSnapshot> {
   const { wsId, potId, scope, scopeNote } = resolved;
-  // EI-9454: a `{ owner }` read is a TARGETED point-lookup — it must not pay the
-  // whole-roster assembly (see the early filter + sweep skip below).
+  // EI-9454: a `{ owner }` read is a TARGETED point-lookup — source queries and
+  // downstream enrichment must receive only the bounded owner selectors, and it
+  // must not pay the whole-roster assembly (see the early filter + sweep skip below).
   const ownerSelectors = opts.owners?.length ? opts.owners : opts.owner ? [opts.owner] : [];
   const targeted = ownerSelectors.length > 0;
+  const targetedOwnerIds = targeted ? [...ownerSelectors] : undefined;
   const [records, federated, recordedLive, , nurseryAliasRows] = await Promise.all([
-    listPresence({ workspaceId: wsId, potSlug: potId }),
-    listFederatedPresence({ workspaceId: wsId, potSlug: potId }),
+    listPresence({
+      workspaceId: wsId,
+      potSlug: potId,
+      ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
+    }),
+    listFederatedPresence({
+      workspaceId: wsId,
+      potSlug: potId,
+      ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
+    }),
     // The AUTHORITATIVE-session-log leg (P-001): live recorded sessions of ANY
     // CLI not yet self-registered in coord_presence — so a recorded session is
     // visible the instant it launches, never gated on a self-heartbeat. Skipped
@@ -430,7 +440,10 @@ export async function assemblePresenceSnapshot(
     // the workspace/all views — the su/operator/admin roster where the gap lives.
     // listRecordedLiveSessions is itself best-effort ([] on DB error).
     potId == null
-      ? listRecordedLiveSessions({ workspaceId: wsId })
+      ? listRecordedLiveSessions({
+          workspaceId: wsId,
+          ...(targetedOwnerIds ? { ownerIds: targetedOwnerIds } : {}),
+        })
       : Promise.resolve([] as Awaited<ReturnType<typeof listRecordedLiveSessions>>),
     // Blunt 24h GC of long-dead rows (the pre-existing backstop, still here as a
     // final safety net). NOTE: the READ side additionally excludes `ended` rows from

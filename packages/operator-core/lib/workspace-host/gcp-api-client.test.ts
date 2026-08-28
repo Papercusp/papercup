@@ -142,6 +142,47 @@ describe('ADC-backed GCP workspace-host API client', () => {
     ).resolves.toMatchObject({ ok: false });
   });
 
+  it('classifies local metadata and active-user resolver failures without exposing arbitrary errors', async () => {
+    const acquireAuth = vi.fn(async () => ({ accessToken: TOKEN, projectId: PROJECT }));
+    const fetchImpl = vi.fn(async () => json({ name: PROJECT })) as typeof fetch;
+    const client = new GoogleComputeWorkspaceHostApiClient({ acquireAuth, fetch: fetchImpl, now: () => NOW });
+    const missingProject: WorkspaceHostProviderConnection = {
+      target: 'gcp',
+      cloudCredentialRef: { kind: 'cloud', ref: 'gcloud://active-user' },
+      provider: {},
+    };
+
+    await expect(client.validateConnection(missingProject)).resolves.toMatchObject({
+      ok: false,
+      errors: ['GCP connection project is missing; reconnect with an explicit project.'],
+    });
+    expect(acquireAuth).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const tokenFailure = new GoogleComputeWorkspaceHostApiClient({
+      acquireAuth: async () => {
+        throw new Error('gcp_gcloud_active_user_token_unavailable');
+      },
+      fetch: fetchImpl,
+      now: () => NOW,
+    });
+    await expect(tokenFailure.validateConnection(connection())).resolves.toMatchObject({
+      ok: false,
+      errors: ['GCP active-user credential resolution failed: an access token is unavailable.'],
+    });
+
+    const unknownFailure = new GoogleComputeWorkspaceHostApiClient({
+      acquireAuth: async () => {
+        throw new Error(`resolver stderr contained ${TOKEN}`);
+      },
+      fetch: fetchImpl,
+      now: () => NOW,
+    });
+    const validation = await unknownFailure.validateConnection(connection());
+    expect(validation).toMatchObject({ ok: false, errors: ['GCP credential/Compute validation failed'] });
+    expect(JSON.stringify(validation)).not.toContain(TOKEN);
+  });
+
   it('admits a hosted delegation only when the injected auth supplier is bound to its exact reference', async () => {
     const hostedRef = 'resolver://workspace-1/gcp/generation-2';
     const hostedConnection: WorkspaceHostProviderConnection = {

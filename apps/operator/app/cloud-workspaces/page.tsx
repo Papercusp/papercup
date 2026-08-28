@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Activity,
   AlertTriangle,
@@ -571,7 +578,55 @@ export default function CloudWorkspacesPage() {
     selectedConnection?.networks.find((option) => option.id === networkParam) ??
     selectedConnection?.networks[0] ??
     null;
+  const catalogSelectionCanonical =
+    connectionParam === (selectedConnection?.id ?? "") &&
+    scopeParam === (selectedScope?.id ?? "") &&
+    regionParam === (selectedRegion?.id ?? "") &&
+    sizeParam === (selectedSize?.id ?? "") &&
+    imageParam === (selectedImage?.id ?? "") &&
+    networkParam === (selectedNetwork?.id ?? "");
+
+  useEffect(() => {
+    if (connections.length === 0) return;
+
+    const connectionId = selectedConnection?.id ?? "";
+    const scopeId = selectedScope?.id ?? "";
+    const regionId = selectedRegion?.id ?? "";
+    const sizeId = selectedSize?.id ?? "";
+    const imageId = selectedImage?.id ?? "";
+    const networkId = selectedNetwork?.id ?? "";
+
+    if (connectionParam !== connectionId) void setConnectionParam(connectionId);
+    if (scopeParam !== scopeId) void setScopeParam(scopeId);
+    if (regionParam !== regionId) void setRegionParam(regionId);
+    if (sizeParam !== sizeId) void setSizeParam(sizeId);
+    if (imageParam !== imageId) void setImageParam(imageId);
+    if (networkParam !== networkId) void setNetworkParam(networkId);
+  }, [
+    connectionParam,
+    connections.length,
+    imageParam,
+    networkParam,
+    regionParam,
+    scopeParam,
+    selectedConnection?.id,
+    selectedImage?.id,
+    selectedNetwork?.id,
+    selectedRegion?.id,
+    selectedScope?.id,
+    selectedSize?.id,
+    setConnectionParam,
+    setImageParam,
+    setNetworkParam,
+    setRegionParam,
+    setScopeParam,
+    setSizeParam,
+    sizeParam,
+  ]);
   const provisionBlockers = [
+    !catalogSelectionCanonical
+      ? "wait for URL-backed selections to finish syncing"
+      : null,
     selectedConnection && selectedConnection.target !== "gcp"
       ? "choose a supported Google Cloud connection"
       : null,
@@ -696,6 +751,7 @@ export default function CloudWorkspacesPage() {
   );
 
   const canProvision = Boolean(
+    catalogSelectionCanonical &&
     selectedConnection?.target === "gcp" &&
     selectedConnection?.status === "connected" &&
     nameParam.trim() &&

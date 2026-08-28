@@ -117,7 +117,11 @@ export interface BulkRunState {
   byItemId: Map<string, BulkRunItem>;
   /** Items still awaiting the owner's call. */
   recommendations: BulkRunItem[];
-  /** Items the resolver never reached (a stopped or failed run). */
+  /**
+   * Rows eligible for a continuation pass: pending, skipped, or failed.
+   * Recommendations remain in the owner-review queue; auto-resolved and
+   * dismissed rows are terminal and must not be requeued.
+   */
   unreached: BulkRunItem[];
   /** The run is live: the resolver is still working. */
   isRunning: boolean;
@@ -160,6 +164,22 @@ export function isActivePhase(phase: BulkRunPhase | null | undefined): boolean {
 }
 
 /**
+ * Select the unresolved Inbox rows that the saved-run resume operation can
+ * safely requeue. `resumeReviewRun` preserves owner decisions (`recommended`)
+ * and terminal outcomes (`auto_resolved`/`dismissed`), so the client must use
+ * the same boundary instead of treating only `pending` rows as continuable.
+ */
+export function isContinuableBulkRunItem(
+  item: Pick<BulkRunItem, "outcome">,
+): boolean {
+  return (
+    item.outcome === "pending" ||
+    item.outcome === "skipped" ||
+    item.outcome === "failed"
+  );
+}
+
+/**
  * The strip's headline counts. Derived from the ITEM ROWS, never from the run's
  * denormalized counters: the counters are recomputed asynchronously after each
  * report, so during a run they can trail the rows the same render is showing —
@@ -173,6 +193,7 @@ export function deriveRunCounts(
   total: number;
   resolved: number;
   forReview: number;
+  pending: number;
   skipped: number;
   failed: number;
   left: number;
@@ -181,11 +202,13 @@ export function deriveRunCounts(
 } {
   let resolved = 0;
   let forReview = 0;
+  let pending = 0;
   let skipped = 0;
   let failed = 0;
   for (const i of items) {
     if (i.outcome === "auto_resolved") resolved += 1;
     else if (i.outcome === "recommended") forReview += 1;
+    else if (i.outcome === "pending") pending += 1;
     else if (i.outcome === "skipped" || i.outcome === "dismissed") skipped += 1;
     else if (i.outcome === "failed") failed += 1;
   }
@@ -199,6 +222,7 @@ export function deriveRunCounts(
     total,
     resolved,
     forReview,
+    pending,
     skipped,
     failed,
     decided,
@@ -270,7 +294,7 @@ export function useInboxBulkRun(
       items,
       byItemId,
       recommendations: items.filter((i) => i.outcome === "recommended"),
-      unreached: items.filter((i) => i.outcome === "pending"),
+      unreached: items.filter(isContinuableBulkRunItem),
       isRunning: run?.phase === "running" || run?.phase === "pending",
       isReview: run?.phase === "review",
       loading: Boolean(loading),

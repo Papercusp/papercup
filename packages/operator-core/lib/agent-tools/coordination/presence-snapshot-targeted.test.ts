@@ -25,8 +25,23 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock factories are hoisted above module-level consts — vi.hoisted() is the
 // sanctioned way to share spies with them (a bare `const` here hits the TDZ).
-const { listPresenceMock, sweepMock, tier1Mock, wakeabilityMock, fleetMock, findLiveHostMock, endedSessionsMock, endedOwnersMock } = vi.hoisted(() => ({
+const {
+  listPresenceMock,
+  federatedMock,
+  recordedLiveSessionsMock,
+  nurseryAliasMock,
+  sweepMock,
+  tier1Mock,
+  wakeabilityMock,
+  fleetMock,
+  findLiveHostMock,
+  endedSessionsMock,
+  endedOwnersMock,
+} = vi.hoisted(() => ({
   listPresenceMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  federatedMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  recordedLiveSessionsMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
+  nurseryAliasMock: vi.fn(async (..._a: unknown[]) => [] as unknown[]),
   sweepMock: vi.fn(async (..._a: unknown[]) => 0),
   tier1Mock: vi.fn(async (..._a: unknown[]) => new Map()),
   wakeabilityMock: vi.fn(async (..._a: unknown[]) => new Map()),
@@ -45,11 +60,11 @@ vi.mock('./presence', async (importOriginal) => ({
   listPresence: listPresenceMock,
   sweepStalePresence: sweepMock,
 }));
-vi.mock('./federated-presence', () => ({ listFederatedPresence: vi.fn(async () => []) }));
+vi.mock('./federated-presence', () => ({ listFederatedPresence: federatedMock }));
 vi.mock('../../adv-sessions', async (orig) => ({
   ...(await orig<typeof import('../../adv-sessions')>()),
   endedRecordedOwnerIds: endedOwnersMock,
-  listRecordedLiveSessions: vi.fn(async () => []),
+  listRecordedLiveSessions: recordedLiveSessionsMock,
   // Unification P-002: the snapshot's recorded-session oracle leg.
   recordedLiveOwnerIds: vi.fn(async () => new Set<string>()),
   // EI-21488009366204518: the targeted-miss session-log death leg.
@@ -66,7 +81,7 @@ vi.mock('./recorded-sessions', async (importOriginal) => ({
 // EI-16639: the nursery-alias leg — no running nursery bees in these fixtures,
 // so it contributes nothing (existing counts/ids stay exactly as asserted below).
 vi.mock('./nursery-alias-liveness', () => ({
-  listRunningNurseryAliasRows: vi.fn(async () => []),
+  listRunningNurseryAliasRows: nurseryAliasMock,
   synthesizeNurseryAliasRosterRows: () => [],
   NURSERY_ALIAS_SOURCE: 'nursery-alias',
 }));
@@ -118,9 +133,35 @@ beforeEach(() => {
   endedSessionsMock.mockResolvedValue([]);
   endedOwnersMock.mockResolvedValue(new Set<string>());
   listPresenceMock.mockResolvedValue([row('su-aaa', false), row('su-bbb', false), row('su-ccc', true)]);
+  federatedMock.mockResolvedValue([]);
+  recordedLiveSessionsMock.mockResolvedValue([]);
+  nurseryAliasMock.mockResolvedValue([]);
 });
 
 describe('assemblePresenceSnapshot targeted { owner } lookup (EI-9454)', () => {
+  it('pushes targeted selectors into every broad source leg', async () => {
+    await assemblePresenceSnapshot(RESOLVED, { owner: 'su-bbb' });
+
+    expect(listPresenceMock).toHaveBeenCalledWith({
+      workspaceId: 'test-ws',
+      potSlug: null,
+      ownerIds: ['su-bbb'],
+    });
+    expect(federatedMock).toHaveBeenCalledWith({
+      workspaceId: 'test-ws',
+      potSlug: null,
+      ownerIds: ['su-bbb'],
+    });
+    expect(recordedLiveSessionsMock).toHaveBeenCalledWith({
+      workspaceId: 'test-ws',
+      ownerIds: ['su-bbb'],
+    });
+    expect(nurseryAliasMock).toHaveBeenCalledWith({
+      workspaceId: 'test-ws',
+      ownerIds: ['su-bbb'],
+    });
+  });
+
   it('enriches ONLY the matched id — the batch joins never see the rest of the roster', async () => {
     const snap = await assemblePresenceSnapshot(RESOLVED, { owner: 'su-bbb' });
     // The load-bearing assertion: every per-owner join got the 1 matched id,

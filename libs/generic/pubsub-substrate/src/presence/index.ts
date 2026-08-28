@@ -12,6 +12,7 @@ export {
   PRESENCE_STALE_MS,
   type PresenceIdentity,
   type PresenceInput,
+  type PresenceListOptions,
   type PresenceRecord,
   type PresenceStore,
 } from './types';

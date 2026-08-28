@@ -67,6 +67,8 @@ export interface FederatedPresenceOpts {
   staleMs?: number;
   /** Injectable clock (tests). */
   now?: () => number;
+  /** Bounded targeted owner selectors; exact ids, labels, and substrings match. */
+  ownerIds?: readonly string[];
 }
 
 /**
@@ -142,14 +144,40 @@ export function mapSharedPresenceRow(
  */
 export async function queryFederatedPresenceRows(
   sql: { <T = unknown>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T> },
-  opts: { workspaceId?: string | null; harnessSlug?: string | null; potSlug?: string | null } = {},
+  opts: {
+    workspaceId?: string | null;
+    harnessSlug?: string | null;
+    potSlug?: string | null;
+    ownerIds?: readonly string[];
+  } = {},
 ): Promise<SharedPresenceDbRow[]> {
+  const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
+  // The synthetic owner id/label are derived from these columns below. Keep
+  // the selector predicate in SQL so a targeted coord:presence read does not
+  // materialize the entire federated roster before filtering in JavaScript.
+  const ownerFilter =
+    ownerIds.length === 0
+      ? sql``
+      : sql`
+       AND (
+         github_user_id::text = ANY(${ownerIds}::text[])
+         OR machine_label = ANY(${ownerIds}::text[])
+         OR EXISTS (
+           SELECT 1
+             FROM unnest(${ownerIds}::text[]) AS requested(owner)
+            WHERE strpos('fed:' || github_user_id::text || '@' || machine_label, requested.owner) > 0
+               OR strpos(requested.owner, 'fed:' || github_user_id::text || '@' || machine_label) > 0
+               OR strpos('gh:' || github_user_id::text || ' · ' || machine_label, requested.owner) > 0
+               OR strpos(requested.owner, 'gh:' || github_user_id::text || ' · ' || machine_label) > 0
+         )
+       )`;
   const rows = (await sql`
     SELECT workspace_id, harness_slug, pot_slug, github_user_id, machine_label, device_pubkey,
            intent, current_view,
            (extract(epoch FROM last_seen_at) * 1000)::bigint AS last_seen_ms
     FROM harness_shared.shared_presence
     WHERE device_pubkey <> ''
+      ${ownerFilter}
   `) as Array<Record<string, unknown>>;
   const filtered = rows
     .map((r) => ({
@@ -165,7 +193,23 @@ export async function queryFederatedPresenceRows(
     }))
     .filter((r) => (opts.workspaceId ? r.workspace_id === opts.workspaceId : true))
     .filter((r) => (opts.harnessSlug ? r.harness_slug === opts.harnessSlug : true))
-    .filter((r) => (opts.potSlug ? r.pot_slug === opts.potSlug : true));
+    .filter((r) => (opts.potSlug ? r.pot_slug === opts.potSlug : true))
+    .filter(
+      (r) =>
+        ownerIds.length === 0 ||
+        ownerIds.some((selector) => {
+          const id = `fed:${r.github_user_id}@${r.machine_label}`;
+          const label = `gh:${r.github_user_id} · ${r.machine_label}`;
+          return (
+            id === selector ||
+            label === selector ||
+            id.includes(selector) ||
+            selector.includes(id) ||
+            label.includes(selector) ||
+            selector.includes(label)
+          );
+        }),
+    );
   return dedupeSharedPresenceRows(filtered);
 }
 
@@ -245,6 +289,7 @@ export async function listFederatedPresence(
         potSlug: opts.potSlug ?? null,
         staleMs: staleMs * 4,
         nowMs,
+        ownerIds: opts.ownerIds,
       });
       sessionRows = sessions.map((s) => mapSessionPresenceRow(s, { now: nowMs, staleMs }));
     } catch {

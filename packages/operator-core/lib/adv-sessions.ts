@@ -2172,10 +2172,17 @@ export const RECORDED_LIVE_MAX_AGE_MS = 12 * 60 * 60 * 1000;
  * window. Callers with a different read contract may override `maxAgeMs`.
  * `DISTINCT ON (coord_owner_id)` most-recent row per owner (a resume reuses the
  * SID). Workspace-scoped when given. Best-effort → [] on any DB error: the
- * roster must render even if this leg fails.
+ * roster must render even if this leg fails. `ownerIds` bounds targeted reads
+ * while preserving the public exact/label/prefix selector behavior.
  */
 export async function listRecordedLiveSessions(
-  opts: { workspaceId?: string | null; maxAgeMs?: number; limit?: number } = {},
+  opts: {
+    workspaceId?: string | null;
+    maxAgeMs?: number;
+    limit?: number;
+    /** Bounded targeted selectors; exact ids, labels, and substrings match. */
+    ownerIds?: readonly string[];
+  } = {},
 ): Promise<AdvSessionRow[]> {
   const ws = opts.workspaceId ?? null;
   const maxAgeSec = Math.max(
@@ -2183,8 +2190,29 @@ export async function listRecordedLiveSessions(
     Math.round((opts.maxAgeMs ?? RECORDED_ADV_SESSION_FRESH_SEC * 1000) / 1000),
   );
   const limit = opts.limit ?? 500;
+  const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
   try {
     const { sql } = getOrgPg();
+    // Targeted presence reads must not scan the recent-session population just
+    // to discard every row except one owner. Exact owner ids can use the
+    // coord_owner_id index; the remaining selector clauses preserve the public
+    // prefix/label lookup semantics.
+    const ownerFilter =
+      ownerIds.length === 0
+        ? sql``
+        : sql`
+         AND (
+           coord_owner_id = ANY(${ownerIds}::text[])
+           OR label = ANY(${ownerIds}::text[])
+           OR EXISTS (
+             SELECT 1
+               FROM unnest(${ownerIds}::text[]) AS requested(owner)
+              WHERE strpos(coord_owner_id, requested.owner) > 0
+                 OR strpos(requested.owner, coord_owner_id) > 0
+                 OR strpos(label, requested.owner) > 0
+                 OR strpos(requested.owner, label) > 0
+           )
+         )`;
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
@@ -2194,10 +2222,27 @@ export async function listRecordedLiveSessions(
          AND coord_owner_id IS NOT NULL
          AND started_at > now() - make_interval(secs => ${maxAgeSec})
          AND (${ws}::text IS NULL OR workspace_id = ${ws})
+         ${ownerFilter}
        ORDER BY coord_owner_id, started_at DESC
        LIMIT ${limit}
     `;
-    return rows.map(mapAdvSessionRow);
+    const mapped = rows.map(mapAdvSessionRow);
+    return ownerIds.length === 0
+      ? mapped
+      : mapped.filter((row) =>
+          ownerIds.some((selector) => {
+            const id = row.coordOwnerId ?? '';
+            const label = row.label ?? '';
+            return (
+              id === selector ||
+              label === selector ||
+              id.includes(selector) ||
+              selector.includes(id) ||
+              label.includes(selector) ||
+              selector.includes(label)
+            );
+          }),
+        );
   } catch (e) {
     warnUnlessMissingTable(e, 'listRecordedLiveSessions');
     return [];

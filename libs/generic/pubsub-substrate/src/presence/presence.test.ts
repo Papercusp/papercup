@@ -24,6 +24,16 @@ function ident(ownerId: string, workspaceId: string | null = 'w1'): PresenceIden
 }
 
 describe('InMemoryPresenceStore — clock-controlled extras', () => {
+  it('filters list reads by exact owner, label, and substring selectors', async () => {
+    const store = new InMemoryPresenceStore({ now: () => 1000 });
+    await store.write(ident('owner-alpha'), { intent: 'alpha' });
+    await store.write(ident('owner-beta'), { intent: 'beta' });
+
+    expect((await store.list({ ownerIds: ['owner-alpha'] })).map((r) => r.ownerId)).toEqual(['owner-alpha']);
+    expect((await store.list({ ownerIds: ['lbl-owner-beta'] })).map((r) => r.ownerId)).toEqual(['owner-beta']);
+    expect((await store.list({ ownerIds: ['beta'] })).map((r) => r.ownerId)).toEqual(['owner-beta']);
+  });
+
   it('preserves exact startedAt across re-writes; bumps heartbeat to current clock', async () => {
     let t = 1000;
     const store = new InMemoryPresenceStore({ now: () => t });

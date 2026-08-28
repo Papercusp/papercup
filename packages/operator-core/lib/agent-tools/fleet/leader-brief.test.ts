@@ -30,7 +30,10 @@ import {
   exactPositiveSinglePlanSlugFromFilter,
   FALSIFIER_FORBIDDEN_TOOLS,
   fleetCapacityProviderForMembers,
+  LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+  LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS,
   LEADER_BRIEF_READ_CONCURRENCY,
+  LEADER_BRIEF_TOTAL_TIMEOUT_MS,
   projectMember,
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
@@ -39,6 +42,7 @@ import {
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
   runBoundedLeaderBriefReads,
+  runLeaderBriefWithinDeadline,
   runLeaderBriefReads,
   selectLeaderBriefMembers,
   shouldRefreshLeaderControlForBrief,
@@ -92,6 +96,29 @@ describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () =>
       expect(result).toEqual(['fallback-0', 'read-1']);
       expect(Date.now() - startedAt).toBeLessThan(250);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('[bounded-timeout] leader-brief:test:0 exceeded'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('keeps the cumulative server budget below the 30s MCP client deadline', async () => {
+    expect(LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS).toBe(3_000);
+    expect(LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS).toBe(750);
+    expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBe(25_000);
+    expect(LEADER_BRIEF_TOTAL_TIMEOUT_MS).toBeLessThan(30_000);
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const startedAt = Date.now();
+    try {
+      await expect(
+        runLeaderBriefWithinDeadline(
+          () => new Promise<never>(() => {}),
+          { data: { ok: false, error: 'leader_brief_deadline' } },
+          20,
+        ),
+      ).resolves.toEqual({ data: { ok: false, error: 'leader_brief_deadline' } });
+      expect(Date.now() - startedAt).toBeLessThan(250);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('fleet:leader-brief:total exceeded 20ms'));
     } finally {
       warn.mockRestore();
     }

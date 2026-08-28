@@ -206,6 +206,12 @@ describe('shared_session_presence (real PG, mig 434)', () => {
     );
     expect(wide.every((r) => r.pot_slug === 'hive-home')).toBe(true);
     expect(wide.length).toBeGreaterThan(0);
+
+    const targeted = await listLiveSessionPresence(
+      { workspaceId: WS, staleMs: 24 * 60 * 60 * 1000, nowMs, ownerIds: ['su-a1'] },
+      db.sql,
+    );
+    expect(targeted.map((r) => r.owner_id)).toEqual(['su-a1']);
   });
 
   it('round-trips fleet membership + listFederatedFleetMembers scopes to one fleet_slug (P-301)', async () => {

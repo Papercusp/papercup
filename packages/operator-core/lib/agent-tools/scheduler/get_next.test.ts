@@ -634,6 +634,7 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
 
   it('shares one deadline across a slow preflight and a hanging claim', async () => {
     vi.useFakeTimers();
+    const startedAt = Date.now();
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     getFlagM
       .mockImplementationOnce(
@@ -651,7 +652,7 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
 
     expect(body).toMatchObject({ ok: false, error: 'timeout', retryable: true });
     expect(body.budgetMs).toBeLessThan(GET_NEXT_BUDGET_MS);
-    expect(Date.now()).toBe(GET_NEXT_TOTAL_BUDGET_MS + 100);
+    expect(Date.now() - startedAt).toBe(GET_NEXT_TOTAL_BUDGET_MS + 100);
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:claim exceeded'));
     warnSpy.mockRestore();
   });

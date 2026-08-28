@@ -281,6 +281,66 @@ fi
 
 set -uo pipefail
 
+# ── Flock holder diagnostics (EI-21322804786723906) ─────────────────────────
+# Diagnostic-only helpers shared by the exclusive barrier and the retry path.
+# `fuser` is only a cheap candidate enumerator: it reports every process with
+# the path open, including writers queued in `flock`, so its output alone is
+# NOT ownership evidence. A candidate is named only when one of its matching
+# fds has a kernel FLOCK WRITE record in fdinfo. A missing `fuser`, unreadable
+# /proc, or a holder that exits between probes must never change admission;
+# callers simply print less. These helpers must never make a run fail.
+_exclusive_describe_holders() {
+  local _file="${1:-}" _target='' _pids='' _pid='' _fd='' _fd_target=''
+  local _fd_number='' _owns=0 _cmd='' _out=''
+  [ -n "$_file" ] || return 0
+  command -v fuser >/dev/null 2>&1 || return 0
+  [ -e "$_file" ] || return 0
+  _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
+  [ -n "$_target" ] || return 0
+  _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
+  [ -n "$_pids" ] || return 0
+  for _pid in $_pids; do
+    _owns=0
+    # A writer waiter opens the same inode before it blocks in `flock`, but its
+    # fdinfo has no owning lock record. Conversely, every live process sharing
+    # the owning open-file description exposes the kernel FLOCK record here —
+    # including the materialization child after pc-heavy execs it.
+    for _fd in "/proc/$_pid/fd"/*; do
+      [ -e "$_fd" ] || continue
+      _fd_target="$(stat -Lc '%d:%i' "$_fd" 2>/dev/null || true)"
+      [ "$_fd_target" = "$_target" ] || continue
+      _fd_number="${_fd##*/}"
+      if grep -Eq '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$_pid/fdinfo/$_fd_number" 2>/dev/null; then
+        _owns=1
+        break
+      fi
+    done
+    [ "$_owns" = 1 ] || continue
+    # A proven holder can still exit between fdinfo and cmdline. Keep the
+    # ownership evidence while making the cmdline race explicit and quiet.
+    _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
+    [ -n "$_cmd" ] || _cmd='(cmdline unavailable after kernel lock proof)'
+    _out="$_out pid $_pid [$_cmd];"
+  done
+  printf '%s' "$_out"
+}
+
+# Probe an advisory flock without perturbing the lock owner. This is separate
+# from holder enumeration so the retry path can distinguish a live materializer
+# from an absent/unreadable signal even when `fuser` is unavailable.
+_exclusive_flock_state() {
+  local _file="${1:-}" _fd='' _state=''
+  [ -n "$_file" ] || { printf '%s\n' unavailable; return 0; }
+  [ -e "$_file" ] || { printf '%s\n' absent; return 0; }
+  if ! { exec {_fd}>>"$_file"; } 2>/dev/null; then
+    printf '%s\n' unavailable
+    return 0
+  fi
+  if flock -s -n "$_fd"; then _state=free; else _state=held; fi
+  eval "exec ${_fd}>&-" 2>/dev/null || true
+  printf '%s\n' "$_state"
+}
+
 # Bash parses a function body in full before executing it. Keep the wrapper's
 # dispatch path in one body so a git-sync rewrite cannot change the bytes bash
 # reads between two top-level commands during a long-running invocation
@@ -1775,59 +1835,6 @@ if ! mkdir -p "$_dir" "$_slot_dir" 2>/dev/null || ! command -v flock >/dev/null 
   exec "$@"
 fi
 
-# ── Blocked-barrier holder identity (EI-21322804786723906) ─────────────────
-# Both refusals below used to report only a COUNT ("only 15/16 heavy slots
-# drained"). That is precisely why this incident was first filed as a STALE
-# writer lock and had to be retracted: with no holder named, the only way to
-# tell a live materializer from an orphaned one is a hand-run fuser/process-tree
-# walk, and the cheap wrong answer ("it's stale, clear it") is the one that
-# looks right. Several sessions repeated that same manual archaeology on this
-# one incident before anyone reached a correct diagnosis. Naming the holder
-# turns a 15-minute mystery into a pid.
-#
-# DIAGNOSTIC ONLY — fail-open by construction, like the coalescing block below.
-# `fuser` is only a cheap candidate enumerator: it reports every process with the
-# path open, including writers queued in `flock`, so its output alone is NOT
-# ownership evidence. A candidate is named only when one of its matching fds has
-# a kernel FLOCK WRITE record in fdinfo. A missing `fuser`, an unreadable /proc,
-# or a holder that exits between the probes must never change the barrier's
-# outcome: every failure path yields a shorter/empty description and the caller
-# simply prints less. It must also never be the thing that makes a gate run fail.
-_exclusive_describe_holders() {
-  local _file="$1" _target='' _pids='' _pid='' _fd='' _fd_target=''
-  local _fd_number='' _owns=0 _cmd='' _out=''
-  command -v fuser >/dev/null 2>&1 || return 0
-  [ -e "$_file" ] || return 0
-  _target="$(stat -Lc '%d:%i' "$_file" 2>/dev/null || true)"
-  [ -n "$_target" ] || return 0
-  _pids="$(fuser "$_file" 2>/dev/null | tr -s ' \t' '\n\n' | grep -E '^[0-9]+$' || true)"
-  [ -n "$_pids" ] || return 0
-  for _pid in $_pids; do
-    _owns=0
-    # A writer waiter opens the same inode before it blocks in `flock`, but its
-    # fdinfo has no owning lock record. Conversely, every live process sharing
-    # the owning open-file description exposes the kernel FLOCK record here —
-    # including the materialization child after pc-heavy execs it.
-    for _fd in "/proc/$_pid/fd"/*; do
-      [ -e "$_fd" ] || continue
-      _fd_target="$(stat -Lc '%d:%i' "$_fd" 2>/dev/null || true)"
-      [ "$_fd_target" = "$_target" ] || continue
-      _fd_number="${_fd##*/}"
-      if grep -Eq '^lock:[[:space:]]+[0-9]+: FLOCK[[:space:]]+ADVISORY[[:space:]]+WRITE' "/proc/$_pid/fdinfo/$_fd_number" 2>/dev/null; then
-        _owns=1
-        break
-      fi
-    done
-    [ "$_owns" = 1 ] || continue
-    # A proven holder can still exit between fdinfo and cmdline. Keep the
-    # ownership evidence while making the cmdline race explicit and quiet.
-    _cmd="$(cat "/proc/$_pid/cmdline" 2>/dev/null | tr '\0' ' ' | cut -c1-100 || true)"
-    [ -n "$_cmd" ] || _cmd='(cmdline unavailable after kernel lock proof)'
-    _out="$_out pid $_pid [$_cmd];"
-  done
-  printf '%s' "$_out"
-}
-
 # A caller-side deadline can terminate an arbitrary command while this wrapper
 # is still in the semaphore queue. Letting Bash report the raw signal (usually
 # 143) makes that indistinguishable from a compiler that started and was then
@@ -2933,6 +2940,32 @@ exit $?
 
 _pc_heavy_retry_result_file=''
 
+# Emit a bounded snapshot of the materializer's observable ownership and
+# progress while a preempted retry waits. The intent lock identifies the
+# materializer that is queued or draining; the writer lock identifies the
+# blocker it is waiting behind. Both probes are fail-open and diagnostic-only.
+_pc_heavy_report_exclusive_materializer() {
+  local _intent_path="${1:-}" _writer_path="${2:-}" _elapsed="${3:-0}"
+  local _intent_state='' _writer_state='' _intent_owner='' _writer_owner=''
+  _intent_state="$(_exclusive_flock_state "$_intent_path")"
+  _writer_state="$(_exclusive_flock_state "$_writer_path")"
+  echo "[pc-heavy] retry materializer progress: elapsed=${_elapsed}s intent=${_intent_state} writer=${_writer_state}" >&2
+
+  _intent_owner="$(_exclusive_describe_holders "$_intent_path")"
+  if [ -n "$_intent_owner" ]; then
+    echo "[pc-heavy] retry materializer intent owner:$_intent_owner" >&2
+  else
+    echo "[pc-heavy] retry materializer intent owner unavailable" >&2
+  fi
+
+  _writer_owner="$(_exclusive_describe_holders "$_writer_path")"
+  if [ -n "$_writer_owner" ]; then
+    echo "[pc-heavy] retry materializer writer lock holder:$_writer_owner" >&2
+  else
+    echo "[pc-heavy] retry materializer writer lock holder unavailable" >&2
+  fi
+}
+
 # A preempted attempt must not immediately compete for the slot it was evicted
 # from. The materializer's intent flock is the correct signal here: it is held
 # from the moment a materializer declares itself until its exclusive writer and
@@ -2950,11 +2983,13 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
   esac
 
   local _intent_path="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}/exclusive-materialization.intent"
+  local _writer_path="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}/exclusive-materialization.lock"
   [ -e "$_intent_path" ] || return 0
   command -v flock >/dev/null 2>&1 || return 0
 
   local _intent_started _intent_deadline _intent_probe_fd='' _intent_announced=0
   local _intent_now='' _intent_last_heartbeat='' _intent_heartbeat_every="${PC_HEAVY_HEARTBEAT_SEC:-15}"
+  local _intent_elapsed=0
   case "$_intent_heartbeat_every" in ''|*[!0-9]*) _intent_heartbeat_every=15 ;; esac
   _intent_started=$(date +%s)
   _intent_deadline=$(( _intent_started + _intent_wait_sec ))
@@ -2975,11 +3010,14 @@ _pc_heavy_wait_for_exclusive_intent_clear() {
 
     if [ "$_intent_announced" = 0 ]; then
       echo "[pc-heavy] retry waiting for exclusive materializer intent to clear (up to ${_intent_wait_sec}s)" >&2
+      _pc_heavy_report_exclusive_materializer "$_intent_path" "$_writer_path" 0
       _intent_announced=1
     else
       _intent_now=$(date +%s)
       if [ $(( _intent_now - _intent_last_heartbeat )) -ge "$_intent_heartbeat_every" ]; then
-        echo "[pc-heavy] retry still waiting for exclusive materializer intent ($(( _intent_now - _intent_started ))s elapsed)" >&2
+        _intent_elapsed=$(( _intent_now - _intent_started ))
+        echo "[pc-heavy] retry still waiting for exclusive materializer intent ($_intent_elapsed s elapsed)" >&2
+        _pc_heavy_report_exclusive_materializer "$_intent_path" "$_writer_path" "$_intent_elapsed"
         _intent_last_heartbeat="$_intent_now"
       fi
     fi

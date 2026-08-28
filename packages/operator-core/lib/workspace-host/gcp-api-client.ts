@@ -50,6 +50,36 @@ interface GcpHttpError extends Error {
   status?: number;
 }
 
+const SAFE_CONNECTION_VALIDATION_PROBLEMS: Readonly<Record<string, string>> = {
+  gcp_workspace_host_project_id_missing:
+    'GCP connection project is missing; reconnect with an explicit project.',
+  gcp_workspace_host_connection_project_mismatch:
+    'GCP connection project does not match its selected scope.',
+  gcp_workspace_host_scope_must_be_project: 'GCP connection scope must select a project.',
+  gcp_workspace_host_cloud_credential_ref_must_use_safe_google_chain:
+    'GCP credential reference is not bound to an approved resolver.',
+  gcp_workspace_host_service_account_key_forbidden:
+    'GCP service-account key credentials are forbidden for this connection.',
+  gcp_gcloud_active_user_count_invalid:
+    'GCP active-user credential resolution failed: exactly one active gcloud account is required.',
+  gcp_gcloud_active_user_unavailable:
+    'GCP active-user credential resolution failed: the active gcloud account is unavailable.',
+  gcp_gcloud_active_user_service_account_forbidden:
+    'GCP active-user credential resolution failed: the active gcloud account must be a human user.',
+  gcp_gcloud_active_user_token_unavailable:
+    'GCP active-user credential resolution failed: an access token is unavailable.',
+  gcp_gcloud_active_user_token_empty:
+    'GCP active-user credential resolution failed: the access token was empty.',
+  gcp_workspace_host_project_unreadable: 'GCP Compute project is unreadable.',
+};
+
+function safeConnectionValidationProblem(error: unknown): string {
+  const status = (error as GcpHttpError | undefined)?.status;
+  if (typeof status === 'number') return `GCP Compute validation failed (HTTP ${status})`;
+  const code = error instanceof Error ? error.message : '';
+  return SAFE_CONNECTION_VALIDATION_PROBLEMS[code] ?? 'GCP credential/Compute validation failed';
+}
+
 interface RawOperation {
   name?: string;
   status?: 'PENDING' | 'RUNNING' | 'DONE';
@@ -415,12 +445,11 @@ export class GoogleComputeWorkspaceHostApiClient implements GcpWorkspaceHostApiC
         errors: [],
       };
     } catch (error) {
-      const status = (error as GcpHttpError).status;
       return {
         ok: false,
         checkedAt,
         warnings: [],
-        errors: [status ? `GCP ADC/Compute validation failed (HTTP ${status})` : 'GCP ADC/Compute validation failed'],
+        errors: [safeConnectionValidationProblem(error)],
       };
     }
   }

@@ -17,8 +17,9 @@ import {
   PRESENCE_STALE_MS,
   type PresenceIdentity,
   type PresenceInput,
-  type PresenceRecord,
   type PresenceStore,
+  type PresenceRecord,
+  type PresenceListOptions,
 } from '@papercusp/pubsub-substrate/presence';
 
 export interface PgPresenceStoreOptions {
@@ -355,12 +356,32 @@ export class PgPresenceStore implements PresenceStore {
   }
 
   async list(
-    opts: { workspaceId?: string | null; potSlug?: string | null } = {},
+    opts: PresenceListOptions = {},
   ): Promise<PresenceRecord[]> {
     await this.opts.ensureSchema();
     const sql = this.opts.getSql();
     const ws = opts.workspaceId ?? null;
     const hive = opts.potSlug ?? null;
+    const ownerIds = [...new Set((opts.ownerIds ?? []).filter((ownerId) => ownerId.length > 0))];
+    // Targeted coord:presence reads must be bounded at the storage boundary.
+    // Keep the public selector semantics (exact id/label or substring either
+    // way) while letting exact owner ids use the primary-key index.
+    const ownerFilter =
+      ownerIds.length === 0
+        ? sql``
+        : sql`
+         AND (
+           cp.owner_id = ANY(${ownerIds}::text[])
+           OR cp.owner_label = ANY(${ownerIds}::text[])
+           OR EXISTS (
+             SELECT 1
+               FROM unnest(${ownerIds}::text[]) AS requested(owner)
+              WHERE strpos(cp.owner_id, requested.owner) > 0
+                 OR strpos(requested.owner, cp.owner_id) > 0
+                 OR strpos(cp.owner_label, requested.owner) > 0
+                 OR strpos(requested.owner, cp.owner_label) > 0
+           )
+         )`;
     const rows = await sql<CoordPresenceDbRow[]>`
       SELECT cp.owner_id, cp.owner_label, cp.workspace_id, cp.source,
              cp.intent, cp.current_plan_slug, cp.current_files,
@@ -373,6 +394,7 @@ export class PgPresenceStore implements PresenceStore {
           ON pus.auth_session_id = cp.owner_id
        WHERE ${ws == null ? sql`TRUE` : sql`cp.workspace_id = ${ws}`}
          AND ${hive == null ? sql`TRUE` : sql`cp.pot_slug = ${hive}`}
+         ${ownerFilter}
        ORDER BY cp.owner_id
     `;
     const now = Date.now();

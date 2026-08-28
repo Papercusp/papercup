@@ -118,6 +118,14 @@ export interface PresenceRecord {
   revoked: boolean;
 }
 
+/** Optional read filters shared by the swappable presence-store implementations. */
+export interface PresenceListOptions {
+  workspaceId?: string | null;
+  potSlug?: string | null;
+  /** Bounded targeted selectors; exact ids, labels, and substring matches are supported. */
+  ownerIds?: readonly string[];
+}
+
 export interface PresenceStore {
   /** Upsert the caller's presence row to exactly this state; bumps heartbeat
    *  AND last_active_at (a write is genuine activity). */
@@ -150,8 +158,11 @@ export interface PresenceStore {
   clear(ownerId: string): Promise<void>;
   /** List presence in deterministic ownerId order (presence-v2 P-005 / D-006 —
    *  cache- and diff-stable), optionally scoped to a workspace and/or a Hive
-   *  (potSlug — the P-004 hive-scoped read; null/omitted = no hive filter). */
-  list(opts?: { workspaceId?: string | null; potSlug?: string | null }): Promise<PresenceRecord[]>;
+   *  (potSlug — the P-004 hive-scoped read; null/omitted = no hive filter).
+   *  `ownerIds` is a bounded targeted selector list. Implementations may push
+   *  it into their storage query; selectors preserve the public owner lookup's
+   *  exact, label, and substring matching semantics. */
+  list(opts?: PresenceListOptions): Promise<PresenceRecord[]>;
   /** Read one presence record by owner id, or null. */
   get(ownerId: string): Promise<PresenceRecord | null>;
   /** Delete presence rows whose heartbeat is older than maxAgeMs — true dead

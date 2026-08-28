@@ -149,6 +149,7 @@ vi.mock('../fleet/model-tiers', () => ({
 
 import {
   checkCompactionCompliance,
+  detectCompactionStranding,
   resetContextDeathEscalationsForTests,
   resetCarryRespawnForTests,
   resetForceCompactedForTests,
@@ -158,6 +159,7 @@ import {
   resetFrozenCodexReadingsForTests,
   staleCutoversForProcessStart,
   resetStaleCutoverEscalationsForTests,
+  resetCompactionStrandingForTests,
   startCompactionComplianceWatchdog,
   discoverPresencelessLoopOwners,
   carryRespawnLoopEscalationBody,
@@ -196,11 +198,30 @@ function fakeSql(opts: {
   presenceGaps?: Array<{ owner_id: string; workspace_id: string | null }>;
   /** owner_id → label, from harness_shared.fleet_membership_events. */
   fleetLabels?: Record<string, string>;
+  /** D-137: exact event-latch evidence keyed by owner. */
+  compactionBoundaries?: Array<{
+    event_key: string;
+    fire_count: number | string;
+    last_fired_at: string | Date;
+  }>;
+  /** D-137: target paths stored on the live work-item payload. */
+  targetPaths?: Array<{ work_item_id: string; paths: string[] }>;
+  /** D-137: attributed target edits after the latest compaction boundary. */
+  targetEdits?: Array<{ file: string; edited_ms: number | string }>;
 }) {
   return ((strings: TemplateStringsArray, ...values: unknown[]) => {
     const q = strings.join(' ');
     if (q.includes('harness_shared.routines') && q.includes('target_owner_id')) {
       return Promise.resolve(opts.presenceGaps ?? []);
+    }
+    if (q.includes('harness_shared.event_key_fires')) {
+      return Promise.resolve(opts.compactionBoundaries ?? []);
+    }
+    if (q.includes('harness_shared.edit_attribution_ledger')) {
+      return Promise.resolve(opts.targetEdits ?? []);
+    }
+    if (q.includes('harness_shared.work_items') && q.includes("payload->'paths'")) {
+      return Promise.resolve(opts.targetPaths ?? []);
     }
     if (q.includes('fleet_membership_events')) {
       const label = opts.fleetLabels?.[String(values[0])];
@@ -259,6 +280,7 @@ beforeEach(() => {
   resetContextUsageCacheForTests(); // P-013 gauge cache + flag mirror
   resetImplausibleReadingsForTests(); // EI-10434 sanity-clamp warn dedup
   resetStaleCutoverEscalationsForTests(); // EI-16190 pre-cutover-process dedup
+  resetCompactionStrandingForTests(); // D-137 repeated-compaction detector dedup
   writePresenceMock.mockResolvedValue(undefined);
   // The watchdog narrates seeds/over-limit crossings on the console by design;
   // silence it so vitest-fail-on-console doesn't flag the expected output.
@@ -599,6 +621,160 @@ describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () 
     );
     expect(out.overLimit).toEqual([]);
     expect(out.unflushedClaims).toEqual([]); // under limit ⇒ the claim read never runs
+  });
+});
+
+describe('D-137 repeated-compaction/pre-edit detector', () => {
+  const nowMs = Date.parse('2026-08-28T03:00:00Z');
+  const targetPath = 'packages/operator-core/lib/workspace-host/initialization-operations-resolver.ts';
+  const base = {
+    owner: 'su-hot',
+    ownerLabel: 'su · hot',
+    event: {
+      key: 'session:compacted:su-hot',
+      fireCount: 2,
+      latestBoundaryMs: nowMs - 5 * 60_000,
+    },
+    staleClaims: [{ workItemId: 'EI-137', reason: 'drift' as const, staleMs: 20 * 60_000 }],
+    targetPaths: [targetPath],
+    expiredOwnerLocks: [{ path: targetPath, expiresAtMs: nowMs - 60_000 }],
+    targetEditsAfterBoundary: [],
+    nowMs,
+  };
+
+  it('fires only when every durable signal agrees', () => {
+    expect(detectCompactionStranding(base)).toEqual({
+      owner: 'su-hot',
+      ownerLabel: 'su · hot',
+      eventKey: 'session:compacted:su-hot',
+      fireCount: 2,
+      latestBoundaryMs: nowMs - 5 * 60_000,
+      workItemIds: ['EI-137'],
+      staleClaims: [{ workItemId: 'EI-137', reason: 'drift', staleMs: 20 * 60_000 }],
+      targetPaths: [targetPath],
+      expiredOwnerLocks: [{ path: targetPath, expiresAtMs: nowMs - 60_000 }],
+    });
+  });
+
+  it.each([
+    ['one boundary', { event: { ...base.event, fireCount: 1 } }],
+    ['no stale claim', { staleClaims: [] }],
+    ['live target lock only', { expiredOwnerLocks: [{ path: targetPath, expiresAtMs: nowMs + 60_000 }] }],
+    [
+      'target edit after boundary',
+      { targetEditsAfterBoundary: [{ file: targetPath, editedAtMs: nowMs - 60_000 }] },
+    ],
+    ['unreadable event', { event: null }],
+    ['unreadable lock read', { expiredOwnerLocks: null }],
+  ])('fails open for %s', (_label, override) => {
+    expect(detectCompactionStranding({ ...base, ...override })).toBeNull();
+  });
+
+  it('rejects a non-owner event key rather than treating a sibling compaction as evidence', () => {
+    expect(
+      detectCompactionStranding({
+        ...base,
+        event: { ...base.event, key: 'session:compacted:someone-else' },
+      }),
+    ).toBeNull();
+  });
+
+  it('integrates the exact event latch, work-item paths, edit ledger, and injected SU lock reader', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    const readExpiredOwnerFileLocks = vi.fn(async () => [
+      { path: targetPath, expiresAtMs: nowMs - 60_000 },
+    ]);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          {
+            owner_id: 'su-hot',
+            owner_label: 'su · hot',
+            workspace_id: 'ws-1',
+            compaction_limit: 158_000,
+          },
+        ],
+        compactionBoundaries: [
+          {
+            event_key: 'session:compacted:su-hot',
+            fire_count: 2,
+            last_fired_at: new Date(nowMs - 5 * 60_000),
+          },
+        ],
+        claimFreshness: {
+          'su-hot': [
+            {
+              work_item_id: 'EI-137',
+              acquired_ms: String(nowMs - 60 * 60_000),
+              last_activity_ms: String(nowMs - 20 * 60_000),
+              checkpoint_updated_ms: String(nowMs - 40 * 60_000),
+            },
+          ],
+        },
+        targetPaths: [{ work_item_id: 'EI-137', paths: [targetPath] }],
+        targetEdits: [],
+      }),
+      { readExpiredOwnerFileLocks },
+    );
+
+    expect(out.compactionStrandingAlerts).toHaveLength(1);
+    expect(out.compactionStrandingAlerts[0]).toMatchObject({
+      owner: 'su-hot',
+      workItemIds: ['EI-137'],
+      targetPaths: [targetPath],
+    });
+    expect(readExpiredOwnerFileLocks).toHaveBeenCalledWith('su-hot', [targetPath]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
+    const payload = (openEscalationMock.mock.calls[0] as unknown as [
+      unknown,
+      { severity?: string; summary?: string; meta?: { subjectSignature?: string },
+    }])[1];
+    expect(payload.severity).toBe('blocker');
+    expect(payload.summary).toContain('compaction-stranding SUSPECT');
+    expect(payload.meta?.subjectSignature).toBe('compaction-watchdog:compaction-stranding:su-hot');
+  });
+
+  it('suppresses the integrated alert when the edit ledger proves target progress', async () => {
+    estimateMock.mockResolvedValue(40_000);
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [
+          {
+            owner_id: 'su-hot',
+            owner_label: 'su · hot',
+            workspace_id: 'ws-1',
+            compaction_limit: 158_000,
+          },
+        ],
+        compactionBoundaries: [
+          {
+            event_key: 'session:compacted:su-hot',
+            fire_count: 2,
+            last_fired_at: new Date(nowMs - 5 * 60_000),
+          },
+        ],
+        claimFreshness: {
+          'su-hot': [
+            {
+              work_item_id: 'EI-137',
+              acquired_ms: String(nowMs - 60 * 60_000),
+              last_activity_ms: String(nowMs - 20 * 60_000),
+              checkpoint_updated_ms: String(nowMs - 40 * 60_000),
+            },
+          ],
+        },
+        targetPaths: [{ work_item_id: 'EI-137', paths: [targetPath] }],
+        targetEdits: [{ file: targetPath, edited_ms: nowMs - 60_000 }],
+      }),
+      {
+        readExpiredOwnerFileLocks: async () => [
+          { path: targetPath, expiresAtMs: nowMs - 60_000 },
+        ],
+      },
+    );
+
+    expect(out.compactionStrandingAlerts).toEqual([]);
+    expect(openEscalationMock).not.toHaveBeenCalled();
   });
 });
 

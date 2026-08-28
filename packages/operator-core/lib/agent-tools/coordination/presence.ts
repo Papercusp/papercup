@@ -310,9 +310,10 @@ export async function clearPresence(ownerId: string): Promise<void> {
 }
 
 /** List presence records in deterministic ownerId order (P-005), optionally
- *  scoped to a workspace and/or a Hive (potSlug — the P-004 hive-scoped read). */
+ *  scoped to a workspace and/or a Hive (potSlug — the P-004 hive-scoped read).
+ *  `ownerIds` is a bounded targeted selector list pushed into the store query. */
 export async function listPresence(
-  opts: { workspaceId?: string | null; potSlug?: string | null } = {},
+  opts: { workspaceId?: string | null; potSlug?: string | null; ownerIds?: readonly string[] } = {},
 ): Promise<PresenceRecord[]> {
   return store.list(opts);
 }

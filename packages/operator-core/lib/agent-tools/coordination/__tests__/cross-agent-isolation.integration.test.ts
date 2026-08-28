@@ -267,6 +267,17 @@ describe('presence isolation + staleness/revoked (real PgPresenceStore)', () => 
     expect((await store.get(b))?.intent).toBe(`work-${b}`);
   });
 
+  it('list pushes targeted owner selectors while preserving workspace isolation', async () => {
+    const ws = uniq('ws');
+    const a = uniq('target');
+    const b = uniq('other');
+    await present(a, ws);
+    await present(b, ws);
+
+    expect((await store.list({ workspaceId: ws, ownerIds: [a] })).map((r) => r.ownerId)).toEqual([a]);
+    expect((await store.list({ workspaceId: ws, ownerIds: [a.slice(0, 8)] })).map((r) => r.ownerId)).toEqual([a]);
+  });
+
   it('the stale flag is computed correctly across PRESENCE_STALE_MS', async () => {
     const ws = uniq('ws');
     const fresh = uniq('fresh');

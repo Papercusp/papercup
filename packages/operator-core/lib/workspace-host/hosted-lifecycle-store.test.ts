@@ -96,7 +96,7 @@ describe('hosted lifecycle store', () => {
   });
 
   it('marks orphaned work, queues one idempotent idle-stop job, and uses replay-safe notifications', async () => {
-    const notify = vi.fn(async () => ({
+    const notify = vi.fn(async (_input: { dedupeKey: string }) => ({
       recordId: 1, deduped: false, mobileDelivered: true, desktopDelivered: true,
     }));
     setHostedLifecycleStoreHooks({
