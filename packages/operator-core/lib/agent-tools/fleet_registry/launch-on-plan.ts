@@ -144,6 +144,11 @@ import {
 export type { MemberLaunchOpts } from '../../agent-launch-core';
 import { resolveGoalLaunch, readGoalLaunchSettingsForLauncher } from '../../goal-launch-settings';
 import {
+  GOAL_LAUNCH_ROLES,
+  isGoalLaunchRole,
+  type GoalLaunchRole,
+} from '../../goal-launch-settings-shared';
+import {
   applyGoalLaunchOverlay,
   goalFleetLaunchOverlay,
   goalFleetWideFoldSlot,
@@ -1468,6 +1473,64 @@ async function unresolvedFleetMemberRole(opts: {
 }
 
 /**
+ * A headcount profile's `role` is a psu persona when authored by a caller, but
+ * older goal-driven launches persisted the goal's launch SLOT there instead
+ * (for example `drain-fleet-leader`).  A slot is not a persona and must not be
+ * sent through role-prompt preflight or `psu --role` on recovery.
+ *
+ * This boundary is intentionally source-aware: only a role inherited from the
+ * persisted homogeneous profile is eligible for sanitization.  Explicit caller
+ * roles remain untouched, including an explicit value that happens to be a
+ * goal-slot name (it should receive the normal persona validation error), and
+ * per-member `members[].role` overrides are not inspected here at all.
+ */
+export interface IgnoredPersistedGoalRoleDiagnostic {
+  role: GoalLaunchRole;
+  source: 'fleet:headcount-target';
+  reason: 'goal-launch-slot-is-not-a-psu-persona';
+}
+
+export interface PersistedGoalLaunchRoleSanitization {
+  role?: string;
+  ignoredRoles: IgnoredPersistedGoalRoleDiagnostic[];
+}
+
+export function sanitizePersistedGoalLaunchRole(opts: {
+  persistedRole?: unknown;
+  explicitRole?: unknown;
+}): PersistedGoalLaunchRoleSanitization {
+  const explicitRole = typeof opts.explicitRole === 'string' ? opts.explicitRole.trim() : undefined;
+  const persistedRole = typeof opts.persistedRole === 'string' ? opts.persistedRole.trim() : undefined;
+
+  // Explicit input wins over recovery. Do not use a broad goal-role filter here:
+  // the caller may intentionally ask psu to validate a role, and member roles
+  // are handled by unresolvedFleetMemberRole/foldMemberSpec independently.
+  if (explicitRole !== undefined) return { role: explicitRole, ignoredRoles: [] };
+  if (!persistedRole) return { role: undefined, ignoredRoles: [] };
+
+  // The predicate is the runtime guard; the closed array is kept in the same
+  // expression so adding/renaming a launch slot cannot silently change this
+  // boundary without updating the canonical vocabulary.
+  if (isGoalLaunchRole(persistedRole) && GOAL_LAUNCH_ROLES.includes(persistedRole)) {
+    return {
+      role: undefined,
+      ignoredRoles: [
+        {
+          role: persistedRole,
+          source: 'fleet:headcount-target',
+          reason: 'goal-launch-slot-is-not-a-psu-persona',
+        },
+      ],
+    };
+  }
+  return { role: persistedRole, ignoredRoles: [] };
+}
+
+// Keep the name discoverable to callers that describe the input as a fleet
+// profile rather than a goal launch; both names share one implementation.
+export const sanitizePersistedFleetLaunchRole = sanitizePersistedGoalLaunchRole;
+
+/**
  * EI-18862608742257943: extract every WI-/EI- id referenced across the composed
  * kickoff brief text(s) a launch is about to hand its members — reusing the SAME
  * id-extraction the work_items:create mirror-guard uses (WI-<n> / EI-<n>,
@@ -2038,6 +2101,7 @@ export default defineTool({
     let persistedHeadcountProfile = savedLaunchSpec.found
       ? { target: savedLaunchSpec.target, config: savedLaunchSpec.config }
       : null;
+    let ignoredRoleDiagnostics: IgnoredPersistedGoalRoleDiagnostic[] = [];
     if (persistedHeadcountProfile) {
       const profile = persistedHeadcountProfile.config;
       const profileModel = composeModelSpec(profile.model, profile.effort);
@@ -2053,7 +2117,15 @@ export default defineTool({
       args.account ??= profile.account;
       args.headless ??= profile.headless ?? true;
       args.carry ??= profile.carry;
-      args.role ??= profile.role;
+      // A persisted homogeneous profile may predate D-016 and contain the
+      // GOAL's launch slot in `role`. That value is not a psu persona and must
+      // never reach role-prompt preflight or the member command. Explicit
+      // caller input remains authoritative, including an explicit invalid role.
+      if (args.role === undefined) {
+        const roleResolution = sanitizePersistedGoalLaunchRole({ persistedRole: profile.role });
+        args.role = roleResolution.role;
+        ignoredRoleDiagnostics = roleResolution.ignoredRoles;
+      }
       args.brief ??= profile.brief;
       args.launchContext ??= profile.launchContext;
       args.contextSize ??= profile.contextSize;
@@ -4441,6 +4513,9 @@ export default defineTool({
     };
     const launchCompletion = completeLaunch();
     const responseRace = await raceLaunchResponseWithinBudget(launchCompletion);
+    const ignoredRoleNote = ignoredRoleDiagnostics.length
+      ? `⚠ ignored persisted GOAL launch slot role(s): ${ignoredRoleDiagnostics.map((diagnostic) => `\`${diagnostic.role}\``).join(', ')} — omitted from psu persona validation and member commands.`
+      : null;
     if (responseRace.timedOut) {
       stampLaunchOutcome(ctx, fleetSlug, launchTransaction);
       const completionHandle = {
@@ -4465,6 +4540,7 @@ export default defineTool({
           account: effAccount ?? null,
           headless: !!args.headless,
           carry: args.carry ?? 'warm',
+          ignoredRoleDiagnostics,
           requested: count,
           liveMembers,
           requestedOpenCount,
@@ -4479,6 +4555,7 @@ export default defineTool({
           message:
             `Launch response bounded at ${LAUNCH_RESPONSE_DEADLINE_MS}ms; transaction ` +
             `\`${launchTransaction.transactionId}\` continues in the background. ` +
+            (ignoredRoleNote ? `${ignoredRoleNote} ` : '') +
             `Use ${completionHandle.nextAction} to inspect the durable result before replaying.`,
         },
         opened.length === 0,
@@ -4486,6 +4563,7 @@ export default defineTool({
     }
     const completionError = responseRace.value;
     const lines: string[] = [];
+    if (ignoredRoleNote) lines.push(ignoredRoleNote);
     if (sizingAdvisory) lines.push(sizingAdvisory.message);
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
     // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
@@ -4768,6 +4846,7 @@ export default defineTool({
               reusePath: savedLaunchSpec.reusePath,
             }
           : null,
+        ignoredRoleDiagnostics,
         // P-004: the resolved per-member config (model/account/carry/compactionLimit/claimKinds),
         // null for a homogeneous (no-`members`) launch. `carry` here is honored per member; the
         // fleet-wide `carry` field above is the default the unspecified members fell through to.

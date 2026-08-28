@@ -268,6 +268,7 @@ import tool, {
   LEADER_AUTO_MODE_DIRECTIVE,
   LAUNCH_RESPONSE_DEADLINE_MS,
   raceLaunchResponseWithinBudget,
+  sanitizePersistedGoalLaunchRole,
   clampHeadlessLaunchToHostMemory,
   summarizeProtectedAgentMemory,
 } from '../launch-on-plan';
@@ -326,6 +327,28 @@ describe('memberSpecIndexForLaunch', () => {
   it('appends a deficit wave after the live members', () => {
     expect(memberSpecIndexForLaunch(1, 0)).toBe(1);
     expect(memberSpecIndexForLaunch(1, 1)).toBe(2);
+  });
+});
+
+describe('sanitizePersistedGoalLaunchRole', () => {
+  it('omits an inherited GOAL launch slot and reports why it was ignored', () => {
+    expect(sanitizePersistedGoalLaunchRole({ persistedRole: ' drain-fleet-leader ' })).toEqual({
+      role: undefined,
+      ignoredRoles: [
+        {
+          role: 'drain-fleet-leader',
+          source: 'fleet:headcount-target',
+          reason: 'goal-launch-slot-is-not-a-psu-persona',
+        },
+      ],
+    });
+  });
+
+  it('preserves explicit roles and ordinary persisted personas', () => {
+    expect(
+      sanitizePersistedGoalLaunchRole({ persistedRole: 'drain-fleet-leader', explicitRole: 'builder' }),
+    ).toEqual({ role: 'builder', ignoredRoles: [] });
+    expect(sanitizePersistedGoalLaunchRole({ persistedRole: 'su' })).toEqual({ role: 'su', ignoredRoles: [] });
   });
 });
 
@@ -652,6 +675,44 @@ describe('fleet:launch-on-plan handler — atomic leader control (WI-38804)', ()
       },
       reusePath: 'fleet:launch-on-plan -> agent-launch-core.memberLaunchCommand',
     });
+  });
+
+  it('omits a persisted GOAL launch slot from persona validation and psu commands, with a diagnostic', async () => {
+    getFleetHeadcountTargetMock.mockResolvedValueOnce({
+      workspaceId: 'ws-1',
+      fleetSlug: 'goal-slot-fleet',
+      target: 1,
+      config: {
+        plan: 'my-plan',
+        harness: 'papercusp',
+        agent: 'claude',
+        model: 'sonnet',
+        headless: true,
+        role: 'drain-fleet-leader',
+      },
+      nextAttemptAt: null,
+      backoffMs: 0,
+      lastError: null,
+    });
+    spawnHeadlessMock.mockReset();
+    spawnHeadlessMock.mockReturnValue({ status: 'ok', terminal: 'headless-1', pid: 201, taskId: 'task-1' });
+
+    const res = await invokeLaunchHandler({ name: 'Goal Slot Fleet' } as never, {} as never, null);
+    const payload = JSON.parse((res as any).content[0].text);
+    const command = (spawnHeadlessMock.mock.calls[0][0] as any).envelope.greetingCmd as string;
+
+    expect(payload.ignoredRoleDiagnostics).toEqual([
+      {
+        role: 'drain-fleet-leader',
+        source: 'fleet:headcount-target',
+        reason: 'goal-launch-slot-is-not-a-psu-persona',
+      },
+    ]);
+    expect(command).not.toContain('--role=drain-fleet-leader');
+    expect(assembleRolePromptMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'drain-fleet-leader' }),
+    );
+    expect(payload.message).toContain('ignored persisted GOAL launch slot role(s)');
   });
 
   it('uses the existing fleet live claim lane before stale saved-plan admission on an omitted top-up (EI-21577352340987493)', async () => {
@@ -2440,6 +2501,23 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
         return verification;
       });
 
+      getFleetHeadcountTargetMock.mockResolvedValueOnce({
+        workspaceId: 'ws-1',
+        fleetSlug: 'bounded-response-fleet',
+        target: 1,
+        config: {
+          plan: 'my-plan',
+          harness: 'papercusp',
+          agent: 'claude',
+          model: 'sonnet',
+          headless: true,
+          role: 'drain-fleet-leader',
+        },
+        nextAttemptAt: null,
+        backoffMs: 0,
+        lastError: null,
+      });
+
       const responsePromise = invokeLaunchHandler(
         { name: 'Bounded Response Fleet', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
         {} as never,
@@ -2461,6 +2539,13 @@ describe('fleet:launch-on-plan handler — verified canary-first transaction (P-
       });
       expect(payload.launchTransaction.state).toBe('launching');
       expect(payload.message).toContain('continues in the background');
+      expect(payload.ignoredRoleDiagnostics).toEqual([
+        {
+          role: 'drain-fleet-leader',
+          source: 'fleet:headcount-target',
+          reason: 'goal-launch-slot-is-not-a-psu-persona',
+        },
+      ]);
 
       resolveVerification({ agentStarted: true, waitedMs: 1, sessions: [], note: 'verified' });
       await vi.advanceTimersByTimeAsync(0);
