@@ -409,6 +409,20 @@ pub enum Event {
     /// parked before this pane attached (or during a disconnect) is otherwise
     /// invisible here, leaving the turn stalled with no way to answer it.
     AgentChatApprovalsHydrated(Vec<crate::models::PendingApproval>),
+    /// A PUI SU-session create/attach completed through launch-su.  The
+    /// binding carries the stable advSessionId and backend identity used by
+    /// every subsequent snapshot/stream/control call.
+    SuSessionOpened(crate::su_session::SuSessionBinding),
+    /// Initial canonical SU-session descriptor snapshot after attach/restart.
+    SuSessionSnapshot(crate::su_session::SuSessionSnapshot),
+    /// One typed lifecycle/transcript/tool/card/refusal event from the shared
+    /// SU-session host.  The reducer keeps sequence ordering and identity
+    /// checks here rather than inferring state from transcript text.
+    SuSessionEvent(crate::su_session::SuSessionEvent),
+    /// A failed snapshot/stream/open operation.  The existing chat pane stays
+    /// usable, but the error remains explicit instead of silently falling back
+    /// to the owned-loop-only path.
+    SuSessionError(String),
     /// Snapshot from the one shared conversations.contextProjection query.
     /// `None` is an honest capability-tier absence for the requested target.
     ConversationContextProjectionLoaded {

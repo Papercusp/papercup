@@ -43,6 +43,7 @@ mod session_config;
 mod session_panes;
 mod shared_cache;
 mod sse;
+mod su_session;
 mod theme;
 mod transcript;
 mod tutorial;
