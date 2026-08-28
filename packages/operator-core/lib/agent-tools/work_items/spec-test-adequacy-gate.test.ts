@@ -355,6 +355,50 @@ describe('specTestAdequacyCompletionGate', () => {
     if (!result.ok) expect(result.reason).toContain('no current terminal complete scorecard');
   });
 
+  it('returns only current pending scorecard issue ids for auditor dispatch', async () => {
+    const deps = passingDeps();
+    deps.listCards.mockResolvedValue([
+      matchingCard({
+        issueId: 'EI-pending-current',
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+      matchingCard({
+        issueId: 'EI-pending-superseded',
+        supersededBy: 'EI-replacement',
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+      matchingCard({
+        issueId: 'EI-pending-retracted',
+        retracted: {} as ScorecardRow['retracted'],
+        gradingAudit: {
+          state: 'pending',
+          metaRubricRef: 'grading-integrity',
+          stampedAt: '2026-08-20T00:02:00.000Z',
+        },
+      }),
+    ]);
+
+    const result = await specTestAdequacyCompletionGate(
+      { workItem: WORK_ITEM, attestation: ATTESTATION },
+      deps,
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      applicable: true,
+      retryable: true,
+      pendingGradingAuditTargetIds: ['EI-pending-current'],
+    });
+  });
+
   it('returns evaluator would-block reasons for stale or otherwise inadequate evidence', async () => {
     const deps = passingDeps();
     deps.listEvidence.mockResolvedValue([

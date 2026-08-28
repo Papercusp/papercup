@@ -101,6 +101,10 @@ const specTestAdequacyCompletionGate = vi.fn();
 vi.mock('./spec-test-adequacy-gate', () => ({
   specTestAdequacyCompletionGate: (...a: unknown[]) => specTestAdequacyCompletionGate(...a),
 }));
+const dispatchPendingGradingAudits = vi.hoisted(() => vi.fn());
+vi.mock('../../grading-integrity', () => ({
+  dispatchPendingGradingAudits: (...a: unknown[]) => dispatchPendingGradingAudits(...a),
+}));
 
 import { z } from 'zod';
 import complete, {
@@ -211,6 +215,8 @@ beforeEach(() => {
   itemTestGate.mockResolvedValue({ ok: true });
   specTestAdequacyCompletionGate.mockReset();
   specTestAdequacyCompletionGate.mockResolvedValue({ ok: true, applicable: false, checked: [] });
+  dispatchPendingGradingAudits.mockReset();
+  dispatchPendingGradingAudits.mockResolvedValue({ requestedTargetIds: [], receipts: [] });
   resolveWorkItemRef.mockReset();
   linkWorkItem.mockReset();
   linkWorkItem.mockResolvedValue({ ok: true });
@@ -1447,6 +1453,48 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.error).toContain('freshness, execution-integrity');
       expect(r.error).toContain('No completion record or state transition was written');
       expect(r.completion).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
+    });
+
+    it('dispatches pending grading auditors and returns their receipts with the refusal', async () => {
+      getWorkItem.mockResolvedValue(linkedIssue);
+      const pendingTargets = ['EI-pending-1', 'EI-pending-2'];
+      specTestAdequacyCompletionGate.mockResolvedValue({
+        ok: false,
+        applicable: true,
+        retryable: true,
+        reason: 'SPEC-003-01@1: no current terminal complete scorecard',
+        checked: [],
+        pendingGradingAuditTargetIds: pendingTargets,
+      });
+      const dispatchResult = {
+        requestedTargetIds: pendingTargets,
+        receipts: pendingTargets.map((issueId) => ({ issueId, state: 'launched' as const })),
+      };
+      dispatchPendingGradingAudits.mockResolvedValue(dispatchResult);
+
+      const r = await one({
+        id: 'WI-101',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+        specAdequacy,
+      });
+
+      expect(dispatchPendingGradingAudits).toHaveBeenCalledWith({
+        targetIds: pendingTargets,
+        ctx,
+        harness: 'papercusp',
+      });
+      expect(r).toMatchObject({
+        ok: false,
+        specAdequacy: {
+          applicable: true,
+          retryable: true,
+          checked: [],
+          gradingAuditDispatch: dispatchResult,
+        },
+      });
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
       expect(attachCompletionEvidenceToSettledItem).not.toHaveBeenCalled();
     });
