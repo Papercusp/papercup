@@ -192,10 +192,34 @@ export const tsParseDetector: ContentDetector = {
  * hosts without its optional runtime installation; a loader failure propagates
  * and the content guard's existing fail-open path logs and skips the detector.
  */
+/**
+ * TypeScript DECLARATION files (`.d.ts` / `.d.mts` / `.d.cts`). They end in `.ts`/`.mts`/
+ * `.cts`, so any suffix test written for source files matches them too.
+ *
+ * WI-481326: that is not cosmetic for {@link esbuildTransformDetector}. A declaration file's
+ * whole job is to declare types WITHOUT values — `export const X: number;` is the correct and
+ * only syntax there — but transformed as a source module that is illegal, and esbuild says so:
+ * `The constant "X" must be initialized`. So every declaration file exporting a
+ * non-literal-typed const failed this detector and was quarantined (excluded from every
+ * auto-commit) FOREVER: there is nothing for the content-fixer to repair, so it burned through
+ * MAX_CONTENT_FIXER_ATTEMPTS against a correct file and escalated needs_human. Measured on
+ * papercusp 2026-08-28: `scripts/lib/governed-test-process.d.mts` and
+ * `apps/operator/scripts/ptool.d.mts` stranded 62 consecutive ticks while the routine's own
+ * `last_status` still read 'synced'.
+ *
+ * Excluding them costs no coverage: this detector's purpose is source files the BUNDLE HOST
+ * rejects, and a declaration file carries no runtime code and is never bundled. `ts-parse`
+ * still covers them — TypeScript parses declaration files by design.
+ */
+const DECLARATION_FILE_RE = /\.d\.(ts|mts|cts)$/;
+
 export const esbuildTransformDetector: ContentDetector = {
   key: 'esbuild-transform',
   glob: '**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
-  matches: (f) => /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) && !isExcludedPath(f),
+  matches: (f) =>
+    /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(f) &&
+    !DECLARATION_FILE_RE.test(f) &&
+    !isExcludedPath(f),
   detect: async (file, text) => {
     const hit = await findEsbuildTransformError(file, text);
     if (!hit) return null;
