@@ -218,6 +218,9 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
       leaderBrief: null,
       fleetSummaries: [{ fleet: 'f', summary: { members: 2, stalled: 0 } }],
       fleetSummariesTruncated: { total: 13, shown: 12, more: 'fleet:leader-brief' },
+      // goalPortfolio is a non-evictable core key for GOAL callers; include
+      // a concrete value so this fixture exercises the complete core order.
+      goalPortfolio: { schemaVersion: 1, goal: { id: 'goal-1' } },
       ...tier4,
     };
     const out = assembleOrientOutput({
@@ -239,6 +242,14 @@ describe('EI-20213176698128052: assembler and shaper share one priority ledger',
 
     expect(ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE).toBe(true);
     expect(Object.keys(out)).toEqual(expected);
+  });
+
+  it('omits the optional GOAL portfolio for an ordinary caller', () => {
+    const out = assembleOrientOutput({
+      result: { ok: true, me: 'me-value', claimable: [], inbox: {} },
+    });
+
+    expect(out).not.toHaveProperty('goalPortfolio');
   });
 });
 
