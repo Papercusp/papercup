@@ -78,6 +78,16 @@ describe('staging-first activation guard', () => {
     expect(stagingFirstActivationProblems(parsed)).toEqual([]);
   });
 
+  it('does not treat an explicit without-waiting phrase as a release-plane gate', () => {
+    const parsed = plan(
+      ['- **P-015** `todo` Migrate provider calls using staging/current-build.'],
+      '',
+      `## Now\n\n**Next:** Advance P-015/P-016 without waiting on green main.`,
+    );
+
+    expect(stagingFirstActivationProblems(parsed)).toEqual([]);
+  });
+
   it('does not attribute another item\'s decision clause through a textual reference', () => {
     const parsed = plan(
       ['- **P-001** `todo` Implement the interactive client on staging.'],

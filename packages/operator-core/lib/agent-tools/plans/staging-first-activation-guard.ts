@@ -9,7 +9,7 @@ export interface StagingFirstActivationProblem {
 
 const DEPLOYED_ENV_RE = /(?:\bmain\b|:3070\b|\bgreen[- ]checkpoint\b|\bdeploy(?:ed|ment|ing)?\b)/i;
 const STRONG_GATE_RE = /(?:\bwait(?:ing)?\s+(?:for|on)\b|\bblock(?:ed|ing|s)?\b|\bprerequisite\b|\bonly\s+after\b|\buntil\b|\bbefore\s+(?:continu(?:e|ing)|implement(?:ation|ing)?|clos(?:e|ing)|mark(?:ing)?\s+(?:it\s+)?done)\b|\b(?:must|required?|requires?)\b.{0,80}\b(?:before|until|prior to)\b)/i;
-const NEGATED_OR_META_GATE_RE = /(?:\b(?:reject|refus|forbid|prevent|detect|flag)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bnot\s+(?:an?\s+)?prerequisite\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:block|wait|require)\w*\b)/i;
+const NEGATED_OR_META_GATE_RE = /(?:\b(?:reject|refus|forbid|prevent|detect|flag)\w*\b|\bguard(?:s|ed|ing)?\s+against\b|\bnot\s+(?:an?\s+)?prerequisite\b|\b(?:does|do|must|should|is|are)\s+not\b.{0,80}\b(?:block|wait|required?|prerequisite)\w*\b|\bnever\s+(?:block|wait|require)\w*\b|\bwithout\s+wait(?:ing)?\s+(?:for|on)\b)/i;
 const FINAL_LIFECYCLE_RE = /(?:\bfinal\s+(?:shipment|promotion|deploy(?:ment)?|release|rollout|verification|acceptance)\b|\bship(?:ment)?\s+verification\b|\brelease\s+packag(?:e|ing)\b|\brollback\b|\bmigration\s+order(?:ing)?\b)/i;
 const FINAL_PHASE_RE = /(?:\brelease\b|\bshipment\b|\brollout\b|\bclosure\b|\bship\b)/i;
 const EXPLICIT_DEPLOYED_ONLY_RE = /\bdeployed[- ]only\b/i;
