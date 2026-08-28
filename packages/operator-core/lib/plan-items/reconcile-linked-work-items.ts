@@ -40,7 +40,10 @@ import {
   setWorkItemClaimHold,
   mergeWorkItemPayload,
   isSettledWorkItemState,
+  isClaimHoldParked,
   readWorkItemHeldOpenBy,
+  readWorkItemClaimHoldProvenance,
+  looksLikePolicyGate,
   ISSUE_FAMILY_KINDS,
   SETTLED_WORK_ITEM_STATES,
   type WorkItem,
@@ -514,6 +517,67 @@ export function planLaneBlockerRef(planSlug: string, itemId: string): string {
 }
 
 /**
+ * Legacy durable parks predate typed release contracts, so the exact plan-lane
+ * blocker history is the strongest provenance they carry. Keep this fallback
+ * deliberately narrow: the reason must name this lane item and describe a
+ * dependency, the park must have been created after this sync first gated the
+ * lane, and owner/policy/manual-pause language always wins in favour of keeping
+ * the park. Unattributed holds and coexisting hold-open leases are likewise not
+ * ours to clear.
+ *
+ * EI-21649364699609566: WI-40822 was parked while P-068 required its hosted-auth
+ * dependency, then P-068 became actionable and this sync cleared its exact
+ * `plan-lane:` blocker while leaving `_claimHold:true`. Exact-plan admission
+ * consequently undercounted the executable frontier. This predicate identifies
+ * that dependency-only legacy shape without turning an actionable plan status
+ * into authority to erase an independent durable disposition.
+ */
+const EXPLICIT_MANUAL_PARK_MARKER =
+  /\b(?:owner(?:[-\s](?:directed|gated|walled|attended))?|manual(?:ly)?|paus(?:e|ed)|stand[-\s]?down|do\s+not|don't|never|forbid(?:s|den)?|prohibit(?:s|ed)?|explicit(?:ly)?|authori[sz]ation|approval|credential|physical[-\s]?device|human[-\s]?(?:action|decision)|security[-\s]?gate)\b/i;
+const DEPENDENCY_PARK_MARKER = /\b(?:requires?|blocked|wait(?:ing)?|until|when|once|after|dependency|prerequisite|unpark)\b/i;
+
+function containsExactToken(text: string, token: string): boolean {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?=$|[^A-Za-z0-9_])`, 'i').test(text);
+}
+
+export function isDependencyDerivedPlanLanePark(
+  wi: Pick<WorkItem, 'payload'>,
+  laneRef: string,
+  laneItem: { planSlug: string; itemId: string },
+): boolean {
+  const provenance = readWorkItemClaimHoldProvenance(wi.payload);
+  const park = provenance.parked;
+  if (!park || provenance.heldOpen) return false;
+  const reason = park.reason?.trim() ?? '';
+  if (
+    !reason ||
+    looksLikePolicyGate(reason) ||
+    EXPLICIT_MANUAL_PARK_MARKER.test(reason) ||
+    !DEPENDENCY_PARK_MARKER.test(reason) ||
+    (!containsExactToken(reason, laneItem.itemId) && !reason.includes(laneRef))
+  ) {
+    return false;
+  }
+
+  const parkedAt = park.at ? Date.parse(park.at) : Number.NaN;
+  if (!Number.isFinite(parkedAt)) return false;
+  return readExternalBlockers(wi.payload).some((blocker) => {
+    if (
+      blocker.kind !== PLAN_LANE_BLOCKER_KIND ||
+      blocker.capability !== 'live-dependency' ||
+      blocker.ref !== laneRef ||
+      blocker.createdBy !== PLAN_LANE_SYNC_ACTOR
+    ) {
+      return false;
+    }
+    if (blocker.status === 'cleared' && blocker.clearedBy !== PLAN_LANE_SYNC_ACTOR) return false;
+    const gatedAt = Date.parse(blocker.createdAt);
+    return Number.isFinite(gatedAt) && gatedAt <= parkedAt;
+  });
+}
+
+/**
  * EI-18653945816361859: lift a STALE plan-lane-sync hold from a work-item whose
  * plan item has just been confirmed terminal (done/dropped) — the exact `ungate`
  * mechanics `applyLaneGateToWorkItem` uses for an `actionable` lane, applied
@@ -542,7 +606,12 @@ async function clearStaleLaneHold(wi: WorkItem, laneRef: string): Promise<void> 
     }
     const heldOpen = readWorkItemHeldOpenBy(wi.payload);
     if (heldOpen?.by === PLAN_LANE_SYNC_ACTOR) {
-      await setWorkItemClaimHold(wi.id, false, { harness, by: PLAN_LANE_SYNC_ACTOR });
+      await setWorkItemClaimHold(wi.id, false, {
+        harness,
+        by: PLAN_LANE_SYNC_ACTOR,
+        leaseOnly: true,
+        expectedLeaseHolder: PLAN_LANE_SYNC_ACTOR,
+      });
     }
   } catch {
     // best-effort — the terminal transition attempt below still runs either way.
@@ -926,17 +995,38 @@ async function applyLaneGateToWorkItem(
       // `states:['open']` — so the item read as unblocked on the plan while staying
       // structurally invisible to `scheduler:get_next`, stranding the lane.
       const restored = restoreStateAfterUngate(wi);
-      const execution = await agenticExecutionForUngate(wi);
+      const claimHold = readWorkItemClaimHoldProvenance(wi.payload);
+      const clearDependencyPark = isDependencyDerivedPlanLanePark(wi, laneRef, laneItem);
+      const clearsSystemLease = claimHold.heldOpen?.by === PLAN_LANE_SYNC_ACTOR;
+      const remainsClaimHeld =
+        isClaimHoldParked(wi.payload) &&
+        (!claimHold.attributed ||
+          Boolean(claimHold.parked && !clearDependencyPark) ||
+          Boolean(claimHold.heldOpen && !clearsSystemLease));
+      const execution = remainsClaimHeld ? null : await agenticExecutionForUngate(wi);
       await setWorkItemStateWithAliasInfo(wi.id, restored, {
         harness,
         by: PLAN_LANE_SYNC_ACTOR,
-        announceClaimable: execution ? false : undefined,
+        announceClaimable: execution || remainsClaimHeld ? false : undefined,
       });
-      if (wi.family !== 'feature') {
+      // The issue-family blocked alias creates a liveness-bound lease. Clear
+      // that lease only, so a coexisting durable park survives. A feature row
+      // has no alias lease; its legacy dependency-only durable park is cleared
+      // solely when the predicate above proves exact plan-lane provenance.
+      if (clearsSystemLease) {
         await setWorkItemClaimHold(wi.id, false, {
           harness,
           by: PLAN_LANE_SYNC_ACTOR,
+          leaseOnly: true,
+          expectedLeaseHolder: PLAN_LANE_SYNC_ACTOR,
           reason: `plan lane ${laneItem.planSlug}#${laneItem.itemId} cleared`,
+        });
+      }
+      if (clearDependencyPark) {
+        await setWorkItemClaimHold(wi.id, false, {
+          harness,
+          parkedBy: PLAN_LANE_SYNC_ACTOR,
+          parkedReason: `dependency-derived plan lane ${laneItem.planSlug}#${laneItem.itemId} cleared`,
         });
       }
       // Clear the blocker only after the lifecycle restore succeeds. On the repair
