@@ -10,9 +10,11 @@
  * this file owns only how that judgement looks.
  *
  * Narrow viewports collapse it to a 74px icon strip (see the container query
- * in the stylesheet); the labels survive as `title` tooltips and the
+ * in the stylesheet); the labels survive as hover/focus tooltips and the
  * accessible name never changes, so the collapse costs no information to a
- * screen-reader user.
+ * screen-reader user. That second half only holds because an unreachable step
+ * is marked `aria-disabled` rather than `disabled` — see the note on the
+ * button.
  */
 
 import { Cloud, Server, SlidersHorizontal } from "lucide-react";
@@ -81,13 +83,34 @@ export function WorkspaceRail({
                   data-active={active ? "true" : "false"}
                   aria-current={active ? "step" : undefined}
                   /*
-                   * A step whose precondition does not hold is genuinely inert
-                   * — disabled rather than merely dimmed, so a click cannot
-                   * strand the operator in an empty stage.
+                   * A step whose precondition does not hold is inert — but
+                   * inert via `aria-disabled`, NEVER the native `disabled`
+                   * attribute, and that distinction is load-bearing rather
+                   * than stylistic.
+                   *
+                   * The tooltip above is the ONLY channel carrying `evidence`
+                   * to a sighted pointer user once the container query
+                   * collapses `.railStepBody` away at <=1100px, and it is
+                   * enriched with that reason precisely in the unreachable
+                   * case. `Tooltip` is Radix (`Trigger asChild`), so it hangs
+                   * pointer and focus listeners on this element — and a
+                   * natively `disabled` button dispatches no pointer events
+                   * and takes no focus. Marking it `disabled` therefore
+                   * suppressed the explanation in exactly the state that
+                   * needed one, and removed the step from the tab order so a
+                   * keyboard user could not discover it either.
+                   *
+                   * `aria-disabled` keeps the step announced as unavailable
+                   * while leaving it hoverable and focusable; the guard in
+                   * `onClick` is what preserves the original guarantee that a
+                   * click cannot strand the operator in an empty stage.
                    */
-                  disabled={!step.reachable}
+                  aria-disabled={step.reachable ? undefined : true}
                   aria-label={`${label}: ${STATUS_LABELS[step.status]}. ${step.evidence}`}
-                  onClick={() => onSelectStep(step.id)}
+                  onClick={() => {
+                    if (!step.reachable) return;
+                    onSelectStep(step.id);
+                  }}
                 >
                   <span className={styles.railStepIcon} aria-hidden="true">
                     <Icon size={16} />

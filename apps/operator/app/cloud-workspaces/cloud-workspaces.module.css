@@ -165,7 +165,7 @@
     color 120ms ease;
 }
 
-.railStep:hover:not(:disabled) {
+.railStep:hover:not([aria-disabled="true"]) {
   background: var(--bg-2);
   color: var(--fg);
 }
@@ -175,8 +175,11 @@
   outline-offset: 2px;
 }
 
-/* A step whose precondition does not hold is inert, and reads that way. */
-.railStep:disabled {
+/* A step whose precondition does not hold is inert, and reads that way.
+   Keyed on `aria-disabled`, not `:disabled`: the step stays hoverable and
+   focusable so the tooltip carrying WHY it is inert can actually open, which
+   a natively disabled button makes impossible. See WorkspaceRail.tsx. */
+.railStep[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.45;
 }
