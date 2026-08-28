@@ -2460,6 +2460,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           rawBody,
           req.url,
         );
+        const coordSendIdentity = classifyCoordSendCall(rawBody, req.url);
+        const coordSend = coordSendIdentity.coordSend;
+        const coordSendTools = coordSendIdentity.tools;
         const criticalContinuation = criticalContinuationIdentity.critical;
         const criticalContinuationTools = criticalContinuationIdentity.tools;
         const sessionHandshake = isMcpSessionHandshakeCall(rawBody);
@@ -2468,37 +2471,43 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const standardReservedControlPlane =
           reservedControlPlane &&
           !criticalContinuation &&
+          !coordSend &&
           !watchdogSessionProbe;
-        const admissionClass = criticalContinuation
-          ? "critical-continuation"
+        const admissionClass = coordSend
+          ? "coord-send"
+          : criticalContinuation
+            ? "critical-continuation"
           : watchdogSessionProbe
             ? "watchdog"
             : standardReservedControlPlane
               ? "reserved-control-plane"
               : "ordinary";
         const admissionCeiling =
-          criticalContinuation || watchdogSessionProbe
+          coordSend || criticalContinuation || watchdogSessionProbe
             ? 1
             : partitionedAdmission
               ? standardReservedControlPlane
                 ? reservedControlPlaneCeiling
                 : ordinaryInFlightCeiling
               : maxInFlight;
-        const classInFlight = criticalContinuation
-          ? criticalContinuationInFlight
-          : watchdogSessionProbe
-            ? watchdogProbeInFlight
-            : standardReservedControlPlane
-              ? reservedControlPlaneInFlight
-              : ordinaryInFlight;
+        const classInFlight = coordSend
+          ? coordSendInFlight
+          : criticalContinuation
+            ? criticalContinuationInFlight
+            : watchdogSessionProbe
+              ? watchdogProbeInFlight
+              : standardReservedControlPlane
+                ? reservedControlPlaneInFlight
+                : ordinaryInFlight;
         const normalInFlight = ordinaryInFlight + reservedControlPlaneInFlight;
         const normalPartitionSaturated =
           !criticalContinuation &&
+          !coordSend &&
           !watchdogSessionProbe &&
           shouldShedForInFlight(normalInFlight, maxInFlight);
         // Ordinary handshakes use the bounded FIFO below, which accounts for both their own
         // handshake cap and the reserved-class cap. Shedding them here would bypass that queue.
-        const admissionSaturated = criticalContinuation
+        const admissionSaturated = criticalContinuation || coordSend
           ? false
           : sessionHandshake && !watchdogSessionProbe
             ? false
@@ -2545,6 +2554,189 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           });
           return;
         }
+        // EI-21669304707115602 — pure coord:send handoffs have a dedicated one-socket
+        // continuation lane. They must not wait behind a long completion/checkpoint on the
+        // shared critical socket, while still keeping a bounded FIFO and an honest pre-forward
+        // dwell response inside ptool's client deadline.
+        if (coordSend && !canGrantCoordSend()) {
+          pumpCoordSendQueue();
+          if (maxCoordSendQueue <= coordSendQueueLength()) {
+            const retryAfterSec = retryAfterSecForDrainRate(
+              coordSendInFlight,
+              1,
+              completedForwardAtMs,
+              Date.now(),
+            );
+            res.writeHead(429, {
+              "content-type": "application/json",
+              "retry-after": String(retryAfterSec),
+            });
+            res.end(
+              JSON.stringify({
+                ok: false,
+                error: "mcp_proxy_coord_send_queue_full",
+                retryable: true,
+                forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                detail: `proxy coord-send FIFO already has ${coordSendQueueLength()} waiter(s) (queue max ${maxCoordSendQueue})`,
+                retryAfterSec,
+                traceId: requestTraceId,
+              }),
+            );
+            log(
+              `shed coord-send request ${requestTraceId} — ` +
+                `${coordSendQueueLength()}/${maxCoordSendQueue} waiters`,
+            );
+            record({
+              kind: "shed_coord_send_queue_full",
+              method: req.method,
+              path: req.url,
+              traceId: requestTraceId,
+              tools: coordSendTools,
+              coordSendInFlight,
+              queueLength: coordSendQueueLength(),
+              maxCoordSendQueue,
+              retryAfterSec,
+              forwardingResult: "not_forwarded",
+            });
+            return;
+          }
+
+          let queuedCoordSend!: QueuedCoordSend;
+          const enqueuedAtMs = Date.now();
+          const granted = await new Promise<boolean>((resolve) => {
+            queuedCoordSend = {
+              resolve,
+              cancelled: false,
+              granted: false,
+              enqueuedAtMs,
+              expired: false,
+              traceId: requestTraceId,
+              tools: coordSendTools,
+              maxWaitMs: coordSendQueueWaitMs,
+            };
+            coordSendQueue.push(queuedCoordSend);
+            cancelQueuedAdmission = (): void => {
+              clearQueuedWaitTimer(queuedCoordSend);
+              cancelQueuedCoordSend(queuedCoordSend);
+            };
+
+            const armCoordSendWaitWatch = (): void => {
+              if (
+                queuedCoordSend.maxWaitMs === 0 &&
+                criticalContinuationQueueWaitLogMs === 0
+              ) {
+                return;
+              }
+              const waitedMs = Date.now() - queuedCoordSend.enqueuedAtMs;
+              const remainingMs =
+                queuedCoordSend.maxWaitMs > 0
+                  ? Math.max(1, queuedCoordSend.maxWaitMs - waitedMs)
+                  : Number.POSITIVE_INFINITY;
+              const nextLogMs =
+                criticalContinuationQueueWaitLogMs > 0
+                  ? criticalContinuationQueueWaitLogMs
+                  : Number.POSITIVE_INFINITY;
+              const nextDelayMs = Math.min(remainingMs, nextLogMs);
+              if (!Number.isFinite(nextDelayMs)) return;
+              queuedCoordSend.waitTimer = setTimeout(() => {
+                if (queuedCoordSend.granted || queuedCoordSend.cancelled)
+                  return;
+                const waitedSoFarMs =
+                  Date.now() - queuedCoordSend.enqueuedAtMs;
+                if (
+                  queuedCoordSend.maxWaitMs > 0 &&
+                  waitedSoFarMs >= queuedCoordSend.maxWaitMs
+                ) {
+                  queuedCoordSend.expired = true;
+                  clearQueuedWaitTimer(queuedCoordSend);
+                  cancelQueuedCoordSend(queuedCoordSend);
+                  return;
+                }
+                log(
+                  `coord-send request ${requestTraceId} still queued ` +
+                    `${Math.round(waitedSoFarMs / 1000)}s — ` +
+                    `${coordSendInFlight} in flight, ${coordSendQueueLength()} waiting`,
+                );
+                record({
+                  kind: "coord_send_queue_wait",
+                  method: req.method,
+                  path: req.url,
+                  traceId: requestTraceId,
+                  tools: coordSendTools,
+                  waitedMs: waitedSoFarMs,
+                  coordSendInFlight,
+                  queueLength: coordSendQueueLength(),
+                  maxCoordSendQueue,
+                  maxCoordSendQueueWaitMs: queuedCoordSend.maxWaitMs,
+                });
+                armCoordSendWaitWatch();
+              }, nextDelayMs);
+              queuedCoordSend.waitTimer.unref?.();
+            };
+            armCoordSendWaitWatch();
+            log(
+              `queued coord-send request ${requestTraceId} — ` +
+                `${coordSendInFlight} in flight, ${coordSendQueueLength()} waiting`,
+            );
+            record({
+              kind: "queue_coord_send",
+              method: req.method,
+              path: req.url,
+              traceId: requestTraceId,
+              tools: coordSendTools,
+              coordSendInFlight,
+              queueLength: coordSendQueueLength(),
+              maxCoordSendQueue,
+              maxCoordSendQueueWaitMs: coordSendQueueWaitMs,
+              forwardingResult: "queued",
+            });
+          });
+          clearQueuedWaitTimer(queuedCoordSend);
+          cancelQueuedAdmission = null;
+          if (!granted || clientGone) {
+            if (granted) {
+              coordSendGrantReservations = Math.max(
+                0,
+                coordSendGrantReservations - 1,
+              );
+              pumpCoordSendQueue();
+            } else if (queuedCoordSend.expired && !clientGone) {
+              const waitedMs = Date.now() - queuedCoordSend.enqueuedAtMs;
+              res.writeHead(429, {
+                "content-type": "application/json",
+                "retry-after": "2",
+              });
+              res.end(
+                JSON.stringify({
+                  ok: false,
+                  error: "mcp_proxy_coord_send_queue_dwell",
+                  retryable: true,
+                  forwardingResult: "not_forwarded" satisfies McpProxyForwardingResult,
+                  detail: `coord:send waited ${waitedMs}ms in the dedicated FIFO (max ${queuedCoordSend.maxWaitMs}ms) — shed; retry`,
+                  retryAfterSec: 2,
+                  traceId: requestTraceId,
+                }),
+              );
+              record({
+                kind: "shed_coord_send_queue_dwell",
+                method: req.method,
+                path: req.url,
+                traceId: requestTraceId,
+                tools: coordSendTools,
+                waitedMs,
+                coordSendInFlight,
+                queueLength: coordSendQueueLength(),
+                maxCoordSendQueueWaitMs: queuedCoordSend.maxWaitMs,
+                forwardingResult: "not_forwarded",
+              });
+            }
+            return;
+          }
+          coordSendGrantReservations = Math.max(
+            0,
+            coordSendGrantReservations - 1,
+          );
+        }
         // EI-21556422206126497 — the one-socket continuation bulkhead protects durability writes
         // from normal traffic, but the old hard admission ceiling shed every SECOND durability
         // write immediately. Preserve single-flight upstream execution while absorbing a bounded
@@ -2579,10 +2771,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             criticalContinuationTools.some((tool) =>
               completionContinuationTools.has(tool),
             ) && !hasQueuedCompletion();
-          const coordSendPriority =
-            criticalContinuationTools.some((tool) =>
-              coordSendContinuationTools.has(tool),
-            ) && !hasQueuedCoordSend();
           const improvementsCapturePriority =
             criticalContinuationTools.some((tool) =>
               improvementsCaptureContinuationTools.has(tool),
@@ -2593,7 +2781,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             !loopCheckpointPriority &&
             !workItemCheckpointPriority &&
             !completionPriority &&
-            !coordSendPriority &&
             !improvementsCapturePriority
           ) {
             const retryAfterSec = retryAfterSecForDrainRate(
@@ -2641,11 +2828,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           const nonExpiring = hasNonExpiringCriticalContinuation(
             criticalContinuationTools,
           );
-          const coordSendWaitBound = criticalContinuationTools.some((tool) =>
-            coordSendContinuationTools.has(tool),
-          )
-            ? coordSendQueueWaitMs
-            : 0;
           const loopCheckpointWaitBound = criticalContinuationTools.some((tool) =>
             loopCheckpointContinuationTools.has(tool),
           )
@@ -2653,7 +2835,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
             : 0;
           const positiveQueueWaitBounds = [
             maxCriticalContinuationQueueWaitMs,
-            coordSendWaitBound,
             loopCheckpointWaitBound,
           ].filter((waitMs): waitMs is number => waitMs > 0);
           const effectiveQueueWaitMs = nonExpiring
@@ -2677,7 +2858,6 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
               loopCheckpointPriority ||
               workItemCheckpointPriority ||
               completionPriority ||
-              coordSendPriority ||
               improvementsCapturePriority
             ) {
               criticalContinuationQueue.unshift(queuedCriticalContinuation);
@@ -2979,7 +3159,15 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         const inFlightId = nextInFlightId++;
         const inFlightStartedAt = Date.now();
         inFlightStarts.set(inFlightId, inFlightStartedAt);
-        if (criticalContinuation) {
+        if (coordSend) {
+          coordSendInFlight++;
+          coordSendInFlightStarts.set(inFlightId, inFlightStartedAt);
+          coordSendRequests.set(inFlightId, {
+            startedAtMs: inFlightStartedAt,
+            traceId: requestTraceId,
+            tools: coordSendTools,
+          });
+        } else if (criticalContinuation) {
           criticalContinuationInFlight++;
           criticalContinuationInFlightStarts.set(inFlightId, inFlightStartedAt);
           criticalContinuationRequests.set(inFlightId, {
@@ -3109,8 +3297,10 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
                 fwd.body,
                 watchdogSessionProbe
                   ? watchdogAgent
-                  : criticalContinuation
-                    ? criticalContinuationAgent
+                  : coordSend
+                    ? coordSendAgent
+                    : criticalContinuation
+                      ? criticalContinuationAgent
                     : reservedControlPlane && controlPlaneReserve > 0
                       ? controlPlaneAgent
                       : upstreamAgent,
@@ -3363,7 +3553,11 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // (success return, exhausted-window fallthrough, or an unexpected throw).
           const completedAtMs = Date.now();
           inFlightStarts.delete(inFlightId);
-          if (criticalContinuation) {
+          if (coordSend) {
+            coordSendInFlight = Math.max(0, coordSendInFlight - 1);
+            coordSendInFlightStarts.delete(inFlightId);
+            coordSendRequests.delete(inFlightId);
+          } else if (criticalContinuation) {
             criticalContinuationInFlight = Math.max(
               0,
               criticalContinuationInFlight - 1,
@@ -3398,6 +3592,7 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
           // is oversubscribed during the grant continuation.
           pumpHandshakeQueue();
           pumpCriticalContinuationQueue();
+          pumpCoordSendQueue();
         }
       })();
     });
@@ -3446,9 +3641,13 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     stallTimers.clear();
     // EI-21504897841052086 — queued waiters' dwell watches must not hold the loop open.
     for (const waiter of handshakeQueue) clearQueuedWaitTimer(waiter);
+    for (const waiter of criticalContinuationQueue)
+      clearQueuedWaitTimer(waiter);
+    for (const waiter of coordSendQueue) clearQueuedWaitTimer(waiter);
     if (ownsControlPlaneAgent) controlPlaneAgent.destroy();
     if (ownsWatchdogAgent) watchdogAgent.destroy();
     if (ownsCriticalContinuationAgent) criticalContinuationAgent.destroy();
+    if (ownsCoordSendAgent) coordSendAgent.destroy();
   });
   return server;
 }

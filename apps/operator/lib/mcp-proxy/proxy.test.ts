@@ -39,6 +39,8 @@ import {
   DEFAULT_LOOP_CHECKPOINT_QUEUE_WAIT_MS,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
+  isCoordSendContinuationCall,
+  coordSendToolNames,
   isCriticalContinuationCall,
   criticalContinuationToolNames,
   isReservedControlPlaneCall,
@@ -2252,8 +2254,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
   it("recognizes only complete continuation-boundary batches for the critical socket", () => {
     const call = (name: string) =>
       Buffer.from(JSON.stringify({ method: "tools/call", params: { name } }));
-    expect(isCriticalContinuationCall(call("coord:send"))).toBe(true);
-    expect(criticalContinuationToolNames(call("coord:send"))).toEqual([
+    expect(isCriticalContinuationCall(call("coord:send"))).toBe(false);
+    expect(criticalContinuationToolNames(call("coord:send"))).toEqual([]);
+    expect(isCoordSendContinuationCall(call("coord:send"))).toBe(true);
+    expect(coordSendToolNames(call("coord:send"))).toEqual([
       "coord:send",
     ]);
     expect(isCriticalContinuationCall(call("improvements:capture"))).toBe(true);
@@ -2295,6 +2299,47 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         ),
       ),
     ).toEqual(["loop:checkpoint"]);
+    const deferredCoordSend = Buffer.from(
+      JSON.stringify({
+        method: "tools/call",
+        params: {
+          name: "tools:invoke",
+          arguments: { name: "coord:send", args: {} },
+        },
+      }),
+    );
+    expect(isCoordSendContinuationCall(deferredCoordSend)).toBe(true);
+    expect(coordSendToolNames(deferredCoordSend)).toEqual(["coord:send"]);
+    expect(
+      isCoordSendContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            JSON.parse(call("coord:send").toString()),
+            JSON.parse(deferredCoordSend.toString()),
+          ]),
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      isCoordSendContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            JSON.parse(call("coord:send").toString()),
+            JSON.parse(call("loop:end").toString()),
+          ]),
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      isCriticalContinuationCall(
+        Buffer.from(
+          JSON.stringify([
+            JSON.parse(call("coord:send").toString()),
+            JSON.parse(call("loop:end").toString()),
+          ]),
+        ),
+      ),
+    ).toBe(true);
     expect(
       isCriticalContinuationCall(
         Buffer.from(
@@ -3773,7 +3818,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const aged = Array.from({ length: agedWaiterCount }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "coord:send"),
+        body(index + 2, "improvements:capture"),
         `/api/mcp?client=aged-${index}`,
       ),
     );
@@ -4240,7 +4285,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const ordinary = Array.from({ length: 15 }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "coord:send"),
+        body(index + 2, "improvements:capture"),
         `/api/mcp?client=ordinary-${index + 1}`,
       ),
     );
@@ -4471,7 +4516,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     const ordinary = Array.from({ length: 16 }, (_, index) =>
       request(
         port(proxy),
-        body(index + 2, "coord:send"),
+        body(index + 2, "improvements:capture"),
         `/api/mcp?client=ordinary-${index + 1}`,
       ),
     );
@@ -4524,7 +4569,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toHaveLength(18);
   });
 
-  it("EI-21648286127930654: admits the first coord:send beyond a full continuation FIFO", async () => {
+  it("EI-21669304707115602: pure coord:send bypasses a full shared continuation FIFO", async () => {
     let releaseFirst: () => void = () => {};
     const firstGate = new Promise<void>((resolve) => {
       releaseFirst = resolve;
@@ -4604,39 +4649,28 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       sendSettled = true;
       return result;
     });
-    await waitFor(
-      () =>
-        logs.filter((line) =>
-          line.includes("queued critical-continuation request"),
-        ).length >= 17,
-    );
+    await waitFor(() => sendSettled);
 
-    expect(sendSettled).toBe(false);
-    expect(hits).toEqual(["held-completion"]);
+    expect(sendSettled).toBe(true);
+    expect(await send).toMatchObject({ status: 200 });
+    expect(hits).toEqual(["held-completion", "priority-send"]);
     const health = JSON.parse(
       (await get(port(proxy), MCP_PROXY_LOCAL_HEALTH_PATH)).body,
     );
     expect(health.inFlight.criticalContinuationQueue).toMatchObject({
-      waiting: 17,
+      waiting: 16,
       max: 16,
-      requests: expect.arrayContaining([
+      requests: expect.not.arrayContaining([
         expect.objectContaining({ tools: ["coord:send"] }),
       ]),
     });
-
-    const secondSend = await request(
-      port(proxy),
-      body(19, "coord:send"),
-      "/api/mcp?client=second-send",
-    );
-    expect(secondSend.status).toBe(429);
-    expect(JSON.parse(secondSend.body).error).toBe(
-      "mcp_proxy_critical_continuation_queue_full",
-    );
+    expect(health.inFlight.coordSendQueue).toMatchObject({
+      waiting: 0,
+      max: 16,
+    });
 
     releaseFirst();
     expect((await first).status).toBe(200);
-    expect((await send).status).toBe(200);
     expect((await Promise.all(ordinary)).every(({ status }) => status === 200)).toBe(
       true,
     );
@@ -4647,7 +4681,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(hits).toHaveLength(18);
   });
 
-  it("EI-21653510279635866: expires a queued coord:send with an explicit not-forwarded result before the client deadline", async () => {
+  it("EI-21653510279635866: expires a queued dedicated coord:send before the client deadline", async () => {
     expect(DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS).toBe(0);
     expect(DEFAULT_COORD_SEND_QUEUE_WAIT_MS).toBeLessThan(60_000);
 
@@ -4667,7 +4701,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
             "client",
           ) ?? "";
         hits.push(client);
-        if (client === "held-completion") {
+        if (client === "held-send") {
           noteFirstStarted();
           void firstGate.then(() => res.end('{"result":{"held":true}}'));
           return;
@@ -4685,6 +4719,7 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
         maxInFlight: 10,
         controlPlaneReserve: 1,
         maxCriticalContinuationQueue: 1,
+        maxCoordSendQueue: 1,
         coordSendQueueWaitMs: 25,
         criticalContinuationQueueWaitLogMs: 10,
         log: () => {},
@@ -4701,8 +4736,8 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
       });
     const first = request(
       port(proxy),
-      body(1, "work_items:complete"),
-      "/api/mcp?client=held-completion",
+      body(1, "coord:send"),
+      "/api/mcp?client=held-send",
     );
     await firstStarted;
 
@@ -4713,10 +4748,10 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     );
     expect(send.status).toBe(429);
     expect(JSON.parse(send.body)).toMatchObject({
-      error: "mcp_proxy_critical_continuation_queue_dwell",
+      error: "mcp_proxy_coord_send_queue_dwell",
       forwardingResult: "not_forwarded",
     });
-    expect(hits).toEqual(["held-completion"]);
+    expect(hits).toEqual(["held-send"]);
 
     releaseFirst();
     expect((await first).status).toBe(200);
