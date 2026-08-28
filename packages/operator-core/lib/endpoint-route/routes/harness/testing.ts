@@ -243,7 +243,7 @@ const run = defineTool({
     const url = new URL(req.url);
     const resolved = await resolveCtx(slug, url.searchParams.get('phase'));
     if (resolved instanceof Response) return resolved;
-    const { root } = resolved;
+    const { project, root } = resolved;
 
     const body = (await req.json().catch(() => ({}))) as {
       runner?: { kind?: string; filePath?: string; filePaths?: string[] };

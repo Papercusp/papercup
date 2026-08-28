@@ -1,0 +1,517 @@
+/**
+ * Shipping-gate Agent Chat E2E (own-tui-full-divorce-2026-08-24 P-022).
+ *
+ * This is intentionally above the reducer/parser layer:
+ *
+ *   installed/built `pui` -> real PTY -> production Hono operator app ->
+ *   real owned loop -> real migrated Postgres
+ *
+ * The only fake is the external model-provider port. Keeping that seam
+ * deterministic lets the gate prove success, HITL, provider failure and a
+ * stalled/cancelled stream without spending credentials or depending on a
+ * third-party service. The loop, capability projection/dispatch, PG approval
+ * store, chat/session persistence, HTTP/SSE transport and Ratatui UI are real.
+ */
+import { createAdaptorServer } from '@hono/node-server';
+import { spawn as ptySpawn, type IPty } from '@lydell/node-pty';
+import { afterAll, beforeAll, beforeEach, describe, expect, test, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import * as path from 'node:path';
+import type { ModelRequest, ModelStreamEvent } from '../agent-loop/model-port';
+import type { OrgTestDb } from '../../test/_org-test-db';
+
+const scriptedProvider = vi.hoisted(() => ({
+  mode: 'success' as 'success' | 'hitl' | 'failure' | 'stall',
+  successText: 'PUI provider fixture replied',
+  requests: [] as Array<{ messages: unknown[]; tools: string[] }>,
+}));
+
+// Provider-only fake: everything above ModelPort stays production-real.
+vi.mock('../agent-loop/provider-router', () => ({
+  createRoutedModelPort: () => ({
+    async *stream(req: ModelRequest): AsyncIterable<ModelStreamEvent> {
+      scriptedProvider.requests.push({
+        messages: req.messages,
+        tools: (req.tools ?? []).map((tool) => tool.name),
+      });
+      if (scriptedProvider.mode === 'failure') {
+        yield { type: 'error', message: 'PUI-E2E provider stream failed visibly' };
+        return;
+      }
+      if (scriptedProvider.mode === 'stall') {
+        await new Promise<void>((resolve) => {
+          if (req.signal?.aborted) return resolve();
+          const timer = setTimeout(resolve, 15_000);
+          timer.unref?.();
+          req.signal?.addEventListener('abort', () => {
+            clearTimeout(timer);
+            resolve();
+          }, { once: true });
+        });
+        yield req.signal?.aborted
+          ? { type: 'stop', reason: 'aborted' }
+          : { type: 'error', message: 'PUI-E2E stalled provider safety deadline fired' };
+        return;
+      }
+      if (scriptedProvider.mode === 'hitl') {
+        const hasResult = req.messages.some((message) =>
+          message.content.some((part) => part.type === 'tool_result'),
+        );
+        if (!hasResult) {
+          yield {
+            type: 'tool_call',
+            id: 'pui-e2e-call-1',
+            name: 'capability:bash',
+            input: {
+              command: "printf 'PUI-E2E-HITL-OK'",
+              description: 'prove real HITL capability round trip',
+            },
+          };
+          yield {
+            type: 'stop',
+            reason: 'tool_use',
+            usage: { inputTokens: 4, outputTokens: 2 },
+          };
+          return;
+        }
+        yield { type: 'text_delta', text: 'PUI HITL round-trip complete' };
+        yield {
+          type: 'stop',
+          reason: 'end_turn',
+          usage: { inputTokens: 8, outputTokens: 4 },
+        };
+        return;
+      }
+      yield { type: 'text_delta', text: scriptedProvider.successText };
+      yield {
+        type: 'stop',
+        reason: 'end_turn',
+        usage: { inputTokens: 6, outputTokens: 3 },
+      };
+    },
+  }),
+}));
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
+const TUI_DIR = path.join(REPO_ROOT, 'apps', 'tui');
+const HARNESS = 'papercusp';
+const WORKSPACE = 'pui-agent-chat-e2e';
+const OWNER = 'pui-agent-chat-e2e-owner';
+
+function cargoTargetDir(): string | null {
+  const probe = spawnSync('cargo', ['metadata', '--format-version', '1', '--no-deps'], {
+    cwd: TUI_DIR,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  if (probe.status !== 0 || !probe.stdout) return null;
+  try {
+    return (JSON.parse(probe.stdout) as { target_directory?: string }).target_directory ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Prefer the P-021 supported installed artifact, then current cargo output. */
+function resolvePuiBinary(): string | null {
+  const target = cargoTargetDir();
+  const candidates = [
+    process.env.PUI_BIN,
+    path.join(process.env.HOME ?? '', '.cargo', 'bin', 'pui'),
+    target ? path.join(target, 'debug', 'pui') : null,
+    target ? path.join(target, 'release', 'pui') : null,
+    path.join(TUI_DIR, 'target', 'debug', 'pui'),
+    path.join(TUI_DIR, 'target', 'release', 'pui'),
+  ];
+  return candidates.find((candidate): candidate is string => Boolean(candidate && existsSync(candidate))) ?? null;
+}
+
+function ensurePuiBinary(): string {
+  const existing = resolvePuiBinary();
+  if (existing) return existing;
+  const built = spawnSync('cargo', ['build', '--locked', '--bin', 'pui'], {
+    cwd: TUI_DIR,
+    encoding: 'utf8',
+    timeout: 840_000,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (built.status !== 0) {
+    throw new Error(`cargo build --locked --bin pui failed:\n${built.stderr?.slice(-4_000)}`);
+  }
+  const resolved = resolvePuiBinary();
+  if (!resolved) throw new Error('pui binary is absent after a successful cargo build');
+  return resolved;
+}
+
+// We match only text that the terminal actually received from a Ratatui draw.
+// Cursor movement is stripped, while row boundaries remain visible enough for
+// bounded substring assertions. This avoids a second UI model in the gate.
+function visibleText(raw: string): string {
+  return raw
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+    .replace(/\x1bP[\s\S]*?\x1b\\/g, '')
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '')
+    .replace(/\x1b[@-_]/g, '')
+    .replace(/\r/g, '\n')
+    .replace(/[ \t]+/g, ' ');
+}
+
+class PuiPane {
+  readonly pty: IPty;
+  private raw = '';
+  private mark = 0;
+  private exit: Promise<{ exitCode: number; signal?: number }>;
+
+  constructor(bin: string, operatorPort: number, home: string) {
+    this.pty = ptySpawn(bin, [], {
+      name: 'xterm-256color',
+      cols: 150,
+      rows: 44,
+      cwd: REPO_ROOT,
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        HOME: home,
+        TERM: 'xterm-256color',
+        LANG: process.env.LANG ?? 'en_US.UTF-8',
+        PUI_OPERATOR: `http://127.0.0.1:${operatorPort}`,
+        PAPERCUSP_TUI_OWNER: OWNER,
+        // Keep this direct-PTY test out of any ambient zellij/tmux session.
+        ZELLIJ: '',
+        ZELLIJ_SESSION_NAME: '',
+        TMUX: '',
+      },
+    });
+    this.pty.onData((chunk) => { this.raw += chunk; });
+    this.exit = new Promise((resolve) => this.pty.onExit(resolve));
+  }
+
+  text(sinceMark = false): string {
+    return visibleText(sinceMark ? this.raw.slice(this.mark) : this.raw);
+  }
+
+  markHere(): void {
+    this.mark = this.raw.length;
+  }
+
+  write(keys: string): void {
+    this.pty.write(keys);
+  }
+
+  async waitFor(needle: string, opts: { timeoutMs?: number; sinceMark?: boolean } = {}): Promise<void> {
+    const timeoutMs = opts.timeoutMs ?? 25_000;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (this.text(opts.sinceMark).includes(needle)) return;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    }
+    throw new Error(
+      `timed out after ${timeoutMs}ms waiting for ${JSON.stringify(needle)}; terminal tail:\n` +
+      this.text(opts.sinceMark).slice(-8_000),
+    );
+  }
+
+  async stop(): Promise<void> {
+    try { this.pty.write('q'); } catch { /* exited */ }
+    const graceful = await Promise.race([
+      this.exit.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 1_500)),
+    ]);
+    if (!graceful) {
+      try { this.pty.kill(); } catch { /* exited */ }
+      await Promise.race([
+        this.exit,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('pui PTY did not exit')), 5_000)),
+      ]);
+    }
+    await waitForNoChildren(this.pty.pid);
+  }
+}
+
+function childPids(parent: number): number[] {
+  const out = spawnSync('ps', ['-o', 'pid=', '--ppid', String(parent)], { encoding: 'utf8' });
+  return (out.stdout ?? '')
+    .split(/\s+/)
+    .map(Number)
+    .filter((pid) => Number.isInteger(pid) && pid > 0);
+}
+
+async function waitForNoChildren(parent: number): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (childPids(parent).length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+  expect(childPids(parent), `processes leaked below pui pid ${parent}`).toEqual([]);
+}
+
+async function listen(server: Server): Promise<number> {
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  return (server.address() as AddressInfo).port;
+}
+
+async function close(server: Server | undefined): Promise<void> {
+  if (!server) return;
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+}
+
+async function putViewState(tab: string): Promise<void> {
+  const { putViewState: put } = await import('../tui-workbench-store');
+  await put(OWNER, { tab, harness: HARNESS, operator_dock_open: false });
+}
+
+async function persistedChats(db: OrgTestDb) {
+  return db.adminSql<Array<{
+    id: string;
+    role: string;
+    transcript: Array<{ role: string; content: string; error?: boolean }>;
+  }>>`
+    SELECT id, role, transcript
+    FROM harness_shared.agent_chats_consolidated
+    WHERE workspace_id = ${WORKSPACE}
+    ORDER BY updated_at DESC
+  `;
+}
+
+let db: OrgTestDb;
+let bin: string;
+let home: string;
+let operatorServer: Server;
+let operatorPort: number;
+let previousEnv: Record<string, string | undefined>;
+
+beforeAll(async () => {
+  vi.setConfig({ testTimeout: 120_000, hookTimeout: 120_000 });
+  bin = ensurePuiBinary();
+  home = mkdtempSync(path.join(tmpdir(), 'pui-agent-chat-e2e-'));
+  mkdirSync(path.join(home, '.papercusp'), { recursive: true });
+  writeFileSync(path.join(home, '.papercusp', 'pui-state.json'), JSON.stringify({ tutorialSeen: true }));
+
+  const { createOrgTestDb } = await import('../../test/_org-test-db');
+  db = await createOrgTestDb();
+  const keys = [
+    'HARNESS_DATABASE_URL',
+    'HARNESS_ADMIN_DATABASE_URL',
+    'DATABASE_URL',
+    'PAPERCUSP_SKIP_PG_DISCOVERY',
+    'PAPERCUSP_PGBOUNCER',
+    'PAPERCUSP_WORKSPACE_ID',
+    'PAPERCUSP_WORKSPACES_ROOT',
+    'PAPERCUSP_SERVE_UI',
+  ];
+  previousEnv = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  Object.assign(process.env, {
+    HARNESS_DATABASE_URL: db.appDsn,
+    HARNESS_ADMIN_DATABASE_URL: db.adminDsn,
+    DATABASE_URL: db.adminDsn,
+    PAPERCUSP_SKIP_PG_DISCOVERY: '1',
+    PAPERCUSP_PGBOUNCER: '0',
+    PAPERCUSP_WORKSPACE_ID: WORKSPACE,
+    PAPERCUSP_WORKSPACES_ROOT: path.join(home, '.papercusp-workspaces'),
+    PAPERCUSP_SERVE_UI: '0',
+  });
+
+  const dbOrg = await import('@papercusp/db-org');
+  await dbOrg._resetForTests();
+  const connection = await import('../../../../libs/papercusp/libs/db/src/connection');
+  connection._resetUrlCacheForTests();
+  await dbOrg._resetForTests();
+
+  const { saveHarnessRegistry } = await import('../harness-registry');
+  await saveHarnessRegistry({
+    projects: [{ slug: HARNESS, path: REPO_ROOT, harness_kind: 'hive', self_repo: true }],
+  }, WORKSPACE);
+  await putViewState('Plans');
+
+  const { app } = await import('../../../../apps/operator/bin/host-app');
+  operatorServer = createAdaptorServer({ fetch: app.fetch });
+  operatorPort = await listen(operatorServer);
+}, 900_000);
+
+afterAll(async () => {
+  await close(operatorServer);
+  const dbOrg = await import('@papercusp/db-org');
+  await dbOrg._resetForTests().catch(() => {});
+  await db?.cleanup();
+  for (const [key, value] of Object.entries(previousEnv ?? {})) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  rmSync(home, { recursive: true, force: true });
+});
+
+beforeEach(async () => {
+  scriptedProvider.mode = 'success';
+  scriptedProvider.successText = 'PUI provider fixture replied';
+  scriptedProvider.requests = [];
+  await db.adminSql`
+    TRUNCATE harness_shared.agent_chat_locks,
+      harness_shared.agent_loop_approvals,
+      harness_shared.agent_loop_sessions,
+      harness_shared.agent_chats_consolidated CASCADE
+  `;
+  await putViewState('Plans');
+});
+
+describe.sequential('pui Agent Chat shipping gate (installed binary, real PTY/operator/PG)', () => {
+  test('restored non-chat -> visible Agent Chat -> real role -> streamed done -> persisted reopen', async () => {
+    const prompt = `PUI-E2E-${Date.now()}-success`;
+    scriptedProvider.successText = `streamed reply for ${prompt}`;
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      await pane.waitFor('Agent Chat');
+      await pane.waitFor(`pot ${HARNESS} · role operator · session new`);
+
+      // Exercise the visible agent/session picker, not a hidden API shortcut.
+      pane.write('\x1b'); // leave the composer so `s` owns the picker binding
+      pane.write('s');
+      await pane.waitFor('New operator session');
+      pane.write('\r');
+      await pane.waitFor(`new operator session selected in ${HARNESS}`);
+
+      pane.write('i');
+      pane.write(prompt);
+      pane.markHere();
+      pane.write('\r');
+      await pane.waitFor(scriptedProvider.successText, { sinceMark: true, timeoutMs: 30_000 });
+      await pane.waitFor('Composer — i type', { sinceMark: true });
+
+      const [chat] = await persistedChats(db);
+      expect(chat?.role).toBe('operator');
+      expect(chat?.transcript).toEqual(expect.arrayContaining([
+        expect.objectContaining({ role: 'user', content: prompt }),
+        expect.objectContaining({ role: 'assistant', content: scriptedProvider.successText }),
+      ]));
+      expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
+      expect(scriptedProvider.requests.length).toBeGreaterThanOrEqual(1);
+
+      await pane.stop();
+      await putViewState('Plans');
+      const reopened = new PuiPane(bin, operatorPort, home);
+      try {
+        await reopened.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+        reopened.write('o');
+        await reopened.waitFor(prompt, { timeoutMs: 30_000 });
+        await reopened.waitFor(scriptedProvider.successText);
+      } finally {
+        await reopened.stop();
+      }
+    } finally {
+      await pane.stop().catch(() => {});
+    }
+  });
+
+  test('real PG-backed HITL blocks on the exact call id, approves, executes, and resumes', async () => {
+    scriptedProvider.mode = 'hitl';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      pane.write('PUI-E2E request a gated capability');
+      pane.write('\r');
+      await pane.waitFor('pui-e2e-call-1', { timeoutMs: 30_000 });
+      await pane.waitFor('capability:bash');
+      pane.write('\x19'); // Ctrl+Y — approve the exact pending call
+      await pane.waitFor('PUI HITL round-trip complete', { timeoutMs: 30_000 });
+      await pane.waitFor('Composer — i type');
+
+      const [chat] = await persistedChats(db);
+      expect(chat?.transcript.at(-1)).toMatchObject({
+        role: 'assistant',
+        content: 'PUI HITL round-trip complete',
+      });
+      expect(scriptedProvider.requests).toHaveLength(2);
+      expect(scriptedProvider.requests[0]?.tools).toContain('capability:bash');
+    } finally {
+      await pane.stop();
+    }
+  });
+
+  test('provider/stream failure is visible, persisted as failure, and leaves the composer retryable', async () => {
+    scriptedProvider.mode = 'failure';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      pane.write('PUI-E2E provider failure');
+      pane.write('\r');
+      await pane.waitFor('PUI-E2E provider stream failed visibly', { timeoutMs: 30_000 });
+      await pane.waitFor('Composer — i type');
+      const [chat] = await persistedChats(db);
+      expect(chat?.transcript.at(-1)).toMatchObject({
+        role: 'assistant',
+        error: true,
+      });
+      expect(chat?.transcript.at(-1)?.content).toContain('provider stream failed visibly');
+    } finally {
+      await pane.stop();
+    }
+  });
+
+  test('stalled turn is visibly cancellable and a retry succeeds without an empty persisted assistant row', async () => {
+    scriptedProvider.mode = 'stall';
+    const pane = new PuiPane(bin, operatorPort, home);
+    try {
+      await pane.waitFor('o:Agent Chat', { timeoutMs: 40_000 });
+      pane.write('o');
+      pane.write('PUI-E2E stalled turn');
+      pane.write('\r');
+      await pane.waitFor('Ctrl+X cancel');
+      pane.write('\x18');
+      await pane.waitFor('cancelled — ready to retry', { timeoutMs: 10_000 });
+      await pane.waitFor('Composer — i type');
+
+      scriptedProvider.mode = 'success';
+      scriptedProvider.successText = 'PUI retry recovered';
+      pane.write('i');
+      pane.write('PUI-E2E retry after cancel');
+      pane.write('\r');
+      await pane.waitFor(scriptedProvider.successText, { timeoutMs: 30_000 });
+
+      const [chat] = await persistedChats(db);
+      expect(chat?.transcript.some((turn) => turn.role === 'assistant' && !turn.content.trim())).toBe(false);
+      expect(chat?.transcript.at(-1)).toMatchObject({ role: 'assistant', content: scriptedProvider.successText });
+    } finally {
+      await pane.stop();
+    }
+  });
+
+  test('canonical-identity mismatch fails quickly with an actionable visible error', async () => {
+    const proxy = createServer(async (req, res) => {
+      const target = `http://127.0.0.1:${operatorPort}${req.url ?? '/'}`;
+      const body: Buffer[] = [];
+      for await (const chunk of req) body.push(Buffer.from(chunk));
+      const upstream = await fetch(target, {
+        method: req.method,
+        headers: req.headers as Record<string, string>,
+        body: body.length ? Buffer.concat(body) : undefined,
+        duplex: body.length ? 'half' : undefined,
+      } as RequestInit & { duplex?: 'half' });
+      let payload = Buffer.from(await upstream.arrayBuffer());
+      if ((req.url ?? '').startsWith('/api/tui/identity')) {
+        const identity = JSON.parse(payload.toString()) as { agentChat: { scope: string } };
+        identity.agentChat.scope = 'workspace:intentionally-wrong';
+        payload = Buffer.from(JSON.stringify(identity));
+      }
+      res.writeHead(upstream.status, Object.fromEntries(upstream.headers.entries()));
+      res.end(payload);
+    });
+    const proxyPort = await listen(proxy);
+    const pane = new PuiPane(bin, proxyPort, home);
+    try {
+      await pane.waitFor('operator identity is internally inconsistent', { timeoutMs: 12_000 });
+      await pane.waitFor('workspace');
+    } finally {
+      await pane.stop();
+      await close(proxy);
+    }
+  });
+});

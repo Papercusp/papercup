@@ -890,7 +890,7 @@ async function maybeCarryRespawn(
     if (spec.openOwnerQuestion.crossesOpenOwnerMessage && reason !== 'context-death') {
       console.warn(
         `[compaction-watchdog] ${ownerLabel} (${ownerId}) ${
-          reason === 'context-death' ? 'was detected dead and' : 'reached the deterministic carry threshold and'
+          'reached the deterministic carry threshold and'
         } has an unanswered owner message; refusing this deliberate cut once (P-010/P-018).`,
       );
       return false;
