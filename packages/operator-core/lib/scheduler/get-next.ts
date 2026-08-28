@@ -1141,6 +1141,22 @@ export async function aggregateIssueClaimExclusions(
      *  {@link readIssueClaimability}) instead of recomputing the candidate subquery. Internal —
      *  only readIssueClaimability passes this; a standalone caller omits it unchanged. */
     precomputedTable?: string;
+    /** WI-525554: set ONLY when `precomputedTable` was materialized with the observation-lane
+     *  floor pushed into its base WHERE, so the observation rows are ABSENT from the population
+     *  these aggregates scan. Both numbers are then measured by the caller against the FULL
+     *  candidate population and substituted here, because they are the two figures consumers
+     *  read as totals rather than as diagnostics:
+     *    - `matchedByFilter` is documented as "the filter matched, BEFORE taken/floors", and
+     *      plan-admission-preflight.ts asserts `matchedByFilter > 0 => some excluded bucket > 0`.
+     *      Letting it report the post-lane-filter population would both break that invariant and
+     *      turn "40 rows matched, all of them observations" into a false "your filter matched 0".
+     *    - `observationLane` would otherwise be a structural ZERO — the count of a floor whose
+     *      rows were removed before counting — which is the "true diagnostic into a lie" failure
+     *      WI-521425 named. A zeroed bucket is indistinguishable from "no observations here".
+     *  Every OTHER bucket is deliberately left scoped to the non-observation population: those
+     *  are per-floor diagnostics answering "why can't I claim", and an observation row is already
+     *  unclaimable for a reason that has its own bucket. */
+    laneScopedPopulation?: { matchedByFilter: number; observationLane: number };
   },
 ): Promise<IssueClaimExclusionBreakdown> {
   const sql = opts.client ?? getOrgPg().sql;
@@ -1243,7 +1259,10 @@ export async function aggregateIssueClaimExclusions(
   const claimable = r?.claimable ?? 0;
   const nonEmptyPaths = r?.claimable_with_paths ?? 0;
   return {
-    matchedByFilter: r?.matched ?? 0,
+    // WI-525554: see `laneScopedPopulation` — when the scanned population had the observation
+    // lane filtered out during materialization, these two come from the caller's full-population
+    // counts. `?? ` is wrong here: 0 is a legitimate measured value, so test for presence.
+    matchedByFilter: opts.laneScopedPopulation ? opts.laneScopedPopulation.matchedByFilter : (r?.matched ?? 0),
     claimable,
     affinityCoverage: {
       denominator: claimable,
@@ -1256,7 +1275,9 @@ export async function aggregateIssueClaimExclusions(
       claimHold: r?.claim_hold ?? 0,
       needsOwnerAction: r?.needs_owner_action ?? 0,
       agentReview: r?.agent_review ?? 0,
-      observationLane: r?.observation_lane ?? 0,
+      observationLane: opts.laneScopedPopulation
+        ? opts.laneScopedPopulation.observationLane
+        : (r?.observation_lane ?? 0),
       externalBlocker: r?.external_blocker ?? 0,
       planLaneReserved: r?.plan_lane_reserved ?? 0,
       federationDetector: r?.federation_detector ?? 0,
@@ -1953,9 +1974,29 @@ export async function readIssueClaimability(
     const operatorScopeSlug = `operator:${issueWs}`;
     const assignee = opts.assignee ?? '';
     const compiled = compileFilter(client, filter);
+    // WI-525554: push the OBSERVATION-LANE floor into the materialization's base WHERE, not just
+    // decorate it as `ok_observation`. Measured 2026-08-28 on the live papercusp population:
+    // 66,645 of 71,266 candidate rows (93.5%) are lane='observation' and can never be claimable,
+    // yet every one of them was materialized and had all 16 floors evaluated. That materialization
+    // was 2,013ms of a 2,278ms call (88%); pushing the lane floor down takes the whole read from
+    // 3,174ms to 1,335ms (2.4x) and the temp table from 66 MB to 6.4 MB, with `claimable`
+    // byte-identical at 2,837.
+    //
+    // WHY THE LANE FLOOR SPECIFICALLY, and why this is safe: it is ROW-INTRINSIC (it reads only
+    // wi.payload's lane), so it cannot depend on anything the other floors compute, and it is
+    // ANDed into ALL_ISSUE_CLAIM_FLOORS_PASS — a row failing it is unclaimable no matter what
+    // every other floor says. Filtering it early therefore removes only rows the bar would have
+    // rejected anyway. The two counts that must NOT shrink with the population are restored via
+    // `laneScopedPopulation` below.
+    //
+    // ⚠ Do NOT generalise this to the other floors. Measured: all 16 floors evaluated TOGETHER
+    // cost 732ms over the full 71k rows and the bare scan is 62ms, so per-floor evaluation was
+    // never the expense — the population size was. Pushing more floors down buys ~nothing and
+    // costs a breakdown bucket each.
+    const laneFloor = observationLaneExclusionSql(client);
     const sub = issueClaimCandidateSubquery(client, {
       compiled,
-      filterPushdown: compiled,
+      filterPushdown: client`(${compiled}) AND (${laneFloor})`,
       projection: 'claimability-snapshot',
       assignee,
       cooldown: releaseCooldownSec(),
@@ -1970,7 +2011,46 @@ export async function readIssueClaimability(
     const precomputedTable = 'claim_candidate_snapshot';
     await client`CREATE TEMP TABLE ${client.unsafe(precomputedTable)} ON COMMIT DROP AS ${sub}`;
 
-    const breakdown = await aggregateIssueClaimExclusions(filter, { ...shared, client, precomputedTable });
+    // WI-525554: the two counts the lane pushdown above would otherwise destroy, measured over the
+    // FULL candidate population (observations included). This reuses the SAME
+    // issueClaimCandidateSubquery + the SAME floor predicates rather than re-deriving them in a
+    // second SQL copy — the drift D-007 measured (a hand-copied floor reporting 0 blocked against
+    // the claim path's 5) is exactly what a bespoke count here would reintroduce.
+    //
+    // It is cheap because it omits `filterPushdown`: with no MATERIALIZED barrier, Postgres prunes
+    // the subquery's unreferenced target-list columns, so only the three floors named below are
+    // ever evaluated — not all 16, and nothing is materialized.
+    const laneScopeSub = issueClaimCandidateSubquery(client, {
+      compiled,
+      projection: 'claimability-snapshot',
+      assignee,
+      cooldown: releaseCooldownSec(),
+      harness: opts.harness,
+      states,
+      issueWs,
+      operatorScopeSlug,
+      rigAvailable: opts.rigAvailable,
+      claimantFleetSlug: opts.claimantFleetSlug,
+      claimSpecReferencesFleet: opts.claimSpecReferencesFleet,
+    });
+    // Both expressions are byte-identical to aggregateIssueClaimExclusions' own `matched` and
+    // `observation_lane` columns — keep them that way if either definition moves.
+    const [laneScopeRow] = (await client`
+      SELECT
+        count(*) FILTER (WHERE spec_match)::int                                        AS matched,
+        count(*) FILTER (WHERE spec_match AND ok_untaken AND NOT ok_observation)::int  AS observation_lane
+      FROM (${laneScopeSub}) lane_scope
+    `) as Array<{ matched: number; observation_lane: number }>;
+
+    const breakdown = await aggregateIssueClaimExclusions(filter, {
+      ...shared,
+      client,
+      precomputedTable,
+      laneScopedPopulation: {
+        matchedByFilter: laneScopeRow?.matched ?? 0,
+        observationLane: laneScopeRow?.observation_lane ?? 0,
+      },
+    });
     const rows = readOpts.breakdownOnly
       ? []
       : await listIssueClaimableRows(filter, { ...shared, spec: opts.spec, client, precomputedTable }, readOpts.limit);
