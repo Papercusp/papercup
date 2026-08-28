@@ -77,7 +77,13 @@ import {
 } from '../../harness/git-sync/hive-git-mode';
 import { hiveGitRepoPath, pathExists } from './storage';
 import { isScopeRepoFamilyPath, parseScopeRepoWireKey, scopeRepoPath } from './scope-repo';
-import { POT_GIT_PROTOCOL, serveUploadPack } from './fetch-transport';
+import {
+  POT_GIT_PROTOCOL,
+  serveUploadPack,
+  type GovernedServeExecution,
+  type TransportResult,
+} from './fetch-transport';
+import { runGovernedOperation } from '../../resource-governor/execution';
 import { authorizeScopeRepoServe, type ScopeRepoServeGrant } from './scope-serve-gate';
 import { getScopeRoster } from '../../p2p/scope-roster';
 import { resolveGithubUserIdForDevicePubkey } from '../hyperbee/hive-member-identity-set';
@@ -864,16 +870,13 @@ function formatRefusalTarget(
   return tail;
 }
 
-// ─── EI-18802033487678337: bounded per-repo serve concurrency ───────────
+// ─── EI-18802033487678337: progress-aware serve supersession ────────────
 //
 // `serveUploadPack` now stands down the moment its requester's duplex dies
-// (fetch-transport.ts), which removes the ORPHAN source. This is the second
-// half: a bound on how much concurrent work ONE repo can be made to do, so no
-// client — buggy, old-build, or hostile — can pile `pack-objects` processes
-// onto a multi-GB repo faster than they retire. Each such process cost
-// 1.0-1.7GB RSS and 40-126% CPU on the live tower; three of them was enough to
-// push every serve past the requester's 120s ceiling, which made the requester
-// re-dial, which made it worse.
+// (fetch-transport.ts). Capacity pressure is handled by the shared adaptive
+// governor at that process boundary; this transport-side state is retained
+// only to supersede an abandoned same-channel request while protecting a
+// transfer that is actively moving bytes.
 
 /** WI-6412: the streaming-progress view the admission rule reads. Deliberately
  *  the narrowest shape that answers "is this serve moving bytes right now?", so
@@ -903,8 +906,9 @@ export interface InFlightServe {
   /** Identity of the requesting channel — one per (muxer, topic), i.e. per
    *  peer connection per pot. Compared by reference. */
   readonly channel: object;
-  /** Resolved on-disk repo path — the contended resource, and therefore the
-   *  cap's key. Two wire repoKeys that resolve to one path share the bound. */
+  /** Resolved on-disk repo path — the resource identity used to scope
+   *  same-channel supersession. Two wire repoKeys that resolve to one path
+   *  share the same supersession domain. */
   readonly repoPath: string;
   readonly repoKey: string;
   readonly sessionId: number;
@@ -923,13 +927,6 @@ export interface ServeAdmission {
   readonly supersede: readonly InFlightServe[];
 }
 
-/** Default concurrent serves allowed per repo path, across all peers. Two, not
- *  one: a second genuine peer should not be refused just because a first is
- *  mid-fetch, and the supersede rule below already means a single peer can
- *  never hold more than one slot. Three-plus concurrent `pack-objects` on a
- *  multi-GB repo is the regime that was observed to self-amplify. */
-export const DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO = 2;
-
 /** WI-6412: how recently a serve must have written for rule 0 to call it "still
  *  streaming".
  *
@@ -941,10 +938,10 @@ export const DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO = 2;
  *     backpressure stall — looks identical to one that vanished. Call a live
  *     transfer stale and we discard it, and the livelock simply returns for
  *     slow peers, who are exactly the peers a 4GB transfer is hardest for.
- *   - TOO LONG is bounded and self-correcting. An abandoned serve holds its
- *     slot for at most one extra re-request cycle: the next request is refused
- *     `busy-streaming`, and the one after that (past the window) supersedes it
- *     normally. Rule 2's cap still bounds concurrency throughout.
+ *   - TOO LONG is bounded and self-correcting. An abandoned serve remains
+ *     visible for at most one extra re-request cycle: the next request is
+ *     refused `busy-streaming`, and the one after that (past the window)
+ *     supersedes it normally.
  *
  *  So this is deliberately generous rather than tight: comfortably longer than
  *  any plausible drain stall, while still far under the requester's own 120s
@@ -1003,26 +1000,19 @@ export const DEFAULT_SERVE_PROGRESS_WINDOW_MS = 30_000;
  *     immediately — that case is unaffected, because an abandoned serve is
  *     exactly one whose bytes have stopped.
  *
- *  2. CAP. After discounting the superseded, if `cap` serves of this repo path
- *     are still in flight, refuse `busy` — FAST. A fast refusal is strictly
- *     better for the requester than admission into a contended queue: it fails
- *     in milliseconds and retries on its next tick, instead of burning its full
- *     120s ceiling waiting on a serve that contention has already doomed.
- *
- * The cap is deliberately keyed on `repoPath` alone (not per-peer): the
- * contended resource is the repo's object store and this box's CPU/RAM, and
- * they do not care which peer asked.
+ * There is intentionally no local concurrency cap. Capacity pressure is
+ * admitted and queued by the shared adaptive governor at the `upload-pack`
+ * process boundary; this function owns only the progress-aware supersession
+ * policy that protects an actively streaming same-channel transfer.
  */
 export function resolveServeAdmission(args: {
   repoPath: string;
   channel: object;
   /** Every serve in flight in this process, including ones for other repos. */
   inFlight: readonly InFlightServe[];
-  cap?: number;
   now?: number;
   progressWindowMs?: number;
 }): ServeAdmission {
-  const cap = args.cap ?? DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO;
   const now = args.now ?? Date.now();
   const windowMs = args.progressWindowMs ?? DEFAULT_SERVE_PROGRESS_WINDOW_MS;
   const sameRepo = args.inFlight.filter((s) => s.repoPath === args.repoPath);
@@ -1075,18 +1065,14 @@ export function resolveServeAdmission(args: {
     return { admit: false, refuseReason: 'busy-streaming', supersede: [] };
   }
   const supersede = sameChannel;
-  const remaining = sameRepo.length - supersede.length;
-  if (remaining >= cap) {
-    return { admit: false, refuseReason: 'busy', supersede };
-  }
   return { admit: true, supersede };
 }
 
-/** Live serves, process-wide. A `Set` (not a per-channel map) because the cap
- *  it answers is process-wide: the repo's object store is shared by every
- *  connection. Entries are removed in `handleReq`'s `finally`, so an entry
- *  outliving its serve would require the serve promise never settling — which
- *  the transport's ceilings make impossible. */
+/** Live serves, process-wide. A `Set` (not a per-channel map) because
+ *  supersession is evaluated across every connection while still matching the
+ *  requesting channel. Entries are removed in `handleReq`'s `finally`, so an
+ *  entry outliving its serve would require the transport promise never
+ *  settling — which its ceilings make impossible. */
 const inFlightServes = new Set<InFlightServe>();
 /** Abort levers for the entries above, keyed by entry identity. */
 const serveAborters = new WeakMap<InFlightServe, AbortController>();
@@ -1249,10 +1235,9 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     if (!(await pathExists(join(repoPath, 'HEAD')))) {
       return refuse('no-such-repo');
     }
-    // EI-18802033487678337: bound concurrent work on this repo BEFORE spawning
-    // anything. Ordered after the existence/authz gates deliberately — a
-    // request that would be refused anyway must not consume a slot, and must
-    // not be told `busy` when the real answer is `no-such-repo`.
+    // EI-18802033487678337: apply the progress-aware supersession policy
+    // before starting this serve. Capacity itself is admitted by the shared
+    // adaptive governor below, so there is no local repo cap or `busy` branch.
     const admission = resolveServeAdmission({
       repoPath,
       channel: state,
@@ -1278,7 +1263,7 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
       standDownServe(superseded, `superseded by a newer request (id=${v.id}) for the same repo`);
     }
     if (!admission.admit) {
-      return refuse(admission.refuseReason ?? 'busy');
+      return refuse(admission.refuseReason ?? 'busy-streaming');
     }
     const duplex = new FrameDuplex(
       (chunk) => state.messages?.dataToClient.send({ id: v.id, chunk }),
@@ -1308,10 +1293,49 @@ function handleReq(state: ChannelState, v: ReqFrame): void {
     serveAborters.set(entry, aborter);
     inFlightServes.add(entry);
     try {
+      const governedExecution: GovernedServeExecution = (run) =>
+        runGovernedOperation<TransportResult>(
+          {
+            workspaceId: cfg.workspaceId,
+            namespace: 'pot-git-serve',
+            owner: `pot-git-serve:${cfg.potHomeSlug}`,
+            admissionClass: 'transfer',
+            demand: { cpuWeight: 1, networkBytes: 1 },
+            payloadRef: `${cfg.potHomeSlug}/${v.repoKey}`,
+            metadata: {
+              protocol: POT_GIT_PROTOCOL,
+              direction: 'serve',
+              repoKey: v.repoKey,
+              topic: state.topicHex,
+              sessionId: v.id,
+            },
+            measureActualDemand: () => ({
+              cpuWeight: 1,
+              networkBytes: duplex.bytesIn + duplex.bytesOut,
+            }),
+            settle: (result) =>
+              result.code === 0 && !result.timedOut
+                ? {
+                    kind: 'release',
+                    actualDemand: {
+                      cpuWeight: 1,
+                      networkBytes: duplex.bytesIn + duplex.bytesOut,
+                    },
+                  }
+                : {
+                    kind: 'cancel',
+                    reason: result.timedOut
+                      ? 'pot-git upload-pack timed out'
+                      : `pot-git upload-pack exited ${result.code}`,
+                  },
+          },
+          async () => run(),
+        );
       const res = await serveUploadPack(repoPath, duplex, {
         timeoutMs: cfg.timeoutMs,
         scopeServeGrant,
         signal: aborter.signal,
+        governedExecution,
         // EI-18776567787336109 (secondary defect): put the REASON on the wire.
         // This fires before the duplex ends, which is the only window in which
         // it can land — the requester deletes its session on the end frame, so

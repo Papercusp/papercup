@@ -32,7 +32,6 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 import {
   _testing,
   resolveServeAdmission,
-  DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO,
   DEFAULT_SERVE_PROGRESS_WINDOW_MS,
   type InFlightServe,
   type ServeProgress,
@@ -397,55 +396,37 @@ describe('resolveServeAdmission (EI-18802033487678337)', () => {
     expect(got.supersede).toEqual([]);
   });
 
-  // Rule 2 — the cap. It bounds cost when the peers are genuinely distinct (so
-  // rule 1 can never fire), the regime a supersede rule alone cannot reach.
-  it('REFUSES busy at the cap across distinct channels', () => {
-    const got = resolveServeAdmission({
-      repoPath: REPO,
-      channel: chanC,
-      inFlight: [serve(chanA, REPO, 1), serve(chanB, REPO, 1)],
-      cap: 2,
-    });
-    expect(got.admit).toBe(false);
-    expect(got.refuseReason).toBe('busy');
+  // Capacity is no longer decided by a local numeric cap. Distinct peers are
+  // admitted here; the shared adaptive governor owns any queueing decision at
+  // the actual `upload-pack` process boundary.
+  it('admits concurrent serves from distinct channels without a local cap', () => {
+    const inFlight = Array.from({ length: 8 }, (_, i) => serve({ c: i }, REPO, i + 1));
+    const got = resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight });
+    expect(got.admit).toBe(true);
+    expect(got.supersede).toEqual([]);
   });
 
-  // The cap DISCOUNTS what this same request supersedes — otherwise a single
-  // re-dialling peer would refuse itself busy forever off its own abandoned
-  // serves, which is the original bug wearing the fix's clothes.
-  it('does not count a serve it is superseding against the cap', () => {
+  it('still supersedes same-channel work while other channels continue', () => {
     const mine = serve(chanA, REPO, 1);
     const got = resolveServeAdmission({
       repoPath: REPO,
       channel: chanA,
-      inFlight: [mine, serve(chanB, REPO, 1)],
-      cap: 2,
+      inFlight: [mine, serve(chanB, REPO, 2)],
     });
     expect(got.admit).toBe(true);
     expect(got.supersede).toEqual([mine]);
   });
 
-  // The cap is keyed on the repo PATH, because the contended resource is that
-  // repo's object store and this box's CPU/RAM — an unrelated repo's serves
-  // must not consume it.
-  it('scopes the cap to the repo path, not the process', () => {
+  // Supersession remains scoped to the same repository path even though the
+  // local capacity cap has been removed.
+  it('does not supersede a different repo on the same channel', () => {
     const got = resolveServeAdmission({
       repoPath: REPO,
-      channel: chanC,
-      inFlight: [serve(chanA, OTHER, 1), serve(chanB, OTHER, 1)],
-      cap: 2,
+      channel: chanA,
+      inFlight: [serve(chanA, OTHER, 1)],
     });
     expect(got.admit).toBe(true);
-  });
-
-  it('defaults the cap to DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO', () => {
-    const inFlight = Array.from({ length: DEFAULT_MAX_CONCURRENT_SERVES_PER_REPO }, (_, i) =>
-      serve({ c: i }, REPO, 1),
-    );
-    expect(resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight }).admit).toBe(false);
-    expect(
-      resolveServeAdmission({ repoPath: REPO, channel: chanC, inFlight: inFlight.slice(1) }).admit,
-    ).toBe(true);
+    expect(got.supersede).toEqual([]);
   });
 
   // ─── WI-6412: rule 0, progress-aware supersession ───────────────────────
