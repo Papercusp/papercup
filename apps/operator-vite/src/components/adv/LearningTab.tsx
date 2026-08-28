@@ -750,6 +750,22 @@ export default function LearningTab() {
   // silently cutting off. Same data-attr + mask pattern (and the same pure
   // tabOverflowState helper) as AdvShell's top-level tab strip.
   const viewListRef = useRef<HTMLDivElement | null>(null);
+  // A ref alone CANNOT drive the wiring effect below: assigning `.current`
+  // renders nothing, so an effect keyed on anything else silently misses the
+  // strip mounting — and the strip genuinely mounts mid-life. Its gate is
+  // `activeStageMeta.views.length > 1`, and that view set is FLAG-derived
+  // (visibleStages(testingOn)); Improve holds exactly `gym` (the sole
+  // TESTING-only view) plus `improvements`, so it sits on that boundary, while
+  // FLAGS.TESTING is dark and useFlag serves FLAG_DEFAULTS until the async
+  // loadFlags() resolves. `activeStage` stays "improve" across that flip, so it
+  // cannot see it. Track the node in STATE via a callback ref, so the mount
+  // itself re-runs the effect. (WI-486080)
+  const [viewList, setViewList] = useState<HTMLDivElement | null>(null);
+  const attachViewList = useCallback((node: HTMLDivElement | null) => {
+    viewListRef.current = node;
+    setViewList(node);
+  }, []);
+  const viewTabCount = activeStageMeta?.views.length ?? 0;
   const [viewOverflow, setViewOverflow] = useState({
     left: false,
     right: false,
