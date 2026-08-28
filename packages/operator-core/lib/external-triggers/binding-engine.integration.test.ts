@@ -5,13 +5,43 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { Sql } from 'postgres';
 import { createOrgTestDb, type OrgTestDb } from '../../test/_org-test-db';
 import type { StartGoalByIdResult } from '../goals/start-goal-by-id';
-import { dispatchPendingTriggerRuns, triggerRunPlanToken } from './binding-engine';
+import { upsertDatatype } from '../datatype-registry-store';
+import type { CreateWorkItemInput, WorkItem } from '../work-items';
+import {
+  dispatchPendingTriggerRuns,
+  directWorkItemTriggerRef,
+  EMAIL_DRAFT_PROPOSAL_HARNESS,
+  EMAIL_DRAFT_PROPOSAL_KIND,
+  EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION,
+  triggerRunPlanToken,
+} from './binding-engine';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO = path.resolve(HERE, '../../../..');
 const WS = 'papercusp-workspace';
 const HARNESS = 'papercusp';
 const PLAN = 'triage-external-event';
+
+const EMAIL_DRAFT_PAYLOAD_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['messageId', 'threadId', 'from', 'to', 'subject', 'text', 'policy'],
+  properties: {
+    messageId: { type: 'string', minLength: 1 },
+    threadId: { type: 'string', minLength: 1 },
+    from: { type: 'string', minLength: 1 },
+    to: { type: 'array', items: { type: 'string', minLength: 1 } },
+    subject: { type: 'string' },
+    text: { type: 'string' },
+    policy: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['draftOnly'],
+      properties: { draftOnly: { const: true } },
+    },
+    triggerRef: { type: 'string' },
+  },
+};
 
 let org: OrgTestDb;
 let sql: Sql;
@@ -513,6 +543,269 @@ describe('external trigger durable dispatch', () => {
       trigger: 'event',
       inputs: args,
     }));
+  });
+});
+
+describe('create-work-item direct Email dispatch (P-018)', () => {
+  let directFixtureSeq = 0;
+
+  async function installEmailDraftDatatype(): Promise<void> {
+    await upsertDatatype(sql, {
+      id: EMAIL_DRAFT_PROPOSAL_KIND,
+      workspaceId: WS,
+      title: 'Email draft proposal',
+      description: 'A draft-only reply proposal from Gmail.',
+      tier: 'generic-kind',
+      workItemKind: EMAIL_DRAFT_PROPOSAL_KIND,
+      payloadSchema: EMAIL_DRAFT_PAYLOAD_SCHEMA,
+      authoritativeWriter: 'papercusp',
+      published: false,
+      createdBy: 'binding-engine.integration.test',
+    });
+  }
+
+  async function seedDirectBinding(): Promise<string> {
+    const rows = await sql.unsafe<Array<{ id: string }>>(
+      `INSERT INTO harness_shared.trigger_bindings
+        (workspace_id, source_id, plan_harness_slug, plan_slug, goal_id,
+         work_item_harness_slug, work_item_kind, event_pattern, event_filter,
+         action, armed, storm_policy)
+      VALUES ($1, $2, NULL, NULL, NULL, $3, $4, $5, '{}'::jsonb,
+              '{"type":"create-work-item"}'::jsonb, TRUE,
+              '{"maxRuns":12,"windowSeconds":60}'::jsonb)
+      RETURNING id`,
+      [WS, sourceId, EMAIL_DRAFT_PROPOSAL_HARNESS, EMAIL_DRAFT_PROPOSAL_KIND, 'ext:gmail:message.received'],
+    );
+    return rows[0].id;
+  }
+
+  async function seedDirectRun(
+    directBindingId: string,
+    overrides: Record<string, unknown> = {},
+    suffix?: string,
+  ): Promise<{
+    triggerRunId: string;
+    eventPayload: Record<string, unknown>;
+    dedupeKey: string;
+    externalId: string;
+  }> {
+    const token = suffix ?? ('direct-' + (++directFixtureSeq));
+    const externalId = 'message-' + token;
+    const dedupeKey = 'gmail:' + token;
+    const eventPayload: Record<string, unknown> = {
+      messageId: externalId,
+      threadId: 'thread-' + token,
+      from: 'sender@example.com',
+      to: ['owner@example.com'],
+      subject: 'Please review the launch',
+      text: 'Could you draft a response?',
+      ...overrides,
+    };
+    const triggerRunId = await seedTriggerRun({
+      bindingId: directBindingId,
+      args: {
+        trigger: {
+          key: 'ext:gmail:message.received',
+          source: 'gmail',
+          event: 'message.received',
+          sourceId,
+          externalId,
+          occurredAt: '2026-08-28T14:00:00.000Z',
+          datatypeId: 'email-message',
+          dedupeKey,
+          payload: eventPayload,
+        },
+      },
+    });
+    return { triggerRunId, eventPayload, dedupeKey, externalId };
+  }
+
+  function returnedWorkItem(input: CreateWorkItemInput, id: string): WorkItem {
+    return {
+      id,
+      kind: input.kind,
+      family: 'feature',
+      harness: input.harness ?? null,
+      title: input.title,
+      summary: input.summary ?? '',
+      state: 'open',
+      payload: input.payload ?? null,
+    } as unknown as WorkItem;
+  }
+
+  it('creates a canonical draft-only Email item and records immutable trigger provenance', async () => {
+    await installEmailDraftDatatype();
+    const directBindingId = await seedDirectBinding();
+    const fixture = await seedDirectRun(directBindingId, {}, 'direct-canonical');
+    const createWorkItem = vi.fn(async (input: CreateWorkItemInput) =>
+      returnedWorkItem(input, 'WI-direct-email-1'),
+    );
+
+    await expect(dispatchPendingTriggerRuns(sql, { createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+
+    const input = createWorkItem.mock.calls[0]![0]!;
+    const triggerRef = directWorkItemTriggerRef(fixture.triggerRunId, directBindingId);
+    expect(input).toMatchObject({
+      kind: EMAIL_DRAFT_PROPOSAL_KIND,
+      title: 'Draft reply: Please review the launch',
+      summary:
+        'Prepare a draft-only reply for Gmail message message-direct-canonical in thread thread-direct-canonical.',
+      harness: EMAIL_DRAFT_PROPOSAL_HARNESS,
+      workspaceId: WS,
+      createdBy: 'system:external-trigger-dispatch',
+      payload: {
+        messageId: 'message-direct-canonical',
+        threadId: 'thread-direct-canonical',
+        from: 'sender@example.com',
+        to: ['owner@example.com'],
+        subject: 'Please review the launch',
+        text: 'Could you draft a response?',
+        policy: { draftOnly: true },
+        triggerRef,
+      },
+    });
+    expect(input.payload).not.toHaveProperty('eventKey');
+    expect(input.payload).not.toHaveProperty('dedupeKey');
+
+    const runs = await sql.unsafe<Array<{
+      status: string;
+      plan_run_ref: string | null;
+      outcome: Record<string, unknown>;
+    }>>(
+      'SELECT status, plan_run_ref, outcome FROM harness_shared.trigger_runs WHERE workspace_id = $1 AND id = $2',
+      [WS, fixture.triggerRunId],
+    );
+    expect(runs[0]).toMatchObject({ status: 'succeeded', plan_run_ref: null });
+    expect(runs[0].outcome).toMatchObject({
+      directWorkItemId: 'WI-direct-email-1',
+      directWorkItem: {
+        schemaVersion: EMAIL_DRAFT_PROPOSAL_SCHEMA_VERSION,
+        eventKey: 'ext:gmail:message.received',
+        triggerRef,
+        dedupeKey: fixture.dedupeKey,
+        sourceId,
+        externalId: fixture.externalId,
+        triggerRunId: fixture.triggerRunId,
+        workItemId: 'WI-direct-email-1',
+        harnessSlug: EMAIL_DRAFT_PROPOSAL_HARNESS,
+        kind: EMAIL_DRAFT_PROPOSAL_KIND,
+      },
+    });
+  });
+
+  it('adopts the existing triggerRef on retry without minting a duplicate item', async () => {
+    await installEmailDraftDatatype();
+    const directBindingId = await seedDirectBinding();
+    const fixture = await seedDirectRun(directBindingId, {}, 'direct-retry');
+    const createdId = 'WI-direct-email-retry';
+    const createWorkItem = vi.fn(async (input: CreateWorkItemInput) =>
+      returnedWorkItem(input, createdId),
+    );
+
+    await expect(dispatchPendingTriggerRuns(sql, { createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+    });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+    const firstInput = createWorkItem.mock.calls[0]![0]!;
+    const now = Date.now();
+    // Model the canonical writer having committed before a transient status
+    // update failure. The next dispatch must discover this payload by triggerRef.
+    await sql.unsafe(
+      `INSERT INTO harness_shared.work_items
+        (harness_slug, feature_id, title, summary, status, item_kind, payload,
+         workspace_id, ts, created_ts, updated_ts, origin)
+      VALUES ($1, $2, $3, $4, 'open', $5, $6::text::jsonb, $7, $8, $8, $8, 'local')`,
+      [
+        EMAIL_DRAFT_PROPOSAL_HARNESS,
+        createdId,
+        firstInput.title,
+        firstInput.summary ?? '',
+        EMAIL_DRAFT_PROPOSAL_KIND,
+        JSON.stringify(firstInput.payload),
+        WS,
+        now,
+      ],
+    );
+    await sql.unsafe(
+      `UPDATE harness_shared.trigger_runs
+         SET status = 'failed',
+             error = 'simulated_trigger_status_update_failure',
+             outcome = '{}'::jsonb,
+             next_attempt_at = now() - interval '1 second',
+             completed_at = now(),
+             updated_at = now()
+       WHERE workspace_id = $1 AND id = $2`,
+      [WS, fixture.triggerRunId],
+    );
+
+    await expect(dispatchPendingTriggerRuns(sql, { createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 1,
+      failed: 0,
+    });
+    expect(createWorkItem).toHaveBeenCalledTimes(1);
+
+    const runs = await sql.unsafe<Array<{
+      status: string;
+      attempts: number;
+      outcome: Record<string, unknown>;
+    }>>(
+      'SELECT status, attempts, outcome FROM harness_shared.trigger_runs WHERE workspace_id = $1 AND id = $2',
+      [WS, fixture.triggerRunId],
+    );
+    expect(runs[0]).toMatchObject({
+      status: 'succeeded',
+      attempts: 2,
+      outcome: {
+        directWorkItemId: createdId,
+        directWorkItem: { triggerRef: directWorkItemTriggerRef(fixture.triggerRunId, directBindingId) },
+      },
+    });
+    const items = await sql.unsafe<Array<{ count: number }>>(
+      `SELECT count(*)::int AS count
+        FROM harness_shared.harness_features_consolidated
+       WHERE workspace_id = $1
+         AND harness_slug = $2
+         AND item_kind = $3
+         AND payload ->> 'triggerRef' = $4`,
+      [
+        WS,
+        EMAIL_DRAFT_PROPOSAL_HARNESS,
+        EMAIL_DRAFT_PROPOSAL_KIND,
+        directWorkItemTriggerRef(fixture.triggerRunId, directBindingId),
+      ],
+    );
+    expect(items[0].count).toBe(1);
+  });
+
+  it('rejects a malformed Email payload before calling the canonical writer', async () => {
+    await installEmailDraftDatatype();
+    const directBindingId = await seedDirectBinding();
+    const fixture = await seedDirectRun(directBindingId, { text: undefined }, 'direct-malformed');
+    const createWorkItem = vi.fn();
+
+    await expect(dispatchPendingTriggerRuns(sql, { createWorkItem })).resolves.toMatchObject({
+      claimed: 1,
+      succeeded: 0,
+      failed: 1,
+      skipped: 0,
+    });
+    expect(createWorkItem).not.toHaveBeenCalled();
+    const runs = await sql.unsafe<Array<{ status: string; error: string }>>(
+      'SELECT status, error FROM harness_shared.trigger_runs WHERE workspace_id = $1 AND id = $2',
+      [WS, fixture.triggerRunId],
+    );
+    expect(runs[0]).toEqual({
+      status: 'failed',
+      error: 'external_trigger_email_draft_text_required',
+    });
   });
 });
 
