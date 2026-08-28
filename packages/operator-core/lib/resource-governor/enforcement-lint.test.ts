@@ -158,6 +158,19 @@ describe('resource governor enforcement lint', () => {
     ).toEqual(['packages/operator-core/lib/p2p/new-unreviewed.ts:resource-start-outside-admission']);
   }, 60_000);
 
+  it('keeps the hand-written .d.mts declaration aligned with the P-016 runtime exports', () => {
+    const declaration = readFileSync(ROOT + 'scripts/check-resource-governor-enforcement.d.mts', 'utf8');
+    for (const symbol of [
+      'RESOURCE_GOVERNOR_SCANNER_PATH',
+      'P016_REVIEWED_DISPOSITIONS',
+      'P016_DISPOSITION_REGISTRY',
+    ]) {
+      expect(declaration).toContain('export const ' + symbol);
+    }
+    expect(declaration).toContain('migration: string;');
+    expect(declaration).toContain('sites: readonly');
+  });
+
   it('can audit a pending migration and applies only centrally registered dispositions', () => {
     const files: Array<[string, string]> = [
       [

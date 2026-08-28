@@ -732,6 +732,105 @@ enumerate_node_modules() {
   dependency_generation_enumerate_node_modules "${1:-$INTEGRATION_ROOT}"
 }
 
+# A pinned generation can be consumed directly when this checkout already
+# contains every required immutable dependency tree.  The normal setup path calls
+# `sync_one_node_modules` once per enumerated tree; on a cache-ready checkpoint
+# that is needlessly expensive because each destination is already a hardlink
+# materialization of the selected generation.  Keep this predicate deliberately
+# metadata-only: it reads the small checkout marker and one small marker per
+# dependency tree, never the dependency payload itself.
+#
+# The check is fail-closed.  A missing/malformed marker, a missing destination,
+# a symlink that escapes the release root, or a tree stamped with another
+# generation returns false and leaves the caller on the existing atomic
+# materialization path.  Positional arguments are accepted for the extracted
+# regression tests; production callers use the script globals.
+pinned_dependency_generation_reuse_safe() {
+  local source_root="${1:-${NODE_MODULES_SOURCE_ROOT:-}}"
+  local release_root="${2:-${RELEASE_ROOT:-}}"
+  local expected_identity="${3:-${PINNED_DEPENDENCY_GENERATION_ID:-}}"
+  local expected_source="${4:-${DEPENDENCY_GENERATION_SOURCE_FINGERPRINT:-}}"
+  local checkout_root checkout_marker marker_identity marker_source
+  local release_real dest_real tree_list nm rel dest tree_marker tree_generation tree_count=0
+
+  PINNED_DEPENDENCY_REUSE_TREE_COUNT=0
+
+  # Generation selectors only emit v1/<sha256> identities and sha256 source
+  # fingerprints.  Rejecting anything else keeps a malformed caller argument
+  # from turning a coincidental marker into an authorization to skip copying.
+  [[ "$expected_identity" =~ ^v1-[0-9a-f]{64}$ ]] || return 1
+  [[ "$expected_source" =~ ^[0-9a-f]{64}$ ]] || return 1
+  [ "$expected_identity" = "v1-$expected_source" ] || return 1
+  [ -n "$source_root" ] && [ -n "$release_root" ] || return 1
+  [ -d "$source_root" ] && [ ! -L "$source_root" ] || return 1
+  release_real="$(realpath -m "$release_root" 2>/dev/null || true)"
+  [ -n "$release_real" ] || return 1
+
+  # A selected generation must be the source, never the mutable integration
+  # tree.  The optional equality check is skipped only by the standalone unit
+  # tests, which do not have dependency-generation selection globals.
+  if [ -n "${DEPENDENCY_GENERATION_TREE:-}" ] \
+    && [ "$source_root" != "$DEPENDENCY_GENERATION_TREE" ]; then
+    return 1
+  fi
+
+  checkout_root="$release_root/node_modules"
+  [ -d "$checkout_root" ] && [ ! -L "$checkout_root" ] || return 1
+  checkout_marker="$checkout_root/.papercusp-dependency-generation"
+  [ -f "$checkout_marker" ] && [ ! -L "$checkout_marker" ] || return 1
+
+  # Require exactly one identity and source field.  `sed | head -1` would let a
+  # duplicate field hide a later tampered value; the awk count makes that state
+  # fail closed while still allowing future marker fields to be added.
+  marker_identity="$(awk -F= '
+    $1 == "identity" { count++; value=substr($0, index($0, "=") + 1) }
+    END { if (count == 1) print value }
+  ' "$checkout_marker")" || return 1
+  marker_source="$(awk -F= '
+    $1 == "source" { count++; value=substr($0, index($0, "=") + 1) }
+    END { if (count == 1) print value }
+  ' "$checkout_marker")" || return 1
+  [ "$marker_identity" = "$expected_identity" ] || return 1
+  [ "$marker_source" = "$expected_source" ] || return 1
+
+  # Capture the tiny path list first so a failed enumerator is observable.  A
+  # process-substitution loop would otherwise hide its exit status and could
+  # authorize reuse after a truncated enumeration.
+  tree_list="$(enumerate_node_modules "$source_root")" || return 1
+  while IFS= read -r nm; do
+    [ -n "$nm" ] || continue
+    case "$nm" in
+      "$source_root"/*) ;;
+      *) return 1 ;;
+    esac
+    rel="${nm#"$source_root"/}"
+    case "$rel" in
+      ''|.|..|/*|../*|*/../*|*/..|*//*|*$'\n'*|*$'\r'*|*$'\t'*) return 1 ;;
+    esac
+    dest="$release_root/$rel"
+    [ -d "$dest" ] && [ ! -L "$dest" ] || return 1
+    # Reject a real directory reached through a symlinked ancestor.  Checking
+    # only `-L "$dest"` would let `$release_root/packages` (or a workspace
+    # parent) redirect the supposedly isolated dependency tree elsewhere.
+    dest_real="$(realpath "$dest" 2>/dev/null || true)"
+    case "$dest_real" in
+      "$release_real"|"$release_real"/*) ;;
+      *) return 1 ;;
+    esac
+    tree_marker="$dest/.papercusp-isolated-snapshot"
+    [ -f "$tree_marker" ] && [ ! -L "$tree_marker" ] || return 1
+    tree_generation="$(awk -F= '
+      $1 == "generation" { count++; value=substr($0, index($0, "=") + 1) }
+      END { if (count == 1) print value }
+    ' "$tree_marker")" || return 1
+    [ "$tree_generation" = "$expected_identity" ] || return 1
+    tree_count=$((tree_count + 1))
+  done <<< "$tree_list"
+
+  PINNED_DEPENDENCY_REUSE_TREE_COUNT="$tree_count"
+  return 0
+}
+
 # A metadata identity for an already-materialized dependency tree. This deliberately
 # avoids reading file CONTENT: the papercusp root node_modules is currently ~13 GiB /
 # 323k files, and reading it merely to decide whether to avoid a copy recreates the
@@ -924,15 +1023,26 @@ if need_node_modules; then
     dependency_generation_apply_retention "$DEPENDENCY_GENERATION_ROOT" "$INTEGRATION_ROOT"
     log "pinned immutable dependency generation $PINNED_DEPENDENCY_GENERATION_ID (reused=$DEPENDENCY_GENERATION_REUSED)"
   fi
-  assert_hardlink_compatible_roots
-  log "${NODE_MODULES_COPY_MODE}-copying node_modules from dependency source (atomic swap; this can take a minute)"
-  # Enumerate every package-local node_modules in the integration tree (prune so
-  # we get the dir itself, not the ones nested inside it — those ride along in the
-  # parent's selected cp mode). Each is refreshed via an atomic sibling-temp swap (above).
-  while IFS= read -r nm; do
-    rel="${nm#"$NODE_MODULES_SOURCE_ROOT"/}"
-    sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
-  done < <(enumerate_node_modules "$NODE_MODULES_SOURCE_ROOT")
+  if pinned_dependency_generation_reuse_safe; then
+    log "DEPENDENCY_GENERATION_CHECKOUT_REUSE status=hit identity=$PINNED_DEPENDENCY_GENERATION_ID trees=$PINNED_DEPENDENCY_REUSE_TREE_COUNT (all structural markers match; skipping materialization)"
+  else
+    # Any incomplete or contradictory marker state takes the historical path.
+    # That path materializes each source into a sibling temp and atomically swaps
+    # it into place, so a reuse miss never weakens the existing isolation/swap
+    # guarantees.
+    if [ -n "${PINNED_DEPENDENCY_GENERATION_ID:-}" ]; then
+      log "DEPENDENCY_GENERATION_CHECKOUT_REUSE status=miss identity=$PINNED_DEPENDENCY_GENERATION_ID (materializing dependency trees)"
+    fi
+    assert_hardlink_compatible_roots
+    log "${NODE_MODULES_COPY_MODE}-copying node_modules from dependency source (atomic swap; this can take a minute)"
+    # Enumerate every package-local node_modules in the integration tree (prune so
+    # we get the dir itself, not the ones nested inside it — those ride along in the
+    # parent's selected cp mode). Each is refreshed via an atomic sibling-temp swap (above).
+    while IFS= read -r nm; do
+      rel="${nm#"$NODE_MODULES_SOURCE_ROOT"/}"
+      sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"
+    done < <(enumerate_node_modules "$NODE_MODULES_SOURCE_ROOT")
+  fi
   # Record WHICH dep state was just copied without touching pinned tracked source.
   # The marker is inside gitignored node_modules and is consumed by
   # need_node_modules() above on the next auto pass.

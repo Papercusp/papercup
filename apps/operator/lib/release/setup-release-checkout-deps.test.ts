@@ -280,6 +280,198 @@ describe('setup-release-checkout.sh dependency-generation retention wiring', () 
   });
 });
 
+describe('setup-release-checkout.sh pinned_dependency_generation_reuse_safe() — cache-ready fast path', () => {
+  const sourceFingerprint = 'a'.repeat(64);
+  const generationId = `v1-${sourceFingerprint}`;
+  let work: string;
+  let sourceRoot: string;
+  let releaseRoot: string;
+
+  function writeCheckoutMarker(
+    identity = generationId,
+    source = sourceFingerprint,
+    extra = '',
+  ): void {
+    writeFileSync(
+      join(releaseRoot, 'node_modules/.papercusp-dependency-generation'),
+      `identity=${identity}\nsource=${source}\n${extra}`,
+    );
+  }
+
+  function addDependencyTree(rel: string, stampedGeneration = generationId): void {
+    mkdirSync(join(sourceRoot, rel), { recursive: true });
+    mkdirSync(join(releaseRoot, rel), { recursive: true });
+    writeFileSync(
+      join(releaseRoot, rel, '.papercusp-isolated-snapshot'),
+      `generation=${stampedGeneration}\n`,
+    );
+  }
+
+  function reuseSafe(overrides: Record<string, string> = {}): {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+  } {
+    const wrapper = [
+      'set -uo pipefail',
+      'source "$GENERATION_SCRIPT"',
+      'source <(sed -n "/^enumerate_node_modules()/,/^}/p; /^pinned_dependency_generation_reuse_safe()/,/^}/p" "$SETUP_SCRIPT")',
+      'if pinned_dependency_generation_reuse_safe; then',
+      '  printf "safe trees=%s\\n" "$PINNED_DEPENDENCY_REUSE_TREE_COUNT"',
+      '  exit 0',
+      'fi',
+      'printf "unsafe\\n"',
+      'exit 1',
+    ].join('\n');
+    const r = spawnSync('bash', ['-c', wrapper], {
+      env: {
+        ...process.env,
+        SETUP_SCRIPT: SCRIPT_PATH,
+        GENERATION_SCRIPT: DEPENDENCY_GENERATION_SCRIPT,
+        NODE_MODULES_SOURCE_ROOT: sourceRoot,
+        DEPENDENCY_GENERATION_TREE: sourceRoot,
+        RELEASE_ROOT: releaseRoot,
+        PINNED_DEPENDENCY_GENERATION_ID: generationId,
+        DEPENDENCY_GENERATION_SOURCE_FINGERPRINT: sourceFingerprint,
+        ...overrides,
+      },
+      encoding: 'utf8',
+    });
+    return {
+      status: r.status,
+      stdout: String(r.stdout ?? ''),
+      stderr: String(r.stderr ?? ''),
+    };
+  }
+
+  beforeEach(() => {
+    work = mkdtempSync(join(tmpdir(), 'nm-generation-reuse-'));
+    sourceRoot = join(work, 'generation-tree');
+    releaseRoot = join(work, 'checkpoint');
+    mkdirSync(sourceRoot, { recursive: true });
+    mkdirSync(releaseRoot, { recursive: true });
+    addDependencyTree('node_modules');
+    addDependencyTree('packages/example/node_modules');
+    writeCheckoutMarker();
+  });
+
+  afterEach(() => {
+    rmSync(work, { recursive: true, force: true });
+  });
+
+  it('reuses only when the checkout marker and every enumerated tree carry the selected generation', () => {
+    const result = reuseSafe();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('safe trees=2\n');
+  });
+
+  it('fails closed when the checkout identity or source fingerprint differs', () => {
+    writeCheckoutMarker(`v1-${'b'.repeat(64)}`, sourceFingerprint);
+    expect(reuseSafe().status).toBe(1);
+
+    writeCheckoutMarker(generationId, 'b'.repeat(64));
+    expect(reuseSafe().status).toBe(1);
+  });
+
+  it('fails closed when the checkout marker or root tree marker is absent', () => {
+    rmSync(
+      join(releaseRoot, 'node_modules/.papercusp-dependency-generation'),
+      { force: true },
+    );
+    expect(reuseSafe().status).toBe(1);
+
+    writeCheckoutMarker();
+    rmSync(
+      join(releaseRoot, 'node_modules/.papercusp-isolated-snapshot'),
+      { force: true },
+    );
+    expect(reuseSafe().status).toBe(1);
+  });
+
+  it('fails closed when an enumerated destination tree is missing', () => {
+    rmSync(join(releaseRoot, 'packages/example/node_modules'), {
+      recursive: true,
+      force: true,
+    });
+    expect(reuseSafe().status).toBe(1);
+  });
+
+  it('fails closed when any tree marker is absent, duplicated, or names another generation', () => {
+    const marker = join(
+      releaseRoot,
+      'packages/example/node_modules/.papercusp-isolated-snapshot',
+    );
+    rmSync(marker);
+    expect(reuseSafe().status).toBe(1);
+
+    writeFileSync(marker, `generation=${generationId}\ngeneration=${generationId}\n`);
+    expect(reuseSafe().status).toBe(1);
+
+    writeFileSync(marker, `generation=v1-${'b'.repeat(64)}\n`);
+    expect(reuseSafe().status).toBe(1);
+  });
+
+  it('rejects a dependency-tree symlink even when its target carries a matching marker', () => {
+    const rel = 'packages/example/node_modules';
+    const outside = join(work, 'outside-node-modules');
+    rmSync(join(releaseRoot, rel), { recursive: true, force: true });
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(
+      join(outside, '.papercusp-isolated-snapshot'),
+      `generation=${generationId}\n`,
+    );
+    symlinkSync(outside, join(releaseRoot, rel));
+
+    expect(reuseSafe().status).toBe(1);
+  });
+
+  it('rejects a mutable-tree source in place of the selected generation tree', () => {
+    expect(
+      reuseSafe({ DEPENDENCY_GENERATION_TREE: join(work, 'another-generation') })
+        .status,
+    ).toBe(1);
+  });
+
+  it('does not walk or overwrite expected copy-up mutations inside a structurally marked tree', () => {
+    const sourceAddon = join(sourceRoot, 'node_modules/native-addon/build.node');
+    const releaseAddon = join(releaseRoot, 'node_modules/native-addon/build.node');
+    mkdirSync(dirname(sourceAddon), { recursive: true });
+    mkdirSync(dirname(releaseAddon), { recursive: true });
+    writeFileSync(sourceAddon, 'immutable-generation-binary');
+    writeFileSync(releaseAddon, 'checkpoint-copy-up-for-runtime-abi');
+
+    const result = reuseSafe();
+    expect(result.status, result.stderr).toBe(0);
+    expect(readFileSync(releaseAddon, 'utf8')).toBe(
+      'checkpoint-copy-up-for-runtime-abi',
+    );
+  });
+
+  it('gates the existing atomic materialization loop and emits explicit hit/miss evidence', () => {
+    const source = readFileSync(SCRIPT_PATH, 'utf8');
+    const branch = source.indexOf(
+      'if pinned_dependency_generation_reuse_safe; then',
+    );
+    const hit = source.indexOf(
+      'DEPENDENCY_GENERATION_CHECKOUT_REUSE status=hit',
+      branch,
+    );
+    const miss = source.indexOf(
+      'DEPENDENCY_GENERATION_CHECKOUT_REUSE status=miss',
+      branch,
+    );
+    const atomicMaterialization = source.indexOf(
+      'sync_one_node_modules "$nm" "$RELEASE_ROOT/$rel"',
+      branch,
+    );
+
+    expect(branch).toBeGreaterThan(-1);
+    expect(hit).toBeGreaterThan(branch);
+    expect(miss).toBeGreaterThan(hit);
+    expect(atomicMaterialization).toBeGreaterThan(miss);
+  });
+});
+
 describe('setup-release-checkout.sh assert_hardlink_compatible_roots() — cross-device guard', () => {
   function assertCompatible(releaseRoot: string, copyMode = 'hardlink'): { status: number | null; stdout: string; stderr: string } {
     const wrapper = [

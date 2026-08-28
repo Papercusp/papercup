@@ -119,7 +119,7 @@ import {
   detectDrivenWorkItemId,
   readActiveLoopFacts,
 } from '../../harness/routines/loop';
-import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { claimWorkItem, classifyClaimFailure, getWorkItem, type WorkItem } from '../../work-items';
 import { admitWorkItemForFleetTarget, admitWorkItemForLoopTarget } from '../../scheduler/fleet-scope-admission';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
@@ -172,6 +172,40 @@ const monitorConfig = (overrides: Record<string, unknown> = {}) => ({
   predicateKey: 'release:green:papercusp',
   stopCondition: 'the exact green verdict is recorded',
   authority: { kind: 'work-item', workItem: 'WI-42' },
+  ...overrides,
+});
+
+const asWorkItem = (overrides: Partial<WorkItem> = {}): WorkItem => ({
+  id: 'WI-TEST',
+  kind: 'bug',
+  family: 'issue',
+  harness: 'papercusp',
+  title: 'test work item',
+  summary: '',
+  state: 'open',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  goalId: null,
+  parent: null,
+  payload: null,
+  origin: 'local',
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '',
+  updatedAt: '',
+  closedAt: null,
   ...overrides,
 });
 
@@ -413,7 +447,7 @@ describe('loop:arm — EI-20034001963934568: reject unverified owner tags in rep
 });
 
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
-  const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
+  const claimedRow = asWorkItem({ id: 'X', assignee: 'su-caller-own-id' });
 
   it("EI-21302411209364135: infers an explicit item's harness before workspace-home fallback", async () => {
     // A workspace-scoped SU session carries the wildcard harness sentinel. Its home
@@ -648,7 +682,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   });
 
   it('EI-21681983105634595: refuses an explicit claim-held item without touching its governor lease', async () => {
-    mockResolvedTyped(getWiM, {
+    mockResolvedTyped(getWiM, asWorkItem({
       id: 'WI-333195',
       state: 'open',
       assignee: null,
@@ -657,7 +691,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
         claim_hold_by: 'system:resource-governor',
         claim_hold_reason: 'durable resource-governor queue; only governor lease transitions may select',
       },
-    });
+    }));
     mockResolvedTyped(claimM, claimedRow);
 
     const b = body(await call({ workItem: 'WI-333195' }));
@@ -677,12 +711,12 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
 
   it('EI-21681983105634595: refuses a claim-held item auto-detected from a COLD goal', async () => {
     detectM.mockReturnValue('WI-333195');
-    mockResolvedTyped(getWiM, {
+    mockResolvedTyped(getWiM, asWorkItem({
       id: 'WI-333195',
       state: 'open',
       assignee: null,
       payload: { _claimHold: 'true', claim_hold_by: 'system:resource-governor' },
-    });
+    }));
     mockResolvedTyped(claimM, claimedRow);
 
     const b = body(await call({ carry: 'cold', goal: 'retune the loop for WI-333195' }));
