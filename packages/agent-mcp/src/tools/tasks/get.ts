@@ -22,7 +22,7 @@ export default defineTool({
   capability: 'tasks:read',
   guidance: {
     when: 'User names a specific task ("the auth task", "task ABC-123") and you need its full body.',
-    notWhen: 'For a list of tasks, use `tasks:list` first. Don\'t call `tasks:get` speculatively across many ids — list returns enough for most "what\'s the gist" questions.',
+    notWhen: 'For a list of tasks, use `tasks:list` first. Don\'t call `tasks:get` speculatively across many ids — list returns enough for most "what\'s the gist" questions. This reads feature/task rows, not process task ids returned by `capability:launch-agent`; inspect those with `processes:list` or stop them with `processes:kill`.',
     chaining: 'Follow `tasks:list` to find the id.',
   },
   args: z.object({

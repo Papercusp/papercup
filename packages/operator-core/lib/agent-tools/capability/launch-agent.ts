@@ -264,6 +264,7 @@ export default defineTool({
       'fleet:launch-on-plan (N members on a plan, with seats + capacity advice)',
       'capability:terminal (run a COMMAND in a visible terminal, not an agent)',
       "coord:presence (a launched/forked agent's identity + liveness)",
+      'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
     ],
   },
   capability: 'capability:terminal',

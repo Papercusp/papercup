@@ -303,6 +303,13 @@ describe('launch-tool routing guidance', () => {
   it('cross-links the canonical four-door routing table', () => {
     expect(launchAgent.guidance?.notWhen).toContain('launching-agents-which-tool-for-which-door');
   });
+
+  it('routes returned process task handles to the process tools', () => {
+    const seeAlso = launchAgent.guidance?.seeAlso;
+    expect(Array.isArray(seeAlso) ? seeAlso.join('\n') : '').toContain(
+      'processes:list / processes:kill (returned tasks[].taskId handles; not tasks:get)',
+    );
+  });
 });
 
 describe('published launch args schema', () => {

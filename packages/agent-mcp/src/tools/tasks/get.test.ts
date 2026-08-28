@@ -138,6 +138,14 @@ describe('tasks:get — arg schema (Gap 10)', () => {
   });
 });
 
+describe('tasks:get — task-id domain guidance', () => {
+  it('distinguishes feature rows from capability:launch-agent process handles', () => {
+    expect(tool.guidance?.notWhen).toContain('not process task ids returned by `capability:launch-agent`');
+    expect(tool.guidance?.notWhen).toContain('`processes:list`');
+    expect(tool.guidance?.notWhen).toContain('`processes:kill`');
+  });
+});
+
 describe('tasks:get — registration smoke (Gap 15)', () => {
   it('is registered under tasks:get with the tasks:read capability', () => {
     const t = lookupByMcpName('tasks:get')!;
