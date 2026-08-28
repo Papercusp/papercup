@@ -72,13 +72,31 @@ const SOURCE_KEY = 'plans';
 const SCOPES = ['slug', 'title', 'now', 'items', 'decisions', 'prose'] as const;
 type Scope = (typeof SCOPES)[number];
 
-const argsSchema = z
-  .object({
+/**
+ * Normalize the legacy `q` spelling before the strict args schema runs.
+ *
+ * Search callers commonly use the shorter `q` spelling, while this tool's
+ * canonical input is `query`. Keep the published schema canonical and discard
+ * the alias after normalization; when both spellings are present, explicit
+ * `query` wins.
+ */
+export function normalizePlansSearchArgs(raw: unknown): unknown {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return raw;
+  const args = raw as Record<string, unknown>;
+  if (!Object.prototype.hasOwnProperty.call(args, 'q')) return raw;
+
+  const { q, ...rest } = args;
+  return rest.query !== undefined ? rest : { ...rest, query: q };
+}
+
+const argsSchema = z.preprocess(
+  normalizePlansSearchArgs,
+  z.object({
     query: z
       .string()
       .min(1)
       .optional()
-      .describe('Search query (case-insensitive, whitespace-tokenized). Required unless `slug` is supplied.'),
+      .describe('Search query (case-insensitive, whitespace-tokenized). Legacy alias: `q`. Required unless `slug` is supplied.'),
     slug: z
       .string()
       .min(1)
@@ -111,7 +129,7 @@ const argsSchema = z
         message: 'pass `query` (or the slug-only alias `slug`).',
       });
     }
-  });
+  }));
 
 interface Hit {
   plan: string;
