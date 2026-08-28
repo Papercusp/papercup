@@ -32,6 +32,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { REPO_ROOT } from '../../docs/_repo-paths';
 import runTool, {
   buildDetachedTestRunRequest,
+  buildTestProcessDemand,
+  classifyTestProcessOutcome,
+  createTestProcessDemandSampler,
   detachedTestTimeoutHint,
   discoverKnownHiveCheckoutRoots,
   groupDirectVitestRoutes,
@@ -181,6 +184,59 @@ describe('selectTestFileRoot (WI-41400 phantom-root fallback)', () => {
         canonicalRepoRoot: selectorCanonical,
       }),
     ).toEqual({ root: selectorPhantom, source: 'requested' });
+  });
+});
+
+describe('governed test-process admission (P-003)', () => {
+  it('constructs an explicit CPU/memory/disk/fd reservation', () => {
+    expect(buildTestProcessDemand({ fileCount: 3 })).toEqual({
+      cpuWeight: 1,
+      memoryBytes: 1024 * 1024 * 1024,
+      diskBytes: 256 * 1024 * 1024,
+      fileDescriptors: 19,
+    });
+  });
+
+  it('records peak child observations as measured actual demand', () => {
+    let now = 1_000;
+    let sample = { cpuMicros: 100, rssBytes: 10, fileDescriptors: 4 };
+    const sampler = createTestProcessDemandSampler(
+      buildTestProcessDemand({ fileCount: 1 }),
+      () => sample,
+      () => now,
+    );
+    sampler.attach(42);
+    now = 2_000;
+    sample = { cpuMicros: 1_500_100, rssBytes: 30, fileDescriptors: 8 };
+    sampler.sample();
+    now = 3_000;
+    sample = { cpuMicros: 3_000_100, rssBytes: 20, fileDescriptors: 6 };
+    expect(sampler.stop({ diskBytes: 123 })).toEqual({
+      cpuWeight: 1.5,
+      memoryBytes: 30,
+      diskBytes: 123,
+      fileDescriptors: 8,
+    });
+    // A stopped sampler is idempotent and cannot restart a timer or overwrite
+    // the close-time measurement.
+    expect(sampler.stop({ diskBytes: 999 })).toEqual({
+      cpuWeight: 1.5,
+      memoryBytes: 30,
+      diskBytes: 123,
+      fileDescriptors: 8,
+    });
+  });
+
+  it('cancels timeout/abort/signal-only exits but releases real red exits', () => {
+    const base = { code: 0, signal: null, timedOut: false, aborted: false, output: '' };
+    expect(classifyTestProcessOutcome({ ...base, timedOut: true })).toMatchObject({ kind: 'cancel' });
+    expect(classifyTestProcessOutcome({ ...base, aborted: true })).toMatchObject({ kind: 'cancel' });
+    expect(classifyTestProcessOutcome({ ...base, code: null, signal: 'SIGTERM' })).toMatchObject({ kind: 'cancel' });
+    expect(classifyTestProcessOutcome({ ...base, code: 1, output: 'worker exited before dispatch' })).toMatchObject({ kind: 'cancel' });
+    expect(classifyTestProcessOutcome({ ...base, code: 1, actualDemand: { memoryBytes: 7 } })).toEqual({
+      kind: 'release',
+      actualDemand: { memoryBytes: 7 },
+    });
   });
 });
 
