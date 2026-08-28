@@ -29,6 +29,7 @@
     "verify:all-dogfood": "npm run verify:dogfood-bootstrap && npm run verify:trigger-consolidation && npm run verify:dogfood-types",
     "substrate:status": "tsx scripts/substrate-status.ts",
     "cut-seed": "tsx lib/release/cut-seed-cli.ts",
+    "release:gcp-image-family": "tsx lib/release/gcp-image-family-release-cli.ts",
     "lint:el-tools": "node scripts/el-tools-check.mjs",
     "lint:plans": "tsx scripts/lint-plans.ts",
     "lint:plans-pg": "node scripts/check-plans-pg-canonical.mjs",
