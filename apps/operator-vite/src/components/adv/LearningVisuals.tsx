@@ -313,6 +313,40 @@ export function LearningDisclosure({
   );
 }
 
+/**
+ * P-004 (owner 2026-08-28: "The how the loop section is also confusing"). One
+ * instrument group inside "How the loop is doing", led by the plain-language
+ * QUESTION it answers. The label is the question; the line beside it is the
+ * answer in words — so the numbers below read as evidence for a claim already
+ * made, rather than as a wall of chips the reader has to decode into one.
+ *
+ * Nothing is summarised away: every instrument that was in that section before
+ * is still in it, under the question it happens to answer.
+ *
+ * It lives HERE rather than in LearningTab so that a panel which knows when it
+ * is empty (LearningEfficacyPanel returns null with no data) can wrap ITSELF
+ * and never leave a labelled card standing empty.
+ */
+export function LoopSection({
+  label,
+  answer,
+  children,
+}: {
+  label: string;
+  answer: string;
+  children: ReactNode;
+}) {
+  return (
+    <section className="pc-learning__loopsec" aria-label={label}>
+      <div className="pc-learning__loopsechead">
+        <span className="pc-learning__loopseclabel">{label}</span>
+        <span className="pc-learning__loopsecanswer">{answer}</span>
+      </div>
+      {children}
+    </section>
+  );
+}
+
 export function LearningVisualStyles() {
   return (
     <style>{`

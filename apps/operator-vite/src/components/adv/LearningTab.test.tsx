@@ -861,7 +861,6 @@ beforeEach(() => {
   };
   // Retained-ledger URL state (WI-39493/WI-39534) — reset like every other key.
   nuqsState.rtab = "all";
-  nuqsState.rship = "all";
   nuqsState.rq = "";
   nuqsState.rplan = null;
   nuqsState.rsel = null;
