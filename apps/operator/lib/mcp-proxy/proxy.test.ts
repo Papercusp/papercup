@@ -33,6 +33,7 @@ import {
   DEFAULT_CONTROL_PLANE_RESERVE,
   DEFAULT_MAX_HANDSHAKES_IN_FLIGHT,
   DEFAULT_MAX_HANDSHAKE_QUEUE,
+  DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE,
   DEFAULT_CRITICAL_CONTINUATION_QUEUE_WAIT_MS,
   isMcpSessionHandshakeCall,
   isMcpProxyWatchdogProbePath,
@@ -5546,6 +5547,12 @@ describe("EI-19305299022434394: admission control — shed with 429 before openi
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKES_IN_FLIGHT)).toBe(true);
     expect(DEFAULT_MAX_HANDSHAKE_QUEUE).toBeGreaterThan(0);
     expect(Number.isFinite(DEFAULT_MAX_HANDSHAKE_QUEUE)).toBe(true);
+  });
+
+  it("EI-21656350947178031: default durability FIFO covers the proxy admission population", () => {
+    expect(DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE).toBeGreaterThanOrEqual(
+      DEFAULT_MAX_IN_FLIGHT,
+    );
   });
 
   it("EI-21395174573687098: uses the full reserved pool because the watchdog has a separate agent", () => {

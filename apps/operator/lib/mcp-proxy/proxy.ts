@@ -1150,16 +1150,20 @@ export const DEFAULT_MAX_HANDSHAKE_QUEUE = Number.isFinite(
 /**
  * EI-21556422206126497 — continuation writes are deliberately single-flight upstream, but
  * immediate shed-on-one made the durability plane fail exactly when two sessions checkpointed
- * together. Queue a small, hard-bounded burst behind that one socket instead.
+ * together. The default bound must cover the proxy's supported concurrent admission population:
+ * a fixed 16-slot FIFO still rejected checkpoints while the normal proxy legitimately admitted
+ * 200 sessions (EI-21656350947178031). Keep an explicit env override, but derive the default from
+ * the same ceiling rather than maintaining a smaller, drifting capacity island.
  */
 const configuredMaxCriticalContinuationQueue = Number(
-  process.env.PAPERCUSP_MCP_PROXY_MAX_CRITICAL_CONTINUATION_QUEUE ?? 16,
+  process.env.PAPERCUSP_MCP_PROXY_MAX_CRITICAL_CONTINUATION_QUEUE ??
+    DEFAULT_MAX_IN_FLIGHT,
 );
 export const DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE = Number.isFinite(
   configuredMaxCriticalContinuationQueue,
 )
   ? Math.max(0, Math.floor(configuredMaxCriticalContinuationQueue))
-  : 16;
+  : DEFAULT_MAX_IN_FLIGHT;
 const MAX_CRITICAL_CONTINUATION_HEALTH_REQUESTS = 16;
 /**
  * EI-21504897841052086 — bounded dwell for a handshake WAITING in the admission FIFO.
@@ -1669,7 +1673,9 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
     opts.handshakeQueueWaitLogMs ?? DEFAULT_HANDSHAKE_QUEUE_WAIT_LOG_MS;
   const configuredCriticalContinuationQueue =
     opts.maxCriticalContinuationQueue ??
-    DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE;
+    (opts.maxInFlight === undefined
+      ? DEFAULT_MAX_CRITICAL_CONTINUATION_QUEUE
+      : maxInFlight);
   const maxCriticalContinuationQueue = Number.isFinite(
     configuredCriticalContinuationQueue,
   )
