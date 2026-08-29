@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { canonicalize } from '@papercusp/publish-auth/jcs';
 import type { WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
 
+import { evaluateImageScanPolicy } from './image-scan-policy';
 import {
   evaluateWorkspaceHostReleaseGate,
   type WorkspaceHostReleaseGateInput,
@@ -75,7 +76,14 @@ export interface AzureComputeGalleryScanEvidence {
   releaseSha256: string;
   trusted: boolean;
   sbomSha256: string;
+  /** Total grype matches at any severity. Evidence; the gate acts on the breakdown. */
   vulnerabilityFindings: number;
+  /**
+   * Per-severity counts keyed by grype's own labels. REQUIRED: the gate ranks these
+   * against the ratified policy, and `evaluateImageScanPolicy` reconciles their sum
+   * against `vulnerabilityFindings` so an absent breakdown cannot read as a clean one.
+   */
+  vulnerabilityBySeverity: Readonly<Record<string, number>>;
   secretFindings: number;
   evidenceRef: string;
 }
@@ -416,8 +424,16 @@ function validateScan(
   ) {
     fail('Azure image scan evidence is not bound to the exact source image, build manifest, and release digest');
   }
-  if (!scan.trusted || scan.vulnerabilityFindings !== 0 || scan.secretFindings !== 0) {
-    fail('Azure image scan must be trusted with zero policy-violating vulnerability and secret findings');
+  if (!scan.trusted) {
+    fail('Azure image scan must be trusted');
+  }
+  const scanPolicy = evaluateImageScanPolicy(scan);
+  if (!scanPolicy.accepted) {
+    fail(
+      `Azure image scan violates the workspace-host release policy: ${scanPolicy.failures
+        .map((failure) => failure.message)
+        .join('; ')}`,
+    );
   }
   if (!SHA256.test(scan.sbomSha256) || !scan.evidenceRef.trim()) {
     fail('Azure image scan must carry an immutable SBOM digest and evidence reference');

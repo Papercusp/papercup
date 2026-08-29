@@ -286,7 +286,10 @@ class FakeAdapter implements AzureComputeGalleryReleaseAdapter {
       ...input,
       trusted: true,
       sbomSha256: SBOM_SHA,
-      vulnerabilityFindings: 0,
+      // A realistic image carries sub-threshold findings. Zero here would let the
+      // happy path pass without ever exercising the severity policy.
+      vulnerabilityFindings: 3,
+      vulnerabilityBySeverity: { Low: 2, Negligible: 1 },
       secretFindings: 0,
       evidenceRef: `azure://scan/${input.sourceImageId}`,
     };
