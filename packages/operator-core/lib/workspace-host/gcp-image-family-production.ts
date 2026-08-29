@@ -43,7 +43,14 @@ const SAFE_EXECUTABLE = /^[A-Za-z0-9_./:+-]+$/;
 export const GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES = {
   packer: 'packer',
   scanner: 'papercusp-image-scan',
+  /** POST-build canary: boots the built candidate image and proves it self-attests. */
   cleanRoom: 'papercusp-gcp-clean-room',
+  /**
+   * PRE-build acceptance: boots stock Ubuntu and proves the signed bundle installs and
+   * self-attests there. Its report is what the release gate ratifies BEFORE authorizing the
+   * image build, which is why it cannot boot the candidate image.
+   */
+  bootstrapAcceptance: 'papercusp-gcp-bootstrap-acceptance',
 } as const;
 
 /**
