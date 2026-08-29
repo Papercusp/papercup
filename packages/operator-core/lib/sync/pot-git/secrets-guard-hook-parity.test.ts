@@ -94,6 +94,17 @@ const SAMPLES: Array<{ what: string; content: string }> = [
   // The rule whose ABSENCE from the hook caused WI-6641's 8h freeze.
   { what: 'secret-named assignment, high-entropy value (api_key:)', content: `${'api' + '_key'}: "${HI_ENTROPY}"` },
   { what: 'secret-named assignment, high-entropy value (ACCESS_TOKEN=)', content: `${'access' + '_token'}="${HI_ENTROPY}"` },
+  // WI-784971 — the shape that actually froze a lane, and the one most likely to be
+  // "fixed" by relaxing the gate. Hyphenated lowercase English reads as obviously
+  // harmless, but per-CHARACTER Shannon entropy cannot tell it from a token at this
+  // length: these score 3.52-3.82 while lowercase hex scores 3.95 and a UUID 3.90, so
+  // no threshold separates them — raising 3.2 to clear these would stop catching real
+  // secrets first. Two such values in workspace-host tests were quarantined out of
+  // every commit for ~41h (2026-08-29). Both scanners refuse them TODAY; these samples
+  // pin that, so relaxing either side fails here instead of silently widening the
+  // accepted set (a passphrase like correct-horse-battery-staple is the same shape).
+  { what: 'secret-named assignment, kebab-case English value (accessToken:)', content: `${'access' + 'Token'}: "${'short' + '-lived-customer-token'}"` },
+  { what: 'secret-named assignment, kebab-case English value (access_token:)', content: `${'access' + '_token'}: "${'metadata' + '-source-token'}"` },
 ];
 
 describe('write-time hook ⊇ publish-time guard (WI-6643)', () => {
