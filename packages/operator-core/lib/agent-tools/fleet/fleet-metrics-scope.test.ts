@@ -78,6 +78,21 @@ describe('fleet metric scope resolver and query kernel', () => {
     expect(result.scope.attribution).toMatchObject({ memberCount: 2, membership: 'ever-members' });
     expect(result.currentRoster.ownerIds).toEqual(['member-live']);
     expect(result.everMemberIds).toEqual(['member-dead', 'member-live']);
+    expect(result.populationLifecycle).toMatchObject({
+      schemaVersion: 'fleet-population-lifecycle-v1',
+      fleet: 'fleet-a',
+      window: { startAt: START, endAt: END },
+      currentRunnableRoster: {
+        census: { population: 'current-runnable-roster', counted: 1 },
+        ownerIds: ['member-live'],
+      },
+      relevantRoster: {
+        census: { population: 'relevant-roster', counted: 1 },
+        ownerIds: ['member-live'],
+      },
+      everMembers: { counted: 2, ownerIds: ['member-dead', 'member-live'] },
+      claimFlow: { status: 'unknown', values: null },
+    });
     expect(selectFleetMetricCurrentItems(result, [item('WI-old'), item('WI-new')]).map((row) => row.id)).toEqual([
       'WI-new',
     ]);

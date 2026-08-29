@@ -784,6 +784,7 @@ export async function buildFleetMetricsResult(
           occurrences: FLEET_METRIC_WRITERS.occurrences,
         },
       },
+      populationLifecycle: resolution.populationLifecycle,
       admissionParity: FLEET_METRIC_ADMISSION_PARITY,
     },
   });

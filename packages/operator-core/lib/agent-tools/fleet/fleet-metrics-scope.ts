@@ -29,6 +29,10 @@ import {
   type FleetMetricScope,
   type FleetMetricsResult,
 } from './fleet-metrics-contract';
+import {
+  buildFleetPopulationLifecycle,
+  type FleetPopulationLifecycleSnapshot,
+} from './fleet-population';
 
 export type FleetMetricFlowMode = 'current-spec' | 'at-event-spec';
 
@@ -69,6 +73,8 @@ export interface ResolvedFleetMetricScope {
     writer: 'fleet-roster';
   };
   everMemberIds: string[];
+  /** Canonical population/lifecycle view shared with fleet status and leader brief. */
+  populationLifecycle: FleetPopulationLifecycleSnapshot;
 }
 
 export type FleetMetricScopeResolution = ResolvedFleetMetricScope | FleetMetricUnavailable;
@@ -289,6 +295,14 @@ async function resolveFleetMetricScopeUnsafe(
     },
   });
 
+  const populationLifecycle = buildFleetPopulationLifecycle({
+    fleet: resolved.fleetSlug,
+    candidates: roster.entries,
+    everMemberIds: [...everMembers],
+    fleetStartedAtMs: fleet.createdAt,
+    observedAtMs: generatedAtMs,
+  }).snapshot;
+
   const staleAfterMs = Math.max(1, Math.trunc(request.staleAfterMs ?? 60_000));
   return {
     ok: true,
@@ -314,10 +328,13 @@ async function resolveFleetMetricScopeUnsafe(
       historyMore: history.more,
     },
     currentRoster: {
+      // Backward-compatible raw roster identity list. The shared snapshot's
+      // `currentRunnableRoster.ownerIds` is the lifecycle-safe headcount cohort.
       ownerIds: roster.entries.map((entry) => entry.agentId),
       writer: 'fleet-roster',
     },
     everMemberIds: [...everMembers].sort(),
+    populationLifecycle,
   };
 }
 

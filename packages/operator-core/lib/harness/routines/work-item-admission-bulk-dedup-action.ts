@@ -20,6 +20,19 @@ function optionalPositiveInteger(value: unknown): number | undefined {
   return n;
 }
 
+/**
+ * `payload.model` overrides the learning-policy default for THIS run only (see
+ * BulkDedupRunOptions.model). Blank/absent keeps the canonical policy model.
+ */
+function optionalModelSpec(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new Error(`bulk dedup expected a model spec string, received ${String(value)}`);
+  }
+  const spec = value.trim();
+  return spec === '' ? undefined : spec;
+}
+
 function optionalNonNegativeInteger(value: unknown): number | undefined {
   if (value === undefined || value === null) return undefined;
   const n = Number(value);
@@ -65,6 +78,7 @@ async function productionRun(ctx: SystemActionCtx): Promise<BulkDedupRunResult> 
     harnessSlug: ctx.installSlug,
     runId,
     ownerId,
+    model: optionalModelSpec(payload.model),
     maxStages: optionalPositiveInteger(payload.maxStages),
     pairsPerCall: optionalPositiveInteger(payload.pairsPerCall),
     shardConcurrency: optionalPositiveInteger(payload.shardConcurrency),

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildFleetPopulationLifecycle,
   selectFleetPopulation,
   withShownCount,
   withLivenessComposition,
@@ -29,6 +30,49 @@ const rows = [
   { id: 'c', live: false },
   { id: 'd', live: false },
 ];
+
+describe('buildFleetPopulationLifecycle', () => {
+  it('binds runnable, relevant, ever-member, target, and lifecycle counts to named populations', () => {
+    const { currentRunnableRows, relevantRows, snapshot } = buildFleetPopulationLifecycle({
+      fleet: 'fleet-a',
+      candidates: [
+        { agentId: 'live', alive: true, sessionState: 'live' as const, claims: [{}] },
+        { agentId: 'parked', alive: true, sessionState: 'parked' as const, claims: [] },
+        { agentId: 'dead', alive: false, sessionState: 'ended' as const, claims: [{}] },
+        { agentId: 'stale', alive: false, sessionState: null, claims: [] },
+      ],
+      everMemberIds: ['historical', 'dead', 'live', 'live'],
+      fleetStartedAtMs: Date.parse('2026-08-21T00:00:00.000Z'),
+      observedAtMs: Date.parse('2026-08-21T01:00:00.000Z'),
+      target: {
+        enabled: true,
+        target: 3,
+        current: 2,
+        shortfall: 1,
+        underStrength: true,
+        verdict: 'under-strength',
+      },
+    });
+
+    expect(currentRunnableRows.map((row) => row.agentId)).toEqual(['live', 'parked']);
+    expect(relevantRows.map((row) => row.agentId)).toEqual(['live', 'parked', 'dead']);
+    expect(snapshot).toMatchObject({
+      schemaVersion: 'fleet-population-lifecycle-v1',
+      fleet: 'fleet-a',
+      currentRunnableRoster: {
+        census: { population: 'current-runnable-roster', candidates: 4, counted: 2, withheld: 2 },
+        ownerIds: ['live', 'parked'],
+      },
+      relevantRoster: {
+        census: { population: 'relevant-roster', candidates: 4, counted: 3, withheld: 1 },
+        ownerIds: ['live', 'parked', 'dead'],
+      },
+      everMembers: { counted: 3, ownerIds: ['dead', 'historical', 'live'] },
+      liveness: { live: 1, parked: 1, dead: 1, unknown: 1 },
+      claimFlow: { status: 'unknown', values: null, reason: 'claim-flow-unread' },
+    });
+  });
+});
 
 describe('selectFleetPopulation', () => {
   it('derives rows and census from ONE pass, so the numbers cannot disagree with the payload', () => {

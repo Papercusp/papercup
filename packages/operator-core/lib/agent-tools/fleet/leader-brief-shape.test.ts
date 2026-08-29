@@ -45,6 +45,24 @@ function largeBrief() {
         },
       },
       population: { candidates: 63, counted: 53, withheld: 10, basis: 'x'.repeat(1000) },
+      populationLifecycle: {
+        schemaVersion: 'fleet-population-lifecycle-v1',
+        fleet: 'large-fleet',
+        window: { startAt: '2026-08-13T00:00:00.000Z', endAt: '2026-08-26T20:00:00.000Z' },
+        populationBasis: { writer: 'fleet-roster', comparisonRule: 'compare only identical population, window, and unit' },
+        currentRunnableRoster: {
+          census: { population: 'current-runnable-roster', candidates: 63, counted: 53, withheld: 10, basis: 'runnable roster' },
+          ownerIds: members.map((member) => member.agentId),
+        },
+        relevantRoster: {
+          census: { population: 'relevant-roster', candidates: 63, counted: 53, withheld: 10, basis: 'relevant roster' },
+          ownerIds: members.map((member) => member.agentId),
+        },
+        everMembers: { counted: 53, ownerIds: members.map((member) => member.agentId) },
+        target: { enabled: true, target: 53, current: 53, shortfall: 0, underStrength: false, verdict: 'at-target' },
+        liveness: { live: 25, parked: 28, dead: 0, suspect: 0, draining: 0, recorded: 0, unknown: 0 },
+        claimFlow: { status: 'unknown', values: null, reason: 'claim-flow-unread' },
+      },
       pool_capacity: { poolExhausted: false, degraded: false, factor: 1, queueDepth: 0 },
     },
     monitoringBlindAdvisory: {
@@ -125,6 +143,10 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
         },
       },
     });
+    // This oversized fixture reaches the explicit emergency tier. The ordinary
+    // monitor projection preserves populationLifecycle; emergency mode reports
+    // its omission through leaderBriefProjection instead of breaking 5 KB.
+    expect(out.summary).not.toHaveProperty('populationLifecycle');
     expect(out.summary).toMatchObject({ dead: 2, dead_member_ids: ['su-51', 'su-52'] });
     expect(out.monitoringBlindAdvisory).toMatchObject({
       line: expect.stringContaining('monitoring blind'),
@@ -175,6 +197,22 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
       awaiters: 1,
     });
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
+  it('preserves the canonical population/lifecycle contract in an ordinary monitor projection', () => {
+    const lifecycle = (largeBrief() as { summary: Record<string, unknown> }).summary.populationLifecycle;
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'small-fleet', members: 1, populationLifecycle: lifecycle } },
+      'trimmed',
+    ) as { summary: Record<string, unknown>; leaderBriefProjection: { emergency?: boolean } };
+
+    expect(out.leaderBriefProjection.emergency).not.toBe(true);
+    expect(out.summary.populationLifecycle).toMatchObject({
+      schemaVersion: 'fleet-population-lifecycle-v1',
+      currentRunnableRoster: { census: { counted: 53 }, ownerIds: expect.any(Array) },
+      everMembers: { counted: 53, ownerIds: expect.any(Array) },
+      claimFlow: { status: 'unknown', values: null },
+    });
   });
 
   it('retains the dark-fleet verdict, reason, and independent falsifier at the normal monitor tier', () => {

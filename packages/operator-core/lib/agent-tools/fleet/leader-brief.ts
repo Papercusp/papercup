@@ -72,7 +72,12 @@ import {
 } from './leadership-disposition';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
 import { resolveSelfRef, markSelfRows, type SelfRef } from '../coordination/self-marker';
-import { selectFleetPopulation, type FleetPopulationCensus } from './fleet-population';
+import {
+  buildFleetPopulationLifecycle,
+  selectFleetPopulation,
+  type FleetPopulationCensus,
+} from './fleet-population';
+import { fleetEverMembers } from '../../fleet-membership-store';
 import { COORD_ROLES } from '../coordination/roles';
 import {
   listFleetRosterDiagnosed,
@@ -3527,6 +3532,37 @@ export async function buildLeaderBrief(
   // `self` now arrives on the caller bag (see LeaderBriefCaller): a viewer has
   // no row of its own in the fleet, so nothing is marked for it.
   const markedMembers = markSelfRows(members, self, 'agentId');
+  const everMemberRead = await withBoundedTimeout(fleetEverMembers(fleet, { workspaceId }), {
+    fallback: null,
+    timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+    label: 'leader-brief:population-ever-members',
+  });
+  const everMemberIdsForPopulation = everMemberRead.value ?? new Set<string>();
+  const populationLifecycle = buildFleetPopulationLifecycle({
+    fleet,
+    candidates: rosterEntries,
+    everMemberIds: [...everMemberIdsForPopulation],
+    everMembersAvailable: !everMemberRead.degraded && everMemberRead.value != null,
+    everMembersReason: everMemberRead.degraded ? 'fleet membership read timed out or failed' : undefined,
+    fleetStartedAtMs: fleetCreatedAtMs,
+    observedAtMs: Date.now(),
+    includeStale: args.include_stale,
+    target: headcount,
+    claimFlow:
+      fleetClaimableCount == null
+        ? null
+        : {
+            status: 'measured',
+            population: 'current-runnable-roster',
+            basis: 'leader-brief fleet roster and scheduler claimable aggregate',
+            claimable: fleetClaimableCount,
+            inFlight: members.reduce((count, member) => count + member.workItemIds.length, 0),
+            orphaned: orphanedInFlight.length,
+            stalled: members.filter((member) => member.verdict === 'stalled' || member.stalled).length,
+            idle: members.filter((member) => member.benchSuggestion?.kind === 'idle-with-claimable' || member.benchSuggestion?.kind === 'laneless-idle').length,
+            criticalContext: members.filter((member) => member.contextPressure === 'critical').length,
+          },
+  }).snapshot;
   const summary = {
     fleet,
     members: members.length,
@@ -3536,6 +3572,7 @@ export async function buildLeaderBrief(
     // leader-brief and fleet:assignments within minutes, each defensible, none
     // reconciled inline.
     population: memberCensus,
+    populationLifecycle,
     // WI-41145: intended population beside exact current launch membership.
     // A disabled saved profile retains its launch recipe internally, but its
     // public target stays null so a reusable recipe cannot masquerade as an

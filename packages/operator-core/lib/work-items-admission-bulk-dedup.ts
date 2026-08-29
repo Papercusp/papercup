@@ -122,6 +122,23 @@ export interface BulkDedupRunOptions {
   ownerId?: string;
   /** Dependency seam used by the real-PG recurrence guard to inject a census rise. */
   beforePostStageCensus?: (sql: OrgSql, stageIndex: number) => Promise<void>;
+  /**
+   * Model spec for this run's judging calls. Defaults to {@link LEARNING_MODEL_SPEC}.
+   *
+   * The default is the owner-directed learning policy and stays that way; this
+   * override exists so ONE run can be driven onto a different backend without
+   * re-pointing every learning path at it — the case that matters here is the
+   * canonical Sol model being unreachable (codex pool usage-walled, or the
+   * ChatGPT-account rejection `The 'gpt-5.6-sol:xhigh' model is not supported
+   * when using Codex with a ChatGPT account`), which failed three of the four
+   * bulk-stage attempts on 2026-08-27/28.
+   *
+   * Whatever is resolved here is what gets WRITTEN to `admission_runs.model_id`,
+   * so the ledger reports the model that actually ran rather than the policy
+   * constant. A ledger that names a model the run did not use is worse than an
+   * empty column: it reads as evidence.
+   */
+  model?: string;
   /** Injectable bounded backoff for transient model transport failures. */
   batchRetryBackoffsMs?: readonly number[];
   /** Injectable sleep seam for retry tests; production uses setTimeout. */
@@ -428,6 +445,7 @@ async function judgeBulkPairs(
   input: BulkInput,
   opts: {
     llmCall: PromoterLlmCall;
+    model: string;
     pairsPerCall: number;
     shardConcurrency: number;
     ownerId?: string;
@@ -487,7 +505,7 @@ async function judgeBulkPairs(
       const attempted = await callBulkModelBatchWithRetry(
         () =>
           opts.llmCall({
-            model: LEARNING_MODEL_SPEC,
+            model: opts.model,
             system: prompt.system,
             messages: [{ role: 'user', content: prompt.user }],
             responseFormat: 'json',
@@ -572,6 +590,9 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
   const batchRetryDelay =
     opts.batchRetryDelay ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const runCensus = opts.runCensus ?? runWorkItemAdmissionCensus;
+  // Resolved ONCE and used for both the model calls and the ledger write, so
+  // `admission_runs.model_id` can never disagree with the model that ran.
+  const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
   const censusBase = {
     ...(opts.census ?? {}),
     workspaceId: opts.workspaceId,
@@ -652,6 +673,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
     try {
       const judged = await judgeBulkPairs(input, {
         llmCall: opts.llmCall,
+        model,
         pairsPerCall,
         shardConcurrency,
         ownerId: opts.ownerId,
@@ -673,7 +695,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           workspaceId: opts.workspaceId,
           harnessSlug: opts.harnessSlug,
           runId: stageRunId,
-          modelId: LEARNING_MODEL_SPEC,
+          modelId: model,
           nowMs: now(),
           pending: stageItems,
           plan,
@@ -724,7 +746,7 @@ export async function runWorkItemAdmissionBulkDedup(opts: BulkDedupRunOptions): 
           UPDATE harness_shared.admission_runs
              SET finished_at = now(), promoted = 0, merged = ${merged}, held = ${held},
                  census_before = ${census.censusAfter}, census_after = ${nextCensus.censusAfter},
-                 model_id = ${LEARNING_MODEL_SPEC}, tokens_in = ${judged.tokensIn}, tokens_out = ${judged.tokensOut},
+                 model_id = ${model}, tokens_in = ${judged.tokensIn}, tokens_out = ${judged.tokensOut},
                  latency_ms = ${Math.max(0, now() - startedAt)},
                  detail = detail || ${JSON.stringify({
                    status: 'complete',

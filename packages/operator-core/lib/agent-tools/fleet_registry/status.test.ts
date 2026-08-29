@@ -8,6 +8,7 @@ const h = vi.hoisted(() => ({
   countRunningWorkspaceBees: vi.fn(),
   countRunningFleetBees: vi.fn(),
   getCompletionIntegrityStats: vi.fn(),
+  fleetEverMembers: vi.fn(),
   resolveAgentIdentity: vi.fn(),
 }));
 
@@ -36,6 +37,9 @@ vi.mock('../../fleet/fleet-roster', async () => {
 });
 vi.mock('../../work-items', () => ({
   getCompletionIntegrityStats: (...a: unknown[]) => h.getCompletionIntegrityStats(...a),
+}));
+vi.mock('../../fleet-membership-store', () => ({
+  fleetEverMembers: (...a: unknown[]) => h.fleetEverMembers(...a),
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: (...a: unknown[]) => h.resolveAgentIdentity(...a),
@@ -108,6 +112,7 @@ beforeEach(() => {
     dedupOrUnverified: 3,
     gateJudged: 4,
   });
+  h.fleetEverMembers.mockResolvedValue(new Set(['su-leader']));
 });
 
 describe('fleet:status', () => {
@@ -128,6 +133,21 @@ describe('fleet:status', () => {
     expect(out.ok).toBe(true);
     expect(out.completionStats).toBeUndefined();
     expect(out.launchTransaction).toMatchObject({ transactionId: 'tx-1', state: 'partial' });
+    expect(out.populationLifecycle).toMatchObject({
+      schemaVersion: 'fleet-population-lifecycle-v1',
+      fleet: 'rocket',
+      currentRunnableRoster: {
+        census: { population: 'current-runnable-roster', counted: 1 },
+        ownerIds: ['su-leader'],
+      },
+      relevantRoster: {
+        census: { population: 'relevant-roster', counted: 1 },
+        ownerIds: ['su-leader'],
+      },
+      everMembers: { counted: 1, ownerIds: ['su-leader'] },
+      liveness: { live: 1, dead: 0 },
+      claimFlow: { status: 'unknown', values: null },
+    });
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
   });
 

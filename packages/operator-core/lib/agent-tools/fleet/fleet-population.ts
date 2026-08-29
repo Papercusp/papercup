@@ -178,6 +178,251 @@ export interface FleetPopulationMeta {
 }
 
 /**
+ * Shared population/lifecycle contract used by fleet:status, fleet:leader-brief,
+ * and the fleet metric scope resolver (fleet-spec-scoped-metrics P-004).
+ *
+ * The three readers used to expose the same concepts under different names and
+ * predicates: status counted a live roster, leader-brief counted a stale-filtered
+ * roster, and metrics returned independent current/ever-member arrays.  This
+ * contract keeps the population basis beside every identity/count and makes an
+ * unavailable claim-flow read explicit rather than manufacturing zeroes.
+ */
+export const FLEET_POPULATION_LIFECYCLE_SCHEMA_VERSION = 'fleet-population-lifecycle-v1' as const;
+
+export interface FleetPopulationLifecycleRoster {
+  census: FleetPopulationCensus;
+  /** Identities in the exact population represented by `census.counted`. */
+  ownerIds: string[];
+}
+
+export interface FleetPopulationLifecycleEverMembers {
+  population: 'ever-members';
+  basis: 'append-only fleet membership events';
+  writer: 'harness_shared.fleet_membership_events';
+  available: boolean;
+  counted: number | null;
+  ownerIds: string[];
+  reason?: string;
+}
+
+export interface FleetPopulationLifecycleTarget {
+  enabled: boolean | null;
+  target: number | null;
+  current: number | null;
+  shortfall: number | null;
+  underStrength: boolean | null;
+  verdict: string;
+}
+
+export type FleetPopulationLifecycleFlow =
+  | {
+      status: 'measured';
+      population: 'current-runnable-roster';
+      basis: string;
+      claimable: number;
+      inFlight: number;
+      orphaned: number;
+      stalled: number;
+      idle: number;
+      criticalContext: number;
+    }
+  | {
+      status: 'unknown';
+      population: 'current-runnable-roster';
+      basis: string;
+      values: null;
+      reason: string;
+    };
+
+export interface FleetPopulationLifecycleLiveness {
+  /** Counts are over the canonical fleet roster candidates, not a filtered display list. */
+  byState: Partial<Record<SessionState, number>>;
+  live: number;
+  parked: number;
+  suspect: number;
+  dead: number;
+  draining: number;
+  recorded: number;
+  unknown: number;
+}
+
+export interface FleetPopulationLifecycleSnapshot {
+  schemaVersion: typeof FLEET_POPULATION_LIFECYCLE_SCHEMA_VERSION;
+  fleet: string;
+  /** Every population in this object shares this observation boundary. */
+  window: {
+    startAt: string | null;
+    endAt: string | null;
+    startSource: 'fleet-created-at';
+    endSource: 'snapshot-generated-at' | 'unavailable';
+  };
+  populationBasis: {
+    writer: 'fleet-roster';
+    comparisonRule: 'compare only identical population, window, and unit';
+  };
+  currentRunnableRoster: FleetPopulationLifecycleRoster;
+  relevantRoster: FleetPopulationLifecycleRoster;
+  everMembers: FleetPopulationLifecycleEverMembers;
+  target: FleetPopulationLifecycleTarget | null;
+  liveness: FleetPopulationLifecycleLiveness;
+  claimFlow: FleetPopulationLifecycleFlow;
+}
+
+export interface FleetPopulationLifecycleInput<T extends {
+  agentId: string;
+  alive?: boolean | null;
+  sessionState?: SessionState | null;
+  claims?: readonly unknown[];
+}> {
+  fleet: string;
+  candidates: readonly T[];
+  everMemberIds: readonly string[];
+  everMembersAvailable?: boolean;
+  everMembersReason?: string;
+  fleetStartedAtMs?: number | null;
+  observedAtMs?: number | null;
+  includeStale?: boolean;
+  target?: Partial<FleetPopulationLifecycleTarget> | null;
+  claimFlow?: FleetPopulationLifecycleFlow | null;
+}
+
+function lifecycleIso(value: number | null | undefined): string | null {
+  return typeof value === 'number' && Number.isFinite(value) ? new Date(value).toISOString() : null;
+}
+
+function lifecycleRosterCensus<T extends { sessionState?: SessionState | null }>(
+  candidates: readonly T[],
+  rows: readonly T[],
+  population: string,
+  basis: string,
+  withheldReason: string,
+  reveal: string,
+): FleetPopulationCensus {
+  const withheld = candidates.length - rows.length;
+  return {
+    population,
+    basis,
+    candidates: candidates.length,
+    counted: rows.length,
+    withheld,
+    withheldReason: withheld > 0 ? withheldReason : null,
+    reveal: withheld > 0 ? reveal : null,
+    liveness: composeLiveness(rows, (row) => row.sessionState ?? null),
+  };
+}
+
+function lifecycleLiveness(rows: readonly { sessionState?: SessionState | null }[]): FleetPopulationLifecycleLiveness {
+  const composition = composeLiveness(rows, (row) => row.sessionState ?? null);
+  const count = (state: SessionState) => composition.byState[state] ?? 0;
+  return {
+    byState: composition.byState,
+    live: count('live'),
+    parked: count('parked'),
+    suspect: count('suspect'),
+    dead: count('ended'),
+    draining: count('draining'),
+    recorded: count('recorded'),
+    unknown: composition.unknown,
+  };
+}
+
+/** Build the one canonical fleet population/lifecycle snapshot. */
+export function buildFleetPopulationLifecycle<T extends {
+  agentId: string;
+  alive?: boolean | null;
+  sessionState?: SessionState | null;
+  claims?: readonly unknown[];
+}>(input: FleetPopulationLifecycleInput<T>): {
+  currentRunnableRows: T[];
+  relevantRows: T[];
+  snapshot: FleetPopulationLifecycleSnapshot;
+} {
+  const currentRunnableRows = input.candidates.filter((row) => {
+    const state = row.sessionState;
+    return !['ended', 'suspect', 'draining', 'recorded'].includes(state ?? '') && row.alive !== false;
+  });
+  const relevantRows = input.candidates.filter(
+    (row) => input.includeStale === true || (row.claims?.length ?? 0) > 0 || row.alive !== false,
+  );
+  const currentOwnerIds = currentRunnableRows.map((row) => row.agentId);
+  const relevantOwnerIds = relevantRows.map((row) => row.agentId);
+  const everOwnerIds = [...new Set(input.everMemberIds.filter((id) => typeof id === 'string' && id.length > 0))].sort();
+  const target = input.target
+    ? {
+        enabled: input.target.enabled ?? null,
+        target: input.target.target ?? null,
+        current: input.target.current ?? null,
+        shortfall: input.target.shortfall ?? null,
+        underStrength: input.target.underStrength ?? null,
+        verdict: input.target.verdict ?? 'unknown',
+      }
+    : null;
+  const claimFlow: FleetPopulationLifecycleFlow = input.claimFlow ?? {
+    status: 'unknown',
+    population: 'current-runnable-roster',
+    basis: 'claim-flow diagnostics were not read by this surface',
+    values: null,
+    reason: 'claim-flow-unread',
+  };
+  const startAt = lifecycleIso(input.fleetStartedAtMs);
+  const endAt = lifecycleIso(input.observedAtMs);
+  return {
+    currentRunnableRows,
+    relevantRows,
+    snapshot: {
+      schemaVersion: FLEET_POPULATION_LIFECYCLE_SCHEMA_VERSION,
+      fleet: input.fleet,
+      window: {
+        startAt,
+        endAt,
+        startSource: 'fleet-created-at',
+        endSource: endAt ? 'snapshot-generated-at' : 'unavailable',
+      },
+      populationBasis: {
+        writer: 'fleet-roster',
+        comparisonRule: 'compare only identical population, window, and unit',
+      },
+      currentRunnableRoster: {
+        census: lifecycleRosterCensus(
+          input.candidates,
+          currentRunnableRows,
+          'current-runnable-roster',
+          'fleet-roster rows that are not ended, suspect, draining, or recorded and retain a runnable heartbeat',
+          'non-runnable lifecycle verdict',
+          'fleet:status { fleet } (full roster)',
+        ),
+        ownerIds: currentOwnerIds,
+      },
+      relevantRoster: {
+        census: lifecycleRosterCensus(
+          input.candidates,
+          relevantRows,
+          'relevant-roster',
+          'fleet-roster rows with a claim or heartbeat freshness; includeStale reveals the complete roster',
+          'idle AND not heartbeat-fresh (stale-idle)',
+          'fleet:status { fleet } (full roster)',
+        ),
+        ownerIds: relevantOwnerIds,
+      },
+      everMembers: {
+        population: 'ever-members',
+        basis: 'append-only fleet membership events',
+        writer: 'harness_shared.fleet_membership_events',
+        available: input.everMembersAvailable ?? true,
+        counted: (input.everMembersAvailable ?? true) ? everOwnerIds.length : null,
+        ownerIds: (input.everMembersAvailable ?? true) ? everOwnerIds : [],
+        ...((input.everMembersAvailable ?? true) || !input.everMembersReason
+          ? {}
+          : { reason: input.everMembersReason }),
+      },
+      target,
+      liveness: lifecycleLiveness(input.candidates),
+      claimFlow,
+    },
+  };
+}
+
+/**
  * Filter a candidate roster AND describe what the filter did, in one pass.
  *
  * Both halves come from the same `candidates` array and the same `keep`

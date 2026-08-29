@@ -13,7 +13,7 @@ import { cpSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFil
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
+import { attributedTypeErrors, collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, formatUnattributedFindings, submoduleFor, submoduleRevisionAt } from '../../../../scripts/check-required-field-strands.mjs';
 
 const ROOT = resolve(__dirname, '../../../..');
 
@@ -698,4 +698,55 @@ describe('invalid base revisions — never reinterpret a bad revision as a clean
       rmSync(tmp, { recursive: true, force: true });
     }
   }, 120_000);
+});
+
+describe('attributedTypeErrors — a typechecker that fell over is not a finding', () => {
+  // EI-21823157797410616. The catch around lint-tsc used to render ANY non-zero exit as
+  // "✗ typecheck reported errors ATTRIBUTED TO YOUR CHANGE". lint-tsc's exit 1 means "a
+  // regression, a TS1xxx hard-fail, OR a script/toolchain error" (scripts/lint-tsc.mjs:49),
+  // so the exit status cannot tell those apart and this predicate reads the OUTPUT instead.
+
+  it('is FALSE for the measured run-4 shape: stale-base git fatals and not one diagnostic', () => {
+    // Verbatim shape from canonical run 4 (2026-08-29): origin/main sat 5,664 commits
+    // stale, so lint-tsc's file set fell outside the typecheck project, it took the
+    // `covered.length === 0` exit, and produced 1,289 of these and ZERO `error TS` lines.
+    const out = [
+      "fatal: path 'vitest.config.ts' exists on disk, but not in 'origin/main'",
+      "fatal: path 'scripts/lib/explicit-files.d.mts' exists on disk, but not in 'origin/main'",
+    ].join('\n');
+
+    expect(attributedTypeErrors(out)).toBe(false);
+  });
+
+  it('is FALSE for empty output — the gate exited before emitting LINT_TSC_RESULT at all', () => {
+    expect(attributedTypeErrors('')).toBe(false);
+    expect(attributedTypeErrors()).toBe(false);
+  });
+
+  it('is TRUE for a real tsc diagnostic, so genuine stranded sites still gate', () => {
+    const out =
+      "packages/operator-core/lib/thing.ts(42,7): error TS2741: Property 'headless' is missing.";
+
+    expect(attributedTypeErrors(out)).toBe(true);
+  });
+
+  it('stays TRUE when real diagnostics are buried among stale-base fatals', () => {
+    // The mixed case is the one that matters: a stale base can co-occur with a genuine
+    // regression, and suppressing the finding would be the dangerous direction of this fix.
+    const out = [
+      "fatal: path 'vitest.config.ts' exists on disk, but not in 'origin/main'",
+      "apps/operator/app/x.ts(9,3): error TS2739: Type '{}' is missing the following properties.",
+      "fatal: path 'scripts/content-lint-runner.d.mts' exists on disk, but not in 'origin/main'",
+    ].join('\n');
+
+    expect(attributedTypeErrors(out)).toBe(true);
+  });
+
+  it('does not mistake prose about type errors for a diagnostic', () => {
+    // The guard's own advice text says "error" and "silence these" in several places; the
+    // predicate must key on the TS#### code, not on the English.
+    const out = 'Do NOT make the new field optional just to silence these type errors.';
+
+    expect(attributedTypeErrors(out)).toBe(false);
+  });
 });

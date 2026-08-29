@@ -1131,7 +1131,22 @@ dependency_generation_quarantine_unretained_locked() {
   # A prior process can die after the atomic rename but before deletion. These
   # paths are already outside the exact-ID namespace, so finish that deferred
   # deletion after this lock is released instead of letting crash residue grow.
-  for quarantine in "$generation_root"/.prune-*; do
+  #
+  # WI-888766: `.invalid-*` is swept on exactly the same terms as `.prune-*`, and
+  # needs no age floor. Both are created by an atomic `mv` while the publish lock
+  # is held — `.invalid-*` by the publish path in dependency_generation_ensure,
+  # which quarantines a losing incumbent and republishes as "one serialized
+  # operation" under that lock — so reaching this loop already proves no peer is
+  # mid-quarantine and nothing can be yanked out from under a live validator.
+  #
+  # Until this line, NOTHING collected `.invalid-*`: it was created and never
+  # enumerated again anywhere in the repo. Being a dotfile, it was invisible even
+  # to the `v1-*` census glob above, so it did not register as a generation at
+  # all. Each one is a full node_modules materialization (~13 GiB here), so three
+  # dead quarantines had stranded 39 GiB for 2-4 days and put the root filesystem
+  # at 95%, which in turn made the cargo lane's disk-headroom admission REFUSE to
+  # run and red-pinned @papercusp/desktop in the gate.
+  for quarantine in "$generation_root"/.prune-* "$generation_root"/.invalid-*; do
     [ -d "$quarantine" ] || continue
     DEPENDENCY_GENERATION_PRUNE_QUARANTINES+=("$quarantine")
   done

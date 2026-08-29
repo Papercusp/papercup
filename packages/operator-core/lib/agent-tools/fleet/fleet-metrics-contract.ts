@@ -8,6 +8,7 @@
  * for missing history, or compare unlike populations as though they were one.
  */
 import { z } from 'zod';
+import type { FleetPopulationLifecycleSnapshot } from './fleet-population';
 
 export const FLEET_METRICS_SCHEMA_VERSION = 'fleet-metrics-v1' as const;
 
@@ -356,6 +357,9 @@ export const fleetMetricsSnapshotSchema = z
     remaining: remainingSchema,
     authority: authorityPartitionSchema,
     issueUnits: issueUnitsSchema,
+    // Optional for backwards-compatible parsing of pre-P-004 snapshots; the
+    // canonical resolver and burn-down writer always emit it for fleet reads.
+    populationLifecycle: z.custom<FleetPopulationLifecycleSnapshot>().optional(),
     admissionParity: z.object({
       oracle: z.literal(FLEET_METRIC_ADMISSION_PARITY.oracle),
       filterEvaluator: z.literal(FLEET_METRIC_ADMISSION_PARITY.filterEvaluator),

@@ -1329,6 +1329,44 @@ describe('immutable dependency generation', () => {
     expect(existsSync(orphan)).toBe(false);
   }, NATIVE_SHELL_TIMEOUT_MS);
 
+  // WI-888766. The sibling case above has guarded `.prune-*` collection for a long
+  // time while `.invalid-*` leaked permanently, which is precisely why the leak
+  // survived: the only other `.invalid-` assertion in this file checks that the
+  // quarantine is CREATED, and a create-only assertion passes just as happily when
+  // nothing ever collects it. Being a dotfile, it was also invisible to the `v1-*`
+  // census glob, so it never registered as a generation at all.
+  //
+  // Cost of the gap in production: each quarantine is a full node_modules
+  // materialization (~13 GiB), three had stranded 39 GiB for 2-4 days, and the
+  // resulting 95%-full root filesystem made the cargo lane's disk-headroom
+  // admission REFUSE to spawn — surfacing as a red @papercusp/desktop in the gate,
+  // i.e. a disk leak wearing a test failure's clothes.
+  it('finishes crash-left INVALID quarantines, not just prune ones (WI-888766)', () => {
+    const integration = makeIntegration();
+    const generationRoot = join(integration, '.papercusp/dependency-generations');
+    const first = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+    });
+    expect(first.status, first.stderr).toBe(0);
+
+    // Shaped exactly like a real one: `.invalid-<identity>-<epoch>.<pid>`, with a
+    // read-only payload, since generations are published immutable and the
+    // collector has to chmod directories before it can unlink.
+    const orphan = join(
+      generationRoot,
+      `.invalid-v1-${'e'.repeat(64)}-1787702669.1654514`,
+    );
+    mkdirSync(join(orphan, 'tree/pkg'), { recursive: true });
+    writeFileSync(join(orphan, 'tree/pkg/index.js'), 'stale\n');
+    chmodSync(join(orphan, 'tree/pkg/index.js'), 0o444);
+
+    const reused = publish(integration, {
+      DEPENDENCY_GENERATION_RETAIN_COUNT: '2',
+    });
+    expect(reused.status, reused.stderr).toBe(0);
+    expect(existsSync(orphan)).toBe(false);
+  }, NATIVE_SHELL_TIMEOUT_MS);
+
   it('imports direct sibling checkout pins and prunes them after their marker goes stale', () => {
     const integration = makeIntegration();
     const generationRoot = join(integration, '.papercusp/dependency-generations');

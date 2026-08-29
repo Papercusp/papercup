@@ -28,6 +28,8 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
 import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 import { crossCheckLaunchVerification, buildOwnerActivityReader } from '../../fleet/launch-verification-cross-check';
+import { fleetEverMembers } from '../../fleet-membership-store';
+import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 
 /**
  * WI-3818: bound the two OPTIONAL legs — completionStats (harness-scoped
@@ -143,8 +145,31 @@ export function shapeFleetStatus(data: unknown, tier: FleetStatusTier): unknown 
     });
   }
 
+  const populationLifecycle = (() => {
+    const source = d.populationLifecycle;
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return undefined;
+    const lifecycle = source as Record<string, unknown>;
+    const compact: Record<string, unknown> = { ...lifecycle };
+    for (const key of ['currentRunnableRoster', 'relevantRoster', 'everMembers']) {
+      const population = lifecycle[key];
+      if (!population || typeof population !== 'object' || Array.isArray(population)) continue;
+      const row = population as Record<string, unknown>;
+      const ids = Array.isArray(row.ownerIds)
+        ? row.ownerIds.filter((id): id is string => typeof id === 'string')
+        : [];
+      const shown = ids.slice(0, caps.members);
+      compact[key] = {
+        ...row,
+        ...(ids.length > 0 ? { ownerIds: shown } : {}),
+        ...(ids.length > shown.length ? { ownerIdsTruncated: ids.length } : {}),
+      };
+    }
+    return compact;
+  })();
+
   return {
     ...d,
+    ...(populationLifecycle ? { populationLifecycle } : {}),
     members,
     ...(source.length > caps.members
       ? {
@@ -331,6 +356,7 @@ export default defineTool({
       beeCountResult,
       headcountTargetResult,
       headcountCurrentResult,
+      everMembersResult,
     ] = await Promise.all([
       listFleetRosterDiagnosed({
         fleetSlug: args.fleet,
@@ -367,6 +393,11 @@ export default defineTool({
           label: 'fleet:status:headcountCurrent',
         },
       ),
+      withBoundedTimeout(fleetEverMembers(args.fleet, { workspaceId }), {
+        fallback: new Set<string>(),
+        timeoutMs: FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS,
+        label: 'fleet:status:everMembers',
+      }),
     ]);
     // A leader can be present in another fleet's labelled roster when it leads
     // multiple fleets. Reconcile the liveness-only enrichment alongside the
@@ -395,11 +426,22 @@ export default defineTool({
       ...(beeCountResult.degraded ? ['beeCount'] : []),
       ...(headcountTargetResult.degraded ? ['headcountTarget'] : []),
       ...(headcountCurrentResult.degraded ? ['headcountCurrent'] : []),
+      ...(everMembersResult.degraded ? ['everMembers'] : []),
     ];
     const headcount = projectFleetHeadcountState(
       headcountTargetResult.value,
       headcountCurrentResult.value,
     );
+    const populationLifecycle = buildFleetPopulationLifecycle({
+      fleet: args.fleet,
+      candidates: roster,
+      everMemberIds: [...everMembersResult.value],
+      everMembersAvailable: !everMembersResult.degraded,
+      everMembersReason: everMembersResult.degraded ? 'fleet membership read timed out or failed' : undefined,
+      fleetStartedAtMs: fleet.createdAt,
+      observedAtMs: Date.now(),
+      target: headcount,
+    }).snapshot;
     // WI-1764 #4 / WI-1813: `memberCount` = VISIBLE desktop su members from the roster
     // (presence — members-only, was roster.length). `beeCount` = BACKGROUND bees spawned
     // INTO this fleet, from the nursery (countRunningFleetBees — reliable + presence-
@@ -544,6 +586,7 @@ export default defineTool({
       beeCount,
       runningBees,
       headcount,
+      populationLifecycle,
       members: roster.map((m) => ({
         agentId: m.agentId,
         label: m.ownerLabel ?? m.label,

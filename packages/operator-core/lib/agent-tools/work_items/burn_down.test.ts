@@ -50,6 +50,7 @@ import {
   type FleetMetricFlowMode,
   type ResolvedFleetMetricScope,
 } from '../fleet/fleet-metrics-scope';
+import { buildFleetPopulationLifecycle } from '../fleet/fleet-population';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
 const mockGetWorkItem = vi.mocked(getWorkItem);
@@ -244,6 +245,13 @@ function fleetResolution(flowMode: FleetMetricFlowMode): ResolvedFleetMetricScop
     },
     currentRoster: { ownerIds: ['member-live'], writer: 'fleet-roster' },
     everMemberIds: ['member-dead', 'member-live'],
+    populationLifecycle: buildFleetPopulationLifecycle({
+      fleet: 'fleet-a',
+      candidates: [{ agentId: 'member-live', alive: true, sessionState: 'live' as const, claims: [] }],
+      everMemberIds: ['member-dead', 'member-live'],
+      fleetStartedAtMs: Date.parse(FLEET_START),
+      observedAtMs: Date.parse(FLEET_END),
+    }).snapshot,
   };
 }
 
@@ -852,6 +860,12 @@ describe('work_items:burn_down', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.snapshot.scope.flow).toMatchObject({ mode: 'current-spec', revision: 2 });
+    expect(result.snapshot.populationLifecycle).toMatchObject({
+      schemaVersion: 'fleet-population-lifecycle-v1',
+      fleet: 'fleet-a',
+      currentRunnableRoster: { ownerIds: ['member-live'] },
+      everMembers: { counted: 2, ownerIds: ['member-dead', 'member-live'] },
+    });
     expect(result.snapshot.quality.exactness).toEqual({ status: 'exact', sourceCap: null });
     expect(result.snapshot.flow).toMatchObject({
       opened: 2,

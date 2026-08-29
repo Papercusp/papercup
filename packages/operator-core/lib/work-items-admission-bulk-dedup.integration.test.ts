@@ -9,6 +9,7 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 
 const { runWorkItemAdmissionBulkDedup } = await import('./work-items-admission-bulk-dedup');
+const { LEARNING_MODEL_SPEC } = await import('./learning/model-policy');
 
 const WS = 'default';
 const HARNESS = 'h1';
@@ -198,6 +199,70 @@ describe('runWorkItemAdmissionBulkDedup (real Postgres)', () => {
       SELECT detail->>'status' AS state, census_before AS before, census_after AS after
         FROM harness_shared.admission_runs WHERE id = 'bulk-success-stage-1'`;
     expect(ledger).toEqual([{ state: 'complete', before: 1, after: 0 }]);
+  }, 60_000);
+
+  // The ledger's model_id used to be a hardcoded LEARNING_MODEL_SPEC literal
+  // written regardless of which model the run actually called. That is a
+  // second copy of a truth the run already owns, so it could only ever drift —
+  // and it drifts exactly when a run is deliberately driven onto a different
+  // backend, which is the one time the column is load-bearing evidence. These
+  // two cases pin the identity from BOTH ends: what llmCall received, and what
+  // landed in the column.
+  it('defaults to the canonical learning model and records THAT model in the ledger', async () => {
+    await seed();
+    const seen: string[] = [];
+    await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-model-default',
+      sql: db.sql,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        seen.push(input.model);
+        return {
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure' }] },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      },
+    });
+
+    expect(seen).toEqual([LEARNING_MODEL_SPEC]);
+    const ledger = await db.sql<Array<{ model_id: string | null }>>`
+      SELECT model_id FROM harness_shared.admission_runs WHERE id = 'bulk-model-default-stage-1'`;
+    expect(ledger).toEqual([{ model_id: LEARNING_MODEL_SPEC }]);
+  }, 60_000);
+
+  it('drives one run onto an override model and records the OVERRIDE, not the policy constant', async () => {
+    await seed();
+    const override = 'claude-opus-5:xhigh';
+    // Guard the guard: an override equal to the default would make the
+    // assertions below pass for the wrong reason.
+    expect(override).not.toBe(LEARNING_MODEL_SPEC);
+    const seen: string[] = [];
+    await runWorkItemAdmissionBulkDedup({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      runId: 'bulk-model-override',
+      sql: db.sql,
+      model: override,
+      census: { chunkCount: 2, targetTokens: 1_000 },
+      llmCall: async (input) => {
+        seen.push(input.model);
+        return {
+          text: '',
+          json: { judgements: [{ pairKey: 'a::b', verdict: 'r-finding-merge', reason: 'same failure' }] },
+          inputTokens: 100,
+          outputTokens: 20,
+        };
+      },
+    });
+
+    expect(seen).toEqual([override]);
+    const ledger = await db.sql<Array<{ model_id: string | null }>>`
+      SELECT model_id FROM harness_shared.admission_runs WHERE id = 'bulk-model-override-stage-1'`;
+    expect(ledger).toEqual([{ model_id: override }]);
   }, 60_000);
 
   it('includes durable parks but mutates only an exact duplicate, preserving park and occurrence provenance', async () => {

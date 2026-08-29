@@ -308,6 +308,41 @@ function compactSummary(value: unknown, ultra = false): unknown {
   );
   if (population) out.population = population;
 
+  // P-004: preserve the canonical population/lifecycle contract as one atomic
+  // object. Identity arrays are bounded here; full-tier callers retain the
+  // complete snapshot emitted by buildFleetPopulationLifecycle.
+  const lifecycle = asDict(source.populationLifecycle);
+  if (lifecycle && !ultra) {
+    const compactLifecycle: Dict =
+      pick(
+        lifecycle,
+        ['schemaVersion', 'fleet', 'window', 'populationBasis', 'target', 'liveness', 'claimFlow'],
+        180,
+      ) ?? {};
+    for (const key of ['currentRunnableRoster', 'relevantRoster', 'everMembers'] as const) {
+      const population = asDict(lifecycle[key]);
+      if (!population) continue;
+      const census = pick(
+        population.census,
+        ['population', 'basis', 'candidates', 'counted', 'withheld', 'withheldReason', 'reveal'],
+        150,
+      );
+      const direct = pick(population, ['population', 'basis', 'writer', 'counted'], 150);
+      const ownerIds = Array.isArray(population.ownerIds)
+        ? population.ownerIds.filter((id): id is string => typeof id === 'string').slice(0, 8)
+        : [];
+      compactLifecycle[key] = {
+        ...(direct ?? {}),
+        ...(census ? { census } : {}),
+        ownerIds,
+        ...(Array.isArray(population.ownerIds) && population.ownerIds.length > ownerIds.length
+          ? { ownerIdsTruncated: population.ownerIds.length }
+          : {}),
+      };
+    }
+    out.populationLifecycle = compactLifecycle;
+  }
+
   const headcount = pick(
     source.headcount,
     ['enabled', 'target', 'current', 'shortfall', 'underStrength', 'verdict'],

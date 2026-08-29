@@ -735,6 +735,59 @@ function main() {
   } catch (err) {
     out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
     if (!json) console.log(out);
+    // EI-21823157797410616 — this catch used to render ANY non-zero lint-tsc exit as the
+    // attribution verdict below, without checking that anything had actually been
+    // attributed. lint-tsc's own documented exit 1 means "a file regressed above its
+    // baseline, a TS1xxx hard-fail, OR A SCRIPT/TOOLCHAIN ERROR" (scripts/lint-tsc.mjs:49),
+    // so the three were indistinguishable here and the third was reported as the first.
+    //
+    // MEASURED (2026-08-29, canonical run 4 of test-suite-recovery-2026-08-27), all four
+    // read off that run's own log: the runner forwarded `--base origin/main` while
+    // origin/main sat 5,664 commits / 6 days stale (it only fast-forwards on a GREEN
+    // checkpoint, and the gate had been red since); the whole-tree diff made `ocFiles`
+    // 3,238 files; the captured output held 1,289 `fatal: path … exists on disk, but not
+    // in 'origin/main'` lines and ZERO `error TS` lines; and no LINT_TSC_RESULT marker was
+    // emitted anywhere, so lint-tsc exited before reaching its own verdict line. This
+    // branch nevertheless announced that the caller's change had stranded construction
+    // sites. Exit 1 is GATING, so that false verdict red-pinned a full-suite run for the
+    // whole fleet.
+    //
+    // NOT established: WHICH of runTscBaselineGate's 15+ exit(1) sites was taken. The
+    // absent marker plus the zero diagnostics prove only that it fell over before judging
+    // anything. That is deliberately left open here, because this fix does not depend on
+    // it — the predicate below keys on whether a diagnostic was PRODUCED, which is correct
+    // for every upstream failure mode rather than for one diagnosed instance.
+    //
+    // The runner already models this correctly and has since WI-37826: a strand guard
+    // answers THREE things — 0 "checked, found nothing", 1 "checked, found something",
+    // EXIT_NOT_CHECKED "I could not look" — and this guard is registered
+    // `notCheckedIsNonGating: true`, so classifyTaskExit() reads the third as
+    // `undetermined` rather than a violation. The only thing missing was for this leg to
+    // tell the truth about which of the three had happened.
+    //
+    // Deliberately NOT weakened: a real stranded site always carries tsc diagnostics, so
+    // genuine findings still take the attribution branch below and still gate.
+    if (!attributedTypeErrors(out)) {
+      console.error(
+        '\n⚠ NOT CHECKED — lint:tsc exited non-zero but reported NO TypeScript diagnostics,',
+      );
+      console.error(
+        '  so nothing was attributed to your change and this run proved NOTHING about it.',
+      );
+      console.error(
+        '  That is an INSTRUMENT fault, not a finding: typically the forwarded --base is',
+      );
+      console.error(
+        '  stale enough that the diff covers files outside the typecheck project, and the',
+      );
+      console.error('  gate exits before it can even emit its LINT_TSC_RESULT marker.');
+      console.error('  This is NOT a clean bill either — re-run against a base that resolves:');
+      console.error(
+        '    node scripts/check-required-field-strands.mjs --typecheck --base <pre-edit-commit> --files=<your,files>',
+      );
+      process.exitCode = EXIT_NOT_CHECKED;
+      return;
+    }
     console.error(
       '\n✗ typecheck reported errors ATTRIBUTED TO YOUR CHANGE — in the file(s) you named,',
     );
@@ -754,6 +807,30 @@ function main() {
   }
   if (!json) console.log(out);
   process.exitCode = 0;
+}
+
+/**
+ * Did lint:tsc actually ATTRIBUTE a TypeScript diagnostic to the caller's files?
+ *
+ * The predicate that separates "the typechecker found stranded construction sites" from
+ * "the typechecker fell over". It keys on the presence of a tsc diagnostic rather than on
+ * the exit status, because lint-tsc's exit 1 deliberately conflates a real regression with
+ * a script/toolchain error (scripts/lint-tsc.mjs:49) — so the exit code cannot answer this
+ * and the OUTPUT can.
+ *
+ * Safe direction: a genuine regression always prints its diagnostics
+ * (`formatRegressedFileDiagnostics`), and every tsc diagnostic carries an `error TS####`
+ * code, so a real finding can never read as unattributed. The converse — output with no
+ * diagnostic at all — cannot be a finding, whatever the exit status claims.
+ *
+ * Pure, so the distinction is unit-testable rather than reachable only through an
+ * end-to-end run that needs a stale base ref to reproduce.
+ *
+ * @param {string} [out] combined stdout+stderr captured from lint-tsc
+ * @returns {boolean}
+ */
+export function attributedTypeErrors(out = '') {
+  return /\berror TS\d+/.test(out);
 }
 
 // Only run main() when invoked as a script, so the pure fns above stay unit-testable.
