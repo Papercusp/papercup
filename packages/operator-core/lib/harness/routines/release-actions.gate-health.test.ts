@@ -445,6 +445,67 @@ describe('P-005: gateRedStreakBroadcast (pure)', () => {
     });
     expect(body).not.toContain('behind staging');
   });
+
+  // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27) ──────────
+  // "Discoverability at the moment of failure": a responder reaching a red gate has to
+  // learn WHERE the repair is authored and WHAT may be admitted before touching
+  // anything. Both previously lived only in a doc nobody opens mid-incident, and the
+  // two failure modes that produced are concrete: authoring the fix in the shared
+  // staging checkout, and `git add -A` sweeping peer/git-sync work into the candidate.
+  describe('P-007: names the repair worktree and the fix-only admission rule', () => {
+    // FALSIFIABILITY CONTROL, kept permanently (CLAUDE.md: for a module subject, keep a
+    // deliberately-wrong implementation in the test file rather than mutating the shared
+    // tree). This is the pre-P-007 body verbatim-in-shape. Every assertion below must
+    // REJECT it; an assertion that passes here is vacuous and would stay green if the
+    // discoverability text were deleted.
+    const preP007Body =
+      'The release gate is FIRING but every verdict is red.\n\n' +
+      'This condition owns ONE work-item for this red (the condition bridge mints it), so claim ' +
+      'that item rather than opening another. Distinct from `green-stall:papercusp`, which means ' +
+      'the gate is not producing verdicts AT ALL.';
+
+    const bodyOf = () =>
+      gateRedStreakBroadcast({
+        installSlug: 'papercusp',
+        consecutiveReds: 3,
+        heldHrs: 2,
+        candidate: 'deadbeefcafe1234',
+      }).body;
+
+    it('names the repair-worktree path SHAPE and the tool that reports the real one', () => {
+      const body = bodyOf();
+      // The shape, so a responder recognizes the directory when they see it...
+      expect(body).toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
+      // ...and the tool, because reconstructing the path by hand is how a responder ends
+      // up authoring in a tree the gate is not going to admit.
+      expect(body).toContain('release:repair-queue');
+      expect(body).toContain('repairHead');
+      expect(preP007Body).not.toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
+      expect(preP007Body).not.toContain('release:repair-queue');
+    });
+
+    it('states the fix-only admission rule: forward-only, and NOT `git add -A`', () => {
+      const body = bodyOf();
+      expect(body).toContain('ancestor');
+      expect(body).toContain('git add -A');
+      expect(body).toContain('/internal/docs/agent-insights/frozen-candidate-fix-only-admission');
+      expect(preP007Body).not.toContain('git add -A');
+      expect(preP007Body).not.toContain('frozen-candidate-fix-only-admission');
+    });
+
+    it('keeps the discoverability text UNCONDITIONAL — every red carries it', () => {
+      // Deliberately not gated on `candidate` / `failingTests` / a repair queue existing.
+      // The responder who most needs the rule is the one reaching a red with the least
+      // context attached, so gating it on optional evidence would drop it exactly then.
+      const bare = gateRedStreakBroadcast({
+        installSlug: 'papercusp',
+        consecutiveReds: 1,
+        heldHrs: null,
+      }).body;
+      expect(bare).toContain('.papercusp/worktrees/green-candidate-<pipeline>-<sha12>');
+      expect(bare).toContain('frozen-candidate-fix-only-admission');
+    });
+  });
 });
 
 describe('trackGateStall gate_health cross-writer preservation (EI-7472)', () => {

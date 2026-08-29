@@ -215,6 +215,42 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
   };
 }
 
+/**
+ * The gateConfig analogue of `passingTaskVerdictCrossRunIdentityEnvironment`: strip the fields
+ * that describe HOW MUCH MACHINE/TIME a run was handed, keeping everything that describes what
+ * the task exercises. Each field neutralised here is SELF-INVALIDATING — it moves on its own
+ * between two runs over a byte-identical tree, so leaving it in makes cross-run reuse
+ * structurally unable to hit rather than merely rare.
+ *
+ * - `affectedBase` is the SELECTION RADIUS: it decides which tasks get picked, never what a
+ *   picked task exercises, and an unpinned local run derives it from the moving test-certified
+ *   watermark.
+ * - `batchTimeout.effectiveMs`/`.source` are DERIVED FROM DURATION HISTORY
+ *   (`timeoutDurationEstimate`), so every run moves the next run's value. Measured: one run hit
+ *   `cross-run:identity-match` and the byte-identical next run missed with `gate-config-changed`
+ *   purely because the first had recorded a duration.
+ *
+ * Validity is decided by `dependencyHash` — the content sha256 of the task's whole dependency
+ * closure — so none of this widens what a stored verdict is allowed to claim. FAIL-SAFE
+ * DIRECTION: a task that exceeds its bound FAILS, and a failed task never stores a passing
+ * verdict, so admitting a stored PASS under a different bound cannot turn a red into a green.
+ *
+ * The STATIC timeout policy (overrideMs/floorMs/headroomMultiplier/quantumMs/maxMs) is retained,
+ * so a real config change still invalidates. `scheduler` is already neutralised upstream in the
+ * shared identity spec.
+ */
+export function passingTaskVerdictCrossRunGateConfig(gateConfig) {
+  const crossRun = { ...gateConfig, affectedBase: null };
+  if (crossRun.batchTimeout && typeof crossRun.batchTimeout === "object") {
+    crossRun.batchTimeout = {
+      ...crossRun.batchTimeout,
+      effectiveMs: null,
+      source: null,
+    };
+  }
+  return crossRun;
+}
+
 /** One bounded, machine-readable composite cache verdict for gate logs. */
 export function formatPassingTaskVerdictSummary(
   decisions,
