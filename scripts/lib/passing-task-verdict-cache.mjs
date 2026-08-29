@@ -137,6 +137,27 @@ export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP = "cross-run-v1";
  * consecutive runs share a base and reuse applies; when it finally goes green the base advances and
  * every task re-runs exactly once. That is the correct conservative behaviour, not an oversight.
  */
+/**
+ * WI-595883 — shell bookkeeping, measured as a live third defeater.
+ *
+ * These three are written by the SHELL to describe the invocation, never the task. `OLDPWD` was
+ * caught red-handed: two otherwise identical runs of the same unchanged task missed with
+ * `environment-changed` for the single reason that one shell had run `cd` and the other had not.
+ * `_` (bash's last-argument) and `SHLVL` (nesting depth) differ on essentially every invocation
+ * for the same reason, so leaving them hashed makes reuse depend on how the caller happened to
+ * type the command.
+ *
+ * The conservative-by-default stance on the rest of the environment is deliberate and unchanged.
+ * The argument for these three is not "probably irrelevant" — it is that they are DEFINED as
+ * properties of the calling shell, so no test outcome can depend on them without depending on who
+ * typed the command. `check-cross-run-identity-shell-volatile.test.ts` fails if one is re-admitted.
+ */
+export const SHELL_VOLATILE_IDENTITY_ENV = Object.freeze([
+  "OLDPWD",
+  "_",
+  "SHLVL",
+]);
+
 export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
   const { environment: identityEnvironment } =
     passingTaskVerdictIdentityEnvironment(environment);
@@ -146,6 +167,7 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
     "VITEST_MAX_WORKERS",
     "VITEST_MAX_FORKS",
     "VITEST_MAX_THREADS",
+    ...SHELL_VOLATILE_IDENTITY_ENV,
   ]) {
     delete identityEnvironment[perRunName];
   }
@@ -407,6 +429,9 @@ export function emptyClosureDigestManifest() {
     updatedAt: null,
     files: {},
     tasks: {},
+    // cacheGroup -> { key: digest }. One record per group, not per task: the identity environment
+    // is the same for every task in a run, so this costs a few KB rather than a few MB.
+    identityEnv: {},
   };
 }
 
@@ -452,6 +477,12 @@ export function readClosureDigestManifest(path) {
           parsed.tasks && typeof parsed.tasks === "object" && !Array.isArray(parsed.tasks)
             ? parsed.tasks
             : {},
+        identityEnv:
+          parsed.identityEnv &&
+          typeof parsed.identityEnv === "object" &&
+          !Array.isArray(parsed.identityEnv)
+            ? parsed.identityEnv
+            : {},
       },
       reason: "manifest-ready",
     };
@@ -468,13 +499,14 @@ export function readClosureDigestManifest(path) {
  * its last observed value: the sidecar answers "what was this path when anyone last looked", and
  * a narrow run must not erase a wide run's record. Newest observations win the size cap.
  */
-export function mergeClosureDigestManifest(
+export function mergeClosureDigestManifest({
   prior,
   observed,
   taskShapes = {},
+  identityEnv = {},
   updatedAt = new Date().toISOString(),
   cap = CLOSURE_DIGEST_MANIFEST_MAX_FILES,
-) {
+}) {
   const files = { ...(prior?.files ?? {}), ...observed };
   const observedKeys = new Set(Object.keys(observed));
   let retained = files;
@@ -492,6 +524,7 @@ export function mergeClosureDigestManifest(
     updatedAt,
     files: retained,
     tasks: { ...(prior?.tasks ?? {}), ...taskShapes },
+    identityEnv: { ...(prior?.identityEnv ?? {}), ...identityEnv },
   };
 }
 
@@ -545,6 +578,86 @@ export function diffClosureDigests({
       changed.length === 0 &&
       unknownPrior.length === 0,
   };
+}
+
+/**
+ * WI-595883 — the same diagnostic, one component up.
+ *
+ * `environment-changed` is exactly as unactionable as `dependency-closure-changed`: it says one of
+ * ~126 hashed variables moved, not which. Locating `OLDPWD` by hand took five probes; this makes
+ * the next one a single grep.
+ *
+ * VALUES ARE NEVER STORED. This environment carries live credentials (ANTHROPIC_API_KEY,
+ * GITHUB_PERSONAL_ACCESS_TOKEN, OPENROUTER_API_KEY, OAuth tokens). The sidecar keeps a truncated
+ * digest per key, and every report names KEYS ONLY.
+ */
+export function identityEnvDigests(environment) {
+  const digests = {};
+  for (const [key, value] of Object.entries(environment ?? {})) {
+    digests[key] = sha256(`${typeof value}\0${String(value)}`).slice(0, 16);
+  }
+  return digests;
+}
+
+export function diffIdentityEnvDigests({ prior, observed, limit = 8 }) {
+  const before = prior ?? null;
+  const now = observed ?? {};
+  if (before === null) {
+    return {
+      known: false,
+      changedCount: 0,
+      addedCount: 0,
+      removedCount: 0,
+      changedKeys: [],
+      addedKeys: [],
+      removedKeys: [],
+      unexplained: false,
+    };
+  }
+  const changedKeys = [];
+  const addedKeys = [];
+  const removedKeys = [];
+  for (const key of Object.keys(now)) {
+    if (!(key in before)) addedKeys.push(key);
+    else if (before[key] !== now[key]) changedKeys.push(key);
+  }
+  for (const key of Object.keys(before)) {
+    if (!(key in now)) removedKeys.push(key);
+  }
+  changedKeys.sort();
+  addedKeys.sort();
+  removedKeys.sort();
+  return {
+    known: true,
+    changedCount: changedKeys.length,
+    addedCount: addedKeys.length,
+    removedCount: removedKeys.length,
+    changedKeys: changedKeys.slice(0, limit),
+    addedKeys: addedKeys.slice(0, limit),
+    removedKeys: removedKeys.slice(0, limit),
+    // The environment hash moved while every variable it covers is identical — the same
+    // "unstable hash, not churn" signal `diffClosureDigests` reports for the closure.
+    unexplained:
+      changedKeys.length === 0 && addedKeys.length === 0 && removedKeys.length === 0,
+  };
+}
+
+/** Keys only — see the credential note on `identityEnvDigests`. */
+export function formatIdentityEnvDeltaLine({ taskKey, reason, delta, manifestReason }) {
+  return [
+    "AFFECTED_TASK_CACHE_ENV_DELTA",
+    `task=${JSON.stringify(taskKey)}`,
+    `reason=${reason}`,
+    `manifest=${manifestReason}`,
+    `priorKnown=${delta.known}`,
+    `changed=${delta.changedCount}`,
+    `added=${delta.addedCount}`,
+    `removed=${delta.removedCount}`,
+    `unexplained=${delta.unexplained}`,
+    `changedKeys=${JSON.stringify(delta.changedKeys)}`,
+    `addedKeys=${JSON.stringify(delta.addedKeys)}`,
+    `removedKeys=${JSON.stringify(delta.removedKeys)}`,
+  ].join(" ");
 }
 
 /** One greppable line per explained miss — the instrument an A/B run reads. */
