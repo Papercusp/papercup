@@ -6880,6 +6880,42 @@ mod tests {
                 text.contains(label.as_str()),
                 "tab {tab:?} display label missing from strip"
             );
+
+            // A whole-frame non-blank count CANNOT detect an empty destination:
+            // the always-drawn tab strip satisfies it on its own, so this test
+            // would pass a destination that draws nothing at all. Measure the
+            // BODY on its own instead.
+            //
+            // Pinned dock mode draws ONLY draw_tab_body over the full area —
+            // no strip, no HUD — so it is the body-isolating instrument that
+            // already exists; do not hand-compute chrome row offsets.
+            //
+            // SCOPE, stated honestly so nobody trusts this further than it goes:
+            // this closes the "destination renders nothing" hole ONLY. It would
+            // NOT have caught WI-644841 / WI-644835, whose bodies were never
+            // empty — Inbox drew its Attention pane and Cupboard drew its
+            // listings; what was missing was a reachable SUB-VIEW behind them.
+            // That class is defended at the unit layer by the per-sub-view
+            // tests (inbox_threads_subview_renders_the_absorbed_conversation_list,
+            // cupboard_installed_subview_renders_the_absorbed_plugin_inventory,
+            // and their key-routing peers), each asserting specific body content
+            // against a negative control. A non-blank count is a floor, never a
+            // capability check — do not add capability claims to this loop.
+            assert!(
+                !app.show_help && !app.show_notifs && app.toast.is_none(),
+                "tab {tab:?}: an overlay is active, so a body-only render would \
+                 measure the overlay instead of the destination"
+            );
+            app.pinned = Some(tab);
+            let body_text = render(&app, 200, 50);
+            app.pinned = None;
+            let body_nonblank = body_text.chars().filter(|ch| !ch.is_whitespace()).count();
+            eprintln!("--- tab {tab:?}: body {body_nonblank} non-blank chars ---");
+            assert!(
+                body_nonblank > 0,
+                "tab {tab:?} BODY rendered empty — the full-frame check above still passed, \
+                 satisfied by the tab strip alone"
+            );
         }
     }
 
