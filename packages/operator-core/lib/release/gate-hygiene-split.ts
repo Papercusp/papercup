@@ -221,11 +221,45 @@ export interface PromotionInput {
   ctx: HygieneClassificationContext;
 }
 
+/** The filing-identity prefix. Lives HERE, in the module with no imports, because both
+ *  draft producers need it and the dependency chain runs gate-hygiene-filing →
+ *  gate-auto-repair → gate-hygiene-split. Defining it in the filing module and importing
+ *  it back would close that chain into a cycle; duplicating the literal in both would put
+ *  a second copy of a convention in the tree, which is the drift this repo's derived-truth
+ *  rule exists to prevent. One definition, at the base. */
+const KEY_PREFIX = "gate-hygiene-unrepaired";
+
+/**
+ * Stable filing identity, keyed on the ENTRY alone — never on the verdict, and never on
+ * which pass observed it. A re-run that produces a different verdict for the same failing
+ * checker must REFRESH the same item, not open a sibling.
+ *
+ * Deliberately SHARED between the gate's promotion drafts and the repair pass's filings:
+ * "gen:contract:check is failing" is ONE condition, whether the gate promoted past it or
+ * the repair pass could not fix it. Keying those separately would open two items for one
+ * broken checker and split its history exactly when someone is trying to read it.
+ */
+export function filingConditionKey(entry: string): string {
+  return `${KEY_PREFIX}:${entry}`;
+}
+
 export interface HygieneWorkItemDraft {
   title: string;
   category: HygieneCategory;
   remedy: string;
   entry: string;
+  /**
+   * Refresh-not-duplicate identity for `work_items:create { conditionKey }`.
+   *
+   * REQUIRED, not optional, and that is the point. The gate PUBLISHES these drafts and a
+   * caller with harness context files them — green-checkpoint.ts runs live from the staging
+   * tree for every co-hosted install, so it must never file work items itself (see
+   * scripts/repair-stale-generated-artifacts.ts, which states the same boundary). Without a
+   * key, a correct external consumer opens a NEW item on every gate run. A hygiene check
+   * stays failing across many runs by definition — that is what makes it hygiene rather
+   * than a flake — so an unkeyed draft duplicates hardest in exactly the case it matters.
+   */
+  conditionKey: string;
 }
 
 export interface PromotionDecision {
@@ -252,6 +286,7 @@ export function decidePromotion(input: PromotionInput): PromotionDecision {
     category: h.category ?? "generated-artifact-stale",
     remedy: h.remedy ?? "",
     entry: h.entry,
+    conditionKey: filingConditionKey(h.entry),
   }));
 
   if (!verdictRendered) {

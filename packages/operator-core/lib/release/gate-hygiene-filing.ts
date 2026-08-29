@@ -149,12 +149,15 @@ export interface HygieneFilingInput {
   assessed?: readonly AssessedRepair[];
 }
 
-const KEY_PREFIX = "gate-hygiene-unrepaired";
-
-/** Filing identity for an entry. Exported so the actuator cannot invent a second scheme. */
-export function filingConditionKey(entry: string): string {
-  return `${KEY_PREFIX}:${entry}`;
-}
+/**
+ * Filing identity for an entry. Exported so the actuator cannot invent a second scheme —
+ * and now DEFINED in gate-hygiene-split rather than here, so the gate's promotion drafts
+ * and this pass's filings cannot drift apart. Same broken checker ⇒ same key ⇒ one item
+ * that refreshes, whichever pass observed it. Re-exported so existing callers of this
+ * module are unaffected by where it lives.
+ */
+import { filingConditionKey } from "./gate-hygiene-split";
+export { filingConditionKey };
 
 function ruleFor(verdict: RepairVerdict): FilingRule {
   // A verdict outside the table can only reach here at RUNTIME (an older caller, a

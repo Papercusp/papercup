@@ -47,6 +47,7 @@ import {
 } from "./green-checkpoint";
 import { git, revParse, advanceReady } from "./git-ops";
 import { releaseConfig } from "./release-config";
+import { filingConditionKey } from "@papercusp/operator-core/lib/release/gate-hygiene-filing";
 
 let repo: string;
 
@@ -224,6 +225,14 @@ describe("P-005 wiring — POSITIVE CONTROLS (every negative below is vacuous wi
     // promotion with no trace of the failure that was waved past.
     expect(result.hygieneDebt?.length ?? 0).toBeGreaterThan(0);
     expect(result.hygieneDebt?.[0]?.entry).toBe("lint:tool-prompts");
+    // The debt must be FILEABLE by the caller that receives it, not merely readable.
+    // Asserted through the FILING module's export on purpose: it proves the gate's
+    // promotion drafts and the repair pass's filings resolve the same identity for the
+    // same broken checker, so they refresh one item instead of opening two. Comparing
+    // against a hardcoded string here would pass just as well with two divergent schemes.
+    expect(result.hygieneDebt?.[0]?.conditionKey).toBe(
+      filingConditionKey("lint:tool-prompts"),
+    );
     expect(
       logs.some((l) => l.includes("NOT a clean green")),
       `the loud disclosure line is missing; logs=${JSON.stringify(logs)}`,
