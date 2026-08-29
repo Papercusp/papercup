@@ -107,6 +107,14 @@ export interface DailyDigestRunOptions {
   runId?: string;
   now?: () => number;
   maxTokens?: number;
+  /**
+   * Model spec for this run. Defaults to LEARNING_MODEL_SPEC (the learning-policy
+   * canonical model). Overridable per run so an operator can drive the digest on a
+   * reachable model when the policy model's accounts are usage-walled, without
+   * re-pointing the global policy. The resolved value is what the run actually calls
+   * AND what the admission_runs ledger records as model_id.
+   */
+  model?: string;
 }
 
 interface BulkStageRow {
@@ -395,6 +403,9 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now;
   const startedMs = now();
+  // Resolve ONCE: the same value must reach the llmCall and the ledger's model_id,
+  // or the ledger can name a model the run never used.
+  const model = opts.model?.trim() || LEARNING_MODEL_SPEC;
   const runId = opts.runId ?? `${WORK_ITEM_ADMISSION_DAILY_DIGEST}:${startedMs}:${randomUUID().slice(0, 8)}`;
   const replay = await readFinishedRun(sql, runId);
   if (replay) return replay;
@@ -483,7 +494,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
     }
     const prompt = buildDailyDigestPrompt(context);
     const response = await opts.llmCall({
-      model: LEARNING_MODEL_SPEC,
+      model,
       system: prompt.system,
       messages: [{ role: 'user', content: prompt.user }],
       responseFormat: 'json',
@@ -536,7 +547,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
     await sql`
       UPDATE harness_shared.admission_runs
          SET finished_at = clock_timestamp(), batch_size = ${context.items.length}, promoted = 0, merged = 0, held = 0,
-             census_before = ${context.censusAfter}, census_after = ${context.censusAfter}, model_id = ${LEARNING_MODEL_SPEC},
+             census_before = ${context.censusAfter}, census_after = ${context.censusAfter}, model_id = ${model},
              tokens_in = ${tokensIn}, tokens_out = ${tokensOut}, latency_ms = ${Math.max(0, now() - startedMs)},
              detail = ${JSON.stringify({ schemaVersion: DAILY_DIGEST_SCHEMA_VERSION, ...result })}::text::jsonb
        WHERE id = ${runId}`;
