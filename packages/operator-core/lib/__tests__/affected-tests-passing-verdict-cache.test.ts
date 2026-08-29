@@ -6,11 +6,20 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildPassingTaskVerdictIdentity,
+  closureDigestManifestPath,
   decidePassingTaskVerdict,
+  diffClosureDigests,
+  diffIdentityEnvDigests,
+  emptyClosureDigestManifest,
   emptyPassingTaskVerdictCache,
+  formatIdentityEnvDeltaLine,
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
+  identityEnvDigests,
+  mergeClosureDigestManifest,
   mergePassingTaskVerdictUpdates,
+  readClosureDigestManifest,
+  SHELL_VOLATILE_IDENTITY_ENV,
   namespacePassingTaskVerdictDecision,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
@@ -793,5 +802,310 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
     expect(Object.keys(clone)).toEqual([]);
     // The input object is never mutated — the child still receives its real plumbing.
     expect(environment.PC_HEAVY_ADMISSION_ID).toBe('per-invocation-value');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-595883 — shell-volatile identity, and making a cache miss say WHY.
+// ---------------------------------------------------------------------------
+
+describe('shell-volatile variables are outside the cross-run identity', () => {
+  const withShellState = (extra: Record<string, string>): Record<string, string> => ({
+    PATH: '/usr/bin',
+    LANG: 'C.UTF-8',
+    ...extra,
+  });
+
+  // MEASURED, not assumed: two runs of the same unchanged task missed with
+  // `environment-changed` for the sole reason that one shell had run `cd` and the other had not.
+  it('matches two runs that differ only in shell bookkeeping', () => {
+    const before = passingTaskVerdictCrossRunIdentityEnvironment(
+      withShellState({ OLDPWD: '/tmp', _: '/usr/bin/node', SHLVL: '2' }),
+    ).environment;
+    const after = passingTaskVerdictCrossRunIdentityEnvironment(
+      withShellState({ OLDPWD: '/var/tmp/elsewhere', _: '/usr/bin/timeout', SHLVL: '4' }),
+    ).environment;
+    expect(after).toEqual(before);
+    expect(Object.keys(before).sort()).toEqual(['LANG', 'PATH']);
+  });
+
+  // CONTROL. Without the strip these very inputs differ, so the assertion above is load-bearing
+  // rather than vacuously true of any two environments. The per-run identity keeps them on
+  // purpose — it is confined to one run, where the shell state cannot drift.
+  it('control: the same two inputs DO differ before the strip is applied', () => {
+    const before = passingTaskVerdictIdentityEnvironment(
+      withShellState({ OLDPWD: '/tmp', _: '/usr/bin/node', SHLVL: '2' }),
+    ).environment;
+    const after = passingTaskVerdictIdentityEnvironment(
+      withShellState({ OLDPWD: '/var/tmp/elsewhere', _: '/usr/bin/timeout', SHLVL: '4' }),
+    ).environment;
+    expect(after).not.toEqual(before);
+  });
+
+  it('strips every listed name and never mutates the caller environment', () => {
+    const environment = withShellState(
+      Object.fromEntries(SHELL_VOLATILE_IDENTITY_ENV.map((name) => [name, 'shell-state'])),
+    );
+    const { environment: clone } = passingTaskVerdictCrossRunIdentityEnvironment(environment);
+    for (const name of SHELL_VOLATILE_IDENTITY_ENV) {
+      expect(clone).not.toHaveProperty(name);
+      expect(environment[name]).toBe('shell-state');
+    }
+  });
+});
+
+describe('closure hashing separates membership from content', () => {
+  it('reports a listHash that moves with membership but not with content', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wi595883-closure-'));
+    try {
+      writeFileSync(join(root, 'a.txt'), 'one');
+      writeFileSync(join(root, 'b.txt'), 'two');
+      // `hashDependencyFileSet` fails closed on any enumeration gap, so narrow before asserting
+      // — an unreadable fixture must surface as its own reason, not as a confusing property error.
+      const hashed = (files: string[]) => {
+        const result = hashDependencyFileSet({ root, files });
+        if (!result.ok) throw new Error(`expected a hashable closure, got ${result.reason}`);
+        return result;
+      };
+
+      const base = hashed(['a.txt', 'b.txt']);
+      expect(base.fileCount).toBe(2);
+      expect(base.files).toEqual(['a.txt', 'b.txt']);
+
+      writeFileSync(join(root, 'a.txt'), 'CHANGED');
+      const contentMoved = hashed(['a.txt', 'b.txt']);
+      expect(contentMoved.hash).not.toBe(base.hash);
+      // The whole point: content churn must NOT look like a membership change.
+      expect(contentMoved.listHash).toBe(base.listHash);
+
+      writeFileSync(join(root, 'c.txt'), 'three');
+      const membershipMoved = hashed(['a.txt', 'b.txt', 'c.txt']);
+      expect(membershipMoved.listHash).not.toBe(base.listHash);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // P-011 names this explicitly ("unrelated changes still hit") and it is the entire value
+  // proposition: if an edit anywhere in the tree invalidated every task, the cache would be a
+  // pure cost. The closure FILTER is what makes it true, so exercise the filter, not the hash.
+  it('an edit outside the task closure does not move its proof, but one inside does', () => {
+    const root = mkdtempSync(join(tmpdir(), 'wi595883-unrelated-'));
+    try {
+      mkdirSync(join(root, 'pkg/target'), { recursive: true });
+      mkdirSync(join(root, 'pkg/unrelated'), { recursive: true });
+      writeFileSync(join(root, 'pkg/target/x.ts'), 'target-one');
+      writeFileSync(join(root, 'pkg/unrelated/y.ts'), 'unrelated-one');
+
+      const provenance = () =>
+        passingTaskVerdictDependencyProvenance({
+          root,
+          taskKey: '@target :: test',
+          script: 'test',
+          workspaceName: '@target',
+          workspaces: new Map([
+            ['@target', { dir: 'pkg/target', deps: [] }],
+            ['@unrelated', { dir: 'pkg/unrelated', deps: [] }],
+          ]),
+          trackedScan: {
+            files: ['pkg/target/x.ts', 'pkg/unrelated/y.ts'],
+            unscannedPresent: [],
+          },
+          repoWideTaskKeys: new Set<string>(),
+          // A FRESH cache per call — a shared one would return the first run's digests and make
+          // this pass no matter what the filter does.
+          digestCache: new Map(),
+        });
+
+      const before = provenance();
+      if (!before.ok) throw new Error(`expected hashable provenance, got ${before.reason}`);
+      expect(before.files).toEqual(['pkg/target/x.ts']);
+
+      writeFileSync(join(root, 'pkg/unrelated/y.ts'), 'unrelated-CHANGED');
+      const afterUnrelated = provenance();
+      if (!afterUnrelated.ok) throw new Error(afterUnrelated.reason);
+      expect(afterUnrelated.hash).toBe(before.hash);
+
+      // CONTROL: the same probe must still notice a change INSIDE the closure, or the assertion
+      // above would hold for a filter that simply hashed nothing.
+      writeFileSync(join(root, 'pkg/target/x.ts'), 'target-CHANGED');
+      const afterInside = provenance();
+      if (!afterInside.ok) throw new Error(afterInside.reason);
+      expect(afterInside.hash).not.toBe(before.hash);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a cache miss explains itself', () => {
+  const manifest = (
+    files: Record<string, string>,
+    tasks: Record<string, { fileCount: number; listHash: string }> = {},
+  ) => ({
+    ...emptyClosureDigestManifest(),
+    files,
+    tasks,
+  });
+
+  it('names the path whose digest moved', () => {
+    const delta = diffClosureDigests({
+      prior: manifest({ 'scripts/a.mjs': 'file:420:aaa', 'scripts/b.mjs': 'file:420:bbb' }),
+      observed: { 'scripts/a.mjs': 'file:420:aaa', 'scripts/b.mjs': 'file:420:MOVED' },
+      files: ['scripts/a.mjs', 'scripts/b.mjs'],
+    });
+    expect(delta.changed).toEqual(['scripts/b.mjs']);
+    expect(delta.changedCount).toBe(1);
+    expect(delta.unexplained).toBe(false);
+  });
+
+  // The reading that no aggregate hash can produce, and the one WI-595883 was filed to test:
+  // the hash moved while every file it covers is byte-, mode- and membership-identical.
+  it('reports unexplained when every observed file is identical', () => {
+    const files = { 'scripts/a.mjs': 'file:420:aaa' };
+    const delta = diffClosureDigests({
+      prior: manifest(files, { 'ws :: test': { fileCount: 1, listHash: 'L1' } }),
+      observed: files,
+      files: ['scripts/a.mjs'],
+      listHash: 'L1',
+      taskKey: 'ws :: test',
+    });
+    expect(delta.unexplained).toBe(true);
+    expect(delta.membershipChanged).toBe(false);
+    expect(delta.changedCount).toBe(0);
+  });
+
+  it('reports a membership change instead of blaming file contents', () => {
+    const delta = diffClosureDigests({
+      prior: manifest(
+        { 'scripts/a.mjs': 'file:420:aaa' },
+        { 'ws :: test': { fileCount: 1, listHash: 'L1' } },
+      ),
+      observed: { 'scripts/a.mjs': 'file:420:aaa', 'scripts/new.mjs': 'file:420:nnn' },
+      files: ['scripts/a.mjs', 'scripts/new.mjs'],
+      listHash: 'L2',
+      taskKey: 'ws :: test',
+    });
+    expect(delta.membershipChanged).toBe(true);
+    expect(delta.priorFileCount).toBe(1);
+    expect(delta.unexplained).toBe(false);
+  });
+
+  // A path the sidecar never observed is not evidence that it moved.
+  it('separates never-observed paths from changed ones', () => {
+    const delta = diffClosureDigests({
+      prior: manifest({ 'scripts/a.mjs': 'file:420:aaa' }),
+      observed: { 'scripts/a.mjs': 'file:420:aaa', 'scripts/fresh.mjs': 'file:420:fff' },
+      files: ['scripts/a.mjs', 'scripts/fresh.mjs'],
+    });
+    expect(delta.changedCount).toBe(0);
+    expect(delta.unknownPrior).toEqual(['scripts/fresh.mjs']);
+  });
+
+  it('names the environment variable that moved, and classifies added and removed', () => {
+    const delta = diffIdentityEnvDigests({
+      prior: { PATH: 'p1', LANG: 'l1', GONE: 'g1' },
+      observed: { PATH: 'CHANGED', LANG: 'l1', FRESH: 'f1' },
+    });
+    expect(delta.changedKeys).toEqual(['PATH']);
+    expect(delta.addedKeys).toEqual(['FRESH']);
+    expect(delta.removedKeys).toEqual(['GONE']);
+    expect(delta.unexplained).toBe(false);
+  });
+
+  it('says so when no prior environment was ever recorded', () => {
+    const delta = diffIdentityEnvDigests({ prior: undefined, observed: { PATH: 'p1' } });
+    expect(delta.known).toBe(false);
+    expect(delta.unexplained).toBe(false);
+  });
+
+  // This environment carries live credentials. Nothing but a digest may reach the sidecar, and
+  // the reported line is keys-only. (The fixture is deliberately NOT key-shaped: a realistic
+  // token literal in a tree file trips the secrets guard and the publish guard.)
+  it('never records a raw environment value', () => {
+    const secret = 'REDACTED-FIXTURE-VALUE-MUST-NOT-BE-STORED';
+    const digests = identityEnvDigests({ ANTHROPIC_API_KEY: secret, PATH: '/usr/bin' });
+    expect(JSON.stringify(digests)).not.toContain(secret);
+    expect(digests.ANTHROPIC_API_KEY).toMatch(/^[0-9a-f]{16}$/);
+    const line = formatIdentityEnvDeltaLine({
+      taskKey: 'ws :: test',
+      reason: 'cross-run:environment-changed',
+      manifestReason: 'manifest-ready',
+      delta: diffIdentityEnvDigests({
+        prior: { ANTHROPIC_API_KEY: 'old-digest' },
+        observed: digests,
+      }),
+    });
+    expect(line).toContain('ANTHROPIC_API_KEY');
+    expect(line).not.toContain(secret);
+  });
+
+  it('distinguishes an identical value from a differing one of the same type', () => {
+    expect(identityEnvDigests({ A: 'x' }).A).toBe(identityEnvDigests({ A: 'x' }).A);
+    expect(identityEnvDigests({ A: 'x' }).A).not.toBe(identityEnvDigests({ A: 'y' }).A);
+  });
+});
+
+describe('the closure sidecar fails open and keeps prior observations', () => {
+  it('retains files this run did not observe', () => {
+    const merged = mergeClosureDigestManifest({
+      prior: { ...emptyClosureDigestManifest(), files: { 'old.mjs': 'file:420:old' } },
+      observed: { 'new.mjs': 'file:420:new' },
+      taskShapes: { 'ws :: test': { fileCount: 2, listHash: 'L1' } },
+      identityEnv: { 'cross-run-v1': { PATH: 'p1' } },
+    });
+    expect(merged.files).toEqual({ 'old.mjs': 'file:420:old', 'new.mjs': 'file:420:new' });
+    expect(merged.tasks['ws :: test']).toEqual({ fileCount: 2, listHash: 'L1' });
+    expect(merged.identityEnv['cross-run-v1']).toEqual({ PATH: 'p1' });
+  });
+
+  it('evicts unobserved paths first when capped', () => {
+    const merged = mergeClosureDigestManifest({
+      prior: { ...emptyClosureDigestManifest(), files: { stale: 'file:420:s' } },
+      observed: { fresh: 'file:420:f' },
+      cap: 1,
+    });
+    expect(Object.keys(merged.files)).toEqual(['fresh']);
+  });
+
+  // A sidecar can only ever improve an error message, so every failure mode must be inert.
+  it.each([
+    ['missing', undefined, 'manifest-missing'],
+    ['corrupt', 'not json', 'manifest-corrupt'],
+    ['version-skewed', JSON.stringify({ version: 999, files: {} }), 'manifest-unusable'],
+    ['shape-invalid', JSON.stringify({ version: 1, files: [] }), 'manifest-unusable'],
+  ])('reads a %s sidecar as an empty manifest', (_label, body, expected) => {
+    const dir = mkdtempSync(join(tmpdir(), 'wi595883-sidecar-'));
+    try {
+      const path = join(dir, 'manifest.json');
+      if (body !== undefined) writeFileSync(path, body as string);
+      const { manifest: read, reason } = readClosureDigestManifest(path);
+      expect(reason).toBe(expected);
+      expect(read.files).toEqual({});
+      expect(read.identityEnv).toEqual({});
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps the sidecar beside the cache rather than inside an entry', () => {
+    expect(closureDigestManifestPath('/tmp/verdicts.json')).toBe(
+      '/tmp/verdicts.json.closure-manifest.json',
+    );
+  });
+});
+
+describe('affected-tests wires the miss diagnostics in', () => {
+  // The pure helpers above are worthless if the runner never calls them, and the runner is not
+  // importable from a unit test — so pin the call sites the same way this file already pins
+  // D-007's script table.
+  it.each([
+    'reportClosureDeltaForMiss(context, cacheDecision)',
+    'formatClosureDeltaLine(',
+    'formatIdentityEnvDeltaLine(',
+    'mergeClosureDigestManifest({',
+    'identityEnvDigests(crossRunEnvironment)',
+  ])('calls %s', (fragment) => {
+    expect(AFFECTED_TESTS_SRC).toContain(fragment.replaceAll('"', "'"));
   });
 });
