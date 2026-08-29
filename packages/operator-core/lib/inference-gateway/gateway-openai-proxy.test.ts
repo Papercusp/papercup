@@ -861,7 +861,11 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
       },
       [codexAcct('cdx-solo')],
       {
-        concurrency: 8,
+        // P-010: the lanes no longer take different sizes, so scarcity is expressed by
+        // the ONE shared seed. A 1-slot seed still makes the wedged Codex request
+        // saturate the Codex lane — which is this test's actual subject — while the
+        // Claude lane, sized identically, stays at running:0 and is never consulted.
+        concurrency: 1,
         selfHeal: { enabled: true, freezeMs: 40, pollMs: 10 },
         requestCeilingMs: 5_000,
         upstreamHeadersTimeoutMs: 5_000,
@@ -889,7 +893,9 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
     expect(gw!.stats()).toMatchObject({
       inFlight: 1,
       inFlightTracked: 1,
-      admission: { running: 0, maxConcurrent: 8 },
+      // Both lanes are sized identically now; the ISOLATION claim is carried by the
+      // running counts — the wedge is held on Codex and the Claude lane is untouched.
+      admission: { running: 0, maxConcurrent: 1 },
       codexAdmission: { running: 1, maxConcurrent: 1 },
     });
 

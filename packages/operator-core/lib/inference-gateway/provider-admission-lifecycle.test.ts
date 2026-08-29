@@ -240,6 +240,27 @@ describe('registration contract', () => {
     expect(() => lifecycle.windowFor('codex')).toThrow(/not registered/);
   });
 
+  it('opens at exactly the requested seed, never rounded UP to meet a larger default floor', () => {
+    // REGRESSION (found by gateway-priority-tiers.test.ts hanging): the default floor is
+    // sized for a large pool, so `max(floor, seed)` silently handed a caller that asked
+    // for 2 slots a 4-slot queue. A test reserving 1 of 2 slots then saw three requests
+    // admitted and waited forever. A floor is a MINIMUM the window contracts to, never a
+    // reason to enlarge what the caller opened with.
+    const queue = new RecordingQueue();
+    const lifecycle = new ProviderAdmissionLifecycle({
+      lanes: [{ id: 'claude', queue }],
+      initialWindow: 2,
+      // deliberately larger than the seed, exactly like the production default
+      minimumWindow: 4,
+    });
+    expect(lifecycle.windowFor('claude')).toBe(2);
+    expect(queue.maxConcurrent).toBe(2);
+    // The floor is clamped DOWN to the seed rather than the seed being raised.
+    expect(lifecycle.snapshotFor('claude').minimumWindow).toBe(2);
+    // CALIBRATION: an un-clamped floor would have produced 4 here.
+    expect(queue.maxConcurrent).not.toBe(4);
+  });
+
   it('treats an explicit seed as initial state, not a ceiling', () => {
     const queue = new RecordingQueue();
     const lifecycle = new ProviderAdmissionLifecycle({

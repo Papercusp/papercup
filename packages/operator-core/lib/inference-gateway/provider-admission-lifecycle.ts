@@ -190,10 +190,17 @@ export class ProviderAdmissionLifecycle {
   constructor(options: ProviderAdmissionLifecycleOptions) {
     this.#now = options.now ?? (() => Date.now());
     this.#log = options.log ?? (() => {});
-    this.#minimumWindow = positiveInt(options.minimumWindow, DEFAULT_MINIMUM_WINDOW);
-    this.#initialWindow = Math.max(
-      this.#minimumWindow,
-      positiveInt(options.initialWindow, INITIAL_PROVIDER_ADMISSION_WINDOW),
+    // A FLOOR MAY NEVER EXCEED THE STARTING WINDOW. A default floor sized for a
+    // 24-slot pool is nonsense over a 2-slot one, and raising the caller's seed to
+    // meet it would silently hand back a bigger window than was asked for — the kind
+    // of quiet override that makes an admission bug impossible to read off the call
+    // site. The retired Codex controller clamped its floor this way (`min(cap-1,
+    // floor)`) and the Claude one did not; that asymmetry was the drift, and this is
+    // the half of it that was right.
+    this.#initialWindow = positiveInt(options.initialWindow, INITIAL_PROVIDER_ADMISSION_WINDOW);
+    this.#minimumWindow = Math.min(
+      positiveInt(options.minimumWindow, DEFAULT_MINIMUM_WINDOW),
+      this.#initialWindow,
     );
     this.#increaseStep = positiveInt(options.increaseStep, DEFAULT_INCREASE_STEP);
     this.#healthySamplesPerIncrease = positiveInt(

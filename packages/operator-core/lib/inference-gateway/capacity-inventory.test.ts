@@ -107,9 +107,18 @@ describe('inference-gateway capacity writer inventory (P-001)', () => {
       // const FAKE_CONCURRENCY = 100;
       const text = "DEFAULT_MAX_QUEUED = 256";
       const DEFAULT_TIMEOUT_MS = 5000;
+      export const PROVIDER_ADMISSION_LIFECYCLE_SCHEMA_VERSION = 'provider-admission-lifecycle-v1';
     `;
     expect(findInferenceGatewayCapacityDeclarations(source)).toEqual([]);
     expect(CAPACITY_WRITER_SYMBOL_PATTERN.test('DEFAULT_TIMEOUT_MS')).toBe(false);
+    // CALIBRATION: the schema-version line above is only an interesting negative because
+    // its SYMBOL does match the capacity pattern — it is excluded on its string value,
+    // not on its name. Without this the case would prove nothing.
+    expect(CAPACITY_WRITER_SYMBOL_PATTERN.test('PROVIDER_ADMISSION_LIFECYCLE_SCHEMA_VERSION')).toBe(true);
+    // ...and a real numeric declaration with the same shape IS still caught.
+    expect(findInferenceGatewayCapacityDeclarations('export const INITIAL_ADMISSION_WINDOW = 8;')).toEqual([
+      { symbol: 'INITIAL_ADMISSION_WINDOW', line: 1 },
+    ]);
   });
 
   it('keeps the inventory rooted in the repository (no generated/public copies)', () => {
