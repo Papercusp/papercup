@@ -2493,6 +2493,13 @@ impl App {
         let rematerializing = snapshot.runtime_reconciliation.as_ref().is_some_and(|r| {
             r.action == crate::su_session::SuSessionRuntimeAction::Rematerialize
         });
+        let orphaned_runtime = snapshot.runtime_reconciliation.clone().filter(|r| {
+            matches!(
+                r.action,
+                crate::su_session::SuSessionRuntimeAction::Relaunch
+                    | crate::su_session::SuSessionRuntimeAction::Wait
+            )
+        });
         let floor_sequence = snapshot.floor_sequence;
         let head_sequence = snapshot.last_sequence;
         state.identity = Some(snapshot.descriptor.identity.clone());
@@ -2547,6 +2554,25 @@ impl App {
                 snapshot_adv_session_id,
                 progress.percent(),
                 progress.remaining()
+            ));
+        } else if let Some(orphan) = orphaned_runtime {
+            // `relaunch` and `wait` are the host's two non-attachable verdicts:
+            // the recorded process is gone with nothing to reattach to, or its
+            // liveness is unknown. Both used to land the pane in `Attached` with
+            // no runtime behind it, which is the silent-orphan state P-010
+            // requires converging to something explicit.
+            state.reconciliation = match orphan.action {
+                crate::su_session::SuSessionRuntimeAction::Relaunch => {
+                    crate::su_session::SuSessionReconciliation::FailedOrphaned
+                }
+                _ => crate::su_session::SuSessionReconciliation::Pending,
+            };
+            self.session_note = Some(format!(
+                "SU runtime not attachable for adv {} ({} · {}{})",
+                snapshot_adv_session_id,
+                orphan.action.as_str(),
+                orphan.reason,
+                if orphan.stale_pid { " · stale pid" } else { "" }
             ));
         } else if runtime_replaced {
             self.session_note = Some(format!(
@@ -11066,6 +11092,236 @@ mod tests {
             Action::Render
         );
         assert!(a.session_note.as_deref().unwrap().contains("unsupported"));
+    }
+
+    /// Build an archived-session snapshot: ended lifecycle, terminal, and the
+    /// host's `rematerialize` verdict, with a retained replay window of
+    /// `floor..=last`.
+    fn su_archived_snapshot(
+        floor: u64,
+        last: u64,
+        reconciliation: Option<serde_json::Value>,
+    ) -> crate::su_session::SuSessionSnapshot {
+        let mut value = json!({
+            "ok": true,
+            "descriptor": {
+                "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+                "lifecycle":"ended", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+                "capabilities": {"commands":{}, "features":{}},
+                "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+            },
+            "floorSequence": floor, "lastSequence": last, "terminal": true
+        });
+        if let Some(reconciliation) = reconciliation {
+            value["runtimeReconciliation"] = reconciliation;
+        }
+        serde_json::from_value(value).expect("decode SU snapshot")
+    }
+
+    fn su_rematerialize_verdict() -> serde_json::Value {
+        json!({"action":"rematerialize","reason":"ended_archived","stalePid":true})
+    }
+
+    /// REGRESSION (P-010). The snapshot cursor must be the FLOOR of the host's
+    /// retained window, never its head.
+    ///
+    /// Pinning it to the head declared the pane already caught up, so the SSE
+    /// replay — which the transport requests from sequence 0, having never sent
+    /// a `Last-Event-ID` despite `subscribe_su_session`'s comment claiming the
+    /// transport handles one — was dropped wholesale by the duplicate guard in
+    /// `apply_su_session_event`. A live session hid this behind its next live
+    /// event; an ended session has none, so the archived transcript the owner
+    /// reattached specifically to READ rendered as an empty pane.
+    #[test]
+    fn su_snapshot_replays_the_retained_window_instead_of_declaring_it_caught_up() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(
+            1,
+            3,
+            Some(su_rematerialize_verdict()),
+        ));
+
+        // The cursor sits BELOW the retained floor, so every retained event is
+        // still replayable rather than pre-acknowledged.
+        assert_eq!(app.su_session.as_ref().unwrap().last_sequence, 0);
+
+        let mut owner = su_event_base("transcript", 1);
+        owner["phase"] = json!("completed");
+        owner["role"] = json!("owner");
+        owner["channel"] = json!("primary");
+        owner["content"] = json!("what did you conclude?");
+        app.apply_su_session_event(su_event(owner));
+        assert!(
+            app.chat_messages
+                .iter()
+                .any(|m| m.content.contains("what did you conclude?")),
+            "the archived transcript must be reduced, not discarded as a replay duplicate"
+        );
+    }
+
+    /// The progress surfaced while an archive is replayed must be a measured
+    /// fraction of the retained window, and must retire itself on catch-up.
+    #[test]
+    fn su_rematerialize_progress_advances_then_converges_to_ended_archived() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(
+            1,
+            5,
+            Some(su_rematerialize_verdict()),
+        ));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::Rematerializing,
+            "an archived session mid-replay is not yet at its resting state"
+        );
+        let opening = app.session_note.clone().unwrap();
+        assert!(opening.contains("Rematerializing"), "note was {opening}");
+        assert!(opening.contains("5 events remaining"), "note was {opening}");
+
+        let mut mid = su_event_base("transcript", 3);
+        mid["phase"] = json!("completed");
+        mid["role"] = json!("owner");
+        mid["channel"] = json!("primary");
+        mid["content"] = json!("halfway");
+        app.apply_su_session_event(su_event(mid));
+        let progress = app.su_session.as_ref().unwrap().rematerialize.unwrap();
+        assert_eq!(progress.remaining(), 2);
+        assert_eq!(progress.percent(), 50);
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::Rematerializing
+        );
+
+        // The terminal lifecycle event is itself part of the replay; it must not
+        // retire the banner while events are still outstanding, and must settle
+        // it once they are not.
+        let mut ended = su_event_base("lifecycle", 5);
+        ended["previousState"] = json!("running");
+        ended["state"] = json!("ended");
+        ended["runtimeGeneration"] = json!(1);
+        app.apply_su_session_event(su_event(ended));
+        assert!(app.su_session.as_ref().unwrap().rematerialize.is_none());
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::EndedArchived
+        );
+        assert!(app
+            .session_note
+            .as_deref()
+            .unwrap()
+            .contains("Rematerialized archived transcript"));
+    }
+
+    /// NEGATIVE CONTROL for the two tests above. A host created live at launch
+    /// reports no reconciliation at all, and `None` must not be read as "clean
+    /// reattach" — it must render no archive banner whatsoever. Without this,
+    /// both progress tests would still pass if the banner were unconditional,
+    /// which is exactly the failure mode a progress indicator invites.
+    #[test]
+    fn su_snapshot_without_a_reconciliation_verdict_shows_no_archive_progress() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 5, None));
+        assert!(app.su_session.as_ref().unwrap().rematerialize.is_none());
+        assert_eq!(
+            app.su_session.as_ref().unwrap().reconciliation,
+            crate::su_session::SuSessionReconciliation::EndedArchived
+        );
+        let note = app.session_note.clone().unwrap();
+        assert!(
+            !note.contains("Rematerializ"),
+            "a never-rehydrated host must not claim archive progress; note was {note}"
+        );
+    }
+
+    /// P-010: the host's two non-attachable verdicts must converge to an
+    /// explicit state instead of leaving the pane in `Attached` with no runtime.
+    #[test]
+    fn su_non_attachable_runtime_converges_to_an_explicit_state() {
+        for (action, reason, expected) in [
+            (
+                "relaunch",
+                "stale_pid_without_native_identity",
+                crate::su_session::SuSessionReconciliation::FailedOrphaned,
+            ),
+            (
+                "wait",
+                "pid_unknown",
+                crate::su_session::SuSessionReconciliation::Pending,
+            ),
+        ] {
+            let mut app = App::new();
+            app.agent_chat_id = Some("chat-1".into());
+            app.set_su_session_binding(su_binding());
+            let snapshot: crate::su_session::SuSessionSnapshot = serde_json::from_value(json!({
+                "ok": true,
+                "descriptor": {
+                    "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+                    "lifecycle":"running", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+                    "capabilities": {"commands":{}, "features":{}},
+                    "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+                },
+                "floorSequence":1, "lastSequence":2, "terminal": false,
+                "runtimeReconciliation": {"action": action, "reason": reason, "stalePid": true}
+            }))
+            .expect("decode SU snapshot");
+            app.apply_su_session_snapshot(snapshot);
+            assert_eq!(
+                app.su_session.as_ref().unwrap().reconciliation,
+                expected,
+                "{action} must not leave the pane reading as attached"
+            );
+            let note = app.session_note.clone().unwrap();
+            assert!(note.contains("not attachable"), "note was {note}");
+            assert!(note.contains(action), "note was {note}");
+            assert!(note.contains(reason), "note was {note}");
+        }
+    }
+
+    /// The replay cursor is monotonic: a reattach that re-reads the same
+    /// snapshot must not rewind it and duplicate an already-reduced transcript.
+    #[test]
+    fn su_snapshot_cursor_never_rewinds_across_a_reattach() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        app.set_su_session_binding(su_binding());
+        app.apply_su_session_snapshot(su_archived_snapshot(
+            1,
+            3,
+            Some(su_rematerialize_verdict()),
+        ));
+        let mut owner = su_event_base("transcript", 3);
+        owner["phase"] = json!("completed");
+        owner["role"] = json!("owner");
+        owner["channel"] = json!("primary");
+        owner["content"] = json!("only once");
+        app.apply_su_session_event(su_event(owner.clone()));
+        assert_eq!(app.su_session.as_ref().unwrap().last_sequence, 3);
+
+        app.apply_su_session_snapshot(su_archived_snapshot(
+            1,
+            3,
+            Some(su_rematerialize_verdict()),
+        ));
+        assert_eq!(
+            app.su_session.as_ref().unwrap().last_sequence,
+            3,
+            "a second snapshot must not rewind the cursor below what was applied"
+        );
+        app.apply_su_session_event(su_event(owner));
+        assert_eq!(
+            app.chat_messages
+                .iter()
+                .filter(|m| m.content.contains("only once"))
+                .count(),
+            1,
+            "the re-delivered replay event must still be de-duplicated"
+        );
     }
 
     #[test]

@@ -607,8 +607,8 @@ export async function rehydrateRegisteredSuSessionHost(input: {
     agentChatId: input.agentChatId,
     workspaceId: input.workspaceId,
   });
-  const descriptor = record?.descriptor ?? null;
-  if (!descriptor) return null;
+  if (!record?.descriptor) return null;
+  const { descriptor } = record;
   if (
     descriptor.identity.agentChatId !== input.agentChatId ||
     descriptor.identity.workspaceId !== input.workspaceId ||
