@@ -791,6 +791,40 @@ export async function lastProductiveToolCallAtByOwner(coordOwnerIds: string[]): 
 }
 
 /**
+ * WI-583276: read the exact owners that emitted an agent-origin tool call in
+ * the recent execution window.  This is deliberately separate from
+ * `lastProductiveToolCallAtByOwner`: a productive-looking tool name can still
+ * be emitted by a hook, while `call_origin='agent'` is the telemetry writer's
+ * authoritative turn provenance.  `null` means the telemetry leg failed or
+ * timed out; callers must preserve that UNKNOWN state rather than treating it
+ * as a fleet-wide zero.
+ */
+export async function agentOriginToolCallOwnersSince(
+  coordOwnerIds: string[],
+  windowMs = 30 * 60_000,
+): Promise<Set<string> | null> {
+  const ids = [...new Set(coordOwnerIds.filter((id) => !!id && !id.startsWith('fed:')))];
+  if (ids.length === 0) return new Set();
+  if (!Number.isFinite(windowMs) || windowMs <= 0) return new Set();
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<{ coord_owner_id: string }[]>`
+      SELECT DISTINCT coord_owner_id
+        FROM harness_shared.tool_invocations
+       WHERE coord_owner_id = ANY(${ids}::text[])
+         AND call_origin = 'agent'
+         AND invoked_at > now() - (${windowMs} * interval '1 millisecond')
+    `;
+    return new Set(rows.map((row) => row.coord_owner_id).filter((id) => typeof id === 'string' && id.length > 0));
+  } catch {
+    return null;
+  }
+}
+
+/** Compatibility-shaped alias for callers that need the existing top-1 naming. */
+export const lastAgentOriginToolCallAtByOwner = agentOriginToolCallOwnersSince;
+
+/**
  * EI-18763117665515043: does this work-item claim's LINKED plan item — resolved
  * via the SAME two-mechanism stamp `planItemLaneBlockReason` already uses for the
  * pre-claim self-select gate (payload.plan_item back-pointer, or the

@@ -84,7 +84,12 @@ import {
   liveFleetMemberIds,
   type ListFleetRosterResult,
 } from '../../fleet/fleet-roster';
-import { shouldRecoverClaimFromHealth, type AgentAssignment, type ClaimHealth } from '../../fleet/assignments';
+import {
+  agentOriginToolCallOwnersSince,
+  shouldRecoverClaimFromHealth,
+  type AgentAssignment,
+  type ClaimHealth,
+} from '../../fleet/assignments';
 import { listPresence } from '../coordination/presence';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
@@ -1737,6 +1742,95 @@ export function computeDarkFleetAlert(input: {
   };
 }
 
+export type FleetExecutionCollapseAlertEvaluation =
+  | {
+      alert: true;
+      reason: string;
+      evidence: FleetExecutionCollapseEvidence;
+      falsifier: AlertFalsifier;
+    }
+  | { alert: false; evidence: FleetExecutionCollapseEvidence }
+  | { alert: null; reason: string; evidence: FleetExecutionCollapseEvidence };
+
+export interface FleetExecutionCollapseEvidence {
+  rosterMembers: number;
+  agentOriginMembers: number | null;
+  heldClaimMembers: number;
+  heldClaims: number;
+  silentHeldClaimMembers: number | null;
+  windowMs: number;
+}
+
+/**
+ * WI-583276: detect a fleet-wide execution collapse that heartbeat/lifecycle
+ * surfaces cannot see.  A claim is evidence of work the fleet owns; an exact
+ * `call_origin='agent'` row is evidence that a member actually got a turn.
+ * Missing either required leg is UNKNOWN, never a false clean or a fabricated
+ * collapse.  PURE: the reader supplies the canonical roster and telemetry set.
+ */
+export function computeFleetExecutionCollapseAlert(input: {
+  roster: ReadonlyArray<{
+    agentId: string;
+    claims?: ReadonlyArray<{ active?: boolean | null; status?: string | null }>;
+  }>;
+  agentOriginOwnerIds: ReadonlySet<string> | null;
+  telemetryDegraded?: boolean;
+  presenceDegraded?: boolean;
+  fleet?: string | null;
+  windowMs?: number;
+}): FleetExecutionCollapseAlertEvaluation {
+  const windowMs = input.windowMs ?? 30 * 60_000;
+  const rosterIds = new Set(input.roster.map((member) => member.agentId).filter(Boolean));
+  const heldByOwner = input.roster.map((member) => {
+    const claims = (member.claims ?? []).filter((claim) => claim.active !== false);
+    return { agentId: member.agentId, claims };
+  });
+  const heldClaimMembers = heldByOwner.filter(({ claims }) => claims.length > 0).length;
+  const heldClaims = heldByOwner.reduce((count, { claims }) => count + claims.length, 0);
+  const baseEvidence = {
+    rosterMembers: rosterIds.size,
+    agentOriginMembers: null as number | null,
+    heldClaimMembers,
+    heldClaims,
+    silentHeldClaimMembers: null as number | null,
+    windowMs,
+  };
+  if (input.presenceDegraded || input.telemetryDegraded || input.agentOriginOwnerIds == null) {
+    return {
+      alert: null,
+      reason:
+        'fleet execution-collapse state is UNKNOWN because the canonical roster or exact agent-origin telemetry ' +
+        'leg was not measured; zero calls must not be inferred from a failed read.',
+      evidence: baseEvidence,
+    };
+  }
+  const agentOriginMembers = [...input.agentOriginOwnerIds].filter((id) => rosterIds.has(id)).length;
+  const silentHeldClaimMembers = heldByOwner.filter(
+    ({ agentId, claims }) => claims.length > 0 && !input.agentOriginOwnerIds!.has(agentId),
+  ).length;
+  const evidence = { ...baseEvidence, agentOriginMembers, silentHeldClaimMembers };
+  if (heldClaims === 0 || agentOriginMembers > 0) return { alert: false, evidence };
+  return {
+    alert: true,
+    evidence,
+    reason:
+      `${heldClaimMembers} fleet member(s) hold ${heldClaims} non-terminal claim(s), but ZERO registered members ` +
+      `produced an agent-origin tool call in the last ${Math.round(windowMs / 60_000)} minutes (WI-583276). ` +
+      'Fresh heartbeats and housekeeping rows do not prove a turn; diagnose the shared inference/launch path before ' +
+      'waking or reclaiming these claims.',
+    falsifier: {
+      tool: 'fleet:assignments',
+      check: renderFalsifierCall('fleet:assignments', { fleet: input.fleet, include_stale: true }),
+      measurement:
+        'the independent assignments claim/progress and per-member liveness view; a progressing claim or recent ' +
+        'agent turn disproves the fleet-wide stop',
+      kills:
+        'any member shows a progressing claim or a confirmed recent agent-origin turn → re-read the telemetry and ' +
+        'do not treat the fleet as collapsed.',
+    },
+  };
+}
+
 /**
  * EI-15055 (fleet-members-parked-stall-2026-07-17): the ZERO-WIP-WITH-SUPPLY alert.
  * `parked` was a plain count with no severity — a leader reading `parked:7` next to
@@ -3203,6 +3297,24 @@ export async function buildLeaderBrief(
       ? { wakeMode: entry.wakeMode }
       : { wakeMode: undefined }),
   }));
+  // WI-583276: exact turn provenance is a separate bounded leg. A failed read
+  // remains UNKNOWN; an empty Set is a measured zero only when the query
+  // completed successfully.
+  const agentOriginRead = await withBoundedTimeout(
+    agentOriginToolCallOwnersSince(rosterEntries.map((entry) => entry.agentId)),
+    {
+      fallback: null,
+      timeoutMs: LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+      label: 'leader-brief:agent-origin-calls',
+    },
+  );
+  const executionCollapseAlert = computeFleetExecutionCollapseAlert({
+    roster: rosterEntries,
+    agentOriginOwnerIds: agentOriginRead.value,
+    telemetryDegraded: agentOriginRead.degraded || agentOriginRead.value == null,
+    presenceDegraded: rosterResult.degradedLegs.includes('presence'),
+    fleet,
+  });
   // WI-41172 / P-010: compute from the UNFILTERED canonical roster before
   // selectLeaderBriefMembers drops stale-idle entries. Presence degradation is
   // in-band UNKNOWN; an assignments-only fallback must never become a verdict.
@@ -4059,6 +4171,11 @@ export async function buildLeaderBrief(
       summary: {
         ...summary,
         darkFleetAlert: darkFleetAlert.alert,
+        fleetExecutionCollapseAlert: executionCollapseAlert.alert,
+        fleetExecutionCollapse: {
+          status: executionCollapseAlert.alert === null ? 'unknown' : 'measured',
+          ...executionCollapseAlert.evidence,
+        },
         strandedFleetAlert: strandedFleetAlert != null,
         specStarvedAlert: specStarvedAlert != null,
         declaredPlanSpecDivergenceAlert: declaredPlanSpecDivergenceAlert != null,
@@ -4225,6 +4342,12 @@ export async function buildLeaderBrief(
         : {}),
       ...(darkFleetAlert.reason ? { darkFleetAlertReason: darkFleetAlert.reason } : {}),
       ...(darkFleetAlert.alert === true ? { darkFleetAlertFalsifier: darkFleetAlert.falsifier } : {}),
+      ...(executionCollapseAlert.reason
+        ? { fleetExecutionCollapseAlertReason: executionCollapseAlert.reason }
+        : {}),
+      ...(executionCollapseAlert.alert === true
+        ? { fleetExecutionCollapseAlertFalsifier: executionCollapseAlert.falsifier }
+        : {}),
       // P-014: always carried when ANY invariant is registered — including the
       // all-satisfied case. A leader must be able to tell "my checks ran and found
       // nothing" from "my checks are not running", which a reason-only field cannot

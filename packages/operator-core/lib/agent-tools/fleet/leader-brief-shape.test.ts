@@ -241,6 +241,40 @@ describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
     });
   });
 
+  it('retains the execution-collapse tri-state and evidence handle at the normal monitor tier', () => {
+    const out = shapeLeaderBrief(
+      {
+        ok: true,
+        summary: {
+          fleet: 'mute-fleet',
+          members: 3,
+          fleetExecutionCollapseAlert: true,
+          fleetExecutionCollapse: {
+            status: 'measured',
+            rosterMembers: 3,
+            agentOriginMembers: 0,
+            heldClaimMembers: 2,
+            heldClaims: 2,
+            silentHeldClaimMembers: 2,
+            windowMs: 1_800_000,
+          },
+        },
+        fleetExecutionCollapseAlertReason: '2 members hold 2 claims, but ZERO agent-origin calls in 30 minutes',
+        fleetExecutionCollapseAlertFalsifier: {
+          tool: 'fleet:assignments',
+          check: "fleet:assignments { fleet: 'mute-fleet', include_stale: true }",
+        },
+      },
+      'trimmed',
+    ) as { summary: Record<string, unknown>; fleetExecutionCollapseAlertReason?: string };
+
+    expect(out.summary).toMatchObject({
+      fleetExecutionCollapseAlert: true,
+      fleetExecutionCollapse: { status: 'measured', agentOriginMembers: 0, heldClaims: 2 },
+    });
+    expect(out.fleetExecutionCollapseAlertReason).toMatch(/ZERO agent-origin/);
+  });
+
   it('retains the executable-frontier verdict, reason, and falsifier at the normal monitor tier', () => {
     const out = shapeLeaderBrief(
       {

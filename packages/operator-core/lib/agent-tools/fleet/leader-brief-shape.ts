@@ -157,6 +157,21 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
   );
   if (population) out.population = population;
 
+  const executionCollapse = pick(
+    source.fleetExecutionCollapse,
+    [
+      'status',
+      'rosterMembers',
+      'agentOriginMembers',
+      'heldClaimMembers',
+      'heldClaims',
+      'silentHeldClaimMembers',
+      'windowMs',
+    ],
+    150,
+  );
+  if (executionCollapse) out.fleetExecutionCollapse = executionCollapse;
+
   if (Array.isArray(source.findings)) {
     out.findings = source.findings.slice(0, rowCap).map((value) => {
       const row = asDict(value);
@@ -275,6 +290,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'spinning',
     'throttled',
     'darkFleetAlert',
+    'fleetExecutionCollapseAlert',
     'fleetHeadcountVsExecutableFrontierAlert',
     'leaderBlockerStallAlert',
     'unowned_criticals',
@@ -809,7 +825,7 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
     },
   };
   // P-010/P-011: keep fleet-level detector evidence at the emergency tier too.
-  for (const alert of ['darkFleetAlert', 'fleetHeadcountVsExecutableFrontierAlert']) {
+  for (const alert of ['darkFleetAlert', 'fleetExecutionCollapseAlert', 'fleetHeadcountVsExecutableFrontierAlert']) {
     const reasonKey = `${alert}Reason`;
     const falsifierKey = `${alert}Falsifier`;
     if (source[reasonKey] !== undefined) {
