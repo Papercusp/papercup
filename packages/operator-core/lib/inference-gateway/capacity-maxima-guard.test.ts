@@ -40,7 +40,16 @@ function runGuard(source: string): { code: number; output: string } {
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'subject.ts'), source, 'utf8');
   try {
-    const output = execFileSync('node', [GUARD, '--root', root], { encoding: 'utf8', stdio: 'pipe' });
+    // `timeout` + `killSignal` are REQUIRED here, not defensive padding (WI-41180): a
+    // synchronous spawn blocks the worker's event loop, so vitest cannot time it out, and
+    // the pure lane shares ONE fork across ~2,740 files — an unbounded hang here wedges
+    // every one of them until the batch watchdog kills the task 45 minutes later.
+    const output = execFileSync('node', [GUARD, '--root', root], {
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 30_000,
+      killSignal: 'SIGKILL',
+    });
     return { code: 0, output };
   } catch (e) {
     const err = e as { status?: number; stdout?: string; stderr?: string };
