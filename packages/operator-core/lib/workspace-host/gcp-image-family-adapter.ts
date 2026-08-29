@@ -1036,9 +1036,19 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
     );
     const init = await this.commands.run(packer, ['init', '--upgrade=false', template], { cwd: root });
     assertSuccess(init, 'packer init');
-    const buildArgs: string[] = ['build', '-machine-readable', '-color=false'];
-    for (const [key, value] of Object.entries(vars)) buildArgs.push('-var', `${key}=${String(value)}`);
-    buildArgs.push(template);
+    const varArgs: string[] = [];
+    for (const [key, value] of Object.entries(vars)) varArgs.push('-var', `${key}=${String(value)}`);
+    // ⚠ EVALUATE the template — with these exact variables — before anything billable runs.
+    // This is not redundant with the release preflight, which runs `packer validate
+    // -syntax-only`: syntax-only PARSES the file without evaluating expressions, so it
+    // cannot see a call to a function Packer does not have, nor a `validation` block whose
+    // condition is false for the variables we are about to build with. A production release
+    // spent a full `packer build` to discover `setsubtract` does not exist in Packer
+    // (EI-21762126059344308); this call finds that class in about a second, for free, and
+    // fails BEFORE a builder VM is created.
+    const validated = await this.commands.run(packer, ['validate', ...varArgs, template], { cwd: root });
+    assertSuccess(validated, 'packer validate');
+    const buildArgs: string[] = ['build', '-machine-readable', '-color=false', ...varArgs, template];
     const built = await this.commands.run(packer, buildArgs, { cwd: root, timeoutMs: DEFAULT_COMMAND_TIMEOUT_MS });
     const stdout = assertSuccess(built, 'packer build');
     const parsedId = parsePackerImageId(stdout, input.projectId, candidateName);

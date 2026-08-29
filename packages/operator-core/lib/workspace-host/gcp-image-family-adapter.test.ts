@@ -301,8 +301,19 @@ describe('GCP image-family production adapter', () => {
       requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
     });
     expect(built.imageId).toBe(CANDIDATE_ID);
-    expect(calls.map((call) => call.args[0])).toEqual(['init', 'build']);
-    expect(calls[1]?.args).not.toContain('--shell');
+    // `validate` sits between init and build ON PURPOSE — it evaluates the template with the
+    // real variables, so an unknown function or a false validation condition fails here in a
+    // second instead of after a builder VM has been created. See the buildCandidate comment.
+    expect(calls.map((call) => call.args[0])).toEqual(['init', 'validate', 'build']);
+    const validateCall = calls[1];
+    const buildCall = calls[2];
+    expect(buildCall?.args).not.toContain('--shell');
+    // The evaluation is worthless unless it evaluates the SAME variables the build uses: a
+    // validate run with different (or no) vars can pass while the build it is guarding fails.
+    const varsOf = (args: readonly string[] | undefined): string[] =>
+      (args ?? []).filter((_, index) => args?.[index - 1] === '-var');
+    expect(varsOf(validateCall?.args)).toEqual(varsOf(buildCall?.args));
+    expect(varsOf(validateCall?.args).length).toBeGreaterThan(0);
     const scan = await adapter.scanImage({
       projectId: PROJECT,
       imageId: CANDIDATE_ID,
@@ -315,6 +326,68 @@ describe('GCP image-family production adapter', () => {
       state: 'ACTIVE',
       architecture: 'x86_64',
     });
+  });
+
+  /**
+   * Recurrence guard for EI-21762126059344308.
+   *
+   * `packer build` runs with `-machine-readable`, and in that mode packer writes its ENTIRE
+   * event stream — `ui,error` records included — to STDOUT, leaving stderr empty. assertSuccess
+   * used to quote stderr only, so a failed production release reported exactly
+   * `packer build failed with exit code 1` and nothing else. That is the dangerous shape: not
+   * a truncated-looking message, but a confident one, indistinguishable from a command that
+   * genuinely had nothing to say. It cost a billable build and a wake to re-derive.
+   *
+   * The stdout-only case is therefore the one asserted here; a stderr-only failure would have
+   * passed against the BROKEN code too, so a test of that direction alone proves nothing.
+   */
+  it('surfaces a failure diagnostic written only to stdout, and says so explicitly when there is none', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL));
+    const candidateArtifact = artifact(createHash('sha256').update(template).digest('hex'));
+    const context = {
+      ...CONTEXT,
+      artifact: candidateArtifact,
+      request: { ...CONTEXT.request, releaseGate: { ...CONTEXT.request.releaseGate, artifact: candidateArtifact } },
+    };
+    const PACKER_STDOUT_ERROR =
+      '1787980033,,ui,error,Error: Call to unknown function\\n\\n  on ' +
+      'infra/images/workspace-host.pkr.hcl line 216:\\n\\nThere is no function named "setsubtract".';
+
+    const buildCandidate = async (
+      run: (command: string, args: readonly string[]) => Promise<GcpImageFamilyCommandResult>,
+    ): Promise<unknown> => {
+      const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+        baseOptions(new ComputeFake(), { repositoryRoot: REPO_ROOT, commandRunner: { run } }),
+      );
+      await adapter.bindReleaseContext(context);
+      return adapter.buildCandidate({
+        projectId: PROJECT,
+        candidateImageName: CANDIDATE_NAME,
+        templatePath: 'infra/images/workspace-host.pkr.hcl',
+        buildManifestIdentity: candidateArtifact.buildManifest.manifestIdentity,
+        releaseVersion: VERSION,
+        releaseSha256: RELEASE_SHA,
+        architecture: 'x86_64',
+        requiredGuestTools: GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS,
+      });
+    };
+
+    // Stdout-only failure: the diagnostic MUST reach the thrown error.
+    await expect(
+      buildCandidate(async (_command, args) =>
+        args[0] === 'init'
+          ? { exitCode: 0, stdout: '', stderr: '' }
+          : { exitCode: 1, stdout: PACKER_STDOUT_ERROR, stderr: '' },
+      ),
+    ).rejects.toThrow(/setsubtract/);
+
+    // A genuinely silent failure must SAY it was silent, so "no diagnostic" stays
+    // distinguishable from "the diagnostic was dropped" — the ambiguity that caused the bug.
+    await expect(
+      buildCandidate(async (_command, args) =>
+        args[0] === 'init' ? { exitCode: 0, stdout: '', stderr: '' } : { exitCode: 1, stdout: '', stderr: '' },
+      ),
+    ).rejects.toThrow(/produced no output on either stream/);
   });
 
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {

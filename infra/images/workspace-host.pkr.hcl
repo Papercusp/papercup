@@ -212,18 +212,29 @@ variable "guest_tool_versions" {
     whose inspection report is a lie.
   EOT
 
+  # ⛔ Do NOT reach for `setsubtract` here. It is the obvious Terraform way to write
+  # "every required package is present" and Packer DOES NOT HAVE IT: Packer's HCL2
+  # function table ships setintersection/setunion but no setsubtract, so the expression
+  # below was previously `length(setsubtract(required, keys(...))) == 0` and every build
+  # died with `Call to unknown function ... there is no function named "setsubtract"`.
+  # `packer validate -syntax-only` does NOT catch this — it parses the file without
+  # evaluating expressions, so the release preflight passed and the failure surfaced only
+  # at billable `packer build` time (EI-21762126059344308 / EI-21751634175352001).
+  # Verified present in Packer v1.16.0 against a known-bad control: alltrue, contains, keys.
   validation {
-    condition = length(setsubtract([
-      "acl",
-      "ca-certificates",
-      "curl",
-      "google-guest-agent",
-      "jq",
-      "minisign",
-      "openssh-server",
-      "ufw",
-      "unattended-upgrades",
-    ], keys(var.guest_tool_versions))) == 0
+    condition = alltrue([
+      for pkg in [
+        "acl",
+        "ca-certificates",
+        "curl",
+        "google-guest-agent",
+        "jq",
+        "minisign",
+        "openssh-server",
+        "ufw",
+        "unattended-upgrades",
+      ] : contains(keys(var.guest_tool_versions), pkg)
+    ])
     error_message = "The guest_tool_versions must pin every package in GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS."
   }
 }
