@@ -2,6 +2,7 @@ export const PASSING_TASK_VERDICT_CACHE_VERSION: number;
 export const PASSING_TASK_VERDICT_IMPLEMENTATION_VERSION: string;
 export const PASSING_TASK_VERDICT_CACHE_MAX_GROUPS: number;
 export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP: string;
+export const PC_HEAVY_VOLATILE_IDENTITY_ENV: readonly string[];
 
 export interface PassingTaskVerdictIdentity {
   taskKey: string;

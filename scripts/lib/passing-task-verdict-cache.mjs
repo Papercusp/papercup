@@ -46,6 +46,35 @@ export function stableJson(value) {
  * makes a later verifier miss. The transport-only proof variable is never itself hashed: it was
  * absent from the initial run and would otherwise invalidate the identity it exists to recover.
  */
+/**
+ * pc-heavy wrapper variables that are UNIQUE PER INVOCATION and therefore must never enter the
+ * cache identity. Each one describes the wrapper process, not the test task, so hashing it makes
+ * every run's `environment` component differ and defeats reuse entirely.
+ *
+ * This list is a second copy of a truth `scripts/pc-heavy.sh` owns, so it WILL drift — it already
+ * did. `affected-tests-passing-verdict-cache.test.ts` DERIVES the volatile set by parsing
+ * pc-heavy.sh for exports whose value resolves to `$$`, `$RANDOM`, `$BASHPID`, `date +%s*`, or
+ * `mktemp`, and fails if any is missing here. Add names by making that guard pass, never by hand
+ * alone.
+ *
+ * EI-21748784988454958: `PC_HEAVY_ADMISSION_ID` is `pc-heavy-$$-$(date +%s%N)` — pid plus
+ * nanoseconds, exported into every child (pc-heavy.sh:2774). Because it was absent here, the
+ * `environment` component differed on EVERY invocation and cross-run reuse could NEVER hit
+ * through pc-heavy — defeating both the root `npm test` resume path (package.json:175) and the
+ * pre-existing green-checkpoint reuse of EI-21577710345620735.
+ */
+export const PC_HEAVY_VOLATILE_IDENTITY_ENV = Object.freeze([
+  "PC_HEAVY_PREEMPT_READY_FILE",
+  "PC_HEAVY_PREEMPT_RESULT_FILE",
+  "PC_HEAVY_CALLER_PID",
+  "PC_HEAVY_CALLER_START_TICKS",
+  "PC_HEAVY_PREEMPT_NOTIFY_FD",
+  // EI-21748784988454958 — each unique per invocation; see the note above.
+  "PC_HEAVY_ADMISSION_ID",
+  "PC_HEAVY_PSI_FINALIZATION_FILE",
+  "PC_HEAVY_PREEMPT_START_FILE",
+]);
+
 export function passingTaskVerdictIdentityEnvironment(environment) {
   const identityEnvironment = { ...(environment ?? {}) };
   const rawProofGroup = identityEnvironment.AFFECTED_TASK_VERDICT_PROOF_GROUP;
@@ -58,13 +87,7 @@ export function passingTaskVerdictIdentityEnvironment(environment) {
   // a new ready-marker path, caller PID/start tick, and notify fd; hashing them would make the
   // explicitly shared proof group miss on environment identity and silently defeat resumability.
   // They remain untouched in the REAL child environment — this clone is cache identity only.
-  for (const transportName of [
-    "PC_HEAVY_PREEMPT_READY_FILE",
-    "PC_HEAVY_PREEMPT_RESULT_FILE",
-    "PC_HEAVY_CALLER_PID",
-    "PC_HEAVY_CALLER_START_TICKS",
-    "PC_HEAVY_PREEMPT_NOTIFY_FD",
-  ]) {
+  for (const transportName of PC_HEAVY_VOLATILE_IDENTITY_ENV) {
     delete identityEnvironment[transportName];
   }
   if (proofGroup !== null) {

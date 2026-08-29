@@ -36,7 +36,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     contextAndRelease:
       "spawnGovernedAgentProcess holds the execution across the child's whole lifetime and releases actual cost on exit; a throwing spawn calls execution.cancel so a failed start never leaks a reservation",
     currentCaps:
-      "none left in-lane: the per-launch spawn ceiling was deleted when capability:launch-agent moved onto spawnGovernedAgentProcess; psu-launcher/psu-pty-host hold no ceiling of their own",
+      "none on the governed door: the per-launch spawn ceiling was deleted when capability:launch-agent and fleet:launch-on-plan moved onto spawnGovernedAgentProcess, and psu-launcher/psu-pty-host hold no ceiling of their own. The lane's OTHER door, fleet/operator-spawn.ts spawnAgentInHarness, still enforces effectiveSpawnCeiling at its atomic admission cap: a USER-set maxSimultaneousAgents is an honoured deliberate throttle, while a SEED-sourced value resolves to the governor's live adaptive window instead of the boot-time host guess (WI-586538 / P-009), so it is never a frozen maximum — and over-ceiling spawns QUEUE on the D-004 wake key rather than being rejected. Routing that second door onto spawnGovernedAgentProcess is tracked residue (WI-590490), not a finished migration",
     writerEvidence:
       "beginGovernedExecution at spawn-execution.ts and pty-bridge.ts with AdmissionContext propagated into the spawned process; residual probe/release/ledger sites carry explicit BYPASS_REGISTRY rows",
     sites: [
@@ -85,7 +85,7 @@ export const RESOURCE_GOVERNOR_INVENTORY = Object.freeze([
     telemetry:
       "per-tool admission counts and MCP proxy shed responses (HTTP 429 + Retry-After) surfaced as governor admission pressure",
     currentCaps:
-      "none; the MCP proxy sheds with a retryable 429 under pressure instead of holding a fixed concurrency ceiling",
+      "none on the machine paths: the MCP proxy sheds with a retryable 429 under pressure instead of holding a fixed concurrency ceiling. ONE deliberate exception lives inside this prefix — INTERACTIVE launches (endpoint-route/routes/agent-mcp/console-launch.ts, adv/launch-su.ts) waive brain admission because the human IS the judgment (D-003), but still pass checkInteractiveSafetyFloor, the P-012 / D-013 deterministic concurrency floor: over-ceiling returns 429 with an actionable message, and the floor read fails OPEN so it can guard a human launch without ever gating one",
     contextAndRelease:
       "runGovernedOperation wraps each subprocess-starting tool and releases on settle; the host bootstrap admits its own long-lived listeners once at start",
     writerEvidence:
