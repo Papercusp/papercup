@@ -29,7 +29,7 @@ export {
   sha256Hex,
   contentAddressing,
   type ContentAddressing,
-} from './content-address.ts';
+} from './content-address.js';
 
 // Content-addressed blob store (Layer A — the storage backend)
 export {
@@ -44,7 +44,7 @@ export {
   type PutBlobResult,
   type GetBlobInput,
   type GetBlobResult,
-} from './blob-store.ts';
+} from './blob-store.js';
 
 // Artifact registry (Layer B — the metadata + lifecycle)
 export {
@@ -57,4 +57,4 @@ export {
   type PublishResult,
   type UnlistResult,
   type ClaimResult,
-} from './registry.ts';
+} from './registry.js';

@@ -559,7 +559,9 @@ export class LiveHealthMonitor {
           this.log(`[resource-governor-health] sample failed: ${error instanceof Error ? error.message : error}`);
         }
       },
-      { category: 'watchdog' },
+      // D-004: must-sample — live host health (loop lag, memory, PSI, pressure) has no
+      // event source to subscribe to; the reading only exists once you take it.
+      { category: 'watchdog', classification: 'must-sample' },
     );
     return first;
   }

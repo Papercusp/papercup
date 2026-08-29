@@ -126,7 +126,14 @@ export function ensureSessionConfinementsReady(): Promise<void> {
             /* transient; the next tick retries */
           });
         },
-        { category: 'cache' },
+        // D-004: honestly a VIOLATION, not a must-sample. This re-reads a PG-backed
+        // store and rebuilds a derived cache every 60s regardless of whether anything
+        // changed and regardless of subscriber presence. Postgres can emit change
+        // events and this repo already has an invalidation bus (notifySyncInvalidate),
+        // so the push path is available and merely unwired — which is exactly the sin
+        // D-004 wants COUNTED rather than excused. Converting it to invalidate-on-write
+        // is the real fix; classifying it 'must-sample' would only hide it.
+        { category: 'cache', classification: 'violation' },
       );
     }
   })();

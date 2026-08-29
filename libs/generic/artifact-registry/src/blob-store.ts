@@ -12,7 +12,7 @@
  * PURE w.r.t. transport + backend. Web-Crypto only.
  */
 
-import { isHexSha256, sha256Hex, type ContentAddressing } from './content-address.ts';
+import { isHexSha256, sha256Hex, type ContentAddressing } from './content-address.js';
 
 /** HTTP-ish status codes the helpers surface; the host maps them onto its transport. */
 export type ArtifactStatus = 200 | 400 | 401 | 403 | 404 | 409 | 410 | 413 | 500;

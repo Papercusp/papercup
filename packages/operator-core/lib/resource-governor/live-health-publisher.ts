@@ -277,7 +277,10 @@ export class ProcessLiveHealthPublisher {
           );
         }
       },
-      { category: 'watchdog', instanced: true, allowInTest: this.allowTimerInTest },
+      // D-004: must-sample — this publishes a MEASURED reading of this process's own
+      // health (event-loop lag, GC observations). Nothing emits those; sampling is the
+      // only way they come into existence.
+      { category: 'watchdog', classification: 'must-sample', instanced: true, allowInTest: this.allowTimerInTest },
     );
     return first;
   }

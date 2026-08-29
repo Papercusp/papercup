@@ -205,6 +205,21 @@ export const GENERIC_USERS = new Set([
   // Keep this list to non-personal accounts only — it is not a place to silence
   // a real name to make the build pass.
   'pcusp', 'papercusp', 'papercup', 'tester', 'User', 'x',
+  // IMAGE-BUILD accounts that our OWN infra creates, plus the stock account of the
+  // builder that creates them (infra/images/workspace-host.pkr.hcl). They surface in
+  // home-path shape only because that file DEFINES the account rather than consuming
+  // one — the useradd/usermod pair that sets the account's home, the `install -d`
+  // that creates it, and the build-user cleanup in the image-finalise step.
+  //
+  // A path a file CREATES inside the image it builds is not a path borrowed from
+  // somebody's box: it is correct on every machine, which is exactly the property
+  // this rule's header says a hardcoded home path lacks. `packer` is HashiCorp's
+  // canonical build account — the same class as `runner` / `builder` above.
+  //
+  // Not an exception added to make a build pass: neither name belongs to a person,
+  // and neither can reach the release bundle's audit, which resolves THIS box's
+  // identity at run time and never looks for a generic home path at all.
+  'papercusp-workspace', 'packer',
   // Stand-ins that name nobody: test fixtures and doc examples.
   'test', 'testuser', 'owner', 'host', 'whoever', 'all', 'paper', 'submission',
   // The canonical fake identities. The identity SCRUBBER's own tests

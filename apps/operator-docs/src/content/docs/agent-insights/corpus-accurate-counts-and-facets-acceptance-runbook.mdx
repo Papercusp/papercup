@@ -125,7 +125,7 @@ Use only the canonical isolated verifier against the current frozen bundle. Exis
 Set VERIFY_TAURI_AGENT_TOOLS_BIN to the explicit managed tauri-agent-tools executable, then run:
 
 ```bash
-VERIFY_TAURI_AGENT_TOOLS_BIN=/home/marsh-office/.local/node25/bin/tauri-agent-tools scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
+VERIFY_TAURI_AGENT_TOOLS_BIN="$HOME/.local/node25/bin/tauri-agent-tools" scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
 
 ```
 The checked-in assertion script is the decisive probe, not a placeholder. It uses the read-only papercusp harness and live authoritative writers as its deterministic dataset precondition; records the exact values observed during the run; navigates /adv?tab=harnesses&slug=papercusp for Work items and Run log, /adv?tab=learning&lview=observations, /adv?tab=learning&lview=improvements, /adv?tab=learning&lview=learnings, /adv?tab=git&slug=papercusp, /coord?panel=history, and /cupboard; asserts [data-testid=wi-count], [data-testid=observations-count], exact-zero Improve/Retain companion counts under a unique impossible-match query, .pc-adv-gitgrid__count, the latest-300 log scope, the latest-matches-up-to-200 coordination window, Cupboard kind facets, and Showing N of M; compares visible and accessible population copy; refuses loaded/page-only substitutions; captures route-specific screenshot/DOM/state/log/error manifests; and prints exactly one P014_TAURI_ACCEPTANCE_OK marker only after all assertions and console checks pass. Any selector, copy, facet-sum, console, provenance, or tool failure exits nonzero. Its source contract is pinned by apps/operator/lib/verify-tauri-headless-quoting.test.ts.
