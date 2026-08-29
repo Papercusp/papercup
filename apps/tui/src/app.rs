@@ -3776,6 +3776,22 @@ impl App {
                                 .map(|entry| (entry.adv_session_id, entry.backend));
                             if let Some((adv_session_id, backend)) = attach_target {
                                 self.reset_agent_chat_binding();
+                                // P-010 duplicate-attach interlock. There are
+                                // now TWO emitters of `AttachSuSession`: this
+                                // user-initiated picker path, and the startup
+                                // adoption path in the `SuSessionInventory`
+                                // arm. `reset_agent_chat_binding()` above
+                                // clears `su_session`, so between this return
+                                // and the binding actually landing, adoption's
+                                // `su_session.is_none()` guard is satisfied —
+                                // an inventory frame arriving in that window
+                                // would emit a SECOND attach for this same
+                                // advSessionId and spawn a duplicate pane.
+                                // Recording it here makes `su_adopted_sessions`
+                                // the single authority on "an attach has
+                                // already been issued", covering both emitters
+                                // rather than just its own.
+                                self.su_adopted_sessions.insert(adv_session_id);
                                 self.su_backend = Some(backend);
                                 self.agent_chat_id = Some(chat_id.to_string());
                                 self.agent_chat_role = role;
@@ -10876,8 +10892,12 @@ mod tests {
     #[test]
     fn session_picker_loads_rather_than_attaches_for_every_non_attached_reconciliation() {
         use crate::su_session::SuSessionReconciliation as R;
-        for reconciliation in [R::Pending, R::RuntimeReplaced, R::EndedArchived, R::FailedOrphaned]
-        {
+        for reconciliation in [
+            R::Pending,
+            R::RuntimeReplaced,
+            R::EndedArchived,
+            R::FailedOrphaned,
+        ] {
             let mut a = App::new();
             a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
             a.su_session_inventory = vec![inventory_row_for("chat-x", reconciliation)];
@@ -11096,6 +11116,167 @@ mod tests {
         assert_eq!(
             app.su_session_inventory[0].reconciliation,
             crate::su_session::SuSessionReconciliation::RuntimeReplaced
+        );
+    }
+
+    /// P-010: "On startup, adopt/reattach live local displayable SU sessions by
+    /// stable advSessionId". Before this, the ONLY emitter of
+    /// `AttachSuSession` was the user-initiated session picker (D-012), so a
+    /// restart left a live session unattached until the user went and picked
+    /// it — the startup half of the requirement had no code path at all.
+    #[test]
+    fn su_inventory_adopts_a_live_session_on_startup() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![inventory_row_for(
+                "chat-1",
+                crate::su_session::SuSessionReconciliation::Attached,
+            )],
+        });
+        assert_eq!(
+            action,
+            Action::AttachSuSession {
+                harness: "papercup".into(),
+                chat_id: "chat-1".into(),
+                adv_session_id: 42,
+                backend: crate::su_session::SuSessionBackend::Codex,
+            }
+        );
+    }
+
+    /// P-010: "prevent duplicate panes/processes". The inventory refreshes on a
+    /// cadence, and the binding does not land in the same tick that adoption is
+    /// emitted — so a second frame arriving in that window must NOT emit a
+    /// second attach for the same advSessionId.
+    #[test]
+    fn su_inventory_adoption_fires_at_most_once_per_adv_session_id() {
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        let row = inventory_row_for(
+            "chat-1",
+            crate::su_session::SuSessionReconciliation::Attached,
+        );
+        let first = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![row.clone()],
+        });
+        assert!(matches!(first, Action::AttachSuSession { .. }));
+        // `su_session` is still None here — the attach task has not bound yet,
+        // which is precisely the window the guard set exists to cover.
+        assert!(app.su_session.is_none());
+        let second = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![row],
+        });
+        assert_eq!(second, Action::Render, "adoption must not re-fire");
+    }
+
+    /// P-010: ended/failed rows are "preserved for inspection" and converged to
+    /// an explicit state — they must never be respawned. Only `Attached`
+    /// asserts a still-present runtime.
+    #[test]
+    fn su_inventory_never_adopts_non_attached_or_terminal_rows() {
+        for reconciliation in [
+            crate::su_session::SuSessionReconciliation::EndedArchived,
+            crate::su_session::SuSessionReconciliation::FailedOrphaned,
+            crate::su_session::SuSessionReconciliation::Pending,
+            crate::su_session::SuSessionReconciliation::RuntimeReplaced,
+        ] {
+            let mut app = App::new();
+            app.agent_chat_id = Some("chat-1".into());
+            let action = app.update(Event::SuSessionInventory {
+                harness: app.harness.clone(),
+                selected_chat_id: Some("chat-1".into()),
+                entries: vec![inventory_row_for("chat-1", reconciliation)],
+            });
+            assert_eq!(action, Action::Render, "{reconciliation:?} must not adopt");
+        }
+
+        // An `Attached` row that is nonetheless terminal is also not adoptable.
+        let mut app = App::new();
+        app.agent_chat_id = Some("chat-1".into());
+        let mut terminal_row = inventory_row_for(
+            "chat-1",
+            crate::su_session::SuSessionReconciliation::Attached,
+        );
+        terminal_row.terminal = true;
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![terminal_row],
+        });
+        assert_eq!(action, Action::Render, "terminal row must not adopt");
+    }
+
+    /// P-010 duplicate-attach interlock across BOTH emitters.
+    ///
+    /// This is the regression the two emitters create together, and neither
+    /// one's own tests can see it. The picker (D-012) calls
+    /// `reset_agent_chat_binding()` before returning its attach, which clears
+    /// `su_session`; an inventory frame arriving before the binding lands then
+    /// satisfies adoption's `su_session.is_none()` guard and would spawn a
+    /// SECOND process for the same advSessionId. The picker therefore records
+    /// into `su_adopted_sessions` too, making that set the single authority on
+    /// "an attach has already been issued".
+    #[test]
+    fn picker_attach_suppresses_a_following_inventory_adoption() {
+        let mut app = App::new();
+        app.agent_chat_summaries = vec![crate::agent_chats::AgentChatSummary {
+            id: "chat-1".into(),
+            role: "worker".into(),
+            feature_id: None,
+            title: Some("Live SU session".into()),
+            turn_count: 1,
+            total_input_tokens: 1,
+            total_output_tokens: 1,
+            total_cost_usd_cents: 0.0,
+            created_at: "2026-08-29".into(),
+            updated_at: "2026-08-29T00:00:00Z".into(),
+            archived_at: None,
+        }];
+        app.su_session_inventory = vec![inventory_row_for(
+            "chat-1",
+            crate::su_session::SuSessionReconciliation::Attached,
+        )];
+        app.open_agent_session_picker();
+        let idx = app
+            .session_picker
+            .as_ref()
+            .unwrap()
+            .options
+            .iter()
+            .position(|option| option.id == "session:chat-1")
+            .unwrap();
+        app.session_picker.as_mut().unwrap().sel = idx;
+        assert!(matches!(
+            app.commit_session_picker(),
+            Action::AttachSuSession {
+                adv_session_id: 42,
+                ..
+            }
+        ));
+        assert!(
+            app.su_session.is_none(),
+            "picker clears the binding, which is what opens the double-attach window"
+        );
+
+        let action = app.update(Event::SuSessionInventory {
+            harness: app.harness.clone(),
+            selected_chat_id: Some("chat-1".into()),
+            entries: vec![inventory_row_for(
+                "chat-1",
+                crate::su_session::SuSessionReconciliation::Attached,
+            )],
+        });
+        assert_eq!(
+            action,
+            Action::Render,
+            "a picker-initiated attach must suppress startup adoption for the same advSessionId"
         );
     }
 

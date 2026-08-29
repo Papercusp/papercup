@@ -131,6 +131,40 @@ fn no_action_variant_is_left_without_an_emitter() {
         "Action::FetchHives is back in the Action enum — see above"
     );
 
+    // ── The general property this test is NAMED for ──────────────────────
+    //
+    // Everything above pins ONE historical variant. That is what let
+    // `Action::AttachSuSession` sit emitter-less for an entire plan cycle
+    // (EI-21746542925159695) without this guard noticing: main.rs handled it and
+    // `attach_su_session_task` existed, so reattach looked implemented while no
+    // reducer path could ever produce it. A guard that hardcodes yesterday's
+    // instance cannot catch tomorrow's. So check every variant.
+    //
+    // Emitters live in app.rs (the reducer PRODUCES actions); main.rs only
+    // consumes them, which is exactly why a `match` arm there is not evidence
+    // of an emitter and must not be counted as one.
+    let variants = action_variants(&app_rs);
+    assert!(
+        variants.len() >= 40,
+        "parsed only {} Action variants — the enum-block parser has drifted and \
+         the emitter check below would pass vacuously",
+        variants.len()
+    );
+    let body = action_enum_body(&app_rs).expect("Action enum block");
+    let outside_enum = app_rs.replace(&body, "");
+    let orphans: Vec<&String> = variants
+        .iter()
+        .filter(|variant| !outside_enum.contains(&format!("Action::{variant}")))
+        .collect();
+    assert!(
+        orphans.is_empty(),
+        "Action variant(s) {orphans:?} are declared and (probably) handled in \
+         main.rs, but nothing in app.rs ever CONSTRUCTS them — the capability is \
+         unreachable at runtime while looking fully wired in review. Either give \
+         each one a reducer emitter, or delete it. This is the exact shape of \
+         EI-21746542925159695 (AttachSuSession) and the earlier FetchHives bug."
+    );
+
     // The guard above is worth nothing if `code_only` silently stops stripping,
     // so calibrate it: this very line's comment names the symbol, and must not
     // be what the assertions matched.
@@ -138,5 +172,69 @@ fn no_action_variant_is_left_without_an_emitter() {
     assert!(
         !code_only("// Action::FetchHives").contains("FetchHives"),
         "code_only stopped stripping comments — the assertions above are inert"
+    );
+}
+
+/// Return the body of the `pub enum Action { .. }` block, braces excluded.
+fn action_enum_body(src: &str) -> Option<String> {
+    let start = src.find("pub enum Action {")?;
+    let open = src[start..].find('{')? + start + 1;
+    // Variants are indented; the enum's closing brace is the first `}` that
+    // begins a line at column 0.
+    let close = src[open..].find("\n}")? + open;
+    Some(src[open..close].to_string())
+}
+
+/// Variant names from the enum body: identifiers at exactly one indent level.
+/// Struct-variant FIELDS sit one level deeper and are lowercase, so the indent
+/// test and the leading-uppercase test each independently exclude them.
+fn action_variants(src: &str) -> Vec<String> {
+    let Some(body) = action_enum_body(src) else {
+        return Vec::new();
+    };
+    body.lines()
+        .filter(|line| line.starts_with("    ") && !line.starts_with("     "))
+        .filter_map(|line| {
+            let trimmed = line.trim_start();
+            let mut chars = trimmed.chars();
+            if !chars.next()?.is_ascii_uppercase() {
+                return None;
+            }
+            let name: String = trimmed
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric())
+                .collect();
+            // Only a real variant is followed by `,`, `{` or `(`.
+            let rest = trimmed[name.len()..].trim_start();
+            (rest.starts_with(',') || rest.starts_with('{') || rest.starts_with('('))
+                .then_some(name)
+        })
+        .collect()
+}
+
+/// Falsifiability control for the general check above. The real assertion
+/// currently passes, and a guard that has never failed is a guard nobody has
+/// tested — so prove on synthetic sources that the detector actually
+/// discriminates, rather than mutating the shared tree to find out.
+#[test]
+fn orphan_detector_discriminates() {
+    let src = "\npub enum Action {\n    Render,\n    Wired {\n        harness: String,\n    },\n    Orphan,\n}\n\nfn reduce() -> Action {\n    if x {\n        return Action::Wired { harness };\n    }\n    Action::Render\n}\n";
+    let variants = action_variants(src);
+    assert_eq!(
+        variants,
+        vec!["Render", "Wired", "Orphan"],
+        "parser must find struct-variants and unit-variants, and must NOT pick \
+         up the `harness: String` field one level deeper"
+    );
+    let body = action_enum_body(src).expect("enum body");
+    let outside = src.replace(&body, "");
+    let orphans: Vec<&String> = variants
+        .iter()
+        .filter(|v| !outside.contains(&format!("Action::{v}")))
+        .collect();
+    assert_eq!(
+        orphans,
+        vec!["Orphan"],
+        "the detector must flag exactly the variant with no construction site"
     );
 }
