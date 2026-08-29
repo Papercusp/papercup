@@ -11,6 +11,8 @@ import {
   writeFileSync,
   readFileSync,
   mkdirSync,
+  readdirSync,
+  utimesSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -7873,6 +7875,57 @@ describe("realCheckpointDeps.runGateAtRef — test-task rescue watchdog (EI-2048
     expect(testOpts?.killProcessGroupOnTimeout).toBe(true);
     expect(lintOpts?.timeoutMs).toBeUndefined();
     expect(lintOpts?.killProcessGroupOnTimeout).toBeUndefined();
+  });
+});
+
+describe("realCheckpointDeps.runGreen — checkpoint-log retention (WI-224710)", () => {
+  let tree: string;
+  let logDir: string;
+
+  beforeEach(() => {
+    tree = mkdtempSync(join(tmpdir(), "gc-log-retention-tree-"));
+    logDir = mkdtempSync(join(tmpdir(), "gc-log-retention-logs-"));
+    writeFileSync(
+      join(tree, "package.json"),
+      JSON.stringify({ name: "x", scripts: { "test:affected": "true" } }),
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tree, { recursive: true, force: true });
+    rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it("prunes persisted checkpoint logs older than 14 days while preserving fresh logs", async () => {
+    const nestedLogDir = join(logDir, "managed-hive");
+    mkdirSync(nestedLogDir);
+    const staleLog = join(nestedLogDir, "stale-checkpoint.log");
+    const freshLog = join(nestedLogDir, "fresh-checkpoint.log");
+    writeFileSync(staleLog, "stale");
+    writeFileSync(freshLog, "fresh");
+    const fifteenDaysAgo = new Date(Date.now() - 15 * 24 * 60 * 60 * 1000);
+    utimesSync(staleLog, fifteenDaysAgo, fifteenDaysAgo);
+
+    const exec: CheckpointExec = async (cmd, args) => {
+      if (cmd === "git" && args[0] === "grep") {
+        return { code: 1, stdout: "", stderr: "" };
+      }
+      return { code: 0, stdout: "Test Files  1 passed (1)\n", stderr: "" };
+    };
+    const cfg = releaseConfig({
+      checkpointRoot: tree,
+      checkpointLogDir: logDir,
+      greenCmd: "npm run test:affected",
+      spaBuildWorkspace: "",
+    });
+
+    const result = await realCheckpointDeps(cfg, exec).runGreen(tree, "base");
+
+    expect(result.green).toBe(true);
+    const retained = readdirSync(nestedLogDir);
+    expect(retained).not.toContain("stale-checkpoint.log");
+    expect(retained).toContain("fresh-checkpoint.log");
+    expect(readdirSync(logDir).filter((name) => name.endsWith(".log"))).toHaveLength(1);
   });
 });
 

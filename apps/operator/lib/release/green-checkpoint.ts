@@ -15203,22 +15203,34 @@ function resolveCandidateSha(treeDir: string): string | undefined {
   }
 }
 
-/** P-014: delete checkpoint-log files older than `days` so the dir doesn't grow
- *  unbounded (it was trending ~16MB / 43 files in 3 days). Best-effort, never throws. */
+/** P-014 / WI-224710: delete checkpoint-log artifacts older than `days` so the
+ *  directory tree doesn't grow unbounded. Workspace-scoped gates publish beneath
+ *  per-hive subdirectories, so a top-level-only scan silently misses most logs.
+ *  Best-effort, never follows symlinks, and never throws. */
 function pruneOldLogs(dir: string, days: number): void {
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-  try {
-    for (const f of readdirSync(dir)) {
-      const p = path.join(dir, f);
+  const pruneDir = (currentDir: string): void => {
+    const entries = (() => {
       try {
-        if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
+        return readdirSync(currentDir, { withFileTypes: true });
+      } catch {
+        return [];
+      }
+    })();
+    for (const entry of entries) {
+      const p = path.join(currentDir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          pruneDir(p);
+        } else if (entry.isFile() && statSync(p).mtimeMs < cutoff) {
+          unlinkSync(p);
+        }
       } catch {
         /* skip a vanished/locked file */
       }
     }
-  } catch {
-    /* dir gone — nothing to prune */
-  }
+  };
+  pruneDir(dir);
 }
 
 /** EI-78: how long a heavy gate leg waits for a pc-heavy slot before running ANYWAY.
