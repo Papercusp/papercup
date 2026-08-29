@@ -4,7 +4,7 @@
  * The tool owns no thresholds and performs no second derivation. It reads the same
  * perf-signals-v1 capture as the infra-liveness panel, delegates the verdict to
  * `evaluateMemoryPressure`, and adds an independent in-process free-memory probe as
- * the cell's falsifier. Agents should normally use
+ * evidence for the cell's explicit assessment. Agents should normally use
  * `state:read { cell: 'host.memoryPressure' }`; this tool is the read-only door that
  * the cell dispatcher needs.
  */
@@ -89,7 +89,7 @@ export default defineTool({
     notWhen:
       'General service health, process forensics, or waiting for the condition to change. Use state:read/state:subscribe on host.memoryPressure.',
     chaining:
-      'state:read { cell:"host.memoryPressure" } → branch on value + unknownHoist; state:subscribe waits for a band transition.',
+      'state:read { cell:"host.memoryPressure" } → branch on assessment.code and follow assessment.safeAction; inspect value/evidence for diagnosis. state:subscribe { cell:"host.memoryPressure" } waits for a semantic band transition.',
   },
   // @cell-lens host.memoryPressure
   capability: 'intel:read',

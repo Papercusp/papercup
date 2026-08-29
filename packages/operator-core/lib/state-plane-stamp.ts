@@ -164,9 +164,10 @@ export interface StatePlaneBlock {
 }
 
 const NOTE =
-  'Each value below has a CELL that re-answers it from the same resolver. These drift mid-turn: ' +
-  're-read with the handle at the moment you ACT on one or quote it into a plan, message or ' +
-  'work-item — never transcribe the reading you are holding now.';
+  'Each value below is a raw MEASUREMENT with a CELL that re-answers it from the same resolver ' +
+  'and, when declared, returns an explicit ASSESSMENT (meaning + safe action + evidence). These ' +
+  'drift mid-turn: re-read with the handle at the moment you ACT on one or quote it into a plan, ' +
+  'message or work-item — never transcribe this measurement or infer its meaning yourself.';
 
 /**
  * Derive the stamps for one door result. Pure and total.
