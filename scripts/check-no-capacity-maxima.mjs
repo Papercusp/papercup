@@ -45,6 +45,8 @@
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
+import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
 
 const REPO_ROOT = resolve(process.argv.includes('--root')
   ? process.argv[process.argv.indexOf('--root') + 1]
@@ -139,18 +141,28 @@ function findings() {
   const found = [];
   for (const rel of SCAN_DIRS) {
     for (const file of walk(join(REPO_ROOT, rel))) {
-      const lines = readFileSync(file, 'utf8').split('\n');
+      const raw = readFileSync(file, 'utf8');
+      const lines = raw.split('\n');
+      // Prose describing a cap is not a cap. A block-comment continuation line
+      // (` * ... maxConcurrent: 3 ...`) is the dominant false positive: three of the
+      // first measured run's nine hits were documentation explaining the very caps
+      // this work removed. A capacity word quoted inside a string is census/fixture
+      // data for the same reason — `currentValue: '{ anthropic: { maxConcurrent: 3 } }'`
+      // describes what production USED to do and is exactly what the inventory records.
+      //
+      // Both are masked by the SHARED stripper. This is a correctness upgrade, not just
+      // a lint migration: the line-local regexes this replaced could not see the INTERIOR
+      // of a block comment (the `^\s*(?:\*|//)` heuristic only caught lines that happen to
+      // start with a leader), and the naive `'[^']*'` masking mis-parsed a regex literal
+      // such as /['"]/ — opening a phantom string that deleted the rest of a real line.
+      // The shared module blanks with SPACES via the TypeScript parser, so it is
+      // length-preserving and `maskedLines[i]` aligns exactly with `lines[i]`.
+      //
+      // Dispositions are still read from the RAW `lines`: they are declared IN comments,
+      // which is precisely what this masks away.
+      const maskedLines = stripCommentsAndStrings(raw, file).split('\n');
       lines.forEach((line, i) => {
-        // Prose describing a cap is not a cap. A block-comment continuation line
-        // (` * ... maxConcurrent: 3 ...`) is the dominant false positive: three of the
-        // first measured run's nine hits were documentation explaining the very caps
-        // this work removed.
-        if (/^\s*(?:\*|\/\/)/.test(line)) return;
-        const code = line.replace(/\/\/.*$/, '').replace(/\/\*.*?\*\//g, '');
-        // A capacity word quoted inside a string is census/fixture data, not a live
-        // bound — `currentValue: '{ anthropic: { maxConcurrent: 3 } }'` describes what
-        // production USED to do and is exactly what the inventory exists to record.
-        const unquoted = code.replace(/'[^']*'/g, "''").replace(/"[^"]*"/g, '""').replace(/`[^`]*`/g, '``');
+        const unquoted = maskedLines[i] ?? '';
         if (!CAPACITY_MAX_RE.test(unquoted)) return;
         if (!PINNED_LITERAL_RE.test(unquoted) && !PINNED_CLAMP_RE.test(unquoted)) return;
         const site = `${relative(REPO_ROOT, file)}:${i + 1}`;
@@ -164,13 +176,20 @@ function findings() {
 const all = findings();
 
 if (process.argv.includes('--list')) {
-  console.log(`# measured ${all.length} capacity-maximum site(s)`);
+  // Buffered into ONE synchronous write, then exit. This payload is machine-readable
+  // (it gets piped into a re-seed) and data-derived (it grows with the measured site
+  // count), so it is exactly the shape that a `console.log` + immediate `process.exit`
+  // truncates: the write is async once stdout is a pipe, and exit does not drain it.
+  // A silently half-written baseline is worse than none — it re-seeds BASELINE short,
+  // which SHRINKS a shrink-only allowlist and quietly un-guards the dropped sites.
+  let out = `# measured ${all.length} capacity-maximum site(s)\n`;
   for (const f of all) {
     const d = f.disposition ? `${f.disposition.disposition}` : 'UNDECLARED';
-    console.log(`${f.site}\t${d}\t${f.line}`);
+    out += `${f.site}\t${d}\t${f.line}\n`;
   }
-  console.log('\n# baseline literal (paste into BASELINE):');
-  console.log(JSON.stringify(all.map((f) => f.site), null, 2));
+  out += '\n# baseline literal (paste into BASELINE):\n';
+  out += `${JSON.stringify(all.map((f) => f.site), null, 2)}\n`;
+  writeStdoutSync(out);
   process.exit(0);
 }
 
