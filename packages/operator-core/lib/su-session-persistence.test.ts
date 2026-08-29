@@ -1,4 +1,6 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   classifySuSessionRuntime,
@@ -69,6 +71,93 @@ describe('P-004 durable SU-session persistence', () => {
   it('uses archive/rematerialize for ended sessions before any relaunch decision', () => {
     expect(classifySuSessionRuntime(record({ endedAt: '2026-08-28T01:00:00Z' }), () => false)).toEqual({
       action: 'rematerialize', reason: 'ended_archived', stalePid: true,
+    });
+  });
+
+  /**
+   * A PURE exported decision helper must have a production CALL SITE, not just
+   * an export.
+   *
+   * `classifySuSessionRuntime` shipped with a full test suite, a documented
+   * contract, and zero production callers: nothing computed its verdict, so the
+   * `rematerialize` reconciliation it exists to produce could never reach PUI,
+   * and a restart into an ended/archived session was indistinguishable from a
+   * live reattach. Review cannot catch this — the function reads as implemented
+   * from every angle except the one that matters — and it is the same defect
+   * that left `Action::AttachSuSession` without an emitter for a whole plan
+   * cycle in the PUI crate (pui-su-session-runtime-correction-2026-08-27 D-009).
+   *
+   * Scoped to non-async exports ON PURPOSE: a pure classifier's ONLY effect is
+   * its return value, so an uncalled one is definitionally dead, whereas an
+   * async writer can legitimately be staged ahead of the lane that wires it.
+   * That is a stated boundary, not an allowlist — widening it is a deliberate
+   * decision, not a silent one.
+   */
+  describe('every pure exported decision helper is reachable from production code', () => {
+    const SOURCE_ROOTS = ['packages', 'apps'];
+    const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.next', 'target', '.git']);
+    const MODULE_BASENAME = 'su-session-persistence';
+    const repoRoot = fileURLToPath(new URL('../../../', import.meta.url));
+    const source = readFileSync(new URL('./su-session-persistence.ts', import.meta.url), 'utf8');
+
+    /** Non-async exported functions, derived from the module rather than listed. */
+    const pureExports = [...source.matchAll(/^export function (\w+)/gm)].map((m) => m[1]);
+
+    /** Production (non-test) sources that mention this module, plus the module itself. */
+    function productionSources(): string[] {
+      const bodies: string[] = [source];
+      for (const root of SOURCE_ROOTS) {
+        let entries: string[];
+        try {
+          entries = readdirSync(join(repoRoot, root), { recursive: true }) as unknown as string[];
+        } catch {
+          continue;
+        }
+        for (const rel of entries) {
+          if (typeof rel !== 'string') continue;
+          if (!/\.(ts|tsx)$/.test(rel) || /\.test\.tsx?$/.test(rel)) continue;
+          if (rel.split(/[\\/]/).some((segment) => SKIP_DIRS.has(segment))) continue;
+          if (rel.endsWith(`${MODULE_BASENAME}.ts`)) continue;
+          let body: string;
+          try {
+            body = readFileSync(join(repoRoot, root, rel), 'utf8');
+          } catch {
+            continue;
+          }
+          if (body.includes(MODULE_BASENAME)) bodies.push(body);
+        }
+      }
+      return bodies;
+    }
+
+    /** A name is reachable when it appears as a call anywhere but its declaration. */
+    function callSites(name: string, bodies: readonly string[]): number {
+      const call = new RegExp(`(?<!function )\\b${name}\\s*\\(`, 'g');
+      return bodies.reduce((total, body) => total + (body.match(call)?.length ?? 0), 0);
+    }
+
+    it('reports no orphaned pure export, and the scan can still detect one', () => {
+      const bodies = productionSources();
+      expect(pureExports.length).toBeGreaterThan(0);
+      expect(bodies.length).toBeGreaterThan(1);
+
+      // The scan MUST NOT see test files. This file imports the module by name,
+      // so a broken `.test.ts` exclusion would pull it in — and every helper
+      // would then look reachable via its own unit tests, which is precisely the
+      // orphan this guard exists to catch. The marker below appears only here.
+      const testFileMarker = 'su-session-persistence-reachability-scan-marker';
+      expect(bodies.some((body) => body.includes(testFileMarker))).toBe(false);
+
+      const orphans = pureExports.filter((name) => callSites(name, bodies) === 0);
+      expect(orphans).toEqual([]);
+
+      // CALIBRATION: a name that is exported nowhere and called nowhere must read
+      // as orphaned. Without this the assertion above also passes when the scan
+      // silently matches everything — the exact way a guard stops guarding.
+      expect(callSites('suSessionRuntimeHelperThatDoesNotExist', bodies)).toBe(0);
+      // ...and a name that IS called must not read as orphaned, so the regex is
+      // not simply failing to match.
+      expect(callSites('classifySuSessionRuntime', bodies)).toBeGreaterThan(0);
     });
   });
 

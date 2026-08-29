@@ -2490,9 +2490,10 @@ impl App {
             || previous_generation
                 .is_some_and(|generation| snapshot.descriptor.runtime_generation > generation);
         let snapshot_adv_session_id = snapshot.descriptor.identity.adv_session_id;
-        let rematerializing = snapshot.runtime_reconciliation.as_ref().is_some_and(|r| {
-            r.action == crate::su_session::SuSessionRuntimeAction::Rematerialize
-        });
+        let rematerializing = snapshot
+            .runtime_reconciliation
+            .as_ref()
+            .is_some_and(|r| r.action == crate::su_session::SuSessionRuntimeAction::Rematerialize);
         let orphaned_runtime = snapshot.runtime_reconciliation.clone().filter(|r| {
             matches!(
                 r.action,
@@ -2517,13 +2518,12 @@ impl App {
         state.last_sequence = state.last_sequence.max(floor_sequence.saturating_sub(1));
         state.stale = false;
         state.error = None;
-        state.rematerialize = rematerializing.then_some(
-            crate::su_session::SuSessionRematerializeProgress {
+        state.rematerialize =
+            rematerializing.then_some(crate::su_session::SuSessionRematerializeProgress {
                 floor_sequence,
                 last_sequence: head_sequence,
                 applied_sequence: state.last_sequence,
-            },
-        );
+            });
         let replay_pending = state
             .rematerialize
             .is_some_and(|progress| !progress.is_complete());
@@ -2541,14 +2541,9 @@ impl App {
             } else {
                 crate::su_session::SuSessionReconciliation::Attached
             };
-        if let Some(progress) =
-            state
-                .rematerialize
-                .filter(|_| {
-                    state.reconciliation
-                        == crate::su_session::SuSessionReconciliation::Rematerializing
-                })
-        {
+        if let Some(progress) = state.rematerialize.filter(|_| {
+            state.reconciliation == crate::su_session::SuSessionReconciliation::Rematerializing
+        }) {
             self.session_note = Some(format!(
                 "Rematerializing archived transcript for adv {}: {}% ({} events remaining)",
                 snapshot_adv_session_id,
@@ -2572,7 +2567,11 @@ impl App {
                 snapshot_adv_session_id,
                 orphan.action.as_str(),
                 orphan.reason,
-                if orphan.stale_pid { " · stale pid" } else { "" }
+                if orphan.stale_pid {
+                    " · stale pid"
+                } else {
+                    ""
+                }
             ));
         } else if runtime_replaced {
             self.session_note = Some(format!(
@@ -11137,11 +11136,7 @@ mod tests {
         let mut app = App::new();
         app.agent_chat_id = Some("chat-1".into());
         app.set_su_session_binding(su_binding());
-        app.apply_su_session_snapshot(su_archived_snapshot(
-            1,
-            3,
-            Some(su_rematerialize_verdict()),
-        ));
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 3, Some(su_rematerialize_verdict())));
 
         // The cursor sits BELOW the retained floor, so every retained event is
         // still replayable rather than pre-acknowledged.
@@ -11149,6 +11144,7 @@ mod tests {
 
         let mut owner = su_event_base("transcript", 1);
         owner["phase"] = json!("completed");
+        owner["turnId"] = json!("turn-archived-1");
         owner["role"] = json!("owner");
         owner["channel"] = json!("primary");
         owner["content"] = json!("what did you conclude?");
@@ -11168,11 +11164,7 @@ mod tests {
         let mut app = App::new();
         app.agent_chat_id = Some("chat-1".into());
         app.set_su_session_binding(su_binding());
-        app.apply_su_session_snapshot(su_archived_snapshot(
-            1,
-            5,
-            Some(su_rematerialize_verdict()),
-        ));
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 5, Some(su_rematerialize_verdict())));
         assert_eq!(
             app.su_session.as_ref().unwrap().reconciliation,
             crate::su_session::SuSessionReconciliation::Rematerializing,
@@ -11184,6 +11176,7 @@ mod tests {
 
         let mut mid = su_event_base("transcript", 3);
         mid["phase"] = json!("completed");
+        mid["turnId"] = json!("turn-archived-mid");
         mid["role"] = json!("owner");
         mid["channel"] = json!("primary");
         mid["content"] = json!("halfway");
@@ -11290,24 +11283,17 @@ mod tests {
         let mut app = App::new();
         app.agent_chat_id = Some("chat-1".into());
         app.set_su_session_binding(su_binding());
-        app.apply_su_session_snapshot(su_archived_snapshot(
-            1,
-            3,
-            Some(su_rematerialize_verdict()),
-        ));
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 3, Some(su_rematerialize_verdict())));
         let mut owner = su_event_base("transcript", 3);
         owner["phase"] = json!("completed");
+        owner["turnId"] = json!("turn-archived-once");
         owner["role"] = json!("owner");
         owner["channel"] = json!("primary");
         owner["content"] = json!("only once");
         app.apply_su_session_event(su_event(owner.clone()));
         assert_eq!(app.su_session.as_ref().unwrap().last_sequence, 3);
 
-        app.apply_su_session_snapshot(su_archived_snapshot(
-            1,
-            3,
-            Some(su_rematerialize_verdict()),
-        ));
+        app.apply_su_session_snapshot(su_archived_snapshot(1, 3, Some(su_rematerialize_verdict())));
         assert_eq!(
             app.su_session.as_ref().unwrap().last_sequence,
             3,
@@ -11466,6 +11452,175 @@ mod tests {
     /// `AttachSuSession` was the user-initiated session picker (D-012), so a
     /// restart left a live session unattached until the user went and picked
     /// it — the startup half of the requirement had no code path at all.
+    fn backend_row(
+        chat_id: &str,
+        adv_session_id: i64,
+        backend: crate::su_session::SuSessionBackend,
+        lifecycle: crate::su_session::SuSessionLifecycleState,
+        reconciliation: crate::su_session::SuSessionReconciliation,
+    ) -> crate::su_session::SuSessionInventoryEntry {
+        crate::su_session::SuSessionInventoryEntry {
+            agent_chat_id: chat_id.into(),
+            adv_session_id,
+            backend,
+            lifecycle,
+            runtime_generation: 1,
+            native_session_id: format!("native-{adv_session_id}"),
+            terminal: matches!(
+                lifecycle,
+                crate::su_session::SuSessionLifecycleState::Ended
+                    | crate::su_session::SuSessionLifecycleState::Failed
+            ),
+            reconciliation,
+        }
+    }
+
+    /// P-010 RESTART JOURNEY — three concurrent backends across a PUI restart.
+    ///
+    /// The reconciliation this exercises is driven by the DURABLE inventory
+    /// (stable advSessionIds + persisted descriptors), not by live processes,
+    /// which is what makes a three-backend journey deterministic here at all.
+    /// PUI hosts one ACTIVE SU pane plus an inventory, so "concurrent Claude,
+    /// Codex and OMP sessions" means all three survive the restart on their
+    /// stable ids and each adopts exactly once as the owner moves between them.
+    ///
+    /// Asserted, in order: (1) a fresh process adopts the selected backend;
+    /// (2) switching selection adopts the next backend on ITS OWN advSessionId,
+    /// never the previously adopted one; (3) an ended row is preserved in the
+    /// inventory for inspection and never respawned; (4) returning to an
+    /// already-adopted session emits no second attach; (5) the whole sequence
+    /// repeats on a genuinely fresh App, which is what a restart is.
+    #[test]
+    fn su_restart_journey_adopts_three_concurrent_backends_exactly_once_each() {
+        use crate::su_session::SuSessionBackend as B;
+        use crate::su_session::SuSessionLifecycleState as L;
+        use crate::su_session::SuSessionReconciliation as R;
+
+        // Claude and Codex are live; OMP ended before the restart and must be
+        // preserved for inspection rather than adopted or relaunched.
+        let fleet = || {
+            vec![
+                backend_row("chat-claude", 101, B::Claude, L::Running, R::Attached),
+                backend_row("chat-codex", 102, B::Codex, L::Ready, R::Attached),
+                backend_row("chat-omp", 103, B::Omp, L::Ended, R::EndedArchived),
+            ]
+        };
+
+        // Selecting a chat and receiving the next inventory frame is exactly
+        // what the owner switching panes looks like to the reducer.
+        let adopt = |app: &mut App, chat_id: &str| -> Action {
+            app.agent_chat_id = Some(chat_id.into());
+            app.update(Event::SuSessionInventory {
+                harness: app.harness.clone(),
+                selected_chat_id: Some(chat_id.into()),
+                entries: fleet(),
+            })
+        };
+
+        for restart in 0..2 {
+            let mut app = App::new();
+
+            // (1) the selected backend is adopted on its stable adv id.
+            assert_eq!(
+                adopt(&mut app, "chat-claude"),
+                Action::AttachSuSession {
+                    harness: "papercup".into(),
+                    chat_id: "chat-claude".into(),
+                    adv_session_id: 101,
+                    backend: B::Claude,
+                },
+                "restart {restart}: Claude must be adopted by stable advSessionId"
+            );
+            // The whole fleet stays visible, not just the adopted pane.
+            assert_eq!(app.su_session_inventory.len(), 3);
+            assert_eq!(
+                app.su_session_inventory
+                    .iter()
+                    .map(|entry| entry.backend)
+                    .collect::<Vec<_>>(),
+                vec![B::Claude, B::Codex, B::Omp],
+                "restart {restart}: all three backends must survive the restart"
+            );
+
+            // (2) switching selection adopts the NEXT backend on its own id.
+            assert_eq!(
+                adopt(&mut app, "chat-codex"),
+                Action::AttachSuSession {
+                    harness: "papercup".into(),
+                    chat_id: "chat-codex".into(),
+                    adv_session_id: 102,
+                    backend: B::Codex,
+                },
+                "restart {restart}: Codex must adopt on 102, never re-adopt 101"
+            );
+
+            // (3) the ended OMP session is preserved for inspection and never
+            // respawned — selecting it must emit no attach at all.
+            assert_eq!(
+                adopt(&mut app, "chat-omp"),
+                Action::Render,
+                "restart {restart}: an ended session must be preserved, not respawned"
+            );
+            assert!(app
+                .su_session_inventory
+                .iter()
+                .any(|entry| entry.agent_chat_id == "chat-omp"
+                    && entry.reconciliation == R::EndedArchived));
+
+            // (4) returning to an already-adopted session emits no second attach.
+            assert_eq!(
+                adopt(&mut app, "chat-claude"),
+                Action::Render,
+                "restart {restart}: re-selecting an adopted session must not duplicate the pane"
+            );
+            assert_eq!(
+                app.su_adopted_sessions.iter().copied().collect::<Vec<_>>(),
+                vec![101, 102],
+                "restart {restart}: exactly the two live backends were adopted, each once"
+            );
+        }
+    }
+
+    /// The inventory row must honour the host's non-attachable verdicts, or a
+    /// `relaunch`/`wait` session is offered for adoption and a pane attaches to
+    /// a runtime the host already reported as absent.
+    #[test]
+    fn su_inventory_row_honours_a_non_attachable_runtime_verdict() {
+        for (action, expected) in [
+            (
+                "reattach",
+                crate::su_session::SuSessionReconciliation::Attached,
+            ),
+            (
+                "relaunch",
+                crate::su_session::SuSessionReconciliation::FailedOrphaned,
+            ),
+            ("wait", crate::su_session::SuSessionReconciliation::Pending),
+        ] {
+            let snapshot: crate::su_session::SuSessionSnapshot = serde_json::from_value(json!({
+                "ok": true,
+                "descriptor": {
+                    "identity": {"agentChatId":"chat-1", "advSessionId":7, "backend":"claude", "nativeSessionId":"native-1", "ownerId":"su-1", "workspaceId":"ws-1", "harnessSlug":"papercup"},
+                    "lifecycle":"running", "runtimeGeneration":1, "role":"su", "carry":"warm", "modes":[],
+                    "capabilities": {"commands":{}, "features":{}},
+                    "backendExtension": {"backend":"claude", "configDir":null, "configDirSource":null}
+                },
+                "floorSequence":1, "lastSequence":2, "terminal": false,
+                "runtimeReconciliation": {"action": action, "reason": "probe", "stalePid": true}
+            }))
+            .expect("decode SU snapshot");
+            let entry = crate::su_session::SuSessionInventoryEntry::from_snapshot(&snapshot);
+            assert_eq!(entry.reconciliation, expected, "action {action}");
+            if expected != crate::su_session::SuSessionReconciliation::Attached {
+                assert_ne!(
+                    entry.reconciliation,
+                    crate::su_session::SuSessionReconciliation::Attached,
+                    "{action} must not be offered for adoption"
+                );
+            }
+        }
+    }
+
     #[test]
     fn su_inventory_adopts_a_live_session_on_startup() {
         let mut app = App::new();

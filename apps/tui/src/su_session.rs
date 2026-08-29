@@ -397,8 +397,22 @@ pub struct SuSessionInventoryEntry {
 impl SuSessionInventoryEntry {
     pub fn from_snapshot(snapshot: &SuSessionSnapshot) -> Self {
         let lifecycle = snapshot.descriptor.lifecycle;
-        let reconciliation = if lifecycle == SuSessionLifecycleState::Failed {
+        // The inventory row must reach the SAME verdict as the pane reducer.
+        // Adoption keys off `reconciliation == Attached && !terminal`, so a row
+        // that ignored the host's non-attachable verdicts would offer a
+        // `relaunch`/`wait` session for adoption and attach a pane to a runtime
+        // the host has already said is not there — the duplicate/phantom pane
+        // P-010 exists to prevent.
+        let runtime_action = snapshot
+            .runtime_reconciliation
+            .as_ref()
+            .map(|reconciliation| reconciliation.action);
+        let reconciliation = if lifecycle == SuSessionLifecycleState::Failed
+            || runtime_action == Some(SuSessionRuntimeAction::Relaunch)
+        {
             SuSessionReconciliation::FailedOrphaned
+        } else if runtime_action == Some(SuSessionRuntimeAction::Wait) {
+            SuSessionReconciliation::Pending
         } else if lifecycle == SuSessionLifecycleState::Ended || snapshot.terminal {
             SuSessionReconciliation::EndedArchived
         } else {

@@ -340,6 +340,30 @@ describe('SuSessionHost', () => {
   });
 });
 
+describe('restart reconciliation on the host snapshot', () => {
+  afterEach(() => _resetSuSessionHostsForTest());
+
+  it('carries the reconciliation verdict a rehydrate classified', () => {
+    const host = new SuSessionHost<'claude'>({
+      descriptor: descriptor(),
+      runtimeReconciliation: { action: 'rematerialize', reason: 'ended_archived', stalePid: true },
+    });
+    expect(host.snapshot().runtimeReconciliation).toEqual({
+      action: 'rematerialize',
+      reason: 'ended_archived',
+      stalePid: true,
+    });
+  });
+
+  it('reports null for a host created live at launch rather than inventing a clean reattach', () => {
+    // A host that was never rehydrated performed no reconciliation. Reporting a
+    // synthetic `reattach` here would make PUI unable to tell "attached to a
+    // running runtime" from "rebuilt out of the archive" — which is the whole
+    // distinction this field exists to carry.
+    expect(new SuSessionHost<'claude'>({ descriptor: descriptor() }).snapshot().runtimeReconciliation).toBeNull();
+  });
+});
+
 describe('agent-chat SU-session route registration', () => {
   it('mounts snapshot, resumable event, and command endpoints on agent-chats', async () => {
     const routes = (await import('./endpoint-route/routes/agent-chats/su-session')).default;

@@ -127,12 +127,6 @@ export async function readDurableSuSession(input: {
   }
 }
 
-/** Read a descriptor snapshot by chat id, used to rehydrate a host after PUI restart. */
-export async function readPersistedSuSessionDescriptor(agentChatId: string, workspaceId = activeWorkspaceId()): Promise<SuSessionDescriptor | null> {
-  const record = await readDurableSuSession({ agentChatId, workspaceId });
-  return record?.descriptor ?? null;
-}
-
 /**
  * Bind one chat to one adv row. The UPDATE predicate and unique index make
  * concurrent duplicate launches converge on one winner; a different chat or
