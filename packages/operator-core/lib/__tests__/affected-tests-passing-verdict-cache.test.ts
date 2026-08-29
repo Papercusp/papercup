@@ -14,6 +14,7 @@ import {
   namespacePassingTaskVerdictDecision,
   PASSING_TASK_VERDICT_CACHE_MAX_GROUPS,
   PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+  PC_HEAVY_VOLATILE_IDENTITY_ENV,
   passingTaskVerdictCacheEntry,
   passingTaskVerdictCrossRunIdentityEnvironment,
   passingTaskVerdictDependencyProvenance,
@@ -598,5 +599,153 @@ describe('D-007 root `npm test` local cross-run reuse', () => {
     expect(shouldStorePassingTaskVerdict({ ...base, identity: null })).toBe(false);
     // A cache HIT must never be re-stored: that would refresh a proof nothing re-verified.
     expect(shouldStorePassingTaskVerdict({ ...base, cacheStatus: 'hit' })).toBe(false);
+  });
+});
+
+// EI-21748784988454958. The whole cross-run feature was INERT in production and every test above
+// still passed, because they build environments by hand and none of them contained the variable
+// that actually breaks it. `pc-heavy.sh` exports PC_HEAVY_ADMISSION_ID="pc-heavy-$$-$(date +%s%N)"
+// into every child, the identity hashes the COMPLETE environment minus a hand-written strip list,
+// and that list did not name it — so `environment` differed on EVERY invocation. Root `npm test`
+// (package.json:175) and the green-checkpoint gate both run under pc-heavy, so NEITHER could ever
+// hit. The observable symptom is indistinguishable from "the cache is working and nothing was
+// reusable", which is why it survived so long.
+describe('pc-heavy per-invocation variables are excluded from the cache identity', () => {
+  const PC_HEAVY_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/pc-heavy.sh'), 'utf8');
+
+  const identityFor = (environment: Record<string, unknown>) =>
+    buildPassingTaskVerdictIdentity({
+      taskKey: '@papercusp/web :: test',
+      command: { cmd: 'npm', argv: ['run', 'test'], cwd: '/repo' },
+      gateConfig: { retry: true, timeoutMs: 1000 },
+      dependencyHash: 'dep-a',
+      environment: passingTaskVerdictCrossRunIdentityEnvironment(environment).environment,
+    });
+
+  // A realistic child environment for two separate `npm test` invocations on an UNCHANGED tree.
+  const invocationOne = {
+    CI: '1',
+    AFFECTED_BASE: 'a2d69cef',
+    PAPERCUSP_TEST_RUN_GROUP: 'run-A',
+    PC_HEAVY_ADMISSION_ID: 'pc-heavy-2582689-1787966068993715006',
+    PC_HEAVY_PSI_FINALIZATION_FILE: '/tmp/pc-heavy-ready/finalization.aBc123',
+    PC_HEAVY_PREEMPT_START_FILE: '/tmp/pc-heavy-slots/scratch/start.xY9z01',
+  };
+  const invocationTwo = {
+    ...invocationOne,
+    PAPERCUSP_TEST_RUN_GROUP: 'run-B',
+    PC_HEAVY_ADMISSION_ID: 'pc-heavy-2599104-1787967914220388311',
+    PC_HEAVY_PSI_FINALIZATION_FILE: '/tmp/pc-heavy-ready/finalization.Qq77Zz',
+    PC_HEAVY_PREEMPT_START_FILE: '/tmp/pc-heavy-slots/scratch/start.Kj4m22',
+  };
+
+  it('hits across two invocations of the real root `npm test` environment', () => {
+    expect(identityFor(invocationTwo).fingerprint).toBe(identityFor(invocationOne).fingerprint);
+  });
+
+  it.each([
+    'PC_HEAVY_ADMISSION_ID',
+    'PC_HEAVY_PSI_FINALIZATION_FILE',
+    'PC_HEAVY_PREEMPT_START_FILE',
+  ])('a new %s alone does not invalidate the identity', (name) => {
+    const changed = { ...invocationOne, [name]: 'something-entirely-different' };
+    expect(identityFor(changed).fingerprint).toBe(identityFor(invocationOne).fingerprint);
+  });
+
+  // The strip must stay MINIMAL. Blanket-wiping PC_HEAVY_* would also pass every test above while
+  // silently discarding variables that DO change what a task exercises.
+  it('does not blanket-strip PC_HEAVY_*: a stable wrapper variable still counts', () => {
+    // PC_HEAVY_ADMISSION_DIR is "$_dir/psi-admissions" off PC_HEAVY_DIR/XDG_RUNTIME_DIR
+    // (pc-heavy.sh:1381,2772) — stable across invocations, so it is NOT volatile and stays hashed.
+    const moved = { ...invocationOne, PC_HEAVY_ADMISSION_DIR: '/somewhere/else/psi-admissions' };
+    const base = { ...invocationOne, PC_HEAVY_ADMISSION_DIR: '/run/user/1000/pc-heavy-slots/psi-admissions' };
+    expect(identityFor(moved).fingerprint).not.toBe(identityFor(base).fingerprint);
+  });
+
+  // ---- the DERIVED guard: pc-heavy.sh owns this truth, so read it rather than restating it ----
+  //
+  // Resolve one level of indirection: `PC_HEAVY_X="$_local"` is only volatile if some assignment
+  // to `_local` is. Returns the set of names whose value reaches a per-invocation expression.
+  //
+  // Deliberately matches an assignment with OR WITHOUT `export`. pc-heavy also injects variables
+  // as a command prefix — `PC_HEAVY_PREEMPT_RESULT_FILE="$_pc_heavy_retry_result_file" \` at
+  // pc-heavy.sh:3250 — which reaches the child exactly like an export but matches no `export`
+  // pattern. An `export`-only derivation silently under-reported that one.
+  //
+  // The bias is intentional: this errs toward OVER-inclusion. Naming a variable that never
+  // reaches the child is harmless (deleting an absent key is a no-op), whereas missing one that
+  // does is precisely the bug this whole block exists to prevent.
+  const volatileExportedNames = (): string[] => {
+    const VOLATILE = /\$\$|\$RANDOM|\$BASHPID|\bdate\s+\+%s|\bmktemp\b|_scratch_mktemp\b/;
+    const localAssignments = new Map<string, string[]>();
+    for (const m of PC_HEAVY_SRC.matchAll(/^\s*(?:local\s+)?(_[A-Za-z0-9_]+)=(.*)$/gm)) {
+      const [, name, rhs] = m;
+      localAssignments.set(name, [...(localAssignments.get(name) ?? []), rhs]);
+    }
+    const found = new Set<string>();
+    for (const m of PC_HEAVY_SRC.matchAll(/^\s*(?:export\s+)?(PC_HEAVY_[A-Z0-9_]+)=(.*)$/gm)) {
+      const [, name, rhs] = m;
+      if (VOLATILE.test(rhs)) {
+        found.add(name);
+        continue;
+      }
+      for (const ref of rhs.matchAll(/\$\{?(_[A-Za-z0-9_]+)\b/g)) {
+        if ((localAssignments.get(ref[1]) ?? []).some((v) => VOLATILE.test(v))) found.add(name);
+      }
+    }
+    return [...found].sort();
+  };
+
+  // CALIBRATION. Without this the guard below passes vacuously whenever the parser breaks or
+  // pc-heavy.sh is restructured — a zero-length derived set matches an empty residue perfectly,
+  // and reads exactly like "nothing is volatile". Assert the instrument still finds the variable
+  // that caused the bug before trusting anything it says.
+  it('the derivation actually detects the known-volatile exports (positive control)', () => {
+    const derived = volatileExportedNames();
+    // The variable that caused the bug: a plain `export NAME=` with an inline $$ / date +%s%N.
+    expect(derived).toContain('PC_HEAVY_ADMISSION_ID');
+    // Indirect + command-prefix form: injected without `export` (pc-heavy.sh:3250) and volatile
+    // only through `_pc_heavy_retry_result_file` -> `_pc_heavy_scratch_mktemp` (:3147). This
+    // pins BOTH the no-export branch and the one level of local-variable resolution; an
+    // export-only or non-resolving derivation drops it and fails here.
+    expect(derived).toContain('PC_HEAVY_PREEMPT_RESULT_FILE');
+    expect(derived.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('every per-invocation export pc-heavy.sh makes is stripped from the identity', () => {
+    const unstripped = volatileExportedNames().filter(
+      (name) => !PC_HEAVY_VOLATILE_IDENTITY_ENV.includes(name),
+    );
+    expect(unstripped).toEqual([]);
+  });
+
+  // FALSIFIABILITY CONTROL, kept permanently rather than proven once by mutating the shared tree.
+  // The guard above is only worth having if it FAILS on an incomplete list, and "expect([]) passes"
+  // is equally consistent with a guard that can never fail. This replays the exact pre-fix list and
+  // asserts the same comparison rejects it — so a future refactor that quietly defeats the
+  // derivation breaks HERE instead of going green while production reuse is dead again.
+  it('the same comparison rejects the pre-fix strip list (control)', () => {
+    const PRE_FIX_LIST = [
+      'PC_HEAVY_PREEMPT_READY_FILE',
+      'PC_HEAVY_PREEMPT_RESULT_FILE',
+      'PC_HEAVY_CALLER_PID',
+      'PC_HEAVY_CALLER_START_TICKS',
+      'PC_HEAVY_PREEMPT_NOTIFY_FD',
+    ];
+    const unstripped = volatileExportedNames().filter((name) => !PRE_FIX_LIST.includes(name));
+    expect(unstripped).toContain('PC_HEAVY_ADMISSION_ID');
+    expect(unstripped.length).toBeGreaterThan(0);
+  });
+
+  // Belt and braces on the mechanism itself: prove the strip list is what does the work, by
+  // checking each named variable really is absent from the hashed clone.
+  it('removes every listed variable from the identity clone but not the real child env', () => {
+    const environment = Object.fromEntries(
+      PC_HEAVY_VOLATILE_IDENTITY_ENV.map((n) => [n, 'per-invocation-value']),
+    );
+    const { environment: clone } = passingTaskVerdictIdentityEnvironment(environment);
+    expect(Object.keys(clone)).toEqual([]);
+    // The input object is never mutated — the child still receives its real plumbing.
+    expect(environment.PC_HEAVY_ADMISSION_ID).toBe('per-invocation-value');
   });
 });
