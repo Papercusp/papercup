@@ -602,11 +602,83 @@ describe('the vetting check (consult-min-max-and-rubric-vetting-2026-08-17 P-004
     expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-grader' });
   });
 
-  it('an unreadable current revision degrades OPEN: any linked vetting satisfies (never throws, never deadlocks)', async () => {
+  // EI-21827040531672903 split this case in two. It used to be one test asserting that
+  // ANY null revision "degrades OPEN", which conflated a rubric that genuinely has no
+  // revision (fine — nothing to pin against) with a revision read that FAILED (not
+  // fine — the guard silently became no guard, and rendered no refusal, so nothing
+  // recorded that it had been skipped). The first still degrades open; the second now
+  // refuses. The pair is the falsifiability control for each other.
+  it('a SUCCESSFUL read of an unversioned rubric degrades OPEN: any linked vetting satisfies (never deadlocks)', async () => {
     mockRevision.mockResolvedValue(null);
     stockScorecards([metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 } })]);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v.satisfied).toBe(true);
+  });
+
+  it('a FAILED revision read refuses instead of failing open — the same state that satisfies on a successful read', async () => {
+    // Identical scorecard state in both halves; the ONLY delta is whether the read
+    // succeeded. If the guard still short-circuited on the null, both would satisfy.
+    const staleVetting = [metaVettingCard({ vetting: { consultId: 'conv-vet-1', rubricRevision: 3 } })];
+
+    mockRevisionRead.mockResolvedValue({ ok: true, revision: null });
+    stockScorecards(staleVetting);
+    expect((await evaluatePlanAcceptanceGate('some-plan-2026-08-11')).satisfied).toBe(true);
+
+    mockRevisionRead.mockResolvedValue({ ok: false, revision: null });
+    stockScorecards(staleVetting);
+    const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+    expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_revision_unreadable' });
+    // The refusal must read as an infrastructure fault, not a missing plan step —
+    // otherwise the next agent goes looking for work that was already done.
+    expect(v.message).toContain('Retry');
+  });
+
+  describe('vetting must PRECEDE grading (EI-21827040531672903)', () => {
+    // All timestamps here are past VETTING_PRECEDES_GRADING_REQUIRED_AFTER so the
+    // ordering leg is live; the grandfathering case below deliberately sits before it.
+    const gradedAt = '2026-09-01T02:00:00Z';
+    const acceptedCards = [
+      scorecard({ createdAt: gradedAt, createdBy: 'su-grader' }),
+      scorecard({
+        issueId: 'EI-accept',
+        createdAt: '2026-09-01T03:00:00Z',
+        createdBy: 'su-implementer',
+        acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets the plan.' },
+      }),
+    ];
+
+    it('refuses when the attestation post-dates the grading — the grading was emitted against an unvetted rubric', async () => {
+      stockScorecards([metaVettingCard({ createdAt: '2026-09-01T05:00:00Z' })], acceptedCards);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_vetted_after_grading' });
+      // Both timestamps belong in the message: the complaint is about ORDER, and a
+      // reader who cannot see both cannot tell that the attestation itself is fine.
+      expect(v.message).toContain('2026-09-01T05:00:00Z');
+      expect(v.message).toContain(gradedAt);
+    });
+
+    it('CONTROL: the same state with the attestation moved BEFORE the grading satisfies', async () => {
+      stockScorecards([metaVettingCard({ createdAt: '2026-09-01T01:00:00Z' })], acceptedCards);
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-grader' });
+    });
+
+    it('a grading created BEFORE the compatibility boundary is grandfathered, even though the attestation follows it', async () => {
+      stockScorecards(
+        [metaVettingCard({ createdAt: '2026-08-30T05:00:00Z' })],
+        [
+          scorecard({ createdAt: '2026-08-30T02:00:00Z', createdBy: 'su-grader' }),
+          scorecard({
+            issueId: 'EI-accept',
+            createdAt: '2026-08-30T06:00:00Z',
+            createdBy: 'su-implementer',
+            acceptance: { verdict: 'accept', reasoning: 'The independent evidence meets the plan.' },
+          }),
+        ],
+      );
+      const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
+      expect(v).toMatchObject({ satisfied: true, gradedBy: 'su-grader' });
+    });
   });
 
   // EI-20821478338037350: a rubric vetted under an explicit no-critique waiver still
