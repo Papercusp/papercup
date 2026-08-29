@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkspaceHostCleanRoomInstallFixture } from '@papercusp/deployment-driver';
 
-import { GcpWorkspaceHostCleanRoomExecutor } from './workspace-host-clean-room-executor';
+import {
+  GcpWorkspaceHostCleanRoomExecutor,
+  excerptDiagnostic,
+} from './workspace-host-clean-room-executor';
 import type {
   GcpImageFamilyCommandResult,
   GcpImageFamilyCommandRunner,
@@ -177,5 +180,80 @@ describe('the production executor never manufactures its own evidence', () => {
     expect(code).not.toContain('runWorkspaceHostCleanRoomAcceptance');
     expect(code).not.toContain('signatureVerified');
     expect(code).not.toContain("passed: true");
+  });
+});
+
+/**
+ * A failed clean-room boot costs ~12 billable minutes, so its stderr is the most expensive
+ * string this class handles. These pin that the diagnostic survives the trip.
+ *
+ * The bug being guarded is subtle because the wrong version LOOKS correct: bounding the text
+ * with `slice(-N)` keeps the end of the output, which is where a shell reader's eye goes and
+ * where systemd's summary lives. But a Node failure prints its message and stack FIRST. So a
+ * tail-only bound preserves a fluent description of the aftermath and silently amputates the
+ * cause — and the result reads as a complete diagnostic, which is why it survived review.
+ */
+describe('clean-room failure diagnostics', () => {
+  /** Shaped like the real P-046 failure: cause at the top, systemd epilogue at the bottom. */
+  function guestFailureOutput(filler: number): string {
+    return [
+      'Error: Cannot find module rocksdb-native.node. Candidates:',
+      '- file:///opt/papercusp/releases/0.0.18/node_modules/rocksdb-native/prebuilds/linux-x64/rocksdb-native.node',
+      '    at require.addon (/opt/papercusp/releases/0.0.18/node_modules/require-addon/lib/node.js:50:17)',
+      ...Array.from({ length: filler }, (_, i) => `  middle noise line ${String(i)}`),
+      'papercusp-workspace.service: Main process exited, code=exited, status=1/FAILURE',
+      'papercusp-workspace.service: Consumed 8.465s CPU time.',
+    ].join('\n');
+  }
+
+  it('keeps the CAUSE at the head, not just the systemd epilogue at the tail', () => {
+    const excerpt = excerptDiagnostic(guestFailureOutput(2_000), 400);
+
+    // The head — the only part naming what actually failed.
+    expect(excerpt).toContain('Cannot find module rocksdb-native.node');
+    expect(excerpt).toContain('require.addon');
+    // The tail — still useful, still present.
+    expect(excerpt).toContain('Consumed 8.465s CPU time.');
+    // And it says what it dropped rather than pretending to be complete.
+    expect(excerpt).toMatch(/chars omitted from the middle/);
+  });
+
+  it('returns short output untouched rather than decorating it', () => {
+    expect(excerptDiagnostic('  boom  ', 400)).toBe('boom');
+  });
+
+  it('surfaces the head of a long guest failure through execute(), and spills the full text', async () => {
+    const stderr = guestFailureOutput(5_000);
+    const { runner } = runnerReturning({ exitCode: 1, stderr });
+    const executor = new GcpWorkspaceHostCleanRoomExecutor({ ...placement, commandRunner: runner });
+
+    const error = await executor.execute(fixture).then(
+      () => null,
+      (e: unknown) => (e instanceof Error ? e : null),
+    );
+    expect(error).not.toBeNull();
+    const message = error?.message ?? '';
+
+    // The regression: with a tail-only slice this assertion fails and the others pass.
+    expect(message).toContain('Cannot find module rocksdb-native.node');
+    expect(message).toContain('exit code 1');
+
+    // The full, unabridged output must be recoverable without paying for another boot.
+    const spill = /\[full guest stderr: ([^\]]+)\]/.exec(message);
+    expect(spill).not.toBeNull();
+    const { readFile } = await import('node:fs/promises');
+    await expect(readFile(spill?.[1] ?? '', 'utf8')).resolves.toBe(stderr);
+  });
+
+  it('never reintroduces a tail-only bound on the diagnostic', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(
+      new URL('./workspace-host-clean-room-executor.ts', import.meta.url),
+      'utf8',
+    );
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+
+    // `slice(-N)` on the diagnostic is the exact shape that dropped the cause.
+    expect(code).not.toMatch(/stderr[^\n]*\.slice\(\s*-/);
   });
 });
