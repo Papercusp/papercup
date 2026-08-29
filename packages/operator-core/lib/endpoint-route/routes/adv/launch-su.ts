@@ -475,8 +475,16 @@ const launchSu = defineTool({
       if (advSessionId == null) {
         return json({ status: 'error', error: 'failed to record session' }, 500);
       }
+      let deferredBindingError: string | null = null;
       if (agentChatId) {
         const binding = await bindSuSessionToAdvSession({ advSessionId, agentChatId }).catch(() => null);
+        if (binding?.status === 'error') {
+          // Fail OPEN — the adv row is committed and the pane is still worth
+          // showing — but never fail SILENT: an unbound row cannot be attached
+          // to later, and a bind that could not even be evaluated used to be
+          // indistinguishable here from a clean 'not_found'.
+          deferredBindingError = binding.reason;
+        }
         if (binding?.status === 'conflict') {
           // A concurrent creator may have won the unique chat index between
           // the duplicate read and this row insert. Close this loser before it
@@ -516,6 +524,7 @@ const launchSu = defineTool({
         harnessSlug: harness,
         planSlug: plan,
         nativeSession: null,
+        ...(deferredBindingError ? { bindingError: deferredBindingError } : {}),
         ...(contextSizeNormalization ? { contextSizeNormalization } : {}),
       });
     }

@@ -35,7 +35,16 @@ export type SuSessionBindingResult =
   | { status: 'bound'; record: DurableSuSessionRecord }
   | { status: 'already_bound'; record: DurableSuSessionRecord }
   | { status: 'not_found' }
-  | { status: 'conflict'; reason: 'chat_bound_elsewhere' | 'identity_mismatch' };
+  | { status: 'conflict'; reason: 'chat_bound_elsewhere' | 'identity_mismatch' }
+  /**
+   * The bind could not be evaluated — a database fault, not a verdict about
+   * the row. Distinct from `not_found` ON PURPOSE: collapsing the two is what
+   * hid a bind that threw on EVERY call (the RETURNING clause referenced an
+   * alias the UPDATE never declared, so Postgres raised 42703 and the blanket
+   * catch reported it as an absent row). A caller may fail open on this, but
+   * it must not read it as "no such session".
+   */
+  | { status: 'error'; reason: string };
 
 export type RuntimeReconciliation =
   | { action: 'reattach'; reason: 'live_pid' | 'native_identity' | 'runtime_replacement'; stalePid: boolean }
@@ -148,23 +157,43 @@ export async function bindSuSessionToAdvSession(input: {
     const { sql } = getOrgPg();
     const workspaceId = input.workspaceId ?? activeWorkspaceId();
     const descriptorJson = input.descriptor ? JSON.stringify(input.descriptor) : null;
+    // The alias `a` is REQUIRED, not cosmetic: RECORD_COLUMNS projects
+    // `to_jsonb(a)` (adv_sessions has no harness_slug column of its own), and
+    // an UPDATE's implicit alias is the unqualified table name — so without
+    // `AS a` this RETURNING raised 42703 `column "a" does not exist` on every
+    // call and the catch below turned it into a silent `not_found`.
+    // `prev` carries the row's state from BEFORE this UPDATE. Without it the
+    // bound/already_bound discriminator was computed from the post-update row,
+    // so a bind that supplied a descriptor could only ever report
+    // 'already_bound' — including the very first bind, which is the one case
+    // it exists to distinguish. Its `id` is aliased so RECORD_COLUMNS' bare
+    // `id` stays unambiguous. No FOR UPDATE on purpose: the unique index
+    // (workspace_id, su_agent_chat_id) is what actually serializes concurrent
+    // binders, and these two columns are informational — taking a row lock on
+    // this hot table would add a lock-ordering hazard to buy nothing.
     const rows = await sql<Record<string, unknown>[]>`
-      UPDATE harness_shared.adv_sessions
+      UPDATE harness_shared.adv_sessions AS a
          SET su_agent_chat_id = ${input.agentChatId.trim()},
-             su_session_descriptor = COALESCE(${descriptorJson}::jsonb, su_session_descriptor),
-             su_session_state = COALESCE(${input.descriptor?.lifecycle ?? null}, su_session_state),
-             su_runtime_generation = COALESCE(${input.descriptor?.runtimeGeneration ?? null}, su_runtime_generation),
+             su_session_descriptor = COALESCE(${descriptorJson}::jsonb, a.su_session_descriptor),
+             su_session_state = COALESCE(${input.descriptor?.lifecycle ?? null}, a.su_session_state),
+             su_runtime_generation = COALESCE(${input.descriptor?.runtimeGeneration ?? null}, a.su_runtime_generation),
              su_session_updated_at = now()
-       WHERE id = ${input.advSessionId}
-         AND workspace_id = ${workspaceId}
-         AND (su_agent_chat_id IS NULL OR su_agent_chat_id = ${input.agentChatId.trim()})
-       RETURNING ${sql.unsafe(RECORD_COLUMNS)}`;
+        FROM (
+          SELECT id AS prev_id,
+                 su_agent_chat_id AS prior_agent_chat_id,
+                 (su_session_descriptor IS NOT NULL) AS prior_has_descriptor
+            FROM harness_shared.adv_sessions
+           WHERE id = ${input.advSessionId} AND workspace_id = ${workspaceId}
+        ) AS prev
+       WHERE a.id = prev.prev_id
+         AND (a.su_agent_chat_id IS NULL OR a.su_agent_chat_id = ${input.agentChatId.trim()})
+       RETURNING ${sql.unsafe(RECORD_COLUMNS)}, prev.prior_agent_chat_id, prev.prior_has_descriptor`;
     if (rows[0]) {
       const record = mapRow(rows[0]);
-      return {
-        status: record.agentChatId === input.agentChatId.trim() && record.descriptor ? 'already_bound' : 'bound',
-        record,
-      };
+      const priorChatId =
+        typeof rows[0].prior_agent_chat_id === 'string' ? rows[0].prior_agent_chat_id : null;
+      const alreadyBound = priorChatId === input.agentChatId.trim() && rows[0].prior_has_descriptor === true;
+      return { status: alreadyBound ? 'already_bound' : 'bound', record };
     }
     const existing = await readDurableSuSession({ advSessionId: input.advSessionId, workspaceId });
     if (!existing) return { status: 'not_found' };
@@ -173,7 +202,12 @@ export async function bindSuSessionToAdvSession(input: {
     if ((error as { code?: string })?.code === '23505') {
       return { status: 'conflict', reason: 'chat_bound_elsewhere' };
     }
-    return { status: 'not_found' };
+    // NOT `not_found`: an exception says nothing about whether the row exists,
+    // and reporting it as an absent row is precisely how a bind that could
+    // never succeed went unnoticed through three adapters and the launch route.
+    const code = (error as { code?: string })?.code;
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'error', reason: code ? `${code}: ${message}` : message };
   }
 }
 
