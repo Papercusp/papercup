@@ -1749,8 +1749,8 @@ export type FleetExecutionCollapseAlertEvaluation =
       evidence: FleetExecutionCollapseEvidence;
       falsifier: AlertFalsifier;
     }
-  | { alert: false; evidence: FleetExecutionCollapseEvidence }
-  | { alert: null; reason: string; evidence: FleetExecutionCollapseEvidence };
+  | { alert: false; reason?: never; falsifier?: never; evidence: FleetExecutionCollapseEvidence }
+  | { alert: null; reason: string; falsifier?: never; evidence: FleetExecutionCollapseEvidence };
 
 export interface FleetExecutionCollapseEvidence {
   rosterMembers: number;
