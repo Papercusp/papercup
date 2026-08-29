@@ -428,6 +428,40 @@ describe('GCP image-family production adapter', () => {
     expect(template).toMatch(/\^projects\/\[\^\/\]\+\/global\/images\/\[\^\/\]\+\$/);
   });
 
+  /**
+   * Recurrence guard for the dash/bash split (P-046, 2026-08-29).
+   *
+   * Every inline provisioner in this template opens with `set -Eeuo pipefail`, which is bash-only.
+   * Packer's default `inline_shebang` is `/bin/sh` — dash on Ubuntu — so a shell provisioner that
+   * does not override the interpreter dies on its FIRST line with
+   *   /tmp/script_1326.sh: 2: set: Illegal option -o pipefail
+   *
+   * One of the seven blocks was missing its `execute_command`, and that is precisely why it
+   * survived review: the other six set it, so the file reads as though a single shell is in use
+   * throughout, and the odd one out is invisible unless you check every block. A per-block
+   * invariant is cheap; noticing an absence in a uniform-looking list is not.
+   *
+   * The check is per-block rather than a count comparison on purpose — equal totals can be
+   * reached with one block missing the setting and another carrying it twice.
+   */
+  it('runs every shell provisioner under bash, since they all use bash-only pipefail', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL), 'utf8');
+    const blocks = template.split(/provisioner\s+"shell"\s*\{/).slice(1);
+    expect(blocks.length).toBeGreaterThan(0);
+
+    for (const [index, rest] of blocks.entries()) {
+      // Bound each block at the start of the next provisioner so the search cannot run past it.
+      const block = rest.split(/\n\s{0,2}provisioner\s+"/)[0] ?? '';
+      const usesBashOnlySyntax = /set\s+-[A-Za-z]*o\s+pipefail|set\s+-[A-Za-z]*u[A-Za-z]*\s/.test(block);
+      if (!usesBashOnlySyntax) continue;
+      expect(
+        /execute_command\s*=\s*"[^"]*\bbash\b/.test(block) || /inline_shebang\s*=\s*"[^"]*\bbash\b/.test(block),
+        `shell provisioner #${String(index + 1)} uses bash-only syntax but does not force a bash interpreter, ` +
+          'so packer will run it under /bin/sh (dash) and it will die on `set -o pipefail`',
+      ).toBe(true);
+    }
+  });
+
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
     const compute = new ComputeFake();
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(

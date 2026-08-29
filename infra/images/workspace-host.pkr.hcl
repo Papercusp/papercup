@@ -389,7 +389,16 @@ build {
   sources = ["source.googlecompute.workspace_host"]
 
   # 1. Do not race cloud-init: an apt run started underneath it deadlocks on the dpkg lock.
+  #
+  # ⚠ execute_command is REQUIRED on every shell provisioner here, including this one, which
+  # needs no root. Without it packer runs the inline script through its default
+  # `inline_shebang` of `/bin/sh` — dash on Ubuntu — and the very first line dies with
+  #   /tmp/script_1326.sh: 2: set: Illegal option -o pipefail
+  # because `pipefail` is bash-only. This block was the ONLY one of the five missing it, which
+  # is exactly why it went unnoticed: the four siblings below set it, so the file reads as
+  # though one shell is in use throughout. Keep all five identical (P-046, 2026-08-29).
   provisioner "shell" {
+    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
     inline = [
       "set -Eeuo pipefail",
       "cloud-init status --wait",
