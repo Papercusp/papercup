@@ -2037,7 +2037,10 @@ fn draw_docs(f: &mut Frame, app: &App, area: Rect) {
         .highlight_symbol("> ");
     f.render_stateful_widget(list, cols[0], &mut state);
 
-    let title = app.docs_files.get(app.doc_sel).cloned().unwrap_or_default();
+    // Through the FILTER, not the raw list: `doc_sel` indexes visible_docs(), so
+    // reading docs_files here would title the reader pane with a different doc
+    // than the one the cursor is on whenever a filter is active.
+    let title = app.selected_doc().unwrap_or_default();
     // The active doc's source · status, appended to the reader title.
     let meta = app
         .doc_active
@@ -6186,6 +6189,37 @@ mod tests {
         let filtered = render(&app, 220, 12);
         assert!(filtered.contains("1/2"), "{filtered}");
         assert!(!filtered.contains("tokens.md"), "{filtered}");
+    }
+
+    /// The reader pane must title itself with the doc the CURSOR is on, resolved
+    /// through the filter. The needle here deliberately selects the doc at raw
+    /// index 1 while `doc_sel` is 0, so a renderer that indexes `docs_files`
+    /// instead of `visible_docs()` titles the pane with the wrong document —
+    /// which is exactly the defect this asserts against, and which a needle
+    /// matching the first entry would not expose.
+    #[test]
+    fn docs_reader_title_follows_the_filtered_selection() {
+        let mut app = App::new();
+        app.tab = Tab::Docs;
+        app.set_docs(crate::models::DocsResponse {
+            files: vec![
+                "internal/docs/testing/agent-e2e.md".into(),
+                "internal/docs/design/tokens.md".into(),
+            ],
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+        app.docs_query = "design".into();
+        app.doc_sel = 0;
+
+        let filtered = render(&app, 220, 12);
+        assert!(filtered.contains("tokens.md"), "{filtered}");
+        assert!(
+            !filtered.contains("agent-e2e"),
+            "reader title fell back to the unfiltered list: {filtered}"
+        );
     }
 
     #[test]
