@@ -565,6 +565,68 @@ describe('GCP image-family production adapter', () => {
     }
   });
 
+  /**
+   * A scan failure must arrive WITH its diagnosis, not just an exit code.
+   *
+   * Measured on P-046 (2026-08-29): the r18d release finally cleared the packer build — the
+   * expensive part — and then died with exactly `GCP image scanner failed with exit code 1`
+   * and nothing else. Both of the scanner's streams had been captured by the command runner
+   * and then discarded by a hand-rolled exit check, so the only way to learn WHY was to spend
+   * another full billable image build. That is the same defect, in the same file, that had
+   * already cost three builds on the packer path hours earlier; the packer path was fixed by
+   * routing through assertSuccess and this path was left behind.
+   *
+   * The guard therefore asserts the two properties that make a failure diagnosable — the
+   * complete output is spilled to a named file, and BOTH streams reach it — rather than
+   * asserting any particular wording, which would just re-freeze today's message.
+   */
+  it('spills the scanner and clean-room diagnosis instead of reporting a bare exit code', async () => {
+    for (const stage of ['scan', 'clean-room'] as const) {
+      const compute = new ComputeFake();
+      // Distinctive per-stream sentinels: a failure that keeps only the stream you EXPECT the
+      // error on is precisely how the packer diagnosis vanished (EI-21762126059344308).
+      const stdoutMark = `SENTINEL_STDOUT_${stage}_9f2a`;
+      const stderrMark = `SENTINEL_STDERR_${stage}_7c4b`;
+      const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+        baseOptions(compute, {
+          commandRunner: {
+            run: async () => ({ exitCode: 3, stdout: stdoutMark, stderr: stderrMark }),
+          },
+        }),
+      );
+      await adapter.bindReleaseContext(CONTEXT);
+
+      const failure = await adapter
+        .scanImage({
+          projectId: PROJECT,
+          imageId: CANDIDATE_ID,
+          buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+          releaseSha256: RELEASE_SHA,
+        })
+        .then(
+          () => null,
+          (error: unknown) => (error instanceof Error ? error.message : String(error)),
+        );
+
+      // Control: the call really did fail. Without this a broken assertion below would pass
+      // vacuously on a scan that unexpectedly SUCCEEDED.
+      expect(failure).not.toBeNull();
+      const message = failure as string;
+
+      // The exit code alone is what the old message carried; it is necessary but not enough.
+      expect(message).toContain('exit code 3');
+
+      // The property that actually matters: a named file holding the COMPLETE output.
+      const spillMatch = message.match(/\[full output: ([^\]]+)\]/);
+      expect(spillMatch).not.toBeNull();
+
+      const spilled = await readFile((spillMatch as RegExpMatchArray)[1], 'utf8');
+      // BOTH streams, not just the one a reader would guess the error went to.
+      expect(spilled).toContain(stdoutMark);
+      expect(spilled).toContain(stderrMark);
+    }
+  });
+
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
     const compute = new ComputeFake();
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
