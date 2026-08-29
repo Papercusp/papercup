@@ -345,9 +345,18 @@ export function hashDependencyFileSet({
   }
   const hash = createHash("sha256");
   hash.update("passing-task-dependency-closure-v1\0");
+  // WI-595883: the MEMBERSHIP hash is kept separate from the content hash on purpose. A closure
+  // whose file LIST moved and a closure whose file BYTES moved both change `hash` identically,
+  // so the single aggregate cannot tell an agent which of the two happened — and those two have
+  // opposite repairs (exclude a churning path vs. investigate a digest). Two hashes discriminate
+  // them for ~64 bytes per task.
+  const listHash = createHash("sha256");
+  listHash.update("passing-task-dependency-closure-list-v1\0");
   for (const file of unique) {
     const digest = digestFile(root, file, digestCache);
     if (!digest.ok) return digest;
+    listHash.update(file);
+    listHash.update("\0");
     hash.update(file);
     hash.update("\0");
     hash.update(digest.kind);
@@ -357,7 +366,203 @@ export function hashDependencyFileSet({
     hash.update(digest.digest);
     hash.update("\0");
   }
-  return { ok: true, hash: hash.digest("hex"), fileCount: unique.length };
+  return {
+    ok: true,
+    hash: hash.digest("hex"),
+    listHash: listHash.digest("hex"),
+    fileCount: unique.length,
+    // The sorted closure itself, so a `dependency-closure-changed` miss can be diffed against the
+    // previous run's observations WITHOUT re-deriving the closure. These are the same string
+    // objects already held by the tracked scan, so retaining them costs references, not bytes.
+    files: unique,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// WI-595883 — closure-delta diagnostics.
+//
+// `dependency-closure-changed` is emitted whenever the closure component of the identity moved,
+// and on its own it is UNACTIONABLE: it says a hash differs, not which of ~1,100 files caused it.
+// On a shared tree that peers edit continuously, that one string is equally consistent with
+// "a peer touched scripts/" (environmental, repair = narrow the closure) and with "the digest is
+// unstable" (a bug, repair = fix the hash). The sidecar below records what each run OBSERVED, so
+// the next run's miss can name the moved path instead of leaving the reader to guess.
+//
+// It is a SIDECAR, not an entry field, because closure digests are shared across every task in a
+// run: one global map costs ~100KB, while the same data per-entry would cost tens of megabytes.
+// It can only ever produce a better error message, so every read of it fails open.
+// ---------------------------------------------------------------------------
+
+export const CLOSURE_DIGEST_MANIFEST_VERSION = 1;
+/** Bounds the sidecar for a repo-wide guard task, whose closure is the entire tracked tree. */
+export const CLOSURE_DIGEST_MANIFEST_MAX_FILES = 40000;
+
+export function closureDigestManifestPath(cachePath) {
+  return `${cachePath}.closure-manifest.json`;
+}
+
+export function emptyClosureDigestManifest() {
+  return {
+    version: CLOSURE_DIGEST_MANIFEST_VERSION,
+    updatedAt: null,
+    files: {},
+    tasks: {},
+  };
+}
+
+/** The full identity of one file AS THE CLOSURE HASH SEES IT — kind and mode included. */
+export function closureDigestToken({ kind, mode, digest }) {
+  return `${kind}:${mode}:${digest}`;
+}
+
+/**
+ * Project the run's `digestCache` (absolute path keys) into repo-relative observations.
+ * Anything outside the root is dropped rather than recorded under an ambiguous key.
+ */
+export function observedClosureDigests(root, digestCache) {
+  const observed = {};
+  for (const [abs, value] of digestCache ?? []) {
+    if (!value || value.ok === false) continue;
+    const rel = relative(root, abs);
+    if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) continue;
+    observed[rel.split(sep).join("/")] = closureDigestToken(value);
+  }
+  return observed;
+}
+
+export function readClosureDigestManifest(path) {
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8"));
+    if (
+      parsed?.version !== CLOSURE_DIGEST_MANIFEST_VERSION ||
+      !parsed.files ||
+      typeof parsed.files !== "object" ||
+      Array.isArray(parsed.files)
+    ) {
+      return {
+        manifest: emptyClosureDigestManifest(),
+        reason: "manifest-unusable",
+      };
+    }
+    return {
+      manifest: {
+        ...emptyClosureDigestManifest(),
+        ...parsed,
+        tasks:
+          parsed.tasks && typeof parsed.tasks === "object" && !Array.isArray(parsed.tasks)
+            ? parsed.tasks
+            : {},
+      },
+      reason: "manifest-ready",
+    };
+  } catch (error) {
+    return {
+      manifest: emptyClosureDigestManifest(),
+      reason: error?.code === "ENOENT" ? "manifest-missing" : "manifest-corrupt",
+    };
+  }
+}
+
+/**
+ * Fold this run's observations over the prior ones. A file the current run did not digest KEEPS
+ * its last observed value: the sidecar answers "what was this path when anyone last looked", and
+ * a narrow run must not erase a wide run's record. Newest observations win the size cap.
+ */
+export function mergeClosureDigestManifest(
+  prior,
+  observed,
+  taskShapes = {},
+  updatedAt = new Date().toISOString(),
+  cap = CLOSURE_DIGEST_MANIFEST_MAX_FILES,
+) {
+  const files = { ...(prior?.files ?? {}), ...observed };
+  const observedKeys = new Set(Object.keys(observed));
+  let retained = files;
+  const names = Object.keys(files);
+  if (names.length > cap) {
+    // Evict paths this run did not observe first; they are the least likely to be asked about.
+    const ordered = [
+      ...names.filter((name) => observedKeys.has(name)),
+      ...names.filter((name) => !observedKeys.has(name)),
+    ].slice(0, cap);
+    retained = Object.fromEntries(ordered.map((name) => [name, files[name]]));
+  }
+  return {
+    version: CLOSURE_DIGEST_MANIFEST_VERSION,
+    updatedAt,
+    files: retained,
+    tasks: { ...(prior?.tasks ?? {}), ...taskShapes },
+  };
+}
+
+/**
+ * Explain one `dependency-closure-changed` miss.
+ *
+ * Membership is checked FIRST because it subsumes content: if the file list moved, per-file
+ * digests are the wrong question. `unknownPrior` is deliberately distinct from `changed` — a path
+ * absent from the sidecar was never observed, which is not evidence that it moved.
+ */
+export function diffClosureDigests({
+  prior,
+  observed,
+  files,
+  listHash,
+  taskKey,
+  limit = 8,
+}) {
+  const priorFiles = prior?.files ?? {};
+  const priorShape = taskKey ? prior?.tasks?.[taskKey] : undefined;
+  const membershipChanged =
+    priorShape != null &&
+    typeof priorShape.listHash === "string" &&
+    typeof listHash === "string" &&
+    priorShape.listHash !== listHash;
+  const changed = [];
+  const unknownPrior = [];
+  for (const file of files ?? []) {
+    const before = priorFiles[file];
+    const now = observed?.[file];
+    if (before === undefined || now === undefined) {
+      unknownPrior.push(file);
+      continue;
+    }
+    if (before !== now) changed.push(file);
+  }
+  return {
+    fileCount: files?.length ?? 0,
+    priorFileCount: priorShape?.fileCount ?? null,
+    membershipChanged,
+    changedCount: changed.length,
+    unknownPriorCount: unknownPrior.length,
+    changed: changed.slice(0, limit),
+    unknownPrior: unknownPrior.slice(0, limit),
+    // The case the whole sidecar exists to make visible: the aggregate hash moved while every
+    // file it covers is byte-, mode- and membership-identical. That is not environmental churn,
+    // it is an unstable hash, and nothing else in this run distinguishes the two.
+    unexplained:
+      priorShape != null &&
+      !membershipChanged &&
+      changed.length === 0 &&
+      unknownPrior.length === 0,
+  };
+}
+
+/** One greppable line per explained miss — the instrument an A/B run reads. */
+export function formatClosureDeltaLine({ taskKey, reason, delta, manifestReason }) {
+  return [
+    "AFFECTED_TASK_CACHE_CLOSURE_DELTA",
+    `task=${JSON.stringify(taskKey)}`,
+    `reason=${reason}`,
+    `manifest=${manifestReason}`,
+    `fileCount=${delta.fileCount}`,
+    `priorFileCount=${delta.priorFileCount ?? "unknown"}`,
+    `membershipChanged=${delta.membershipChanged}`,
+    `changed=${delta.changedCount}`,
+    `unknownPrior=${delta.unknownPriorCount}`,
+    `unexplained=${delta.unexplained}`,
+    `changedPaths=${JSON.stringify(delta.changed)}`,
+    `unknownPriorPaths=${JSON.stringify(delta.unknownPrior)}`,
+  ].join(" ");
 }
 
 const pathInsideDir = (file, dir) => file === dir || file.startsWith(`${dir}/`);
