@@ -5,7 +5,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 // Leaf module on purpose: workspace-host-clean-room-executor (where this helper used to live)
 // imports THIS file, so importing it from there would be a cycle.
-import { excerptDiagnostic } from './diagnostic-excerpt';
+import { excerptDiagnostic, spillDiagnostic } from './diagnostic-excerpt';
 
 import {
   buildWorkspaceHostCleanRoomInstallFixture,
@@ -306,11 +306,22 @@ function assertSuccess(result: GcpImageFamilyCommandResult, operation: string): 
   if (!Number.isSafeInteger(result.exitCode) || result.exitCode !== 0) {
     const stderr = redactDiagnostic(result.stderr);
     const stdout = redactDiagnostic(result.stdout);
+
+    // Spill the COMPLETE output before excerpting it, and name the path FIRST. Every excerpt
+    // rule is a guess about where the cause sits; this build is billable, so a wrong guess costs
+    // another one. With the full text on disk the excerpt only has to be a good preview.
+    const spillPath = spillDiagnostic(
+      operation,
+      `=== ${operation} exit ${String(result.exitCode)} ===\n\n--- stdout ---\n${stdout}\n\n--- stderr ---\n${stderr}\n`,
+      'papercusp-image-build-',
+    );
+
     const parts: string[] = [];
     if (stderr) parts.push(`stderr: ${excerptDiagnostic(stderr)}`);
     if (stdout) parts.push(`stdout: ${excerptDiagnostic(stdout)}`);
     fail(
       `${operation} failed with exit code ${String(result.exitCode)}` +
+        (spillPath === null ? '' : ` [full output: ${spillPath}]`) +
         // An explicit "no output" is a real finding — it distinguishes a silent command from
         // this function having dropped the stream the failure was written to.
         (parts.length > 0 ? `; ${parts.join('; ')}` : '; the command produced no output on either stream'),
