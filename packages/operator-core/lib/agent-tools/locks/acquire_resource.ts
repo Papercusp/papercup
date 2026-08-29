@@ -17,6 +17,7 @@ import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireResource, type ResourceHolder } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
 import { resourceLockDomain } from './coordination-domain';
+import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
 import {
   findCrossDomainResourceConflicts,
   CROSS_DOMAIN_CONFLICT_HINT,
@@ -71,6 +72,13 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { ownerId, ownerLabel } = readIdentity(ctx);
+    // WI-562584: load the registry's DECLARED domain kinds before resolving, so
+    // a resource whose domain cannot be inferred from its name (git-sync's
+    // per-install `extra_lock_resources`) still lands in the domain its
+    // system-side acquirer holds it in. TTL-bounded and coalesced — at most one
+    // read per 30s across every acquire — and it never throws: a failed read
+    // leaves the name inference below exactly as it was.
+    await ensureResourceDomainKindsFresh();
     // WI-5960: route through the resource's OWN domain (host-global / workspace-
     // scoped / caller-tree), not unconditionally the file-lock (repo-root) domain
     // — a `git-sync:<slug>` (or `release-deploy`/`dev-server`) acquire under the

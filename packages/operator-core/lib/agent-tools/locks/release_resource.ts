@@ -20,6 +20,7 @@ import { tryReleaseResource } from './su-lock-store';
 import { broadcastResourceBackUp } from './resource-broadcast';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { resourceLockDomain, candidateResourceLockDomains } from './coordination-domain';
+import { ensureResourceDomainKindsFresh } from './resource-domain-kinds';
 
 const releaseItem = z.object({
   lock_id: z.string().uuid().optional(),
@@ -53,6 +54,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const { ownerId } = readIdentity(ctx);
+    // WI-562584: same declared-domain load the acquire path does, for the same
+    // reason — a release resolves the resource's domain by name, so it has to
+    // resolve the SAME one the acquire did or it releases nothing. TTL-bounded,
+    // coalesced, and never throws.
+    await ensureResourceDomainKindsFresh();
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
     const resources = [...(args.resource ? [args.resource] : []), ...(args.resources ?? [])];
     const bulkItems = args.items?.length

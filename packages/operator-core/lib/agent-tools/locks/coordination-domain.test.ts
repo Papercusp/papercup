@@ -14,6 +14,11 @@ import {
   resolveExplicitFileLockDomain,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
+import {
+  ensureResourceDomainKindsFresh,
+  __resetResourceDomainKindsForTest,
+  type ResourceCoordinationDomainKind,
+} from './resource-domain-kinds';
 
 /** Scaffold a VALID fake git dir — findRepoRoot requires a gitlink file or a git
  *  dir WITH HEAD (valid-git-entry.ts); a bare empty `.git` no longer counts. */
@@ -26,11 +31,16 @@ const SAVED = process.env.PAPERCUSP_LOCK_DOMAIN;
 beforeEach(() => {
   delete process.env.PAPERCUSP_LOCK_DOMAIN;
   __resetLockCoordinationDomain();
+  // WI-562584: resourceLockDomain() now consults the registry-declared domain
+  // kind. Seed the cache with an EMPTY loader so these cases exercise the pure
+  // name inference and nothing here reaches for the su-lock DB.
+  __resetResourceDomainKindsForTest(async () => new Map());
 });
 afterEach(() => {
   if (SAVED === undefined) delete process.env.PAPERCUSP_LOCK_DOMAIN;
   else process.env.PAPERCUSP_LOCK_DOMAIN = SAVED;
   __resetLockCoordinationDomain();
+  __resetResourceDomainKindsForTest();
 });
 
 describe('lockDomainForProjectDir', () => {
@@ -196,6 +206,62 @@ describe('resourceLockDomain', () => {
     // host-global resource through the tree-scoped path in a future edit.
     expect(resourceLockDomain('dev-server')).toBe(resourceLockDomain('dev-server'));
     expect(resourceLockDomain('dev-server').startsWith('/')).toBe(false);
+  });
+});
+
+// WI-562584. The two hardcoded sets above cannot be completed by hand: git-sync
+// holds its whole configured lock set (`trigger_config.extra_lock_resources`)
+// in the WORKSPACE domain, and those names are per-install human configuration.
+// `libs-papercusp-submodule` advertises neither family, so it resolved to the
+// caller tree while git-sync held it in the workspace domain — the acquire was
+// granted into a namespace git-sync never checks and mutual exclusion silently
+// did not hold. The acquirer now DECLARES the kind on the registry row and this
+// resolver reads it back.
+describe('resourceLockDomain — registry-declared domain kinds', () => {
+  const seed = async (entries: Array<[string, ResourceCoordinationDomainKind]>) => {
+    __resetResourceDomainKindsForTest(async () => new Map(entries));
+    await ensureResourceDomainKindsFresh();
+  };
+
+  it('resolves a workspace-DECLARED extra to the workspace domain — the defect', async () => {
+    // Pre-fix this answered lockCoordinationDomain(); the two disagree, which is
+    // exactly why this is a real assertion and not a tautology.
+    expect(resourceLockDomain('libs-papercusp-submodule')).toBe(lockCoordinationDomain());
+    expect(workspaceScopedLockDomain()).not.toBe(lockCoordinationDomain());
+
+    await seed([['libs-papercusp-submodule', 'workspace']]);
+
+    expect(resourceLockDomain('libs-papercusp-submodule')).toBe(workspaceScopedLockDomain());
+  });
+
+  it('resolves a host-global DECLARED resource to the fixed host-global domain', async () => {
+    await seed([['some-shared-daemon', 'host-global']]);
+    expect(resourceLockDomain('some-shared-daemon')).toBe(hostGlobalLockDomain());
+  });
+
+  it('leaves an UNDECLARED resource on the caller-tree domain — a cold or failed cache changes nothing', async () => {
+    await seed([['libs-papercusp-submodule', 'workspace']]);
+    expect(resourceLockDomain('some-unregistered-resource')).toBe(lockCoordinationDomain());
+
+    // A load that never completes must not change any answer either.
+    __resetResourceDomainKindsForTest(() => new Promise(() => {}));
+    expect(resourceLockDomain('libs-papercusp-submodule')).toBe(lockCoordinationDomain());
+    expect(resourceLockDomain('release-deploy')).toBe(hostGlobalLockDomain());
+  });
+
+  it('never lets a declaration DEMOTE a hardcoded host-global resource into the caller tree', async () => {
+    // The column default is 'tree', so every un-backfilled row would read as a
+    // tree declaration. Honouring that ahead of HOST_GLOBAL_RESOURCES would
+    // re-open EI-18674647773291145. The sets are consulted FIRST for this reason.
+    await seed([['release-deploy', 'workspace'], ['dev-server', 'workspace']]);
+    expect(resourceLockDomain('release-deploy')).toBe(hostGlobalLockDomain());
+    expect(resourceLockDomain('dev-server')).toBe(hostGlobalLockDomain());
+  });
+
+  it('keeps the git-sync family on the workspace domain whatever the registry says', async () => {
+    await seed([['git-sync:papercusp', 'host-global'], ['git-sync', 'host-global']]);
+    expect(resourceLockDomain('git-sync:papercusp')).toBe(workspaceScopedLockDomain());
+    expect(resourceLockDomain('git-sync')).toBe(workspaceScopedLockDomain());
   });
 });
 

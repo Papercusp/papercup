@@ -93,10 +93,16 @@ vi.mock('../../agent-tools/locks/live-lock-paths', () => ({
 // store is mocked anyway, but the P-006 auto-register INSERT runs through the tx
 // itself, so record those queries.
 const txQueries: Array<{ text: string; values: unknown[] }> = [];
-const fakeTx = (strings: TemplateStringsArray, ...values: unknown[]): Promise<unknown[]> => {
+type FakeTx = (strings: TemplateStringsArray, ...values: unknown[]) => Promise<unknown[]>;
+const recordingTx: FakeTx = (strings, ...values) => {
   txQueries.push({ text: strings.join('?'), values });
   return Promise.resolve([]);
 };
+/** Swappable so one test can make a specific in-txn statement FAIL without
+ *  re-mocking the module (WI-562584: a failed registry declaration must not
+ *  cost the commit). Restored in beforeEach. */
+let fakeTxImpl: FakeTx = recordingTx;
+const fakeTx: FakeTx = (strings, ...values) => fakeTxImpl(strings, ...values);
 vi.mock('../../agent-tools/locks/in-workspace-txn', () => ({
   inWorkspaceTxn: (_cd: string, _owner: string, fn: (tx: unknown) => unknown) => fn(fakeTx),
 }));
@@ -398,9 +404,22 @@ const acquiredResources = (): string[] =>
 const acquiredLockModes = (): string[] =>
   tryAcquireResourceMock.mock.calls.map(([, o]) => (o as { mode: string }).mode);
 
-/** Resource names auto-registered via the in-txn agent_resource_registry INSERT (P-006). */
+/** Resource names auto-registered via the in-txn agent_resource_registry INSERT (P-006).
+ *  Matched on INSERT specifically: the same txn also UPDATEs that table to declare the
+ *  workspace coordination domain for every lock-set member (WI-562584), and an
+ *  unqualified table match would silently fold those in as "registrations". */
 const registeredResources = (): string[] =>
-  txQueries.filter((q) => q.text.includes('agent_resource_registry')).map((q) => q.values[0] as string);
+  txQueries
+    .filter((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))
+    .map((q) => q.values[0] as string);
+
+/** Resource names whose registry row this tick stamped with the WORKSPACE coordination
+ *  domain (WI-562584) — the declaration an agent's `resourceLockDomain()` reads back so
+ *  it acquires in the SAME domain this action holds the resource in. */
+const workspaceDomainStampedResources = (): string[] =>
+  txQueries
+    .filter((q) => /UPDATE\s+agent_resource_registry/i.test(q.text) && q.text.includes('coordination_domain_kind'))
+    .map((q) => q.values[0] as string);
 
 /** papercup's MIGRATED trigger_config (db mig 237): the legacy back-off names ride
  *  extra_lock_resources, so peers acquiring exclusive(git-sync) still back it off. */
@@ -517,6 +536,7 @@ beforeEach(() => {
   unsafeCalls.length = 0;
   templateCalls.length = 0;
   txQueries.length = 0;
+  fakeTxImpl = recordingTx;
   rejectUnsafeAtCall = null;
   unsafeCallCount = 0;
   rejectTemplateOnce = null;
@@ -1091,9 +1111,65 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
     // ONLY the per-slug name is auto-registered (idempotent ON CONFLICT DO NOTHING);
     // the extras are a human-registered coordination surface
     expect(registeredResources()).toEqual(['git-sync:papercup']);
-    expect(txQueries.find((q) => q.text.includes('agent_resource_registry'))?.text)
+    expect(txQueries.find((q) => /INSERT\s+INTO\s+agent_resource_registry/i.test(q.text))?.text)
       .toContain('ON CONFLICT (resource) DO NOTHING');
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync:papercup', 'git-sync']);
+  });
+
+  // WI-562584. The defect this pins: an agent's `resourceLockDomain()` inferred the
+  // domain from the resource NAME, so `libs-papercusp-submodule` — which advertises
+  // neither the host-global set nor the `git-sync:` prefix — resolved to the caller
+  // tree while THIS action holds it in the workspace domain (`cd = workspaceId`).
+  // Two disjoint namespaces: the agent's acquire was granted and mutual exclusion
+  // silently did not hold. The stamp is what makes the domain KNOWN rather than
+  // inferred, and it has to cover the EXTRAS specifically: those are
+  // human-registered, so the auto-register INSERT above never touches them.
+  it('declares the workspace coordination domain for EVERY lock-set member, extras included', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    await action(ctx);
+
+    expect(workspaceDomainStampedResources()).toEqual([
+      'git-sync',
+      'git-sync:papercup',
+      'libs-papercusp-submodule',
+    ]);
+    // Every acquire in this tick used the workspace domain — which is precisely what
+    // the stamp tells a later reader, so the two cannot drift apart silently.
+    for (const [, opts] of tryAcquireResourceMock.mock.calls) {
+      expect((opts as { coordinationDomain: string }).coordinationDomain).toBe('ws-42');
+    }
+    const stamp = txQueries.find((q) => /UPDATE\s+agent_resource_registry/i.test(q.text));
+    // Idempotent by construction: a row already declaring 'workspace' is not rewritten,
+    // so a per-minute routine does not churn updated_ts on every tick.
+    expect(stamp?.text).toContain("coordination_domain_kind IS DISTINCT FROM 'workspace'");
+  });
+
+  // The stamp is a DECLARATION for future readers, not a precondition of this
+  // acquire — and the agent side already fails closed without it
+  // (cross-domain-conflict.ts). A registry write that errors must therefore not
+  // cost the commit; if it did, one broken column would stop every harness syncing.
+  it('still syncs when the coordination-domain declaration fails', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+    fakeTxImpl = (strings, ...values) => {
+      const text = strings.join('?');
+      txQueries.push({ text, values });
+      if (/UPDATE\s+agent_resource_registry/i.test(text)) {
+        return Promise.reject(new Error('column "coordination_domain_kind" does not exist'));
+      }
+      return Promise.resolve([]);
+    };
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await action(ctx);
+
+    expect(runGitSyncMock).toHaveBeenCalledTimes(1);
+    expect(acquiredResources()).toEqual(['git-sync', 'git-sync:papercup', 'libs-papercusp-submodule']);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('could not declare workspace coordination domain'),
+      expect.anything(),
+    );
+    warn.mockRestore();
   });
 
   it('skips before the per-slug acquire when dev:restart holds the exclusive shared barrier', async () => {

@@ -25,6 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
 import { activeWorkspaceId } from '../../workspace-registry';
+import { declaredResourceDomainKind } from './resource-domain-kinds';
 
 let _domain: string | null = null;
 let _fileDomain: string | null = null;
@@ -303,10 +304,28 @@ export function workspaceScopedLockDomain(): string {
  * `HOST_GLOBAL_RESOURCES` (or a prefix to `WORKSPACE_SCOPED_RESOURCE_PREFIXES`)
  * fixes every call site in one place instead of requiring each one to remember
  * the branch.
+ *
+ * WI-562584: the two name-shaped sets above cannot be completed by hand. An
+ * install's system-side acquirer holds its whole configured lock set
+ * (`trigger_config.extra_lock_resources`) in the WORKSPACE domain, and those
+ * names are per-install human configuration that shared operator-core code
+ * cannot enumerate — so a name such as `libs-papercusp-submodule` resolved here
+ * to the caller tree while git-sync genuinely held it in the workspace domain,
+ * and mutual exclusion silently did not hold. The acquirer therefore DECLARES
+ * the kind on the registry row (sql/027) and it is consulted here.
+ *
+ * The declaration is consulted AFTER the hardcoded sets and only when it is
+ * non-default, which makes it strictly additive: `tree` is the column default
+ * and means UNDECLARED, so a cold cache, a failed refresh, or an unstamped row
+ * all degrade to exactly the inference above. A declaration can promote a
+ * resource OUT of the caller-tree domain; nothing can demote one INTO it.
  */
 export function resourceLockDomain(resource: string): string {
   if (HOST_GLOBAL_RESOURCES.has(resource)) return hostGlobalLockDomain();
   if (isWorkspaceScopedResource(resource)) return workspaceScopedLockDomain();
+  const declared = declaredResourceDomainKind(resource);
+  if (declared === 'host-global') return hostGlobalLockDomain();
+  if (declared === 'workspace') return workspaceScopedLockDomain();
   return lockCoordinationDomain();
 }
 

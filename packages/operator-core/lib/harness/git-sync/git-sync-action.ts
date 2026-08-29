@@ -739,10 +739,50 @@ export async function registerGitSyncResource(tx: SqlTag, slug: string): Promise
     'commit -> submodule-push -> pointer-bump -> push sequence. A peer doing manual whole-tree git work in this ' +
     `harness's checkout can acquire exclusive(${resource}) to make its git-sync back off that tick.`;
   await tx`
-    INSERT INTO agent_resource_registry (resource, description, rule_text, enforcement, match_patterns)
-    VALUES (${resource}, ${description}, ${ruleText}, 'advisory', ARRAY[]::text[])
+    INSERT INTO agent_resource_registry
+      (resource, description, rule_text, enforcement, match_patterns, coordination_domain_kind)
+    VALUES (${resource}, ${description}, ${ruleText}, 'advisory', ARRAY[]::text[], 'workspace')
     ON CONFLICT (resource) DO NOTHING
   `;
+}
+
+/**
+ * WI-562584: declare, on the registry row, that THIS resource's holders live in
+ * the workspace domain — because that is the domain this action is about to
+ * acquire it in (`cd = ctx.workspaceId || '*'`).
+ *
+ * Every member of the tick's lock set gets this, not just the auto-registered
+ * per-slug name. That is the whole point: the names that were mis-resolved are
+ * the `trigger_config.extra_lock_resources` ones, which are HUMAN-registered
+ * (see {@link registerGitSyncResource}) and therefore never touched by the
+ * INSERT above. An agent reading `resourceLockDomain()` previously inferred the
+ * caller-tree domain for those names and was granted a lock in a namespace this
+ * action never checks — mutual exclusion silently not holding.
+ *
+ * Derived, not hand-maintained: the value comes from the acquirer's own live
+ * lock set, so an install that adds an extra resource tomorrow is covered
+ * without an edit to shared operator-core code (which could not enumerate a
+ * per-install config anyway).
+ *
+ * Failures are swallowed. The stamp makes a future acquire by a DIFFERENT actor
+ * resolve the same domain; it is not a precondition of THIS acquire, and the
+ * cross-domain conflict guard on the agent side already fails closed without
+ * it. Aborting a commit over it would trade a real capability for a diagnostic.
+ */
+async function stampWorkspaceDomainKind(tx: SqlTag, slug: string, resource: string): Promise<void> {
+  try {
+    await tx`
+      UPDATE agent_resource_registry
+         SET coordination_domain_kind = 'workspace', updated_ts = clock_timestamp()
+       WHERE resource = ${resource}
+         AND coordination_domain_kind IS DISTINCT FROM 'workspace'
+    `;
+  } catch (err) {
+    console.warn(
+      `[git-sync] ${slug}: could not declare workspace coordination domain for "${resource}":`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 type AcquireState = 'acquired' | 'held' | 'contended' | 'error';
@@ -906,6 +946,10 @@ async function acquireLocks(
       inWorkspaceTxn(cd, owner, async (tx) => {
         // Auto-register ONLY the per-slug name, in the same txn as its acquire.
         if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
+        // ...but declare the workspace domain for EVERY name in the lock set —
+        // the extras are human-registered, and they are exactly the ones a
+        // reader used to mis-resolve to the caller tree (WI-562584).
+        await stampWorkspaceDomainKind(tx as SqlTag, slug, resource);
         const purgedOwners = await clearQueuedGitSyncOwners(tx, cd, resource);
         if (purgedOwners.length > 0) {
           console.error(
