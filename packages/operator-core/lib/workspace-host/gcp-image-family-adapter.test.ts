@@ -581,50 +581,77 @@ describe('GCP image-family production adapter', () => {
    * asserting any particular wording, which would just re-freeze today's message.
    */
   it('spills the scanner and clean-room diagnosis instead of reporting a bare exit code', async () => {
-    for (const stage of ['scan', 'clean-room'] as const) {
-      const compute = new ComputeFake();
-      // Distinctive per-stream sentinels: a failure that keeps only the stream you EXPECT the
-      // error on is precisely how the packer diagnosis vanished (EI-21762126059344308).
-      const stdoutMark = `SENTINEL_STDOUT_${stage}_9f2a`;
-      const stderrMark = `SENTINEL_STDERR_${stage}_7c4b`;
-      const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
-        baseOptions(compute, {
-          commandRunner: {
-            run: async () => ({ exitCode: 3, stdout: stdoutMark, stderr: stderrMark }),
-          },
-        }),
-      );
-      await adapter.bindReleaseContext(CONTEXT);
+    // Distinctive per-stream sentinels. A failure handler that keeps only the stream you
+    // EXPECT the error on is precisely how the packer diagnosis vanished
+    // (EI-21762126059344308), so each stream is checked for by name.
+    const failing = (stdoutMark: string, stderrMark: string) => ({
+      run: async () => ({ exitCode: 3, stdout: stdoutMark, stderr: stderrMark }),
+    });
 
-      const failure = await adapter
-        .scanImage({
-          projectId: PROJECT,
-          imageId: CANDIDATE_ID,
-          buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
-          releaseSha256: RELEASE_SHA,
-        })
-        .then(
-          () => null,
-          (error: unknown) => (error instanceof Error ? error.message : String(error)),
-        );
+    const assertDiagnosable = async (message: string | null, stdoutMark: string, stderrMark: string) => {
+      // Control: the call really did fail. Without this, a mistake below would pass
+      // vacuously against a call that unexpectedly SUCCEEDED.
+      expect(message).not.toBeNull();
+      const text = message as string;
 
-      // Control: the call really did fail. Without this a broken assertion below would pass
-      // vacuously on a scan that unexpectedly SUCCEEDED.
-      expect(failure).not.toBeNull();
-      const message = failure as string;
-
-      // The exit code alone is what the old message carried; it is necessary but not enough.
-      expect(message).toContain('exit code 3');
+      // The exit code alone is what the old message carried — necessary, nowhere near enough.
+      expect(text).toContain('exit code 3');
 
       // The property that actually matters: a named file holding the COMPLETE output.
-      const spillMatch = message.match(/\[full output: ([^\]]+)\]/);
+      const spillMatch = text.match(/\[full output: ([^\]]+)\]/);
       expect(spillMatch).not.toBeNull();
 
       const spilled = await readFile((spillMatch as RegExpMatchArray)[1], 'utf8');
       // BOTH streams, not just the one a reader would guess the error went to.
       expect(spilled).toContain(stdoutMark);
       expect(spilled).toContain(stderrMark);
-    }
+    };
+
+    const capture = async (work: Promise<unknown>): Promise<string | null> =>
+      work.then(
+        () => null,
+        (error: unknown) => (error instanceof Error ? error.message : String(error)),
+      );
+
+    const scanAdapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(new ComputeFake(), { commandRunner: failing('SENTINEL_OUT_SCAN_9f2a', 'SENTINEL_ERR_SCAN_7c4b') }),
+    );
+    await scanAdapter.bindReleaseContext(CONTEXT);
+    await assertDiagnosable(
+      await capture(
+        scanAdapter.scanImage({
+          projectId: PROJECT,
+          imageId: CANDIDATE_ID,
+          buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+          releaseSha256: RELEASE_SHA,
+        }),
+      ),
+      'SENTINEL_OUT_SCAN_9f2a',
+      'SENTINEL_ERR_SCAN_7c4b',
+    );
+
+    const cleanAdapter = new GoogleComputeGcpImageFamilyReleaseAdapter(
+      baseOptions(new ComputeFake(), {
+        commandRunner: failing('SENTINEL_OUT_CLEAN_3d1e', 'SENTINEL_ERR_CLEAN_5b8f'),
+      }),
+    );
+    await cleanAdapter.bindReleaseContext(CONTEXT);
+    await assertDiagnosable(
+      await capture(
+        cleanAdapter.launchCleanRoomCanary({
+          projectId: PROJECT,
+          zone: 'us-central1-a',
+          serviceAccountEmail: CONTEXT.request.cleanRoom.serviceAccountEmail,
+          subnetwork: CONTEXT.request.cleanRoom.subnetwork,
+          imageId: CANDIDATE_ID,
+          buildManifestIdentity: CONTEXT.artifact.buildManifest.manifestIdentity,
+          releaseVersion: VERSION,
+          releaseSha256: RELEASE_SHA,
+        }),
+      ),
+      'SENTINEL_OUT_CLEAN_3d1e',
+      'SENTINEL_ERR_CLEAN_5b8f',
+    );
   });
 
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
