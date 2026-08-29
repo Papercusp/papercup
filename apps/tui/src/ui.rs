@@ -6131,6 +6131,63 @@ mod tests {
         assert!(text.contains("Hello docs"));
     }
 
+    /// EI-21646357450104414 — paths were rendered through a hard-coded
+    /// `trunc(p, 26)`, so a deep documentation tree became a column of
+    /// indistinguishable `internal/docs/agent-i…` prefixes no matter how wide
+    /// the terminal was. Two independent properties are asserted: the budget
+    /// FOLLOWS the pane, and elision drops leading directories rather than the
+    /// filename that identifies the doc.
+    #[test]
+    fn docs_paths_are_width_aware_and_elide_from_the_left() {
+        let long = "internal/docs/agent-insights/derived-truth-ladder.md";
+        let e = elide_left(long, 24);
+        assert_eq!(e.chars().count(), 24);
+        assert!(e.starts_with('…'), "{e}");
+        assert!(e.ends_with("derived-truth-ladder.md"), "{e}");
+        // The old helper keeps the HEAD, losing exactly the identifying tail —
+        // this is the calibration that proves the assertion above is not
+        // vacuously true of any truncation.
+        assert!(!trunc(long, 24).ends_with("derived-truth-ladder.md"));
+        assert_eq!(elide_left("short.md", 24), "short.md");
+
+        let mut app = App::new();
+        app.tab = Tab::Docs;
+        app.set_docs(crate::models::DocsResponse {
+            files: vec![long.to_string(), "internal/docs/design/tokens.md".into()],
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+        // A wide terminal has budget for the whole path; a narrow one does not.
+        assert!(render(&app, 220, 12).contains(long));
+        assert!(!render(&app, 90, 12).contains(long));
+    }
+
+    /// A NARROWED list must never be readable as a small documentation tree, so
+    /// the title carries shown/total whenever a filter is active.
+    #[test]
+    fn docs_title_reports_shown_over_total_while_filtered() {
+        let mut app = App::new();
+        app.tab = Tab::Docs;
+        app.set_docs(crate::models::DocsResponse {
+            files: vec![
+                "internal/docs/testing/agent-e2e.md".into(),
+                "internal/docs/design/tokens.md".into(),
+            ],
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+        assert!(render(&app, 220, 12).contains("docs (2)"));
+
+        app.docs_query = "testing".into();
+        let filtered = render(&app, 220, 12);
+        assert!(filtered.contains("1/2"), "{filtered}");
+        assert!(!filtered.contains("tokens.md"), "{filtered}");
+    }
+
     #[test]
     fn testing_and_config_views_render() {
         use crate::models::TestingDomain;

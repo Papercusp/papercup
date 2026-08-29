@@ -14942,6 +14942,90 @@ mod tests {
     /// fourteen tabs, so it cannot catch a SUBSTITUTION (a destination swapped
     /// for a retired shell, or two entries transposed) — which is precisely the
     /// drift D-003 forbids. This asserts the canonical list itself.
+    /// EI-21646357450104414 — Docs shipped as an unfiltered flat list, so a
+    /// several-hundred-path documentation tree was reachable only by cursoring
+    /// through it. The filter narrows the list AND rebases the cursor, which is
+    /// the half that can silently go wrong: `doc_sel` indexes the VISIBLE list,
+    /// so a stale index must never resolve to a doc that is off screen.
+    #[test]
+    fn docs_filter_narrows_the_list_and_the_cursor_stays_on_screen() {
+        let mut a = App::new();
+        let files = vec![
+            "internal/docs/testing/agent-e2e.md".to_string(),
+            "internal/docs/design/tokens.md".to_string(),
+            "internal/docs/testing/vitest.md".to_string(),
+        ];
+        a.set_docs(crate::models::DocsResponse {
+            files: files.clone(),
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+        assert_eq!(a.visible_docs().len(), 3, "no filter shows every doc");
+
+        a.docs_query = "testing".to_string();
+        assert_eq!(a.visible_docs().len(), 2);
+        assert!(a.visible_docs().iter().all(|p| p.contains("testing")));
+
+        // The cursor was on the last of three. After narrowing to two it must
+        // address a VISIBLE row — an unclamped index here would hand the reader
+        // pane a doc the list is no longer showing.
+        a.doc_sel = 2;
+        a.set_docs(crate::models::DocsResponse {
+            files,
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+        assert_eq!(a.doc_sel, 1);
+        assert_eq!(
+            a.selected_doc().as_deref(),
+            Some("internal/docs/testing/vitest.md")
+        );
+    }
+
+    /// The `/` composer commits on Enter, abandons on Esc without disturbing the
+    /// committed filter, and treats an empty commit as "clear" rather than as a
+    /// needle that matches nothing.
+    #[test]
+    fn docs_filter_composer_commits_cancels_and_clears() {
+        let mut a = App::new();
+        a.tab = Tab::Docs;
+        a.set_docs(crate::models::DocsResponse {
+            files: vec!["readme.md".to_string(), "spec/DESIGN.md".to_string()],
+            active_path: None,
+            content: None,
+            entries: vec![],
+            active_entry: None,
+        });
+
+        a.on_key(KeyCode::Char('/'), KeyModifiers::empty());
+        assert!(a.docs_search_open);
+        for c in "design".chars() {
+            a.on_key(KeyCode::Char(c), KeyModifiers::empty());
+        }
+        a.on_key(KeyCode::Enter, KeyModifiers::empty());
+        assert!(!a.docs_search_open);
+        assert_eq!(a.docs_query, "design");
+        // Case-insensitive: a lowercase needle finds DESIGN.md.
+        assert_eq!(a.visible_docs().len(), 1);
+
+        a.on_key(KeyCode::Char('/'), KeyModifiers::empty());
+        a.on_key(KeyCode::Char('z'), KeyModifiers::empty());
+        a.on_key(KeyCode::Esc, KeyModifiers::empty());
+        assert_eq!(a.docs_query, "design", "Esc must not commit the edit");
+
+        a.on_key(KeyCode::Char('/'), KeyModifiers::empty());
+        for _ in 0.."design".len() {
+            a.on_key(KeyCode::Backspace, KeyModifiers::empty());
+        }
+        a.on_key(KeyCode::Enter, KeyModifiers::empty());
+        assert!(a.docs_query.is_empty(), "an empty commit clears the filter");
+        assert_eq!(a.visible_docs().len(), 2);
+    }
+
     #[test]
     fn tab_all_is_exactly_the_fourteen_canonical_destinations() {
         // D-003 / audit D-005 target information architecture, in strip order.
