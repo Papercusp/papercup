@@ -711,6 +711,105 @@ describe('engineer issues surface (real PG)', () => {
     expect(all.gap).toBe(1);
   });
 
+  /**
+   * WI-564691 — the aggregates must apply the SAME filter as the row read.
+   *
+   * `countIssuesByState` and `countObservationsByKind` silently dropped `q` (and
+   * `severities`) from their WHERE. Row mode narrowed correctly, so the two disagreed:
+   * measured live, `issues:list { q:'disk' }` returned 1,848 while
+   * `issues:list { q:'disk', rollup:'state' }` returned 126,878 — the whole population,
+   * consumed as a verdict because that is precisely what `rollup` exists to answer.
+   *
+   * The decisive falsifier is the no-match query: a `q` that matches NOTHING must count
+   * ZERO. Under the bug it returned the entire corpus, and a count that ignores its
+   * filter is indistinguishable from a real one — there is no error, just a plausible
+   * number. This MUST be an integration test for the same reason as the GROUP BY case
+   * above: the defect is in the SQL Postgres actually runs, so a mocked `sql` tag would
+   * "pass" against the broken query forever.
+   */
+  it('countIssuesByState applies `q` — a no-match filter counts 0, not the population', async () => {
+    const total = (counts: Record<string, number>) =>
+      Object.values(counts).reduce((a, b) => a + b, 0);
+
+    await issues.createIssue({ title: 'low-disk on runner', createdBy: 'agA' });
+    await issues.createIssue({ title: 'disk pressure', createdBy: 'agA' });
+    await issues.createIssue({ title: 'unrelated flake', body: 'mentions disk here', createdBy: 'agA' });
+    await issues.createIssue({ title: 'totally other', createdBy: 'agA' });
+
+    // The population is 4; three match 'disk' (two by title, one by BODY).
+    expect(total(await issues.countIssuesByState({}))).toBe(4);
+
+    // THE FALSIFIER: under the bug this returned 4 (the whole population).
+    expect(total(await issues.countIssuesByState({ q: 'zzzznonexistentzzzz' }))).toBe(0);
+
+    // And a matching filter must agree with BOTH row-mode readers over the same filter —
+    // the list, the total and the histogram must never disagree about what `q` means.
+    const rows = await issues.listIssues({ q: 'disk' });
+    expect(rows).toHaveLength(3);
+    expect(await issues.countIssues({ q: 'disk' })).toBe(3);
+    expect(total(await issues.countIssuesByState({ q: 'disk' }))).toBe(3);
+
+    // Title-only vs body-inclusive: `q` spans both columns in every reader.
+    expect(total(await issues.countIssuesByState({ q: 'low-disk' }))).toBe(1);
+  });
+
+  it('the topic-joined aggregate branch applies `q` too', async () => {
+    const total = (counts: Record<string, number>) =>
+      Object.values(counts).reduce((a, b) => a + b, 0);
+
+    await topicStore.create({ slug: 'qtopic', description: 'q parity', created_ts: NOW });
+    await issues.createIssue({ title: 'disk one', topics: ['qtopic'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'disk two', topics: ['qtopic'], createdBy: 'agA' });
+    await issues.createIssue({ title: 'memory thing', topics: ['qtopic'], createdBy: 'agA' });
+    // Off-topic, and matching 'disk' — must NOT leak into the topic-scoped count.
+    await issues.createIssue({ title: 'disk elsewhere', createdBy: 'agA' });
+
+    // Both branches are hand-written separately, so a fix to one is not evidence
+    // about the other — cover the join explicitly.
+    expect(total(await issues.countIssuesByState({ topic: 'qtopic' }))).toBe(3);
+    expect(total(await issues.countIssuesByState({ topic: 'qtopic', q: 'disk' }))).toBe(2);
+    expect(await issues.countIssues({ topic: 'qtopic', q: 'disk' })).toBe(2);
+    expect(total(await issues.countIssuesByState({ topic: 'qtopic', q: 'nomatch' }))).toBe(0);
+  });
+
+  it('countObservationsByKind applies `q`, and both aggregates apply `severities`', async () => {
+    const total = (counts: Record<string, number>) =>
+      Object.values(counts).reduce((a, b) => a + b, 0);
+
+    await issues.createIssue({
+      title: 'disk friction',
+      severity: 'critical',
+      createdBy: 'agA',
+      payload: { observation: { kind: 'friction' } },
+    });
+    await issues.createIssue({
+      title: 'memory friction',
+      severity: 'nit',
+      createdBy: 'agA',
+      payload: { observation: { kind: 'friction' } },
+    });
+    await issues.createIssue({
+      title: 'disk gap',
+      severity: 'critical',
+      createdBy: 'agA',
+      payload: { observation: { kind: 'gap' } },
+    });
+
+    // `q` was dropped here too — the kind histogram ignored it entirely.
+    expect(total(await issues.countObservationsByKind({}))).toBe(3);
+    const byKind = await issues.countObservationsByKind({ q: 'disk' });
+    expect(byKind.friction).toBe(1);
+    expect(byKind.gap).toBe(1);
+    expect(total(await issues.countObservationsByKind({ q: 'nomatch' }))).toBe(0);
+
+    // `severities` (the PLURAL set form) was the second dropped field: `severity`
+    // singular was honoured, so the surface narrowed correctly under one spelling and
+    // silently not under the other.
+    expect(total(await issues.countIssuesByState({ severities: ['critical'] }))).toBe(2);
+    expect(total(await issues.countIssuesByState({ severities: ['critical', 'nit'] }))).toBe(3);
+    expect(total(await issues.countObservationsByKind({ severities: ['nit'] }))).toBe(1);
+  });
+
   it('promote → mints + links an F-FIX feature; issue stays open', async () => {
     const { id } = await issues.createIssue({ title: 'broken thing', scope: 'harness:papercup', createdBy: 'agA' });
     const res = await issues.promoteIssue(id, { actor: 'agA' });

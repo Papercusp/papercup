@@ -1426,6 +1426,69 @@ export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIs
 }
 
 /**
+ * WI-564691 — the MATCH filters (free-text `q`, severity, stable-title prefix,
+ * observation-lane exclusion, watchdog-key restriction) as ONE fragment, so the row
+ * read and every COUNT companion apply a byte-identical predicate.
+ *
+ * This is {@link issueShapeWhereSql}'s rule applied to the predicates that had already
+ * drifted. Measured 2026-08-29 across the five `ListIssuesFilter` readers, FIVE fields
+ * were honoured by some sites and silently dropped by others:
+ *
+ *                           listIssues  countIssues  byState  bySourceRole  byKind
+ *   q                           ✓            ✓          ✗          ✓          ✗
+ *   severities                  ✓            ✓          ✗          ✓          ✗
+ *   titlePrefix                 ✓            ✓          ✓          ✓          ✗
+ *   excludeObservationLane      ✓            ✓          ✓          ✓          ✗
+ *   watchdogKeyed               ✓            ✗          ✗          ✗          ✗
+ *
+ * `q` is the one that reached a caller. `issues:list { q, rollup:'state' }` passes `q`
+ * straight through, so the rollup counted the WHOLE issue population while row mode
+ * counted 8 — the same filter answering two ways, ~16,000x apart, with no error to
+ * notice. What makes that shape dangerous is that it was q-ONLY: severity/kind/scope
+ * DID narrow the rollup, so sanity-checking the surface with any other filter returned
+ * a correct-looking answer and licensed trusting the broken one.
+ *
+ * The {@link countIssuesBySourceRole} docblock had ALREADY recorded that byState "omits
+ * `q` and `severities`, which is safe for its callers". That safety was a fact about the
+ * callers of the day, not a property of the function — and adding one caller that
+ * accepts `q` silently invalidated it without touching the SQL. A predicate set that is
+ * correct only for the current caller list is not a contract, which is why this is a
+ * shared fragment rather than a sixth hand-maintained copy.
+ *
+ * `aliased` selects the `ei.`-prefixed column form used inside the topic-joined
+ * subqueries, matching {@link issueShapeWhereSql} / {@link issueIdsWhereSql}.
+ *
+ * Returns `TRUE` when no match filter is set, so a call site can AND it unconditionally.
+ * Parity is enforced mechanically by issues-engineer-filter-parity.test.ts.
+ */
+export function issueMatchWhereSql(sql: OrgSql, aliased: boolean, filter: ListIssuesFilter) {
+  const col = (c: string) => sql.unsafe(aliased ? `ei.${c}` : c);
+  const q = filter.q?.trim();
+  return sql`
+    ${
+      q
+        ? sql`(COALESCE(${col('title')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(${col('body')}, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')`
+        : sql`TRUE`
+    }
+    AND ${
+      filter.severity
+        ? sql`${col('severity')} = ${filter.severity}`
+        : filter.severities
+          ? sql`${col('severity')} = ANY(${filter.severities as string[]}::text[])`
+          : sql`TRUE`
+    }
+    -- WI-37499: stable-title prefix (see ListIssuesFilter.titlePrefix).
+    AND ${filter.titlePrefix ? sql`${col('title')} LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
+    -- The observation-lane floor, applied wherever the caller opts in (listWorkItems
+    -- does, by default, via includeObservations).
+    AND ${filter.excludeObservationLane ? sql`${col('lane')} IS DISTINCT FROM 'observation'` : sql`TRUE`}
+    -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
+    -- applied HERE, not in JS after the read: a row read's ORDER BY/LIMIT would make a
+    -- JS post-filter a recency window rather than a set.
+    AND ${filter.watchdogKeyed ? sql`${col('payload')}->>'watchdogKey' IS NOT NULL` : sql`TRUE`}`;
+}
+
+/**
  * Render the watchdog recovery-window floor against the engineer_issues view.
  *
  * `work-items.ts` owns the real claim helper, but it imports this module for the
@@ -1623,7 +1686,6 @@ async function listIssuesWithLimit(
   rowLimit: number | null,
 ): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
-  const q = filter.q?.trim();
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
@@ -1670,7 +1732,6 @@ async function listIssuesWithLimit(
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-       AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
        AND ${
          filter.scope
            ? sql`scope = ${filter.scope}`
@@ -1680,7 +1741,7 @@ async function listIssuesWithLimit(
        }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-       AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+       AND ${issueMatchWhereSql(sql, false, filter)}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1704,22 +1765,11 @@ async function listIssuesWithLimit(
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
-       -- EI-10422: mirrors observationLaneExclusionSql (work-items.ts) — the self-select
-       -- claim path already excludes a lane:'observation' row; this hoists the SAME
-       -- floor into the general list read when the caller opts in (listWorkItems does,
-       -- by default, via includeObservations).
-       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-       -- WI-37499: stable-title prefix (see ListIssuesFilter.titlePrefix).
-       AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
        -- P-006/D-031: positive lane selection — the canonical observation-population
        -- read. Same stored generated column the exclusion above keys on, so INCLUDE and
        -- EXCLUDE can never disagree about what "the observation lane" is.
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
-       -- WI-4532: watchdog-keyed restriction (see ListIssuesFilter.watchdogKeyed). Must be
-       -- applied HERE, not in JS after the read: the ORDER BY/LIMIT below makes a JS
-       -- post-filter a recency window rather than a set.
-       AND ${filter.watchdogKeyed ? sql`payload->>'watchdogKey' IS NOT NULL` : sql`TRUE`}
      ORDER BY created_at DESC
      ${rowLimit === null ? sql`` : sql`LIMIT ${rowLimit}`}`;
   return rows.map(toIssue);
@@ -1790,7 +1840,6 @@ export async function projectAllIssuesForBoundedRead<T>(
  */
 export async function countIssues(filter: ListIssuesFilter = {}): Promise<number> {
   const { sql } = getOrgPg();
-  const q = filter.q?.trim();
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   if (filter.topic) {
     const rows = await sql<{ n: number }[]>`
@@ -1806,7 +1855,6 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-         AND ${q ? sql`(COALESCE(ei.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(ei.body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${
            filter.scope
              ? sql`ei.scope = ${filter.scope}`
@@ -1816,7 +1864,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : filter.severities ? sql`ei.severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, true, filter)}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1835,8 +1883,6 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
          AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}`;
     return rows[0]?.n ?? 0;
@@ -1847,7 +1893,6 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-       AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
        AND ${
          filter.scope
            ? sql`scope = ${filter.scope}`
@@ -1857,7 +1902,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-       AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+       AND ${issueMatchWhereSql(sql, false, filter)}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1877,8 +1922,6 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
            ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
            : sql`TRUE`
        }
-       AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-       AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
        AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
        AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}`;
   return rows[0]?.n ?? 0;
@@ -1930,7 +1973,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, true, filter)}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1949,8 +1992,6 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
          AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY ei.state`
@@ -1969,7 +2010,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          }
          AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, false, filter)}
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -1989,8 +2030,6 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
              ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-         AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
          AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY state`;
@@ -2015,10 +2054,14 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
  * corpus value — and the same remedy: ask Postgres for the aggregate instead of tallying
  * whatever the row read happened to fetch.
  *
- * The WHERE mirrors {@link countIssues} rather than {@link countIssuesByState}: the latter
- * omits `q` and `severities`, which is safe for its callers but would silently widen THIS
- * histogram past the row read it is meant to describe. A caller that filters by text and
- * gets back options that ignore the text has the original bug pointed the other way.
+ * The WHERE mirrors {@link countIssues} — as every reader here now does, via
+ * {@link issueMatchWhereSql}. This docblock used to say the WHERE mirrors countIssues
+ * "rather than countIssuesByState: the latter omits `q` and `severities`, which is safe
+ * for its callers". That was true when written and became false without anyone editing
+ * it: `issues:list { q, rollup:'state' }` added a caller that passes `q`, and byState's
+ * rollup then counted the whole population (WI-564691). Recording a known divergence in
+ * prose is what let it survive — the parity is now a shared fragment plus a mechanical
+ * guard (issues-engineer-filter-parity.test.ts), so it cannot silently lapse again.
  *
  * ⚠ COST: `payload ->> 'sourceRole'` is not a cheap column — payload is large and stored
  * out-of-line, so this forces the datum (see WI-7102, which tracks migrating the remaining
@@ -2032,7 +2075,6 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
  */
 export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Promise<Record<string, number>> {
   const { sql } = getOrgPg();
-  const q = filter.q?.trim();
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
   const rows = filter.topic
     ? await sql<{ source_role: string | null; n: number }[]>`
@@ -2048,7 +2090,6 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
        WHERE ei.workspace_id = ${issuesScopeWorkspace()}
          AND ei.kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
-         AND ${q ? sql`(COALESCE(ei.title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(ei.body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${
            filter.scope
              ? sql`ei.scope = ${filter.scope}`
@@ -2058,7 +2099,7 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : filter.severities ? sql`ei.severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, true, filter)}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -2076,8 +2117,6 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
              ? sql`(ei.state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority, 'ei')})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`ei.lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-         AND ${filter.titlePrefix ? sql`ei.title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
          AND ${filter.excludeRubricGraded ? sql`(ei.payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY ei.payload ->> 'sourceRole'`
@@ -2087,8 +2126,7 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
        WHERE workspace_id = ${issuesScopeWorkspace()}
          AND kind = ANY(${kindSet as string[]}::text[])
          AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
-         AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
-         AND ${
+           AND ${
            filter.scope
              ? sql`scope = ${filter.scope}`
              : filter.scopes
@@ -2097,7 +2135,7 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
          }
          AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`severity = ${filter.severity}` : filter.severities ? sql`severity = ANY(${filter.severities as string[]}::text[])` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, false, filter)}
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -2115,8 +2153,6 @@ export async function countIssuesBySourceRole(filter: ListIssuesFilter = {}): Pr
              ? sql`(state = ANY(${ISSUE_TERMINAL_STATES as string[]}::text[]) AND ${completionAuthorityPredicateSql(sql, filter.completionAuthority)})`
              : sql`TRUE`
          }
-         AND ${filter.excludeObservationLane ? sql`lane IS DISTINCT FROM 'observation'` : sql`TRUE`}
-         AND ${filter.titlePrefix ? sql`title LIKE ${likePrefixPattern(filter.titlePrefix)} ESCAPE '\\'` : sql`TRUE`}
          AND ${filter.lane ? sql`lane = ${filter.lane}` : sql`TRUE`}
          AND ${filter.excludeRubricGraded ? sql`(payload -> 'observation' ->> 'rubricRef') IS NULL` : sql`TRUE`}
        GROUP BY payload ->> 'sourceRole'`;
@@ -2160,7 +2196,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          }
          AND ${filter.assignee ? sql`ei.assignee = ${filter.assignee}` : sql`TRUE`}
          AND ${filter.assignedBy ? sql`ei.assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-         AND ${filter.severity ? sql`ei.severity = ${filter.severity}` : sql`TRUE`}
+         AND ${issueMatchWhereSql(sql, true, filter)}
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
@@ -2210,7 +2246,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        }
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}
-       AND ${filter.severity ? sql`severity = ${filter.severity}` : sql`TRUE`}
+       AND ${issueMatchWhereSql(sql, false, filter)}
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
