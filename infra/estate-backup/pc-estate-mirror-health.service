@@ -1,0 +1,16 @@
+[Unit]
+Description=Off-GCP estate mirror freshness probe (WI-645563)
+Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
+# A mirror timer that quietly stops firing is indistinguishable from a healthy
+# mirror when you look at the mirror itself — the files are all still there and
+# all still verify. Only an AGE assertion tells the two apart, which is why
+# this probe exists as a separate unit from the copy job it watches.
+OnFailure=pc-estate-mirror-alert.service
+
+[Service]
+Type=oneshot
+Nice=19
+ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh health
+
+[Install]
+WantedBy=default.target

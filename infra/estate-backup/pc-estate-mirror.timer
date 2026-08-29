@@ -1,0 +1,18 @@
+[Unit]
+Description=Off-GCP estate mirror — daily (WI-645563)
+
+[Timer]
+# The estate's own pc-estate-backup.timer fires 03:32Z (prod) / 03:33Z (mesh)
+# and takes a few minutes. 05:15Z leaves a wide margin for a slow dump without
+# waiting so long that a day's snapshot could be pruned from the bucket first
+# (bucket lifecycle: NEARLINE@14d, DELETE@45d — no near-term pressure).
+OnCalendar=*-*-* 05:15:00 UTC
+# Persistent so a box that was asleep at 05:15 still mirrors on wake. Missing a
+# day silently is the failure this whole unit exists to prevent.
+Persistent=true
+RandomizedDelaySec=5min
+AccuracySec=1min
+Unit=pc-estate-mirror.service
+
+[Install]
+WantedBy=timers.target

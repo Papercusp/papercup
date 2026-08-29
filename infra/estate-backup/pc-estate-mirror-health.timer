@@ -1,0 +1,13 @@
+[Unit]
+Description=Off-GCP estate mirror freshness probe — 6-hourly (WI-645563)
+
+[Timer]
+# Four times a day, offset from the 05:15Z mirror run so a probe never races
+# the copy it is judging.
+OnCalendar=*-*-* 02,08,14,20:40:00 UTC
+Persistent=true
+RandomizedDelaySec=3min
+Unit=pc-estate-mirror-health.service
+
+[Install]
+WantedBy=timers.target

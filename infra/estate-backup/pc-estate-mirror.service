@@ -1,0 +1,25 @@
+[Unit]
+Description=Off-GCP mirror of the estate backups (WI-645563)
+Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
+After=network-online.target
+# OnFailure is a [Unit] key. Putting it in [Service] is SILENTLY IGNORED by
+# systemd — that mistake left the Postgres backup with no alarm at all for a
+# while (EI-10733 follow-up). Keep it here.
+OnFailure=pc-estate-mirror-alert.service
+
+[Service]
+Type=oneshot
+# The mirror is bulk I/O against a 92%-full disk shared with the whole fleet.
+# It is never the urgent thing on this box, so it yields to everything.
+Nice=15
+IOSchedulingClass=idle
+MemoryAccounting=yes
+MemoryHigh=2G
+MemoryMax=4G
+# One estate day is ~1.5GB over a home link; 45min is generous, and a run that
+# exceeds it is a fault worth alarming on rather than one to wait out.
+TimeoutStartSec=45min
+ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh mirror
+
+[Install]
+WantedBy=default.target

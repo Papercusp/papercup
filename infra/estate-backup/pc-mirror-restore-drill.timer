@@ -1,0 +1,14 @@
+[Unit]
+Description=Off-GCP mirror restore drill — weekly (WI-645563)
+
+[Timer]
+# Weekly. The plan's own Phase 6 lesson is that an unexercised backup does not
+# remove an assumption, it relocates one — so the mirror is exercised on a
+# cadence rather than trusted because it was exercised once at build time.
+OnCalendar=Mon *-*-* 06:30:00 UTC
+Persistent=true
+RandomizedDelaySec=10min
+Unit=pc-mirror-restore-drill.service
+
+[Install]
+WantedBy=timers.target

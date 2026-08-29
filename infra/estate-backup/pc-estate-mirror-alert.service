@@ -1,0 +1,7 @@
+[Unit]
+Description=Raise an alarm when the off-GCP estate mirror fails (WI-645563)
+Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
+
+[Service]
+Type=oneshot
+ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror-alert.sh "pc-estate-mirror unit failed"

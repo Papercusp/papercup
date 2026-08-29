@@ -175,16 +175,83 @@ Postgres major-version change. A backup is only known-good as of its last
 restore drill — the WI-37835 artifact was fresh, complete, self-validating,
 and unrestorable two independent ways for weeks.
 
-## 6. Known limit — provider concentration
+## 6. Provider concentration — and the off-GCP mirror that closes it
 
 The bucket lives in the **same GCP project** as the VMs. P-024 exists because
 one provider held both the systems and the recovery path, and a same-project
-bucket reproduces that under project suspension.
+bucket reproduces that under project suspension. A second bucket in another GCP
+project does **not** fix it: account-level suspension is the modelled event, and
+it takes every project on the billing account at once.
 
-What *is* achieved: every artifact restores with stock open-source tools
-(`pg_restore`, `redis-server`, `clickhouse-client`, `tar`) and needs no GCP
-API. To close the rest, copy a periodic artifact out of GCP entirely:
+Two things now stand between us and that event.
+
+**The procedure is provider-portable.** Every artifact restores with stock
+open-source tools (`pg_restore`, `redis-server`, `clickhouse-client`, `tar`) and
+needs no GCP API.
+
+**The artifacts are no longer only on GCP.** `pc-estate-mirror.sh` (WI-645563)
+keeps a verified, immutable copy on the owner's own hardware, on a daily timer:
+
+| unit | cadence | what it does |
+|---|---|---|
+| `pc-estate-mirror.timer` | daily 05:15Z | pull every new snapshot, verify each artifact's sha256 against its own `MANIFEST.json`, seal it `chattr +i`, prune past 14 per host |
+| `pc-estate-mirror-health.timer` | 6-hourly | assert the mirror is FRESH — a timer that quietly stops firing looks exactly like a healthy mirror from the inside |
+| `pc-mirror-restore-drill.timer` | weekly | re-verify every stored byte, then actually restore one from the mirror alone |
+
+All three carry `OnFailure=pc-estate-mirror-alert.service`, which writes a marker
+file, journals, `notify-send`s, and broadcasts to the fleet over `coord:send`.
+Silence is not evidence of health — EI-10733 is what a silently-rotting backup
+costs (30 days).
+
+```
+/mnt/data/papercusp-estate-mirror/
+  snapshots/<host>/<taken_at>/    MANIFEST.json + MIRROR-META.json + pg/ redis/ vol/
+  tools/                          this runbook and the scripts, mirrored too
+  MIRROR-STATE.json               last run, per-host counts, seal state, errors
+  DRILL-STATE.json                per-table fingerprints from the last drill
+  .quarantine/                    snapshots that FAILED verification — kept, not deleted
+```
+
+### Restoring when GCP is gone
+
+Nothing in this path touches Google:
 
 ```bash
-gcloud storage cp -r gs://papercusp-estate-backups-active-alcove-504205-q3/daily/<date> <off-provider destination>
+MIRROR=/mnt/data/papercusp-estate-mirror
+ls $MIRROR/snapshots/hetzner-restore-prod/            # pick a snapshot
+cat $MIRROR/snapshots/hetzner-restore-prod/<ts>/MANIFEST.json
+# then follow §3 with that local directory as the artifact source.
+$MIRROR/tools/RESTORE-RUNBOOK.md                      # this file, mirrored
 ```
+
+The weekly drill proves that path rather than assuming it —
+`pc-mirror-restore-drill.sh` restores a mirrored dump into a throwaway stock
+Postgres container on the owner's box and grades four independent legs
+(sha256 integrity, TOC parse against the capture-time object count, a real
+restore producing relations, and no table that held rows last week holding zero
+now). Its verdict ignores `pg_restore`'s exit code on purpose: pg_restore
+continues past errors and returns non-zero for harmless ownership noise, so
+content is the verdict, not status.
+
+⚠ **Published snapshots are immutable.** Before any deliberate deletion:
+
+```bash
+sudo chattr -R -i /mnt/data/papercusp-estate-mirror/snapshots/<host>/<ts>
+```
+
+### What the mirror still does NOT give us
+
+Stated plainly, because a backup you have overestimated is worse than one you
+have measured:
+
+- **It is not geographically offsite.** Fire or theft at the office destroys
+  this copy. GCP still holds one, so no *single* event destroys both — that is
+  two failure domains, not three.
+- **It is not encrypted at rest.** It sits mode-0700 on the owner's hardware.
+  Every agent here already holds `sudo -n` and read access to the source bucket,
+  so a key stored on this same box would add a way to *lose* the backup without
+  adding a boundary that matters. A key held elsewhere is the real fix, and
+  belongs with the offsite work.
+- **Both this box's filesystems run ~92% full.** The mirror refuses to run below
+  a 40GB floor and alarms rather than silently skipping, but headroom is the
+  thing most likely to break it first.

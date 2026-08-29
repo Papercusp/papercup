@@ -1,0 +1,19 @@
+[Unit]
+Description=Restore drill FROM the off-GCP estate mirror (WI-645563)
+Documentation=file:%h/papercupai-workspace/papercusp/infra/estate-backup/RESTORE-RUNBOOK.md
+After=network-online.target docker.service
+OnFailure=pc-estate-mirror-alert.service
+
+[Service]
+Type=oneshot
+Nice=15
+IOSchedulingClass=idle
+# Re-read every stored byte against its capture-time manifest BEFORE spending a
+# restore on it. Bit rot is the failure a copy job can never see, because a copy
+# job only ever looks at data it just wrote.
+ExecStartPre=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-estate-mirror.sh verify
+ExecStart=%h/papercupai-workspace/papercusp/infra/estate-backup/pc-mirror-restore-drill.sh
+TimeoutStartSec=90min
+
+[Install]
+WantedBy=default.target

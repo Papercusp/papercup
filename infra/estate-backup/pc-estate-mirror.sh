@@ -1,0 +1,483 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# pc-estate-mirror.sh — the OFF-GCP copy of the estate backups (WI-645563)
+#
+# WHY THIS EXISTS
+#   gs://papercusp-estate-backups-active-alcove-504205-q3 lives in the SAME GCP
+#   project (active-alcove-504205-q3) as the two VMs it protects. A project- or
+#   account-level suspension therefore takes the estate AND its backups in one
+#   event -- which is exactly the Hetzner event the whole restore plan existed
+#   to stop recurring. Acceptance criterion `recovery-survives-provider-loss`
+#   was graded DEGRADED at ship time with this item as the stated remediation.
+#
+#   A second bucket in another GCP project on the same billing account does NOT
+#   fix that: account-level suspension is the modelled event. This script keeps
+#   a copy on hardware that is not Google's at all, and seals it immutable so
+#   neither a stray `rm -rf` nor an agent with sudo can quietly delete it.
+#
+# WHAT IT GUARANTEES (and what it does not)
+#   ✓ The bytes are off GCP entirely, on the owner's box.
+#   ✓ Every artifact is verified against the snapshot's own MANIFEST.json
+#     sha256 BEFORE it is published -- a truncated or corrupt transfer is
+#     quarantined, never mistaken for a good copy.
+#   ✓ Published snapshots are chattr +i immutable (verified at runtime; the
+#     state file records `sealed:false` rather than pretending when it fails).
+#   ✓ The restore PROCEDURE (tools/) is mirrored too. Data without the runbook
+#     is not a recovery.
+#   ✗ NOT geographically offsite. Fire/theft at the office destroys this copy --
+#     GCP still holds one, so no SINGLE event destroys both, but this is two
+#     failure domains, not three. Offsite hardening is tracked separately.
+#   ✗ NOT encrypted at rest. The dumps sit mode-0700 under the owner's account
+#     on the owner's hardware; every agent here already holds `sudo -n` and read
+#     access to the source bucket, so a key stored on this same box would add a
+#     way to LOSE the backup without adding a boundary that matters.
+#
+# MODES
+#   mirror   pull every not-yet-mirrored snapshot, verify, seal, prune  (daily)
+#   verify   re-check every stored snapshot against its manifest        (weekly)
+#   health   assert the mirror is FRESH and sealed; alarm if not        (6-hourly)
+#
+# Exits non-zero on any failure, so systemd's OnFailure= alert fires. A backup
+# that fails silently is the failure mode this whole file is built against
+# (EI-10733: the DB backup rotted unnoticed for 30 days).
+# ---------------------------------------------------------------------------
+set -uo pipefail
+
+MODE="${1:-mirror}"
+
+BUCKET="${PC_ESTATE_BUCKET:-gs://papercusp-estate-backups-active-alcove-504205-q3}"
+ROOT="${PC_ESTATE_MIRROR_ROOT:-/mnt/data/papercusp-estate-mirror}"
+KEEP="${PC_ESTATE_MIRROR_KEEP:-14}"          # snapshots retained per host
+MIN_FREE_GB="${PC_ESTATE_MIRROR_MIN_FREE_GB:-40}"
+MAX_AGE_H="${PC_ESTATE_MIRROR_MAX_AGE_H:-30}" # health: newest snapshot age
+SEAL="${PC_ESTATE_MIRROR_SEAL:-1}"
+
+SNAPDIR="$ROOT/snapshots"
+STATE="$ROOT/MIRROR-STATE.json"
+STAGE="$ROOT/.staging"
+QUAR="$ROOT/.quarantine"
+# Quarantine VERDICTS live outside the quarantined payload so a re-attempt that
+# replaces the payload cannot reset the attempt count that bounds it.
+QMETA="$ROOT/.quarantine-meta"
+LOG="$ROOT/mirror.log"
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ALERT="$SELF_DIR/pc-estate-mirror-alert.sh"
+
+log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG" >&2; }
+die() { log "FATAL: $*"; exit 1; }
+
+alarm() {
+  # Best-effort: the alert path must never itself fail the run's exit code.
+  [ -x "$ALERT" ] && "$ALERT" "$*" || log "ALARM (no alert script): $*"
+}
+
+# --- immutability helpers ---------------------------------------------------
+# chattr +i is verified at runtime, never assumed: it is a filesystem
+# capability, and claiming "immutable" on a filesystem that silently ignored
+# the flag would be worse than not claiming it.
+seal()   { [ "$SEAL" = "1" ] || return 1; sudo -n chattr -R +i "$1" 2>/dev/null; }
+unseal() { sudo -n chattr -R -i "$1" 2>/dev/null || true; }
+
+seal_supported() {
+  [ "$SEAL" = "1" ] || return 1
+  local probe="$ROOT/.sealprobe.$$"
+  : >"$probe" 2>/dev/null || return 1
+  if sudo -n chattr +i "$probe" 2>/dev/null; then
+    sudo -n chattr -i "$probe" 2>/dev/null; rm -f "$probe"; return 0
+  fi
+  rm -f "$probe" 2>/dev/null; return 1
+}
+
+free_gb() { df -BG --output=avail "$ROOT" 2>/dev/null | tail -1 | tr -dc '0-9'; }
+
+# --- verify one snapshot directory against its own MANIFEST.json ------------
+# Returns 0 = every listed artifact present, right size, right sha256.
+verify_snapshot() {
+  local dir="$1"
+  python3 - "$dir" <<'PY'
+import hashlib, json, os, sys
+d = sys.argv[1]
+mp = os.path.join(d, "MANIFEST.json")
+if not os.path.isfile(mp):
+    print("MISSING MANIFEST.json"); sys.exit(1)
+try:
+    m = json.load(open(mp))
+except Exception as e:
+    print("UNREADABLE MANIFEST.json: %s" % e); sys.exit(1)
+arts = m.get("artifacts") or []
+if not arts:
+    print("MANIFEST lists ZERO artifacts"); sys.exit(1)
+bad = []
+total = 0
+for a in arts:
+    p = os.path.join(d, a["path"])
+    if not os.path.isfile(p):
+        bad.append("%s: MISSING" % a["path"]); continue
+    sz = os.path.getsize(p)
+    total += sz
+    if "bytes" in a and sz != a["bytes"]:
+        bad.append("%s: size %d != manifest %d" % (a["path"], sz, a["bytes"])); continue
+    if a.get("sha256"):
+        h = hashlib.sha256()
+        with open(p, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        if h.hexdigest() != a["sha256"]:
+            bad.append("%s: sha256 MISMATCH" % a["path"])
+for b in bad:
+    print(b)
+print("VERIFIED artifacts=%d bytes=%d manifest_failures=%s" %
+      (len(arts) - len(bad), total, m.get("failures")))
+sys.exit(1 if bad else 0)
+PY
+}
+
+# ---------------------------------------------------------------------------
+# MODE: mirror
+# ---------------------------------------------------------------------------
+do_mirror() {
+  mkdir -p "$SNAPDIR" "$STAGE" "$QUAR" "$QMETA" || die "cannot create $ROOT"
+  chmod 700 "$ROOT" 2>/dev/null || true
+
+  command -v gcloud >/dev/null || die "gcloud not on PATH"
+  gcloud storage ls "$BUCKET/" >/dev/null 2>&1 || die "cannot read $BUCKET (gcloud auth?)"
+
+  local sealed=false; seal_supported && sealed=true
+  $sealed || log "WARNING: chattr +i unavailable here — snapshots will be mirrored but NOT sealed"
+
+  # Every snapshot is exactly one MANIFEST.json, so this enumerates them
+  # without depending on the daily/<date>/ nesting staying the shape it is.
+  local manifests
+  manifests=$(gcloud storage ls "$BUCKET/daily/**/MANIFEST.json" 2>/dev/null | sort) \
+    || die "snapshot enumeration failed"
+  [ -n "$manifests" ] || die "no snapshots found in $BUCKET/daily/ — nothing to mirror is itself a fault"
+
+  local errors=() quarantined=() mirrored=0 skipped=0
+  while IFS= read -r mf; do
+    [ -n "$mf" ] || continue
+    local prefix host ts dst
+    prefix="${mf%/MANIFEST.json}"
+    ts="$(basename "$prefix")"
+    host="$(basename "$(dirname "$prefix")")"
+    dst="$SNAPDIR/$host/$ts"
+
+    if [ -f "$dst/MIRROR-META.json" ]; then skipped=$((skipped+1)); continue; fi
+
+    # A snapshot that has already been judged UNMIRRORABLE is not retried
+    # forever. The distinction matters and it is not cosmetic:
+    #   source_incomplete — the object is absent FROM THE BUCKET. No number of
+    #                       retries invents it, so retrying only burns transfer
+    #                       and raises the same alarm every single day until
+    #                       everyone learns to ignore the alarm. That is how a
+    #                       real one gets missed.
+    #   transfer_corrupt  — the object is there but arrived wrong. That IS
+    #                       plausibly transient, so it gets a bounded 3 tries.
+    # Either way the snapshot stays visible in MIRROR-STATE.json as a standing
+    # fault. Suppressing the repeat alarm is not the same as forgetting.
+    local qmeta="$QMETA/$host/$ts.json"
+    if [ -f "$qmeta" ]; then
+      local qclass qatt
+      qclass=$(python3 -c "import json;print(json.load(open('$qmeta')).get('classification',''))" 2>/dev/null)
+      qatt=$(python3 -c "import json;print(json.load(open('$qmeta')).get('attempts',0))" 2>/dev/null)
+      if [ "$qclass" = "source_incomplete" ] || [ "${qatt:-0}" -ge 3 ]; then
+        quarantined+=("$host/$ts ($qclass, attempts=${qatt:-0})")
+        continue
+      fi
+    fi
+
+    local avail; avail=$(free_gb)
+    if [ -n "$avail" ] && [ "$avail" -lt "$MIN_FREE_GB" ]; then
+      errors+=("disk floor: ${avail}GB free < ${MIN_FREE_GB}GB — refusing to mirror $host/$ts")
+      log "REFUSING: only ${avail}GB free (floor ${MIN_FREE_GB}GB)"
+      break
+    fi
+
+    log "mirroring $host/$ts"
+    rm -rf "${STAGE:?}/$host/$ts"
+    mkdir -p "$STAGE/$host"
+    if ! gcloud storage cp -r "$prefix" "$STAGE/$host/" --quiet >>"$LOG" 2>&1; then
+      errors+=("$host/$ts: download failed")
+      rm -rf "${STAGE:?}/$host/$ts"
+      continue
+    fi
+
+    local vout
+    if ! vout=$(verify_snapshot "$STAGE/$host/$ts" 2>&1); then
+      # A bad copy is QUARANTINED, never published and never silently dropped:
+      # the difference between the two is the difference between a known-bad
+      # backup and an unknown-bad one.
+      mkdir -p "$QUAR/$host" "$QMETA/$host"
+      rm -rf "${QUAR:?}/$host/$ts"
+      mv "$STAGE/$host/$ts" "$QUAR/$host/$ts" 2>/dev/null || true
+
+      local klass
+      # $vout is passed through the environment, not interpolated into the
+      # heredoc: it is arbitrary text from a failure path, and a quote or a
+      # backslash in it must not be able to rewrite this program.
+      klass=$(PC_VOUT="$vout" python3 - "$qmeta" "$host" "$ts" <<'PY'
+import json, os, sys, datetime
+qmeta, host, ts = sys.argv[1:4]
+lines = [l.strip() for l in os.environ.get("PC_VOUT", "").splitlines()
+         if l.strip() and not l.startswith("VERIFIED ")]
+# Absent from the source bucket vs present-but-wrong. Only the second is worth
+# retrying, and calling the first "transient" is how a permanent fault becomes
+# background noise.
+klass = "source_incomplete" if lines and all(l.endswith(": MISSING") for l in lines) \
+        else "transfer_corrupt"
+prev = {}
+if os.path.isfile(qmeta):
+    try: prev = json.load(open(qmeta))
+    except Exception: prev = {}
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+os.makedirs(os.path.dirname(qmeta), exist_ok=True)
+json.dump({
+    "host": host, "taken_at": ts,
+    "classification": klass,
+    "attempts": int(prev.get("attempts", 0)) + 1,
+    "first_seen": prev.get("first_seen", now),
+    "last_seen": now,
+    "failures": lines[:20],
+    "note": ("The bucket itself does not hold these objects; the snapshot's own "
+             "MANIFEST.json claims them. Retrying cannot fix this — the source "
+             "snapshot is incomplete.") if klass == "source_incomplete"
+            else "Objects are present in the bucket but arrived wrong; bounded retry.",
+}, open(qmeta, "w"), indent=2)
+print(klass)
+PY
+)
+      # New quarantines alarm; a fault already on the books does not re-alarm.
+      errors+=("$host/$ts: VERIFY FAILED (${klass:-unknown}) — quarantined: $(echo "$vout" | head -3 | tr '\n' ';')")
+      log "VERIFY FAILED $host/$ts [${klass:-unknown}]: $vout"
+      continue
+    fi
+    log "verified $host/$ts: $(echo "$vout" | tail -1)"
+
+    python3 - "$STAGE/$host/$ts" "$prefix" "$host" "$ts" "$vout" "$sealed" <<'PY'
+import json, os, sys, datetime
+d, src, host, ts, vout, sealed = sys.argv[1:7]
+total = 0
+for r, _, fs in os.walk(d):
+    for f in fs:
+        total += os.path.getsize(os.path.join(r, f))
+mf = json.load(open(os.path.join(d, "MANIFEST.json")))
+json.dump({
+    "mirrored_at": datetime.datetime.now(datetime.timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "source": src,
+    "host": host,
+    "taken_at": ts,
+    "bytes_on_disk": total,
+    "artifacts": len(mf.get("artifacts") or []),
+    "manifest_failures": mf.get("failures"),
+    "verification": vout.strip().splitlines()[-1] if vout.strip() else "",
+    "sealed": sealed == "true",
+}, open(os.path.join(d, "MIRROR-META.json"), "w"), indent=2)
+PY
+
+    mkdir -p "$SNAPDIR/$host"
+    rm -rf "${dst:?}"
+    if ! mv "$STAGE/$host/$ts" "$dst"; then
+      errors+=("$host/$ts: publish (mv) failed")
+      continue
+    fi
+    $sealed && { seal "$dst" || log "WARNING: seal failed for $dst"; }
+    mirrored=$((mirrored+1))
+  done <<<"$manifests"
+
+  # --- the restore PROCEDURE travels with the data --------------------------
+  # tools/ is re-synced every run because the runbook is edited over time and
+  # the copy that matters is the one you can still read after GCP is gone.
+  local tnew="$ROOT/.tools.new"
+  rm -rf "$tnew"; mkdir -p "$tnew"
+  if gcloud storage cp -r "$BUCKET/tools/*" "$tnew/" --quiet >>"$LOG" 2>&1; then
+    [ -d "$ROOT/tools" ] && { unseal "$ROOT/tools"; rm -rf "$ROOT/tools"; }
+    mv "$tnew" "$ROOT/tools"
+    $sealed && seal "$ROOT/tools"
+  else
+    rm -rf "$tnew"
+    errors+=("tools/ sync failed — the mirror has data but no runbook copy")
+  fi
+
+  # --- retention ------------------------------------------------------------
+  local pruned=0
+  for hostdir in "$SNAPDIR"/*/; do
+    [ -d "$hostdir" ] || continue
+    local old
+    old=$(ls -1 "$hostdir" 2>/dev/null | sort -r | tail -n +$((KEEP+1)))
+    while IFS= read -r o; do
+      [ -n "$o" ] || continue
+      unseal "$hostdir$o"
+      rm -rf "${hostdir:?}$o" && pruned=$((pruned+1))
+    done <<<"$old"
+  done
+
+  write_state "$mirrored" "$skipped" "$pruned" "$sealed" "${errors[@]:-}"
+
+  for q in "${quarantined[@]:-}"; do
+    [ -n "$q" ] && log "standing quarantine (not retried, still on the books): $q"
+  done
+
+  if [ ${#errors[@]} -gt 0 ] && [ -n "${errors[0]:-}" ]; then
+    alarm "estate mirror: ${#errors[@]} error(s) — ${errors[0]}"
+    return 1
+  fi
+  log "mirror OK: +${mirrored} new, ${skipped} already held, ${pruned} pruned, ${#quarantined[@]} standing quarantine(s), sealed=${sealed}"
+  return 0
+}
+
+write_state() {
+  local mirrored="$1" skipped="$2" pruned="$3" sealed="$4"; shift 4
+  local errs=("$@")
+  python3 - "$STATE" "$SNAPDIR" "$mirrored" "$skipped" "$pruned" "$sealed" "$(free_gb)" "$QMETA" "${errs[@]}" <<'PY'
+import json, os, sys, datetime
+state, snapdir, mirrored, skipped, pruned, sealed, freegb, qmeta = sys.argv[1:9]
+errs = [e for e in sys.argv[9:] if e]
+# Standing quarantines are DERIVED from the marker directory rather than passed
+# in, so a run that quarantines nothing new still reports every fault already on
+# the books. A fault that disappears from the report the day after it is raised
+# is a fault nobody fixes.
+standing = []
+for root, _, files in os.walk(qmeta) if os.path.isdir(qmeta) else []:
+    for f in files:
+        if not f.endswith(".json"):
+            continue
+        try:
+            q = json.load(open(os.path.join(root, f)))
+        except Exception:
+            continue
+        standing.append({k: q.get(k) for k in
+                         ("host", "taken_at", "classification", "attempts",
+                          "first_seen", "failures")})
+standing.sort(key=lambda q: (q.get("host") or "", q.get("taken_at") or ""))
+hosts = {}
+total = 0
+for h in sorted(os.listdir(snapdir)) if os.path.isdir(snapdir) else []:
+    hd = os.path.join(snapdir, h)
+    if not os.path.isdir(hd):
+        continue
+    snaps = sorted(x for x in os.listdir(hd) if os.path.isdir(os.path.join(hd, x)))
+    b = 0
+    for s in snaps:
+        for r, _, fs in os.walk(os.path.join(hd, s)):
+            for f in fs:
+                try:
+                    b += os.path.getsize(os.path.join(r, f))
+                except OSError:
+                    pass
+    total += b
+    hosts[h] = {"count": len(snaps), "oldest": snaps[0] if snaps else None,
+                "newest": snaps[-1] if snaps else None, "bytes": b}
+json.dump({
+    "last_run_at": datetime.datetime.now(datetime.timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "ok": not errs,
+    "mirrored": int(mirrored), "already_held": int(skipped), "pruned": int(pruned),
+    "sealed": sealed == "true",
+    "free_gb": int(freegb or 0),
+    "bytes_total": total,
+    "hosts": hosts,
+    "errors": errs,
+    "quarantined": standing,
+    "unseal_hint": "sudo chattr -R -i <path>  # published snapshots are immutable",
+}, open(state, "w"), indent=2)
+PY
+}
+
+# ---------------------------------------------------------------------------
+# MODE: verify — re-read every stored byte. Catches bit rot and tampering,
+# which a copy job can never catch because it only ever looks at new data.
+# ---------------------------------------------------------------------------
+do_verify() {
+  [ -d "$SNAPDIR" ] || die "no mirror at $SNAPDIR"
+  local bad=0 good=0
+  for hostdir in "$SNAPDIR"/*/; do
+    [ -d "$hostdir" ] || continue
+    for snap in "$hostdir"*/; do
+      [ -d "$snap" ] || continue
+      if out=$(verify_snapshot "$snap" 2>&1); then
+        good=$((good+1))
+      else
+        bad=$((bad+1)); log "VERIFY FAIL ${snap}: $(echo "$out" | head -3 | tr '\n' ';')"
+      fi
+    done
+  done
+  log "verify: ${good} intact, ${bad} FAILED"
+  if [ "$bad" -gt 0 ]; then
+    alarm "estate mirror: ${bad} stored snapshot(s) FAILED re-verification (bit rot or tampering)"
+    return 1
+  fi
+  [ "$good" -gt 0 ] || { alarm "estate mirror: verify found ZERO snapshots"; return 1; }
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# MODE: health — the detector. A mirror timer that quietly stops running looks
+# exactly like a healthy mirror from the inside; only an age assertion tells
+# them apart.
+# ---------------------------------------------------------------------------
+do_health() {
+  local problems=()
+  if [ ! -f "$STATE" ]; then
+    alarm "estate mirror: no MIRROR-STATE.json at $STATE — the mirror has never completed a run"
+    return 1
+  fi
+  mapfile -t problems < <(python3 - "$STATE" "$MAX_AGE_H" "$MIN_FREE_GB" <<'PY'
+import json, sys, datetime
+state, max_age_h, min_free = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+s = json.load(open(state))
+now = datetime.datetime.now(datetime.timezone.utc)
+def age_h(stamp, fmt):
+    try:
+        t = datetime.datetime.strptime(stamp, fmt).replace(tzinfo=datetime.timezone.utc)
+    except Exception:
+        return None
+    return (now - t).total_seconds() / 3600.0
+a = age_h(s.get("last_run_at", ""), "%Y-%m-%dT%H:%M:%SZ")
+if a is None:
+    print("last_run_at unreadable")
+elif a > max_age_h:
+    print("STALE: last successful mirror run was %.1fh ago (limit %dh)" % (a, max_age_h))
+if not s.get("ok"):
+    print("last run reported errors: %s" % "; ".join(s.get("errors") or [])[:300])
+if not s.get("sealed"):
+    print("mirror is NOT sealed immutable")
+if int(s.get("free_gb") or 0) < min_free:
+    print("disk floor: %sGB free < %dGB" % (s.get("free_gb"), min_free))
+# Standing quarantines go to stderr, not into the problem list: they were
+# alarmed once when they were found, and re-alarming a known-permanent fault
+# every six hours is how a team learns to ignore this alarm. They stay in
+# MIRROR-STATE.json and in the journal, which is where a standing fault belongs.
+for q in (s.get("quarantined") or []):
+    sys.stderr.write("NOTE standing quarantine: %s/%s [%s, attempts=%s, first seen %s]\n"
+                     % (q.get("host"), q.get("taken_at"), q.get("classification"),
+                        q.get("attempts"), q.get("first_seen")))
+hosts = s.get("hosts") or {}
+if not hosts:
+    print("mirror holds ZERO hosts")
+for h, v in hosts.items():
+    if not v.get("count"):
+        print("host %s holds ZERO snapshots" % h)
+        continue
+    na = age_h((v.get("newest") or "")[:15], "%Y%m%dT%H%M%S")
+    if na is None:
+        print("host %s: newest snapshot timestamp unreadable (%s)" % (h, v.get("newest")))
+    elif na > max_age_h:
+        print("host %s: newest snapshot is %.1fh old (limit %dh)" % (h, na, max_age_h))
+PY
+)
+  if [ ${#problems[@]} -gt 0 ] && [ -n "${problems[0]:-}" ]; then
+    for p in "${problems[@]}"; do log "HEALTH: $p"; done
+    alarm "estate mirror health: ${problems[0]}"
+    return 1
+  fi
+  log "health OK"
+  return 0
+}
+
+mkdir -p "$ROOT" 2>/dev/null || true
+case "$MODE" in
+  mirror) do_mirror ;;
+  verify) do_verify ;;
+  health) do_health ;;
+  *) echo "usage: $0 [mirror|verify|health]" >&2; exit 2 ;;
+esac
