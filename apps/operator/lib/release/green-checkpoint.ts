@@ -6328,6 +6328,26 @@ export function greenCheckpointCapacityEvidence(
   );
 }
 
+/**
+ * WI-606293: the one phrasing for a withheld fixer dispatch. It must say the pool is
+ * walled and that nothing was spent — an operator reading "no fixer launched" without a
+ * cause reasonably concludes the repair arm is broken and goes hunting, which is the
+ * several-hour detour this whole preflight exists to prevent.
+ */
+export function frozenRepairCapacityHoldSummary(
+  head: string,
+  hold: { summary: string; retryAtMs: number | null },
+): string {
+  const retry =
+    typeof hold.retryAtMs === "number" && Number.isFinite(hold.retryAtMs)
+      ? ` Retry after ${new Date(hold.retryAtMs).toISOString()}.`
+      : "";
+  return (
+    `frozen repair fixer dispatch WITHHELD for ${head.slice(0, 8)}: ${hold.summary}.${retry}` +
+    " No repair attempt and no dispatch reservation were spent, and no suite was run."
+  );
+}
+
 /** P-012 failure signature for the release-fixer dedup, folding the SPA-build break in:
  *  a green run has none; otherwise the extracted suite failures, plus the sentinel
  *  `@papercusp/operator-vite` when the build (not the suite) is what failed — so a broken
@@ -13131,6 +13151,66 @@ export function realCheckpointDeps(
     runId,
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
+    async checkFixerProviderCapacity() {
+      const { accountStatus } = await import(
+        "@papercusp/operator-core/lib/deployment/account-pool-store"
+      );
+      // No role->provider resolver exists anywhere in this tree (grepped 2026-08-29), so
+      // the fixer's backend is NAMED here rather than derived — the one hand-maintained
+      // fact in this preflight, kept overridable so a pot that moves the fixer off codex
+      // does not have to patch the gate. Everything below is measured, not assumed.
+      const provider = (
+        process.env.PAPERCUSP_RELEASE_FIXER_PROVIDER?.trim() || "codex"
+      ).toLowerCase();
+      const rows = (await accountStatus()).filter(
+        (r) => r.provider === provider,
+      );
+      if (rows.length === 0) {
+        return {
+          ok: true,
+          summary: `no ${provider} accounts in the pool to measure; not withholding on an unknown`,
+        };
+      }
+      // `usageWalled` is the exhausted-window meter, deliberately NOT the `available`
+      // boolean — that one reads true on a weekly-exhausted account whose bounded rate
+      // pause has lapsed (WI-3310), which is exactly the false "go" this preflight exists
+      // to catch.
+      const notWalled = rows.filter((r) => !r.usageWalled);
+      if (notWalled.length > 0) {
+        return {
+          ok: true,
+          summary: `${notWalled.length}/${rows.length} ${provider} account(s) have usage headroom (${notWalled
+            .map((r) => r.id)
+            .join(", ")})`,
+        };
+      }
+      // Every row is walled. Withhold only if at least one of those readings is FRESH —
+      // a stale or never-observed reading is an unknown, and an unknown must never
+      // masquerade as a measured wall (EI-18809949582687481).
+      const fresh = rows.filter((r) => r.readingStatus === "fresh");
+      if (fresh.length === 0) {
+        return {
+          ok: true,
+          summary: `all ${rows.length} ${provider} account(s) read walled, but no reading is fresh (${rows
+            .map((r) => `${r.id}:${r.readingStatus}`)
+            .join(", ")}); dispatching rather than withholding on a stale reading`,
+        };
+      }
+      const resets = rows
+        .map((r) => r.usageResetAt)
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+      const retryAtMs = resets.length > 0 ? Math.min(...resets) : null;
+      return {
+        ok: false,
+        retryAtMs,
+        summary:
+          `all ${rows.length} ${provider} account(s) are usage-walled ` +
+          `(${rows.map((r) => r.id).join(", ")}; ${fresh.length} fresh reading(s))` +
+          (retryAtMs
+            ? `; earliest window reset ${new Date(retryAtMs).toISOString()}`
+            : "; no window reset reported"),
+      };
+    },
     async checkDiskHeadroom() {
       const { detectCriticalWriteHeadroom, diskPolicyFromEnv } =
         await import("@papercusp/operator-core/lib/storage/disk-space-alarm");
