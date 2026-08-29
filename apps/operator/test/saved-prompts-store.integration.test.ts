@@ -63,6 +63,16 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS last_used_at timestamptz,
       ADD COLUMN IF NOT EXISTS archived_at timestamptz
   `);
+  // Workflowy-style checkoff (migration 606, quick-panel-workflowy-clone-2026-07-14
+  // P-001 / WI-4840). NULL = active. mapRow()'s asIsoOrNull(r.completed_at) reads
+  // this column on every RETURNING * / SELECT * — omitting it here makes `postgres`
+  // hand back `undefined` (no such property) rather than SQL NULL, and
+  // asIsoOrNull's `v === null` check does not catch `undefined`, so asIso(undefined)
+  // crashes on `.toISOString()`. This mirrors migration 606's DDL exactly.
+  await sql.unsafe(`
+    ALTER TABLE harness_shared.saved_prompts
+      ADD COLUMN IF NOT EXISTS completed_at timestamptz
+  `);
   await sql.unsafe(`
     DO $$ BEGIN
       ALTER TABLE harness_shared.saved_prompts
