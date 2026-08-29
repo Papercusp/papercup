@@ -1065,7 +1065,15 @@ export async function listPlanIndexRows(
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, forced_past,
                input_schema IS NOT NULL AS has_input_schema,
-               content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin,
+               -- STORED generated column (migration 1024). Do NOT inline
+               -- "content LIKE BLENDER_PLAN_SQL_PATTERN" here again: content averages
+               -- 10 kB and is TOASTed, so the LIKE detoasts it for every candidate row
+               -- even though content is never returned. Measured 88.0 ms / 7,609 buffers
+               -- with it vs 1.4 ms / 360 without -- 98.5% of this query's cost, and this
+               -- was the #1 statement on the instance at 16.2% of all database time.
+               -- The legacy fallback below still computes it inline ON PURPOSE: that path
+               -- runs only where migration 1024 has not applied and the column is absent.
+               is_blender_origin,
                EXISTS (
                  SELECT 1
                    FROM harness_shared.trigger_bindings tb
@@ -1197,7 +1205,15 @@ export async function listPlanIndexRowsForWorkspace(
                schedule, schedule_active, scheduled_at, expires_at, tzid, template_slug, run_seq,
                template, forced_past,
                input_schema IS NOT NULL AS has_input_schema,
-               content LIKE ${BLENDER_PLAN_SQL_PATTERN} AS is_blender_origin,
+               -- STORED generated column (migration 1024). Do NOT inline
+               -- "content LIKE BLENDER_PLAN_SQL_PATTERN" here again: content averages
+               -- 10 kB and is TOASTed, so the LIKE detoasts it for every candidate row
+               -- even though content is never returned. Measured 88.0 ms / 7,609 buffers
+               -- with it vs 1.4 ms / 360 without -- 98.5% of this query's cost, and this
+               -- was the #1 statement on the instance at 16.2% of all database time.
+               -- The legacy fallback below still computes it inline ON PURPOSE: that path
+               -- runs only where migration 1024 has not applied and the column is absent.
+               is_blender_origin,
                EXISTS (
                  SELECT 1
                    FROM harness_shared.trigger_bindings tb
