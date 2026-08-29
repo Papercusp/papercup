@@ -138,7 +138,10 @@ import {
   closureDigestManifestPath,
   decidePassingTaskVerdict,
   diffClosureDigests,
+  diffIdentityEnvDigests,
   formatClosureDeltaLine,
+  formatIdentityEnvDeltaLine,
+  identityEnvDigests,
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
   mergeClosureDigestManifest,
@@ -3945,6 +3948,10 @@ const taskVerdictClosureManifestRead = TASK_VERDICT_CACHE_ENABLED
   : null;
 /** taskKey -> { fileCount, listHash } for every closure this run resolved. */
 const taskVerdictClosureShapes = {};
+// cacheGroup -> { envKey: digest } as this run computed it. Last writer wins: the identity
+// environment is a property of the RUN, and the per-task variation that does exist
+// (VITEST_MAX_*) is already stripped from the cross-run identity it is compared against.
+const taskVerdictIdentityEnvByGroup = {};
 
 function dependencyProvenanceForTask(t) {
   if (!TASK_VERDICT_CACHE_ENABLED) return null;
@@ -3976,24 +3983,47 @@ function dependencyProvenanceForTask(t) {
  */
 function reportClosureDeltaForMiss(context, decision) {
   try {
-    if (!TASK_VERDICT_CACHE_ENABLED) return;
-    if (decision?.hit) return;
-    if (!String(decision?.reason ?? "").endsWith("dependency-closure-changed")) return;
+    if (!TASK_VERDICT_CACHE_ENABLED || decision?.hit) return;
+    const reason = String(decision?.reason ?? "");
+    const manifestReason =
+      taskVerdictClosureManifestRead?.reason ?? "manifest-disabled";
+    const key = taskKey(context.t);
+    if (reason.endsWith("environment-changed")) {
+      // Namespacing is what tells us WHICH lookup produced the miss, and therefore which of the
+      // two identity environments the stored entry was built from.
+      const group = reason.startsWith("cross-run:")
+        ? PASSING_TASK_VERDICT_CROSS_RUN_GROUP
+        : TASK_VERDICT_CACHE_GROUP;
+      const observed = taskVerdictIdentityEnvByGroup[group];
+      if (!observed) return;
+      errSync(
+        formatIdentityEnvDeltaLine({
+          taskKey: key,
+          reason,
+          manifestReason,
+          delta: diffIdentityEnvDigests({
+            prior: taskVerdictClosureManifestRead?.manifest?.identityEnv?.[group],
+            observed,
+          }),
+        }),
+      );
+      return;
+    }
+    if (!reason.endsWith("dependency-closure-changed")) return;
     const provenance = context.cacheProvenance;
     if (!provenance?.ok || !provenance.files) return;
-    const delta = diffClosureDigests({
-      prior: taskVerdictClosureManifestRead?.manifest,
-      observed: observedClosureDigests(ROOT, taskVerdictDigestCache),
-      files: provenance.files,
-      listHash: provenance.listHash,
-      taskKey: taskKey(context.t),
-    });
     errSync(
       formatClosureDeltaLine({
-        taskKey: taskKey(context.t),
-        reason: decision.reason,
-        delta,
-        manifestReason: taskVerdictClosureManifestRead?.reason ?? "manifest-disabled",
+        taskKey: key,
+        reason,
+        manifestReason,
+        delta: diffClosureDigests({
+          prior: taskVerdictClosureManifestRead?.manifest,
+          observed: observedClosureDigests(ROOT, taskVerdictDigestCache),
+          files: provenance.files,
+          listHash: provenance.listHash,
+          taskKey: key,
+        }),
       }),
     );
   } catch {
@@ -4279,6 +4309,15 @@ function runCapturedTask(
           ...cacheIdentitySpec,
           environment: crossRunEnvironment,
         });
+        // WI-595883: per-variable digests, so the NEXT run's `environment-changed` miss names the
+        // variable instead of asserting that one of ~126 moved. Digests only — this environment
+        // carries live credentials and none of them are ever written to disk.
+        taskVerdictIdentityEnvByGroup[crossRunGroup] =
+          identityEnvDigests(crossRunEnvironment);
+        if (TASK_VERDICT_CACHE_GROUP) {
+          taskVerdictIdentityEnvByGroup[TASK_VERDICT_CACHE_GROUP] =
+            identityEnvDigests(cacheIdentityEnvironment);
+        }
         if (!cacheDecision.hit) {
           const crossRunDecision = decidePassingTaskVerdict({
             enabled: true,
@@ -4858,11 +4897,12 @@ if (TASK_VERDICT_CACHE_ENABLED) {
   try {
     writePassingTaskVerdictCacheAtomic(
       TASK_VERDICT_CLOSURE_MANIFEST_PATH,
-      mergeClosureDigestManifest(
-        readClosureDigestManifest(TASK_VERDICT_CLOSURE_MANIFEST_PATH).manifest,
-        observedClosureDigests(ROOT, taskVerdictDigestCache),
-        taskVerdictClosureShapes,
-      ),
+      mergeClosureDigestManifest({
+        prior: readClosureDigestManifest(TASK_VERDICT_CLOSURE_MANIFEST_PATH).manifest,
+        observed: observedClosureDigests(ROOT, taskVerdictDigestCache),
+        taskShapes: taskVerdictClosureShapes,
+        identityEnv: taskVerdictIdentityEnvByGroup,
+      }),
       `${RUN_TOKEN}-closure-manifest`,
     );
   } catch (error) {
