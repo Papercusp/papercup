@@ -95,13 +95,13 @@ vi.mock('../../events/await/installed-events', () => ({
 }));
 // EI-13095/P-006: the done/unblocked registration latches probe the live item —
 // mocked so the rig stays hermetic (the real module pulls db-org). Defaults
-// ('live'/structured 'blocked') make every existing case register exactly as before.
+// ('live'/a real blocking edge) make every existing case register exactly as before.
 vi.mock('../../work-items-events', () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: 'live' as const, itemState: 'wip' })),
   liveBlockedState: vi.fn(async () => ({
     verdict: 'blocked' as const,
-    lifecycleState: 'blocked',
-    dependencyState: 'unblocked' as const,
+    lifecycleState: 'open',
+    dependencyState: 'blocked' as const,
   })),
   // EI-18731480441007330: the self-await deadlock guard's probe. Defaults to
   // 'live' with no assignee (never equal to the caller's own ownerId,
@@ -1022,7 +1022,7 @@ describe('the done-key registration LATCH (EI-13095 — the WI-5075 stranded-awa
 });
 
 describe('the unblocked-key registration LATCH (P-006 / EI-21581161723225407)', () => {
-  it('does not misclassify a lifecycle-blocked target with no dependency edges as already unblocked', async () => {
+  it('REFUSES a lifecycle-blocked target with no dependency edges because the edge-only key cannot fire', async () => {
     vi.mocked(liveBlockedState).mockResolvedValueOnce({
       verdict: 'blocked',
       lifecycleState: 'blocked',
@@ -1032,14 +1032,38 @@ describe('the unblocked-key registration LATCH (P-006 / EI-21581161723225407)', 
     const out = await call({ event: 'work-item:unblocked:WI-42218' });
 
     expect(out).toMatchObject({
-      ok: true,
-      await_id: 99,
+      ok: false,
+      error: 'unfirable_work_item_unblocked',
+      firable: false,
       event: 'work-item:unblocked:WI-42218',
+      work_item_id: 'WI-42218',
       item_state: 'blocked',
       lifecycle_state: 'blocked',
       dependency_state: 'unblocked',
     });
-    expect(out.already_unblocked).toBeUndefined();
+    expect(out.advice).toContain('NO live blocker dependency edge');
+    expect(out.advice).toContain('nothing was registered');
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
+  it('still registers when a live blocker dependency edge can fire the key', async () => {
+    vi.mocked(liveBlockedState).mockResolvedValueOnce({
+      verdict: 'blocked',
+      lifecycleState: 'open',
+      dependencyState: 'blocked',
+    });
+
+    const out = await call({ event: 'work-item:unblocked:WI-42218' });
+
+    expect(out).toMatchObject({
+      ok: true,
+      await_id: 99,
+      event: 'work-item:unblocked:WI-42218',
+      item_state: 'open',
+      lifecycle_state: 'open',
+      dependency_state: 'blocked',
+    });
+    expect(out.error).toBeUndefined();
     expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe('work-item:unblocked:WI-42218');
   });
 });

@@ -654,7 +654,7 @@ const WI_STATE_FAMILY: Record<string, string> = {
 defineTool({
   name: "work-item:await",
   description:
-    "Sleep until a work item changes status instead of polling work_items:get. With no `state`, arms the general work-item:status:<id> (ANY transition). With a single `state` (done|unblocked|blocked|claimed), arms only that specific key. Then END YOUR TURN.",
+    "Sleep until a work item changes status instead of polling work_items:get. With no `state`, arms the general work-item:status:<id> (ANY transition). With a single `state` (done|unblocked|blocked|claimed), arms only that specific key. The unblocked key requires a live `blocks` dependency edge; lifecycle-only blocked holds are refused because they cannot emit it. Then END YOUR TURN.",
   capability: "coord:write",
   guidance: {
     when: "You are blocked on a peer/dependency work item (its completion, unblock, or any transition) — arm this and end your turn instead of re-reading work_items:get.",
@@ -735,6 +735,22 @@ defineTool({
             probe.value.verdict === "settled"
               ? `${args.id} is already SETTLED — "${key}" will never fire. Do not wait on it.`
               : `${args.id} has NO live blocker right now — "${key}" fires only on a future blocked→unblocked edge. Proceed with the blocked work now.`,
+        });
+      }
+      if (probe.value.verdict === "blocked" && probe.value.dependencyState === "unblocked") {
+        return reply({
+          ok: false,
+          error: "unfirable_work_item_unblocked",
+          firable: false,
+          event: key,
+          work_item_id: args.id,
+          item_state: probe.value.lifecycleState,
+          lifecycle_state: probe.value.lifecycleState,
+          dependency_state: probe.value.dependencyState,
+          advice:
+            `${args.id} is lifecycle-${probe.value.lifecycleState} but has NO live blocker dependency edge. ` +
+            `"${key}" fires only when the item's LAST live \`blocks\` edge clears, so this exact key cannot fire for the current shape and nothing was registered. ` +
+            "Await work-item:done:<actual-blocker-id> instead (and keep a bounded fallback wake), or omit `state` to await the general lifecycle status key.",
         });
       }
     }

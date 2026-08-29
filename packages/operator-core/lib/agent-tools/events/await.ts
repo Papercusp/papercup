@@ -146,7 +146,7 @@ export default defineTool({
   description:
     'Register a one-shot WAKE on an event key/pattern; when it fires you are re-invoked, so end your turn instead of polling. Patterns wake on their first match; `spec` threshold trees wake when satisfied.',
   guidance: {
-    when: 'You are blocked on a known event key: lock grant, plan run, peer answer, deploy/gate, or another emitter (patterns/macros cover families; see `event`). For `work-item:status:<id>` / `work-item:done:<id>` / `claim:released:<id>`, the id must belong to a DIFFERENT assignee: awaiting your own item is an unsatisfiable self-deadlock and is refused before registration. Pair key? Its completion OWNER must declare it (`events:emit { announce:true }`); await the RETURNED key, never a hand-typed chat key. `work-item:unblocked:<id>` latches at registration and returns `already_unblocked` when already clear.',
+    when: 'You are blocked on a known event key: lock grant, plan run, peer answer, deploy/gate, or another emitter (patterns/macros cover families; see `event`). For `work-item:status:<id>` / `work-item:done:<id>` / `claim:released:<id>`, the id must belong to a DIFFERENT assignee: awaiting your own item is an unsatisfiable self-deadlock and is refused before registration. Pair key? Its completion OWNER must declare it (`events:emit { announce:true }`); await the RETURNED key, never a hand-typed chat key. `work-item:unblocked:<id>` is emitted only when the last live `blocks` edge clears: registration returns `already_unblocked` when already clear and refuses lifecycle-blocked items with no blocker edge because that exact key cannot fire.',
     notWhen:
       'Ambient interest (use watch:create { targetKind:"topic", wake:false }), sub-minute waits inside one turn, or recurring schedules. Prefer sugar verbs for common waits: deploy:await, checkpoint:await, work-item:await, service:await-up, git-sync:await, plan-item:await, fleet:await-drained.',
     chaining: 'Recipe: `events:catalog` → `events:await { event }` (or sugar) → END YOUR TURN → wake carries payload → re-register for the NEXT occurrence (one-shot: a fired await is gone). Re-awaiting the same key retires your prior wait; `events:cancel` retracts, `events:status` inspects.',
@@ -786,9 +786,12 @@ export default defineTool({
     // `work-item:unblocked:<id>` fires only on a blocked→unblocked EDGE, so a
     // registration against an item with NO live blocker (or already settled)
     // could only ever time out — the await-after-the-fact strand, same class
-    // as the EI-9270 announced-gate race above. Say so NOW. Best-effort and
-    // time-bounded: an 'unknown' probe (unreadable item, ambiguous id) falls
-    // through to a normal registration.
+    // as the EI-9270 announced-gate race above. A lifecycle-only `blocked` /
+    // `needs-human` hold is NOT an emitter: with no live `blocks` edge there is
+    // no last-edge-clear transition that can fire this exact key. Refuse that
+    // shape before registration instead of returning a durable silent park.
+    // Best-effort and time-bounded: an 'unknown' probe (unreadable item,
+    // ambiguous id) falls through to a normal registration.
     const unblockedTarget = patternAwait ? undefined : /^work-item:unblocked:([^:]+)$/.exec(eventKey)?.[1];
     let unblockedProbe: LiveBlockedStateProbe | null = null;
     if (unblockedTarget) {
@@ -814,6 +817,29 @@ export default defineTool({
                   probe.value.verdict === 'settled'
                     ? `${unblockedTarget} is already SETTLED — "${eventKey}" will never fire. Do not wait on it.`
                     : `${unblockedTarget} has NO live blocker right now — it is ALREADY unblocked, so "${eventKey}" will not fire (it fires only on a future blocked→unblocked edge). Proceed with the blocked work now instead of waiting.`,
+              }),
+            },
+          ],
+        };
+      }
+      if (probe.value.verdict === 'blocked' && probe.value.dependencyState === 'unblocked') {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                error: 'unfirable_work_item_unblocked',
+                firable: false,
+                event: eventKey,
+                work_item_id: unblockedTarget,
+                item_state: probe.value.lifecycleState,
+                lifecycle_state: probe.value.lifecycleState,
+                dependency_state: probe.value.dependencyState,
+                advice:
+                  `${unblockedTarget} is lifecycle-${probe.value.lifecycleState} but has NO live blocker dependency edge. ` +
+                  `"${eventKey}" fires only when the item's LAST live \`blocks\` edge clears, so this exact key cannot fire for the current shape and nothing was registered. ` +
+                  'Await work-item:done:<actual-blocker-id> instead (and keep a bounded fallback wake), or use the general work-item:status:<id> key if a lifecycle transition is what you need.',
               }),
             },
           ],

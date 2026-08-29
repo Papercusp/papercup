@@ -115,13 +115,13 @@ vi.mock("../../harness/git-sync/pipeline-events", () => ({
 
 // EI-13095/P-006: the work-item:await latches probe the live item — mocked here
 // so the rig stays hermetic (the real module pulls db-org). Default
-// 'live'/structured 'blocked' = every existing case registers exactly as before.
+// 'live'/a real blocking edge = every existing case registers exactly as before.
 vi.mock("../../work-items-events", () => ({
   liveSettledProbe: vi.fn(async () => ({ verdict: "live" as const, itemState: "wip" })),
   liveBlockedState: vi.fn(async () => ({
     verdict: "blocked" as const,
-    lifecycleState: "blocked",
-    dependencyState: "unblocked" as const,
+    lifecycleState: "open",
+    dependencyState: "blocked" as const,
   })),
 }));
 
@@ -920,7 +920,7 @@ describe("work-item:await registration latches (EI-13095 — the sugar used to b
     expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:unblocked:WI-9");
   });
 
-  it("state:'unblocked' on a lifecycle-blocked item with no dependency edges stays registered and reports both states", async () => {
+  it("state:'unblocked' on a lifecycle-blocked item with no dependency edges is refused as unfirable", async () => {
     vi.mocked(liveBlockedState).mockResolvedValueOnce({
       verdict: "blocked",
       lifecycleState: "blocked",
@@ -928,15 +928,18 @@ describe("work-item:await registration latches (EI-13095 — the sugar used to b
     });
     const out = await callWi({ id: "WI-42228", state: "unblocked" });
     expect(out).toMatchObject({
-      ok: true,
-      await_ids: [99],
-      events: ["work-item:unblocked:WI-42228"],
+      ok: false,
+      error: "unfirable_work_item_unblocked",
+      firable: false,
+      event: "work-item:unblocked:WI-42228",
+      work_item_id: "WI-42228",
       item_state: "blocked",
       lifecycle_state: "blocked",
       dependency_state: "unblocked",
     });
-    expect(out.already_unblocked).toBeUndefined();
-    expect(vi.mocked(registerAwait).mock.calls[0][0].eventKey).toBe("work-item:unblocked:WI-42228");
+    expect(out.advice).toContain("NO live blocker dependency edge");
+    expect(out.advice).toContain("nothing was registered");
+    expect(registerAwait).not.toHaveBeenCalled();
   });
 
   it("state:'any' probes NOTHING (the general status key can always fire again)", async () => {
