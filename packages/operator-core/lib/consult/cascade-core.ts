@@ -26,6 +26,7 @@ import {
   revivalBrief,
   revivalBudgetSpent,
 } from './get-feedback-core';
+import { consultResponderVerbMenu } from './responder-verb-menu';
 
 /** Chain events a digest entry can record: the responder reply kinds, plus
  * the two non-reply advance triggers. */
@@ -113,8 +114,11 @@ export function cascadeWakeBody(input: {
     `${why}\n` +
     `FEEDBACK SO FAR (build on it or contest it — the full thread is conversation ${input.conversationId}):\n` +
     `${digestLines}\n` +
-    `Reply in conversation ${input.conversationId} with consult:reply { kind } (answer requires evidence; labeled first-principles reasoning is admissible for a best-available pick); ` +
-    `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
+    consultResponderVerbMenu({
+      conversationId: input.conversationId,
+      evidenceNote:
+        'answer requires evidence; labeled first-principles reasoning is admissible for a best-available pick',
+    })
   );
 }
 

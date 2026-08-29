@@ -35,6 +35,7 @@ import type { Sql } from 'postgres';
 import type { RouteResult, RoutingCandidate, SelectionVia } from './relevance-router';
 import { DEFAULT_SIM_FLOOR, selectResponders, selectionSnapshot } from './relevance-router';
 import { advanceCascade, makeDigestEntry } from './cascade-core';
+import { consultResponderVerbMenu } from './responder-verb-menu';
 
 /** P-006 archive-first retrieval floor: a closed_answered consult whose
  * question similarity clears this is served from the archive (create +
@@ -426,9 +427,12 @@ export function revivalBrief(opts: {
     `From ${opts.requesterId} (score ${c.score.toFixed(2)}, sim ${c.signals.similarity.toFixed(2)}).\n` +
     `Why you: ${evidenceLine(c)} — sessions:read resolves the refs (they are YOUR turns).\n` +
     `QUESTION: ${opts.question}\n` +
-    `Answer FROM your transcript, citing evidence: consult:reply { conversation_id: '${opts.conversationId}', kind: 'answer', body, evidence } — ` +
-    `consult:decline { reason } if your context genuinely does not cover it; consult:close { outcome } when settled. ` +
-    `Untyped conversations:post is refused. When done, you may end your turn — you were revived for this consult, not for a standing mission.`
+    `Answer FROM your transcript, citing evidence.\n` +
+    consultResponderVerbMenu({
+      conversationId: opts.conversationId,
+      declineNote: 'if your context genuinely does not cover it',
+    }) +
+    `\nWhen done, you may end your turn — you were revived for this consult, not for a standing mission.`
   );
 }
 
@@ -1020,22 +1024,28 @@ export async function getFeedbackCore(
       responder: finalChosen.ownerId,
       conversationId: opened.conversation_id,
       summary: `🧭 consult from ${req.requesterId}: ${req.question.replace(/\s+/g, ' ').slice(0, 72)}`,
+      // The branch-specific PREAMBLE varies (why you were picked, and what standard of answer
+      // that implies); the verb menu does NOT. Keeping the menu out of the ternary is the point
+      // of EI-21761566265989000: three inline copies is how all three came to omit the READ door.
       body:
-        finalChosen.fallback === 'lexical'
+        (finalChosen.fallback === 'lexical'
           ? `The semantic embedder is UNAVAILABLE. You are the bounded MANUAL-REVIEW pick from lexical text_tsv evidence (token overlap only; this is NOT a qualified semantic route).\n` +
-            `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n` +
-            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
-            `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
+            `Lexical evidence: ${evidenceLine(finalChosen)}. Review the question independently, state what you can and cannot ground, and do not present token overlap as expertise.\n`
           : finalChosenVia === 'minimum'
           ? `Selected as BEST-AVAILABLE reviewer (blended score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)} — BELOW the relevance floor; no better-matched live peer exists, and this consult carries a minimum of ${minResponders}).\n` +
-            `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n` +
-            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence — labeled first-principles reasoning is admissible here); ` +
-            `consult:decline { reason } only if you genuinely cannot add value; consult:close { outcome } when settled. Untyped conversations:post is refused.`
+            `This is a FIRST-PRINCIPLES review request, not a claim your transcript covers it — do NOT decline solely for lack of context. Review the question on its merits and state plainly what you can and cannot ground.\n`
           : `Routed to you by transcript relevance (score ${finalChosen.score.toFixed(2)}, sim ${finalChosen.signals.similarity.toFixed(2)}).\n` +
             `Why you: ${evidenceLine(finalChosen)} — sessions:read resolves the refs.\n` +
-            `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence. ` +
-            `Reply in conversation ${opened.conversation_id} with consult:reply { kind } (answer requires evidence); ` +
-            `consult:decline { reason } if it's not your area; consult:close { outcome } when settled. Untyped conversations:post is refused.`,
+            `Validate relevance FIRST; decline cheaply if your context doesn't cover it. Answer FROM your transcript, citing evidence.\n`) +
+        consultResponderVerbMenu({
+          conversationId: opened.conversation_id,
+          ...(finalChosenVia === 'minimum'
+            ? { evidenceNote: 'answer requires evidence — labeled first-principles reasoning is admissible here' }
+            : {}),
+          ...(finalChosen.fallback !== 'lexical' && finalChosenVia !== 'minimum'
+            ? { declineNote: "if it's not your area" }
+            : {}),
+        }),
     });
     pickupConfirmed = r.pickupConfirmed ?? false;
     queued = r.queued ?? r.woke ?? 0;

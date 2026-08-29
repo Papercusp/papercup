@@ -33,7 +33,7 @@ export default defineTool({
     notWhen:
       'Your context does not cover the question → consult:decline (cheap, honest). The thread is settled → consult:close. A non-consult conversation → conversations:post.',
     chaining:
-      'Validate relevance first (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }.',
+      'READ THE THREAD FIRST: conversations:get { id } — there is NO consult:read, and a wrong-door read returns EMPTY, which looks exactly like a thread with no replies (a reviewer answered without the requester\'s posts that way). → validate relevance (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }.',
   },
   capability: 'coord:write',
   requirePrincipal: false,

@@ -40,6 +40,7 @@ import type { Sql, TransactionSql } from 'postgres';
 import type { PostResult } from '../agent-tools/coordination/conversations-core';
 import { DEAD_RESPONDER_STATES, consultParkKey as parkKey } from './get-feedback-core';
 import { advanceCascade, digestFromRow, makeDigestEntry, selectionFromRouting, type CascadeEventKind } from './cascade-core';
+import { consultResponderVerbMenu } from './responder-verb-menu';
 
 export const RESPONDER_REPLY_KINDS = ['answer', 'clarifying_question', 'new_fact'] as const;
 export const REQUESTER_REPLY_KINDS = ['question', 'new_fact'] as const;
@@ -400,7 +401,11 @@ export async function consultReplyCore(
       responder: row.responder_id,
       conversationId: req.conversationId,
       summary: `🧭 consult follow-up from ${req.authorId}: ${oneLine(req.body, 72)}`,
-      body: `Follow-up (${req.kind}) on consult ${req.conversationId} (exchange ${exchangesUsed}/${row.max_exchanges}). Reply with consult:reply, or close with consult:close.`,
+      // EI-21761566265989000: a follow-up wake is the case where unread posts are GUARANTEED to
+      // exist — that is what makes it a follow-up — so naming the read door matters most here.
+      body:
+        `Follow-up (${req.kind}) on consult ${req.conversationId} (exchange ${exchangesUsed}/${row.max_exchanges}).\n` +
+        consultResponderVerbMenu({ conversationId: req.conversationId }),
     });
     woke = r.woke;
   }
