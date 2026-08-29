@@ -112,7 +112,15 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
     // materialized ONCE (the CREATE TEMP TABLE), then counts, rows, the two-part sample
     // (floor ids + queue-control detail), and the WI-6673 admitted-composition read each
     // scan that materialized snapshot instead of recomputing it from scratch...
-    expect(pg.queries).toHaveLength(6);
+    //
+    // WI-525554 adds ONE deliberate exception, which is why this is 7 and not 6: the
+    // lane-scope population read (statement 2, right after the materialization) re-derives
+    // from issueClaimCandidateSubquery instead of scanning the temp table, because it must
+    // measure the FULL pre-pushdown population that the lane filter would otherwise destroy.
+    // That does NOT weaken the invariant this test exists for: it runs on the SAME
+    // transaction client, so it sees the same MVCC snapshot as every other statement here.
+    // The load-bearing assertions are beginCalls and poolLog below, not this count.
+    expect(pg.queries).toHaveLength(7);
     // ...and NOTHING was issued on a fresh pool checkout outside the snapshot. This is the
     // regression: independent checkouts is what let the readings disagree.
     expect(pg.poolLog).toEqual([]);
@@ -318,9 +326,9 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
       breakdownOnly: true,
     });
     expect(pg.beginCalls).toBe(1);
-    // the materialization + counts + the unconditional admitted-composition read; the row
-    // list is skipped.
-    expect(pg.queries).toHaveLength(3);
+    // the materialization + the WI-525554 lane-scope population read + counts + the
+    // unconditional admitted-composition read; the row list is skipped.
+    expect(pg.queries).toHaveLength(4);
     expect(out.rows).toEqual([]);
     expect(out.sample).toBeUndefined();
   });
@@ -328,16 +336,21 @@ describe('readIssueClaimability — one snapshot for every claimability read (WI
   it('omitting sampleLimit reads counts + rows (+ composition) only, and omits `sample` entirely (absent, not an empty sample)', async () => {
     const pg = makePool();
     const out = await readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20 });
-    // materialization + counts + rows + composition.
-    expect(pg.queries).toHaveLength(4);
+    // materialization + the WI-525554 lane-scope population read + counts + rows + composition.
+    expect(pg.queries).toHaveLength(5);
     expect(out.sample).toBeUndefined();
     expect('sample' in out).toBe(false);
   });
 
   it('a failed read THROWS — it never degrades to a partial or zeroed reading (a synthesised 0 is indistinguishable from a genuinely drained lane)', async () => {
-    // query 1 = the CREATE TEMP TABLE materialization, query 2 = the counts (both succeed);
-    // query 3 = the row list — the one that now fails.
-    const pg = makePool({ failAtQuery: 3 }); // the row list fails, after materialize+counts succeeded
+    // query 1 = the CREATE TEMP TABLE materialization, query 2 = the WI-525554 lane-scope
+    // population read, query 3 = the counts (all three succeed); query 4 = the row list —
+    // the one that now fails.
+    //
+    // The ordinal MUST track that insertion. Left at 3 this test still passed, but it was
+    // failing the COUNTS rather than the row list — a different statement than the name
+    // claims, which is a silently weakened test rather than a loud one.
+    const pg = makePool({ failAtQuery: 4 }); // the row list fails, after materialize+lane-scope+counts succeeded
     await expect(
       readIssueClaimability(undefined, { ...OPTS, client: pg.client }, { limit: 20, sampleLimit: 5 }),
     ).rejects.toThrow(/snapshot read failed/);
