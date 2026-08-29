@@ -203,7 +203,7 @@ describe('keychain (encrypted-file fallback)', () => {
     }
   });
 
-  it('prefers the canonical legacy key over a divergent primary and heals the primary mirror', async () => {
+  it('fails closed without rewriting either valid but divergent fallback mirror', async () => {
     const id = 'hive:default:divergent-fallbacks';
     const canonicalDer = Buffer.from('canonical-legacy-hive-key-material');
     const divergentDer = Buffer.from('divergent-primary-hive-key-material');
@@ -213,37 +213,41 @@ describe('keychain (encrypted-file fallback)', () => {
     const { keychainStore } = await loadKeychain();
     await keychainStore(id, canonicalDer);
     expect(existsSync(encPath(id))).toBe(true);
+    const canonicalLegacyBlob = await readFile(encPath(id));
 
     const primaryDir = mkdtempSync(join(tmpdir(), 'pc-keychain-divergent-primary-'));
     process.env.PAPERCUSP_IDENTITY_DIR = primaryDir;
     const primaryPath = join(primaryDir, 'keypair-hive_default_divergent-fallbacks.enc');
     try {
-      // Reproduce the live split: a later configured-directory copy is valid
-      // but belongs to a different identity, while the OS tier is unavailable.
+      // A normal configured store now mirrors both roots. Restore the prior
+      // legacy ciphertext afterward to reproduce the live split without adding
+      // a test-only encryption seam to the production module.
+      vi.resetModules();
       await keychainStore(id, divergentDer);
       expect(existsSync(primaryPath)).toBe(true);
+      writeFileSync(encPath(id), canonicalLegacyBlob);
+      const primaryBefore = await readFile(primaryPath);
+      const legacyBefore = await readFile(encPath(id));
 
       vi.resetModules();
-      const firstLoad = await (await loadKeychain()).keychainLoad(id);
-      expect(firstLoad).toEqual({ kind: 'ok', value: canonicalDer });
-
-      // The reconciliation is durable, not just a one-load preference: after
-      // legacy cleanup, a fresh module must still resolve the canonical DER
-      // from the healed configured mirror.
-      rmSync(encPath(id));
-      vi.resetModules();
-      const afterLegacyRemoval = await (await loadKeychain()).keychainLoad(id);
-      expect(afterLegacyRemoval).toEqual({ kind: 'ok', value: canonicalDer });
+      const loaded = await (await loadKeychain()).keychainLoad(id);
+      expect(loaded.kind).toBe('error');
+      if (loaded.kind === 'error') {
+        expect(loaded.error.kind).toBe('io_error');
+        expect(loaded.error.reason).toContain('identity mirrors disagree');
+      }
+      expect(await readFile(primaryPath)).toEqual(primaryBefore);
+      expect(await readFile(encPath(id))).toEqual(legacyBefore);
     } finally {
       rmSync(primaryDir, { recursive: true, force: true });
     }
   });
 
-  it('honors PAPERCUSP_IDENTITY_DIR over HOME for fallback storage', async () => {
+  it('mirrors a configured fallback into HOME so an unconfigured launcher reuses the same identity', async () => {
     const customIdentityDir = mkdtempSync(join(tmpdir(), 'pc-keychain-identity-'));
     process.env.PAPERCUSP_IDENTITY_DIR = customIdentityDir;
     try {
-      const { keychainStore, keychainLoad } = await loadKeychain();
+      const { keychainStore } = await loadKeychain();
       const id = '279242982:papercusp-testvm-tester';
       const der = Buffer.from('shared-hive-device-key-material');
       const safe = id.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -251,8 +255,14 @@ describe('keychain (encrypted-file fallback)', () => {
       await keychainStore(id, der);
 
       expect(existsSync(join(customIdentityDir, 'keypair-' + safe + '.enc'))).toBe(true);
-      expect(existsSync(encPath(id))).toBe(false);
+      expect(existsSync(encPath(id))).toBe(true);
 
+      // Reproduce the stale installed launcher that omitted the configured
+      // root. It must see the mirrored canonical DER, not a not_found that
+      // authorizes loadOrGenerateDeviceKeypair to mint a split identity.
+      delete process.env.PAPERCUSP_IDENTITY_DIR;
+      vi.resetModules();
+      const { keychainLoad } = await loadKeychain();
       const loaded = await keychainLoad(id);
       expect(loaded.kind).toBe('ok');
       if (loaded.kind === 'ok') expect(loaded.value.equals(der)).toBe(true);

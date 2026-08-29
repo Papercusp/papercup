@@ -11,11 +11,13 @@
  *      ~/.papercusp/identity/ (AES-256-GCM, machine-derived PBKDF2 key from
  *      hostname + username)
  *
- * Stores deliberately converge an available OS backend AND tier 3. macOS can
- * boot headlessly with the login Keychain locked (`security` exits 36), so an
- * OS-only device key would disappear precisely when the sidecar must restart
- * without an Aqua login. The encrypted mirror must contain the SAME DER: using
- * an older readable fallback would fork the announced device identity.
+ * Stores deliberately converge an available OS backend AND every tier-3 root
+ * this runtime can read. macOS can boot headlessly with the login Keychain
+ * locked (`security` exits 36), so an OS-only device key would disappear
+ * precisely when the sidecar must restart without an Aqua login. A configured
+ * shared identity root is also mirrored into the legacy HOME root: a stale or
+ * partially-upgraded launcher that omitted PAPERCUSP_IDENTITY_DIR must still
+ * load the SAME DER rather than minting a second device identity.
  *
  * Tier 3 is not as strong as an OS keychain but avoids storing the
  * private key in plain text. Acceptable for Phase 1b; a full Tauri
@@ -308,11 +310,6 @@ function encFileName(keychainId: string): string {
   return 'keypair-' + safe + '.enc';
 }
 
-function encFilePath(keychainId: string): string {
-  // WRITES always land in the configured (primary) identityDir().
-  return join(identityDir(), encFileName(keychainId));
-}
-
 /**
  * Dirs to READ a key from, in priority order: the configured `identityDir()`
  * first, then the legacy `~/.papercusp/identity` default. A shared-operator
@@ -342,8 +339,12 @@ async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
   return pbkdf2Async(machineSecret, salt, PBKDF2_ITERATIONS, KEY_LEN, 'sha512');
 }
 
-async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
-  await mkdir(identityDir(), { recursive: true });
+async function fileStoreInDir(
+  dir: string,
+  keychainId: string,
+  privateKeyDer: Buffer,
+): Promise<void> {
+  await mkdir(dir, { recursive: true });
   const salt = randomBytes(SALT_LEN);
   const iv = randomBytes(IV_LEN);
   const key = await deriveMachineKey(salt);
@@ -353,7 +354,20 @@ async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<voi
   const authTag = cipher.getAuthTag();
 
   const blob = Buffer.concat([salt, iv, authTag, ciphertext]);
-  await writeFile(encFilePath(keychainId), blob, { mode: 0o600 });
+  await writeFile(join(dir, encFileName(keychainId)), blob, { mode: 0o600 });
+}
+
+async function fileStore(keychainId: string, privateKeyDer: Buffer): Promise<void> {
+  // The read path accepts both a configured shared root and the historical
+  // HOME root. The write path must therefore converge BOTH. Writing only the
+  // configured root leaves an older launcher (or installed binary) that omits
+  // PAPERCUSP_IDENTITY_DIR unable to see the canonical key; it then observes a
+  // true not_found and legitimately mints a different device identity into the
+  // legacy root. The next configured reader used to prefer that new legacy key
+  // and overwrite the good shared mirror — the live EI-203928 recurrence.
+  for (const dir of identityReadDirs()) {
+    await fileStoreInDir(dir, keychainId, privateKeyDer);
+  }
 }
 
 async function fileLoadFromDir(dir: string, name: string): Promise<KeychainResult<Buffer>> {
@@ -399,13 +413,19 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
   const legacy = await fileLoadFromDir(dirs[1], name);
   if (primary.kind === 'ok' && legacy.kind === 'ok') {
     if (!primary.value.equals(legacy.value)) {
-      // Both files decrypt, so first-success ordering cannot identify the
-      // canonical key. The legacy copy predates the configured-directory
-      // migration and is the only surviving provenance for the original
-      // identity. Heal the configured mirror synchronously before returning so
-      // a later legacy cleanup cannot expose the divergent primary again.
-      await fileStore(keychainId, legacy.value);
-      return legacy;
+      // Both files decrypt, so first-success ordering CANNOT establish which
+      // identity is canonical. Legacy is not inherently older: a stale launcher
+      // that omitted PAPERCUSP_IDENTITY_DIR can mint a brand-new legacy key.
+      // Never choose one or mutate either from a read path. `io_error` is the
+      // fail-closed class loadOrGenerateDeviceKeypair refuses to regenerate on.
+      return {
+        kind: 'error',
+        error: {
+          kind: 'io_error',
+          reason:
+            'configured and legacy encrypted identity mirrors disagree — refusing to select or mutate either',
+        },
+      };
     }
     return primary;
   }
@@ -425,7 +445,7 @@ async function fileLoad(keychainId: string): Promise<KeychainResult<Buffer>> {
 
 async function fileDelete(keychainId: string): Promise<void> {
   // WI-2018: delete from EVERY dir `fileLoad` reads (primary + legacy), not just the
-  // primary. Deleting only `encFilePath()` left a legacy-dir copy that `fileLoad`
+  // configured primary. Deleting only one copy left a legacy-dir copy that `fileLoad`
   // silently RESURRECTED on the next load — so a poisoned/divergent key survived its
   // own cleanup (the split-device-identity class; proven live on the mac VM
   // 2026-07-03, where a poison-era epoch key persisted in the second identity root).
