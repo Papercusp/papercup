@@ -121,19 +121,55 @@ describe('GCP image-family production composition', () => {
           packerExecutable: executable,
           scanExecutable: executable,
           cleanRoomExecutable: executable,
+          bootstrapAcceptanceExecutable: executable,
         }),
       ).resolves.toMatchObject({
         ok: true,
         missing: [],
-        executables: { packer: executable, scanner: executable, cleanRoom: executable },
+        executables: {
+          packer: executable,
+          scanner: executable,
+          cleanRoom: executable,
+          bootstrapAcceptance: executable,
+        },
       });
       await expect(
         probeGcpImageFamilyExecutables({
           packerExecutable: join(dir, 'missing'),
           scanExecutable: executable,
           cleanRoomExecutable: executable,
+          bootstrapAcceptanceExecutable: executable,
         }),
       ).resolves.toMatchObject({ ok: false, missing: ['packer'] });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * The PRE-build acceptance binary produces the clean-room report the release gate ratifies.
+   * It was registered in GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES but never probed, so the
+   * read-only preflight reported `ok` while the release could not produce its gate evidence —
+   * the exact class of failure this preflight exists to catch before any mutation.
+   */
+  it('fails the preflight when the pre-build bootstrap-acceptance binary is missing', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'gcp-image-release-acceptance-'));
+    try {
+      const executable = join(dir, 'tool');
+      await writeFile(executable, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      await chmod(executable, 0o755);
+      await expect(
+        probeGcpImageFamilyExecutables({
+          packerExecutable: executable,
+          scanExecutable: executable,
+          cleanRoomExecutable: executable,
+          bootstrapAcceptanceExecutable: join(dir, 'missing'),
+        }),
+      ).resolves.toMatchObject({
+        ok: false,
+        missing: ['bootstrapAcceptance'],
+        executables: { bootstrapAcceptance: null },
+      });
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

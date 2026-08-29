@@ -134,12 +134,6 @@ pub enum Event {
         domain_id: String,
         files: Vec<String>,
     },
-    /// The user's memories from `memory:list` (D-006 Step 2). `available=false`
-    /// = the memory backend reported unavailable (the tab's empty state).
-    Memories {
-        available: bool,
-        results: Vec<crate::models::MemoryEntry>,
-    },
     /// Typed memory-list outcome. This keeps auth/transport failures distinct
     /// from the backend's intentional `ok:false` unavailable envelope.
     MemoryLoad(MemoryLoadState),
@@ -157,6 +151,13 @@ pub enum Event {
     },
     /// A test run finished (legacy synchronous seam, retained for compatibility
     /// with older callers and reducer tests).
+    ///
+    /// Deliberately unconstructed in the binary: the live path is
+    /// `TestRunProgress`, whose terminal snapshot ends a run. This variant and
+    /// its reducer arm are kept as the compatibility seam the doc above
+    /// describes, and are exercised by the reducer tests — so the dead_code
+    /// warning is a statement about the bin build only, not unreachable code.
+    #[allow(dead_code)]
     TestRunDone {
         file: String,
         result: crate::models::TestRunResult,

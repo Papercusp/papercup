@@ -39,6 +39,7 @@ import {
   main,
   parseImmutableImageId,
   parseJsonObject,
+  requireExactText,
   requireText,
 } from './gcp-ephemeral.mjs';
 import { runScriptOnPrivateVm } from './gcp-private-vm-session.mjs';
@@ -87,7 +88,11 @@ async function cleanRoom(input) {
 
   const fixture = input.fixture;
   if (!fixture || typeof fixture !== 'object') fail('fixture is required to run a clean-room canary');
-  const bootstrapScript = requireText(fixture.bootstrapScript, 'fixture.bootstrapScript');
+  // requireExactText, NOT requireText: same content-addressing rule as the pre-build acceptance
+  // binary. The digest check below is conditional on bootstrapScriptSha256 being supplied, which
+  // is why trimming stayed invisible under hand-made inputs that omit it and only bit on the
+  // production path, where a real fixture always carries its digest.
+  const bootstrapScript = requireExactText(fixture.bootstrapScript, 'fixture.bootstrapScript');
   const fixtureId = requireText(fixture.fixtureId, 'fixture.fixtureId');
 
   // The submitted script must match its own advertised digest before we execute it.

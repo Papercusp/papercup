@@ -207,7 +207,8 @@ test('Codex /v1/responses keeps two tier-3 slots plus a reserved Scout slot', as
     },
     {
       codexPool,
-      codexConcurrency: 3,
+      // P-010: one shared admission seed for both lanes — Codex has no separate size.
+      concurrency: 3,
       // Give Claude a deliberately different reserve so inheriting its layer would leave only one
       // Codex tier-3 slot. The Codex-specific layer must preserve two bee slots plus Scout's reserve.
       priorityTiers: tiersDep({ caps: {}, tier1Reserve: 2 }),

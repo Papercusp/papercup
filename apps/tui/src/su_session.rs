@@ -410,7 +410,10 @@ pub enum SuSessionEvent {
     Session {
         #[serde(flatten)]
         envelope: SuSessionEventEnvelope,
-        descriptor: SuSessionDescriptor,
+        // Boxed to keep the enum small: an inline descriptor made this variant
+        // ~592 bytes against a ~385-byte next-largest, so every SuSessionEvent
+        // (including the far more frequent Lifecycle/Tool ones) paid that cost.
+        descriptor: Box<SuSessionDescriptor>,
     },
     Lifecycle {
         #[serde(flatten)]

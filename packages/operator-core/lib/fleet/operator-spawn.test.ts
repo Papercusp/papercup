@@ -8,6 +8,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({
   ownerSteering: { value: null as null | Record<string, unknown> },
+  // P-009 (WI-586538): controllable rate-limit config + governor window so
+  // spawnConcurrencyCeiling's seed-vs-user branch is directly testable.
+  rateLimit: {
+    value: { maxSimultaneousAgents: 16, concurrencyFloor: 1 } as Record<string, unknown>,
+  },
+  governorWindow: { value: null as number | null },
 }));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
@@ -84,7 +90,21 @@ vi.mock('../hive-local-blueprint-resolve', () => ({
   blueprintLocalRootExtra: (root: string | null) => (root ? `BLUEPRINT_LOCAL_ROOT=${root}` : null),
 }));
 vi.mock('../rate-limit-config', () => ({
-  getCachedRateLimitConfig: () => ({ maxSimultaneousAgents: 16, concurrencyFloor: 1 }),
+  getCachedRateLimitConfig: () => h.rateLimit.value,
+}));
+// P-009 (WI-586538): only effectiveConcurrencySnapshot is overridden — the rest of the
+// shared agent surface stays REAL, since operator-spawn's import graph reaches it.
+vi.mock('@papercusp/papercusp-shared/agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/papercusp-shared/agent')>()),
+  effectiveConcurrencySnapshot: () => ({
+    effective: null,
+    floor: 1,
+    cleanStreak: 0,
+    effectiveAfterExpiry: h.governorWindow.value,
+    peak: 0,
+    contractedAt: null,
+    constraintExpired: false,
+  }),
 }));
 vi.mock('./spawn-reclaim', () => ({
   heartbeatSpawns: vi.fn(async () => {}),
@@ -1396,5 +1416,49 @@ describe('getSpawnHeadroom({ skipHostSaturationShed }) — EI-5678', () => {
     vi.mocked(evaluatePerfSignals).mockClear();
     await getSpawnHeadroom('ws-test', { skipHostSaturationShed: true });
     expect(evaluatePerfSignals).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * P-009 / WI-586538 — spawnConcurrencyCeiling honours `maxSimultaneousAgentsSource`.
+ *
+ * Found by INDEPENDENT ACCEPTANCE GRADING of capless-adaptive-resource-governor-2026-08-26
+ * (criterion `no-artificial-ceiling`). `applyCached` already honoured the seed/user split at
+ * the governor's GLOBAL gate, but this — the second, independent count ceiling that
+ * getSpawnHeadroom/effectiveSpawnCeiling enforce — read the raw number unconditionally, so a
+ * seed-sourced host-profile guess silently became a spawn MAXIMUM.
+ *
+ * FALSIFIABILITY: the middle test is the load-bearing one. Against the pre-fix implementation
+ * (`return getCachedRateLimitConfig().maxSimultaneousAgents`) it returns the frozen seed 16
+ * instead of the governor's live 40 and FAILS. The other two pin the behaviour that must NOT
+ * regress while fixing it: a real user throttle still caps hard, and the pre-init fallback is
+ * never unbounded.
+ */
+describe('spawnConcurrencyCeiling — P-009 seed-vs-user (WI-586538)', () => {
+  const DEFAULT_CFG = { maxSimultaneousAgents: 16, concurrencyFloor: 1 };
+  afterEach(() => {
+    h.rateLimit.value = { ...DEFAULT_CFG };
+    h.governorWindow.value = null;
+  });
+
+  it("source 'user': an explicit throttle STILL installs a hard cap, ignoring the governor window", () => {
+    h.rateLimit.value = { maxSimultaneousAgents: 25, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'user' };
+    h.governorWindow.value = 40;
+    // D-002 forbids *Papercusp* configuring a maximum; the owner setting one is real intent.
+    expect(spawnConcurrencyCeiling()).toBe(25);
+  });
+
+  it("source 'seed': tracks the governor's LIVE window, so capacity grows PAST the host guess", () => {
+    h.rateLimit.value = { maxSimultaneousAgents: 16, concurrencyFloor: 1, maxSimultaneousAgentsSource: 'seed' };
+    h.governorWindow.value = 40;
+    expect(spawnConcurrencyCeiling()).toBe(40);
+  });
+
+  it('absent source is read as seed, and with NO finite window falls back to the seed — never unbounded', () => {
+    h.rateLimit.value = { ...DEFAULT_CFG }; // no source field at all (pre-init default shape)
+    h.governorWindow.value = null;
+    const ceiling = spawnConcurrencyCeiling();
+    expect(ceiling).toBe(16);
+    expect(Number.isFinite(ceiling)).toBe(true);
   });
 });

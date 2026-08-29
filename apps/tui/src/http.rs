@@ -11,6 +11,7 @@ use crate::sse::{parse_sse_frames, SseFrame};
 use anyhow::{anyhow, Context, Result};
 use serde_json::Value;
 use std::fmt;
+use std::time::Duration;
 use tokio::sync::mpsc;
 
 /// A non-success HTTP response, preserved as a typed error so callers can
@@ -48,11 +49,30 @@ impl HttpClient {
         Ok(Self::new(base, token))
     }
 
+    /// Bounded connect budget: an explicitly-selected operator that is
+    /// unreachable must fail FAST with an actionable error rather than hang on
+    /// the OS TCP default (which can stall a launch for minutes and reads to
+    /// the user as a frozen cockpit).
+    ///
+    /// Deliberately `connect_timeout`, NOT a whole-request `timeout`: SSE
+    /// subscriptions here are long-lived streams that stay open for the life of
+    /// the session, so a total request timeout would cut the cockpit off
+    /// mid-session. Connection establishment is the leg that must be bounded —
+    /// it is exactly the unreachable-host case.
+    const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
     pub fn new(base: String, token: Option<String>) -> Self {
+        // Fall back to the default client if the builder ever fails, so a
+        // transport-construction edge can never take the cockpit down; the
+        // bounded-connect property is asserted by test below.
+        let http = reqwest::Client::builder()
+            .connect_timeout(Self::CONNECT_TIMEOUT)
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             base: base.trim_end_matches('/').to_string(),
             token,
-            http: reqwest::Client::new(),
+            http,
         }
     }
 
@@ -189,12 +209,17 @@ fn discover_operator() -> Result<(String, Option<String>)> {
     Ok((base, token))
 }
 
-/// Best-effort bearer from `~/.papercusp/operator.json` — for EXPLICIT operator
-/// selection (`PUI_OPERATOR`, P-001 refit): the URL is pinned by the user but
-/// the locally-provisioned token still applies. Missing/unreadable → `None`.
-pub fn discovered_token() -> Option<String> {
-    discover_operator().ok().and_then(|(_, token)| token)
-}
+// NOTE: there is deliberately NO unscoped `discovered_token()` here.
+//
+// An endpoint-blind accessor returning the local `~/.papercusp/operator.json`
+// bearer is a credential-leak footgun: paired with an explicitly selected
+// remote operator it transmits a locally-provisioned secret to a host that has
+// no business seeing it. Because this module carries `#![allow(dead_code)]`,
+// such a helper attracts no unused warning and can sit here looking sanctioned
+// until some future caller reaches for the shorter name.
+//
+// Use `discovered_token_for(base)` — it is endpoint-scoped by construction and
+// returns `None` rather than leaking across operators.
 
 /// Return the discovered bearer only when `operator.json` describes the SAME
 /// canonical endpoint. Borrowing a token from a different operator is a hidden
@@ -244,6 +269,35 @@ pub fn base_for_selection(sel: &str) -> Result<String> {
 mod tests {
     use super::*;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// Recurrence guard for the bounded probe budget: an unreachable,
+    /// explicitly-selected operator must fail QUICKLY rather than hang.
+    ///
+    /// 203.0.113.0/24 is TEST-NET-3 (RFC 5737) — reserved for documentation and
+    /// routed nowhere. A connect attempt therefore either blackholes (the case
+    /// this guards: with no `connect_timeout`, Linux retries SYNs for ~130s
+    /// before giving up) or is refused immediately by local routing policy.
+    /// Both outcomes satisfy the bound; only the unbounded regression blows it,
+    /// which is precisely the failure this asserts against.
+    #[tokio::test]
+    async fn unreachable_operator_fails_within_bounded_connect_budget() {
+        let client = HttpClient::new("http://203.0.113.1:9443".to_string(), None);
+        let started = std::time::Instant::now();
+        let result = client.sys_http("GET", "/api/health", None).await;
+        let elapsed = started.elapsed();
+
+        assert!(
+            result.is_err(),
+            "an unroutable operator must not report success"
+        );
+        assert!(
+            elapsed < Duration::from_secs(30),
+            "connect budget is unbounded: took {elapsed:?} (CONNECT_TIMEOUT is {:?}). \
+             Without connect_timeout this stalls ~130s on Linux SYN retries, which \
+             reads to the user as a frozen cockpit.",
+            HttpClient::CONNECT_TIMEOUT
+        );
+    }
 
     #[test]
     fn base_for_selection_maps_names_and_urls() {

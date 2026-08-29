@@ -8,6 +8,9 @@ import {
   createGovernedProcessDemandSampler,
   governedProcessIdempotencyKey,
   runGovernedTestProcess,
+  GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES,
+  GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS,
+  GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES,
 } from '../../../../scripts/lib/governed-test-process.mjs';
 
 const context = {
@@ -143,5 +146,155 @@ describe('governed test-process bridge', () => {
     });
     expect(result.info.inherited).toBe(false);
     expect(JSON.parse(result.childEnv.PAPERCUSP_ADMISSION_CONTEXT)).toEqual(context);
+  });
+});
+
+// P-006 regression coverage (plan nonblocking-test-materializer-2026-08-28).
+//
+// The bridge's job is to decide whether a child produced a TRUSTWORTHY verdict.
+// `release` teaches the governor a measured demand and settles the receipt as a
+// real run; `cancel` says the run proved nothing. Every shape below is one the
+// classifier could otherwise settle as a successful release having measured
+// nothing — the false green this plan exists to make impossible.
+
+describe('demand construction', () => {
+  it('scales the descriptor reservation with the file count, and clamps it', () => {
+    expect(buildGovernedProcessDemand({ fileCount: 1 }).fileDescriptors).toBe(17);
+    expect(buildGovernedProcessDemand({ fileCount: 8 }).fileDescriptors).toBe(24);
+    // A fractional or negative count must never reserve a fractional/absurd budget.
+    expect(buildGovernedProcessDemand({ fileCount: 3.9 }).fileDescriptors).toBe(19);
+    expect(buildGovernedProcessDemand({ fileCount: -5 }).fileDescriptors).toBe(17);
+  });
+
+  it('honours explicit positive overrides', () => {
+    expect(
+      buildGovernedProcessDemand({ cpuWeight: 2.5, memoryBytes: 5000, diskBytes: 6000, fileDescriptors: 7 }),
+    ).toEqual({ cpuWeight: 2.5, memoryBytes: 5000, diskBytes: 6000, fileDescriptors: 7 });
+  });
+
+  it('falls back to bounded defaults for zero, negative, and non-finite input', () => {
+    const defaults = {
+      cpuWeight: 1,
+      memoryBytes: GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES,
+      diskBytes: GOVERNED_TEST_PROCESS_DEFAULT_DISK_BYTES,
+      fileDescriptors: GOVERNED_TEST_PROCESS_DEFAULT_FILE_DESCRIPTORS + 1,
+    };
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        buildGovernedProcessDemand({ memoryBytes: bad, diskBytes: bad, fileDescriptors: bad, cpuWeight: -1 }),
+      ).toEqual(defaults);
+    }
+  });
+
+  it('permits a deliberate zero cpu weight while still flooring the byte reservations', () => {
+    // The asymmetry is intentional: a zero-cpu reservation is meaningful, a
+    // zero-memory one is a missing value.
+    expect(buildGovernedProcessDemand({ cpuWeight: 0 }).cpuWeight).toBe(0);
+    expect(buildGovernedProcessDemand({ memoryBytes: 0 }).memoryBytes).toBe(
+      GOVERNED_TEST_PROCESS_DEFAULT_MEMORY_BYTES,
+    );
+  });
+});
+
+describe('worker-exit classification', () => {
+  // One case per token in the untrustworthy-output pattern, so removing a token
+  // fails HERE rather than silently widening `release`. Each carries code 0 —
+  // the false-green shape, where the child claims success while its own output
+  // says no verdict was produced.
+  const untrustworthyOutput: [string, string][] = [
+    ['a crashed vitest worker', 'Worker exited unexpectedly'],
+    ['a watchdog marker', 'TEST_FILE_WATCHDOG fired after 120s'],
+    ['a route error', 'TEST_FILE_ROUTE_ERROR requested=3 matched=0'],
+    ['a cgroup task ceiling', 'fork failed: TasksMax limit reached'],
+    ['a termination signal named in output', 'child received SIGTERM'],
+    ['a kill signal named in output', 'runner sent SIGKILL to the pool'],
+  ];
+
+  it.each(untrustworthyOutput)('refuses to release after %s', (_label, text) => {
+    expect(classifyGovernedTestProcessOutcome({ code: 0, signal: null, stderr: text })).toMatchObject({
+      kind: 'cancel',
+    });
+  });
+
+  it('scans stdout, stderr, and the combined output field alike', () => {
+    for (const key of ['stdout', 'stderr', 'output']) {
+      expect(
+        classifyGovernedTestProcessOutcome({ code: 0, signal: null, [key]: 'Worker exited unexpectedly' }),
+      ).toMatchObject({ kind: 'cancel' });
+    }
+  });
+});
+
+describe('no false green', () => {
+  // CALIBRATION — without this, every assertion below would still pass if the
+  // classifier degenerated into always-cancel, which would prove nothing.
+  it('does release a clean, trustworthy exit', () => {
+    expect(
+      classifyGovernedTestProcessOutcome({
+        code: 0,
+        signal: null,
+        stdout: 'Test Files  1 passed (1)',
+        actualDemand: { memoryBytes: 3 },
+      }),
+    ).toEqual({ kind: 'release', actualDemand: { memoryBytes: 3 } });
+  });
+
+  const untrustworthy: [string, Record<string, unknown>][] = [
+    ['a success code delivered alongside a kill signal', { code: 0, signal: 'SIGKILL' }],
+    ['a spawnSync status of 0 that was still signalled', { status: 0, signal: 'SIGTERM' }],
+    ['no exit code at all', { code: null, signal: null }],
+    ['a watchdog timeout carrying a success code', { code: 0, signal: null, timedOut: true }],
+    ['the internal watchdog flag', { code: 0, signal: null, __watchdogTimedOut: true }],
+    ['the public watchdog flag', { code: 0, signal: null, watchdogTimedOut: true }],
+    ['an abort before any verdict', { code: 0, signal: null, aborted: true }],
+    ['a spawn failure', { code: 0, signal: null, spawnError: 'ENOENT' }],
+    ['the internal spawn-failure field', { code: 0, signal: null, __spawnError: 'EACCES' }],
+    ['a start failure that produced no output', { code: null, error: new Error('boom') }],
+  ];
+
+  it.each(untrustworthy)('never settles %s as a release', (_label, outcome) => {
+    expect(classifyGovernedTestProcessOutcome(outcome).kind).toBe('cancel');
+  });
+
+  it('carries no measured demand on a refusal, so a cancelled run cannot teach the governor', () => {
+    const settled = classifyGovernedTestProcessOutcome({
+      code: 0,
+      signal: 'SIGKILL',
+      actualDemand: { memoryBytes: 999 },
+    });
+    expect(settled.kind).toBe('cancel');
+    expect(settled.actualDemand).toBeUndefined();
+  });
+});
+
+describe('receipt lifecycle and demand accounting', () => {
+  it('refuses a malformed invocation instead of starting an ungoverned child', async () => {
+    await expect(runGovernedTestProcess(null, async () => 'ran')).rejects.toThrow(/options are required/);
+    await expect(runGovernedTestProcess({}, undefined)).rejects.toThrow(/callback is required/);
+  });
+
+  it('falls back to the planned reservation when nothing could be measured', () => {
+    const planned = buildGovernedProcessDemand({ fileCount: 2 });
+    const sampler = createGovernedProcessDemandSampler(planned, {
+      readSnapshot: () => ({ cpuMicros: null, rssBytes: null, fileDescriptors: null }),
+      now: () => 1,
+      intervalMs: 60_000,
+    });
+    sampler.attach(7);
+    expect(sampler.stop()).toEqual(planned);
+  });
+
+  it('stays fail-soft when a procfs read throws or the pid is invalid', () => {
+    const planned = buildGovernedProcessDemand();
+    const sampler = createGovernedProcessDemandSampler(planned, {
+      readSnapshot: () => {
+        throw new Error('procfs vanished');
+      },
+      now: () => 1,
+      intervalMs: 60_000,
+    });
+    sampler.attach(0);
+    expect(() => sampler.sample()).not.toThrow();
+    expect(sampler.stop()).toEqual(planned);
   });
 });

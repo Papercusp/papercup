@@ -286,6 +286,7 @@ export async function probeGcpImageFamilyExecutables(
     | 'scannerExecutable'
     | 'cleanRoomExecutable'
     | 'cleanRoomCommand'
+    | 'bootstrapAcceptanceExecutable'
   > = {},
 ): Promise<{ ok: boolean; executables: Readonly<Record<string, string | null>>; missing: readonly string[] }> {
   const configured = {
@@ -293,6 +294,14 @@ export async function probeGcpImageFamilyExecutables(
     scanner: options.scanExecutable ?? options.scannerExecutable ?? GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES.scanner,
     cleanRoom:
       options.cleanRoomExecutable ?? options.cleanRoomCommand ?? GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES.cleanRoom,
+    /**
+     * The PRE-build acceptance binary produces the clean-room report the gate ratifies, so an
+     * absent one must fail this read-only preflight rather than surfacing mid-release. It was
+     * registered in GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES but never probed here, which let the
+     * preflight report `ok` while the release could not actually produce its gate evidence.
+     */
+    bootstrapAcceptance:
+      options.bootstrapAcceptanceExecutable ?? GCP_IMAGE_FAMILY_RELEASE_EXECUTABLES.bootstrapAcceptance,
   };
   const found: Record<string, string | null> = {};
   const missing: string[] = [];

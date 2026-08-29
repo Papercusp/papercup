@@ -51,6 +51,22 @@ export function requireText(value, path) {
   return value.trim();
 }
 
+/**
+ * Like `requireText`, but returns the string EXACTLY as received.
+ *
+ * Use this for any value that is CONTENT-ADDRESSED — a script, a document, a payload whose
+ * sha256 is asserted elsewhere. `requireText` trims, and trimming mutates the bytes the digest
+ * was computed over: a bootstrap script ending in the usual trailing newline hashes differently
+ * once trimmed, so an integrity check comparing it against its own advertised digest fails on a
+ * payload that was never actually corrupt. Worse, without that check the guest would execute a
+ * script whose digest does not match the one attested — silently breaking the
+ * exact-bootstrap-attestation property the release gate exists to verify.
+ */
+export function requireExactText(value, path) {
+  if (typeof value !== 'string' || value.trim() === '') fail(`${path} must be a non-empty string`);
+  return value;
+}
+
 /** A sha256 hex digest, optionally prefixed `sha256:`. Returns the bare 64-char hex, lowercased. */
 export function requireDigest(value, path) {
   const text = requireText(value, path);

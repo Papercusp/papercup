@@ -171,6 +171,12 @@ function envOptions(
     ...(env.PAPERCUSP_GCP_CLEAN_ROOM_EXECUTABLE
       ? { cleanRoomExecutable: env.PAPERCUSP_GCP_CLEAN_ROOM_EXECUTABLE }
       : {}),
+    ...(env.PAPERCUSP_GCP_BOOTSTRAP_ACCEPTANCE_EXECUTABLE
+      ? {
+          bootstrapAcceptanceExecutable:
+            env.PAPERCUSP_GCP_BOOTSTRAP_ACCEPTANCE_EXECUTABLE,
+        }
+      : {}),
   } satisfies GcpImageFamilyReleaseCompositionOptions;
 }
 

@@ -336,7 +336,7 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
         res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'over' } }));
       },
       [codexAcct('cdx-solo')],
-      { concurrency: 8, codexConcurrency: 4, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 } },
+      { concurrency: 8, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 } },
     );
     expect((await postResponses({ model: 'gpt-x', input: 'hi' })).status).toBe(429);
     const stats = (await (await ask('/stats')).json()) as {
@@ -861,7 +861,6 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
       },
       [codexAcct('cdx-solo')],
       {
-        codexConcurrency: 1,
         concurrency: 8,
         selfHeal: { enabled: true, freezeMs: 40, pollMs: 10 },
         requestCeilingMs: 5_000,

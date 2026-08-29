@@ -68,6 +68,9 @@ import { wakeParentOnChildDeath } from './parent-wake';
 import { maybeReconcileBeeCompletion } from './bee-completion-reconcile';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { getCachedRateLimitConfig } from '../rate-limit-config';
+// P-009: the governor's LIVE adaptive window, read by spawnConcurrencyCeiling() so a
+// seed-sourced host-profile guess can never freeze into a spawn maximum.
+import { effectiveConcurrencySnapshot } from '@papercusp/papercusp-shared/agent';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { backendFeatureGuard, interactiveBackendFromSpawnBackend } from '../backend-feature-capabilities';
 import { releaseWorkItem } from '../work-items';
@@ -77,14 +80,42 @@ import { releaseWorkItem } from '../work-items';
  * single fleet-wide number, NOT a per-path allocator (P-007). Folds the old
  * hardcoded operator-spawn cap (`MAX_CONCURRENT_SPAWNS=10`) and the orchestrator
  * dispatch cap into ONE configurable value: `operator:rate_limit_config`'s
- * `maxSimultaneousAgents` (default 16, live-editable, clamped ≤ RATE_LIMIT_MAX_CEILING).
+ * `maxSimultaneousAgents` (live-editable, clamped ≤ RATE_LIMIT_SANITY_BOUND).
  * The governor's global gate + the orchestrator dispatch ceiling + the await pump
  * already read this same number, so every spawn path now draws from one ledger.
- * This is the absolute hard backstop; the WORTH-IT allocation is the brain's call
- * (P-005), informed by `getSpawnHeadroom`.
+ * The WORTH-IT allocation is the brain's call (P-005), informed by `getSpawnHeadroom`.
+ *
+ * P-009 — WHETHER THIS IS A CAP AT ALL depends on `maxSimultaneousAgentsSource`:
+ *
+ * - `'user'` an explicit, deliberate throttle ("I'm using Claude myself, fleet back
+ *            off"). Real user intent, so it installs a hard ceiling. D-002 forbids
+ *            *Papercusp* configuring a maximum; it never forbade the owner setting one.
+ * - `'seed'` nobody asked for a limit — the number is only the host resource-profile's
+ *            boot-time starting point. It must NOT become a productive-capacity
+ *            maximum, so this returns the governor's LIVE adaptive window instead of
+ *            the frozen guess, letting capacity grow past it exactly as the global
+ *            gate already allows.
+ *
+ * `applyCached` (rate-limit-config.ts) has always honoured this at the governor's
+ * global gate — a seed installs NO cap there, only a probe start. This function is
+ * the SECOND, independent count ceiling (`getSpawnHeadroom` derives `globalHeadroom`
+ * from it, and `effectiveSpawnCeiling` hard-enforces it at admission), and it used to
+ * read the raw number unconditionally — so on any seed-sourced host the resource-profile
+ * guess silently became a spawn maximum: precisely the failure mode P-009 exists to
+ * prevent, and it survived because the enforcement scan's STATIC_CAP pattern cannot see
+ * a ceiling that arrives from a function call rather than a digit literal.
+ * Found by independent acceptance grading of capless-adaptive-resource-governor-2026-08-26
+ * (criterion `no-artificial-ceiling`); see WI-586538.
+ *
+ * FAIL-SAFE: before the governor has a finite window installed (pre-init, when `cached`
+ * is still the source-absent resource-profile default), fall back to the seed number.
+ * This never returns an unbounded ceiling, so boot behaviour is unchanged.
  */
 export function spawnConcurrencyCeiling(): number {
-  return getCachedRateLimitConfig().maxSimultaneousAgents;
+  const cfg = getCachedRateLimitConfig();
+  if ((cfg.maxSimultaneousAgentsSource ?? 'seed') === 'user') return cfg.maxSimultaneousAgents;
+  const { effectiveAfterExpiry } = effectiveConcurrencySnapshot();
+  return effectiveAfterExpiry ?? cfg.maxSimultaneousAgents;
 }
 
 /**

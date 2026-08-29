@@ -204,6 +204,15 @@ pub enum Action {
         command: serde_json::Value,
     },
     /// Reattach a previously created SU session by its stable advSessionId.
+    ///
+    /// ⚠ Currently has NO emitter — main.rs handles it and spawns
+    /// `attach_su_session_task`, but no reducer path constructs it, so the
+    /// reattach capability is unreachable. Whether this is an unwired
+    /// capability or superseded residue of `Action::OpenSuSession` needs a
+    /// design call, tracked as EI-21746542925159695. Annotated rather than
+    /// deleted so the decision is not pre-empted by a lint cleanup; remove this
+    /// `allow` (and the variant, or the gap) when that issue is settled.
+    #[allow(dead_code)]
     AttachSuSession {
         harness: String,
         chat_id: String,
@@ -1076,6 +1085,12 @@ pub enum Tab {
     Testing,
     Config,
     Plugins,
+    /// Retired standalone shell — Configuration (`Tab::Config`) hosts its
+    /// capability after the 21→14 consolidation (D-003). The variant is kept
+    /// deliberately so persisted pane state naming "Settings" still migrates
+    /// (`from_title` resolves it to `Tab::Config`); it is intentionally never
+    /// constructed in the binary, which is what the dead_code warning reports.
+    #[allow(dead_code)]
     Settings,
     /// Memory browser (D-006 Step 2) — whatever the configured memory backend
     /// holds (mem0 today; the MemoryBackend seam later). Appended; key 'm'.
@@ -2512,7 +2527,7 @@ impl App {
         match event {
             crate::su_session::SuSessionEvent::Session { descriptor, .. } => {
                 state.lifecycle = descriptor.lifecycle;
-                state.descriptor = Some(descriptor);
+                state.descriptor = Some(*descriptor);
             }
             crate::su_session::SuSessionEvent::Lifecycle {
                 state: lifecycle, ..
@@ -6610,23 +6625,6 @@ impl App {
                     self.testing_file_sel = 0;
                     self.testing_files_loading = false;
                     self.testing_focus = TestingFocus::Files;
-                }
-                self.last_error = None;
-                Action::Render
-            }
-            Event::Memories { available, results } => {
-                self.memory_available = available;
-                self.memory_load_state = if available {
-                    MemoryLoadState::Available {
-                        results: results.clone(),
-                    }
-                } else {
-                    MemoryLoadState::BackendUnavailable { reason: None }
-                };
-                self.memories = results;
-                let len = self.visible_memories().len();
-                if self.memory_sel >= len {
-                    self.memory_sel = len.saturating_sub(1);
                 }
                 self.last_error = None;
                 Action::Render
@@ -15849,13 +15847,12 @@ mod tests {
         a.update(key('m', KeyModifiers::NONE));
         assert_eq!(a.tab, Tab::Memory);
         // The list lands from memory:list; availability follows the payload.
-        a.update(Event::Memories {
-            available: true,
+        a.update(Event::MemoryLoad(MemoryLoadState::Available {
             results: vec![
                 mem("m1", "likes rust", "preference"),
                 mem("m2", "tz is ET", "identity"),
             ],
-        });
+        }));
         assert!(a.memory_available);
         assert_eq!(a.visible_memories().len(), 2);
         a.update(key('j', KeyModifiers::NONE));

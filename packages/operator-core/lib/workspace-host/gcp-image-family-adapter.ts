@@ -199,6 +199,12 @@ export interface GcpImageFamilyReleaseAdapterOptions {
   scannerExecutable?: string;
   cleanRoomExecutable?: string;
   cleanRoomCommand?: string;
+  /**
+   * PRE-build clean-room acceptance binary. Distinct from `cleanRoomExecutable`, which is the
+   * POST-build canary: this one boots stock Ubuntu to prove the signed bundle installs, and its
+   * report is the evidence the release gate ratifies before any image is built.
+   */
+  bootstrapAcceptanceExecutable?: string;
   guestToolVersions?: Readonly<Record<string, string>>;
   sourceImage?: string;
   machineType?: string;

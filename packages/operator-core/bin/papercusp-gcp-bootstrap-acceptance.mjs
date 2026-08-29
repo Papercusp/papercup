@@ -29,7 +29,7 @@
  */
 import { createHash } from 'node:crypto';
 
-import { fail, main, requireText } from './gcp-ephemeral.mjs';
+import { fail, main, requireExactText, requireText } from './gcp-ephemeral.mjs';
 import {
   STOCK_UBUNTU_IMAGE_PROJECT,
   resolveImageFromFamily,
@@ -52,7 +52,10 @@ async function bootstrapAcceptance(input) {
 
   const fixture = input.fixture;
   if (!fixture || typeof fixture !== 'object') fail('fixture is required to run bootstrap acceptance');
-  const bootstrapScript = requireText(fixture.bootstrapScript, 'fixture.bootstrapScript');
+  // requireExactText, NOT requireText: the digest below is computed over these exact bytes and
+  // compared against the fixture's advertised sha256. requireText trims, and the fixture's
+  // bootstrap script ends in a newline, so trimming here rejected every genuine fixture.
+  const bootstrapScript = requireExactText(fixture.bootstrapScript, 'fixture.bootstrapScript');
   const fixtureId = requireText(fixture.fixtureId, 'fixture.fixtureId');
 
   // The submitted script must match its own advertised digest before we execute it.
