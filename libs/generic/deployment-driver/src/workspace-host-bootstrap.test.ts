@@ -161,6 +161,38 @@ describe('buildWorkspaceHostBootstrap', () => {
     expect(first).not.toMatch(/NOPASSWD|usermod .*sudo/);
   });
 
+  /**
+   * The unit's WorkingDirectory is the STATE root, because that is the only writable place the
+   * service owns. Every content resolver in the server falls back to probing relative to cwd,
+   * so each content root must be pinned to the RELEASE root explicitly or it resolves under the
+   * state root, where none of them exists.
+   *
+   * Measured (P-046, 2026-08-29): with these absent the server died at boot with
+   *   prompt-assembly: oracle.persona.md not found at
+   *   /var/lib/papercusp/apps/operator/prompts/oracle.persona.md
+   * `promptsDir()` had tried cwd/apps/operator/prompts, cwd/prompts, and a module walk-up for
+   * apps/operator/prompts — the bundle ships prompts/ at its own root, so all three missed.
+   *
+   * Prompts is only the first of these to THROW; a missing SPA or docs root starts a server
+   * that quietly serves nothing, which is why all five are pinned rather than just the one
+   * that failed loudly.
+   */
+  it('pins every content root to the release rather than the working directory', () => {
+    const unit = buildWorkspaceHostBootstrap(input());
+
+    for (const [envVar, dir] of [
+      ['PAPERCUSP_PROMPTS_DIR', 'prompts'],
+      ['PAPERCUSP_SPA_DIST', 'spa'],
+      ['PAPERCUSP_DOCS_ROOT', 'internal-docs'],
+      ['PAPERCUSP_TEMPLATES_DIR', 'templates'],
+      ['PAPERCUSP_RUBRICS_DIR', 'rubrics'],
+    ] as const) {
+      expect(unit).toContain(`Environment=${envVar}=$RUNTIME_ROOT/current/${dir}`);
+      // The whole bug: a value that resolves against the state root (or nothing at all).
+      expect(unit).not.toContain(`Environment=${envVar}=$STATE_ROOT`);
+    }
+  });
+
   it('defines replay-safe install, upgrade, rollback, and failure restoration', () => {
     const upgrade = buildWorkspaceHostBootstrap(input({ action: 'upgrade' }));
     const rollback = buildWorkspaceHostBootstrap(input({ action: 'rollback' }));
