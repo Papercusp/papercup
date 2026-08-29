@@ -2275,7 +2275,19 @@ describe('pc-heavy.sh — priority-aware PSI admission (WI-42293)', () => {
       '  },',
       ');',
       'process.stdout.write(JSON.stringify({ status: result.status, signal: result.signal, timedOut: result.timedOut }) + \'\\n\');',
-      'if (result.error || result.status !== 0) process.exitCode = 1;',
+      // Exit deterministically rather than falling off the end with `process.exitCode`.
+      // A TOP-LEVEL runCapturedTestProcess call — one with no inherited
+      // PAPERCUSP_ADMISSION_CONTEXT, which is exactly this fixture — admits through the
+      // resource governor and leaves 2 PgBouncer sockets open on 127.0.0.1:6432, so the
+      // event loop never drains and this driver would hang forever AFTER writing its
+      // result (measured via process._getActiveHandles(): ["Socket","Socket"] +
+      // stdout/stderr). pc-heavy then correctly freezes the never-ending run and reports
+      // exit 75, which is indistinguishable from the protection defect this test guards.
+      // The real `test:file` CLI does not take that path (it inherits an admission
+      // context and skips admission) and scripts/affected-tests.mjs already exits
+      // explicitly for the same reason. The governor leak is tracked separately as
+      // WI-638180; this fixture must not depend on it either way.
+      'process.exit(result.error || result.status !== 0 ? 1 : 0);',
     ].join('\n'));
     const env = baseEnv({
       PC_HEAVY_SLOTS: '1',
