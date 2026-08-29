@@ -25,11 +25,21 @@ vi.mock('./in-workspace-txn', () => ({
 vi.mock('./su-lock-store', () => ({ tryAcquireResource: vi.fn() }));
 vi.mock('./resource-acquire-wait', () => ({ acquireResourceExclusiveWithWait: vi.fn() }));
 vi.mock('./resource-broadcast', () => ({ broadcastResourceDrainStart: vi.fn() }));
+// WI-562584: the fail-closed cross-domain guard runs before either acquire
+// branch. Its own rules are covered in cross-domain-conflict.test.ts; here it
+// is mocked so these cases exercise the handler's branch/status mapping, and
+// so a guard that silently stopped running would still be caught below.
+vi.mock('./cross-domain-conflict', () => ({
+  findCrossDomainResourceConflicts: vi.fn(async () => []),
+  CROSS_DOMAIN_CONFLICT_HINT: 'HINT',
+}));
 
-import { tryAcquireResource } from './su-lock-store';
+import { tryAcquireResource, type ResourceAcquireResult } from './su-lock-store';
 import { acquireResourceExclusiveWithWait } from './resource-acquire-wait';
+import { findCrossDomainResourceConflicts } from './cross-domain-conflict';
 const sharedM = vi.mocked(tryAcquireResource);
 const exclM = vi.mocked(acquireResourceExclusiveWithWait);
+const crossM = vi.mocked(findCrossDomainResourceConflicts);
 const tool = (await import('./acquire_resource')).default;
 
 type Out = { content: { text: string }[] };
@@ -37,12 +47,24 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 const callShared = () => tool.handler({ resource: 'dev-server', mode: 'shared' } as never, {} as never) as Promise<Out>;
 const callExcl = () => tool.handler({ resource: 'dev-server', mode: 'exclusive', wait: { max_drain_sec: 5 } } as never, {} as never) as Promise<Out>;
 const holder = { owner: 'o2', owner_label: 'O2', mode: 'shared', status: 'held', reason: '', expires_ts: new Date('2026-01-01T00:00:00Z') };
+/** A COMPLETE granted-shared store result (no `as never`), so a new required
+ *  field on ResourceAcquireResult fails here rather than at the fleet gate. */
+const sharedGrant = (over: Partial<Extract<ResourceAcquireResult, { ok: true }>> = {}): ResourceAcquireResult => ({
+  ok: true,
+  lock_id: 'L1',
+  mode: 'shared',
+  status: 'held',
+  expires_ts: new Date('2026-02-01T00:00:00Z'),
+  shared_holders: [],
+  fence_seq: 0,
+  ...over,
+});
 
 beforeEach(() => vi.clearAllMocks());
 
 describe('locks:acquire_resource shared', () => {
   it('grants a shared hold', async () => {
-    sharedM.mockResolvedValue({ ok: true, lock_id: 'L1', status: 'held', expires_ts: new Date('2026-02-01T00:00:00Z') } as never);
+    sharedM.mockResolvedValue(sharedGrant());
     const b = body(await callShared());
     expect(b).toMatchObject({ ok: true, lock_id: 'L1', mode: 'shared', status: 'held', owner: 'me' });
   });
@@ -79,5 +101,66 @@ describe('locks:acquire_resource exclusive', () => {
     exclM.mockResolvedValue({ ok: false, reason: 'unknown_resource' } as never);
     const b = body(await callExcl());
     expect(b).toMatchObject({ ok: false, reason: 'unknown_resource', holders: [] });
+  });
+});
+
+// WI-562584 — the guard fails CLOSED: a wrong domain inference used to grant a
+// lock over a live hold in a sibling coordination domain, so `ok:true` was not
+// proof of exclusivity. These assert the handler REFUSES BEFORE the store is
+// touched; the conflict rules themselves live in cross-domain-conflict.test.ts.
+describe('locks:acquire_resource cross-domain guard', () => {
+  const foreign = {
+    coordination_domain: 'papercusp-workspace',
+    resource: 'dev-server',
+    owner: 'system:git-sync',
+    owner_label: 'git-sync',
+    mode: 'exclusive' as const,
+    status: 'held',
+    reason: 'sweep',
+    acquired_ts: '2026-08-28T20:00:00.000Z',
+    expires_ts: '2026-08-28T21:00:00.000Z',
+  };
+
+  it('refuses a shared acquire held in another domain, WITHOUT calling the store', async () => {
+    crossM.mockResolvedValue([foreign]);
+    const b = body(await callShared());
+    expect(b).toMatchObject({ ok: false, reason: 'held_in_other_domain' });
+    expect(b.holders[0]).toMatchObject({ owner: 'system:git-sync', coordination_domain: 'papercusp-workspace' });
+    expect(sharedM).not.toHaveBeenCalled();
+  });
+
+  it('refuses an exclusive acquire held in another domain, WITHOUT starting a drain', async () => {
+    crossM.mockResolvedValue([foreign]);
+    const b = body(await callExcl());
+    expect(b).toMatchObject({ ok: false, reason: 'held_in_other_domain' });
+    expect(exclM).not.toHaveBeenCalled();
+  });
+
+  it('refuses fail-CLOSED when the sibling-domain read itself fails (an unanswered question is not permission)', async () => {
+    crossM.mockRejectedValue(new Error('connection terminated'));
+    const b = body(await callExcl());
+    expect(b).toMatchObject({ ok: false, reason: 'cross_domain_check_failed', error: 'connection terminated' });
+    expect(exclM).not.toHaveBeenCalled();
+  });
+
+  it('does NOT refuse when no sibling domain holds it — the ordinary path is unchanged', async () => {
+    crossM.mockResolvedValue([]);
+    sharedM.mockResolvedValue(sharedGrant());
+    const b = body(await callShared());
+    expect(b).toMatchObject({ ok: true, lock_id: 'L1' });
+    expect(sharedM).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks the domain the acquire actually TARGETS, not the caller-tree domain', async () => {
+    crossM.mockResolvedValue([]);
+    sharedM.mockResolvedValue(sharedGrant());
+    await callShared();
+    // 'dev-server' is host-global (HOST_GLOBAL_RESOURCES), so the target domain
+    // is NOT readIdentity's 'dom' — passing the caller's domain here would make
+    // the guard read the wrong sibling set and miss the real holder.
+    expect(crossM).toHaveBeenCalledWith(
+      expect.objectContaining({ resource: 'dev-server', requestedMode: 'shared', owner: 'me' }),
+    );
+    expect(crossM.mock.calls[0]![0].targetDomain).not.toBe('dom');
   });
 });
