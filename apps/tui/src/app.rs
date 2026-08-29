@@ -4115,8 +4115,9 @@ impl App {
     /// explicit `false` may disable the corrected path.
     pub fn su_session_cutover_enabled(&self) -> bool {
         self.flags
-            .get(crate::su_session::PUI_SU_SESSION_HOST_FLAG)
-            .copied()
+            .iter()
+            .find(|(key, _)| key == crate::su_session::PUI_SU_SESSION_HOST_FLAG)
+            .map(|(_, on)| *on)
             .unwrap_or(true)
     }
 
@@ -14953,6 +14954,122 @@ mod tests {
         }
     }
 
+    // --- P-011 SU-session cutover (pui-su-session-runtime-correction-2026-08-27) ---
+    //
+    // The pure routing policy is covered in su_session.rs. These assert the two
+    // things only `App` can answer: how an ABSENT flag resolves, and that the
+    // composer's Enter key really applies the decision (including its telemetry)
+    // rather than keeping an inline branch that drifted from it.
+
+    /// Put the app in the state a real owner is in when they press Enter.
+    fn composing(text: &str) -> App {
+        let mut a = App::new();
+        a.tab = Tab::Operator;
+        a.chat_composing = true;
+        a.chat_input = text.to_string();
+        a
+    }
+
+    #[test]
+    fn the_cutover_is_on_before_the_flag_bootstrap_answers() {
+        // `flags` is empty until /api/flags/bootstrap replies. Reading that as OFF
+        // would put every turn sent in the first seconds after launch on the
+        // pre-cutover path, silently — the outcome P-011 forbids.
+        let a = App::new();
+        assert!(a.flags.is_empty());
+        assert!(a.su_session_cutover_enabled());
+    }
+
+    #[test]
+    fn only_an_explicit_false_disables_the_cutover() {
+        let mut a = App::new();
+        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, false)]));
+        assert!(!a.su_session_cutover_enabled());
+        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, true)]));
+        assert!(a.su_session_cutover_enabled());
+        // An unrelated flag must not be mistaken for this one.
+        a.set_flags(flags(&[("papercusp-something-else", false)]));
+        assert!(a.su_session_cutover_enabled());
+    }
+
+    #[test]
+    fn enter_on_a_new_conversation_opens_an_su_session_by_default() {
+        let mut a = composing("hello");
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        match action {
+            Action::OpenSuSession { backend, .. } => {
+                assert_eq!(backend, crate::su_session::PUI_DEFAULT_SU_BACKEND);
+            }
+            other => panic!("a new conversation must default to the SU host, got {other:?}"),
+        }
+        assert_eq!(
+            a.su_last_dispatch.map(|d| d.reason),
+            Some(crate::su_session::SuDispatchReason::CutoverDefault)
+        );
+    }
+
+    #[test]
+    fn enter_with_the_kill_switch_off_returns_to_the_owned_loop_and_says_so() {
+        let mut a = composing("hello");
+        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, false)]));
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::SendChat(_)),
+            "the kill-switch must roll back to the owned loop, got {action:?}"
+        );
+        // P-011 forbids a SILENT fallback: the owner is told which runtime took
+        // the turn and which switch sent it there.
+        let note = a.session_note.clone().expect("a rollback must be stated");
+        assert!(note.contains("owned loop"), "note {note:?}");
+        assert!(
+            note.contains(crate::su_session::PUI_SU_SESSION_HOST_FLAG),
+            "note {note:?} must name the switch"
+        );
+    }
+
+    #[test]
+    fn enter_on_a_pre_cutover_conversation_never_opens_a_new_su_session() {
+        let mut a = composing("hello");
+        a.agent_chat_id = Some("chat-legacy".into());
+        a.pui_runtime_class = Some(crate::su_session::PuiRuntimeClass::LegacyOwnedLoop);
+        let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::SendChat(_)),
+            "a pre-cutover conversation must keep its runtime, got {action:?}"
+        );
+        assert_eq!(
+            a.su_last_dispatch.map(|d| d.reason),
+            Some(crate::su_session::SuDispatchReason::LegacyConversationPreserved)
+        );
+    }
+
+    /// The window this closes: the picker commits `session:<id>`, and the load is
+    /// still in flight. Before P-011 a cleared `su_backend` was enough to keep a
+    /// turn typed here off the SU host; now that the SU host is the DEFAULT, the
+    /// selection has to be held as explicitly unclassified or that same keystroke
+    /// opens a new SU session on an old chat.
+    #[test]
+    fn selecting_a_chat_holds_it_unclassified_until_its_class_arrives() {
+        let mut a = App::new();
+        a.agent_chat_summaries = vec![chat_summary_for("chat-x")];
+        let action = select_session_option(&mut a, "session:chat-x");
+        assert!(matches!(action, Action::LoadAgentChat { .. }), "{action:?}");
+        assert_eq!(
+            a.pui_runtime_class,
+            Some(crate::su_session::PuiRuntimeClass::Unclassified)
+        );
+
+        let mut b = a;
+        b.tab = Tab::Operator;
+        b.chat_composing = true;
+        b.chat_input = "typed while the load was in flight".into();
+        let action = b.on_key(KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            matches!(action, Action::SendChat(_)),
+            "an in-flight selection must not open an SU session, got {action:?}"
+        );
+    }
+
     // --- P10 Settings tab (feature flags) ---
 
     fn flags(pairs: &[(&str, bool)]) -> FlagsResponse {
@@ -16666,10 +16783,15 @@ mod tests {
         a.update(key('2', KeyModifiers::NONE)); // a digit types, does NOT switch tab
         assert_eq!(a.chat_input, "h2");
         assert_eq!(a.tab, Tab::Operator);
-        // Enter sends: appends the user msg + a streaming bubble, returns SendChat.
+        // Enter sends: appends the user msg + a streaming bubble, and carries the
+        // typed text into the dispatch. Since P-011 an UNBOUND conversation's
+        // first turn opens an SU session rather than going to the owned loop;
+        // what this test is about is that the composed text is what gets sent.
         match a.update(ev(KeyCode::Enter)) {
-            Action::SendChat(t) => assert_eq!(t, "h2"),
-            other => panic!("expected SendChat, got {other:?}"),
+            Action::OpenSuSession { initial_turn, .. } => {
+                assert_eq!(initial_turn.as_deref(), Some("h2"));
+            }
+            other => panic!("expected the SU-session default, got {other:?}"),
         }
         assert!(a.chat_input.is_empty());
         assert!(a.chat_streaming);
@@ -17758,7 +17880,15 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::NONE,
         )));
-        assert_eq!(act, Action::SendChat("hi".to_string()));
+        // P-011: an unbound conversation's first turn opens an SU session. This
+        // test is about the DOCK routing the keys and the send at all, so it
+        // asserts the composed text reached the dispatch.
+        match act {
+            Action::OpenSuSession { initial_turn, .. } => {
+                assert_eq!(initial_turn.as_deref(), Some("hi"));
+            }
+            other => panic!("expected the dock's send to dispatch, got {other:?}"),
+        }
         assert_eq!(a.chat_input, "");
     }
 

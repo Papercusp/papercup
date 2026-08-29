@@ -26,6 +26,18 @@ vi.mock('./known-roles', () => ({
 const TEST_WS = 'papercusp-workspace';
 vi.mock('./workspace-registry', () => ({ activeWorkspaceId: () => TEST_WS }));
 
+// P-011: createChat stamps the dispatch policy a conversation is born under, so
+// it reads the cutover kill-switch. Mocked here so these tests never depend on a
+// live flag backend — and so `flagState` can drive both switch positions and the
+// backend-unreachable case.
+const flagState = { cutover: true as boolean | 'throw' };
+vi.mock('@papercusp/flags/server', () => ({
+  getFlag: vi.fn(async () => {
+    if (flagState.cutover === 'throw') throw new Error('flag backend unreachable');
+    return flagState.cutover;
+  }),
+}));
+
 // Capture the SQL + bound args that the data layer hands to the legacy client.
 // The same fake client backs listChats (.all), getChat/createChat (.get +
 // .run) and archiveChat (.run) — every prepare() records its SQL + bound
@@ -72,6 +84,7 @@ import {
   createChat,
   archiveChat,
   LIST_CHATS_DEFAULT_LIMIT,
+  toPuiSessionRuntimeClass,
 } from './agent-chats-data';
 
 describe('isValidChatRole', () => {
@@ -371,8 +384,9 @@ describe('createChat', () => {
     // one INSERT + one SELECT, no harness_features probe
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
     expect(insert).toBeDefined();
-    // INSERT bound args: (id, workspace_id, role, feature_id, title, transcript)
-    expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', null, 'worker', '[]']);
+    // INSERT bound args:
+    // (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
+    expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', null, 'worker', '[]', 'su-session']);
     expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(false);
   });
 
@@ -390,7 +404,15 @@ describe('createChat', () => {
       active: false, // taken_by null → not active
     });
     const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
-    expect(insert?.args.slice(1)).toEqual([TEST_WS, 'worker', 'F-9', 'worker · F-9', '[]']);
+    expect(insert?.args.slice(1)).toEqual([
+      TEST_WS,
+      'worker',
+      'F-9',
+      'worker · F-9',
+      '[]',
+      // P-011: the dispatch policy this conversation is born under.
+      'su-session',
+    ]);
     expect(calls.some((c) => /harness_features/.test(c.sql))).toBe(true);
   });
 
@@ -423,6 +445,88 @@ describe('createChat', () => {
     runMock.mockRejectedValueOnce(new Error('unique violation'));
     const r = await createChat({ slug: 'foo', role: 'worker' });
     expect(r).toEqual({ ok: false, status: 500, error: 'failed to create chat: unique violation' });
+  });
+});
+
+// ── P-011 PUI session runtime classification ────────────────────────────────
+//
+// pui-su-session-runtime-correction-2026-08-27 P-011 / WI-287136. The cutover
+// makes the SU-session host the default for a NEW PUI conversation, which turns
+// "this chat has no adv_sessions binding" into an ambiguous reading: it is what a
+// pre-cutover conversation looks like AND what a chat created two seconds ago
+// looks like. The stamp is what separates them, so these cover the writer that
+// produces it and the reader that refuses to guess when it is absent.
+describe('PUI session runtime class (P-011)', () => {
+  const CLASS_ARG = 6; // (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
+
+  beforeEach(() => {
+    flagState.cutover = true;
+  });
+
+  it('stamps a chat created under the cutover as su-session', async () => {
+    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    await createChat({ slug: 'foo', role: 'worker' });
+    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    expect(insert?.sql).toMatch(/su_runtime_class/);
+    expect(insert?.args[CLASS_ARG]).toBe('su-session');
+  });
+
+  it('stamps a chat created while the kill-switch is OFF as legacy-owned-loop', async () => {
+    // A chat born during a rollback really IS an owned-loop conversation, and it
+    // must stay one after the switch goes back ON. Stamping it 'su-session'
+    // because the flag later flipped would re-home an existing conversation —
+    // the exact silent identity change P-011 forbids.
+    flagState.cutover = false;
+    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    await createChat({ slug: 'foo', role: 'worker' });
+    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    expect(insert?.args[CLASS_ARG]).toBe('legacy-owned-loop');
+  });
+
+  it('fails CLOSED to legacy-owned-loop when the flag backend is unreachable', async () => {
+    // Not knowing whether the cutover was in force is not the same as knowing it
+    // was. Claiming the SU-session policy on a guess is the one error that
+    // changes a conversation's identity, so an unreachable backend takes the
+    // answer that cannot.
+    flagState.cutover = 'throw';
+    getMock.mockResolvedValueOnce(ROW({ role: 'worker', title: 'worker', feature_id: null }));
+    const r = await createChat({ slug: 'foo', role: 'worker' });
+    expect(r.ok).toBe(true);
+    const insert = calls.find((c) => /INSERT INTO agent_chats/.test(c.sql));
+    expect(insert?.args[CLASS_ARG]).toBe('legacy-owned-loop');
+  });
+
+  it('reads only the two legal classes; anything else is UNCLASSIFIED, not a guess', () => {
+    expect(toPuiSessionRuntimeClass('su-session')).toBe('su-session');
+    expect(toPuiSessionRuntimeClass('legacy-owned-loop')).toBe('legacy-owned-loop');
+    for (const raw of [null, undefined, '', 'owned-loop', 'SU-SESSION', 0, {}]) {
+      expect(toPuiSessionRuntimeClass(raw)).toBeNull();
+    }
+  });
+
+  it('surfaces the stamp on both the detail row and the list projection', () => {
+    expect(rowToChat({ ...ROW({}), su_runtime_class: 'legacy-owned-loop' }).su_runtime_class).toBe(
+      'legacy-owned-loop',
+    );
+    // A pre-stamp row reads as null — the PUI renders that as "unclassified" and
+    // holds the conversation rather than re-homing it.
+    expect(rowToChat(ROW({})).su_runtime_class).toBeNull();
+    expect(
+      rowToChatSummary({ id: 'c1', role: 'worker', su_runtime_class: 'su-session' })
+        .su_runtime_class,
+    ).toBe('su-session');
+  });
+
+  it('projects the class in the list query — the PUI classifies from summaries', async () => {
+    // The TUI reducer derives a loaded conversation's class from the summary row
+    // that arrives with it (apps/tui/src/app.rs, Event::AgentChatLoaded). If the
+    // list stopped projecting the column every conversation would read as
+    // unclassified and the cutover would silently never take effect. Asserted
+    // through the real query rather than the private column constant, so it
+    // cannot pass on a projection the list does not actually issue.
+    await listChats({ slug: 'foo' });
+    const select = calls.find((c) => /FROM agent_chats/.test(c.sql));
+    expect(select?.sql).toMatch(/su_runtime_class/);
   });
 });
 
