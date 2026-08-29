@@ -9,6 +9,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { getLegacyClient } from '@papercusp/db-org';
+import { FLAGS } from '@papercusp/flags';
+import { getFlag } from '@papercusp/flags/server';
 import { getKnownRoles } from './known-roles';
 import { activeWorkspaceId } from './workspace-registry';
 
@@ -61,11 +63,44 @@ export interface TranscriptTurn {
   unreportedFrames?: number;
 }
 
+/**
+ * Which dispatch policy a PUI conversation was CREATED under — its permanent home,
+ * not its current live state (pui-su-session-runtime-correction-2026-08-27 P-011).
+ *
+ * `'su-session'` was created after the cutover, so the canonical SU-session host is
+ * where its turns belong. `'legacy-owned-loop'` was created under the pre-cutover
+ * PUI-owned agent loop (or while the kill-switch was OFF) and must never be
+ * re-homed onto an SU session — that would change an existing conversation's
+ * identity and backend, which is exactly what P-011 forbids.
+ *
+ * `null` means UNCLASSIFIED: a row written by a pre-cutover writer that migration
+ * 1023 did not reach. Readers surface it as unknown; nobody assumes a policy.
+ */
+export type PuiSessionRuntimeClass = 'su-session' | 'legacy-owned-loop';
+
+export const PUI_SESSION_RUNTIME_CLASSES: readonly PuiSessionRuntimeClass[] = [
+  'su-session',
+  'legacy-owned-loop',
+];
+
+/**
+ * Narrow a stored `su_runtime_class` value. Anything not one of the two legal
+ * classes — including an empty string a loose writer might leave behind — reads as
+ * UNCLASSIFIED rather than being coerced into a plausible-looking policy.
+ */
+export function toPuiSessionRuntimeClass(v: unknown): PuiSessionRuntimeClass | null {
+  return typeof v === 'string' && (PUI_SESSION_RUNTIME_CLASSES as readonly string[]).includes(v)
+    ? (v as PuiSessionRuntimeClass)
+    : null;
+}
+
 export interface ChatRow {
   id: string;
   role: string;
   feature_id: string | null;
   title: string | null;
+  /** @see PuiSessionRuntimeClass — null means unclassified, never "assume legacy". */
+  su_runtime_class: PuiSessionRuntimeClass | null;
   transcript: TranscriptTurn[];
   total_input_tokens: number;
   total_output_tokens: number;
@@ -91,6 +126,8 @@ export interface ChatSummary {
   role: string;
   feature_id: string | null;
   title: string | null;
+  /** @see PuiSessionRuntimeClass — null means unclassified, never "assume legacy". */
+  su_runtime_class: PuiSessionRuntimeClass | null;
   turn_count: number;
   total_input_tokens: number;
   total_output_tokens: number;
@@ -145,6 +182,7 @@ export function rowToChat(r: Record<string, unknown>): ChatRow {
     role: r.role as string,
     feature_id: (r.feature_id as string | null) ?? null,
     title: (r.title as string | null) ?? null,
+    su_runtime_class: toPuiSessionRuntimeClass(r.su_runtime_class),
     transcript:
       typeof r.transcript === 'string'
         ? JSON.parse(r.transcript)
@@ -177,6 +215,7 @@ export function rowToChatSummary(r: Record<string, unknown>): ChatSummary {
     role: r.role as string,
     feature_id: (r.feature_id as string | null) ?? null,
     title: (r.title as string | null) ?? null,
+    su_runtime_class: toPuiSessionRuntimeClass(r.su_runtime_class),
     turn_count: toNum(r.turn_count),
     total_input_tokens: toNum(r.total_input_tokens),
     total_output_tokens: toNum(r.total_output_tokens),
@@ -223,7 +262,7 @@ export const LIST_CHATS_MAX_LIMIT = 100;
 /** Columns listChats projects — everything EXCEPT the heavy `transcript` jsonb
  *  body, which is replaced by its length (`turn_count`). See ChatSummary. */
 const LIST_CHATS_COLUMNS =
-  'id, role, feature_id, title, ' +
+  'id, role, feature_id, title, su_runtime_class, ' +
   'total_input_tokens, total_output_tokens, total_cost_usd_cents, ' +
   'created_at, updated_at, archived_at, ' +
   "jsonb_array_length(COALESCE(transcript, '[]'::jsonb)) AS turn_count";
@@ -315,6 +354,23 @@ export async function createChat(
   const title =
     input.title ?? (input.feature_id ? `${input.role} · ${input.feature_id}` : input.role);
 
+  // P-011: stamp the dispatch policy this conversation is BORN under, so its home
+  // is a recorded fact rather than something a later reader has to infer from the
+  // absence of an adv_sessions binding (which is also what a chat created two
+  // seconds ago looks like). A chat created while the kill-switch is OFF really is
+  // an owned-loop conversation and stays one after the switch goes back ON —
+  // flipping a flag must never re-home an existing conversation.
+  //
+  // Fails CLOSED to 'legacy-owned-loop': if the flag backend is unreachable we do
+  // not know the cutover was in force, and claiming the SU-session policy on a
+  // guess is the one error that changes a conversation's identity.
+  const suRuntimeClass: PuiSessionRuntimeClass = (await getFlag(
+    FLAGS.PUI_SU_SESSION_HOST,
+    'system',
+  ).catch(() => false))
+    ? 'su-session'
+    : 'legacy-owned-loop';
+
   try {
     const db = dbForSlug(input.slug);
     // Stamp the LIVE workspace explicitly (WI-5125). The per-harness agent_chats
@@ -327,10 +383,18 @@ export async function createChat(
     // so the writer must pass it. Same pattern as harness_features' writers.
     await db
       .prepare(
-        `INSERT INTO agent_chats (id, workspace_id, role, feature_id, title, transcript)
-         VALUES (?, ?, ?, ?, ?, ?::jsonb)`,
+        `INSERT INTO agent_chats (id, workspace_id, role, feature_id, title, transcript, su_runtime_class)
+         VALUES (?, ?, ?, ?, ?, ?::jsonb, ?)`,
       )
-      .run(id, activeWorkspaceId(), input.role, input.feature_id ?? null, title, '[]');
+      .run(
+        id,
+        activeWorkspaceId(),
+        input.role,
+        input.feature_id ?? null,
+        title,
+        '[]',
+        suRuntimeClass,
+      );
     const row = (await db.prepare('SELECT * FROM agent_chats WHERE id = ?').get(id)) as Record<
       string,
       unknown

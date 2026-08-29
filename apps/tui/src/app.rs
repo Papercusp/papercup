@@ -1104,6 +1104,13 @@ pub enum Tab {
     /// conversations substrate (questions/discussions + threads + topics) with
     /// state/kind/topic filters, a detail thread + accepted answer + linked
     /// work-item, and promote-to-issue. Appended; key 'd' (Discuss).
+    ///
+    /// RETIRED SHELL — the capability now lives in the Inbox `Threads`
+    /// sub-view (`InboxFocus::Threads`), which is where every keystroke and
+    /// the renderer are wired. The variant is retained only so persisted
+    /// view-state naming this tab still resolves; nothing in the running app
+    /// constructs it, hence the allow. Do NOT re-point live wiring at it.
+    #[allow(dead_code)]
     Conversations,
     /// Voice (holepunch-voice-channels-2026-06-05 P-008) — P2P user↔user voice
     /// channels over the operator voice node. Appended; key 'a' (audio). The
@@ -1514,6 +1521,44 @@ pub enum PluginsFocus {
 /// the thread list, its seed/accepted-answer/linked-work-item detail, the
 /// state/kind/topic filters, and promote-to-issue — was unreachable from any
 /// keystroke. This focus is what makes the absorbed half reachable again.
+/// Which sub-view of the Cupboard tab has focus. `Tab` cycles.
+///
+/// Cupboard absorbed the retired `Tab::Plugins` shell, but only its *title*
+/// moved: `draw_cupboard` advertised " Browse + Installed ({plugins.len()}) "
+/// while rendering `app.cupboard` (marketplace listings) exclusively, and both
+/// installed-plugin renderers were dead code no keystroke could reach. These
+/// sub-views are what make the absorbed inventory real.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CupboardFocus {
+    /// Marketplace listings — discovery, kind filter, search. The landing view.
+    Browse,
+    /// Installed plugin manifests + their contributions and settings.
+    Installed,
+    /// Plugin-contributed launchable TUI panes.
+    Panes,
+}
+
+impl CupboardFocus {
+    /// The installed-plugin renderer this sub-view maps onto, if any. `Browse`
+    /// has none — it is the Cupboard's own marketplace list.
+    pub fn plugin_focus(self) -> Option<PluginsFocus> {
+        match self {
+            CupboardFocus::Browse => None,
+            CupboardFocus::Installed => Some(PluginsFocus::List),
+            CupboardFocus::Panes => Some(PluginsFocus::Panes),
+        }
+    }
+
+    /// Tab cycles Browse ▸ Installed ▸ Panes ▸ Browse.
+    pub fn next(self) -> CupboardFocus {
+        match self {
+            CupboardFocus::Browse => CupboardFocus::Installed,
+            CupboardFocus::Installed => CupboardFocus::Panes,
+            CupboardFocus::Panes => CupboardFocus::Browse,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InboxFocus {
     /// The pot-scope-filtered attention list, tiered Decisions ▸ Handled ▸
@@ -1721,6 +1766,9 @@ pub struct App {
     /// Which Inbox sub-view is drawn — the attention list, or the absorbed
     /// Convos thread browser. `Tab` toggles.
     pub inbox_focus: InboxFocus,
+    /// Which Cupboard sub-view is drawn — marketplace Browse, or the absorbed
+    /// installed-plugin inventory / panes launcher. `Tab` cycles.
+    pub cupboard_focus: CupboardFocus,
     pub plugin_config: Option<(String, serde_json::Value)>,
     /// Memory tab (D-006 Step 2): the backend's memories (`memory:list`), an
     /// optional search-hit overlay (`memory:search` — shown instead of the
@@ -1975,10 +2023,23 @@ pub struct App {
     /// turn is STALLED waiting on a decision only this pane can supply — the
     /// composer swaps to the approve/deny prompt while any entry stands.
     pub pending_approvals: Vec<crate::models::PendingApproval>,
-    /// Explicit backend selected for the corrected PUI SU-session path. `None`
-    /// preserves the legacy native-chat path until the owner chooses a backend
-    /// from the session picker; once set, new turns use the shared host.
+    /// Backend the owner EXPLICITLY selected in the session picker. `None` is no
+    /// longer "stay on the legacy path" — since P-011 the SU-session host is the
+    /// default for an unbound conversation, so `None` means "no explicit pick" and
+    /// `su_dispatch_decision` resolves it.
     pub su_backend: Option<crate::su_session::SuSessionBackend>,
+    /// The dispatch policy of the conversation currently loaded, read off its
+    /// persisted `su_runtime_class` stamp. `None` means NO conversation is loaded
+    /// (the only case the cutover kill-switch governs); `Some(Unclassified)` means
+    /// one IS loaded but its home was never recorded — a different answer, and the
+    /// distinction is what stops a flag flip from re-homing an existing chat.
+    /// See `crate::su_session::decide_su_dispatch`.
+    pub pui_runtime_class: Option<crate::su_session::PuiRuntimeClass>,
+    /// The runtime decision the last owner send actually took, kept for the status
+    /// line and as this surface's telemetry record. P-011 forbids a silent
+    /// fallback to the owned loop / ModelPort, so the PUI keeps and states the
+    /// reason rather than leaving a rollback to be inferred from behaviour.
+    pub su_last_dispatch: Option<crate::su_session::SuDispatchDecision>,
     /// Durable SU-session binding + canonical lifecycle/sequence read-model.
     pub su_session: Option<crate::su_session::SuSessionState>,
     /// All durable SU sessions discovered for the active harness.  This
@@ -2198,6 +2259,7 @@ impl App {
             plugin_sel: 0,
             plugins_focus: PluginsFocus::List,
             inbox_focus: InboxFocus::Attention,
+            cupboard_focus: CupboardFocus::Browse,
             plugin_config: None,
             hives: Vec::new(),
             hive_sel: 0,
@@ -2303,6 +2365,8 @@ impl App {
             chat_load_token: 0,
             pending_approvals: Vec::new(),
             su_backend: None,
+            pui_runtime_class: None,
+            su_last_dispatch: None,
             su_session: None,
             su_session_inventory: Vec::new(),
             su_adopted_sessions: BTreeSet::new(),
@@ -2444,6 +2508,10 @@ impl App {
         self.chat_load_token = self.chat_load_token.saturating_add(1);
         self.agent_chat_id = None;
         self.su_session = None;
+        // The previous conversation's dispatch policy must not outlive its
+        // binding: leaving it set would let the NEXT conversation's first turn be
+        // routed by the LAST one's recorded home (P-011).
+        self.pui_runtime_class = None;
         self.chat_messages.clear();
         self.pending_approvals.clear();
         self.chat_streaming = false;
@@ -3938,13 +4006,24 @@ impl App {
                                     backend,
                                 };
                             }
-                            // A selected legacy agent-chat may or may not have
-                            // a durable SU binding; clear the backend intent
-                            // until `agent_chat_load` probes the canonical
-                            // snapshot, avoiding an accidental new SU session
-                            // on an old chat.
+                            // A selected agent-chat may or may not have a durable
+                            // SU binding; clear the backend intent until
+                            // `agent_chat_load` probes the canonical snapshot,
+                            // avoiding an accidental new SU session on an old chat.
                             self.su_backend = None;
                             self.reset_agent_chat_binding();
+                            // P-011: a conversation IS being selected, so this is
+                            // not the unbound case the cutover default governs —
+                            // but its recorded home has not arrived yet. Hold it
+                            // explicitly as unclassified until `AgentChatLoaded`
+                            // supplies the real class. Leaving it `None` here would
+                            // make a turn typed in that window read as "new
+                            // conversation" and open an SU session on an old chat:
+                            // the very accident the comment above names, which the
+                            // cleared `su_backend` alone no longer prevents now
+                            // that the SU host is the default rather than opt-in.
+                            self.pui_runtime_class =
+                                Some(crate::su_session::PuiRuntimeClass::Unclassified);
                             self.agent_chat_id = Some(chat_id.to_string());
                             self.agent_chat_role = role;
                             self.session_note = Some(format!("loading {label}"));
@@ -4024,6 +4103,32 @@ impl App {
         if self.flag_sel >= self.flags.len() {
             self.flag_sel = self.flags.len().saturating_sub(1);
         }
+    }
+
+    /// Is the P-011 SU-session cutover in force?
+    ///
+    /// UNKNOWN resolves to ON, and that direction is deliberate: `self.flags` is
+    /// empty until `/api/flags/bootstrap` answers, so reading an absent key as OFF
+    /// would put every turn sent in the first seconds after launch — or in a whole
+    /// session whose bootstrap failed — on the pre-cutover path, silently, which is
+    /// precisely the outcome P-011 forbids. The flag is a kill-switch, so only an
+    /// explicit `false` may disable the corrected path.
+    pub fn su_session_cutover_enabled(&self) -> bool {
+        self.flags
+            .get(crate::su_session::PUI_SU_SESSION_HOST_FLAG)
+            .copied()
+            .unwrap_or(true)
+    }
+
+    /// Where the next owner turn goes, and why. Pure over the app's current state
+    /// so the policy can be exercised directly; the key handler applies it.
+    pub fn su_dispatch_decision(&self) -> crate::su_session::SuDispatchDecision {
+        crate::su_session::decide_su_dispatch(crate::su_session::SuDispatchInputs {
+            attached: self.su_session.is_some(),
+            picked_backend: self.su_backend,
+            loaded_class: self.pui_runtime_class,
+            cutover_enabled: self.su_session_cutover_enabled(),
+        })
     }
 
     /// Record a launched pane into the crew roster (P12b) if it's a `psu` agent
@@ -7729,6 +7834,25 @@ impl App {
                     && load_token == self.chat_load_token
                     && !self.chat_streaming
                 {
+                    // P-011: read the loaded conversation's recorded dispatch
+                    // policy off the summary row that carries it, BEFORE the
+                    // summaries move into `self`. Deriving it here (rather than
+                    // adding it to the event) keeps the classification on the same
+                    // frame as the load, so there is no window in which a chat is
+                    // loaded with a stale class from the previous one.
+                    //
+                    // A chat absent from the summary list (an archived row reached
+                    // by id) resolves to `Unclassified`, which the dispatch policy
+                    // holds on the owned loop and says so — the answer that cannot
+                    // change an existing conversation's identity.
+                    self.pui_runtime_class = chat_id.as_deref().map(|id| {
+                        crate::su_session::PuiRuntimeClass::parse(
+                            summaries
+                                .iter()
+                                .find(|s| s.id == id)
+                                .and_then(|s| s.su_runtime_class.as_deref()),
+                        )
+                    });
                     self.agent_chat_id = chat_id;
                     self.agent_chat_role = role;
                     self.agent_chat_summaries = summaries;
@@ -8513,19 +8637,29 @@ impl App {
                     self.chat_input.clear();
                     self.chat_history_push(&text);
                     self.begin_user_send(&text);
-                    if let Some(state) = self.su_session.as_ref() {
-                        let _ = state;
-                        Action::SendSuSessionTurn(text)
-                    } else if let Some(backend) = self.su_backend {
-                        Action::OpenSuSession {
-                            harness: self.harness.clone(),
-                            role: self.agent_chat_role.clone(),
-                            backend,
-                            carry: "warm".into(),
-                            initial_turn: Some(text),
+                    // P-011 cutover. The routing decision is no longer inline
+                    // `if let` chains: it is one policy function whose ordering is
+                    // the safety argument (an existing conversation's runtime
+                    // outranks the kill-switch, in both directions), and it returns
+                    // the REASON alongside the target so the owner is told which
+                    // runtime took the turn instead of inferring it.
+                    let decision = self.su_dispatch_decision();
+                    self.su_last_dispatch = Some(decision);
+                    self.session_note = Some(format!("this turn → {}", decision.reason.note()));
+                    match decision.target {
+                        crate::su_session::SuDispatchTarget::AttachedSuSession => {
+                            Action::SendSuSessionTurn(text)
                         }
-                    } else {
-                        Action::SendChat(text)
+                        crate::su_session::SuDispatchTarget::OpenSuSession(backend) => {
+                            Action::OpenSuSession {
+                                harness: self.harness.clone(),
+                                role: self.agent_chat_role.clone(),
+                                backend,
+                                carry: "warm".into(),
+                                initial_turn: Some(text),
+                            }
+                        }
+                        crate::su_session::SuDispatchTarget::OwnedLoop => Action::SendChat(text),
                     }
                 }
                 // Up/Down recall submitted lines. They were previously inert here
@@ -8929,7 +9063,13 @@ impl App {
             // ── Inbox · Threads sub-view (absorbed Brief 25 Convos) ──────────
             // Gated on the Threads focus, not on the retired `Tab::Convos`:
             // that tab is no longer in `Tab::ALL`, so these arms were dead.
-            KeyCode::Char('s') if self.inbox_threads_focused() => {
+            // UPPERCASE `S`, not the `s` this filter used on the retired Convos
+            // tab: these arms precede the global switch-key dispatch, so a
+            // lowercase `s` here would shadow `s`→Sessions for as long as the
+            // sub-view is open. That was harmless while the tab was
+            // unreachable; on a live Inbox sub-view it would silently break a
+            // public destination key and violate the single-keymap invariant.
+            KeyCode::Char('S') if self.inbox_threads_focused() => {
                 self.conv_state_idx = (self.conv_state_idx + 1) % CONV_STATES.len();
                 self.conversation_sel = 0;
                 self.refetch_conversations()
@@ -9009,13 +9149,27 @@ impl App {
             // keeps lowercase `l` available for pane navigation elsewhere.
             KeyCode::Char('L') if self.tab == Tab::Plans => self.open_fleet_launcher(),
             KeyCode::Char('i') if self.inbox_threads_focused() => self.conv_promote(),
-            KeyCode::Char('f') if self.tab == Tab::Cupboard => {
+            // Cupboard sub-view focus: Tab cycles the marketplace Browse list ▸
+            // the absorbed installed-plugin inventory ▸ its panes launcher.
+            // This is the only keystroke that reaches either absorbed view.
+            KeyCode::Tab if self.tab == Tab::Cupboard => {
+                self.cupboard_focus = self.cupboard_focus.next();
+                self.cupboard_confirm = None;
+                Action::Render
+            }
+            KeyCode::Enter if self.cupboard_plugin_focus().is_some() => {
+                match self.cupboard_plugin_focus() {
+                    Some(focus) => self.plugin_view_enter(focus),
+                    None => Action::None,
+                }
+            }
+            KeyCode::Char('f') if self.cupboard_browse_focused() => {
                 self.cycle_cupboard_kind();
                 self.cupboard_sel = 0;
                 self.cupboard_confirm = None;
                 self.refetch_cupboard()
             }
-            KeyCode::Char('/') if self.tab == Tab::Cupboard => {
+            KeyCode::Char('/') if self.cupboard_browse_focused() => {
                 self.cupboard_search_open = true;
                 self.cupboard_search_input = self.cupboard_query.clone();
                 Action::Render
@@ -9028,10 +9182,10 @@ impl App {
                 self.docs_search_input = self.docs_query.clone();
                 Action::Render
             }
-            KeyCode::Char('r') if self.tab == Tab::Cupboard => self.refetch_cupboard(),
-            KeyCode::Char('n') if self.tab == Tab::Cupboard => self.load_next_cupboard(),
-            KeyCode::Enter if self.tab == Tab::Cupboard => self.cupboard_activate(),
-            KeyCode::Char('y') if self.tab == Tab::Cupboard => {
+            KeyCode::Char('r') if self.cupboard_browse_focused() => self.refetch_cupboard(),
+            KeyCode::Char('n') if self.cupboard_browse_focused() => self.load_next_cupboard(),
+            KeyCode::Enter if self.cupboard_browse_focused() => self.cupboard_activate(),
+            KeyCode::Char('y') if self.cupboard_browse_focused() => {
                 // Confirm the armed listing by id (independent of the cursor,
                 // which may have moved since arming).
                 if let Some(id) = self.cupboard_confirm.take() {
@@ -9238,19 +9392,9 @@ impl App {
                 self.pane_entered = true;
                 Action::Render
             }
-            KeyCode::Enter if self.tab == Tab::Plugins => match self.plugins_focus {
-                PluginsFocus::Panes => match self.plugin_launch_spec() {
-                    Some(spec) => Action::Launch(spec),
-                    None => Action::None,
-                },
-                PluginsFocus::List => match self.selected_plugin() {
-                    Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
-                        harness: self.harness.clone(),
-                        plugin: p.name.clone(),
-                    },
-                    _ => Action::None,
-                },
-            },
+            KeyCode::Enter if self.tab == Tab::Plugins => {
+                self.plugin_view_enter(self.plugins_focus)
+            }
             // Enter on the operator pane (outside compose) focuses the composer.
             KeyCode::Enter if self.tab == Tab::Operator => {
                 self.chat_composing = true;
@@ -9695,6 +9839,42 @@ impl App {
         self.tab == Tab::Inbox && self.inbox_focus == InboxFocus::Threads
     }
 
+    /// True when the Cupboard is showing its own marketplace list. The
+    /// Cupboard's listing actions (filter, search, paging, install/confirm)
+    /// are gated on this so they cannot fire against a list that is not on
+    /// screen while an absorbed plugin sub-view has focus.
+    pub fn cupboard_browse_focused(&self) -> bool {
+        self.tab == Tab::Cupboard && self.cupboard_focus == CupboardFocus::Browse
+    }
+
+    /// The installed-plugin sub-view the Cupboard is showing, if any.
+    pub fn cupboard_plugin_focus(&self) -> Option<PluginsFocus> {
+        if self.tab != Tab::Cupboard {
+            return None;
+        }
+        self.cupboard_focus.plugin_focus()
+    }
+
+    /// Enter on an installed-plugin view: launch the selected pane, or load the
+    /// selected plugin's per-harness settings. Shared by the retired Plugins
+    /// tab and the Cupboard sub-views that absorbed it, so the two can never
+    /// drift apart.
+    fn plugin_view_enter(&self, focus: PluginsFocus) -> Action {
+        match focus {
+            PluginsFocus::Panes => match self.plugin_launch_spec() {
+                Some(spec) => Action::Launch(spec),
+                None => Action::None,
+            },
+            PluginsFocus::List => match self.selected_plugin() {
+                Some(p) if p.config_schema.is_some() => Action::LoadPluginConfig {
+                    harness: self.harness.clone(),
+                    plugin: p.name.clone(),
+                },
+                _ => Action::None,
+            },
+        }
+    }
+
     pub fn selected_conversation(&self) -> Option<&crate::models::ConvSummary> {
         self.visible_conversations()
             .get(self.conversation_sel)
@@ -10083,7 +10263,11 @@ impl App {
             Tab::Fleet => self.visible_roster().len(),
             Tab::Sessions => return,
             Tab::Memory => self.visible_memories().len(),
-            Tab::Cupboard => self.cupboard.len(),
+            Tab::Cupboard => match self.cupboard_focus {
+                CupboardFocus::Browse => self.cupboard.len(),
+                CupboardFocus::Installed => self.plugins.len(),
+                CupboardFocus::Panes => self.panes.len(),
+            },
             Tab::Conversations => self.visible_conversations().len(),
             Tab::Hives => crate::hives::group_hives(&self.hives).len(),
             // No list move_sel navigates — j/k scroll the transcript (Operator),
@@ -10125,7 +10309,11 @@ impl App {
             Tab::Fleet => &mut self.fleet.agent_sel,
             Tab::Sessions => return,
             Tab::Memory => &mut self.memory_sel,
-            Tab::Cupboard => &mut self.cupboard_sel,
+            Tab::Cupboard => match self.cupboard_focus {
+                CupboardFocus::Browse => &mut self.cupboard_sel,
+                CupboardFocus::Installed => &mut self.plugin_sel,
+                CupboardFocus::Panes => &mut self.pane_sel,
+            },
             Tab::Conversations => &mut self.conversation_sel,
             Tab::Hives => &mut self.hive_sel,
             Tab::Config
@@ -10938,6 +11126,7 @@ mod tests {
             id: "chat-review".into(),
             role: "reviewer".into(),
             feature_id: None,
+            su_runtime_class: None,
             title: Some("Review the patch".into()),
             turn_count: 4,
             total_input_tokens: 10,
@@ -10979,6 +11168,7 @@ mod tests {
             id: id.into(),
             role: "operator".into(),
             feature_id: None,
+            su_runtime_class: None,
             title: Some("session".into()),
             turn_count: 2,
             total_input_tokens: 0,
@@ -11775,6 +11965,7 @@ mod tests {
             id: "chat-1".into(),
             role: "worker".into(),
             feature_id: None,
+            su_runtime_class: None,
             title: Some("Live SU session".into()),
             turn_count: 1,
             total_input_tokens: 1,
@@ -13794,6 +13985,8 @@ mod tests {
         // do not reintroduce it as a public switch key.
         assert_eq!(Tab::from_switch_key('9'), None);
         assert_eq!(Tab::from_title("Plugins"), Some(Tab::Cupboard));
+        // NOTE: the Inbox·Threads keymap guard lives in
+        // `inbox_tab_key_reaches_the_absorbed_thread_controls` below.
         a.tab = Tab::Plugins;
         assert_eq!(a.tab, Tab::Plugins);
         // The tab defaults to the List sub-view (D-007); Tab toggles to the
@@ -15187,14 +15380,18 @@ mod tests {
         };
         assert!(matches!(*follow_up, Action::FetchConversations { .. }));
         assert_eq!(a.tab, Tab::Inbox);
-        // Exercise the retained conversation renderer/keymap as an internal
-        // compatibility view after proving the public migration route.
-        a.tab = Tab::Conversations;
+        // Exercise the absorbed conversation keymap where it is now actually
+        // REACHABLE — the Inbox Threads sub-view. Driving `Tab::Conversations`
+        // directly (as this test used to) proved nothing a user can do: that
+        // tab is out of `Tab::ALL`, so no keystroke reaches it.
         let act = a.update(key('d', KeyModifiers::NONE));
         assert_eq!(act, Action::None);
-        assert_eq!(a.tab, Tab::Conversations);
-        // The direct internal view does not own a public switch key; seed the
-        // same fetch state explicitly before exercising its controls.
+        assert_eq!(a.tab, Tab::Inbox, "'d' is no longer a public switch key");
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert!(
+            a.inbox_threads_focused(),
+            "Tab must reach the absorbed Threads sub-view"
+        );
         a.conversations_loading = true;
 
         // The list lands: 2 tagged + 1 untagged, all open.
@@ -15225,8 +15422,9 @@ mod tests {
         assert_eq!(a.conv_topic, None); // wraps back to unfiltered
         assert_eq!(a.visible_conversations().len(), 3);
 
-        // 's' cycles state (open→resolved) + refetches; 't' cycles kind.
-        let s = a.update(key('s', KeyModifiers::NONE));
+        // 'S' cycles state (open→resolved) + refetches; 't' cycles kind.
+        // Uppercase so the sub-view never shadows `s`→Sessions.
+        let s = a.update(key('S', KeyModifiers::NONE));
         assert_eq!(a.conv_state(), "resolved");
         assert!(matches!(s, Action::FetchConversations { .. }));
         let t = a.update(key('t', KeyModifiers::NONE));
@@ -15816,6 +16014,183 @@ mod tests {
         for t in Tab::ALL {
             assert_eq!(Tab::from_switch_key(t.switch_key()), Some(t));
         }
+    }
+
+    /// The absorbed Convos controls were gated on `Tab::Conversations`, a tab
+    /// retired out of `Tab::ALL` — so no keystroke could reach the thread
+    /// list, its filters, or promote-to-issue. They are now gated on the Inbox
+    /// Threads sub-view. The Attention assertions are the negative control:
+    /// without them, a guard passes even if the arms fire on the whole tab.
+    #[test]
+    fn inbox_tab_key_reaches_the_absorbed_thread_controls() {
+        let mut a = App::new();
+        a.tab = Tab::Inbox;
+        // Inbox lands on Attention, so Convos controls stay inert here.
+        assert_eq!(a.inbox_focus, InboxFocus::Attention);
+        assert!(!a.inbox_threads_focused());
+        let state_before = a.conv_state_idx;
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            a.conv_state_idx, state_before,
+            "thread filters must not fire from the Attention sub-view"
+        );
+        assert_eq!(a.tab, Tab::Inbox, "the negative control must not navigate");
+
+        // The thread filter is UPPERCASE `S` precisely so the sub-view never
+        // shadows the public `s`→Sessions destination key.
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(
+            a.tab,
+            Tab::Sessions,
+            "lowercase 's' must still reach Sessions from the Inbox"
+        );
+        a.tab = Tab::Inbox;
+
+        // Tab hops to Threads — the only keystroke that reaches the absorbed
+        // capability at all.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.inbox_focus, InboxFocus::Threads);
+        assert!(a.inbox_threads_focused());
+
+        // Now the absorbed filters respond.
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::NONE,
+        )));
+        assert_ne!(
+            a.conv_state_idx, state_before,
+            "'S' must cycle the thread state filter in the Threads sub-view"
+        );
+        assert_eq!(
+            a.tab,
+            Tab::Inbox,
+            "'S' must not fall through to a tab switch"
+        );
+        let kind_before = a.conv_kind_idx;
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::NONE,
+        )));
+        assert_ne!(a.conv_kind_idx, kind_before, "'t' cycles the kind filter");
+
+        // Tab returns to the attention list.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.inbox_focus, InboxFocus::Attention);
+    }
+
+    /// j/k must drive the list actually on screen. Before the sub-view landed,
+    /// `move_sel` only ever advanced `inbox_sel`, so even a drawn thread list
+    /// would have been unnavigable.
+    #[test]
+    fn inbox_threads_subview_navigates_conversations_not_attention() {
+        let mut a = App::new();
+        a.tab = Tab::Inbox;
+        a.inbox_focus = InboxFocus::Threads;
+        a.conversations = vec![
+            crate::models::ConvSummary {
+                id: "conv-a1".into(),
+                kind: "question".into(),
+                state: "open".into(),
+                scope: "workspace".into(),
+                harness_slug: None,
+                title: Some("first".into()),
+                asker_id: "su-test".into(),
+                topics: Vec::new(),
+                promoted_issue_id: None,
+                created_ts: String::new(),
+            },
+            crate::models::ConvSummary {
+                id: "conv-b2".into(),
+                kind: "discussion".into(),
+                state: "open".into(),
+                scope: "workspace".into(),
+                harness_slug: None,
+                title: Some("second".into()),
+                asker_id: "su-test".into(),
+                topics: Vec::new(),
+                promoted_issue_id: None,
+                created_ts: String::new(),
+            },
+        ];
+        let inbox_sel_before = a.inbox_sel;
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(a.conversation_sel, 1, "j moves the thread cursor");
+        assert_eq!(
+            a.inbox_sel, inbox_sel_before,
+            "the attention cursor must not move while Threads is focused"
+        );
+        assert_eq!(
+            a.selected_conversation().map(|c| c.id.as_str()),
+            Some("conv-b2")
+        );
+    }
+
+    /// Cupboard's absorbed plugin views had no subview toggle, so no keystroke
+    /// reached them. Tab now cycles Browse ▸ Installed ▸ Panes ▸ Browse, and
+    /// the Cupboard's own listing actions are gated to Browse so they cannot
+    /// fire against a list that is not on screen.
+    #[test]
+    fn cupboard_tab_key_cycles_into_the_absorbed_plugin_subviews() {
+        let mut a = App::new();
+        a.tab = Tab::Cupboard;
+        assert_eq!(a.cupboard_focus, CupboardFocus::Browse);
+        assert!(a.cupboard_browse_focused());
+        assert_eq!(a.cupboard_plugin_focus(), None);
+
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.cupboard_focus, CupboardFocus::Installed);
+        assert_eq!(a.cupboard_plugin_focus(), Some(PluginsFocus::List));
+        assert!(
+            !a.cupboard_browse_focused(),
+            "listing actions must not stay armed while an absorbed view shows"
+        );
+
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.cupboard_focus, CupboardFocus::Panes);
+        assert_eq!(a.cupboard_plugin_focus(), Some(PluginsFocus::Panes));
+
+        // Cycles back round to the marketplace list.
+        a.update(Event::Key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)));
+        assert_eq!(a.cupboard_focus, CupboardFocus::Browse);
+        assert!(a.cupboard_browse_focused());
+    }
+
+    /// j/k must drive the list actually on screen — otherwise a rendered
+    /// inventory would still be unnavigable.
+    #[test]
+    fn cupboard_subviews_navigate_their_own_lists() {
+        let mut a = App::new();
+        a.tab = Tab::Cupboard;
+        a.plugins = vec![
+            crate::models::PluginManifest {
+                name: "alpha".into(),
+                ..Default::default()
+            },
+            crate::models::PluginManifest {
+                name: "beta".into(),
+                ..Default::default()
+            },
+        ];
+        a.cupboard_focus = CupboardFocus::Installed;
+        let cupboard_sel_before = a.cupboard_sel;
+        a.update(Event::Key(KeyEvent::new(
+            KeyCode::Char('j'),
+            KeyModifiers::NONE,
+        )));
+        assert_eq!(a.plugin_sel, 1, "j moves the installed-plugin cursor");
+        assert_eq!(
+            a.cupboard_sel, cupboard_sel_before,
+            "the marketplace cursor must not move while Installed is focused"
+        );
     }
 
     // --- Operator chat pane (tui-operator-surface-2026-06-04) ---

@@ -111,6 +111,9 @@ pub struct AgentChatSummary {
     pub feature_id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// @see `AgentChat::su_runtime_class` — `None` is UNCLASSIFIED, not legacy.
+    #[serde(default)]
+    pub su_runtime_class: Option<String>,
     #[serde(default)]
     pub turn_count: u32,
     #[serde(default)]
@@ -141,6 +144,13 @@ pub struct AgentChat {
     pub feature_id: Option<String>,
     #[serde(default)]
     pub title: Option<String>,
+    /// Which dispatch policy this conversation was CREATED under
+    /// (`su-session` | `legacy-owned-loop`), stamped server-side by migration
+    /// 1023 / `createChat`. `None` means the row predates the stamp, which is a
+    /// third answer — UNCLASSIFIED — and never a licence to assume either policy.
+    /// See `crate::su_session::PuiRuntimeClass`.
+    #[serde(default)]
+    pub su_runtime_class: Option<String>,
     #[serde(default)]
     pub transcript: Vec<AgentChatTranscriptTurn>,
     #[serde(default)]
