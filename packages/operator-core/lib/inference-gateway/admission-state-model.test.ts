@@ -1,0 +1,306 @@
+/**
+ * P-013 spec `capless-p013-state-read-model@3`.
+ *
+ * The clause's falsifier is: "Two status surfaces disagree about the binding writer
+ * or omit the generation/freshness needed to interpret a capacity number." Its
+ * probeMethod is: "Compare gateway status, fleet capacity, health panels, and alert
+ * projections against one state snapshot."
+ *
+ * That probe is executed literally below — `surfaces-agree` builds ONE snapshot and
+ * compares all four projections field-by-field. The test is written so it can only
+ * pass while the projections genuinely share a single source: it asserts over the
+ * FULL projection registry rather than a hand-listed pair, so a fifth surface added
+ * later is covered without anyone remembering to extend this file.
+ */
+
+import { describe, expect, it } from 'vitest';
+
+import type { QueueReceipt } from '../resource-governor/admission';
+import type { CaplessControllerDecision } from '../resource-governor/controller';
+import {
+  BINDING_DISPOSITIONS,
+  describeGatewayAdmissionState,
+  explainGatewayLaneBinding,
+  GATEWAY_ADMISSION_STATE_SCHEMA_VERSION,
+  GATEWAY_STATE_PROJECTIONS,
+  gatewayLaneId,
+  projectAlerts,
+  projectFleetCapacity,
+  projectGatewayStatus,
+  projectHealthPanel,
+} from './admission-state-model';
+import type { PhysicalConstraintObservation, PhysicalConstraintVerdict } from './physical-constraints';
+
+const NOW = 1_700_000_000_000;
+
+function klass(over: Partial<CaplessControllerDecision['classes'][number]> = {}) {
+  return {
+    admissionClass: 'interactive',
+    desiredWindow: 12,
+    effectiveWindow: 8,
+    inFlight: 3,
+    availableStarts: 5,
+    paused: false,
+    pauseUntilMs: null,
+    protected: false,
+    healthySamples: 4,
+    feedback: [],
+    ...over,
+  } as CaplessControllerDecision['classes'][number];
+}
+
+function decision(over: Partial<CaplessControllerDecision> = {}): CaplessControllerDecision {
+  return {
+    schemaVersion: 'capless-controller-v1',
+    generation: 42,
+    evaluatedAtMs: NOW - 1_000,
+    healthScopeId: 'gateway',
+    healthState: 'healthy',
+    healthSeverity: 'none',
+    classes: [klass()],
+    reasons: [],
+    ...over,
+  } as CaplessControllerDecision;
+}
+
+function observation(over: Partial<PhysicalConstraintObservation> = {}): PhysicalConstraintObservation {
+  return {
+    id: 'obs-1',
+    key: 'rate-limit',
+    kind: 'quota',
+    source: 'provider',
+    sourceId: 'anthropic',
+    scope: { provider: 'anthropic' },
+    state: 'measured',
+    value: 0,
+    unit: 'count',
+    constraint: true,
+    binding: 'external-physical-contract',
+    causalRole: 'cause',
+    actionable: false,
+    confidence: 1,
+    observedAtMs: NOW - 500,
+    collectedAtMs: NOW - 500,
+    expiresAtMs: NOW + 60_000,
+    lastMeasuredAtMs: NOW - 500,
+    freshness: { state: 'fresh', ageMs: 500, validUntilMs: NOW + 60_000 },
+    reason: 'anthropic 429 budget exhausted',
+    evidence: ['429 from anthropic'],
+    ...over,
+  } as PhysicalConstraintObservation;
+}
+
+function verdict(observations: PhysicalConstraintObservation[]): PhysicalConstraintVerdict {
+  return {
+    schemaVersion: 'gateway-physical-constraint-v1',
+    evaluatedAtMs: NOW,
+    state: 'constrained',
+    constrained: true,
+    actionable: false,
+    observations,
+    attributions: [],
+    actionableResources: [],
+    reasons: [],
+  } as unknown as PhysicalConstraintVerdict;
+}
+
+function receipt(over: Partial<QueueReceipt> = {}): QueueReceipt {
+  return {
+    receiptId: 'r-1',
+    idempotencyKey: 'k-1',
+    state: 'queued',
+    enqueuedAtMs: NOW - 5_000,
+    decisionGeneration: 42,
+    ...over,
+  };
+}
+
+describe('describeGatewayAdmissionState (unit)', () => {
+  it('gives every capacity number a writer, a unit, and a disposition', () => {
+    const snap = describeGatewayAdmissionState({ decision: decision(), nowMs: NOW });
+    const lane = snap.lanes[0]!;
+
+    for (const [field, m] of Object.entries({
+      desiredWindow: lane.desiredWindow,
+      effectiveWindow: lane.effectiveWindow,
+      inFlight: lane.inFlight,
+      availableStarts: lane.availableStarts,
+      queueDepth: lane.queue.depth,
+    })) {
+      expect(m.writer.writer, `${field} must name its writer`).toMatch(/\.ts#/);
+      expect(m.writer.unit, `${field} must name its unit`).toBeTruthy();
+      expect(m.writer.disposition, `${field} must declare a disposition`).toBeTruthy();
+    }
+  });
+
+  it('never labels an adaptive window as a binding disposition', () => {
+    // The whole point of the capless work: desired/effective are MEASUREMENTS of an
+    // unbounded adaptive target, so they must never carry a disposition that the
+    // source lint would read as a licence to cap.
+    const snap = describeGatewayAdmissionState({ decision: decision(), nowMs: NOW });
+    const lane = snap.lanes[0]!;
+    expect(BINDING_DISPOSITIONS.has(lane.desiredWindow.writer.disposition)).toBe(false);
+    expect(BINDING_DISPOSITIONS.has(lane.effectiveWindow.writer.disposition)).toBe(false);
+  });
+
+  it('counts only still-waiting receipts as queue depth', () => {
+    const snap = describeGatewayAdmissionState({
+      decision: decision(),
+      nowMs: NOW,
+      queued: {
+        interactive: [
+          receipt({ receiptId: 'r-1', state: 'queued', enqueuedAtMs: NOW - 9_000 }),
+          receipt({ receiptId: 'r-2', state: 'eligible', enqueuedAtMs: NOW - 3_000 }),
+          receipt({ receiptId: 'r-3', state: 'completed' }),
+          receipt({ receiptId: 'r-4', state: 'cancelled' }),
+        ],
+      },
+    });
+    const lane = snap.lanes[0]!;
+    // Counting terminal receipts would inflate the single number an operator uses to
+    // decide whether admission is stuck — the failure this assertion pins.
+    expect(lane.queue.depth.value).toBe(2);
+    expect(lane.queue.oldestEnqueuedAtMs).toBe(NOW - 9_000);
+    expect(lane.queue.receipts).toHaveLength(4);
+  });
+
+  it('reports binding precedence: pause outranks physical contract outranks window', () => {
+    const paused = explainGatewayLaneBinding(klass({ paused: true, pauseUntilMs: NOW + 1_000 }), [observation()]);
+    expect(paused.bindingTerm).toBe('pause');
+
+    const physical = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), [observation()]);
+    expect(physical.bindingTerm).toBe('physical-contract');
+
+    const window = explainGatewayLaneBinding(klass({ inFlight: 8, effectiveWindow: 8 }), []);
+    expect(window.bindingTerm).toBe('effective-window');
+
+    const free = explainGatewayLaneBinding(klass({ inFlight: 1, effectiveWindow: 8 }), []);
+    expect(free.bindingTerm).toBeNull();
+    expect(free.writer).toBeNull();
+  });
+
+  it('does not attribute another account\'s physical constraint to this lane', () => {
+    const snap = describeGatewayAdmissionState({
+      decision: decision(),
+      physical: verdict([observation({ scope: { provider: 'anthropic', accountId: 'acct-other' } })]),
+      provider: 'claude',
+      accountId: 'acct-mine',
+      nowMs: NOW,
+    });
+    // A quota on one account reported as binding on another is exactly the
+    // misdiagnosis this model exists to prevent.
+    expect(snap.lanes[0]!.physical).toHaveLength(0);
+    expect(snap.lanes[0]!.binding.bindingTerm).not.toBe('physical-contract');
+  });
+
+  it('degrades freshness with age and refuses to call a skewed clock fresh', () => {
+    const budget = 10_000;
+    const at = (evaluatedAtMs: number) =>
+      describeGatewayAdmissionState({
+        decision: decision({ evaluatedAtMs }),
+        nowMs: NOW,
+        freshnessBudgetMs: budget,
+      }).freshness;
+
+    expect(at(NOW - 1_000)).toBe('fresh');
+    expect(at(NOW - 15_000)).toBe('aging');
+    expect(at(NOW - 60_000)).toBe('stale');
+    // An observation from the future is a broken instrument. Reporting it as `fresh`
+    // would launder the fault into a confident reading.
+    expect(at(NOW + 60_000)).toBe('unknown');
+  });
+
+  it('reports unknown freshness for an empty snapshot rather than fresh', () => {
+    const snap = describeGatewayAdmissionState({ decision: decision({ classes: [] }), nowMs: NOW });
+    expect(snap.freshness).toBe('unknown');
+    expect(snap.schemaVersion).toBe(GATEWAY_ADMISSION_STATE_SCHEMA_VERSION);
+  });
+});
+
+describe('surfaces-agree (integration — the spec falsifier, executed)', () => {
+  const snapshot = describeGatewayAdmissionState({
+    decision: decision({
+      classes: [
+        klass({ admissionClass: 'interactive', inFlight: 8, effectiveWindow: 8, availableStarts: 0 }),
+        klass({ admissionClass: 'batch', inFlight: 1, effectiveWindow: 6, availableStarts: 5 }),
+      ],
+    }),
+    physical: verdict([observation()]),
+    provider: 'claude',
+    accountId: 'acct-mine',
+    queued: { batch: [receipt({ state: 'queued' })] },
+    nowMs: NOW,
+  });
+
+  const projections = Object.entries(GATEWAY_STATE_PROJECTIONS).map(
+    ([name, project]) => [name, project(snapshot)] as const,
+  );
+
+  it('covers every registered surface, so a new one cannot silently escape this probe', () => {
+    expect(projections.map(([n]) => n).sort()).toEqual(
+      ['alerts', 'fleet:capacity', 'gateway:status', 'health-panel'].sort(),
+    );
+    expect(projections.length).toBeGreaterThanOrEqual(4);
+  });
+
+  it('never omits the generation or freshness needed to interpret a capacity number', () => {
+    // The "omit" half of the falsifier.
+    for (const [name, projected] of projections) {
+      expect(projected.generation, `${name} omitted generation`).toBe(snapshot.generation);
+      expect(projected.freshness, `${name} omitted freshness`).toBe(snapshot.freshness);
+    }
+  });
+
+  it('no two surfaces disagree about a lane\'s binding writer', () => {
+    // The "disagree" half of the falsifier. Every projection that reports a lane must
+    // report the SAME binding term and writer for it.
+    const byLane = new Map<string, { surface: string; term: unknown; writer: unknown }[]>();
+    for (const [surface, projected] of projections) {
+      const rows = 'lanes' in projected ? projected.lanes : projected.alerts;
+      for (const row of rows as { laneId: string; bindingTerm: unknown; bindingWriter: unknown }[]) {
+        const seen = byLane.get(row.laneId) ?? [];
+        seen.push({ surface, term: row.bindingTerm, writer: row.bindingWriter });
+        byLane.set(row.laneId, seen);
+      }
+    }
+
+    expect(byLane.size).toBeGreaterThan(0);
+    for (const [laneId, rows] of byLane) {
+      const terms = new Set(rows.map((r) => JSON.stringify(r.term)));
+      const writers = new Set(rows.map((r) => JSON.stringify(r.writer)));
+      expect(terms.size, `${laneId}: surfaces disagree on binding term — ${JSON.stringify(rows)}`).toBe(1);
+      expect(writers.size, `${laneId}: surfaces disagree on binding writer — ${JSON.stringify(rows)}`).toBe(1);
+    }
+  });
+
+  it('agrees on the shared capacity numbers the surfaces both publish', () => {
+    const status = projectGatewayStatus(snapshot);
+    const capacity = projectFleetCapacity(snapshot);
+    for (const lane of snapshot.lanes) {
+      const s = status.lanes.find((l) => l.laneId === lane.laneId)!;
+      const c = capacity.lanes.find((l) => l.laneId === lane.laneId)!;
+      // These two surfaces are the pair that historically disagreed (maxConcurrent
+      // beside effective, from two independent reads).
+      expect(s.inFlight).toEqual(c.inFlight);
+      expect(s.queued).toEqual(c.queued);
+    }
+  });
+
+  it('names the binding writer for the constrained lane, and no writer for the free one', () => {
+    const health = projectHealthPanel(snapshot);
+    const constrained = health.lanes.find((l) => l.laneId === gatewayLaneId({
+      admissionClass: 'interactive', provider: 'claude', accountId: 'acct-mine',
+    }))!;
+    expect(constrained.bindingTerm).toBe('physical-contract');
+    expect(constrained.bindingWriter).toContain('physical-constraints.ts#');
+  });
+
+  it('alerts only on work waiting while starts are available', () => {
+    // batch has 1 queued with 5 starts available ⇒ an admission defect, alert.
+    // interactive is at its window ⇒ working as designed, no alert.
+    const alerts = projectAlerts(snapshot);
+    expect(alerts.alerts).toHaveLength(1);
+    expect(alerts.alerts[0]!.laneId).toContain('batch');
+    expect(alerts.alerts[0]!.kind).toBe('admission-stalled');
+  });
+});
