@@ -521,11 +521,37 @@ export async function buildControlAnchorState(
   } = {},
 ): Promise<ControlAnchorState> {
   const sql = opts.sql ?? getOrgPg().sql;
-  const [modes, loop, membership, brief, claims, selfWake] = await Promise.all([
-    getModes(workspaceId, ownerId, sql),
+  // ⚠ Each leg is guarded AT CREATION, not after the whole set is built.
+  //
+  // These legs are started eagerly and settled together, so two different
+  // failures can orphan a rejection with no handler — and on Node's default
+  // --unhandled-rejections=throw an orphan takes the process down. That breaks
+  // the fail-soft guarantee refreshControlAnchorAfterMutation advertises at
+  // exactly the moment it matters most, because a DB fault fails SEVERAL legs
+  // at once rather than one:
+  //   1. Promise.all rejects with the FIRST failure and abandons the rest; the
+  //      losers keep running and reject into nothing.
+  //   2. Worse, a leg whose construction throws SYNCHRONOUSLY (`claimsP` is a
+  //      tagged template — an `sql` that is not callable throws right here)
+  //      aborts the remaining legs, orphaning every promise already created.
+  //      A guard placed after the set is assembled never even runs.
+  //
+  // `guard` is identity — it only marks a rejection handled, so Promise.all
+  // still rejects with the first failure and callers see identical behaviour.
+  // Measured 2026-08-29 in canonical run 4: standing-goal-boot-arm.test.ts
+  // (whose `sql` is `{}`) passed all 11 tests and still exited 1 on exactly
+  // three orphans — the three legs built before the tagged template threw —
+  // which failed the whole @papercusp/operator-core test:lane-pure task.
+  const guard = <T>(leg: T): T => {
+    void Promise.resolve(leg).catch(() => {});
+    return leg;
+  };
+  const modesP = guard(getModes(workspaceId, ownerId, sql));
+  const loopP = guard(
     opts.loop === undefined ? getLoopStatus(ownerId, { sql }) : Promise.resolve(opts.loop),
-    latestFleetMembership(workspaceId, ownerId, sql),
-    getSessionBrief({ ownerId }),
+  );
+  const membershipP = guard(latestFleetMembership(workspaceId, ownerId, sql));
+  const briefP = guard(getSessionBrief({ ownerId }));
     // ⚠ NO `expires_ts > clock_timestamp()` FILTER HERE — deliberately.
     //
     // `plan_item_claims` is a TTL'd coordination LEASE (default ttl_sec 1200 =
@@ -549,21 +575,30 @@ export async function buildControlAnchorState(
     //
     // `lease_valid` is carried so callers can tell "mine, lease live" from
     // "mine, lease lapsed — re-claim before editing".
-    sql<ScopeClaimRow[]>`
+  const claimsP = guard(sql<ScopeClaimRow[]>`
       SELECT harness_slug, plan_slug, item_id,
              expires_ts > clock_timestamp() AS lease_valid
         FROM harness_shared.plan_item_claims
        WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
          AND owner = ${ownerId}
        ORDER BY (expires_ts > clock_timestamp()) DESC, plan_slug, item_id
-    `,
+    `);
     // WI-7302 part 2: the forward-looking wake-source leg. Best-effort — on any
     // failure this resolves to an empty map and `wakeSource` is simply absent
     // (UNKNOWN), because a degraded query must never be able to tell a healthy
     // session that nothing will ever wake it.
+  const selfWakeP = guard(
     (opts.fetchSelfWakeFn ?? fetchSelfWake)([ownerId]).catch(
       () => new Map<string, SelfWakeSignals>(),
     ),
+  );
+  const [modes, loop, membership, brief, claims, selfWake] = await Promise.all([
+    modesP,
+    loopP,
+    membershipP,
+    briefP,
+    claimsP,
+    selfWakeP,
   ]);
   const derived = deriveClaimScope(claims, brief?.currentPlanSlug, brief?.harnessSlug);
   const fleet = membership?.fleetSlug;
