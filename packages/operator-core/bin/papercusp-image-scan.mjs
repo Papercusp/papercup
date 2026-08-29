@@ -159,6 +159,24 @@ fi
 vuln_count=\$(jq '[.matches[]?] | length' /tmp/vuln.json 2>/dev/null || echo "null")
 if [ "\$vuln_count" = "null" ]; then detail="vuln-parse-failed"; exit 1; fi
 
+# A bare total is not actionable: it cannot distinguish 3922 negligible unfixed CVEs in
+# the distro base from one Critical with a patch already available. The gate consumes the
+# counts; a HUMAN triaging a red consumes these breakdowns. Both fail closed on a parse
+# error, for the same reason the counts above do.
+vuln_by_severity=\$(jq -c '[.matches[]?.vulnerability.severity] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_by_severity" = "null" ]; then detail="vuln-severity-parse-failed"; exit 1; fi
+vuln_fixable=\$(jq '[.matches[]? | select(.vulnerability.fix.state == "fixed")] | length' /tmp/vuln.json 2>/dev/null || echo "null")
+if [ "\$vuln_fixable" = "null" ]; then detail="vuln-fix-parse-failed"; exit 1; fi
+
+# Secret DETAIL is rule + file + line ONLY. The matched value is deliberately NEVER
+# emitted: this document is read back over SSH and lands in release logs and work-item
+# evidence, so echoing the secret would convert a detection into a disclosure. Anyone
+# extending this must keep .Match and .Secret out of the projection.
+secrets_by_rule=\$(jq -c '[.[]?.RuleID] | group_by(.) | map({key:.[0], value:length}) | from_entries' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_by_rule" = "null" ]; then detail="secret-rule-parse-failed"; exit 1; fi
+secrets_sample=\$(jq -c '[.[]? | {rule:.RuleID, file:.File, line:.StartLine}] | .[0:50]' /tmp/secrets.json 2>/dev/null || echo "null")
+if [ "\$secrets_sample" = "null" ]; then detail="secret-sample-parse-failed"; exit 1; fi
+
 sbom_sha=\$(sha256sum /tmp/sbom.json | cut -d' ' -f1)
 
 jq -n \\
@@ -166,7 +184,11 @@ jq -n \\
   --argjson vulnerabilityFindings "\$vuln_count" \\
   --argjson secretFindings "\$secret_count" \\
   --argjson mountedFilesystems "\$mounted" \\
-  '{sbomSha256:\$sbomSha256, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems}' \\
+  --argjson vulnerabilityBySeverity "\$vuln_by_severity" \\
+  --argjson vulnerabilityFixable "\$vuln_fixable" \\
+  --argjson secretsByRule "\$secrets_by_rule" \\
+  --argjson secretSample "\$secrets_sample" \\
+  '{sbomSha256:\$sbomSha256, vulnerabilityFindings:\$vulnerabilityFindings, secretFindings:\$secretFindings, mountedFilesystems:\$mountedFilesystems, vulnerabilityBySeverity:\$vulnerabilityBySeverity, vulnerabilityFixable:\$vulnerabilityFixable, secretsByRule:\$secretsByRule, secretSample:\$secretSample}' \\
   > ${RESULT_PATH} || { detail="result-write-failed"; exit 1; }
 
 status="ok"
@@ -330,6 +352,27 @@ async function scan(input) {
     .digest('hex')
     .slice(0, 32)}`;
 
+  // Diagnostics travel WITH the counts. Without them a non-zero result is a dead end:
+  // the gate says "3922" and the image is gone by the time anyone asks which 3922.
+  // These never gate anything — they exist so a red is triageable without a re-scan.
+  const isPlainObject = (value) =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  const findings = {
+    ...(isPlainObject(measurement.vulnerabilityBySeverity)
+      ? { vulnerabilityBySeverity: measurement.vulnerabilityBySeverity }
+      : {}),
+    ...(Number.isSafeInteger(measurement.vulnerabilityFixable)
+      ? { vulnerabilityFixable: measurement.vulnerabilityFixable }
+      : {}),
+    ...(isPlainObject(measurement.secretsByRule)
+      ? { secretsByRule: measurement.secretsByRule }
+      : {}),
+    // rule/file/line only — the scanner never emits the matched value, and neither do we.
+    ...(Array.isArray(measurement.secretSample)
+      ? { secretSample: measurement.secretSample }
+      : {}),
+  };
+
   return {
     imageId: requested.imageId,
     buildManifestIdentity,
@@ -341,6 +384,7 @@ async function scan(input) {
     sbomSha256,
     vulnerabilityFindings,
     secretFindings,
+    ...findings,
     evidenceRef,
   };
 }
