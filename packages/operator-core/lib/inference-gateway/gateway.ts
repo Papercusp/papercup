@@ -41,6 +41,11 @@ import {
   type TierAdmissionConfig,
   type PriorityTierMap,
 } from '@papercusp/papercusp-shared/agent';
+import {
+  INITIAL_PROVIDER_ADMISSION_WINDOW,
+  ProviderAdmissionLifecycle,
+  type ProviderLaneId,
+} from './provider-admission-lifecycle';
 import { accountLoadKey, ACCOUNT_INFLIGHT_LOAD_WEIGHT } from './account-failover';
 import { selectAffectedOwners } from './affected-owners';
 import { withOAuthBeta, scrubSecrets } from './credential-store';
@@ -357,36 +362,20 @@ const EGRESS_PROBE_DELAY_MS =
  *  (WI-389). Kept under EGRESS_CIRCUIT_OPEN_MS − EGRESS_PROBE_DELAY_MS so the probe still fits inside the
  *  open window. Env-tunable. */
 const EGRESS_PROBE_HTTP_TIMEOUT_MS = Number(process.env.PAPERCUSP_GATEWAY_EGRESS_PROBE_HTTP_MS) || 12_000;
-const DEFAULT_CONCURRENCY = 24; // the queue is the concurrency authority; governor does rate/pause
-/**
- * Legacy compatibility metadata only. Account-count arithmetic is no longer an
- * admission authority; the capless controller learns the Codex class window from
- * provider outcomes. Keep the symbol for old status/readback consumers during the
- * migration, but do not use it to derive a live queue limit.
+/*
+ * RETIRED BY P-010 (capless-inference-gateway-2026-08-28):
+ *   - `DEFAULT_CONCURRENCY = 24`            the baked Claude admission ceiling
+ *   - `CODEX_ADMISSION_SLOTS_PER_ACCOUNT`   the Codex account-scaled slot ceiling
+ *   - `accountScaledCodexConcurrency()`     Codex's separate seed arithmetic
+ *   - `readCodexConcurrencyOverride()`      PAPERCUSP_GATEWAY_CODEX_CONCURRENCY
+ *
+ * Admission concurrency is no longer configured for either provider. Both lanes
+ * are driven by ONE `ProviderAdmissionLifecycle` (provider-admission-lifecycle.ts)
+ * whose window has a floor and intentionally no maximum, so a healthy lane grows
+ * past whatever it started at instead of being pinned to a number someone typed.
+ * A bootstrap value can still say where a COLD lane starts (D-002: initial state,
+ * never a ceiling) — see `INITIAL_PROVIDER_ADMISSION_WINDOW`.
  */
-export const CODEX_ADMISSION_SLOTS_PER_ACCOUNT = 4;
-
-/**
- * Return the compatibility seed for Codex admission. This used to multiply
- * account count by `CODEX_ADMISSION_SLOTS_PER_ACCOUNT` and clamp it to Claude's
- * configured concurrency. The formula made serviceability look like physical
- * capacity and prevented healthy expansion past the old ceiling. The account
- * argument remains for source compatibility and telemetry callers; it is ignored
- * by the live decision.
- */
-export function accountScaledCodexConcurrency(_accountCount: number, claudeConcurrency: number): number {
-  const claudeCap = Number.isFinite(claudeConcurrency)
-    ? Math.max(1, Math.floor(claudeConcurrency))
-    : DEFAULT_CONCURRENCY;
-  return claudeCap;
-}
-
-/** Read the explicit process-level Codex cap override without confusing an unset/invalid
- *  value with the account-scaled default. */
-export function readCodexConcurrencyOverride(env: NodeJS.ProcessEnv = process.env): number | undefined {
-  const configured = Number(env.PAPERCUSP_GATEWAY_CODEX_CONCURRENCY);
-  return Number.isFinite(configured) && configured > 0 ? configured : undefined;
-}
 /** AIMD admission-concurrency defaults (inference-gateway-robustness-audit-2026-06-20 P1 / B-GW-1). The
  *  gateway shrinks the admission queue's EFFECTIVE maxConcurrent under sustained upstream 429s (fewer
  *  concurrent upstream calls = lower per-IP RPM = the throttle eases — breaking the retry-storm
@@ -794,9 +783,9 @@ export interface GatewayDeps {
   governorFor?(model: string, accountId: string): RateLimitGovernor;
   /** Max admission wait before a synthetic 429+retry-after. Default 2 min. */
   maxQueueWaitMs?: number;
-  /** Codex/OpenAI-compatible admission cap. Defaults to the conservative
-   *  subscription floor (3), independent of the larger Claude gateway queue. */
-  codexConcurrency?: number;
+  /* RETIRED by P-010: there is no Codex-specific admission size. Both provider
+   * lanes start from the shared `concurrency` seed and are sized thereafter by the
+   * one capless ProviderAdmissionLifecycle, from the outcomes each lane observes. */
   /** POST-admission extended-absorption budget (ms). >0 = on a slot-hold-deadline shed, release the slot +
    *  re-acquire + retry (no slot held during the wait → no wedge) instead of 429ing, up to this budget. 0 = OFF. */
   requestAbsorbMs?: number;
@@ -848,7 +837,7 @@ export interface GatewayDeps {
   };
   /** OPTIONAL Codex/OpenAI-compatible priority-tier layer. When omitted, Codex keeps the
    *  legacy compatibility behavior of reusing `priorityTiers`; the launch layer supplies this
-   *  separately so its reserve/caps are sized to `codexConcurrency`, not Claude's larger queue. */
+   *  separately so each lane's reserve/caps start from the shared admission seed. */
   codexPriorityTiers?: {
     /** Role/label → tier map for Codex requests. */
     map: PriorityTierMap;
@@ -1645,7 +1634,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const credential401DeadThreshold = deps.credential401DeadThreshold ?? DEFAULT_CREDENTIAL_401_DEAD_THRESHOLD;
   const orgDisallowedDeactivateThreshold =
     deps.orgDisallowedDeactivateThreshold ?? DEFAULT_ORG_DISALLOWED_DEACTIVATE_THRESHOLD;
-  const concurrency = deps.concurrency ?? DEFAULT_CONCURRENCY;
+  // P-010: this is a SEED — where a cold lane starts — not a cap. `deps.concurrency`
+  // survives as a bootstrap input (P-012 migrates the deployment paths that still
+  // pass it) but it no longer bounds anything: the lifecycle grows both lanes past
+  // it under clean traffic.
+  const admissionSeedWindow = Math.max(
+    1,
+    Math.floor(
+      deps.concurrency !== undefined && Number.isFinite(deps.concurrency) && deps.concurrency > 0
+        ? deps.concurrency
+        : INITIAL_PROVIDER_ADMISSION_WINDOW,
+    ),
+  );
   // Default OFF: the LAUNCH layer (startGatewayService) opts production in from the env (like priorityTiers).
   // Off-by-default keeps every direct-construction unit test byte-identical (their tiny maxQueueWaitMs is
   // incompatible with second-scale pacing — a test opts in explicitly with a realistic maxQueueWaitMs).
@@ -1739,7 +1739,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const baseTierCaps: Record<number, number> = { ...(tierLayer?.config.caps ?? {}) };
   const codexBaseTierCaps: Record<number, number> = { ...(codexTierLayer?.config.caps ?? {}) };
   const queue = new PriorityAdmissionQueue({
-    maxConcurrent: concurrency,
+    maxConcurrent: admissionSeedWindow,
     agingIntervalMs: deps.agingIntervalMs,
     maxQueued,
     ...(tierLayer ? { tiers: tierLayer.config } : {}),
@@ -1755,11 +1755,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
   };
   const codexAccountCount =
     accountPoolSize(deps.codexPool) + (codexCliPool ? accountPoolSize(codexCliPool) : codexCliAccounts().length);
-  const defaultCodexConcurrency = accountScaledCodexConcurrency(codexAccountCount, concurrency);
-  const codexConcurrency = Math.max(
-    1,
-    Math.floor(deps.codexConcurrency ?? readCodexConcurrencyOverride() ?? defaultCodexConcurrency),
-  );
+  // P-010: Codex no longer derives a DIFFERENT starting window from its account
+  // count. Account arithmetic described serviceability, not physical capacity, and
+  // clamping it to Claude's configured concurrency is precisely the "parallel
+  // Claude-default / Codex-special capacity logic" this item deletes. Both lanes
+  // now start from the same seed and are separated only by the outcomes they
+  // actually observe. `codexAccountCount` remains for routing/telemetry.
+  void codexAccountCount;
   // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
   const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
   const codexOAuthNonStreamEnabled = deps.codexOAuthNonStream ?? DEFAULT_CODEX_OAUTH_NONSTREAM;
@@ -1773,7 +1775,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   );
   const isCodexCliAccountId = (accountId: string) => codexCliAccounts().some((a) => a.accountId === accountId);
   const codexQueue = new PriorityAdmissionQueue({
-    maxConcurrent: codexConcurrency,
+    maxConcurrent: admissionSeedWindow,
     agingIntervalMs: deps.agingIntervalMs,
     maxQueued,
     ...(codexTierLayer ? { tiers: codexTierLayer.config } : {}),
@@ -1792,75 +1794,76 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // pool + governors exist) still computes the old recommendation for diagnostics, but P-007 deliberately keeps
   // it out of `setMaxConcurrent`: serviceability is routing/causal evidence, not productive capacity.
   let serviceableAdmissionCapFn: () => number = () => Number.POSITIVE_INFINITY;
-  let lastAimdEff = concurrency;
   // Compatibility readback for the retired serviceable clamp. Both modes are now
   // advisory; retaining the field lets older status consumers understand a
   // deploy-skewed response without allowing it to reinstate a hard cap.
   let clampMode: ServiceableClampMode = 'off';
   /** The clamp's most recent RECOMMENDATION (what it would cap to), recorded even when overridden. */
   let lastServiceableRecommendation = Number.POSITIVE_INFINITY;
-  /** Live admission after the controller is applied — surfaced on /stats. */
-  let lastAdmissionApplied = concurrency;
   /** The RAW serviceable-account count behind the recommendation. Recorded so `/stats` can publish the
    *  clamp's INPUT and not only its output — `recommendation: 4` alone cannot tell a reader whether that
    *  came from one serviceable account or from the MIN floor. */
   let serviceableAccountsFn: () => number | null = () => null;
   let lastServiceableAccounts: number | null = null;
-  const applyAdmissionCap = (eff: number): void => {
-    lastAimdEff = eff;
-    const recommendation = serviceableAdmissionCapFn();
-    lastServiceableRecommendation = recommendation;
+
+  // ────────────────────────────────────────────────────────────────────────────
+  // P-010: ONE capless admission lifecycle for every provider lane.
+  //
+  // This replaces the two hand-kept AIMD controllers that used to live here — a
+  // Claude one capped at `DEFAULT_CONCURRENCY` and a Codex one capped at an
+  // account-scaled seed, each with its own apply-closure, its own floor
+  // derivation and its own tier-shedding call. They were the same policy written
+  // twice, and they had already drifted (the Codex lane clamped its effective
+  // window to `min(codexConcurrency, eff)`; the Claude lane did not).
+  //
+  // Lanes share the POLICY and differ only in the outcomes they observe, so a
+  // Codex 429 moves the Codex window and nothing else. The window has a floor and
+  // no maximum: a lane whose traffic stays clean grows past its seed.
+  // ────────────────────────────────────────────────────────────────────────────
+  const providerAdmission = new ProviderAdmissionLifecycle({
+    lanes: [
+      { id: 'claude', queue, ...(tiered ? { baseTierCaps } : {}) },
+      { id: 'codex', queue: codexQueue, ...(codexTiered ? { baseTierCaps: codexBaseTierCaps } : {}) },
+    ],
+    initialWindow: admissionSeedWindow,
+    // The AIMD floor stays a floor — a minimum, never a maximum — so it is the one
+    // legacy tuning input that survives P-010 unchanged.
+    minimumWindow: deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR,
+    contractionFraction: deps.aimd?.decreaseFactor,
+    contractionThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
+    healthySamplesPerIncrease: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
+    log,
+  });
+
+  /**
+   * Refresh the serviceable-clamp DIAGNOSTICS. P-007 retired the clamp as an
+   * admission authority; these values are published so a reader can see the
+   * recommendation and its input, and they never touch a queue.
+   */
+  const refreshServiceableDiagnostics = (): void => {
+    lastServiceableRecommendation = serviceableAdmissionCapFn();
     lastServiceableAccounts = serviceableAccountsFn();
-    // P-007: the recommendation is diagnostic/routing evidence only. It is never
-    // multiplied into or used to cap productive admission.
-    const capped = Math.max(1, eff);
-    lastAdmissionApplied = capped;
-    queue.setMaxConcurrent(capped);
-    // TIER-AWARE SHEDDING (step 4): as live concurrency shrinks (AIMD storm OR few serviceable accounts), shed
-    // the bottom tier caps (4→3→2, holding tier 1) by the SAME number of lost slots — so the protected
-    // interactive lane keeps its full ceiling while the sheddable batch bands give up headroom first. On
-    // recovery the caps re-grow. No-op without the tier layer (flag-OFF stays byte-identical).
-    if (tiered) {
-      const shedCaps = shedTierCaps(baseTierCaps, concurrency - capped);
-      for (const [t, cap] of Object.entries(shedCaps)) queue.setTierCap(Number(t), cap);
-    }
   };
-  const aimd = new AimdConcurrencyController({
-    cap: concurrency,
-    floor: deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR,
-    decreaseFactor: deps.aimd?.decreaseFactor,
-    decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
-    increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
-    onChange: (eff) => {
-      applyAdmissionCap(eff);
-      log('warn', `inference-gateway: AIMD admission concurrency → ${eff}/${concurrency} (effective/cap)`);
-    },
-  });
-  const applyCodexAdmissionCap = (eff: number): void => {
-    const capped = Math.max(1, Math.min(codexConcurrency, eff));
-    codexQueue.setMaxConcurrent(capped);
-    if (codexTiered) {
-      const shedCaps = shedTierCaps(codexBaseTierCaps, codexConcurrency - capped);
-      for (const [t, cap] of Object.entries(shedCaps)) codexQueue.setTierCap(Number(t), cap);
-    }
+
+  /**
+   * AIMD-shaped view of a lane for status consumers written against the retired
+   * controllers. `cap` reports the lane's own HIGH-WATER MARK — the most it has
+   * ever sustained — because no configured maximum exists any more. Reading it as
+   * a ceiling is wrong; it is evidence.
+   */
+  const laneAimdSnapshot = (lane: ProviderLaneId): AimdSnapshot => {
+    const s = providerAdmission.snapshotFor(lane);
+    return {
+      effective: s.window,
+      cap: s.observedPeak,
+      floor: s.minimumWindow,
+      pressure: s.pressure,
+      cleanStreak: s.cleanStreak,
+      decreases: s.contractions,
+      increases: s.expansions,
+      hardFailures: s.hardFailures,
+    };
   };
-  // Codex has a separate upstream and a separately-sized queue. Feeding its 429s/successes into the
-  // Claude controller used to shrink/recover the WRONG queue, leaving Codex admission unchanged while
-  // perturbing Claude traffic. Keep the policy identical but the feedback loops independent.
-  const requestedCodexAimdFloor = deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR;
-  const codexAimdFloor =
-    codexConcurrency > 1 ? Math.max(1, Math.min(codexConcurrency - 1, Math.floor(requestedCodexAimdFloor))) : 1;
-  const codexAimd = new AimdConcurrencyController({
-    cap: codexConcurrency,
-    floor: codexAimdFloor,
-    decreaseFactor: deps.aimd?.decreaseFactor,
-    decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
-    increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
-    onChange: (eff) => {
-      applyCodexAdmissionCap(eff);
-      log('warn', `inference-gateway: Codex AIMD admission concurrency → ${eff}/${codexConcurrency} (effective/cap)`);
-    },
-  });
 
   // A single-account deps set synthesizes a one-entry, no-failover pool; a real `pool` supersedes it.
   const pool: AccountPool =
@@ -1896,7 +1899,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const g = deps.governorFor
       ? deps.governorFor(model, accountId)
       : governorForBackend('claude-code', model, undefined, accountId);
-    if (g.state.limits.maxConcurrent < concurrency) g.state.limits.maxConcurrent = concurrency;
+    // The QUEUE is the concurrency authority, so the governor's own concurrency
+    // limit must stay non-binding. It now tracks the LIVE learned window rather
+    // than a configured cap, so a lane that grows past its seed does not start
+    // tripping the governor it was supposed to have been freed from.
+    const liveWindow = providerAdmission.windowFor('claude');
+    if (g.state.limits.maxConcurrent < liveWindow) g.state.limits.maxConcurrent = liveWindow;
     // Smooth the static-floor RPM allowance into an even pace (subscription accounts return no per-minute
     // headers, so paceDelayMs stays 0 → the count gate alone lets effRpm fire as an instant burst that trips
     // the sub-minute burst limit). Gateway-only opt-in; the fleet concurrency governor is left untouched.
@@ -1936,7 +1944,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   // Apply the controller once now that the serviceability observer is wired. The
   // recommendation is recorded for `/stats` but cannot alter the productive
   // window; this also seeds the diagnostic readback from t=0.
-  applyAdmissionCap(lastAimdEff);
+  refreshServiceableDiagnostics();
 
   // G1 (WI-649): FLEET-WIDE bare-burst detector. True when ≥half the pool is currently OUT OF ROTATION
   // (pool.exhaustedUntil — the short bare-429 paces / hard caps / transport circuits that other in-flight
@@ -2940,18 +2948,19 @@ export function createInferenceGateway(deps: GatewayDeps) {
       clamp: {
         mode: clampMode,
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
-        applied: lastAdmissionApplied,
+        applied: providerAdmission.windowFor('claude'),
         overridden:
           Number.isFinite(lastServiceableRecommendation) &&
-          lastServiceableRecommendation < lastAdmissionApplied,
+          lastServiceableRecommendation < providerAdmission.windowFor('claude'),
         legacyConfigured: SERVICEABLE_CLAMP_ON,
         legacyTickMs: SERVICEABLE_CLAMP_TICK_MS,
         serviceableAccounts: lastServiceableAccounts,
       },
       maxQueued,
-      concurrencyCap: concurrency,
-      aimd: aimd.snapshot(),
-      codexAimd: codexAimd.snapshot(),
+      // Compatibility field: the lane's high-water mark, not a configured cap (P-010).
+      concurrencyCap: providerAdmission.snapshotFor('claude').observedPeak,
+      aimd: laneAimdSnapshot('claude'),
+      codexAimd: laneAimdSnapshot('codex'),
       failovers,
       upstreamErrors,
       egressCircuitOpens,
@@ -4754,7 +4763,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // healthy account — the genuine pool-wide-saturation signal (we waited / shed / will forward it).
           // A routed-around per-account quota-429 stays invisible to global AIMD, so one account hitting its
           // quota can no longer choke the whole gateway's admission concurrency.
-          if (up.status === 429 && !routedAround) aimd.recordThrottle();
+          if (up.status === 429 && !routedAround) providerAdmission.recordThrottle('claude');
           if (proceed) {
             clearStall(); // this attempt is done; the next iteration arms a fresh deadline
             peekedRest?.destroy(); // discard the throttled/capped account's body
@@ -4884,7 +4893,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // (a 4xx client error, or a 429 we chose not to retry) is neither throttle nor clean-capacity,
         // so it neither shrinks nor grows the limit (a 429 already recorded its throttle above).
         if (up.status >= 200 && up.status < 300) {
-          aimd.recordSuccess();
+          providerAdmission.recordSuccess('claude');
           // CREDENTIAL-HEALTH (#5 PART A): a 2xx is a SUCCESSFUL auth for this account's credential — clear
           // its consecutive-401 streak so a later dead-credential episode re-arms a fresh alert (and a
           // recovered-but-previously-flapping credential never carries a stale streak into a false alert).
@@ -4953,7 +4962,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           // Correct the earlier optimistic recordSuccess() with an immediate hard clamp — every genuine
           // mid-stream death funnels through this one function (stream error, idle-stall abort), so this is
           // the single wiring point. Guarded by the early-return above: fires at most once per request.
-          aimd.recordHardFailure();
+          providerAdmission.recordHardFailure('claude');
           if (!isSse) {
             try {
               res.destroy();
@@ -5100,7 +5109,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   /** Serve one `/v1/responses` request by driving the codex CLI on a ChatGPT-subscription
    *  account (codex-cli-bridge.ts). Non-streaming only; runs INSIDE the codex admission
    *  queue (same slot accounting as the bearer path), so concurrent CLI spawns are bounded
-   *  by codexConcurrency. */
+   *  by the codex lane's live capless admission window. */
   async function serveCodexCliBridge(
     req: http.IncomingMessage,
     res: http.ServerResponse,
@@ -5249,7 +5258,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             signal: ac.signal,
           });
           stageSpan?.endStage('upstreamTtfb');
-          codexAimd.recordSuccess();
+          providerAdmission.recordSuccess('codex');
           const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
           if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
             headers[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
@@ -5692,7 +5701,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         if (up.status === 429) {
           codexUpstream429++;
-          codexAimd.recordThrottle();
+          providerAdmission.recordThrottle('codex');
           recordOwnerOutcome(routing.ownerId, 'upstream_429', { account: cli.accountId, status: 429 });
           if (canRetry) {
             const reset = parseRateReset(headersToObject(up.headers));
@@ -5723,7 +5732,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
             continue;
           }
         } else if (up.ok) {
-          codexAimd.recordSuccess();
+          providerAdmission.recordSuccess('codex');
           lastEgressOkAt.set(cli.accountId, Date.now());
           ipTransportFailStreak.delete(pickedEgress.key);
         }
@@ -6241,7 +6250,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // 429 → ROTATE + retry (route around) rather than forwarding the throttle to the bee.
         if (up.status === 429) {
           codexUpstream429++;
-          codexAimd.recordThrottle();
+          providerAdmission.recordThrottle('codex');
           recordOwnerOutcome(wantOwner, 'upstream_429', { account: active.accountId, status: 429 });
           if (canRetry) {
             const reset = parseRateReset(headersToObject(up.headers));
@@ -6258,7 +6267,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           }
           // no rotate target / out of attempts → fall through and forward the 429 (the bee's CLI retries)
         } else if (up.ok) {
-          codexAimd.recordSuccess();
+          providerAdmission.recordSuccess('codex');
         }
 
         const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: active.accountId };
@@ -6700,11 +6709,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (raw) {
         const prev = clampMode;
         clampMode = raw;
-        applyAdmissionCap(lastAimdEff); // refresh diagnostic readback; admission stays controller-driven
+        refreshServiceableDiagnostics(); // readback only; admission stays lifecycle-driven
         if (prev !== clampMode) {
           log(
             'warn',
-            `inference-gateway: serviceable-admission clamp mode ${prev} → ${clampMode} (recommendation=${Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : 'n/a'}, live admission=${lastAdmissionApplied})`,
+            `inference-gateway: serviceable-admission clamp mode ${prev} → ${clampMode} (recommendation=${Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : 'n/a'}, live admission=${providerAdmission.windowFor('claude')})`,
           );
         }
       }
@@ -6712,9 +6721,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ok: true,
         mode: clampMode,
         recommendation: Number.isFinite(lastServiceableRecommendation) ? lastServiceableRecommendation : null,
-        applied: lastAdmissionApplied,
-        aimdEffective: lastAimdEff,
-        concurrencyCap: concurrency,
+        applied: providerAdmission.windowFor('claude'),
+        aimdEffective: providerAdmission.windowFor('claude'),
+        // Compatibility field. There is no configured cap any more; this reports
+        // the lane's own high-water mark (P-010).
+        concurrencyCap: providerAdmission.snapshotFor('claude').observedPeak,
       });
       return;
     }

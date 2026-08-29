@@ -74,6 +74,7 @@ function writer(
 }
 
 const GATEWAY = 'packages/operator-core/lib/inference-gateway/gateway.ts';
+const LIFECYCLE = 'packages/operator-core/lib/inference-gateway/provider-admission-lifecycle.ts';
 const LAUNCH = 'packages/operator-core/lib/inference-gateway/launch.ts';
 const SIDECAR = 'packages/operator-core/lib/inference-gateway/sidecar-main.ts';
 const PRIORITY = 'libs/papercusp-shared/src/resilience/priority-admission.ts';
@@ -88,43 +89,13 @@ const PROFILE = 'libs/generic/resource-profile/src/index.ts';
  * capacity bug (D-009).
  */
 export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapacityWriter[] = Object.freeze([
-  writer({
-    id: 'gateway-claude-default-concurrency',
-    file: GATEWAY,
-    symbol: 'DEFAULT_CONCURRENCY',
-    sourceAnchor: 'const DEFAULT_CONCURRENCY = 24',
-    sourceKind: 'code',
-    dimensions: ['claude-admission'],
-    units: 'requests in flight',
-    owner: 'inference-gateway Claude admission queue',
-    liveEffect: 'Seeds the Claude PriorityAdmissionQueue and the AIMD cap; currently acts as a productive-capacity ceiling.',
-    currentValue: 24,
-    disposition: 'remove',
-    deletionTarget: 'P-005/P-007: CaplessAdaptiveController desired window',
-    recurrenceTest: 'capacity-inventory.test.ts source-anchor + unclassified-writer guard',
-    durableSource: 'resource-governor durable desired/effective state and receipts',
-    telemetry: 'gateway stats admission/aimd snapshots with generation and freshness',
-    contextPath: 'createInferenceGateway → PriorityAdmissionQueue → executeLegacyLaneTask',
-    fanOut: 'Claude messages, maintenance, and Anthropic-compatible callers',
-  }),
-  writer({
-    id: 'gateway-codex-slots-per-account',
-    file: GATEWAY,
-    symbol: 'CODEX_ADMISSION_SLOTS_PER_ACCOUNT',
-    sourceAnchor: 'export const CODEX_ADMISSION_SLOTS_PER_ACCOUNT = 4',
-    sourceKind: 'code',
-    dimensions: ['codex-admission'],
-    units: 'requests per resolved account',
-    owner: 'inference-gateway Codex admission sizing',
-    liveEffect: 'Multiplies account count into a default Codex queue size and can cap healthy-account expansion.',
-    currentValue: 4,
-    disposition: 'remove',
-    deletionTarget: 'P-007: provider feedback, not slots-per-account arithmetic',
-    recurrenceTest: 'capacity-inventory.test.ts source-anchor + unclassified-writer guard',
-    durableSource: 'resource-governor Codex admission class state',
-    telemetry: 'Codex admission and provider outcome snapshots',
-    contextPath: 'accountScaledCodexConcurrency → codexQueue',
-  }),
+  // P-010 REMOVED four gateway/launch writers — `DEFAULT_CONCURRENCY = 24` (both the
+  // gateway copy and launch.ts's mirror), `CODEX_ADMISSION_SLOTS_PER_ACCOUNT = 4`, and
+  // the `accountScaledCodexConcurrency` derivation — when Claude and Codex collapsed
+  // onto one capless ProviderAdmissionLifecycle. The census tracks LIVE writers, so a
+  // deleted writer has no row; their recurrence guard is CAPACITY_WRITER_SYMBOL_PATTERN,
+  // which matches *CONCURRENCY* and SLOTS_PER_ACCOUNT, so re-declaring any of them in
+  // scope is reported as an unclassified writer and reds this file's census test.
   writer({
     id: 'gateway-aimd-floor',
     file: GATEWAY,
@@ -217,15 +188,16 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
   }),
   writer({
     id: 'gateway-serviceable-clamp-application',
-    file: GATEWAY,
-    symbol: 'applyAdmissionCap',
-    sourceAnchor: 'const capped = Math.max(1, eff)',
+    file: LIFECYCLE,
+    symbol: 'ProviderAdmissionLifecycle#apply',
+    sourceAnchor: 'const window = Math.max(this.#minimumWindow, Math.floor(lane.window));',
     sourceKind: 'code',
     dimensions: ['claude-admission', 'codex-admission'],
     units: 'requests in flight',
     owner: 'inference-gateway admission application',
-    liveEffect: 'Applies the AIMD effective admission with a one-request floor; the serviceable recommendation is diagnostic only.',
-    currentValue: 'max(1, aimd effective)',
+    liveEffect:
+      'Applies each lane\'s learned window to its queue, floored at the configured minimum. P-010 replaced the two per-provider apply-closures with this one; the serviceable recommendation is diagnostic only and no longer participates.',
+    currentValue: 'max(minimumWindow, learned lane window)',
     disposition: 'remove',
     deletionTarget: 'P-007: remove derived serviceable hard clamp; retain attribution only',
     recurrenceTest: 'capacity-inventory.test.ts source-anchor + admission-ceiling fixtures',
@@ -378,40 +350,25 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     contextPath: 'resolvePriorityTiers → defaultTierCaps',
   }),
   writer({
-    id: 'launch-default-concurrency',
-    file: LAUNCH,
-    symbol: 'DEFAULT_CONCURRENCY',
-    sourceAnchor: 'const DEFAULT_CONCURRENCY = 24; // mirrors gateway.ts\'s default',
+    id: 'provider-admission-initial-window',
+    file: LIFECYCLE,
+    symbol: 'INITIAL_PROVIDER_ADMISSION_WINDOW',
+    sourceAnchor: 'export const INITIAL_PROVIDER_ADMISSION_WINDOW =',
     sourceKind: 'code',
-    dimensions: ['claude-admission'],
+    dimensions: ['claude-admission', 'codex-admission'],
     units: 'requests in flight',
-    owner: 'inference-gateway launch adapter',
-    liveEffect: 'Mirrors the gateway cap when constructing priority-tier and service options.',
-    currentValue: 24,
-    disposition: 'remove',
-    deletionTarget: 'P-004/P-005: remove duplicated compatibility ceiling',
-    recurrenceTest: 'capacity-inventory.test.ts source-anchor + launch wiring tests',
-    durableSource: 'durable controller state seeded once for compatibility',
-    telemetry: 'launch provenance and live gateway config version',
-    contextPath: 'startGatewayService → createInferenceGateway',
-  }),
-  writer({
-    id: 'launch-codex-derived-concurrency',
-    file: LAUNCH,
-    symbol: 'codexConcurrency',
-    sourceAnchor: 'accountScaledCodexConcurrency(codexAccounts.length, claudeConcurrency)',
-    sourceKind: 'code',
-    dimensions: ['codex-admission'],
-    units: 'requests in flight',
-    owner: 'inference-gateway launch adapter',
-    liveEffect: 'Derives a Codex queue size from account count and the Claude ceiling.',
-    currentValue: 'min(claudeConcurrency, accountCount × slotsPerAccount)',
-    disposition: 'remove',
-    deletionTarget: 'P-007: provider/account observations feed class feedback directly',
-    recurrenceTest: 'capacity-inventory.test.ts source-anchor + multi-account expansion tests',
-    durableSource: 'Codex admission-class desired/effective state',
-    telemetry: 'Codex pool health, provider responses, and controller generation',
-    contextPath: 'startGatewayService → codexQueue',
+    owner: 'inference-gateway provider admission lifecycle',
+    liveEffect:
+      'Sets where a COLD provider lane opens when no bootstrap seed is supplied. It is initial state, not a ceiling (D-002): the lane grows past it under clean traffic and is never clamped to it, and it is shared by every lane so no provider carries its own arithmetic.',
+    currentValue: 8,
+    disposition: 'transient-feedback',
+    deletionTarget:
+      'Retain only while a cold lane needs a starting position; it decays into learned state on the first expansions and durable controller state supersedes it across restarts.',
+    recurrenceTest: 'provider-admission-lifecycle.test.ts seed-is-not-a-ceiling falsifier + capacity-inventory.test.ts source-anchor',
+    durableSource: 'per-lane learned admission window from observed provider outcomes',
+    telemetry: 'ProviderAdmissionLifecycle snapshot: window, observedPeak, pressure, contractions, expansions',
+    contextPath: 'createInferenceGateway → ProviderAdmissionLifecycle → PriorityAdmissionQueue',
+    fanOut: 'every provider lane (Claude and Codex) equally',
   }),
   writer({
     id: 'launch-priority-tier-defaults',
@@ -431,24 +388,12 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     telemetry: 'tier queue/in-flight/wait distributions',
     contextPath: 'GATEWAY_PRIORITY_TIERS flag → resolvePriorityTiers',
   }),
-  writer({
-    id: 'sidecar-concurrency-environment',
-    file: SIDECAR,
-    symbol: 'startGatewayService concurrency option',
-    sourceAnchor: 'concurrency: Number(process.env.PAPERCUSP_GATEWAY_CONCURRENCY)',
-    sourceKind: 'deployment',
-    dimensions: ['deployment', 'claude-admission'],
-    units: 'requests in flight',
-    owner: 'packaged/systemd gateway sidecar',
-    liveEffect: 'Threads an environment override into the launch adapter and can reinstate a cap on restart.',
-    currentValue: 'PAPERCUSP_GATEWAY_CONCURRENCY (unset => launch default)',
-    disposition: 'remove',
-    deletionTarget: 'P-004/P-012: compatibility telemetry only; never an admission ceiling',
-    recurrenceTest: 'capacity-inventory.test.ts deployment-anchor guard',
-    durableSource: 'durable controller state plus explicit migration diagnostics',
-    telemetry: 'environment provenance and live controller generation',
-    contextPath: 'runGatewaySidecarMain → startGatewayService',
-  }),
+  // P-010 REMOVED the `sidecar-concurrency-environment` writer: sidecar-main.ts no
+  // longer reads PAPERCUSP_GATEWAY_CONCURRENCY at all, so the production sidecar
+  // passes no admission seed and the env cannot reinstate a cap on restart. The
+  // systemd row below survives because the unit file still MENTIONS the variable —
+  // it is now inert documentation, and deleting that mention is P-012's deployment
+  // sweep, not this item's.
   writer({
     id: 'systemd-concurrency-environment',
     file: 'apps/operator/scripts/systemd/papercup-inference-gateway.service',
@@ -458,10 +403,11 @@ export const INFERENCE_GATEWAY_CAPACITY_INVENTORY: readonly InferenceGatewayCapa
     dimensions: ['deployment', 'claude-admission'],
     units: 'requests in flight',
     owner: 'systemd gateway unit',
-    liveEffect: 'Documents the restart-time cap override that can shadow live controller state.',
-    currentValue: 24,
+    liveEffect:
+      'INERT since P-010: the unit file still mentions the variable, but sidecar-main.ts no longer reads it, so setting it changes no admission decision. Retained as a live row because the mention itself is a capacity CLAIM a deployer can act on.',
+    currentValue: '24 (documented only; read by nothing)',
     disposition: 'remove',
-    deletionTarget: 'P-004/P-012: delete cap-bearing deployment default after observe-only migration',
+    deletionTarget: 'P-012: delete the mention in the deployment sweep',
     recurrenceTest: 'capacity-inventory.test.ts deployment-anchor guard',
     durableSource: 'controller state and deployment provenance',
     telemetry: 'systemd environment plus gateway /admin/config readback',
@@ -971,12 +917,11 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
       id: 'gateway-concurrency',
       field: 'PAPERCUSP_GATEWAY_CONCURRENCY / Claude default',
       legacyFields: ['PAPERCUSP_GATEWAY_CONCURRENCY', 'DEFAULT_CONCURRENCY', 'GatewayServiceOptions.concurrency'],
-      writerIds: [
-        'gateway-claude-default-concurrency',
-        'launch-default-concurrency',
-        'sidecar-concurrency-environment',
-        'systemd-concurrency-environment',
-      ],
+      // P-010 deleted the gateway/launch/sidecar writers in this group. Only the
+      // systemd unit's inert MENTION of the variable still exists; the group is kept
+      // (not deleted) so the legacy field names stay discoverable to a migrating
+      // deployment even though nothing reads them any more.
+      writerIds: ['systemd-concurrency-environment'],
       observeOnlyMigration:
         'Read the environment, launch option, and legacy seed once as compatibility metadata with source and timestamp; initialize controller desired state only and never pass it as maxConcurrent.',
       warningReadback:
@@ -999,6 +944,31 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
       disposition: 'remove-after-gate',
     }),
     compatibilityGroup({
+      id: 'provider-admission-seed',
+      field: 'Cold-lane admission seed (post-P-010 replacement for every retired provider ceiling)',
+      legacyFields: ['DEFAULT_CONCURRENCY', 'CODEX_ADMISSION_SLOTS_PER_ACCOUNT', 'accountScaledCodexConcurrency'],
+      writerIds: ['provider-admission-initial-window'],
+      observeOnlyMigration:
+        'Read any supplied bootstrap value once as INITIAL STATE for every provider lane equally, never as a per-provider size and never as maxConcurrent. A restored durable controller window supersedes it; an absent seed simply starts the lane at the shared default.',
+      warningReadback:
+        'Stats and gateway:status publish the live per-lane window, the lane high-water mark, contraction/expansion counts, and the fact that boundBy=none — so a reader can never mistake the seed for a ceiling it is being held to.',
+      removalRelease:
+        'P-010 shipped this seed as the replacement for every retired provider ceiling. It is initial state, not a cap, so it has no deletion gate of its own — durable controller state is what removes its relevance, and P-012 removes the deployment inputs that still supply one.',
+      rollbackBehavior: rollbackCompatibilityText('provider admission seed'),
+      docsRunbookConsumers: [COMPATIBILITY_MATRIX_DOC, CAPACITY_RULE_DOC],
+      apiConsumers: [
+        'packages/operator-core/lib/inference-gateway/provider-admission-lifecycle.ts :: ProviderAdmissionLifecycle',
+        'packages/operator-core/lib/inference-gateway/gateway.ts :: createInferenceGateway',
+        'GET /stats :: aimd, codexAimd, concurrencyCap',
+      ],
+      stateConsumers: [
+        'packages/operator-core/lib/resource-governor/controller.ts',
+        'packages/operator-core/lib/inference-gateway/capless-adapter.ts',
+        'packages/operator-core/lib/inference-gateway/observability.ts',
+      ],
+      disposition: 'feedback-only',
+    }),
+    compatibilityGroup({
       id: 'gateway-codex-concurrency',
       field: 'PAPERCUSP_GATEWAY_CODEX_CONCURRENCY / Codex account scaling',
       legacyFields: [
@@ -1007,7 +977,10 @@ export const INFERENCE_GATEWAY_CAPACITY_COMPATIBILITY_GROUPS: readonly Inference
         'accountScaledCodexConcurrency',
         'GatewayServiceOptions.codexConcurrency',
       ],
-      writerIds: ['gateway-codex-slots-per-account', 'launch-codex-derived-concurrency'],
+      // P-010 COMPLETED this group's removal: every Codex-specific capacity writer is
+      // deleted, so the group has no live writers left. It is retained as the migration
+      // RECORD (its legacy field names are what a deployer greps for), not as pending work.
+      writerIds: [],
       observeOnlyMigration:
         'Record the Codex override and account-count calculation as a bootstrap observation with account-pool generation; seed desired state once without deriving a maximum from account count.',
       warningReadback:
@@ -1621,10 +1594,16 @@ export const CAPACITY_WRITER_SYMBOL_PATTERN =
 export function findInferenceGatewayCapacityDeclarations(source: string): Array<{ symbol: string; line: number }> {
   const code = executableSource(source);
   const declarations: Array<{ symbol: string; line: number }> = [];
-  const declaration = /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*[^;\n]*\b\d+(?:\.\d+)?\b/g;
+  const declaration = /\b(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=;\n]+)?=\s*([^;\n]*\b\d+(?:\.\d+)?\b[^;\n]*)/g;
   for (const match of code.matchAll(declaration)) {
     const symbol = match[1];
     if (!CAPACITY_WRITER_SYMBOL_PATTERN.test(symbol)) continue;
+    // A capacity writer declares a NUMBER. A schema-version or key string that merely
+    // CONTAINS a digit ('…-v1') is not one, and flagging it produces an unclassifiable
+    // finding an author can only silence by renaming — which is how a guard teaches
+    // people to work around it. Matches this file's own stated contract: "protocol
+    // timeouts and unrelated collection bounds are not capacity writers".
+    if (/^\s*(['"`])/.test(match[2] ?? '')) continue;
     const line = code.slice(0, match.index ?? 0).split('\n').length;
     declarations.push({ symbol, line });
   }

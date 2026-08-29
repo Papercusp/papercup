@@ -60,10 +60,15 @@ describe('inference-gateway compatibility/deletion matrix (P-004)', () => {
   });
 
   it('joins an exact writer to its family policy without exposing a second governor', () => {
-    const row = compatibilityForInferenceGatewayWriter('gateway-claude-default-concurrency');
-    expect(row?.groupId).toBe('gateway-concurrency');
-    expect(row?.writerIds).toEqual(['gateway-claude-default-concurrency']);
+    const row = compatibilityForInferenceGatewayWriter('provider-admission-initial-window');
+    expect(row?.groupId).toBe('provider-admission-seed');
+    expect(row?.writerIds).toEqual(['provider-admission-initial-window']);
     expect(row?.stateConsumers.some((path) => path.includes('resource-governor'))).toBe(true);
+    // P-010 deleted `gateway-claude-default-concurrency` (and the Codex slot writers)
+    // outright. A join against a retired writer must answer "no such writer", not a
+    // stale policy row — that is what makes the deletion observable here.
+    expect(compatibilityForInferenceGatewayWriter('gateway-claude-default-concurrency')).toBeUndefined();
+    expect(compatibilityForInferenceGatewayWriter('gateway-codex-slots-per-account')).toBeUndefined();
   });
 
   it('rejects missing contracts, unknown writers, and rollback-cap regressions', () => {

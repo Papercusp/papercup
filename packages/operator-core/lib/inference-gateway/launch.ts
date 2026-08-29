@@ -23,13 +23,12 @@ import {
   type OrphanedClaim,
 } from './affected-owners';
 import {
-  accountScaledCodexConcurrency,
   createInferenceGateway,
   parseUnifiedWindow,
   parseUnified7dWindow,
-  readCodexConcurrencyOverride,
   type InferenceGateway,
 } from './gateway';
+import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
 import {
   createDurableGatewayAdmissionGovernor,
   type DurableGatewayAdmissionOptions,
@@ -116,8 +115,8 @@ export interface GatewayServiceOptions {
   port?: number;
   workspace?: string;
   concurrency?: number;
-  /** OpenAI/Codex-compatible admission cap; independently sizes the Codex priority-tier reserve. */
-  codexConcurrency?: number;
+  /* RETIRED by P-010: no Codex-only admission size. Removed from the options
+   * surface so no deployment path can reinstate a Codex-specific ceiling. */
   upstreamBase?: string;
   /** Proactively refresh the bound token on this interval (ms). 0 = on-demand only. Default 45 min. */
   refreshIntervalMs?: number;
@@ -764,16 +763,20 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   // Priority-TIER admission configs (gateway-priority-tiers-2026-06-22) — flag-gated; null (omitted) under
   // flag-OFF so each gateway queue runs its flat priority+aging behavior unchanged. Resolve Claude and Codex
   // independently: their reserved tier-1 floors protect different admission pools.
-  const DEFAULT_CONCURRENCY = 24; // mirrors gateway.ts's default; the reserved floor is sized to this pool
-  const claudeConcurrency = opts.concurrency ?? DEFAULT_CONCURRENCY;
-  // Scale the default to the resolved Codex account pool. An option or env value is an explicit
-  // operator override and therefore remains authoritative over the account-scaled recommendation.
-  const codexConcurrency = Math.max(
+  // P-010: this layer no longer mirrors a `DEFAULT_CONCURRENCY = 24` from gateway.ts,
+  // and Codex no longer derives a separate account-scaled size. Both lanes start from
+  // ONE seed and are grown/contracted independently by the gateway's single capless
+  // ProviderAdmissionLifecycle, which owns the live window from that point on.
+  //
+  // The seed matters here only because the priority-tier reserve has to be sized to
+  // SOMETHING at construction time; the lifecycle re-sheds and re-grows those caps
+  // against each lane's own high-water mark as soon as traffic starts.
+  const admissionSeedWindow = Math.max(
     1,
     Math.floor(
-      opts.codexConcurrency ??
-        readCodexConcurrencyOverride() ??
-        accountScaledCodexConcurrency(codexAccounts.length, claudeConcurrency),
+      opts.concurrency !== undefined && Number.isFinite(opts.concurrency) && opts.concurrency > 0
+        ? opts.concurrency
+        : INITIAL_PROVIDER_ADMISSION_WINDOW,
     ),
   );
   const resolveTiers = async (slots: number, lane: 'Claude' | 'Codex') =>
@@ -783,8 +786,8 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
       log('warn', `inference-gateway: ${lane} priority-tier config resolve failed (${(e as Error).message}) — running the flat admission queue`);
       return null;
     });
-  const priorityTiers = await resolveTiers(claudeConcurrency, 'Claude');
-  const codexPriorityTiers = await resolveTiers(codexConcurrency, 'Codex');
+  const priorityTiers = await resolveTiers(admissionSeedWindow, 'Claude');
+  const codexPriorityTiers = await resolveTiers(admissionSeedWindow, 'Codex');
   if (priorityTiers) {
     log('info', `inference-gateway: Claude priority-tier admission ON — reserve=${priorityTiers.config.tier1Reserve} caps=${JSON.stringify(priorityTiers.config.caps)}`);
   }
@@ -861,8 +864,9 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     codexCliAccounts: () => cliAccountsOf(codexAccounts),
     upstreamBase: opts.upstreamBase,
     openaiUpstreamBase: process.env.OPENAI_BASE_URL_UPSTREAM || undefined,
+    // Seed only (P-010): the gateway's capless lifecycle owns the live window for
+    // BOTH lanes from here on, so there is no separate Codex size to hand down.
     concurrency: opts.concurrency,
-    codexConcurrency,
     // Smooth each per-account RPM allowance into an even pace so the fleet can't fire a sub-minute BURST
     // that trips Anthropic's burst limit (the bare-burst 429 storm, 2026-06-23). Throughput-neutral (the
     // per-minute count gate still caps the rate). On by default in production; set PAPERCUSP_GATEWAY_RPM_SMOOTH=0

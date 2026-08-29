@@ -6,10 +6,11 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startGatewayService, resolvePriorityTiers, type RunningGatewayService } from './launch';
-// The RETIRED per-account multiplier, imported rather than spelled `4`: if the constant
-// is ever deleted with the last of the formula, this file stops compiling instead of
-// silently asserting against a stale literal.
-import { CODEX_ADMISSION_SLOTS_PER_ACCOUNT } from './gateway';
+import { INITIAL_PROVIDER_ADMISSION_WINDOW } from './provider-admission-lifecycle';
+
+/** The per-account multiplier P-010 deleted along with `accountScaledCodexConcurrency`.
+ *  Spelled here only so the falsifier below can name the number that must not return. */
+const RETIRED_CODEX_SLOTS_PER_ACCOUNT = 4;
 
 let upstream: http.Server | undefined;
 let svc: RunningGatewayService | undefined;
@@ -61,7 +62,7 @@ test('startGatewayService composes account → resolver → proxy; /healthz + a 
   assert.equal(up.lastAuth(), 'Bearer bound-token', 'gateway injected the bound account token');
 });
 
-test('startGatewayService sizes Claude and Codex priority tiers from their own concurrency caps', async () => {
+test('startGatewayService sizes both provider priority-tier layers from the ONE shared admission seed', async () => {
   const flagEnv = 'PAPERCUSP_FLAG_PAPERCUSP_GATEWAY_PRIORITY_TIERS';
   const previousFlag = process.env[flagEnv];
   process.env[flagEnv] = '1';
@@ -76,11 +77,10 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
       log: (_level, message) => logs.push(message),
       resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
       makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
-      // An EXPLICIT operator cap stays authoritative under D-006, and it is what makes
-      // "sized from its OWN pool" observable at all: with no override both lanes now
-      // resolve to the same 24, so a one-account fixture could no longer tell a
-      // Codex-sized reserve apart from Claude's. 8 slots ⇒ ceil(8 * 0.15) = 2 ≠ 4.
-      codexConcurrency: 8,
+      // P-010: ONE seed feeds both lanes. There is no Codex-only size to pass, so the
+      // observable property flips from "each lane sized from its own pool" to "both
+      // lanes derive the same reserve from the same seed". 8 slots ⇒ ceil(8*0.15) = 2.
+      concurrency: 8,
       observePool: () => () => {},
       poolReloadIntervalMs: 0,
     });
@@ -90,13 +90,13 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
       codexAdmission: { maxConcurrent: number; tier1Reserve?: number };
       codexAimd: { cap: number; floor: number };
     };
-    assert.equal(stats.concurrencyCap, 24, 'Claude keeps the gateway concurrency cap it was configured with');
-    assert.equal(stats.codexAdmission.maxConcurrent, 8, 'the explicit Codex cap sizes its own admission pool');
-    assert.equal(stats.codexAdmission.tier1Reserve, 2, 'Codex reserve is ceil(8 * 0.15), not Claude\'s reserve');
-    assert.equal(stats.codexAimd.cap, 8, 'Codex AIMD cap follows its own admission cap, not Claude\'s');
-    assert.equal(stats.codexAimd.floor, 4, 'the default AIMD floor already sits below an 8-slot cap');
-    assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=4')), 'launch resolves Claude tiers for 24 slots');
-    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=2')), 'launch resolves Codex tiers for 8 slots');
+    assert.equal(stats.concurrencyCap, 8, 'the compat readback reports the lane high-water mark, which starts at the seed');
+    assert.equal(stats.codexAdmission.maxConcurrent, 8, 'Codex starts at the shared seed, not a Codex-specific size');
+    assert.equal(stats.codexAdmission.tier1Reserve, 2, 'Codex reserve is ceil(8 * 0.15) from the shared seed');
+    assert.equal(stats.codexAimd.cap, 8, 'the compat AIMD readback reports the lane high-water mark');
+    assert.equal(stats.codexAimd.floor, 4, 'the AIMD floor survives P-010 — a floor is a minimum, never a ceiling');
+    assert.ok(logs.some((message) => message.includes('Claude priority-tier admission ON — reserve=2')), 'launch resolves Claude tiers from the shared seed');
+    assert.ok(logs.some((message) => message.includes('Codex priority-tier admission ON — reserve=2')), 'launch resolves Codex tiers from the same seed');
   } finally {
     if (previousFlag === undefined) delete process.env[flagEnv];
     else process.env[flagEnv] = previousFlag;
@@ -106,11 +106,10 @@ test('startGatewayService sizes Claude and Codex priority tiers from their own c
 test('one Codex account does NOT multiply into a four-slot admission cap (D-006)', async () => {
   // The falsifier for capless-inference-gateway-2026-08-28 D-006 ("serviceability
   // informs attribution, not an admission formula"). `accountScaledCodexConcurrency`
-  // used to return accounts * CODEX_ADMISSION_SLOTS_PER_ACCOUNT (1 * 4 = 4); it now
-  // returns the configured Claude cap and the controller learns the real window from
-  // outcomes. ONE account is the only fixture that separates the two — seven accounts
-  // read 24 under both rules (28 clamped, vs. the cap itself), which is why the
-  // sibling multi-account case below cannot catch a reinstated multiplication.
+  // used to return accounts * 4 (1 account ⇒ 4); P-010 deleted the function outright,
+  // so the Codex lane now opens at the SAME seed every other lane opens at and grows
+  // from its own outcomes. ONE account is the fixture that separates the two rules:
+  // the retired product (4) and the shared seed are different numbers here.
   const up = await startUpstream();
   const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
   const codexDb = [{ accountId: 'codex-main', credentialRef: 'token:/codex', source: 'pool' as const }];
@@ -128,13 +127,22 @@ test('one Codex account does NOT multiply into a four-slot admission cap (D-006)
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number };
   };
-  assert.equal(stats.codexAdmission.maxConcurrent, 24, 'account count is attribution evidence, not an admission formula');
-  assert.equal(stats.codexAdmission.maxConcurrent, stats.concurrencyCap, 'the unoverridden Codex seed is the configured cap itself');
-  assert.equal(stats.codexAimd.cap, 24, 'the Codex AIMD ceiling follows that seed');
-  assert.notEqual(stats.codexAdmission.maxConcurrent, CODEX_ADMISSION_SLOTS_PER_ACCOUNT, 'the retired slots-per-account product must not come back');
+  assert.equal(
+    stats.codexAdmission.maxConcurrent,
+    INITIAL_PROVIDER_ADMISSION_WINDOW,
+    'account count is attribution evidence, not an admission formula',
+  );
+  assert.equal(stats.codexAdmission.maxConcurrent, stats.concurrencyCap, 'both lanes open at the one shared seed');
+  assert.notEqual(
+    stats.codexAdmission.maxConcurrent,
+    RETIRED_CODEX_SLOTS_PER_ACCOUNT,
+    'the retired slots-per-account product must not come back',
+  );
+  // CALIBRATION: the assertion above is only a falsifier while the two numbers differ.
+  assert.notEqual(INITIAL_PROVIDER_ADMISSION_WINDOW, RETIRED_CODEX_SLOTS_PER_ACCOUNT);
 });
 
-test('startGatewayService seeds Codex admission from the configured cap and preserves explicit overrides', async () => {
+test('startGatewayService seeds every provider lane identically, whatever the account count', async () => {
   const up = await startUpstream();
   const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
   const codexDb = Array.from({ length: 7 }, (_, i) => ({
@@ -157,12 +165,16 @@ test('startGatewayService seeds Codex admission from the configured cap and pres
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number; floor: number };
   };
-  // D-006: the account COUNT is deliberately not an input here — seven accounts seed the
-  // same 24 that one does. (This case therefore cannot detect a reinstated multiplication;
+  // D-006: the account COUNT is deliberately not an input — seven accounts open at the
+  // same seed one does. (This case cannot detect a reinstated multiplication on its own;
   // the single-account case above is the falsifier for that.)
-  assert.equal(scaled.codexAdmission.maxConcurrent, 24, 'the seed is the configured cap, whatever the account count');
-  assert.equal(scaled.codexAimd.cap, 24);
-  assert.equal(scaled.codexAimd.floor, 4, 'the default AIMD floor is already below the 24-slot cap');
+  assert.equal(
+    scaled.codexAdmission.maxConcurrent,
+    INITIAL_PROVIDER_ADMISSION_WINDOW,
+    'the seed is the shared starting window, whatever the account count',
+  );
+  assert.equal(scaled.codexAimd.cap, INITIAL_PROVIDER_ADMISSION_WINDOW);
+  assert.equal(scaled.codexAimd.floor, 4, 'the AIMD floor is a minimum and survives P-010');
 
   await svc.stop();
   svc = await startGatewayService({
@@ -170,18 +182,21 @@ test('startGatewayService seeds Codex admission from the configured cap and pres
     upstreamBase: up.base,
     log: () => {},
     resolveAccounts,
-    codexConcurrency: 2,
+    concurrency: 12,
     makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
     observePool: () => () => {},
     poolReloadIntervalMs: 0,
   });
-  const overridden = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+  const seeded = (await (await fetch(`http://127.0.0.1:${svc.port}/stats`)).json()) as {
+    concurrencyCap: number;
     codexAdmission: { maxConcurrent: number };
     codexAimd: { cap: number; floor: number };
   };
-  assert.equal(overridden.codexAdmission.maxConcurrent, 2, 'an explicit Codex cap remains authoritative');
-  assert.equal(overridden.codexAimd.cap, 2);
-  assert.equal(overridden.codexAimd.floor, 1, 'an explicit cap of two still receives an adaptable floor');
+  // An explicit bootstrap value still says where a COLD lane starts (D-002) — and it says
+  // it for BOTH lanes, because there is no Codex-only input left to say it differently.
+  assert.equal(seeded.codexAdmission.maxConcurrent, 12, 'the explicit seed opens the Codex lane');
+  assert.equal(seeded.concurrencyCap, 12, 'and opens the Claude lane at exactly the same window');
+  assert.equal(seeded.codexAimd.cap, 12);
 });
 
 test('reloadPool HOT-SWAPS the account pool from the DB source-of-truth, no restart (B-HOT-1)', async () => {

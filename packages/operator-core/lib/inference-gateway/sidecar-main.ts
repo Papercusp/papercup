@@ -14,7 +14,8 @@
  *
  * Env (unchanged from bin.ts):
  *   PAPERCUSP_GATEWAY_PORT         localhost port to listen on (default 8788)
- *   PAPERCUSP_GATEWAY_CONCURRENCY  max forwarded requests at once (default 24)
+ *   (PAPERCUSP_GATEWAY_CONCURRENCY was RETIRED by capless-inference-gateway P-010:
+ *    admission concurrency is learned per provider lane, never configured.)
  *   PAPERCUSP_WORKSPACE            workspace id for account-pool resolution (default: active)
  *   PAPERCUSP_ACCOUNT_ID           pin a specific pool account (else sole-account / local fallback)
  *   ANTHROPIC_BASE_URL_UPSTREAM    override the upstream (default https://api.anthropic.com)
@@ -150,7 +151,9 @@ export async function runGatewaySidecarMain(): Promise<void> {
     // canonical work-item queue before provider execution. Unit/load callers
     // that invoke startGatewayService directly retain the compatibility path.
     durableAdmission: true,
-    concurrency: Number(process.env.PAPERCUSP_GATEWAY_CONCURRENCY) || undefined,
+    // P-010: no configured admission concurrency. The gateway's single capless
+    // lifecycle learns each provider lane's window from that lane's own outcomes,
+    // so the production sidecar deliberately passes no seed at all.
     upstreamBase: process.env.ANTHROPIC_BASE_URL_UPSTREAM || undefined,
     // Local inference-backend pool (local-concurrent-inference-2026-07-02 P-004, D-002): the ONLY
     // production entrypoint that opts in to the DB-backed registry (launch.ts defaults to empty/no-PG
