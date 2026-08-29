@@ -43,7 +43,13 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(
 };
 export function formatPassingTaskVerdictSummary(
   decisions: Array<{ status?: string; reason?: string }>,
-  options?: { proofGroupApplied?: boolean; cacheGroup?: string | null },
+  options?: {
+    proofGroupApplied?: boolean;
+    cacheGroup?: string | null;
+    // Present in the runtime since the cross-run work; omitting it here made a legal call fail
+    // typecheck as an excess property (same drift class as EI-21641681059912531).
+    cacheScope?: string | null;
+  },
 ): string;
 export function namespacePassingTaskVerdictDecision<
   Decision extends { hit: boolean; reason?: string },
