@@ -1172,6 +1172,13 @@ export const P016_REVIEWED_DISPOSITIONS = Object.freeze([
       "P-016 reviewed bypass disposition for scripts/publish-official-blueprints.mts: this CI/guard helper subprocess is bounded and awaited (or release/control metadata), creates no independent resident queue, and must remain runnable while productive capacity is pressured.",
   },
   {
+    path: "scripts/publish-workspace-host-artifacts.mjs",
+    code: "resource-start-outside-admission",
+    disposition: "bypass",
+    reason:
+      "P-016 reviewed bypass disposition for scripts/publish-workspace-host-artifacts.mjs: its single `gh auth token` credential read is bounded and awaited (synchronous execFileSync that prints and exits), creates no independent resident queue, and must remain runnable while productive capacity is pressured — the same class as scripts/check-fleet-auth.mjs.",
+  },
+  {
     path: "scripts/repair-stale-generated-artifacts.ts",
     code: "resource-start-outside-admission",
     disposition: "bypass",
