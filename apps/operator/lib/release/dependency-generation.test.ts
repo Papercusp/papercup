@@ -954,11 +954,22 @@ describe('immutable dependency generation', () => {
       'skipping repeat validation under publish lock',
     );
     expect(readFileSync(validationTrace, 'utf8').trim().split('\n')).toHaveLength(1);
+    // WI-888766: this assertion used to require the `.invalid-*` quarantine to
+    // still be SITTING THERE after the republish, which quietly codified the leak
+    // as expected behaviour — it is the reason a permanently-uncollected 13 GiB
+    // directory survived review for so long. Retention now finishes the quarantine
+    // in the same publish, so absence is the correct expectation.
+    //
+    // The behaviour this test actually exists to prove — that a corrupt incumbent
+    // is REPLACED rather than trusted — is not weakened by the flip: it is already
+    // established independently above by `expect(repaired.stderr).toContain(
+    // 'quarantined invalid generation')` plus the republished content check. That
+    // asserts the quarantine HAPPENED; this now asserts it was also CLEANED UP.
     expect(
       readdirSync(join(integration, '.papercusp/dependency-generations')).some(
         (entry) => entry.startsWith(`.invalid-${identity}-`),
       ),
-    ).toBe(true);
+    ).toBe(false);
 
     const selected = selectGeneration(
       join(integration, '.papercusp/dependency-generations'),
