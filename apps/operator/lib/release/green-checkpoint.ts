@@ -95,6 +95,7 @@ import {
   createFrozenCandidateQueue,
   createFrozenCandidateRepairQueue,
   decideFrozenCandidateRepairQueue,
+  decideFrozenRepairDispatchInfeasible,
   decideFrozenConvergenceCycleEntry,
   markFrozenCandidateVerificationRed,
   markFrozenRepairExhausted,
@@ -1349,8 +1350,7 @@ export function buildTerminalFailureCheckpointResult(opts: {
     detail.includes("exited 75") &&
     detail.includes("[pc-heavy] REFUSED materialization");
   const dependencySnapshotChanged =
-    detail.includes("dependency-generation.sh") &&
-    detail.includes("exited 75");
+    detail.includes("dependency-generation.sh") && detail.includes("exited 75");
   // P-006: dependency-generation.sh reserves exit 74 for ONE condition — the immutable
   // dependency generation the gate needs is absent or unusable. All eight `return 74` sites are
   // that family (missing selector, no immutable token, replaced after validation, invalid marker,
@@ -1368,9 +1368,7 @@ export function buildTerminalFailureCheckpointResult(opts: {
   // generation gone bad, which is a store-repair problem. Checked first — it is the narrower case.
   const dependencyPrewarmMissing =
     dependencyGenerationUnusable &&
-    detail.includes(
-      "no prewarmed dependency generation for input fingerprint",
-    );
+    detail.includes("no prewarmed dependency generation for input fingerprint");
 
   if (dependencyPrewarmMissing) {
     // Name the exact fingerprint the producer must publish. Without it the operator reading this
@@ -1528,8 +1526,7 @@ export const DEPENDENCY_GENERATION_HARD_TIMEOUT_MS = 90 * 60_000;
  * candidate 10bf66f6 while it was still materializing. Keep 30m as the NO-PROGRESS budget,
  * but share the publisher's 90m hard ceiling so stage output can renew the idle timer without
  * allowing an endlessly-chatty child to hold the gate forever. */
-export const SETUP_TREE_HARD_TIMEOUT_MS =
-  DEPENDENCY_GENERATION_HARD_TIMEOUT_MS;
+export const SETUP_TREE_HARD_TIMEOUT_MS = DEPENDENCY_GENERATION_HARD_TIMEOUT_MS;
 
 /** WI-21357012876642589: refresh the materialization phase marker while the two
  * timeout-bounded setup legs are quiet. The max is two setup bounds because
@@ -6556,7 +6553,8 @@ export function isJudgingPinnedActiveRepair(input: {
 }): boolean {
   const { candidate, repairCandidate } = input;
   if (repairCandidate == null || repairCandidate !== candidate) return false;
-  if (input.repairPhase == null || input.repairPhase === "blocked") return false;
+  if (input.repairPhase == null || input.repairPhase === "blocked")
+    return false;
   return input.repairBlockedReason == null;
 }
 
@@ -7603,7 +7601,9 @@ async function runGreenCheckpointInner(
           }); dispatching anyway rather than withholding on an unknown`,
         };
       }
-      deps.log(`frozen repair provider-capacity preflight: ${capacity.summary}`);
+      deps.log(
+        `frozen repair provider-capacity preflight: ${capacity.summary}`,
+      );
       if (!capacity.ok) {
         return {
           queue: null,
@@ -7678,7 +7678,11 @@ async function runGreenCheckpointInner(
         `green-checkpoint-frozen-repair-reservation:${dispatchQueue.dispatchReservation?.token ?? dispatchQueue.candidate}`,
         intervalMs,
         renew,
-        { category: "watchdog", classification: "timeout-reaper", allowInTest: true },
+        {
+          category: "watchdog",
+          classification: "timeout-reaper",
+          allowInTest: true,
+        },
       );
     }
 
@@ -8108,26 +8112,59 @@ async function runGreenCheckpointInner(
     } else if (decision.kind === "dispatch-fixer") {
       const dispatch = await dispatchFrozenRepair(repairQueue, false);
       if (dispatch.capacityHold) {
-        // WI-606293: the pool is walled, so a launch would spend an attempt to reach
-        // `turn.failed`. Hold instead. `green: null` + `repair-in-progress` keeps this in
-        // the existing inconclusive class — a walled provider is not evidence about the
-        // candidate, and must not inflate the red streak.
-        const summary = frozenRepairCapacityHoldSummary(
-          repairQueue.repairHead,
-          dispatch.capacityHold,
-        );
-        deps.log(summary);
-        return {
-          advanced: false,
-          candidate: repairQueue.repairHead,
-          from: lastReady,
-          green: null,
-          reason: "repair-in-progress",
-          summary,
-          repairQueue,
-        };
+        // WI-606293 / EI-218123: a measured provider wall with an unassigned, zero-attempt
+        // queue is structurally unable to resolve this frozen candidate. Retire that queue
+        // and fall through to the current staging tip; this is distinct from a queue that
+        // already spent an attempt, which retains the existing inconclusive hold semantics.
+        const dispatchInfeasible =
+          repairQueue.phase === "awaiting-fixer" &&
+          repairQueue.attempts === 0 &&
+          repairQueue.fixerSpawnId === null &&
+          !repairQueue.dispatchReservation
+            ? decideFrozenRepairDispatchInfeasible(repairQueue, {
+                nowMs: Date.now(),
+              })
+            : null;
+        if (dispatchInfeasible) {
+          const abandonedQueue = repairQueue;
+          await deps.writeFrozenRepairQueue?.(null);
+          await deps
+            .cleanupFrozenRepairWorktree?.(abandonedQueue)
+            .catch((e) =>
+              deps.log(
+                `warn: dispatch-infeasible repair worktree cleanup failed: ${e instanceof Error ? e.message : e}`,
+              ),
+            );
+          repairQueue = null;
+          candidate = await revParse(
+            cfg.integrationRoot,
+            cfg.integrationBranch,
+          );
+          deps.log(
+            `frozen candidate ${dispatchInfeasible.abandonedCandidate.slice(0, 8)} ` +
+              `retired after measured provider-capacity infeasibility (attempts=0); ` +
+              `falling through to current staging candidate ${candidate.slice(0, 8)}`,
+          );
+        } else {
+          // A walled provider says nothing about a candidate whose repair has already started:
+          // keep it inconclusive so it cannot inflate the red streak.
+          const summary = frozenRepairCapacityHoldSummary(
+            repairQueue.repairHead,
+            dispatch.capacityHold,
+          );
+          deps.log(summary);
+          return {
+            advanced: false,
+            candidate: repairQueue.repairHead,
+            from: lastReady,
+            green: null,
+            reason: "repair-in-progress",
+            summary,
+            repairQueue,
+          };
+        }
       }
-      if (dispatch.reservationBlocked) {
+      if (repairQueue && dispatch.reservationBlocked) {
         // A competing checkpoint owns the launch window. Re-read the durable row so this
         // process returns the live reservation (rather than a stale unassigned snapshot),
         // and never runs a second fixer or suite while the winner is preparing it.
@@ -8148,22 +8185,23 @@ async function runGreenCheckpointInner(
           summary,
           repairQueue,
         };
+      } else if (repairQueue) {
+        repairQueue = dispatch.queue ?? repairQueue;
+        const fired = dispatch.fired;
+        const summary = fired?.spawnId
+          ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
+          : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
+        deps.log(summary);
+        return {
+          advanced: false,
+          candidate: repairQueue.repairHead,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue,
+        };
       }
-      repairQueue = dispatch.queue ?? repairQueue;
-      const fired = dispatch.fired;
-      const summary = fired?.spawnId
-        ? `frozen repair fixer ${fired.spawnId} dispatched for ${repairQueue.repairHead.slice(0, 8)} (attempt ${repairQueue.attempts}); no suite run`
-        : `frozen repair fixer dispatch did not return a spawn for ${repairQueue.repairHead.slice(0, 8)}; queue remains unassigned for retry`;
-      deps.log(summary);
-      return {
-        advanced: false,
-        candidate: repairQueue.repairHead,
-        from: lastReady,
-        green: null,
-        reason: "repair-in-progress",
-        summary,
-        repairQueue,
-      };
     } else if (decision.kind === "wait-for-dispatch-reservation") {
       const summary =
         `frozen repair fixer dispatch reservation ${decision.reservationToken} is active until ${decision.reservationExpiresAtMs}; ` +
@@ -8401,7 +8439,12 @@ async function runGreenCheckpointInner(
   // The quiet cut can still land BETWEEN a source commit and its later sibling
   // test commit. Detect that ancestry shape while candidate and excluded tip are
   // both known. Diagnostic only: never rewrite the candidate or skip tests.
-  if (quietCutApplied && lastReady && candidateBeforeQuietCut !== candidate && deps.detectSplitSourceTestPairs) {
+  if (
+    quietCutApplied &&
+    lastReady &&
+    candidateBeforeQuietCut !== candidate &&
+    deps.detectSplitSourceTestPairs
+  ) {
     try {
       splitSourceTestPairs = await deps.detectSplitSourceTestPairs({
         base: lastReady,
@@ -8419,7 +8462,9 @@ async function runGreenCheckpointInner(
         );
       }
     } catch (e) {
-      deps.log(`quiet-cut split-pair detector skipped (${e instanceof Error ? e.message : e})`);
+      deps.log(
+        `quiet-cut split-pair detector skipped (${e instanceof Error ? e.message : e})`,
+      );
     }
   }
 
@@ -9294,21 +9339,21 @@ async function runGreenCheckpointInner(
             `frozen convergence cycle SUPPRESSED for ${candidate.slice(0, 8)} — FLAGS.RELEASE_FREEZE_AND_CONVERGE_DEFAULT is OFF (owner-set). The red stands and the candidate is NOT frozen; the next tick re-cuts at tip.`,
           );
         } else {
-        repairQueue = createFrozenCandidateRepairQueue({
-          candidate,
-          qualificationAttemptId: deps.qualificationAttemptId ?? null,
-          base: lastReady,
-          worktreePath: path.join(
-            cfg.integrationRoot,
-            ".papercusp",
-            "worktrees",
-            `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
-          ),
-          failingTests,
-          affectedTestProofGroup: deps.runId ?? null,
-          nowMs: Date.now(),
-        });
-        repairQueueCreatedThisPass = true;
+          repairQueue = createFrozenCandidateRepairQueue({
+            candidate,
+            qualificationAttemptId: deps.qualificationAttemptId ?? null,
+            base: lastReady,
+            worktreePath: path.join(
+              cfg.integrationRoot,
+              ".papercusp",
+              "worktrees",
+              `green-candidate-${pipelineName(cfg.integrationRoot)}-${candidate.slice(0, 12)}`,
+            ),
+            failingTests,
+            affectedTestProofGroup: deps.runId ?? null,
+            nowMs: Date.now(),
+          });
+          repairQueueCreatedThisPass = true;
         }
       }
       const deferNewRepairDispatch =
@@ -9641,7 +9686,8 @@ async function runGreenCheckpointInner(
         from: lastReady ?? null,
         pipeline,
         candidateSource,
-        summary: verdictSummary + lineageNote + alreadyFixedNote + historicalFlakeNote,
+        summary:
+          verdictSummary + lineageNote + alreadyFixedNote + historicalFlakeNote,
         failingTests: failingTests ?? [],
         splitSourceTestPairs,
         logPath: logPath ?? null,
@@ -10760,8 +10806,9 @@ export async function ensureCheckpointDependencyGeneration(
   // D-033: `reused=` is advisory — a missing/unparseable value degrades to false
   // (exclusive materialization), never to a refusal.
   const reused =
-    output.match(/DEPENDENCY_GENERATION_RESULT[^\n]*\sreused=(true|false)\b/)?.[1] ===
-    "true";
+    output.match(
+      /DEPENDENCY_GENERATION_RESULT[^\n]*\sreused=(true|false)\b/,
+    )?.[1] === "true";
   return { candidate, identity, token, inputFingerprint, reused };
 }
 
@@ -10912,8 +10959,11 @@ export async function beginCheckpointPreflight(
         `${error instanceof Error ? error.message : String(error)}; joining fail-closed publisher fallback`,
     );
   }
-  prewarmedDependencyGeneration ??=
-    await ensureCheckpointDependencyGeneration(cfg, candidate, exec);
+  prewarmedDependencyGeneration ??= await ensureCheckpointDependencyGeneration(
+    cfg,
+    candidate,
+    exec,
+  );
   const lock = acquireCheckpointRunLock(
     checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
   );
@@ -13057,7 +13107,10 @@ export function realCheckpointDeps(
     ref: string,
     inputRoot: string,
   ): Promise<
-    Pick<PrewarmedCheckpointDependencyGeneration, "identity" | "token" | "reused">
+    Pick<
+      PrewarmedCheckpointDependencyGeneration,
+      "identity" | "token" | "reused"
+    >
   > => {
     // Keep selector reads behind the existing install-safe boundary. Publication
     // swaps the selector atomically, but the reader lock also ensures an install
@@ -13188,9 +13241,8 @@ export function realCheckpointDeps(
     qualificationAttemptId:
       process.env[CHECKPOINT_QUALIFICATION_ATTEMPT_ENV]?.trim() || undefined,
     async checkFixerProviderCapacity() {
-      const { accountStatus } = await import(
-        "@papercusp/operator-core/lib/deployment/account-pool-store"
-      );
+      const { accountStatus } =
+        await import("@papercusp/operator-core/lib/deployment/account-pool-store");
       // No role->provider resolver exists anywhere in this tree (grepped 2026-08-29), so
       // the fixer's backend is NAMED here rather than derived — the one hand-maintained
       // fact in this preflight, kept overridable so a pot that moves the fixer off codex
@@ -13229,12 +13281,16 @@ export function realCheckpointDeps(
           ok: true,
           summary: `all ${rows.length} ${provider} account(s) read walled, but no reading is fresh (${rows
             .map((r) => `${r.id}:${r.readingStatus}`)
-            .join(", ")}); dispatching rather than withholding on a stale reading`,
+            .join(
+              ", ",
+            )}); dispatching rather than withholding on a stale reading`,
         };
       }
       const resets = rows
         .map((r) => r.usageResetAt)
-        .filter((v): v is number => typeof v === "number" && Number.isFinite(v));
+        .filter(
+          (v): v is number => typeof v === "number" && Number.isFinite(v),
+        );
       const retryAtMs = resets.length > 0 ? Math.min(...resets) : null;
       return {
         ok: false,
@@ -13438,7 +13494,8 @@ export function realCheckpointDeps(
             //
             // `reused` is advisory and degrades to false, so an unparseable selector answer
             // keeps the conservative exclusive hold.
-            const exclusiveMaterialization = !selectedDependencyGeneration.reused;
+            const exclusiveMaterialization =
+              !selectedDependencyGeneration.reused;
             log(
               `frozen repair dependency generation ${selectedDependencyGeneration.identity} ` +
                 `reused=${selectedDependencyGeneration.reused} — ` +
@@ -14873,7 +14930,10 @@ export function realCheckpointDeps(
       }
     },
     async detectSplitSourceTestPairs(input) {
-      return detectSplitSourceTestPairs({ repo: cfg.integrationRoot, ...input });
+      return detectSplitSourceTestPairs({
+        repo: cfg.integrationRoot,
+        ...input,
+      });
     },
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
@@ -15651,7 +15711,8 @@ if (require.main === module) {
    * (or the integration branch name) rather than emitting nothing.
    */
   const emitCrashResult = async (e: unknown): Promise<void> => {
-    let candidate = resolvedCandidateForRun ?? candidateArg ?? cfg.integrationBranch;
+    let candidate =
+      resolvedCandidateForRun ?? candidateArg ?? cfg.integrationBranch;
     if (!resolvedCandidateForRun) {
       try {
         candidate = await revParse(
@@ -15689,303 +15750,311 @@ if (require.main === module) {
       process.exit(1);
     }
     if (!lock.acquired) {
-    Promise.all([
-      Promise.resolve(prewarmedDependencyGeneration.candidate),
-      refExists(cfg.integrationRoot, cfg.releaseRef)
-        .then((ok) =>
-          ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null,
-        )
-        .catch(() => null),
-    ])
-      .then(async ([candidate, from]) => {
-        await emitResult({
-          advanced: false,
-          candidate,
-          from,
-          green: null,
-          candidateSource,
-          ...(diagnostic ? { diagnostic } : {}),
-          // NOT 'up-to-date' (which release-actions treats as a benign green that resets
-          // the stall streak): a lock-skip is a NON-advance, and a PERSISTENT one (a stale
-          // lock that never reclaims) is exactly the silent multi-hour deploy freeze. Its
-          // own reason keeps it OUT of the green set so trackGateStall counts it and the
-          // held-gate alarm fires. (green-checkpoint-stale-lock-2026-06-26.)
-          reason: "skipped-locked",
-          summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}`,
+      Promise.all([
+        Promise.resolve(prewarmedDependencyGeneration.candidate),
+        refExists(cfg.integrationRoot, cfg.releaseRef)
+          .then((ok) =>
+            ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null,
+          )
+          .catch(() => null),
+      ])
+        .then(async ([candidate, from]) => {
+          await emitResult({
+            advanced: false,
+            candidate,
+            from,
+            green: null,
+            candidateSource,
+            ...(diagnostic ? { diagnostic } : {}),
+            // NOT 'up-to-date' (which release-actions treats as a benign green that resets
+            // the stall streak): a lock-skip is a NON-advance, and a PERSISTENT one (a stale
+            // lock that never reclaims) is exactly the silent multi-hour deploy freeze. Its
+            // own reason keeps it OUT of the green set so trackGateStall counts it and the
+            // held-gate alarm fires. (green-checkpoint-stale-lock-2026-06-26.)
+            reason: "skipped-locked",
+            summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}`,
+          });
+          process.exit(0);
+        })
+        .catch(async (e) => {
+          console.error(
+            `${orchestratorStdoutTag()} FAILED:`,
+            e instanceof Error ? e.message : e,
+          );
+          await emitCrashResult(e);
+          process.exit(1);
         });
-        process.exit(0);
-      })
-      .catch(async (e) => {
-        console.error(
-          `${orchestratorStdoutTag()} FAILED:`,
-          e instanceof Error ? e.message : e,
-        );
-        await emitCrashResult(e);
-        process.exit(1);
-      });
     } else {
-    // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
-    // canceled on every normal exit path below, so it only ever fires when this run
-    // misses its configured deadline (see armSelfWatchdog's doc comment).
-    const selfWatchdog = selfWatchdogConfigFromEnv();
-    // The transported manual deadline is the resettable IDLE budget. Progress may extend a
-    // healthy late phase, but never beyond the independent 3h ceiling that also bounds the
-    // scheduled parent-death backstop. Keep this ceiling explicit at the CLI seam so progress
-    // can never become an unbounded keepalive.
-    const hardCeilingMs = SELF_WATCHDOG_MS;
-    const watchdog = armSelfWatchdog(lock, {
-      ms: selfWatchdog.ms,
-      hardCeilingMs,
-      trigger: selfWatchdog.trigger,
-      // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
-      // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
-      // SIGKILLs this process's own group on the very next synchronous line, so the dynamic
-      // import()s (which cannot even begin resolving until the sync stack unwinds) never got a
-      // single event-loop turn. Every agent parked on the red verdict via checkpoint:await missed
-      // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
-      // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
-      onFire: async () => {
-        // EI-20669541349219660: the suite MAY have finished red before this kill — its
-        // parsed failing-file list is persisted beside the run-lock the moment it exists
-        // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
-        // "cap kill teaches the next run nothing" loop; when no marker exists (the suite
-        // itself never finished) this degrades to the WI-4957 explicit empty array, so a
-        // consumer can still tell "never got far enough to know" from "nothing failing".
-        const carried = emergencyRedFailingTests(
-          readFailingFilesMarker(
-            checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
-          ),
-          runId,
-        );
-        const watchdogSummary =
-          selfWatchdog.trigger === "manual-run-deadline"
-            ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
-              `run-lock released and process group is being terminated.`
-            : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
-              `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`;
-        // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` in the
-        // builder. A watchdog kill means this run never rendered a verdict, so claiming the code
-        // is RED is a fabricated measurement.
-        //
-        // WI-41740: `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — and it is
-        // UNCONDITIONAL, deliberately NOT conditioned on whether `carried` above rescued a real
-        // failing-file list. This path previously held 'not-green' "so the red streak / held-gate
-        // alarm still count it"; that justification had ALREADY been falsified on the sibling
-        // crash path by EI-21465187777146773 — 'error' is counted in
-        // gate_health.consecutiveNoVerdict and escalates at the SAME stallReds threshold, so
-        // staying loud never required calling a never-rendered verdict a red. It is unconditional
-        // for three further reasons:
-        //   - the contentless-red HARM is already guarded HERE: shouldDispatchReleaseFixer
-        //     (release-actions.ts) requires failingTests.length > 0, so an empty `carried`
-        //     already cannot dispatch a release-fixer at a phantom file list;
-        //   - conditioning `reason` on `carried` would make the DURABLE CLASS depend on a RACE
-        //     (did the suite finish red before the kill landed?), banking two different statuses
-        //     for two identical watchdog kills. `reason` classifies the EVENT; `failingTests`
-        //     carries the rescued evidence structurally — that is the correct axis split;
-        //   - it ends an internal contradiction: `green: null` already dispatches
-        //     `green-checkpoint:inconclusive` while 'not-green' made classifyQualification bank
-        //     kind:'red'. With 'error' the qualification falls to kind:'code-inconclusive', which
-        //     is terminal exactly like red (isTerminalQualificationOutcome) and equally never
-        //     auto-retried (checkpoint-run.ts) — no guard is weakened; it merely stops asserting a
-        //     measurement that was never taken.
-        //
-        // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
-        // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
-        // The builder never sets `crashed` — an absent leg stays absent, not written falsey.
-        const inconclusive: CheckpointResult = buildSelfWatchdogCheckpointResult({
-          candidate: prewarmedDependencyGeneration.candidate,
-          runId,
-          summary: carried.note
-            ? `${watchdogSummary} ${carried.note}`
-            : watchdogSummary,
-          // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
-          // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
-          // emit below, which is gone (see the block comment there); `failingTests` is a typed
-          // CheckpointResult field that release-actions' buildCheckpointDetail persists, so the
-          // EI-20669541349219660 signal now survives on the durable verdict too, not just a wake.
-          failingTests: carried.failingTests,
-          candidateSource,
-          ...(diagnostic ? { diagnostic } : {}),
-        });
-        // Emits the result marker AND — because `green === null` — dispatches
-        // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
-        await emitResult(inconclusive);
-        // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
-        // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
-        // reasons: (1) emitResult above now fires the inconclusive pair for us, so keeping the red
-        // emit would have this one run assert BOTH "no verdict was rendered" and "the code is
-        // red"; (2) the red emit passed `cancelSiblingKeysFor: [release:green…]`, which retires
-        // any pending green await for this candidate — precisely what emitInconclusiveVerdict's
-        // doc comment forbids, since a watchdog kill says NOTHING about how this candidate will
-        // eventually resolve and the next cron may well green it. No wake is lost: `checkpoint:await`
-        // arms all three verdict keys (agent-tools/events/sugar.ts, release-checkpoint-launch.ts),
-        // and the normal red path still emits the red pair.
-        if (candidateSource !== "pinned" && diagnostic !== "candidate-pinned") {
-          try {
-            const { notifyAttention } =
-              await import("@papercusp/operator-core/lib/attention-notify");
-            await notifyAttention({
-              kind: "intervention",
-              title:
-                "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
-              body:
-                inconclusive.summary ?? "self-watchdog fired with no summary",
-              importance: "urgent",
-              data: {
-                candidate: inconclusive.candidate,
-                reason: inconclusive.reason,
-              },
-            });
-          } catch {
-            /* best-effort — the kill proceeds regardless */
-          }
-        }
-      },
-    });
-    // WI-7069: durable arm-event marker — see writeSelfWatchdogArmMarker's doc comment. Written
-    // right after the timer is actually armed (not before), so a marker on disk is proof the
-    // real `setTimeout(SELF_WATCHDOG_MS)` above it exists, not just that this code path ran.
-    writeSelfWatchdogArmMarker(
-      checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
-      {
-        armedAtMs: Date.now(),
+      // WI-1319 root fix (c): arm the self-watchdog for the lifetime of this run —
+      // canceled on every normal exit path below, so it only ever fires when this run
+      // misses its configured deadline (see armSelfWatchdog's doc comment).
+      const selfWatchdog = selfWatchdogConfigFromEnv();
+      // The transported manual deadline is the resettable IDLE budget. Progress may extend a
+      // healthy late phase, but never beyond the independent 3h ceiling that also bounds the
+      // scheduled parent-death backstop. Keep this ceiling explicit at the CLI seam so progress
+      // can never become an unbounded keepalive.
+      const hardCeilingMs = SELF_WATCHDOG_MS;
+      const watchdog = armSelfWatchdog(lock, {
         ms: selfWatchdog.ms,
         hardCeilingMs,
-        pid: process.pid,
-      },
-    );
-    type TerminalOwner = "none" | "signal" | "normal" | "crash";
-    let terminalOwner: TerminalOwner = "none";
-    const claimTerminal = (owner: Exclude<TerminalOwner, "none">): boolean => {
-      if (terminalOwner !== "none") return false;
-      terminalOwner = owner;
-      return true;
-    };
-
-    const releaseAndExit = (code: number): never => {
-      watchdog.cancel();
-      lock.release();
-      // WI-39607: sweep survivors LAST — after the verdict has been emitted and the lock
-      // freed, and immediately before the exit. Ordering is the whole risk here: run it
-      // any earlier and it races the `__GREEN_CHECKPOINT_RESULT__` marker that every
-      // downstream reader depends on. It excludes this process and its ancestors, so the
-      // exit code below is still ours to return.
-      sweepCheckpointSurvivors();
-      process.exit(code);
-    };
-    const finalizeTermSignal = async (
-      signal: NodeJS.Signals,
-    ): Promise<boolean> => {
-      // Claim before any async candidate lookup. A normal completion that gets its callback
-      // onto the event loop after this point must not overwrite the cancellation result.
-      if (!claimTerminal("signal")) return false;
-
-      const candidate = prewarmedDependencyGeneration.candidate;
-
-      let from: string | null = null;
-      try {
-        if (await refExists(cfg.integrationRoot, cfg.releaseRef)) {
-          from = await revParse(cfg.integrationRoot, cfg.releaseRef);
-        }
-      } catch {
-        /* best-effort — cancellation remains truthful without a resolved ready pin */
-      }
-
-      const cancelled = {
-        ...buildTerminationCheckpointResult({
-          candidate,
-          from,
-          signal,
-          runId,
-        }),
-        candidateSource,
-        ...(diagnostic ? { diagnostic } : {}),
-      };
-      // Record first, then emit the marker + inconclusive wake. The signal handler awaits this
-      // finalizer, so releaseAndExit cannot tear down either write before it is durable.
-      const recorded = await recordOwnVerdict(cancelled);
-      await emitResult(recorded ? { ...cancelled, recorded: true } : cancelled);
-      return true;
-    };
-    const releaseAfterSignal = (code: number): void => {
-      // A normal/crash terminal path may win while finalization is in flight. In that case the
-      // finalizer returns false and this guard is the second belt against a double exit.
-      if (terminalOwner !== "signal") return;
-      releaseAndExit(code);
-    };
-    const finalizeFatalError = createFatalCheckpointFinalizer({
-      claimTerminal,
-      cancelWatchdog: watchdog.cancel,
-      logFailure: (e) =>
-        console.error(
-          `${orchestratorStdoutTag()} FAILED:`,
-          e instanceof Error ? e.message : e,
-        ),
-      emitCrashResult,
-      releaseLock: lock.release,
-    });
-    const handleFatalProcessError = createFatalProcessHandler(
-      finalizeFatalError,
-      (code) => process.exit(code),
-    );
-    // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an
-    // external "stop this run" (systemctl --user stop, e.g. from release-checkpoint-launch's
-    // replaceStale path) relied entirely on the OS's default terminate-on-signal behaviour to
-    // kill it. That default is silently BYPASSED the moment ANY listener is registered for the
-    // same signal anywhere in this process (Node then expects user code to call process.exit()
-    // itself) — and this run programmatically drives vitest's runner, whose own worker-pool
-    // cleanup path can install exactly such a listener. When that happens the process survives
-    // past the stop request without ever reaching `releaseAndExit`, so its run-lock is never
-    // released — a caller's replaceStale (stop the stale run, then relaunch) then relaunches
-    // straight into "skipped-locked" against the very run it believed it had just stopped
-    // (confirmed live 2026-07-13: the SAME pid reported "already running" on two consecutive
-    // replaceStale attempts). Registering our OWN handler makes the release deterministic:
-    // whatever else may or may not be listening, THIS run always drops its lock and exits the
-    // moment it is asked to stop.
-    const handleTermSignal = createTerminationSignalHandler(
-      releaseAfterSignal,
-      undefined,
-      finalizeTermSignal,
-    );
-    process.once("SIGTERM", handleTermSignal);
-    process.once("SIGINT", handleTermSignal);
-    process.once("uncaughtException", handleFatalProcessError);
-    process.once("unhandledRejection", handleFatalProcessError);
-    runGreenCheckpoint(
-      cfg,
-      realCheckpointDeps(
-        cfg,
-        undefined,
-        runId,
-        undefined,
-        watchdog.progress,
-        undefined,
-        prewarmedDependencyGeneration,
-      ),
-      {
-        candidate: candidateArg,
-        candidateHint: prewarmedDependencyGeneration.candidate,
-        candidateSource,
-        ...(diagnostic ? { diagnostic } : {}),
-        noPush: process.argv.includes("--no-push"),
-      },
-    )
-      .then(async (r) => {
-        // Claim the terminal race before recording/emitting. If a managed signal already owns
-        // it, its awaited finalizer is responsible for the only marker and process exit.
-        if (!claimTerminal("normal")) return;
-        // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
-        // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
-        // not to record this same verdict a second time (double-counting the red streak).
-        const recorded = await recordOwnVerdict(r);
-        await emitResult(recorded ? { ...r, recorded: true } : r);
-        releaseAndExit(0);
-      })
-      .catch(async (e) => {
-        // The same awaited finalizer serves ordinary promise rejection and process-level fatal
-        // events, so neither path can drift back to a bare exit without the typed marker.
-        if (await finalizeFatalError(e)) process.exit(1);
+        trigger: selfWatchdog.trigger,
+        // WI-4528 (EI-10800 class): ASYNC + AWAITED. These two effects used to be fire-and-forget
+        // `void import(...).then(emit)` — a GUARANTEED lost wake, not merely a race: armSelfWatchdog
+        // SIGKILLs this process's own group on the very next synchronous line, so the dynamic
+        // import()s (which cannot even begin resolving until the sync stack unwinds) never got a
+        // single event-loop turn. Every agent parked on the red verdict via checkpoint:await missed
+        // it and hung to its own timeout — in the ONE situation (lost parent, abnormal exit) where
+        // that wake matters most. armSelfWatchdog now BOUND-awaits this hook before the kill.
+        onFire: async () => {
+          // EI-20669541349219660: the suite MAY have finished red before this kill — its
+          // parsed failing-file list is persisted beside the run-lock the moment it exists
+          // (writeFailingFilesMarker, keyed by runId). Carrying it here is what breaks the
+          // "cap kill teaches the next run nothing" loop; when no marker exists (the suite
+          // itself never finished) this degrades to the WI-4957 explicit empty array, so a
+          // consumer can still tell "never got far enough to know" from "nothing failing".
+          const carried = emergencyRedFailingTests(
+            readFailingFilesMarker(
+              checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+            ),
+            runId,
+          );
+          const watchdogSummary =
+            selfWatchdog.trigger === "manual-run-deadline"
+              ? `manual checkpoint exceeded its ${formatSelfWatchdogDuration(selfWatchdog.ms)} deadline with no normal exit — ` +
+                `run-lock released and process group is being terminated.`
+              : `self-watchdog fired after ${formatSelfWatchdogDuration(selfWatchdog.ms)} with no normal exit — ` +
+                `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`;
+          // EI-20702428259478130: this verdict is INCONCLUSIVE, not red — see `green: null` in the
+          // builder. A watchdog kill means this run never rendered a verdict, so claiming the code
+          // is RED is a fabricated measurement.
+          //
+          // WI-41740: `reason` is 'error' — EI-21462211894072863's NO-VERDICT class — and it is
+          // UNCONDITIONAL, deliberately NOT conditioned on whether `carried` above rescued a real
+          // failing-file list. This path previously held 'not-green' "so the red streak / held-gate
+          // alarm still count it"; that justification had ALREADY been falsified on the sibling
+          // crash path by EI-21465187777146773 — 'error' is counted in
+          // gate_health.consecutiveNoVerdict and escalates at the SAME stallReds threshold, so
+          // staying loud never required calling a never-rendered verdict a red. It is unconditional
+          // for three further reasons:
+          //   - the contentless-red HARM is already guarded HERE: shouldDispatchReleaseFixer
+          //     (release-actions.ts) requires failingTests.length > 0, so an empty `carried`
+          //     already cannot dispatch a release-fixer at a phantom file list;
+          //   - conditioning `reason` on `carried` would make the DURABLE CLASS depend on a RACE
+          //     (did the suite finish red before the kill landed?), banking two different statuses
+          //     for two identical watchdog kills. `reason` classifies the EVENT; `failingTests`
+          //     carries the rescued evidence structurally — that is the correct axis split;
+          //   - it ends an internal contradiction: `green: null` already dispatches
+          //     `green-checkpoint:inconclusive` while 'not-green' made classifyQualification bank
+          //     kind:'red'. With 'error' the qualification falls to kind:'code-inconclusive', which
+          //     is terminal exactly like red (isTerminalQualificationOutcome) and equally never
+          //     auto-retried (checkpoint-run.ts) — no guard is weakened; it merely stops asserting a
+          //     measurement that was never taken.
+          //
+          // DISCRIMINATOR (release-actions.ts): a watchdog kill is reason 'error' with `crashed`
+          // ABSENT plus this distinctive summary; a crash is reason 'error' with `crashed: true`.
+          // The builder never sets `crashed` — an absent leg stays absent, not written falsey.
+          const inconclusive: CheckpointResult =
+            buildSelfWatchdogCheckpointResult({
+              candidate: prewarmedDependencyGeneration.candidate,
+              runId,
+              summary: carried.note
+                ? `${watchdogSummary} ${carried.note}`
+                : watchdogSummary,
+              // EI-20702428259478130: carry the rescued failing-file list on the RESULT rather than
+              // only in an event payload. This used to ride on the hand-rolled `green-checkpoint:red`
+              // emit below, which is gone (see the block comment there); `failingTests` is a typed
+              // CheckpointResult field that release-actions' buildCheckpointDetail persists, so the
+              // EI-20669541349219660 signal now survives on the durable verdict too, not just a wake.
+              failingTests: carried.failingTests,
+              candidateSource,
+              ...(diagnostic ? { diagnostic } : {}),
+            });
+          // Emits the result marker AND — because `green === null` — dispatches
+          // `green-checkpoint:inconclusive` (global + pipeline-scoped) via emitInconclusiveVerdict.
+          await emitResult(inconclusive);
+          // EI-20702428259478130: this path used to ALSO hand-roll `green-checkpoint:red` +
+          // `green-checkpoint:red:<pipeline>` here. That is deleted rather than converted, for two
+          // reasons: (1) emitResult above now fires the inconclusive pair for us, so keeping the red
+          // emit would have this one run assert BOTH "no verdict was rendered" and "the code is
+          // red"; (2) the red emit passed `cancelSiblingKeysFor: [release:green…]`, which retires
+          // any pending green await for this candidate — precisely what emitInconclusiveVerdict's
+          // doc comment forbids, since a watchdog kill says NOTHING about how this candidate will
+          // eventually resolve and the next cron may well green it. No wake is lost: `checkpoint:await`
+          // arms all three verdict keys (agent-tools/events/sugar.ts, release-checkpoint-launch.ts),
+          // and the normal red path still emits the red pair.
+          if (
+            candidateSource !== "pinned" &&
+            diagnostic !== "candidate-pinned"
+          ) {
+            try {
+              const { notifyAttention } =
+                await import("@papercusp/operator-core/lib/attention-notify");
+              await notifyAttention({
+                kind: "intervention",
+                title:
+                  "Release pipeline WEDGED — green-checkpoint self-watchdog fired (no verdict)",
+                body:
+                  inconclusive.summary ?? "self-watchdog fired with no summary",
+                importance: "urgent",
+                data: {
+                  candidate: inconclusive.candidate,
+                  reason: inconclusive.reason,
+                },
+              });
+            } catch {
+              /* best-effort — the kill proceeds regardless */
+            }
+          }
+        },
       });
+      // WI-7069: durable arm-event marker — see writeSelfWatchdogArmMarker's doc comment. Written
+      // right after the timer is actually armed (not before), so a marker on disk is proof the
+      // real `setTimeout(SELF_WATCHDOG_MS)` above it exists, not just that this code path ran.
+      writeSelfWatchdogArmMarker(
+        checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+        {
+          armedAtMs: Date.now(),
+          ms: selfWatchdog.ms,
+          hardCeilingMs,
+          pid: process.pid,
+        },
+      );
+      type TerminalOwner = "none" | "signal" | "normal" | "crash";
+      let terminalOwner: TerminalOwner = "none";
+      const claimTerminal = (
+        owner: Exclude<TerminalOwner, "none">,
+      ): boolean => {
+        if (terminalOwner !== "none") return false;
+        terminalOwner = owner;
+        return true;
+      };
+
+      const releaseAndExit = (code: number): never => {
+        watchdog.cancel();
+        lock.release();
+        // WI-39607: sweep survivors LAST — after the verdict has been emitted and the lock
+        // freed, and immediately before the exit. Ordering is the whole risk here: run it
+        // any earlier and it races the `__GREEN_CHECKPOINT_RESULT__` marker that every
+        // downstream reader depends on. It excludes this process and its ancestors, so the
+        // exit code below is still ours to return.
+        sweepCheckpointSurvivors();
+        process.exit(code);
+      };
+      const finalizeTermSignal = async (
+        signal: NodeJS.Signals,
+      ): Promise<boolean> => {
+        // Claim before any async candidate lookup. A normal completion that gets its callback
+        // onto the event loop after this point must not overwrite the cancellation result.
+        if (!claimTerminal("signal")) return false;
+
+        const candidate = prewarmedDependencyGeneration.candidate;
+
+        let from: string | null = null;
+        try {
+          if (await refExists(cfg.integrationRoot, cfg.releaseRef)) {
+            from = await revParse(cfg.integrationRoot, cfg.releaseRef);
+          }
+        } catch {
+          /* best-effort — cancellation remains truthful without a resolved ready pin */
+        }
+
+        const cancelled = {
+          ...buildTerminationCheckpointResult({
+            candidate,
+            from,
+            signal,
+            runId,
+          }),
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+        };
+        // Record first, then emit the marker + inconclusive wake. The signal handler awaits this
+        // finalizer, so releaseAndExit cannot tear down either write before it is durable.
+        const recorded = await recordOwnVerdict(cancelled);
+        await emitResult(
+          recorded ? { ...cancelled, recorded: true } : cancelled,
+        );
+        return true;
+      };
+      const releaseAfterSignal = (code: number): void => {
+        // A normal/crash terminal path may win while finalization is in flight. In that case the
+        // finalizer returns false and this guard is the second belt against a double exit.
+        if (terminalOwner !== "signal") return;
+        releaseAndExit(code);
+      };
+      const finalizeFatalError = createFatalCheckpointFinalizer({
+        claimTerminal,
+        cancelWatchdog: watchdog.cancel,
+        logFailure: (e) =>
+          console.error(
+            `${orchestratorStdoutTag()} FAILED:`,
+            e instanceof Error ? e.message : e,
+          ),
+        emitCrashResult,
+        releaseLock: lock.release,
+      });
+      const handleFatalProcessError = createFatalProcessHandler(
+        finalizeFatalError,
+        (code) => process.exit(code),
+      );
+      // EI-10680: this process previously had NO signal handler for SIGTERM/SIGINT, so an
+      // external "stop this run" (systemctl --user stop, e.g. from release-checkpoint-launch's
+      // replaceStale path) relied entirely on the OS's default terminate-on-signal behaviour to
+      // kill it. That default is silently BYPASSED the moment ANY listener is registered for the
+      // same signal anywhere in this process (Node then expects user code to call process.exit()
+      // itself) — and this run programmatically drives vitest's runner, whose own worker-pool
+      // cleanup path can install exactly such a listener. When that happens the process survives
+      // past the stop request without ever reaching `releaseAndExit`, so its run-lock is never
+      // released — a caller's replaceStale (stop the stale run, then relaunch) then relaunches
+      // straight into "skipped-locked" against the very run it believed it had just stopped
+      // (confirmed live 2026-07-13: the SAME pid reported "already running" on two consecutive
+      // replaceStale attempts). Registering our OWN handler makes the release deterministic:
+      // whatever else may or may not be listening, THIS run always drops its lock and exits the
+      // moment it is asked to stop.
+      const handleTermSignal = createTerminationSignalHandler(
+        releaseAfterSignal,
+        undefined,
+        finalizeTermSignal,
+      );
+      process.once("SIGTERM", handleTermSignal);
+      process.once("SIGINT", handleTermSignal);
+      process.once("uncaughtException", handleFatalProcessError);
+      process.once("unhandledRejection", handleFatalProcessError);
+      runGreenCheckpoint(
+        cfg,
+        realCheckpointDeps(
+          cfg,
+          undefined,
+          runId,
+          undefined,
+          watchdog.progress,
+          undefined,
+          prewarmedDependencyGeneration,
+        ),
+        {
+          candidate: candidateArg,
+          candidateHint: prewarmedDependencyGeneration.candidate,
+          candidateSource,
+          ...(diagnostic ? { diagnostic } : {}),
+          noPush: process.argv.includes("--no-push"),
+        },
+      )
+        .then(async (r) => {
+          // Claim the terminal race before recording/emitting. If a managed signal already owns
+          // it, its awaited finalizer is responsible for the only marker and process exit.
+          if (!claimTerminal("normal")) return;
+          // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
+          // would kill an un-awaited write. The marker then carries `recorded` so the routine knows
+          // not to record this same verdict a second time (double-counting the red streak).
+          const recorded = await recordOwnVerdict(r);
+          await emitResult(recorded ? { ...r, recorded: true } : r);
+          releaseAndExit(0);
+        })
+        .catch(async (e) => {
+          // The same awaited finalizer serves ordinary promise rejection and process-level fatal
+          // events, so neither path can drift back to a bare exit without the typed marker.
+          if (await finalizeFatalError(e)) process.exit(1);
+        });
     }
   };
   void beginCheckpoint().catch(async (e) => {

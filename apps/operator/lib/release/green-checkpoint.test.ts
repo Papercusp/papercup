@@ -534,11 +534,15 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
       };
       deps.prepareFrozenRepairWorktree = async () => {
         prepared = true;
-        throw new Error("automatic first-red path must re-triage before preparing a fixer");
+        throw new Error(
+          "automatic first-red path must re-triage before preparing a fixer",
+        );
       };
       deps.dispatchFrozenRepairFixer = async () => {
         dispatched = true;
-        throw new Error("automatic first-red path must re-triage before dispatching a fixer");
+        throw new Error(
+          "automatic first-red path must re-triage before dispatching a fixer",
+        );
       };
 
       const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
@@ -548,10 +552,10 @@ describe("WI-39944: serialized frozen-candidate repair orchestration", () => {
         candidate,
         green: false,
         reason: "not-green",
-          retriage: {
-            classification: "stale-candidate",
-            autoRefire: false,
-          },
+        retriage: {
+          classification: "stale-candidate",
+          autoRefire: false,
+        },
       });
       expect(writes.map((entry) => entry?.phase ?? "clear")).toEqual([
         "ready-to-test",
@@ -7925,7 +7929,9 @@ describe("realCheckpointDeps.runGreen — checkpoint-log retention (WI-224710)",
     const retained = readdirSync(nestedLogDir);
     expect(retained).not.toContain("stale-checkpoint.log");
     expect(retained).toContain("fresh-checkpoint.log");
-    expect(readdirSync(logDir).filter((name) => name.endsWith(".log"))).toHaveLength(1);
+    expect(
+      readdirSync(logDir).filter((name) => name.endsWith(".log")),
+    ).toHaveLength(1);
   });
 });
 
@@ -12056,7 +12062,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
     const frozen = await commit("b", "2", "frozen candidate");
-    let queue: FrozenCandidateRepairQueue | null = unassignedQueue(frozen, ready);
+    let queue: FrozenCandidateRepairQueue | null = unassignedQueue(
+      frozen,
+      ready,
+    );
     const { deps } = stubDeps(false, ["lib/broken.test.ts"]);
     let dispatched = 0;
     let prepared = 0;
@@ -12112,6 +12121,56 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
     expect(result.summary).toContain("2026-09-03T16:24:00.000Z");
     // The attempt budget is the scarce resource this whole preflight protects.
     expect(queue?.attempts).toBe(1);
+  });
+
+  it("retires an unassigned zero-attempt queue and falls through to the current staging tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const frozen = await commit("b", "2", "frozen candidate");
+    const movingTip = await commit("c", "3", "current staging tip");
+    let queue: FrozenCandidateRepairQueue | null = {
+      ...unassignedQueue(frozen, ready),
+      attempts: 0,
+      openedAtMs: Date.now() - 16 * 60 * 1_000,
+      updatedAtMs: Date.now() - 15 * 60 * 1_000,
+    };
+    const { deps, calls } = stubDeps(true);
+    const cleaned: string[] = [];
+    deps.readFrozenRepairQueue = async () => queue;
+    deps.writeFrozenRepairQueue = async (next) => {
+      queue = next;
+    };
+    deps.cleanupFrozenRepairWorktree = async (oldQueue) => {
+      cleaned.push(oldQueue.candidate);
+    };
+    deps.prepareFrozenRepairWorktree = async () => {
+      throw new Error(
+        "dispatch-infeasible queue must not prepare a fixer worktree",
+      );
+    };
+    deps.dispatchFrozenRepairFixer = async () => {
+      throw new Error("dispatch-infeasible queue must not launch a fixer");
+    };
+    deps.checkFixerProviderCapacity = async () => ({
+      ok: false,
+      summary: "all codex accounts are usage-walled",
+      retryAtMs: RESET_AT,
+    });
+
+    // Move the integration branch after the frozen queue was opened: the retired queue must
+    // not keep this run pinned to `frozen`.
+    await git(repo, ["branch", "-f", "main", movingTip]);
+    const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(calls).toContain("runGreen");
+    expect(cleaned).toEqual([frozen]);
+    expect(queue).toBeNull();
+    expect(result).toMatchObject({
+      advanced: true,
+      candidate: movingTip,
+      green: true,
+      reason: "advanced",
+    });
   });
 
   it("dispatches rather than freezing when the capacity probe itself throws", async () => {
