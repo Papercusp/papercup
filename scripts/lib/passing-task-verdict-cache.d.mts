@@ -73,14 +73,28 @@ export function passingTaskVerdictCacheEntry(
   cacheGroup: string | null,
   taskKey: string,
 ): PassingTaskVerdictCache["groups"][string]["entries"][string] | undefined;
+/**
+ * Shared so `passingTaskVerdictDependencyProvenance` cannot drift from the hash it delegates to —
+ * they returned different declared shapes once, and only the .d.mts knew.
+ */
+export type DependencyClosureProof =
+  | {
+      ok: true;
+      hash: string;
+      /** Membership only — moves when a file enters/leaves the closure, not when bytes change. */
+      listHash: string;
+      fileCount: number;
+      /** The sorted closure, so a miss can be diffed without re-deriving it. */
+      files: string[];
+    }
+  | { ok: false; reason: string };
+
 export function hashDependencyFileSet(args: {
   root: string;
   files: string[];
   unavailable?: string[];
   digestCache?: Map<string, unknown>;
-}):
-  | { ok: true; hash: string; fileCount: number }
-  | { ok: false; reason: string };
+}): DependencyClosureProof;
 export function passingTaskVerdictDependencyProvenance(args: {
   root: string;
   taskKey: string;
@@ -90,9 +104,7 @@ export function passingTaskVerdictDependencyProvenance(args: {
   trackedScan: { files: string[]; unscannedPresent: string[] };
   repoWideTaskKeys: Set<string>;
   digestCache?: Map<string, unknown>;
-}):
-  | { ok: true; hash: string; fileCount: number }
-  | { ok: false; reason: string };
+}): DependencyClosureProof;
 export function shouldStorePassingTaskVerdict(args: {
   enabled: boolean;
   cacheStatus?: string;
@@ -125,3 +137,106 @@ export function mergePassingTaskVerdictUpdates(
   updates: PassingTaskVerdictCache["groups"][string]["entries"],
   updatedAt?: string,
 ): PassingTaskVerdictCache;
+
+// --- WI-595883: shell-volatile identity + miss diagnostics (plan D-010) ---
+
+/** Written by the SHELL to describe the invocation, never the task. Cross-run identity only. */
+export const SHELL_VOLATILE_IDENTITY_ENV: readonly string[];
+
+export const CLOSURE_DIGEST_MANIFEST_VERSION: number;
+export const CLOSURE_DIGEST_MANIFEST_MAX_FILES: number;
+
+/** `${kind}:${mode}:${digest}` — one file's identity AS THE CLOSURE HASH SEES IT. */
+export type ClosureDigestToken = string;
+
+export interface ClosureDigestManifest {
+  version: number;
+  updatedAt: string | null;
+  /** repo-relative path -> digest token */
+  files: Record<string, ClosureDigestToken>;
+  /** taskKey -> closure shape */
+  tasks: Record<string, { fileCount: number; listHash: string }>;
+  /** cacheGroup -> { envKey: digest }. Digests only — this environment carries credentials. */
+  identityEnv: Record<string, Record<string, string>>;
+}
+
+export function closureDigestManifestPath(cachePath: string): string;
+export function emptyClosureDigestManifest(): ClosureDigestManifest;
+export function closureDigestToken(value: {
+  kind: string;
+  mode: number;
+  digest: string;
+}): ClosureDigestToken;
+export function observedClosureDigests(
+  root: string,
+  digestCache: Iterable<[string, unknown]> | null | undefined,
+): Record<string, ClosureDigestToken>;
+export function readClosureDigestManifest(path: string): {
+  manifest: ClosureDigestManifest;
+  reason: string;
+};
+export function mergeClosureDigestManifest(args: {
+  prior?: ClosureDigestManifest | null;
+  observed: Record<string, ClosureDigestToken>;
+  taskShapes?: Record<string, { fileCount: number; listHash: string }>;
+  identityEnv?: Record<string, Record<string, string>>;
+  updatedAt?: string;
+  cap?: number;
+}): ClosureDigestManifest;
+
+export interface ClosureDelta {
+  fileCount: number;
+  priorFileCount: number | null;
+  membershipChanged: boolean;
+  changedCount: number;
+  unknownPriorCount: number;
+  changed: string[];
+  unknownPrior: string[];
+  /** The hash moved while every covered file is byte-, mode- and membership-identical. */
+  unexplained: boolean;
+}
+
+export function diffClosureDigests(args: {
+  prior?: ClosureDigestManifest | null;
+  observed?: Record<string, ClosureDigestToken> | null;
+  files?: string[] | null;
+  listHash?: string;
+  taskKey?: string;
+  limit?: number;
+}): ClosureDelta;
+
+export function identityEnvDigests(
+  environment: Record<string, unknown> | null | undefined,
+): Record<string, string>;
+
+export interface IdentityEnvDelta {
+  known: boolean;
+  changedCount: number;
+  addedCount: number;
+  removedCount: number;
+  changedKeys: string[];
+  addedKeys: string[];
+  removedKeys: string[];
+  unexplained: boolean;
+}
+
+export function diffIdentityEnvDigests(args: {
+  prior?: Record<string, string> | null;
+  observed?: Record<string, string> | null;
+  limit?: number;
+}): IdentityEnvDelta;
+
+/** Keys only — never a raw environment value. */
+export function formatIdentityEnvDeltaLine(args: {
+  taskKey: string;
+  reason: string;
+  delta: IdentityEnvDelta;
+  manifestReason: string;
+}): string;
+
+export function formatClosureDeltaLine(args: {
+  taskKey: string;
+  reason: string;
+  delta: ClosureDelta;
+  manifestReason: string;
+}): string;
