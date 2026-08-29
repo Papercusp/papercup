@@ -39,7 +39,7 @@ export const DIAGNOSTIC_CAUSE_FRACTION = 0.3;
  * above it. Anchoring on the consequence and then reading backwards is what actually recovers
  * the cause.
  */
-const CAUSE_LEAD_FRACTION = 0.75;
+const CAUSE_LEAD_FRACTION = 0.6;
 
 /**
  * Lines that carry a failure SIGNAL. Deliberately matched against the EARLIEST such line: a
@@ -173,9 +173,19 @@ export function excerptDiagnostic(
   const newHeadChars = Math.ceil(remaining * DIAGNOSTIC_HEAD_FRACTION);
   const newTailChars = remaining - newHeadChars;
 
-  const lead = Math.floor(causeChars * CAUSE_LEAD_FRACTION);
-  const causeStart = Math.max(newHeadChars, lineStartAt(trimmed, Math.max(0, cause - lead)));
-  const causeEnd = Math.min(trimmed.length - newTailChars, causeStart + causeChars);
+  // The anchor LINE must survive whole — a band that ends mid-line can cut off the very words
+  // that identified it. Reserve it first, then spend what is left on the lines before it.
+  const anchorStart = lineStartAt(trimmed, cause);
+  const newlineAfter = trimmed.indexOf('\n', cause);
+  const anchorEnd = newlineAfter === -1 ? trimmed.length : newlineAfter;
+
+  const slack = Math.max(0, causeChars - (anchorEnd - anchorStart));
+  const lead = Math.floor(slack * CAUSE_LEAD_FRACTION);
+  const causeStart = Math.max(newHeadChars, lineStartAt(trimmed, Math.max(0, anchorStart - lead)));
+  const causeEnd = Math.min(
+    trimmed.length - newTailChars,
+    Math.max(anchorEnd, causeStart + causeChars),
+  );
 
   return (
     `${trimmed.slice(0, newHeadChars)}\n` +

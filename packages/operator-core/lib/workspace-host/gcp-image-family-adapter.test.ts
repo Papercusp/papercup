@@ -530,6 +530,41 @@ describe('GCP image-family production adapter', () => {
     expect(checked, 'no execute_command referenced {{ .Vars }} — the guard measured nothing').toBeGreaterThan(0);
   });
 
+  it('canonicalises the signing key before hashing it, instead of trusting transport to preserve bytes', async () => {
+    // Writes a value straight out of the environment with no trailing-newline normalisation.
+    const writesRawEnvValue = (line: string): boolean =>
+      /printf\s+'%s'\s+\\?"\$SIGNING_PUBLIC_KEY\\?"\s*>/.test(line);
+    // Strips all trailing newlines via $(...) and appends exactly one.
+    const canonicalises = (line: string): boolean =>
+      /printf\s+'%s\\+n'\s+\\?"\$\(printf\s+'%s'\s+\\?"\$SIGNING_PUBLIC_KEY\\?"\)\\?"/.test(line);
+
+    // Controls, so a guard that can never reject anything cannot pass as protection.
+    expect(
+      writesRawEnvValue(`printf '%s' \\"$SIGNING_PUBLIC_KEY\\" > \\"$PUBLIC_KEY_PATH\\"`),
+      'the exact r18c defect',
+    ).toBe(true);
+    expect(
+      canonicalises(`printf '%s\\\\n' \\"$(printf '%s' \\"$SIGNING_PUBLIC_KEY\\")\\" > \\"$PUBLIC_KEY_PATH\\"`),
+      'the corrected form',
+    ).toBe(true);
+
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL), 'utf8');
+    const writes = template
+      .split('\n')
+      .filter((line) => line.includes('$SIGNING_PUBLIC_KEY') && line.includes('>'));
+
+    expect(writes.length, 'no line writes the signing key — the guard measured nothing').toBeGreaterThan(0);
+    for (const line of writes) {
+      expect(
+        writesRawEnvValue(line),
+        'the signing key is written straight from the environment. Packer\'s {{ .Vars }} transport ' +
+          'strips the trailing newline of a multi-line value, so the file lands one byte short and ' +
+          'fails its digest check (measured: 113 bytes, expected 114). Canonicalise it instead.',
+      ).toBe(false);
+      expect(canonicalises(line), 'the signing key write must normalise to exactly one trailing newline').toBe(true);
+    }
+  });
+
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
     const compute = new ComputeFake();
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(

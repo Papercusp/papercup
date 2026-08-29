@@ -16,9 +16,7 @@
  * make the gate ratify its own assumption — asserted success wearing the costume of evidence,
  * which is precisely the failure the clean room is built to catch.
  */
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 import type {
   WorkspaceHostCleanRoomExecutor,
@@ -81,7 +79,7 @@ const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
  * Everything over the budget is spilled to a file whose path the message names; see
  * {@link spillCleanRoomDiagnostic}.
  */
-import { excerptDiagnostic } from './diagnostic-excerpt';
+import { excerptDiagnostic, spillDiagnostic } from './diagnostic-excerpt';
 
 export { excerptDiagnostic } from './diagnostic-excerpt';
 
@@ -94,15 +92,7 @@ export { excerptDiagnostic } from './diagnostic-excerpt';
  * truncated diagnostic could only be recovered by paying for the whole boot again.
  */
 function spillCleanRoomDiagnostic(fixtureId: string, stderr: string): string | null {
-  try {
-    const safeId = fixtureId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120) || 'fixture';
-    const dir = mkdtempSync(join(tmpdir(), 'papercusp-clean-room-'));
-    const path = join(dir, `${safeId}.stderr.log`);
-    writeFileSync(path, stderr, 'utf8');
-    return path;
-  } catch {
-    return null;
-  }
+  return spillDiagnostic(fixtureId, stderr, 'papercusp-clean-room-');
 }
 
 /**

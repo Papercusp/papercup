@@ -531,7 +531,17 @@ build {
       "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \"$BUNDLE_URL\" --output \"$BUNDLE_PATH\"",
       "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \"$SIGNATURE_URL\" --output \"$SIGNATURE_PATH\"",
       "verify_digest release-bundle \"$BUNDLE_PATH\" \"$BUNDLE_SHA256\"",
-      "printf '%s' \"$SIGNING_PUBLIC_KEY\" > \"$PUBLIC_KEY_PATH\"",
+      # Canonicalise to EXACTLY ONE trailing newline instead of trusting the value to arrive
+      # byte-identical. MEASURED on the r18c build: the manifest key is 114 bytes ending in a
+      # newline, and the guest received 113 — packer's `{{ .Vars }}` transport strips the trailing
+      # newline from a multi-line value, so `printf '%s'` reproduced a file one byte short and the
+      # digest check failed (computed 9485c0a5…, expected 66bad893…).
+      #
+      # `$(...)` strips ALL trailing newlines and `printf '%s\\n'` then appends exactly one, so
+      # this yields the declared bytes whether or not the transport preserved them. Compensating
+      # for the observed stripping (by hardcoding an added newline) would silently break again the
+      # day the transport stops stripping; normalising cannot.
+      "printf '%s\\n' \"$(printf '%s' \"$SIGNING_PUBLIC_KEY\")\" > \"$PUBLIC_KEY_PATH\"",
       "verify_digest signing-public-key \"$PUBLIC_KEY_PATH\" \"$SIGNING_KEY_SHA256\"",
       "minisign -Vm \"$BUNDLE_PATH\" -x \"$SIGNATURE_PATH\" -p \"$PUBLIC_KEY_PATH\" >/dev/null",
       "RELEASE_DIR=\"/opt/papercusp/releases/$RELEASE_VERSION\"",
