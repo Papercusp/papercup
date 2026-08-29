@@ -150,12 +150,49 @@ export const PASSING_TASK_VERDICT_CROSS_RUN_GROUP = "cross-run-v1";
  * The conservative-by-default stance on the rest of the environment is deliberate and unchanged.
  * The argument for these three is not "probably irrelevant" — it is that they are DEFINED as
  * properties of the calling shell, so no test outcome can depend on them without depending on who
- * typed the command. `check-cross-run-identity-shell-volatile.test.ts` fails if one is re-admitted.
+ * typed the command. `affected-tests-passing-verdict-cache.test.ts` fails if one is re-admitted.
  */
 export const SHELL_VOLATILE_IDENTITY_ENV = Object.freeze([
   "OLDPWD",
   "_",
   "SHLVL",
+]);
+
+/**
+ * EI-21762403020037943 — launcher-seam markers, the same defeater one level up from the shell.
+ *
+ * `capability:bash` stamps these into every child it spawns. They describe WHICH DOOR the command
+ * was typed through — the task id the operator minted for this job, whether it went through the
+ * foreground or background seam, and with what caller timeout — never what the command exercises.
+ * So the argument is the one `SHELL_VOLATILE_IDENTITY_ENV` already makes, not a weaker "probably
+ * irrelevant": a test outcome cannot depend on them without depending on who launched it.
+ *
+ * Measured, not assumed. `PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID` is a fresh enrolment task
+ * id per background job (`bash-jobs.ts:1445`), so an agent measuring cross-run reuse the only way
+ * it can — two separate `capability:bash` jobs — ALWAYS missed with `cross-run:environment-changed`.
+ * A healthy cache was indistinguishable from a broken one from outside. Corroborated live by a
+ * grader's ENV_DELTA on 2026-08-29: `changed=1 changedKeys=[PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID]`.
+ *
+ * The green-checkpoint gate never saw this: it runs under systemd/pc-heavy, which does not stamp
+ * these names. That is precisely why it went unnoticed — the defeater only fires on the measuring
+ * path, so it corrupted the INSTRUMENT while leaving the instrumented system healthy.
+ *
+ * This list is a second copy of a truth the `capability:bash` seam owns, so it WILL drift — every
+ * future launcher that stamps a unique id into the child env re-introduces the bug until its name
+ * lands here. `affected-tests-passing-verdict-cache.test.ts` DERIVES the set by parsing
+ * `bash-jobs.ts` for the env-name constants that seam exports, and fails if any is missing here or
+ * if a child-env stamp appears that the derivation cannot account for. Add names by making that
+ * guard pass, never by hand alone.
+ *
+ * Scoped to the CROSS-RUN identity on purpose. Within one run the seam cannot drift, and the
+ * per-run group is confined to that run anyway — the same reasoning that keeps the shell-volatile
+ * names in the per-run identity.
+ */
+export const CAPABILITY_BASH_SEAM_IDENTITY_ENV = Object.freeze([
+  "PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID",
+  "PAPERCUSP_CAPABILITY_BASH_FOREGROUND",
+  "PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS",
+  "PC_HEAVY_DURABLE_CALLER",
 ]);
 
 export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
@@ -168,6 +205,7 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(environment) {
     "VITEST_MAX_FORKS",
     "VITEST_MAX_THREADS",
     ...SHELL_VOLATILE_IDENTITY_ENV,
+    ...CAPABILITY_BASH_SEAM_IDENTITY_ENV,
   ]) {
     delete identityEnvironment[perRunName];
   }
