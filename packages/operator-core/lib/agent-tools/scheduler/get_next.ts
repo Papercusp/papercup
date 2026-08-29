@@ -1124,6 +1124,10 @@ export default defineTool({
     const claim = await withBoundedTimeout(
       getNextForBee({
         cupId: ident.ownerId,
+        // EI-21830839826880925: ordinary MCP reads can occupy every slot on the
+        // process-wide org pool. Keep pickup on its own tiny transactional pool so a
+        // fleet member does not spend the whole 30s claim budget waiting behind them.
+        useDedicatedClaimPool: true,
         // WI-1564: MUST match the partition scheduler:set_claim_spec writes
         // (same resolveClaimSpecWorkspace helper) — a reader left on 'default'
         // while the queen writes the workspace partition (or a federated spec

@@ -7096,6 +7096,8 @@ export async function claimNextIssueWorkItem(
   filter: ClaimNextFilter,
   explicitActiveWorkspaceId: string,
   opts: {
+    /** Optional caller-owned client; scheduler:get_next uses its isolated claim pool. */
+    client?: OrgSql;
     issueKinds?: readonly IssueStoreKind[];
     ids?: readonly string[];
     /** WI-5258: ids the caller's spec NEGATIVELY excludes (e.g. `not:{id in [...]}` —
@@ -7172,7 +7174,7 @@ export async function claimNextIssueWorkItem(
     };
   } = {},
 ): Promise<WorkItem | null> {
-  const { sql } = getOrgPg();
+  const sql = opts.client ?? getOrgPg().sql;
   // Scope the issue-claim to the canonical ISSUE workspace (resolveIssuesScopeWorkspace —
   // honors the ISSUES_PER_WORKSPACE flag), NOT the feature activeWorkspaceId(), so the
   // UPDATE and the getIssue() re-read below agree on the same partition (they'd diverge

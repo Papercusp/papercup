@@ -23,6 +23,7 @@ import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
 import { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 import { recordClaimAttempt } from '../orchestrator/claim-audit';
+import { getLongLivedAdminPool } from '../long-lived-admin-pool';
 export { resolveClaimSpecWorkspace } from './claim-spec-workspace';
 
 /**
@@ -533,14 +534,26 @@ export async function getNextForBee(args: {
    *  side-effect-free for every other caller (notably the many unit tests that
    *  exercise its miss path directly, unmocked PG and all). */
   checkIdleDrainOnMiss?: boolean;
+  /**
+   * Use a small scheduler-only transactional pool for the spec/concurrency/claim path.
+   * The public scheduler:get_next tool enables this; direct library callers retain the
+   * injected/shared-client behavior they had before.
+   */
+  useDedicatedClaimPool?: boolean;
 }): Promise<(GetNextResult & { specSource: ClaimSpecRecord['source'] }) | null> {
+  const claimSql = args.useDedicatedClaimPool
+    ? (getLongLivedAdminPool('scheduler-claim', { max: 2, prepare: false }) as unknown as OrgSql)
+    : undefined;
   // EI-8579: resolve via getClaimSpecRecord (not the bare getClaimSpec) so the caller can
   // tell WHICH row answered — a bee with neither a per-bee nor an inherited fleet spec
   // (source:'default') is silently drawing plain oldest-first ordering, which can hand it
   // owner-deferred work (e.g. a paused/de-scoped category) a curated spec would exclude.
   // scheduler:get_next surfaces this as an advisory `warning` so a self-pulling agent with
   // no spec learns to set one, instead of claimHold-parking deferred rows one at a time.
-  const resolvedRecord = await getClaimSpecRecord({ cupId: args.cupId, workspaceId: args.workspaceId });
+  const resolvedRecord = await getClaimSpecRecord(
+    { cupId: args.cupId, workspaceId: args.workspaceId },
+    claimSql,
+  );
   // WI-4770: membership changes are not an authorization to widen into the
   // default backlog. A fleet/leader transition can briefly have no valid
   // inherited sentinel while the leader rebinds the intended lane. Keep that
@@ -589,7 +602,7 @@ export async function getNextForBee(args: {
     cupId: args.cupId,
     workspaceId: args.workspaceId,
     maxConcurrentClaims: record.spec.limits?.maxConcurrentClaims,
-  });
+  }, claimSql);
   if (concurrency.blocked) return null;
 
   // WI-3667: the global floors (claimFloorsWhereSql) enforce EXPLICIT `blocks` dep
@@ -625,6 +638,7 @@ export async function getNextForBee(args: {
       contendedPaths: args.contendedPaths,
     }, {
       harness: args.harness,
+      ...(claimSql ? { client: claimSql } : {}),
       // WI-5261: thread the caller's already-resolved workspace through explicitly —
       // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
       // depends on the AsyncLocalStorage request-scope still being intact this deep into
@@ -877,7 +891,7 @@ export async function getClaimSpecRecord(
   let transitionFleetSlug: string | undefined;
   try {
     const { latestFleetMembership } = await import('../fleet-membership-store');
-    const membership = await latestFleetMembership(ws, args.cupId);
+    const membership = await latestFleetMembership(ws, args.cupId, sql);
     if (membership?.fleetSlug) {
       transitionFleetSlug = membership.fleetSlug;
       const frows = (await sql`

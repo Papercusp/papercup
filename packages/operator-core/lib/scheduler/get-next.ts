@@ -133,6 +133,12 @@ export interface BeeContext {
 export interface GetNextOpts {
   harness: string;
   /**
+   * Optional caller-owned SQL client. The scheduler tool supplies a small dedicated
+   * transactional pool so claim pickup cannot queue behind unrelated MCP reads on the
+   * process-wide org pool. Omitted preserves every existing caller/test path.
+   */
+  client?: OrgSql;
+  /**
    * WI-5261: the caller's already-resolved workspace (e.g. resolveClaimSpecWorkspace's
    * output in getNextForBee) — explicitly threaded through so tier 1/2/3 don't have to
    * re-derive it via activeWorkspaceId()/issuesScopeWorkspace(), which depend on the
@@ -2575,7 +2581,7 @@ export async function getNextWorkItem(
   bee: BeeContext,
   opts: GetNextOpts,
 ): Promise<GetNextResult | null> {
-  const { sql } = getOrgPg();
+  const sql = opts.client ?? getOrgPg().sql;
   // WI-5261: prefer the caller's explicitly-resolved workspace (threaded via opts.workspaceId)
   // over re-deriving it here — activeWorkspaceId() depends on the AsyncLocalStorage request
   // scope still being intact at this exact point in the async call chain (tool handler ->
@@ -2651,6 +2657,7 @@ export async function getNextWorkItem(
       },
       ws,
       {
+        client: sql,
         issueKinds,
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,
@@ -2849,6 +2856,7 @@ export async function getNextWorkItem(
       },
       ws,
       {
+        client: sql,
         issueKinds,
         ids: idValues,
         excludeIds: excludeIds.length ? excludeIds : undefined,

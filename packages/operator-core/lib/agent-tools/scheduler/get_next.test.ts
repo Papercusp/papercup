@@ -265,7 +265,10 @@ describe('scheduler:get_next derives harness from the bound session (WI-38059)',
 
     expect(body).toMatchObject({ ok: false, windDown: true });
     expect(getNextM).toHaveBeenCalledOnce();
-    expect(getNextM.mock.calls[0]?.[0]).toMatchObject({ harness: 'papercusp' });
+    expect(getNextM.mock.calls[0]?.[0]).toMatchObject({
+      harness: 'papercusp',
+      useDedicatedClaimPool: true,
+    });
   });
 
   it('returns a typed harness_required error when neither the call nor session supplies one', async () => {
