@@ -143,6 +143,18 @@ import type { FleetCampaign } from './fleet-campaign';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
+import { listWorkItems, WORK_ITEMS_MAX_LIMIT, type WorkItem } from '../../work-items';
+import { readIssueOccurrenceCounts, type IssueOccurrenceCounts } from '../../issue-occurrence-ledger';
+import {
+  FLEET_METRICS_SCHEMA_VERSION,
+  parseFleetMetricsResult,
+  type FleetMetricsResult,
+} from './fleet-metrics-contract';
+import {
+  resolveFleetMetricScope,
+  type FleetMetricScopeResolution,
+} from './fleet-metrics-scope';
+import { buildFleetMetricsResult } from '../work_items/burn_down';
 import { trimToByteBudget } from '../_bound-output';
 import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 import { getLongCallsInFlight } from '../../in-flight-calls';
@@ -186,6 +198,96 @@ export const LEADER_BRIEF_OPTIONAL_READ_TIMEOUT_MS = 750;
  * a slow database yields an explicit degraded brief instead of -32001/no body.
  */
 export const LEADER_BRIEF_TOTAL_TIMEOUT_MS = 25_000;
+
+export interface LeaderBriefFleetMetricsDeps {
+  resolveScope(input: { workspaceId: string; harness: string; fleet: string; flowMode: 'current-spec' }): Promise<FleetMetricScopeResolution>;
+  listItems(input: { harness: string; includeObservations: true; limit: number }): Promise<WorkItem[]>;
+  readOccurrences(input: { workspaceId: string; harnessSlug: string; since: string }): Promise<IssueOccurrenceCounts>;
+  build(
+    resolution: FleetMetricScopeResolution,
+    items: readonly WorkItem[],
+    opts: { issueOccurrences: IssueOccurrenceCounts; sourceCapExhausted: boolean; assignee?: string },
+  ): Promise<FleetMetricsResult>;
+}
+
+const LEADER_BRIEF_FLEET_METRICS_DEPS: LeaderBriefFleetMetricsDeps = {
+  resolveScope: resolveFleetMetricScope,
+  listItems: listWorkItems,
+  readOccurrences: readIssueOccurrenceCounts,
+  build: buildFleetMetricsResult,
+};
+
+/** A failed fleet-metrics leg is data, never an omitted/zero-looking block. */
+export function leaderBriefFleetMetricsUnavailable(input: {
+  fleet: string;
+  harness: string | null;
+  reason: string;
+  recoverVia: string;
+}): Extract<FleetMetricsResult, { ok: false }> {
+  const parsed = parseFleetMetricsResult({
+    ok: false,
+    schemaVersion: FLEET_METRICS_SCHEMA_VERSION,
+    error: 'fleet_metrics_unavailable',
+    reason: input.reason,
+    recoverVia: input.recoverVia,
+    requested: {
+      fleet: input.fleet,
+      harness: input.harness ?? '(unresolved)',
+      flowMode: 'current-spec',
+      window: 'fleet-lifetime',
+    },
+  });
+  if (parsed.ok) throw new Error('leader-brief unavailable fleet metrics parsed as a snapshot');
+  return parsed;
+}
+
+/** P-005 / D-001: reuse work_items:burn_down's canonical resolver + builder. */
+export async function readLeaderBriefFleetMetrics(
+  input: { workspaceId: string; fleet: string; harness: string | null; assignee?: string },
+  deps: LeaderBriefFleetMetricsDeps = LEADER_BRIEF_FLEET_METRICS_DEPS,
+): Promise<FleetMetricsResult> {
+  if (!input.harness) {
+    return leaderBriefFleetMetricsUnavailable({
+      fleet: input.fleet,
+      harness: null,
+      reason: 'fleet metric harness is unresolved',
+      recoverVia: 'fleet:leader-brief { fleet, harness }',
+    });
+  }
+  try {
+    const resolution = await deps.resolveScope({
+      workspaceId: input.workspaceId,
+      harness: input.harness,
+      fleet: input.fleet,
+      flowMode: 'current-spec',
+    });
+    if (!resolution.ok) return parseFleetMetricsResult(resolution);
+    const items = await deps.listItems({
+      harness: input.harness,
+      includeObservations: true,
+      limit: WORK_ITEMS_MAX_LIMIT,
+    });
+    const issueOccurrences = await deps.readOccurrences({
+      workspaceId: input.workspaceId,
+      harnessSlug: input.harness,
+      since: resolution.scope.window.startAt,
+    });
+    return await deps.build(resolution, items, {
+      issueOccurrences,
+      sourceCapExhausted: items.length >= WORK_ITEMS_MAX_LIMIT,
+      assignee: input.assignee,
+    });
+  } catch (error) {
+    return leaderBriefFleetMetricsUnavailable({
+      fleet: input.fleet,
+      harness: input.harness,
+      reason: `canonical fleet metric read failed${error instanceof Error && error.message ? `: ${error.message}` : ''}`,
+      recoverVia:
+        `work_items:burn_down { harness: '${input.harness}', fleet: '${input.fleet}', ` +
+        `window: 'fleet-lifetime', flowMode: 'current-spec' }`,
+    });
+  }
+}
 
 export async function runLeaderBriefWithinDeadline<T>(
   work: () => Promise<T>,
@@ -3603,6 +3705,31 @@ export async function buildLeaderBrief(
     requestedHarness: args.harness,
     laneHealth: fleetLaneHealth,
   });
+  // P-005 / D-001: hydrate the rich, replace-full fleet snapshot through the
+  // canonical scope resolver + burn-down builder. A missing harness or a slow
+  // optional leg remains an explicit unavailable result with recoverVia;
+  // omission/zero would falsely read as a measured empty fleet.
+  const fleetMetricsHarness = args.harness ?? fleetLaneHealth?.spec.harness ?? null;
+  const fleetMetricsFallback = leaderBriefFleetMetricsUnavailable({
+    fleet,
+    harness: fleetMetricsHarness,
+    reason: 'canonical fleet metric read exceeded the leader-brief leg budget',
+    recoverVia: fleetMetricsHarness
+      ? `work_items:burn_down { harness: '${fleetMetricsHarness}', fleet: '${fleet}', window: 'fleet-lifetime' }`
+      : 'fleet:leader-brief { fleet, harness }',
+  });
+  const fleetMetrics = await boundedLeaderBriefRead(
+    'fleet-metrics',
+    () =>
+      readLeaderBriefFleetMetrics({
+        workspaceId,
+        fleet,
+        harness: fleetMetricsHarness,
+        assignee: ownerId,
+      }),
+    fleetMetricsFallback,
+    LEADER_BRIEF_HEADCOUNT_TIMEOUT_MS,
+  );
   const fleetLaneEffective = fleetLaneHealth?.effective ?? null;
   const fleetClaimableCount = fleetLaneEffective?.claimable ?? null;
   const fleetLaneGating =
@@ -4209,6 +4336,9 @@ export async function buildLeaderBrief(
       // reader can tell an unmeasured axis from a quiet one.
       ...(delta ? { delta, deltaSummary } : {}),
       ...(campaign ? { campaign } : {}),
+      // P-005 / D-004: current snapshot is distinct from the cursor-based
+      // wake delta above and carries its own scope/window/population metadata.
+      fleetMetrics,
       // P-027: successful-empty is explicit; absence means the bounded event
       // discovery leg was unavailable. The payload shaper caps verbose rows and
       // retains a truthful recovery pointer rather than clipping JSON.

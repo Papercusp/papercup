@@ -39,6 +39,7 @@ import {
   prioritizeActionableMembers,
   prioritizeBenchSuggestedMembers,
   readLeaderMonitoringBlindAdvisory,
+  readLeaderBriefFleetMetrics,
   readLeaderAnnouncedGates,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -56,6 +57,84 @@ import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 import type { DependencyBottleneckResult } from '../../dependency-traversal';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('fleet:leader-brief canonical fleet metrics hydration (P-005)', () => {
+  it('reuses the resolver, observation-inclusive source, occurrence writer, and builder', async () => {
+    const resolution = {
+      ok: true,
+      scope: { window: { startAt: '2026-08-21T00:00:00.000Z' } },
+    } as never;
+    const items = [{ id: 'WI-1' }] as never;
+    const unavailable = {
+      ok: false,
+      schemaVersion: 'fleet-metrics-v1',
+      error: 'fleet_metrics_unavailable',
+      reason: 'fixture result',
+      recoverVia: 'fixture:recover',
+      requested: {
+        fleet: 'fleet-a',
+        harness: 'papercusp',
+        flowMode: 'current-spec',
+        window: 'fleet-lifetime',
+      },
+    } as const;
+    const resolveScope = vi.fn(async () => resolution);
+    const listItems = vi.fn(async () => items);
+    const readOccurrences = vi.fn(async () => ({
+      canonicalClusters: 1,
+      rawOccurrences: 2,
+      duplicateOccurrences: 1,
+      units: {
+        canonicalClusters: 'distinct canonical work-item ids with occurrences' as const,
+        rawOccurrences: 'append-only report rows' as const,
+        duplicateOccurrences: 'report rows not creating a canonical item' as const,
+      },
+      writer: 'harness_shared.work_item_occurrences' as const,
+    }));
+    const build = vi.fn(async () => unavailable);
+
+    await expect(
+      readLeaderBriefFleetMetrics(
+        { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp', assignee: 'su-leader' },
+        { resolveScope, listItems, readOccurrences, build },
+      ),
+    ).resolves.toEqual(unavailable);
+    expect(resolveScope).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      fleet: 'fleet-a',
+      harness: 'papercusp',
+      flowMode: 'current-spec',
+    });
+    expect(listItems).toHaveBeenCalledWith({ harness: 'papercusp', includeObservations: true, limit: 2_000 });
+    expect(readOccurrences).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      since: '2026-08-21T00:00:00.000Z',
+    });
+    expect(build).toHaveBeenCalledWith(resolution, items, {
+      issueOccurrences: expect.objectContaining({ rawOccurrences: 2 }),
+      sourceCapExhausted: false,
+      assignee: 'su-leader',
+    });
+  });
+
+  it('returns a typed unavailable envelope when the canonical leg fails', async () => {
+    const result = await readLeaderBriefFleetMetrics(
+      { workspaceId: 'ws', fleet: 'fleet-a', harness: 'papercusp' },
+      {
+        resolveScope: async () => { throw new Error('scope store offline'); },
+        listItems: vi.fn(),
+        readOccurrences: vi.fn(),
+        build: vi.fn(),
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'canonical fleet metric read failed: scope store offline',
+      recoverVia: expect.stringContaining('work_items:burn_down'),
+    });
+  });
+});
 
 describe('fleet:leader-brief bounded read fan-out (EI-21577690778811728)', () => {
   it('keeps tuple order while limiting independent reads to the configured width', async () => {

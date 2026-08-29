@@ -113,6 +113,28 @@ function largeBrief() {
 }
 
 describe('fleet:leader-brief payload projection (EI-20243661938229668)', () => {
+  it('keeps a canonical fleet-metrics unavailable result and recovery path atomically', () => {
+    const fleetMetrics = {
+      ok: false,
+      schemaVersion: 'fleet-metrics-v1',
+      error: 'fleet_metrics_unavailable',
+      reason: 'source capped',
+      recoverVia: 'work_items:burn_down { window: "fleet-lifetime" }',
+      requested: {
+        fleet: 'large-fleet',
+        harness: 'papercusp',
+        flowMode: 'current-spec',
+        window: 'fleet-lifetime',
+      },
+    };
+    const out = shapeLeaderBrief(
+      { ok: true, summary: { fleet: 'large-fleet' }, fleetMetrics },
+      'trimmed',
+    ) as Record<string, unknown>;
+    expect(out.fleetMetrics).toEqual(fleetMetrics);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(LEADER_BRIEF_SHAPER_BUDGET_CHARS);
+  });
+
   it('declares a bounded shaper and a ceiling below the result-door envelope', () => {
     expect((leaderBriefTool as { shape?: unknown }).shape).toBeDefined();
     expect((leaderBriefTool as { payloadTierCeilingChars?: number }).payloadTierCeilingChars).toBe(

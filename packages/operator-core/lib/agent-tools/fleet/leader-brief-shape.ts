@@ -7,6 +7,8 @@
  * variable-size field bounded before the framework serializes it.
  */
 
+import { fleetMetricsResultSchema } from './fleet-metrics-contract';
+
 export type LeaderBriefPayloadTier = 'trimmed' | 'standard';
 
 /** Leave margin below the universal ~6KB result door for its JSON envelope. */
@@ -122,6 +124,14 @@ function compactClaimableNow(value: unknown): unknown {
   const unknown = pick(source.unknown, ['code', 'detail'], 220);
   if (unknown) out.unknown = unknown;
   return out;
+}
+
+/** P-005: validate and keep this bounded aggregate atomically. Its metadata is
+ * what makes the counts comparable; dropping scope/window/population would
+ * violate D-005 even if the numerals survived. */
+function compactFleetMetrics(value: unknown): unknown {
+  const parsed = fleetMetricsResultSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 /** P-006: keep the ranked dependency answer as one measured|unknown unit. The
@@ -694,6 +704,10 @@ function buildProjection(
   if ('deltaSummary' in data) out.deltaSummary = clip(data.deltaSummary, 220) ?? data.deltaSummary;
   if ('delta' in data) out.delta = data.delta;
   if ('campaign' in data) out.campaign = compactCampaign(data.campaign, campaignRecentRows);
+  if ('fleetMetrics' in data) {
+    const fleetMetrics = compactFleetMetrics(data.fleetMetrics);
+    if (fleetMetrics !== undefined) out.fleetMetrics = fleetMetrics;
+  }
   if ('idleCauses' in data) out.idleCauses = data.idleCauses;
   if ('reservation' in data) out.reservation = compactReservation(data.reservation, caps.reservationMembers);
 
@@ -820,6 +834,9 @@ export function shapeLeaderBrief(data: unknown, tier: LeaderBriefPayloadTier): u
       : {}),
     ...(source.leaderBlockerStall !== undefined
       ? { leaderBlockerStall: compactEmergencyLeaderBlockerStall(source.leaderBlockerStall) }
+      : {}),
+    ...(source.fleetMetrics !== undefined
+      ? { fleetMetrics: compactFleetMetrics(source.fleetMetrics) }
       : {}),
     leaderBriefProjection: {
       tier,
