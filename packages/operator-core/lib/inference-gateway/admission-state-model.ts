@@ -362,6 +362,115 @@ function providerAlias(provider: GatewayAdmissionProvider): string {
   return provider === 'claude' ? 'anthropic' : provider;
 }
 
+/**
+ * One provider lane as the RUNNING gateway knows it.
+ *
+ * `window` comes from `ProviderAdmissionLifecycle` and `inFlight`/`queued` from the
+ * lane's `queue.snapshot()` — the two live writers `/admin/config` already reads.
+ * Naming them here is what lets the endpoint stop assembling its own answer.
+ */
+export interface GatewayLiveLaneInput {
+  readonly lane: GatewayAdmissionProvider;
+  readonly window: number;
+  readonly observedPeak: number;
+  readonly minimumWindow: number;
+  readonly inFlight: number;
+  readonly queued: number;
+  readonly accountId?: string | null;
+  readonly admissionClass?: AdmissionClass;
+}
+
+export interface DescribeGatewayLiveStateInput {
+  readonly lanes: readonly GatewayLiveLaneInput[];
+  readonly generation: number;
+  readonly evaluatedAtMs: number;
+  readonly healthState?: GatewayAdmissionStateSnapshot['healthState'];
+  readonly physical?: PhysicalConstraintVerdict | null;
+  readonly bypassKeys?: readonly string[];
+  readonly reasons?: readonly string[];
+  readonly nowMs?: number;
+  readonly freshnessBudgetMs?: number;
+}
+
+const WRITER_LIFECYCLE = 'inference-gateway/provider-admission-lifecycle.ts#ProviderAdmissionLifecycle';
+const WRITER_LANE_QUEUE = 'inference-gateway/gateway.ts#queue.snapshot';
+
+/**
+ * Build the canonical snapshot from the LIVE gateway's own writers.
+ *
+ * The provider lifecycle keeps ONE adaptive window per lane, so `desiredWindow` and
+ * `effectiveWindow` are deliberately the same number here rather than being split to
+ * look richer. Reporting a fabricated gap between them would recreate the exact
+ * confusion this model exists to end — a reader seeing two different numbers and
+ * inferring a suppression that never happened.
+ */
+export function describeGatewayLiveAdmissionState(
+  input: DescribeGatewayLiveStateInput,
+): GatewayAdmissionStateSnapshot {
+  const decision = {
+    schemaVersion: 'capless-controller-v1',
+    generation: input.generation,
+    evaluatedAtMs: input.evaluatedAtMs,
+    healthScopeId: 'inference-gateway',
+    healthState: input.healthState ?? 'unknown',
+    healthSeverity: 'none',
+    reasons: input.reasons ?? [],
+    classes: input.lanes.map((lane) => ({
+      admissionClass: lane.admissionClass ?? lane.lane,
+      desiredWindow: lane.window,
+      effectiveWindow: lane.window,
+      inFlight: lane.inFlight,
+      availableStarts: Math.max(0, lane.window - lane.inFlight),
+      paused: false,
+      pauseUntilMs: null,
+      protected: false,
+      healthySamples: 0,
+      feedback: [],
+    })),
+  } as unknown as CaplessControllerDecision;
+
+  // The per-lane queue depth is a real measurement from a DIFFERENT writer than the
+  // controller path, so it is re-stamped with that writer rather than inheriting the
+  // controller's — otherwise `gateway:status` would attribute a queue number to the
+  // lifecycle, and the first person to distrust it would open the wrong file.
+  const base = describeGatewayAdmissionState({
+    decision,
+    physical: input.physical ?? null,
+    bypassKeys: input.bypassKeys,
+    nowMs: input.nowMs,
+    freshnessBudgetMs: input.freshnessBudgetMs,
+  });
+
+  const lanes = base.lanes.map((laneState, i) => {
+    const live = input.lanes[i]!;
+    const laneKey: GatewayLaneKey = {
+      admissionClass: live.admissionClass ?? live.lane,
+      provider: live.lane,
+      accountId: live.accountId ?? null,
+    };
+    return {
+      ...laneState,
+      lane: laneKey,
+      laneId: gatewayLaneId(laneKey),
+      desiredWindow: measure(live.window, WRITER_LIFECYCLE, 'concurrent-requests', 'observed'),
+      effectiveWindow: measure(live.window, WRITER_LIFECYCLE, 'concurrent-requests', 'observed'),
+      inFlight: measure(live.inFlight, WRITER_LANE_QUEUE, 'concurrent-requests', 'observed'),
+      availableStarts: measure(
+        Math.max(0, live.window - live.inFlight),
+        WRITER_MODEL,
+        'concurrent-requests',
+        'derived',
+      ),
+      queue: {
+        ...laneState.queue,
+        depth: measure(live.queued, WRITER_LANE_QUEUE, 'requests', 'observed'),
+      },
+    };
+  });
+
+  return { ...base, lanes };
+}
+
 // ── Projections ──────────────────────────────────────────────────────────────
 // Each surface below is a VIEW of the snapshot above, never an independent read.
 // They may show different FIELDS; they may never disagree about a shared one.
