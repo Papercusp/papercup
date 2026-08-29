@@ -36,6 +36,11 @@ afterEach(() => {
 function git(cwd: string, ...args: string[]): string {
   return execFileSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
+    // A sync spawn blocks the worker's event loop, so vitest cannot time it out, and the
+    // pure lane shares one fork across ~2,740 files — an unbounded block here wedges all
+    // of them until the batch watchdog fires 45 minutes later (WI-41180 ratchet).
+    timeout: 120_000,
+    killSignal: 'SIGKILL',
     // Local-path submodules are refused by default since the CVE-2022-39253 fix.
     env: { ...process.env, GIT_ALLOW_PROTOCOL: 'file', GIT_TERMINAL_PROMPT: '0' },
   }).trim();
