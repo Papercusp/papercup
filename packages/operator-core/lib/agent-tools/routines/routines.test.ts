@@ -497,6 +497,40 @@ describe('routines:list', () => {
     });
   });
 
+  it('P-013: an UNRECOGNIZED gate_health field survives the read — the convergence projection needs no wiring here', () => {
+    // `attestGateHealth` returns `{ ...gateHealth, <attestations> }`, a SPREAD. That is the ONLY
+    // reason `gate_health.convergence` (written by writeFrozenCandidateRepairQueue) reaches a
+    // reader without this function being taught about it.
+    //
+    // This is a guard, not a demonstration. EI-19343516395023183 records the sibling failure in
+    // this exact family: `parseInFlightRetriage` returns an EXPLICIT object literal, so
+    // `charged`/`totalRefires`/`absoluteCeiling` were persisted by both writers and reached no
+    // reader at all — for months, silently, while every consumer rendered a confidently wrong
+    // number. If someone later refactors this spread into a field-by-field literal "to make the
+    // shape explicit", the convergence projection dies the same silent death. This test fails first.
+    const convergence = {
+      candidate: 'abc123',
+      repairHead: 'def456',
+      phase: 'awaiting-fixer',
+      openedAtMs: 1,
+      ageMs: 2,
+      attempts: 1,
+      admissionRounds: 2,
+      failingFirst: 5,
+      failingNow: 1,
+      shrinkTotal: 4,
+      shrinkPerRound: [{ round: 1, failingCount: 5, delta: null }],
+      converging: true,
+      observedAtMs: 3,
+    };
+    const result = attestGateHealth({ observedCandidate: 'abc123', convergence }, Date.now()) as Record<
+      string,
+      unknown
+    >;
+    // Byte-identical, not merely present: a reader computes shrink from these numbers.
+    expect(result.convergence).toEqual(convergence);
+  });
+
   it('marks cached failingTests as belonging to a prior verdict when another candidate is in flight', () => {
     const now = Date.parse('2026-08-12T17:30:00.000Z');
     const result = attestGateHealth(
