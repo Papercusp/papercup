@@ -1537,7 +1537,23 @@ export function gateRedStreakBroadcast(opts: {
       }\n\nThis condition owns ONE work-item for this red (the condition bridge mints it), so claim ` +
       `that item rather than opening another. Distinct from \`green-stall:${opts.installSlug}\`, which ` +
       `means the gate is not producing verdicts AT ALL — during a long red streak both can be open, and ` +
-      `they are the same gate seen two ways.`,
+      `they are the same gate seen two ways.` +
+      // P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27): DISCOVERABILITY AT THE
+      // MOMENT OF FAILURE. A responder reaching a red gate has to learn two things before touching
+      // anything — WHERE the repair is authored, and WHAT may be admitted — and both were previously
+      // only in a doc nobody reads mid-incident. Naming them here puts them in front of the claimant
+      // at the one moment they are load-bearing, and (via the condition state's `latest_body` fold)
+      // on the owning work-item itself.
+      `\n\nWHERE TO FIX IT: a frozen candidate is repaired in an ISOLATED repair worktree at ` +
+      `\`<integrationRoot>/.papercusp/worktrees/green-candidate-<pipeline>-<sha12>\` — never in the ` +
+      `shared staging checkout. \`release:repair-queue\` reports the exact \`worktreePath\`, ` +
+      `\`candidate\` and \`repairHead\` for this red; use those, do not reconstruct the path by hand.` +
+      `\n\nWHAT MAY BE ADMITTED (fix-only): author in that worktree starting at \`repairHead\`, then ` +
+      `admit by git plumbing. A new head is accepted ONLY when the old \`repairHead\` is an ancestor — ` +
+      `a non-forward move is a hard stop to diagnose, never a licence to re-cut the candidate from ` +
+      `tip. \`git add -A\` in the shared checkout is NOT an admission mechanism: it sweeps up peer and ` +
+      `git-sync work that was never part of the frozen candidate. Full rule: ` +
+      `/internal/docs/agent-insights/frozen-candidate-fix-only-admission.`,
   };
 }
 

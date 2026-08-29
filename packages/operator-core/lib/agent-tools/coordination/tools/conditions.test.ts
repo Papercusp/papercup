@@ -196,6 +196,49 @@ describe("computeConditionStates (pure)", () => {
     expect(s!.one_shot).toBe(false);
     expect(s!.last_seen).toBe(at(5));
   });
+
+  // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27) ──────────
+  // The fold is what carries an emitter's `body` — "evidence + the recommended first
+  // step" — onto the work-item the condition bridge mints. Folding only `summary`
+  // discarded it for every condition family; measured live 2026-08-29, real bodies of
+  // 543–1097 chars were being dropped on the floor.
+  describe("latest_body — the emitter's fuller body survives the fold", () => {
+    it("folds the alarm body alongside its summary", () => {
+      const [s] = computeConditionStates([
+        { ...alarm(1, "gate-red-streak:papercusp"), body: "WHERE TO FIX IT: the repair worktree" },
+      ]);
+      expect(s!.latest_body).toBe("WHERE TO FIX IT: the repair worktree");
+      // Control: without the fold this field is undefined, not merely empty — so a
+      // regression that removed it fails here rather than reading as "no body sent".
+      expect(s!.latest_body).not.toBeUndefined();
+    });
+
+    it("is null when the emitter sent no body (most watchdogs)", () => {
+      const [s] = computeConditionStates([alarm(1, "gate-red-streak:papercusp")]);
+      expect(s!.latest_body).toBeNull();
+    });
+
+    it("CLEARS on a body-less re-alarm rather than carrying stale evidence forward", () => {
+      // latest_body and latest_summary must always describe the SAME alarm. Carrying a
+      // previous episode's evidence onto a fresh failure is worse than carrying none:
+      // the claimant would act on a recommended first step for a different incident.
+      const [s] = computeConditionStates([
+        { ...alarm(1, "gate-red-streak:papercusp"), body: "old evidence" },
+        alarm(5, "gate-red-streak:papercusp", "a fresh red"),
+      ]);
+      expect(s!.latest_summary).toBe("a fresh red");
+      expect(s!.latest_body).toBeNull();
+    });
+
+    it("keeps the OLDER body when an out-of-order envelope is not the latest", () => {
+      // The fold guards latest_* on `ts >= last_seen`; body must ride that same guard.
+      const [s] = computeConditionStates([
+        { ...alarm(5, "gate-red-streak:papercusp"), body: "current evidence" },
+        { ...alarm(1, "gate-red-streak:papercusp"), body: "stale evidence" },
+      ]);
+      expect(s!.latest_body).toBe("current evidence");
+    });
+  });
 });
 
 describe("coord:conditions handler", () => {

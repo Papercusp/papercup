@@ -24,6 +24,7 @@ function mkState(over: Partial<ConditionState> = {}): ConditionState {
     last_seen: '2026-07-05T00:00:00.000Z',
     alarm_count: 1,
     latest_summary: 'git-sync stalled',
+    latest_body: null,
     resolved_at: null,
     resolved_summary: null,
     ...over,
@@ -846,6 +847,63 @@ describe('toBridgeConditionStates (pure)', () => {
       'papercusp',
     );
     expect(out[0].open).toBe(false);
+  });
+
+  // ── P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27) ──────────
+  // The minted work-item is the ONE surface a claimant opens at the moment of failure.
+  // Until this fold existed it carried a boilerplate template plus a one-line summary,
+  // so every emitter's `body` — documented as "evidence + the recommended first step" —
+  // was discarded for every condition family. Measured live 2026-08-29 against
+  // coord_event_log: real alarm bodies of 543–1097 chars were being dropped.
+  describe('P-007: the emitter body reaches the owning work-item', () => {
+    // FALSIFIABILITY CONTROL, kept permanently (CLAUDE.md: prove a guard can fail
+    // WITHOUT mutating the shared tree). This is the pre-P-007 summary shape. Every
+    // assertion below must REJECT it — if one passes here, that assertion is vacuous
+    // and would go green against a regression that dropped the fold again.
+    const preFoldSummary =
+      `Owning work-item for condition 'gate-red-streak:papercusp', minted by the condition bridge ` +
+      `(P-003, gate-ownership-condition-singleton-2026-08-03).\n\n` +
+      `Latest alarm: the gate is red\n` +
+      `First seen: 2026-07-05T00:00:00.000Z · open since: 2026-07-05T00:00:00.000Z · alarms: 1`;
+
+    it('renders the emitter body under its own heading', () => {
+      const out = toBridgeConditionStates(
+        [
+          mkState({
+            condition_key: 'gate-red-streak:papercusp',
+            latest_summary: 'the gate is red',
+            latest_body: 'WHERE TO FIX IT: .papercusp/worktrees/green-candidate-<pipeline>-<sha12>',
+          }),
+        ],
+        'papercusp',
+      );
+      expect(out[0].summary).toContain('Latest alarm detail (from the emitter):');
+      expect(out[0].summary).toContain('green-candidate-<pipeline>-<sha12>');
+      // The control lacks both — proving neither assertion is trivially satisfied.
+      expect(preFoldSummary).not.toContain('Latest alarm detail (from the emitter):');
+      expect(preFoldSummary).not.toContain('green-candidate-<pipeline>-<sha12>');
+    });
+
+    it('OMITS the block entirely when the emitter sent no body', () => {
+      // Most watchdogs send summary-only; a bare heading with nothing under it would
+      // read as "the evidence was lost" rather than "there was none".
+      const out = toBridgeConditionStates(
+        [mkState({ condition_key: 'gate-red-streak:papercusp', latest_body: null })],
+        'papercusp',
+      );
+      expect(out[0].summary).not.toContain('Latest alarm detail');
+    });
+
+    it('TRUNCATES a runaway body and MARKS the truncation', () => {
+      // Bounded because every reader of the item pays for this text. An unmarked clip
+      // is worse than a clip: it reads as the whole of what the emitter said.
+      const out = toBridgeConditionStates(
+        [mkState({ condition_key: 'gate-red-streak:papercusp', latest_body: 'x'.repeat(5000) })],
+        'papercusp',
+      );
+      expect(out[0].summary).toContain('…[truncated at 2000 chars');
+      expect(out[0].summary.length).toBeLessThan(3000);
+    });
   });
 });
 

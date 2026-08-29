@@ -423,6 +423,18 @@ const OPEN_SCAN_WINDOW = 500;
 const BRIDGE_TITLE_MAX = 160;
 
 /**
+ * Longest alarm BODY carried into the minted work-item's summary (P-007,
+ * converge-frozen-candidate-by-fix-only-admission-2026-08-27).
+ *
+ * Bounded rather than unbounded because this text is read by every agent that opens
+ * the item, so an emitter with a runaway body would tax every reader of every
+ * condition. Sized to fit the bodies emitters actually write — the gate red-streak
+ * broadcast, the largest live one, is well under this — and truncation is MARKED, so
+ * a clipped body never reads as a complete one.
+ */
+const BRIDGE_BODY_MAX = 2000;
+
+/**
  * PURE (P-003): project folded condition states onto the bridge's input shape,
  * keeping only the OPTED-IN keys whose owning harness can actually be established.
  *
@@ -450,6 +462,20 @@ export function toBridgeConditionStates(
     const harness = resolveConditionHarness(s.condition_key, homeHarness);
     if (!harness) continue;
     const latest = (s.latest_summary ?? '').trim();
+    // P-007: carry the emitter's FULLER BODY — "evidence + the recommended first step"
+    // (SevereEventInput.body) — onto the item a claimant actually opens. Before this,
+    // the bridge folded only the one-line summary, so every emitter's evidence and
+    // recommended first step was discarded for every condition family and the claimant
+    // got boilerplate plus a headline. Truncation is marked so a clipped body is never
+    // mistaken for the whole of what the emitter said.
+    const body = (s.latest_body ?? '').trim();
+    const bodyBlock = body
+      ? `\n\nLatest alarm detail (from the emitter):\n${
+          body.length > BRIDGE_BODY_MAX
+            ? `${body.slice(0, BRIDGE_BODY_MAX)}\n…[truncated at ${BRIDGE_BODY_MAX} chars — read the full alarm via coord:inbox / the severe-event notification]`
+            : body
+        }`
+      : '';
     out.push({
       conditionKey: s.condition_key,
       open: s.open,
@@ -460,7 +486,8 @@ export function toBridgeConditionStates(
         `this condition — the partial unique index on work_items.condition_key guarantees at most ` +
         `one open owner, so claim THIS rather than filing another.\n\n` +
         `Latest alarm: ${latest || '(no summary)'}\n` +
-        `First seen: ${s.first_seen} · open since: ${s.open_since ?? '(unknown)'} · alarms: ${s.alarm_count}`,
+        `First seen: ${s.first_seen} · open since: ${s.open_since ?? '(unknown)'} · alarms: ${s.alarm_count}` +
+        bodyBlock,
       harness,
       severity: entry.severity,
     });

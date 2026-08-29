@@ -55,6 +55,20 @@ export interface ConditionState {
   /** the latest alarm's one-line summary. */
   latest_summary: string | null;
   /**
+   * P-007 (converge-frozen-candidate-by-fix-only-admission-2026-08-27): the latest
+   * alarm's FULLER BODY — what `SevereEventInput.body` is documented to carry,
+   * "evidence + the recommended first step".
+   *
+   * Folding it is not cosmetic. The owning work-item the condition bridge mints is
+   * the one surface a claimant reads at the moment of failure, and it is built from
+   * this state — so while only `latest_summary` was folded, EVERY emitter's evidence
+   * and recommended first step was dropped on the floor for EVERY condition family,
+   * leaving the claimant a boilerplate template and a single headline. Null when the
+   * emitter sent no body (most watchdogs), which reads as "there was none", never as
+   * "it was lost".
+   */
+  latest_body: string | null;
+  /**
    * WI-6228: the latest alarm declared its emitter ONE-SHOT — it alarms once per
    * episode and stays silent until recovery, so `last_seen` freezing is NOT
    * evidence the signal cleared. Optional: an envelope from an emitter that never
@@ -123,6 +137,7 @@ export function computeConditionStates(
             last_seen: ts,
             alarm_count: 0,
             latest_summary: null,
+            latest_body: null,
             resolved_at: ts,
             resolved_summary:
               typeof e["summary"] === "string" ? (e["summary"] as string) : null,
@@ -147,6 +162,7 @@ export function computeConditionStates(
         alarm_count: 1,
         latest_summary:
           typeof e["summary"] === "string" ? (e["summary"] as string) : null,
+        latest_body: typeof e["body"] === "string" ? (e["body"] as string) : null,
         one_shot: e["one_shot"] === true,
         resolved_at: null,
         resolved_summary: null,
@@ -161,6 +177,10 @@ export function computeConditionStates(
         prev.last_seen = ts;
         prev.latest_summary =
           typeof e["summary"] === "string" ? (e["summary"] as string) : null;
+        // Assigned unconditionally beside latest_summary, so the two always describe
+        // the SAME alarm. Carrying a previous episode's body forward past a body-less
+        // re-alarm would attach stale evidence to a fresh failure — worse than none.
+        prev.latest_body = typeof e["body"] === "string" ? (e["body"] as string) : null;
         // WI-6228: the LATEST alarm decides — an emitter that switched to/from
         // one-shot is described by what it most recently declared.
         prev.one_shot = e["one_shot"] === true;
