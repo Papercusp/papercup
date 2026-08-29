@@ -873,7 +873,7 @@ impl OperatorClient {
         let backend = value
             .get("agent")
             .cloned()
-            .map(|v| serde_json::from_value::<SuSessionBackend>(v))
+            .map(serde_json::from_value::<SuSessionBackend>)
             .transpose()
             .context("decode SU-session backend")?
             .ok_or_else(|| anyhow!("launch-su omitted the resolved backend"))?;

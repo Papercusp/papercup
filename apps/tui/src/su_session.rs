@@ -50,9 +50,10 @@ impl std::fmt::Display for SuSessionBackend {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SuSessionLifecycleState {
+    #[default]
     Starting,
     Ready,
     Running,
@@ -111,12 +112,6 @@ impl SuSessionLifecycleState {
             Self::Ended => "ended",
             Self::Failed => "failed",
         }
-    }
-}
-
-impl Default for SuSessionLifecycleState {
-    fn default() -> Self {
-        Self::Starting
     }
 }
 
