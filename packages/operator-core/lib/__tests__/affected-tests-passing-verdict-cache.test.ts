@@ -1372,6 +1372,13 @@ describe('vitest cache artifacts stay out of the dependency closure', () => {
       cwd: REPO_ROOT,
       encoding: 'utf8',
       maxBuffer: 64 * 1024 * 1024,
+      // A sync spawn blocks the worker's event loop, so vitest cannot time it out,
+      // and the pure lane shares one fork across ~2,740 files — an unbounded call
+      // here wedges every one of them until the batch watchdog fires 45 min later
+      // (WI-41180). `--recurse-submodules` walks seven submodules, so this is a
+      // realistic staller under fleet load, not a theoretical one.
+      timeout: 120_000,
+      killSignal: 'SIGKILL',
     })
       .split('\n')
       .filter(Boolean);

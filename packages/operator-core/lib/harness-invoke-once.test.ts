@@ -43,6 +43,22 @@ const spec = (over: Partial<InvokeOnceSpec> = {}): InvokeOnceSpec => ({
   ...over,
 });
 
+// HERMETICITY (file-level, deliberately not per-describe). Every agent session on
+// this box exports the whole AGENT_* spawn-config family — an su/psu shell carries
+// AGENT_ROLE_BACKENDS + AGENT_MODELS maps that name `merge-resolver` (this file's
+// fixture role, chosen ABOVE precisely for having no committed default) plus
+// AGENT_BACKEND/AGENT_CMD/CLAUDE. Inherited, those silently redirect the role to a
+// different backend/model and turn generic expectations red — so the suite passed or
+// failed by WHO ran it, not by what the code does. Three describes had grown their
+// own partial baseline for the same reason; clearing the family once, here, closes
+// the class instead of one more instance of it, and every case that WANTS a value
+// still stubs it (stubEnv runs after this hook).
+beforeEach(() => {
+  for (const key of ['AGENT_CMD', 'AGENT_MODELS', 'AGENT_ROLE_BACKENDS', 'AGENT_BACKEND', 'CLAUDE']) {
+    vi.stubEnv(key, undefined as unknown as string);
+  }
+});
+
 afterEach(() => vi.unstubAllEnvs());
 
 describe('buildInvokeOnce — command + core env', () => {
