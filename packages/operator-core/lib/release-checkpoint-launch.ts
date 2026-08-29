@@ -46,6 +46,7 @@ import {
   type GateVerdictTarget,
 } from './release/gate-verdict-target';
 import { checkpointScopeMemoryMaxG, SYSTEMD_TRANSIENT_UNIT_COLLECTION_ARGS } from './systemd-scope';
+import { admitCheckpointMemory, type CheckpointMemoryAdmission } from './release/checkpoint-memory-admission';
 import { CHECKPOINT_QUALIFICATION_ATTEMPT_ENV } from './release/checkpoint-qualification-transaction';
 import type { CheckpointEligibilitySnapshot } from './release/checkpoint-eligibility-snapshot';
 import {
@@ -156,6 +157,12 @@ export interface LaunchCheckpointResult {
    *  "this refused because one is already in flight, don't retry" from a transient spawn
    *  failure — they'd retry / manually kill what they assumed was stuck). */
   alreadyRunning?: ActiveCheckpointCheck;
+  /** Present when `reason === 'memory_budget'` — P-006's cross-root memory bound deferred this
+   *  launch because the SUM of live checkpoint commitments plus this run's cap would exceed the
+   *  host budget. Structured for the same reason `alreadyRunning` is: "deferred, another pot's
+   *  run is holding the budget, retry later" is a different instruction to the caller than a
+   *  spawn failure, and the numbers behind the verdict are what make it checkable. */
+  memoryAdmission?: CheckpointMemoryAdmission;
   /** EI-9672: set when `replaceStale:true` found the active run CONFIRMED stale and stopped
    *  it before this launch — the detail of what was stopped, for the caller's audit trail. */
   replacedStale?: ActiveCheckpointCheck;
@@ -2684,6 +2691,33 @@ export async function launchDetachedCheckpoint(
     }
   }
 
+  // P-006 (green-checkpoint-red-streak-root-cause-2026-08-17): the SAME cross-root memory
+  // bound the scheduled gate consults, applied here because this is the OTHER seam that
+  // creates a checkpoint scope. A bound at one launcher only is not a bound: the run-lock
+  // below is per-root, so without this a manual run would still be free to stack its 40 GiB
+  // on top of every other pot's in-flight scope. Placed immediately before the argv is built,
+  // so returning here means no scope — and therefore no commitment — is ever created.
+  //
+  // The request is computed with the SAME expression buildCheckpointSystemdArgv uses for its
+  // MemoryMax property, so the admission and the scope can never disagree about the size of
+  // this run. Fails open on an unmeasurable probe and on a sole run — see the module note.
+  const capacityMode = process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null;
+  const memoryAdmission = admitCheckpointMemory({
+    requestG: checkpointScopeMemoryMaxG({
+      PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE: capacityMode ?? 'shared',
+    }),
+  });
+  if (!memoryAdmission.admit) {
+    return Promise.resolve({
+      launched: false,
+      unit,
+      argv: [],
+      logPath,
+      reason: 'memory_budget',
+      memoryAdmission,
+    });
+  }
+
   const current = currentCheckpointCandidate(root, execFn);
   const tipSha = current.current_head;
   const candidateSha = opts.candidate ?? current.current_candidate;
@@ -2698,7 +2732,7 @@ export async function launchDetachedCheckpoint(
     opts.target === undefined ? resolveHomeGateTarget() : opts.target,
     // WI-39472: forward the launcher's capacity contract, so a manual run uses the same fork
     // budget as the scheduled gate instead of silently falling back to `shared`.
-    process.env.PAPERCUSP_GREEN_CHECKPOINT_CAPACITY_MODE ?? null,
+    capacityMode,
     candidateSha,
     opts.logicalAttemptId,
   );

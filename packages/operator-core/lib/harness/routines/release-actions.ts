@@ -59,6 +59,7 @@ import {
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
 import { isRecordedInconclusiveStatus } from '../../release/gate-abort-status';
 import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
+import { admitCheckpointMemory } from '../../release/checkpoint-memory-admission';
 import {
   FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS,
   parseFrozenCandidateRepairQueue,
@@ -1145,6 +1146,44 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     });
     return;
   }
+  // P-006 (green-checkpoint-red-streak-root-cause-2026-08-17): the CROSS-ROOT memory bound.
+  //
+  // The run-lock one layer down is PER-ROOT — green-checkpoint.ts hashes integrationRoot into
+  // the lock filename — so it serializes THIS pot and says nothing about the ~15 pots sharing
+  // this hourly cron. Each reserved-mode run commits 40 GiB to its own transient scope, so
+  // nothing prevented the sum from exceeding the host. This is the last gate before the scope
+  // exists, for the same reason the qualification admission above is: the scope is created
+  // inside runScript, so returning here means no memory is ever committed.
+  //
+  // Compute the cap ONCE and pass the same number to both the admission and the scope, so the
+  // two can never disagree about how large this run is.
+  //
+  // Unlike readQualificationAdmission above, this one FAILS OPEN — see the module note. An
+  // unmeasurable probe must not be more restrictive than the unbounded status quo it replaces,
+  // and a lone run is never refused.
+  const checkpointMemoryG = checkpointScopeMemoryMaxG();
+  const memoryAdmission = admitCheckpointMemory({ requestG: checkpointMemoryG });
+  if (!memoryAdmission.admit) {
+    console.warn(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${memoryAdmission.detail}`);
+    await appendPipelineEvent({
+      workspaceId: ctx.workspaceId,
+      installSlug: ctx.installSlug,
+      kind: 'green_checkpoint',
+      status: 'skipped-memory-budget',
+      detail: {
+        reason: memoryAdmission.reason,
+        requestG: memoryAdmission.requestG,
+        committedG: memoryAdmission.committedG,
+        budgetG: memoryAdmission.budgetG,
+        scopes: memoryAdmission.scopes,
+        unbounded: memoryAdmission.unbounded,
+      },
+    });
+    return;
+  }
+  // Log the admitted verdict too: a bound nobody can see working is indistinguishable from a
+  // bound that is silently failing open, which is exactly the failure mode this guard risks.
+  console.log(`${orchestratorStdoutTag()} ${ctx.installSlug}: ${memoryAdmission.detail}`);
   const r = await runScript(
     root,
     'apps/operator/lib/release/green-checkpoint.ts',
@@ -1164,7 +1203,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
     },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.
-    { memoryMaxG: checkpointScopeMemoryMaxG() },
+    { memoryMaxG: checkpointMemoryG },
     // EI-20709645463022690: for a SUBJECT hive, drop the operator's inherited DATABASE_URL/PG*
     // so the pot's suite resolves its OWN database. EMPTY for operator-home, whose gate legs
     // genuinely need that DSN — so papercusp's own pipeline is byte-identical (D-007).
