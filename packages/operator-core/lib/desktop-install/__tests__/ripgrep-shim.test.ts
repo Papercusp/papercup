@@ -22,7 +22,24 @@ import { promisify } from 'node:util';
 import { writeRipgrepShim } from '../papercusp-files';
 import { augmentedSpawnPath } from '../../plugin-spawn-impl';
 
-const run = promisify(execFile);
+const execFileAsync = promisify(execFile);
+
+/** Every child here is BOUNDED on purpose. Unbounded, the only thing that stops a
+ *  slow spawn is vitest's own 60s test timeout, which reports a bare "test timed
+ *  out" naming neither the child nor the reason — an UNDETERMINED result wearing a
+ *  red's clothing, which sends the next agent to triage a shim that is fine. Both
+ *  exec cases below red exactly that way in a canonical full-suite run (60105ms)
+ *  while passing solo, and D-014 of ship-main-greening-plans-2026-08-29 makes that
+ *  pair non-attributable rather than a proven load artifact. An explicit bound is
+ *  what makes the difference observable: a real hang now fails AS a killed child. */
+const run = (
+  file: string,
+  args: readonly string[],
+  opts: Record<string, unknown> = {},
+): ReturnType<typeof execFileAsync> =>
+  execFileAsync(file, args as string[], { timeout: 30_000, killSignal: 'SIGKILL', ...opts } as never) as ReturnType<
+    typeof execFileAsync
+  >;
 
 let tmp: string;
 
