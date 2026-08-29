@@ -137,6 +137,18 @@ describe('computeDeployStatus — decision tree', () => {
       escapesUsed: 0,
       maxCandidateEscapes: 0,
       escapeAvailable: false,
+      // No shared-tree edit set is supplied here, so the collision probe is explicitly
+      // UNMEASURED rather than a false all-clear. `collidingPaths` carries an explicit
+      // `string[]` because the enclosing `as const` would otherwise infer `readonly []`,
+      // which is not assignable to the interface's mutable `string[]`.
+      sharedTreeCollision: {
+        measured: false,
+        repairInFlight: false,
+        collidingPaths: [] as string[],
+        collisionCount: 0,
+        truncated: false,
+        detail: null,
+      },
       nextAction: 'release:repair-queue',
     } as const;
     const s = computeDeployStatus(mkSnap({ repairQueue }, {}));

@@ -2742,6 +2742,16 @@ describe('computeStages: position x health', () => {
             fixerSpawnId: 'dead-fixer',
             fixerAlive: false,
             dispatchReservation: null,
+            // This fixture supplies no shared-tree edit set, so the collision probe is
+            // explicitly UNMEASURED rather than a false all-clear (measured:false ≠ zero paths).
+            sharedTreeCollision: {
+              measured: false,
+              repairInFlight: false,
+              collidingPaths: [],
+              collisionCount: 0,
+              truncated: false,
+              detail: null,
+            },
             decision: 'recover-dead-fixer',
             retireAllowed: true,
             retireRefusal: null,
