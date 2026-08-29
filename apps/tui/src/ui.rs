@@ -2,9 +2,8 @@
 //! snapshot-testable against a ratatui `TestBackend`.
 
 use crate::app::{
-    App, FleetLauncherField, HarnessFocus, InboxFocus, PluginsFocus, SessionBrowserFacet, Tab,
-    TestingFocus,
-    SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
+    App, CupboardFocus, FleetLauncherField, HarnessFocus, InboxFocus, PluginsFocus,
+    SessionBrowserFacet, Tab, TestingFocus, SESSION_BROWSER_STATES, SESSION_BROWSER_WHEN,
 };
 use crate::models::{
     contribution_count, contribution_names, tier_glyph, tier_label, Notif,
@@ -668,6 +667,9 @@ fn draw_tab_body(f: &mut Frame, app: &App, tab: Tab, body: Rect) {
         // existing list remains the primary pane and advertises the installed
         // capability in its title/detail contract.
         Tab::Cupboard => draw_cupboard(f, app, body),
+        // Retired shell kept only for exhaustiveness + persisted view-state.
+        // The live path to this renderer is Inbox's Threads sub-view, via
+        // `draw_inbox`; nothing reaches this arm.
         Tab::Conversations => draw_conversations(f, app, body),
         Tab::Voice => crate::voice_ui::draw_voice(f, &app.voice_ui, body),
         Tab::Hives => crate::hives::draw_hives(f, app, body),
@@ -1618,7 +1620,7 @@ fn draw_conversations(f: &mut Frame, app: &App, area: Rect) {
         " Conversations (loading…) ".to_string()
     } else {
         format!(
-            " Inbox · Threads ({}) · [Tab] Attention · s:{} t:{}{} ",
+            " Inbox · Threads ({}) · [Tab] Attention · S:{} t:{}{} ",
             convs.len(),
             app.conv_state(),
             app.conv_kind(),
@@ -2296,7 +2298,7 @@ fn draw_plugins_list(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(Line::from(format!(
-                " plugins ({}) — Tab→panes ",
+                " Cupboard · Installed — plugins ({}) — Tab→panes ",
                 app.plugins.len()
             ))),
         &format!(
@@ -2438,7 +2440,7 @@ fn draw_plugin_panes(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(Line::from(format!(
-                " {} · plugin panes ({}) — Enter to launch · Tab→list ",
+                " {} · plugin panes ({}) — Enter to launch · Tab→browse ",
                 app.harness,
                 app.panes.len()
             ))),
@@ -3624,6 +3626,15 @@ fn draw_memory(f: &mut Frame, app: &App, area: Rect) {
 /// filter row is derived from the live `kind_facets`; unsupported kinds remain
 /// browsable but read-only instead of exposing a confirmation that must fail.
 fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
+    // Three sub-views, `Tab` cycles: the marketplace Browse list below, and
+    // the two absorbed installed-plugin views. Without this dispatch the
+    // Cupboard advertised "Browse + Installed (N)" in its own title while
+    // rendering listings only, and both installed renderers were dead code.
+    match app.cupboard_focus {
+        CupboardFocus::Browse => {}
+        CupboardFocus::Installed => return draw_plugins_list(f, app, area),
+        CupboardFocus::Panes => return draw_plugin_panes(f, app, area),
+    }
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
@@ -3655,12 +3666,12 @@ fn draw_cupboard(f: &mut Frame, app: &App, area: Rect) {
     };
     let title = if app.cupboard_query.is_empty() {
         format!(
-            " Cupboard · Browse + Installed ({}) · {kinds} · {population} · f:kind{next_hint} /:search ",
+            " Cupboard · Browse · [Tab] Installed ({}) · {kinds} · {population} · f:kind{next_hint} /:search ",
             app.plugins.len()
         )
     } else {
         format!(
-            " Cupboard · Browse + Installed ({}) · {kinds} · \"{}\" ({population}){next_hint} ",
+            " Cupboard · Browse · [Tab] Installed ({}) · {kinds} · \"{}\" ({population}){next_hint} ",
             app.plugins.len(),
             trunc(&app.cupboard_query, 18),
         )
@@ -5564,7 +5575,9 @@ mod tests {
         }]);
         let text = render(&app, 100, 28);
         assert!(text.contains("Inbox"));
-        assert!(text.contains("Attention + Threads"));
+        // Attention and Threads are sub-views now, not one merged pane: the
+        // title names the one on screen and advertises the key to the other.
+        assert!(text.contains("Attention · [Tab] Threads"));
         assert!(text.contains("◆1")); // title headlines the Decisions count
         assert!(text.contains("Decisions (1)")); // the Decisions tier section header
         assert!(text.contains("needs-human"));
@@ -5622,9 +5635,9 @@ mod tests {
         assert!(text.contains("Handled by operator (1)"));
         assert!(text.contains("Alerts (1)"));
         assert!(text.contains("Activity (2)"));
-        // The title now names the consolidated Attention + Threads destination
-        // and headlines the Decisions count.
-        assert!(text.contains("Inbox · Attention + Threads"));
+        // The title names the Attention sub-view on screen, advertises the
+        // Tab key that reaches Threads, and headlines the Decisions count.
+        assert!(text.contains("Inbox · Attention · [Tab] Threads"));
         assert!(text.contains("◆1"));
     }
 
@@ -6363,7 +6376,12 @@ mod tests {
         assert!(text.contains("app:10"));
         assert!(text.contains("knowledge-pack:5"));
         assert!(text.contains("template:15"));
-        assert!(text.contains("Browse + Installed"));
+        // The title names the Browse sub-view on screen and advertises the key
+        // that reaches the installed inventory. It used to read
+        // "Browse + Installed", which claimed to show an inventory this pane
+        // never rendered — see
+        // `cupboard_installed_subview_renders_the_absorbed_plugin_inventory`.
+        assert!(text.contains("Browse · [Tab] Installed"));
         // The page affordance remains visible in the list row; the long title
         // is intentionally allowed to clip its trailing hint at this width.
         assert!(text.contains("load next page"));
@@ -6518,6 +6536,151 @@ mod tests {
         });
         let running = render(&app, 110, 24);
         assert!(running.contains("running…"));
+    }
+
+    fn conv(id: &str, kind: &str, state: &str, title: &str) -> crate::models::ConvSummary {
+        crate::models::ConvSummary {
+            id: id.into(),
+            kind: kind.into(),
+            state: state.into(),
+            scope: "workspace".into(),
+            harness_slug: Some("papercup".into()),
+            title: Some(title.into()),
+            asker_id: "su-test".into(),
+            topics: Vec::new(),
+            promoted_issue_id: None,
+            created_ts: "2026-08-29".into(),
+        }
+    }
+
+    /// The Convos→Inbox absorption is only real if entering Inbox can actually
+    /// REACH the absorbed thread list. Regression guard for the title-only
+    /// absorption: `draw_inbox` rendered the attention list unconditionally
+    /// while `tab_entry_side_effect` fetched conversations that nothing ever
+    /// drew, so the thread list, its detail, its filters and promote-to-issue
+    /// were unreachable from every keystroke.
+    ///
+    /// This asserts on conversation DATA in the frame and pairs it with an
+    /// Attention-focus NEGATIVE CONTROL. That control is the point: a
+    /// whole-frame nonblank-cell count is satisfied by the always-drawn tab
+    /// strip alone, which is exactly why an 813-test green suite covered this
+    /// gap. Never verify this class with `live_all_tabs_render`.
+    #[test]
+    fn inbox_threads_subview_renders_the_absorbed_conversation_list() {
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.conversations = vec![
+            conv("conv-a1", "question", "open", "Why is the gate red"),
+            conv("conv-b2", "discussion", "closed", "Rubric vetting scope"),
+        ];
+
+        // NEGATIVE CONTROL — on the Attention sub-view the thread data is
+        // absent, so the positive assertions below cannot be satisfied by
+        // ambient chrome (tab strip, borders, dock).
+        // Rendered wide so the list column does not truncate the titles the
+        // assertions below match on.
+        app.inbox_focus = InboxFocus::Attention;
+        let attention = render(&app, 200, 20);
+        assert!(
+            !attention.contains("Why is the gate red"),
+            "attention sub-view must not already contain thread data, else the \
+             positive assertion proves nothing: {attention}"
+        );
+        assert!(
+            !attention.contains("Rubric vetting scope"),
+            "attention sub-view must not contain any thread data: {attention}"
+        );
+
+        // POSITIVE — Tab to Threads and the fetched conversations are drawn.
+        app.inbox_focus = InboxFocus::Threads;
+        let threads = render(&app, 200, 20);
+        assert!(
+            threads.contains("Why is the gate red"),
+            "Inbox body must render the absorbed thread list: {threads}"
+        );
+        // The SECOND thread is the load-bearing assertion: only the selected
+        // thread reaches the detail pane, so a non-selected row can appear
+        // ONLY if the list itself rendered.
+        assert!(
+            threads.contains("Rubric vetting scope"),
+            "every visible conversation must be listed, not just the selected \
+             one in the detail pane: {threads}"
+        );
+        // The body carries real per-thread columns, not just a count.
+        assert!(threads.contains("open"), "thread state column: {threads}");
+        assert!(
+            threads.contains("Inbox · Threads (2)"),
+            "the sub-view must name itself and its live count: {threads}"
+        );
+    }
+
+    /// The absorbed empty-state string used to read "open Inbox to browse"
+    /// while the user was already IN the Inbox — it pointed at a destination
+    /// that no longer existed instead of at the keystroke that reveals the
+    /// threads.
+    #[test]
+    fn inbox_attention_advertises_the_key_that_reaches_threads() {
+        let mut app = App::new();
+        app.tab = Tab::Inbox;
+        app.inbox_focus = InboxFocus::Attention;
+        app.conversations = vec![conv("conv-a1", "question", "open", "Seeded thread")];
+        let text = render(&app, 200, 20);
+        assert!(
+            text.contains("[Tab] Threads"),
+            "the Threads sub-view must be discoverable from Attention: {text}"
+        );
+        assert!(
+            !text.contains("open Inbox to browse"),
+            "stale absorption text points at a destination that no longer exists: {text}"
+        );
+    }
+
+    /// The Plugins→Cupboard absorption is only real if entering Cupboard can
+    /// REACH the installed inventory its own title advertises. Regression
+    /// guard: `draw_cupboard` titled itself "Browse + Installed (N)" while
+    /// rendering `app.cupboard` marketplace listings exclusively, so
+    /// `draw_plugins_list` and `draw_plugin_panes` were dead code.
+    ///
+    /// The Browse-focus negative control is the load-bearing half — the
+    /// pre-fix render is exactly what Browse produces, and asserting the
+    /// installed data is ABSENT there is what makes the positive assertion
+    /// mean something. A whole-frame nonblank count cannot tell them apart.
+    #[test]
+    fn cupboard_installed_subview_renders_the_absorbed_plugin_inventory() {
+        use crate::models::PluginManifest;
+        let mut app = App::new();
+        app.tab = Tab::Cupboard;
+        app.plugins = vec![PluginManifest {
+            name: "logs-plugin".into(),
+            ..Default::default()
+        }];
+
+        // NEGATIVE CONTROL — the marketplace Browse view (what the Cupboard
+        // rendered unconditionally before this fix) shows no installed data,
+        // even though its title counts it.
+        app.cupboard_focus = CupboardFocus::Browse;
+        let browse = render(&app, 140, 16);
+        assert!(
+            !browse.contains("logs-plugin"),
+            "browse sub-view must not already contain installed-plugin data, \
+             else the positive assertion proves nothing: {browse}"
+        );
+        assert!(
+            browse.contains("[Tab] Installed (1)"),
+            "browse must advertise the key that reaches the inventory it counts: {browse}"
+        );
+
+        // POSITIVE — Tab to Installed and the inventory is actually drawn.
+        app.cupboard_focus = CupboardFocus::Installed;
+        let installed = render(&app, 140, 16);
+        assert!(
+            installed.contains("logs-plugin"),
+            "Cupboard body must render the absorbed installed-plugin inventory: {installed}"
+        );
+        assert!(
+            installed.contains("Cupboard · Installed"),
+            "the sub-view must name itself: {installed}"
+        );
     }
 
     #[test]
