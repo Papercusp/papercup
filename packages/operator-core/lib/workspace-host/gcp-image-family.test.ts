@@ -240,6 +240,8 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
   activePin: GcpImageFamilyPin = PREVIOUS;
   badMigration = false;
   badScan = false;
+  /** Severity breakdown the fake scanner reports; sums to vulnerabilityFindings. */
+  scanBySeverity: Record<string, number> = { Low: 2, Negligible: 1 };
 
   constructor() {
     for (const pin of [PREVIOUS, OLDER]) {
@@ -264,7 +266,10 @@ class FakeAdapter implements GcpImageFamilyReleaseAdapter {
       releaseSha256: input.releaseSha256,
       trusted: !this.badScan,
       sbomSha256: SBOM_SHA,
-      vulnerabilityFindings: 0,
+      // A realistic image carries sub-threshold findings. Zero here would let the
+      // happy path pass without ever exercising the severity policy.
+      vulnerabilityFindings: Object.values(this.scanBySeverity).reduce((a, b) => a + b, 0),
+      vulnerabilityBySeverity: this.scanBySeverity,
       secretFindings: 0,
       evidenceRef: `gcp://scan/${input.imageId}`,
     };
@@ -357,11 +362,45 @@ describe('GCP workspace-host image family release', () => {
     expect(adapter.inspections.get(OLDER.imageId)?.state).toBe('DEPRECATED');
   });
 
+  it('publishes an image whose findings are all below the denied severity', async () => {
+    // The regression this guards: the gate used to demand zero grype matches at ANY
+    // severity, which no real OS image can satisfy (measured 3922 on stock Ubuntu —
+    // EI-21770579023793724). The default fixture now carries sub-threshold findings,
+    // so a green release here means the severity policy is genuinely being applied.
+    const adapter = new FakeAdapter();
+    await executeGcpImageFamilyRelease(request(), adapter);
+    expect(adapter.calls).toContain('publish-family-version');
+  });
+
+  it('refuses to publish when a finding reaches the denied severity', async () => {
+    // Positive control for the test above: same path, one High, and publication must
+    // not happen — so the acceptance above cannot be passing vacuously.
+    const highSeverity = new FakeAdapter();
+    highSeverity.scanBySeverity = { Low: 2, High: 1 };
+    await expect(executeGcpImageFamilyRelease(request(), highSeverity)).rejects.toThrow(
+      'violates the workspace-host release policy',
+    );
+    expect(highSeverity.calls).not.toContain('publish-family-version');
+  });
+
+  it('refuses to publish when the severity breakdown does not account for every finding', async () => {
+    // The dead-instrument shape: a breakdown that reports nothing while the total
+    // says findings exist must never read as clean.
+    const unaccounted = new FakeAdapter();
+    unaccounted.scanBySeverity = {};
+    const original = unaccounted.scanImage.bind(unaccounted);
+    unaccounted.scanImage = async (input) => ({ ...(await original(input)), vulnerabilityFindings: 3922 });
+    await expect(executeGcpImageFamilyRelease(request(), unaccounted)).rejects.toThrow(
+      'does not account for every finding',
+    );
+    expect(unaccounted.calls).not.toContain('publish-family-version');
+  });
+
   it('fails closed before family publication when scan or exact migration evidence is not green', async () => {
     const badScan = new FakeAdapter();
     badScan.badScan = true;
     await expect(executeGcpImageFamilyRelease(request(), badScan)).rejects.toThrow(
-      'scan must be trusted with zero policy-violating',
+      'scan must be trusted',
     );
     expect(badScan.calls).not.toContain('publish-family-version');
 

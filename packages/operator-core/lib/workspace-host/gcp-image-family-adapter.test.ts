@@ -292,7 +292,11 @@ describe('GCP image-family production adapter', () => {
         releaseSha256: input.releaseSha256,
         trusted: true,
         sbomSha256: 'd'.repeat(64),
-        vulnerabilityFindings: 0,
+        // A realistic scanner result carries sub-threshold findings plus the
+        // breakdown that accounts for them. Zero here would let this path pass
+        // without ever exercising the severity policy the adapter now applies.
+        vulnerabilityFindings: 3,
+        vulnerabilityBySeverity: { Low: 2, Negligible: 1 },
         secretFindings: 0,
         evidenceRef: 'gcp://scan/evidence-1',
       }),

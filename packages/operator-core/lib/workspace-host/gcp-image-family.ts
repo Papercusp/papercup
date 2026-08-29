@@ -1,5 +1,6 @@
 import type { WorkspaceHostBootstrapAttestation, WorkspaceHostImageArtifact } from '@papercusp/deployment-driver';
 
+import { evaluateImageScanPolicy } from './image-scan-policy';
 import {
   evaluateWorkspaceHostReleaseGate,
   type WorkspaceHostReleaseGateInput,
@@ -40,7 +41,14 @@ export interface GcpImageScanEvidence {
   releaseSha256: string;
   trusted: boolean;
   sbomSha256: string;
+  /** Total grype matches at any severity. Evidence; the gate acts on the breakdown. */
   vulnerabilityFindings: number;
+  /**
+   * Per-severity counts keyed by grype's own labels. REQUIRED: the gate ranks these
+   * against the ratified policy, and `evaluateImageScanPolicy` reconciles their sum
+   * against `vulnerabilityFindings` so an absent breakdown cannot read as a clean one.
+   */
+  vulnerabilityBySeverity: Readonly<Record<string, number>>;
   secretFindings: number;
   evidenceRef: string;
 }
@@ -257,8 +265,16 @@ function validateScan(scan: GcpImageScanEvidence, artifact: WorkspaceHostImageAr
   ) {
     fail('GCP image scan is not bound to the exact candidate, build manifest, and release digest');
   }
-  if (!scan.trusted || scan.vulnerabilityFindings !== 0 || scan.secretFindings !== 0) {
-    fail('GCP image scan must be trusted with zero policy-violating vulnerability and secret findings');
+  if (!scan.trusted) {
+    fail('GCP image scan must be trusted');
+  }
+  const policy = evaluateImageScanPolicy(scan);
+  if (!policy.accepted) {
+    fail(
+      `GCP image scan violates the workspace-host release policy: ${policy.failures
+        .map((failure) => failure.message)
+        .join('; ')}`,
+    );
   }
   if (!SHA256.test(scan.sbomSha256) || !scan.evidenceRef.trim()) {
     fail('GCP image scan must carry an immutable SBOM digest and evidence reference');

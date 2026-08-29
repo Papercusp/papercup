@@ -143,7 +143,13 @@ export interface ArtifactTrustRuntime {
 }
 
 const SHA256 = /^[0-9a-f]{64}$/;
-const SEVERITY_RANK: Record<VulnerabilitySeverity, number> = {
+/**
+ * Severity ordering for `denyVulnerabilitiesAtOrAbove`. Exported so the
+ * workspace-host IMAGE scan gate (`image-scan-policy.ts`) ranks severities against
+ * this exact table instead of keeping a second copy that can drift out of step with
+ * the policy it is supposed to be enforcing.
+ */
+export const SEVERITY_RANK: Record<VulnerabilitySeverity, number> = {
   unknown: -1,
   low: 0,
   medium: 1,

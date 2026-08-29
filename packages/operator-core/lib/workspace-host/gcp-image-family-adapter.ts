@@ -32,6 +32,7 @@ import {
   type GcpImageInspection,
   type GcpImageScanEvidence,
 } from './gcp-image-family';
+import { evaluateImageScanPolicy } from './image-scan-policy';
 
 /** A shell-free command invocation used by the image, scanner, and clean-room seams. */
 export interface GcpImageFamilyCommand {
@@ -556,6 +557,10 @@ function scanEvidence(
     trusted: result.trusted === true,
     sbomSha256: digest(result.sbomSha256, 'scan.sbomSha256'),
     vulnerabilityFindings: result.vulnerabilityFindings as number,
+    // The severity breakdown is now GATE INPUT, not just a diagnostic, so it is
+    // carried through unvalidated-but-typed and handed to evaluateImageScanPolicy,
+    // which is the single place that decides whether a measurement is usable.
+    vulnerabilityBySeverity: result.vulnerabilityBySeverity as Readonly<Record<string, number>>,
     secretFindings: result.secretFindings as number,
     evidenceRef: text(result.evidenceRef, 'scan.evidenceRef'),
   };
@@ -563,15 +568,20 @@ function scanEvidence(
     evidence.imageId !== input.imageId ||
     evidence.buildManifestIdentity !== input.buildManifestIdentity ||
     evidence.releaseSha256 !== input.releaseSha256 ||
-    !Number.isSafeInteger(evidence.vulnerabilityFindings) ||
-    evidence.vulnerabilityFindings < 0 ||
-    !Number.isSafeInteger(evidence.secretFindings) ||
-    evidence.secretFindings < 0 ||
-    !evidence.trusted ||
-    evidence.vulnerabilityFindings !== 0 ||
-    evidence.secretFindings !== 0
+    !evidence.trusted
   ) {
-    fail('GCP image scanner evidence is untrusted, non-zero, or bound to a different subject');
+    fail('GCP image scanner evidence is untrusted or bound to a different subject');
+  }
+  // Integer/shape validation and the severity threshold both live in the policy
+  // module, so the adapter and the release gate cannot drift into disagreeing about
+  // what a usable measurement is. Every rejection there fails CLOSED.
+  const scanPolicy = evaluateImageScanPolicy(evidence);
+  if (!scanPolicy.accepted) {
+    fail(
+      `GCP image scanner evidence violates the workspace-host release policy: ${scanPolicy.failures
+        .map((failure) => failure.message)
+        .join('; ')}`,
+    );
   }
   return evidence;
 }
