@@ -22,10 +22,15 @@ import { createBranchedSqlMock } from '../testing/sql-mock';
 const { sqlMock } = vi.hoisted(() => ({
   sqlMock: vi.fn(async (..._args: unknown[]) => [] as unknown[]),
 }));
+const getLongLivedAdminPoolMock = vi.hoisted(() => vi.fn(() => sqlMock));
 
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@papercusp/db-org')>()),
   getOrgPg: () => ({ sql: sqlMock }),
+}));
+
+vi.mock('../long-lived-admin-pool', () => ({
+  getLongLivedAdminPool: getLongLivedAdminPoolMock,
 }));
 
 const getNextWorkItemMock = vi.fn();
@@ -75,6 +80,47 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     releaseWorkItemMock.mockReset().mockResolvedValue(null);
     matchesWorkItemClaimSpecMock.mockReset().mockReturnValue(true);
     recordClaimAttemptMock.mockReset().mockResolvedValue(undefined);
+    getLongLivedAdminPoolMock.mockClear();
+  });
+
+  it('routes the public pull path through the isolated scheduler claim pool', async () => {
+    const branches = createBranchedSqlMock([
+      {
+        label: 'per-bee claim-spec lookup',
+        match: (q) => q.includes('FROM harness_shared.cup_claim_specs'),
+        respond: () => [],
+      },
+      {
+        label: 'fleet-membership lookup',
+        match: (q) => q.includes('FROM harness_shared.fleet_membership_events'),
+        respond: () => [],
+      },
+      {
+        label: 'active claims lookup',
+        match: (q) => q.includes('taken_by'),
+        respond: () => [],
+      },
+    ]);
+    sqlMock.mockImplementation(branches.handler);
+    getNextWorkItemMock.mockResolvedValue(null);
+
+    await getNextForBee({
+      cupId: 'me',
+      harness: 'papercusp',
+      ignoreStoredSpec: true,
+      useDedicatedClaimPool: true,
+    });
+
+    expect(getLongLivedAdminPoolMock).toHaveBeenCalledWith('scheduler-claim', {
+      max: 2,
+      prepare: false,
+    });
+    expect(getNextWorkItemMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ client: sqlMock }),
+    );
+    branches.assertAllMatched();
   });
 
   it('fails closed when the bee already holds an active or parked claim (EI-11796)', async () => {

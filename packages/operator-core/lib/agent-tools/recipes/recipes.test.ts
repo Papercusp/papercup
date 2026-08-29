@@ -114,7 +114,7 @@ vi.mock('../../telemetry-dispatch-wrapper', () => ({
 import './list';
 import recipeGetTool from './get';
 import './revise';
-import './search';
+import recipeSearchTool from './search';
 import recipeRunTool from './run';
 import './candidates';
 import './merge';
@@ -156,6 +156,13 @@ describe('recipes:* registration (P-005, P-013)', () => {
     const tool = findTool('recipes:candidates');
     expect(tool.effect).toBe('read');
     expect(tool.capabilities).toContain('recipes:read');
+  });
+
+  it('recipes:search accepts limits through 50 and rejects 51', () => {
+    const limit = (recipeSearchTool.args as any).shape.limit;
+    expect(limit.safeParse(40).success).toBe(true);
+    expect(limit.safeParse(50).success).toBe(true);
+    expect(limit.safeParse(51).success).toBe(false);
   });
 
   it('recipes:get advertises its global scope and rejects harness scoping', () => {

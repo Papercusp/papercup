@@ -156,16 +156,50 @@ export const INDEX_CENSUS_SQL = `
 type Queryable = { unsafe: (sql: string) => Promise<unknown> };
 
 /**
+ * Rewrite one `timestamp with time zone` literal to a canonical `+00` rendering,
+ * or return null if it is not one this understands (in which case it is left
+ * exactly as Postgres wrote it — an unparsed literal must never be silently
+ * rewritten into something that compares equal).
+ */
+function toUtcTimestamptzLiteral(body: string): string | null {
+  const m = /^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2}(?:\.\d+)?)([+-]\d{2})(?::?(\d{2}))?$/.exec(
+    body,
+  );
+  if (!m) return null;
+  const at = new Date(`${m[1]}T${m[2]}${m[3]}:${m[4] ?? '00'}`);
+  if (Number.isNaN(at.getTime())) return null;
+  const [date, time] = at.toISOString().slice(0, -1).split('T');
+  return `${date} ${time.endsWith('.000') ? time.slice(0, -4) : time}+00`;
+}
+
+/**
  * Normalize a rendered index definition for comparison.
  *
- * Only whitespace is touched. Resist the urge to normalize more: every
- * "harmless" rewrite (lowercasing, stripping `USING btree`, collapsing
- * parentheses) is a rule about what counts as the SAME index, and each one is a
- * place a real difference can hide. Whitespace is the only difference Postgres
- * itself will never render inconsistently between two identical schemas.
+ * Exactly TWO rules, and both are about RENDERING rather than meaning. Resist
+ * adding a third on principle: every "harmless" rewrite (lowercasing, stripping
+ * `USING btree`, collapsing parentheses) is a rule about what counts as the SAME
+ * index, and each one is a place a real difference can hide.
+ *
+ *  1. Whitespace — the one difference Postgres will never render inconsistently
+ *     between two identical schemas.
+ *  2. `timestamp with time zone` literals, rewritten to a `+00` rendering.
+ *     NOT a cosmetic nicety — this one was measured. `pg_get_indexdef` renders a
+ *     timestamptz literal in the SESSION's TimeZone, so the partial-index
+ *     predicate in `session_turn_journal_turn_uq` comes back as
+ *     `'1970-01-01 00:00:00+00'` from the UTC test container and
+ *     `'1969-12-31 19:00:00-05'` from the America/New_York dev box — the same
+ *     instant, the same index, reported as a REDEFINITION on 2026-08-29 before
+ *     this rule existed. Left unfixed, the guard would have cried wolf on every
+ *     install whose server timezone is not UTC, which is most of them.
  */
 export function normalizeIndexDefinition(definition: string): string {
-  return definition.replace(/\s+/g, ' ').trim();
+  return definition
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/'([^']*)'::timestamp with time zone/g, (whole, body: string) => {
+      const utc = toUtcTimestamptzLiteral(body);
+      return utc === null ? whole : `'${utc}'::timestamp with time zone`;
+    });
 }
 
 export async function takeIndexCensus(client: Queryable): Promise<IndexCensusEntry[]> {

@@ -4,6 +4,7 @@ import {
   dailyDigestWatchdogKey,
   parseDailyDigestProposals,
   runWorkItemAdmissionDailyDigest,
+  MIN_DAILY_DIGEST_COVERAGE,
   type DailyDigestContext,
 } from './work-items-admission-daily-digest';
 import { LEARNING_MODEL_SPEC } from './learning/model-policy';
@@ -12,6 +13,7 @@ const context: DailyDigestContext = {
   sourceBulkStageRunId: 'bulk-stage-1',
   sourceCensusRunId: 'census-1',
   censusAfter: 12,
+  coverage: { live: 3, covered: 3, uncovered: 0, ratio: 1 },
   items: [
     {
       id: 'WI-1',
@@ -184,5 +186,98 @@ describe('work-item admission daily digest', () => {
     expect(bound.at(-1)?.values).toContain(override);
     // the regression this pins: the ledger must NOT name the policy model the run never used
     expect(bound.at(-1)?.values).not.toContain(LEARNING_MODEL_SPEC);
+  });
+
+  /**
+   * D-028. The census shard map can never cover the live corpus EXACTLY on a live
+   * workspace: a census takes ~510s while items arrive at ~8/min, so it is ~67 items
+   * stale before it finishes. The old gate demanded exact coverage and therefore never
+   * let a digest run at all — while already tolerating the opposite drift direction
+   * (map entries whose item has left the corpus) one line above. These cases pin the
+   * corrected asymmetry: arrivals are EXCLUDED and DISCLOSED above a floor, and the
+   * invariants that actually protect the digest still hard-block.
+   */
+  function coverageHarness(opts: { corpusIds: string[]; memberIds: string[]; duplicateId?: string }) {
+    const bound: Array<{ statement: string; values: unknown[] }> = [];
+    const prompts: string[] = [];
+    const sql = (async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      const statement = [...strings].join(' ');
+      if (statement.includes('SELECT detail, tokens_in')) return [];
+      if (statement.includes("run_kind = 'bulk-stage'")) return [{ id: 'bulk-1', detail: { resultCensusRunId: 'census-1' } }];
+      if (statement.includes("run_kind = 'census'")) return [{ id: 'census-1', census_after: 3 }];
+      if (statement.includes('FROM harness_shared.work_items')) {
+        return opts.corpusIds.map((id) => ({
+          id, title: `title ${id}`, summary: `summary ${id}`, state: 'open', kind: 'bug', admission: 'admitted',
+        }));
+      }
+      if (statement.includes('dedup_shard_map')) {
+        const rows = opts.memberIds.map((id) => ({ shard_id: 0, item_id: id, role: 'member' }));
+        if (opts.duplicateId) rows.push({ shard_id: 1, item_id: opts.duplicateId, role: 'member' });
+        return rows;
+      }
+      if (statement.includes('UPDATE harness_shared.admission_runs')) bound.push({ statement, values });
+      return [];
+    }) as unknown as import('./work-items').OrgSql;
+    const llmCall = vi.fn(async (call: { messages: Array<{ content: string }> }) => {
+      prompts.push(call.messages.map((message) => message.content).join('\n'));
+      return { json: { umbrellas: [] }, text: '', tokensIn: 5, tokensOut: 7 };
+    }) as unknown as Parameters<typeof runWorkItemAdmissionDailyDigest>[0]['llmCall'];
+    const detail = () => {
+      const payload = bound.at(-1)?.values.find((value) => typeof value === 'string' && value.startsWith('{'));
+      return JSON.parse(String(payload)) as Record<string, unknown>;
+    };
+    return { sql, llmCall, bound, prompts, detail };
+  }
+
+  const ids = (n: number, from = 1) => Array.from({ length: n }, (_, index) => `WI-${index + from}`);
+
+  const runCoverage = async (harness: ReturnType<typeof coverageHarness>, runId: string) =>
+    runWorkItemAdmissionDailyDigest({
+      workspaceId: 'ws', harnessSlug: 'papercusp', runId,
+      now: () => Date.parse('2026-08-29T00:00:00Z'), sql: harness.sql, llmCall: harness.llmCall,
+      fileUmbrella: vi.fn(async () => ({ id: 'WI-U1', created: true })), linkUmbrella: vi.fn(async () => 3),
+    });
+
+  it('D-028: digests the covered subset when items arrived after the census, and discloses the gap', async () => {
+    // 10 live, 9 in the map: WI-10 arrived after the census. 0.9 clears the floor.
+    const harness = coverageHarness({ corpusIds: ids(10), memberIds: ids(9) });
+    const result = await runCoverage(harness, 'daily-drift');
+
+    expect(result).toMatchObject({ status: 'complete', modelCalled: true });
+    expect(result.coverage).toEqual({ live: 10, covered: 9, uncovered: 1, ratio: 0.9 });
+    // the arrival is EXCLUDED from what the model reasons over, not silently shardless
+    expect(result.corpusSize).toBe(9);
+    expect(harness.prompts[0]).toContain('WI-9');
+    expect(harness.prompts[0]).not.toContain('WI-10');
+    // and the drift is on the ledger row: disclosed partial coverage, never silent
+    expect(harness.detail().coverage).toEqual({ live: 10, covered: 9, uncovered: 1, ratio: 0.9 });
+  });
+
+  it('D-028: still blocks below the coverage floor rather than digest a misleading sample', async () => {
+    const covered = Math.floor(10 * MIN_DAILY_DIGEST_COVERAGE) - 1; // strictly under the floor
+    const harness = coverageHarness({ corpusIds: ids(10), memberIds: ids(covered) });
+    const result = await runCoverage(harness, 'daily-under-floor');
+
+    expect(result).toMatchObject({ status: 'blocked', blockedReason: 'census-coverage-mismatch', modelCalled: false });
+    expect(harness.prompts).toHaveLength(0);
+    // a blocked run still reports what it measured, so the block is diagnosable
+    expect(result.coverage).toMatchObject({ live: 10, covered, uncovered: 10 - covered });
+    expect(harness.detail().coverage).toMatchObject({ live: 10, covered });
+  });
+
+  it('D-028: duplicate member rows still hard-block — coverage tolerance never weakens the one-shard invariant', async () => {
+    const harness = coverageHarness({ corpusIds: ids(10), memberIds: ids(10), duplicateId: 'WI-3' });
+    const result = await runCoverage(harness, 'daily-duplicate');
+
+    expect(result).toMatchObject({ status: 'blocked', blockedReason: 'census-coverage-mismatch', modelCalled: false });
+    expect(harness.prompts).toHaveLength(0);
+  });
+
+  it('D-028: an empty corpus still blocks as empty-corpus, never as a coverage mismatch', async () => {
+    const harness = coverageHarness({ corpusIds: [], memberIds: [] });
+    const result = await runCoverage(harness, 'daily-empty');
+
+    expect(result).toMatchObject({ status: 'blocked', blockedReason: 'empty-corpus', modelCalled: false });
+    expect(harness.prompts).toHaveLength(0);
   });
 });

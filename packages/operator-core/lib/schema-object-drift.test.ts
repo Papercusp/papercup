@@ -136,7 +136,7 @@ describe('compareIndexCensus', () => {
 });
 
 describe('normalizeIndexDefinition', () => {
-  it('collapses whitespace and nothing else', () => {
+  it('collapses whitespace', () => {
     expect(normalizeIndexDefinition('CREATE  INDEX\n  a ON b (c) ')).toBe('CREATE INDEX a ON b (c)');
   });
 
@@ -146,6 +146,41 @@ describe('normalizeIndexDefinition', () => {
     expect(normalizeIndexDefinition('CREATE INDEX a ON b USING btree (c)')).not.toBe(
       normalizeIndexDefinition('create index a on b using btree (c)'),
     );
+  });
+
+  describe('timestamptz literals — the measured false positive', () => {
+    // pg_get_indexdef renders a timestamptz literal in the SESSION's TimeZone,
+    // so the SAME index reports a different definition from a UTC container and
+    // from the America/New_York dev box. Observed on
+    // session_turn_journal_turn_uq, 2026-08-29.
+    const utc =
+      "CREATE UNIQUE INDEX u ON s.t USING btree (session_id, COALESCE(turn_ts, '1970-01-01 00:00:00+00'::timestamp with time zone))";
+    const newYork =
+      "CREATE UNIQUE INDEX u ON s.t USING btree (session_id, COALESCE(turn_ts, '1969-12-31 19:00:00-05'::timestamp with time zone))";
+
+    it('renders the same instant identically regardless of server timezone', () => {
+      expect(normalizeIndexDefinition(newYork)).toBe(normalizeIndexDefinition(utc));
+    });
+
+    it('still distinguishes two genuinely DIFFERENT instants', () => {
+      // The control for the rule above: it must equate renderings, never values.
+      const later = utc.replace('1970-01-01 00:00:00+00', '1970-01-02 00:00:00+00');
+      expect(normalizeIndexDefinition(later)).not.toBe(normalizeIndexDefinition(utc));
+    });
+
+    it('leaves a literal it cannot parse exactly as Postgres wrote it', () => {
+      // Failing to normalize is a false positive; normalizing something
+      // unrecognized into a value that happens to compare equal is a false
+      // NEGATIVE, which is worse — so an unparsed literal is passed through.
+      const weird = "CREATE INDEX u ON s.t (COALESCE(x, 'infinity'::timestamp with time zone))";
+      expect(normalizeIndexDefinition(weird)).toBe(weird);
+    });
+
+    it('preserves sub-second precision', () => {
+      const ms =
+        "CREATE INDEX u ON s.t (COALESCE(x, '2026-01-02 03:04:05.678+00'::timestamp with time zone))";
+      expect(normalizeIndexDefinition(ms)).toContain('05.678+00');
+    });
   });
 });
 

@@ -23,6 +23,35 @@ export const DEFAULT_DAILY_DIGEST_MAX_TOKENS = 20_000;
 export const MIN_DAILY_DIGEST_MEMBERS = 3;
 export const MAX_DAILY_DIGEST_UMBRELLAS = 100;
 
+/**
+ * Minimum share of the LIVE corpus the census shard map must cover for a digest to run
+ * (plan decision D-028).
+ *
+ * Exact coverage is not a satisfiable gate on a live workspace: a census over this corpus
+ * takes ~510s while items arrive at ~8/min, so every census is ~67 items stale the moment
+ * it completes — before a digest can even start.  The digest therefore digests the COVERED
+ * SUBSET and discloses the gap, but still refuses below this floor, because a digest over a
+ * small fraction of the corpus would propose umbrellas from a misleading sample.  The floor
+ * makes coverage a quality bar rather than a liveness impossibility.
+ */
+export const MIN_DAILY_DIGEST_COVERAGE = 0.8;
+
+/**
+ * How much of the live corpus a given digest run actually considered.  Recorded on every
+ * run's admission_runs detail (D-028): silent partial coverage is not acceptable, disclosed
+ * partial coverage is.
+ */
+export interface DailyDigestCoverage {
+  /** Live non-terminal, non-observation corpus size read at digest time. */
+  live: number;
+  /** Corpus items present in the census shard map — the subset this run digested. */
+  covered: number;
+  /** Corpus items that arrived after the census; excluded here, picked up next cycle. */
+  uncovered: number;
+  /** covered / live; 1 when the corpus is empty. */
+  ratio: number;
+}
+
 export interface DailyDigestItem {
   id: string;
   title: string;
@@ -45,6 +74,7 @@ export interface DailyDigestContext {
   items: DailyDigestItem[];
   shards: DailyDigestShard[];
   censusAfter: number | null;
+  coverage: DailyDigestCoverage;
 }
 
 export interface DailyDigestUmbrellaProposal {
@@ -72,6 +102,11 @@ export interface DailyDigestRunResult {
   sourceBulkStageRunId: string | null;
   sourceCensusRunId: string | null;
   corpusSize: number;
+  /**
+   * Coverage this run measured, or null when it blocked before coverage could be computed
+   * (no completed bulk stage / no resolvable census).
+   */
+  coverage: DailyDigestCoverage | null;
   modelCalled: boolean;
   tokensIn: number;
   tokensOut: number;
@@ -248,7 +283,11 @@ function sourceCensusId(stage: BulkStageRow): string | null {
 async function readDigestContext(
   sql: OrgSql,
   input: { workspaceId: string; harnessSlug: string; stage: BulkStageRow },
-): Promise<{ context: DailyDigestContext | null; blockedReason?: DailyDigestRunResult['blockedReason'] }> {
+): Promise<{
+  context: DailyDigestContext | null;
+  blockedReason?: DailyDigestRunResult['blockedReason'];
+  coverage?: DailyDigestCoverage;
+}> {
   const censusId = sourceCensusId(input.stage);
   if (!censusId) return { context: null, blockedReason: 'census-coverage-mismatch' };
   const censusRows = await sql<CensusRow[]>`
@@ -291,8 +330,21 @@ async function readDigestContext(
     if (memberById.has(id)) return { context: null, blockedReason: 'census-coverage-mismatch' };
     memberById.set(id, Number(row.shard_id));
   }
-  if (memberById.size !== corpusIds.size || [...corpusIds].some((id) => !memberById.has(id))) {
-    return { context: null, blockedReason: 'census-coverage-mismatch' };
+  // D-028: corpus GROWTH since the census is tolerated exactly as shrinkage already is —
+  // `memberRows` above drops map entries whose item has since left the corpus, and there is
+  // no reason to treat the opposite direction differently.  Items that ARRIVED after the
+  // census are excluded from this run (the next census/digest cycle picks them up) instead
+  // of hard-blocking the digest; the run discloses the gap on its ledger row.  Coverage
+  // still keeps a FLOOR so a digest never reasons from a small, misleading sample.
+  const covered = [...corpusIds].filter((id) => memberById.has(id)).length;
+  const coverage: DailyDigestCoverage = {
+    live: corpusIds.size,
+    covered,
+    uncovered: corpusIds.size - covered,
+    ratio: corpusIds.size === 0 ? 1 : covered / corpusIds.size,
+  };
+  if (corpusIds.size > 0 && coverage.ratio < MIN_DAILY_DIGEST_COVERAGE) {
+    return { context: null, blockedReason: 'census-coverage-mismatch', coverage };
   }
   const shardMap = new Map<number, DailyDigestShard>();
   for (const row of mapRows) {
@@ -302,7 +354,8 @@ async function readDigestContext(
     shard[row.role === 'member' ? 'members' : 'ghosts'].push(row.item_id);
     shardMap.set(shardId, shard);
   }
-  const items = corpusRows.map((row) => ({
+  // Only covered rows are digested; `shardId` below is therefore always resolvable.
+  const items = corpusRows.filter((row) => memberById.has(row.id)).map((row) => ({
     id: row.id,
     title: row.title ?? '',
     summary: row.summary ?? '',
@@ -319,7 +372,9 @@ async function readDigestContext(
         items,
         shards: [],
         censusAfter: Number(census.census_after ?? 0),
+        coverage,
       },
+      coverage,
     };
   return {
     context: {
@@ -328,8 +383,22 @@ async function readDigestContext(
       items,
       shards: [...shardMap.values()].sort((a, b) => a.shardId - b.shardId),
       censusAfter: census.census_after == null ? null : Number(census.census_after),
+      coverage,
     },
+    coverage,
   };
+}
+
+/** Restore a recorded coverage block from a ledger row; null when absent or malformed. */
+function parseCoverage(value: unknown): DailyDigestCoverage | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const live = Number(raw.live);
+  const covered = Number(raw.covered);
+  const uncovered = Number(raw.uncovered);
+  const ratio = Number(raw.ratio);
+  if (![live, covered, uncovered, ratio].every((n) => Number.isFinite(n))) return null;
+  return { live, covered, uncovered, ratio };
 }
 
 async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestRunResult | null> {
@@ -362,6 +431,7 @@ async function readFinishedRun(sql: OrgSql, runId: string): Promise<DailyDigestR
     sourceBulkStageRunId: typeof detail.sourceBulkStageRunId === 'string' ? detail.sourceBulkStageRunId : null,
     sourceCensusRunId: typeof detail.sourceCensusRunId === 'string' ? detail.sourceCensusRunId : null,
     corpusSize: Number(detail.corpusSize ?? 0),
+    coverage: parseCoverage(detail.coverage),
     modelCalled: detail.modelCalled === true,
     tokensIn: Number(row.tokens_in ?? 0),
     tokensOut: Number(row.tokens_out ?? 0),
@@ -425,6 +495,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         sourceBulkStageRunId: null,
         sourceCensusRunId: null,
         corpusSize: 0,
+        coverage: null,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -453,6 +524,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         sourceBulkStageRunId: stage.id,
         sourceCensusRunId: sourceCensusId(stage),
         corpusSize: 0,
+        coverage: contextResult.coverage ?? null,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -477,6 +549,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
         sourceBulkStageRunId: context.sourceBulkStageRunId,
         sourceCensusRunId: context.sourceCensusRunId,
         corpusSize: 0,
+        coverage: context.coverage,
         modelCalled: false,
         tokensIn: 0,
         tokensOut: 0,
@@ -537,6 +610,7 @@ export async function runWorkItemAdmissionDailyDigest(opts: DailyDigestRunOption
       sourceBulkStageRunId: context.sourceBulkStageRunId,
       sourceCensusRunId: context.sourceCensusRunId,
       corpusSize: context.items.length,
+      coverage: context.coverage,
       modelCalled: true,
       tokensIn,
       tokensOut,

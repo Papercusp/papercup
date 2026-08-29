@@ -40,6 +40,11 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { lastServiceHealth, lastServiceHealthAt, probeAll, recordProbeResults, type ProbeResult } from '../../service-health';
 import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
+import {
+  checkSchemaObjectDrift,
+  describeSchemaObjectDrift,
+  type SchemaObjectDriftResult,
+} from '../../schema-object-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
 // WI-38327: the threshold the bridge's own alarm decider debounces on. Imported so the
@@ -75,6 +80,12 @@ export type WatchdogSource =
   | 'red-test' | 'smoke-fail' | 'repeated-tool-error' | 'service-down'
   // P-010 blind-source collectors (watchdog-robustness):
   | 'migration-drift' | 'routine-failure' | 'stuck-plan' | 'failed-spawn' | 'expired-lease' | 'unresolved-escalation'
+  // WI-918476: index objects that exist in the LIVE database but that no migration
+  // produces (or vice versa) — the third direction, and the one neither
+  // 'migration-drift' nor 'schema-ahead-of-code' can see, because both of those read
+  // the migration LEDGER and an object created outside the migration set leaves no
+  // trace in it. See collectSchemaObjectDriftSignals.
+  | 'schema-object-drift'
   // a role fire-path in error-backoff (autoloop_state.consecutive_errors):
   | 'fire-circuit-open'
   // an engine LOOP (loop:arm) parked at 'infinity' far past its fire with NO completion
@@ -2121,6 +2132,82 @@ export async function collectSchemaAheadSignals(
   }];
 }
 
+/**
+ * schema-object-drift: index objects that exist in the LIVE database but that the
+ * migration set does not produce — so a FRESH INSTALL will not have them.
+ *
+ * The third direction, and the one neither collector above can see. Both of them
+ * read the migration LEDGER (`schema_migrations` vs the `sql/` dir), and an index
+ * created outside the migration set leaves no trace in the ledger at all: every
+ * migration can be applied, byte-identical, and the live schema still carry
+ * objects users never get. Measured on the dev database 2026-08-29 (WI-918476):
+ * `plugin_configs_plugin_idx` and `plugin_enables_plugin_idx` exist here and in
+ * no migration. Every query plan tuned against them here is tuned against
+ * something that is not shipped.
+ *
+ * Fires on `liveOnly` and `definitionMismatch` only. `referenceOnly` (an index
+ * the migrations produce that is missing live) is deliberately NOT fired: that is
+ * `collectMigrationDriftSignals`' question, it answers it more precisely, and a
+ * second collector on the same condition would just double the claim capacity a
+ * single unapplied migration consumes.
+ *
+ * Severity `major`, not `critical`. Nothing is broken right now — the live schema
+ * is a superset — so this is a fidelity finding, and paging it as an outage would
+ * teach the reader to discount the source.
+ */
+export async function collectSchemaObjectDriftSignals(
+  check: () => Promise<SchemaObjectDriftResult> = checkSchemaObjectDrift,
+): Promise<WatchdogSignal[]> {
+  let result: SchemaObjectDriftResult;
+  try { result = await check(); } catch { return []; }
+
+  if (!result.drift) {
+    // An UNAVAILABLE check is not a clean one, and a guard that can never speak
+    // is worse than no guard — so an ungenerated manifest is itself the finding.
+    // A live-census failure is NOT: the database being unreachable is transient
+    // and already covered by the service-health collectors.
+    if (result.unavailableReason?.includes('manifest')) {
+      return [{
+        source: 'schema-object-drift',
+        key: 'schema-object-drift-unavailable',
+        title: 'The migration-derived index manifest has never been generated',
+        body:
+          `Watchdog signal (schema-object-drift): the live-vs-migration index guard cannot run, so index drift ` +
+          `is currently UNDETECTED rather than absent.\n\n${result.unavailableReason}`,
+        severity: 'major',
+        kind: 'bug',
+        paths: ['packages/operator-core/lib/db-schema-reference/index-manifest.ts'],
+      }];
+    }
+    return [];
+  }
+
+  const { liveOnly, definitionMismatch } = result.drift;
+  if (liveOnly.length === 0 && definitionMismatch.length === 0) return [];
+
+  const stamp = result.manifestGeneratedAt
+    ? `\n\nReference manifest generated: ${result.manifestGeneratedAt}. If these objects were added by a migration NEWER than that, the manifest is stale — regenerate it (PAPERCUSP_UPDATE_INDEX_MANIFEST=1 npm run test:file -- apps/operator/test/schema-object-drift.integration.test.ts) before treating them as drift.`
+    : '';
+
+  return [{
+    source: 'schema-object-drift',
+    key: 'schema-object-drift',
+    title: 'Live schema carries index objects no migration produces',
+    body:
+      `Watchdog signal (schema-object-drift): the live database's index set does not match the one the ` +
+      `migrations build, so this database is NOT what a fresh install gets. Query plans validated here are ` +
+      `validated against indexes users may not have.\n\n${describeSchemaObjectDrift(result.drift)}\n\n` +
+      `Compared ${result.drift.liveIndexCount} live indexes against ${result.drift.referenceIndexCount} ` +
+      `migration-derived ones across: ${result.drift.schemasCompared.join(', ')}. Not compared (no migration ` +
+      `builds them): ${result.drift.schemasNotCompared.join(', ') || 'none'}.${stamp}\n\n` +
+      `Remedy: either add a migration that creates the object (so every install gets it) or drop it here (so ` +
+      `this database matches what ships). Leaving it is the one option that keeps the two permanently different.`,
+    severity: 'major',
+    kind: 'bug',
+    paths: ['libs/papercusp/libs/db/sql'],
+  }];
+}
+
 /** The dbos-executor-reaper's stamped `metadata.last_error_source` — a self-heal
  *  requeue, not a genuine wedge (EI-5302). Mirrors REAPER_LAST_ERROR_SOURCE in
  *  dbos/dbos-executor-reaper.ts (duplicated as a literal to avoid a cross-module
@@ -3681,6 +3768,7 @@ export async function defaultPapercuspCollectors(
     // P-010 blind-source collectors (each conservative + behind the P-009 per-source budget).
     { name: 'papercusp-migration-drift', collect: () => collectMigrationDriftSignals() },
     { name: 'papercusp-schema-ahead-of-code', collect: () => collectSchemaAheadSignals() },
+    { name: 'papercusp-schema-object-drift', collect: () => collectSchemaObjectDriftSignals() },
     { name: 'papercusp-routine-failure', collect: () => collectRoutineFailureSignals(getOrgPg().sql) },
     { name: 'papercusp-stuck-plan', collect: () => collectStuckPlanSignals(getOrgPg().sql, workspaceId) },
     { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql, opts) },

@@ -37,17 +37,38 @@
  * Two independent assertions per case:
  *
  *   1. ABSOLUTE — at the SHIPPED profile the query must reach its table through
- *      an index. A case that seq-scans on both profiles is a real finding, and
- *      the agreement check alone would call it green.
- *   2. AGREEMENT — the plan must be the SAME shape at the dev profile and the
- *      shipped profile. This is the audit's actual question, self-calibrating:
- *      it needs no hand-tuned expected cost and goes red the moment a schema,
- *      index or derivation change makes the two hosts disagree.
+ *      an index. This is the load-bearing half: it is what catches a hot query
+ *      whose index the planner declines on the hardware we actually ship to.
+ *   2. AGREEMENT — the plan must be the SAME shape at the dev profile and at the
+ *      shipped profile, i.e. this box can still OBSERVE what a laptop does. A
+ *      case that diverges is untestable here by observation and will look
+ *      correct on every dev box forever.
  *
- * A permanent DIVERGENCE CONTROL (see `divergence control` below) proves the
- * agreement check can still fail. Without it, "every case agreed" is
- * indistinguishable from "the comparison is broken" — the whole population
- * passing is only evidence when something is known to be able to fail.
+ * ## Measured, and it corrects the assumption this gate was commissioned on
+ *
+ * The premise going in was that the 24x effective_cache_size gap would flip hot
+ * queries between the two profiles — that a query index-scanning here would
+ * sequentially scan on a laptop. Swept across selectivities from 0.3% to 100%
+ * of a 20M-row table (2026-08-29, WI-918476), that is NOT what happens: both
+ * profiles flip index -> seq at the SAME selectivity, and every hot case below
+ * agrees. The reason is structural. `effective_cache_size` enters the cost model
+ * mainly through the Mackert-Lohman estimate of INDEX pages surviving in cache
+ * across REPEATED scans; for a single scan the dominant term is the heap fetch,
+ * priced by `random_page_cost` — which is 4.0 on BOTH hosts, because the
+ * derivation does not produce one.
+ *
+ * So the divergence risk is smaller than assumed, and the real exposure is the
+ * opposite shape: both hosts get the SAME plan from the SAME wrong constant, and
+ * on this box that is harmless because everything is resident in 63 GB of shared
+ * buffers, while on a laptop it is not. That is a runtime cost, not a plan-shape
+ * difference — which is exactly why assertion 1, not assertion 2, is the one
+ * doing the work here.
+ *
+ * A permanent CONTROL (the `CONTROL:` test below) proves the assertion can still
+ * fail, by flipping a real case to Seq Scan under a deliberately hostile
+ * `random_page_cost`. Without it, "every case passed" is indistinguishable from
+ * "the plan is no longer being read" — a whole population passing is only
+ * evidence when something is known to be able to fail.
  *
  * ## Why the session can stand in for a whole server
  *
@@ -219,17 +240,8 @@ interface PlanCase {
   /** The table whose access path is being asserted. */
   readonly relation: string;
   readonly query: string;
-  /**
-   * The access path the SHIPPED profile must use. `'index'` for a real hot
-   * query; `'seq'` only for the divergence control, which exists to fail.
-   */
+  /** The access path the SHIPPED profile must use. */
   readonly expectShipped: 'index' | 'seq';
-  /**
-   * Must the two profiles agree? True for every real case. The divergence
-   * control sets this false and asserts the opposite — that is what proves the
-   * agreement check is falsifiable rather than vacuously true.
-   */
-  readonly expectAgreement: boolean;
   readonly why: string;
 }
 
@@ -255,7 +267,6 @@ const CASES: readonly PlanCase[] = [
              WHERE session_id = 'probe-session-0007'
              ORDER BY turn_idx`,
     expectShipped: 'index',
-    expectAgreement: true,
     why: 'session_turns_session_idx. Reading one session out of tens of thousands is the single hottest session-store access; a Seq Scan here reads the whole ~10 GB table to return a few dozen rows.',
   },
   {
@@ -266,7 +277,6 @@ const CASES: readonly PlanCase[] = [
              ORDER BY ingested_at DESC
              LIMIT 100`,
     expectShipped: 'index',
-    expectAgreement: true,
     why: 'session_turns_ingested_idx. ORDER BY + LIMIT is the shape where losing the index is worst: the alternative is not a cheap scan, it is a full sort of every row to return 100.',
   },
   {
@@ -278,7 +288,6 @@ const CASES: readonly PlanCase[] = [
              ORDER BY invoked_at DESC
              LIMIT 50`,
     expectShipped: 'index',
-    expectAgreement: true,
     why: 'tool_invocations_telemetry_idx is a covering (workspace_id, harness_slug, invoked_at DESC) index built for exactly this query; if the planner declines it, the index is dead weight on every install.',
   },
   {
@@ -289,18 +298,7 @@ const CASES: readonly PlanCase[] = [
              ORDER BY invoked_at DESC
              LIMIT 100`,
     expectShipped: 'index',
-    expectAgreement: true,
     why: 'tool_invocations_invoked_at_cov_idx INCLUDEs every selected column, so this should be an Index Only Scan — the cheapest plan available and the one most sensitive to a pessimistic random_page_cost.',
-  },
-  {
-    name: 'divergence control — moderate-selectivity range scan (MUST diverge)',
-    relation: 'tool_invocations',
-    query: `SELECT id
-              FROM harness_shared.tool_invocations
-             WHERE invoked_at > now() - interval '30 days'`,
-    expectShipped: 'seq',
-    expectAgreement: false,
-    why: 'THE CALIBRATION CASE — permanent, and it is meant to fail the agreement check. An unbounded range predicate matching a large fraction of a 20M-row table sits exactly on the index-vs-seq cost boundary, which is where a 24x effective_cache_size gap changes the answer. If this case ever starts AGREEING, the comparison has stopped discriminating and every green above is uninformative — fix the instrument before trusting the population.',
   },
 ];
 
@@ -416,39 +414,30 @@ describe('plan shape at the SHIPPED embedded GUC profile', () => {
     expect(Object.keys(SHIPPED_TUNING)).not.toContain('randomPageCost');
   });
 
-  it('TEMP SWEEP', async () => {
-    const probes: Array<[string, string]> = [];
-    for (const mins of [1, 2, 5, 10, 20, 30, 60, 120, 180, 240, 300]) {
-      probes.push([
-        `range ${mins}m`,
-        `SELECT id FROM harness_shared.tool_invocations WHERE invoked_at > now() - interval '${mins} minutes'`,
-      ]);
-      probes.push([
-        `range+cols ${mins}m`,
-        `SELECT tool_name, status FROM harness_shared.tool_invocations WHERE invoked_at > now() - interval '${mins} minutes'`,
-      ]);
-    }
-    for (const n of [1, 5, 25, 60, 120, 200]) {
-      probes.push([
-        `turns sessions x${n}`,
-        `SELECT s.turn_idx FROM harness_shared.session_turns s WHERE s.session_id IN (${Array.from({ length: n }, (_, i) => `'probe-session-${String(i).padStart(4, '0')}'`).join(',')})`,
-      ]);
-    }
-    probes.push([
-      'nestloop join',
-      `SELECT t.id FROM harness_shared.session_turns s JOIN harness_shared.tool_invocations t ON t.spawn_id = s.session_id AND t.workspace_id = s.workspace_id WHERE s.session_id = 'probe-session-0007'`,
-    ]);
-    const out: string[] = [];
-    for (const [label, q] of probes) {
-      await applyProfile(sql, SHIPPED_TUNING);
-      const sp = await planFor(sql, q);
-      await applyProfile(sql, DEV_TUNING);
-      const dp = await planFor(sql, q);
-      const s = [...accessPaths(sp, 'tool_invocations'), ...accessPaths(sp, 'session_turns')].sort().join('+');
-      const d = [...accessPaths(dp, 'tool_invocations'), ...accessPaths(dp, 'session_turns')].sort().join('+');
-      out.push(`${s === d ? '   ' : '>>>'} ${label}: shipped=[${s}] dev=[${d}]`);
-    }
-    console.log('SWEEP\n' + out.join('\n'));
+  it('CONTROL: the assertion can actually fail — a hostile profile flips a hot query to Seq Scan', async () => {
+    // Every case below passes. That is only evidence if something is known to be
+    // able to FAIL, so here is that something: take the FIRST real case, keep
+    // everything else identical, and price random I/O absurdly. The planner must
+    // abandon the index. If it does not, `accessPaths` has stopped reading the
+    // plan (a renamed EXPLAIN field, a changed node type) and every green above
+    // is uninformative — fix the instrument before trusting the population.
+    //
+    // Deliberately structural rather than numerically tuned: an earlier version
+    // of this control tried to find a real selectivity at which the SHIPPED and
+    // DEV profiles disagree. None exists (see the header's measured note), and a
+    // control that has to be re-tuned to keep failing is not a control.
+    const probe = CASES[0];
+    await applyProfile(sql, SHIPPED_TUNING);
+    const honest = accessPaths(await planFor(sql, probe.query), probe.relation);
+    expect([...honest]).toEqual(['index']);
+
+    await sql.unsafe(`SET random_page_cost = 100000`);
+    const hostile = accessPaths(await planFor(sql, probe.query), probe.relation);
+    await applyProfile(sql, SHIPPED_TUNING); // restore before the real cases run
+    expect(
+      [...hostile],
+      'With random_page_cost at 100000 the planner still chose an index. The plan is no longer being read correctly — check accessPaths() against the current EXPLAIN (FORMAT JSON) node names.',
+    ).toEqual(['seq']);
   });
 
   for (const testCase of CASES) {
@@ -472,15 +461,13 @@ describe('plan shape at the SHIPPED embedded GUC profile', () => {
         `${testCase.why}\n\nAt the SHIPPED profile (effective_cache_size=${SHIPPED_TUNING.effectiveCacheSizeMb}MB, work_mem=${SHIPPED_TUNING.workMemMb}MB, random_page_cost=${randomPageCostFor(SHIPPED_TUNING)}) this query reaches ${testCase.relation} via [${[...shipped].join(', ')}], expected [${testCase.expectShipped}].\n\nPlan:\n${JSON.stringify(shippedPlan, null, 2)}`,
       ).toEqual([testCase.expectShipped]);
 
-      // 2. AGREEMENT — whether the dev box can still see what a laptop does.
+      // 2. AGREEMENT — whether the dev box can still OBSERVE what a laptop does.
       const agrees =
         shipped.size === dev.size && [...shipped].every((path) => dev.has(path));
       expect(
         agrees,
-        testCase.expectAgreement
-          ? `PLAN DIVERGENCE: this query takes [${[...dev].join(', ')}] on the dev box but [${[...shipped].join(', ')}] on a shipped laptop. It is therefore UNTESTABLE here by observation — it will look correct on every dev box forever. ${testCase.why}`
-          : `The divergence control has stopped diverging: both profiles now take [${[...shipped].join(', ')}]. ${testCase.why}`,
-      ).toBe(testCase.expectAgreement);
+        `PLAN DIVERGENCE: this query takes [${[...dev].join(', ')}] on the dev box but [${[...shipped].join(', ')}] on a shipped laptop, so it is now UNTESTABLE here by observation — it will look correct on every dev box forever. Every case agreed when this gate was written; something in the schema, the indexes or deriveDatabaseTuning() has changed that. ${testCase.why}`,
+      ).toBe(true);
     });
   }
 });
