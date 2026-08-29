@@ -2736,6 +2736,8 @@ describe('computeStages: position x health', () => {
             ageMs: 60_000,
             maxAgeMs: 120_000,
             ageExpired: false,
+            zeroAttemptStalled: false,
+            zeroAttemptStallMs: 15 * 60_000,
             escapesUsed: 0,
             maxCandidateEscapes: 0,
             escapeAvailable: false,

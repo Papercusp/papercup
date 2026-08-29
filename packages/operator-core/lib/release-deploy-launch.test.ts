@@ -128,6 +128,8 @@ describe('computeDeployStatus — decision tree', () => {
       ageMs: 3,
       maxAgeMs: 4,
       ageExpired: false,
+      zeroAttemptStalled: false,
+      zeroAttemptStallMs: 15 * 60_000,
       fixerSpawnId: 'fixer-1',
       fixerAlive: false,
       dispatchReservation: null,
