@@ -143,9 +143,37 @@ describe('governed test-process bridge', () => {
       owner: 'runner',
       idempotencyKey: 'explicit-key',
       leaseTtlMs: 4567,
+      // WI-638180: every caller of this bridge is a one-shot CLI. Without this
+      // flag the admission runs on the process-wide `getOrgPg()` pool, which no
+      // library may close — the runner then finishes all of its work and hangs
+      // forever on two idle PgBouncer sockets, which a supervisor reads as a
+      // wedged test run rather than a completed one.
+      dedicatedClient: true,
     });
     expect(result.info.inherited).toBe(false);
     expect(JSON.parse(result.childEnv.PAPERCUSP_ADMISSION_CONTEXT)).toEqual(context);
+  });
+
+  it('lets a long-lived embedder opt back onto the shared pool (WI-638180)', async () => {
+    // The default is the safe one, so the escape hatch needs its own coverage:
+    // an in-process host must be able to keep the shared pool it already owns.
+    const runGovernedOperation = vi.fn(async (_input: unknown, run: (ctx: typeof context) => Promise<unknown>) => run(context));
+    await runGovernedTestProcess(
+      {
+        executionApi: {
+          admissionContextFromEnvironment: vi.fn(() => undefined),
+          governedExecutionLeaseTtlForTimeout: vi.fn(() => 1000),
+          runGovernedOperation,
+        },
+        workspaceId: 'ws',
+        env: {},
+        owner: 'embedded-runner',
+        dedicatedClient: false,
+      },
+      async () => 'ok',
+    );
+    const [input] = runGovernedOperation.mock.calls[0] as unknown as [Record<string, unknown>];
+    expect(input.dedicatedClient).toBe(false);
   });
 });
 

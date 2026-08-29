@@ -1,11 +1,20 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Governor } from './admission';
-import { WorkItemAdmissionQueueDriver, type DurableAdmissionQueueStore } from './queue';
+import {
+  PgWorkItemAdmissionQueueStore,
+  WorkItemAdmissionQueueDriver,
+  type DurableAdmissionQueueStore,
+} from './queue';
 import {
   admissionContextFromEnvironment,
   beginGovernedExecution,
   governedExecutionLeaseTtlForTimeout,
+  resetGovernedExecutionRuntimesForTests,
+  runGovernedOperation,
+  setGovernedProcessClientFactoryForTests,
   withGovernedExecution,
+  withGovernedProcessRuntime,
+  type GovernedProcessClient,
 } from './execution';
 
 afterEach(() => {
@@ -243,5 +252,159 @@ describe('governed execution lifecycle', () => {
         { governor: new Governor(driver), driver: {} as WorkItemAdmissionQueueDriver },
       ),
     ).rejects.toThrow(/requires a durable queued receipt/);
+  });
+});
+
+/**
+ * WI-638180 — the dedicated-client LIFETIME.
+ *
+ * A top-level governed admission used to run on `getOrgPg()`, a process-wide
+ * singleton no library may close. The one-shot test-runner CLIs therefore
+ * finished every unit of work and then hung forever on two idle PgBouncer
+ * sockets — which reads to a supervisor exactly like a wedged test run
+ * (`pc-heavy` reporting exit 75), not like a completed one.
+ *
+ * These pin the replacement contract: a process-scoped operation gets its OWN
+ * client, and that client is closed when the LAST in-flight operation settles —
+ * not per-operation, and not never. The falsifier is stated with each case:
+ * every assertion below fails against the pre-fix behaviour (a client that is
+ * never ended) or against an obvious wrong repair (ending it under a running
+ * sibling, or handing the next operation an already-closed pool).
+ */
+describe('governed process client lifetime (WI-638180)', () => {
+  interface FakeClient extends GovernedProcessClient {
+    ends: number;
+  }
+
+  let built: FakeClient[] = [];
+
+  function fakeClient(endImpl?: (client: FakeClient) => Promise<void>): FakeClient {
+    // A query would mean the test is exercising the store, not the lifetime.
+    const sql = (() => {
+      throw new Error('lifetime tests must never issue a query');
+    }) as unknown as GovernedProcessClient['sql'];
+    const client: FakeClient = {
+      sql,
+      ends: 0,
+      async end() {
+        client.ends += 1;
+        if (endImpl) await endImpl(client);
+      },
+    };
+    built.push(client);
+    return client;
+  }
+
+  beforeEach(() => {
+    built = [];
+    resetGovernedExecutionRuntimesForTests();
+    setGovernedProcessClientFactoryForTests(() => fakeClient());
+  });
+
+  afterEach(() => {
+    setGovernedProcessClientFactoryForTests(null);
+    resetGovernedExecutionRuntimesForTests();
+  });
+
+  it('closes the dedicated client once the operation settles', async () => {
+    // Falsifier: the pre-fix seam closed nothing, so `ends` stayed 0 here and
+    // the CLI's event loop stayed non-empty forever.
+    const deps = await withGovernedProcessRuntime('ws-1', 'ns-1', async (d) => {
+      expect(built).toHaveLength(1);
+      expect(built[0]!.ends).toBe(0);
+      return d;
+    });
+    expect(deps.driver).toBeInstanceOf(WorkItemAdmissionQueueDriver);
+    expect(built[0]!.ends).toBe(1);
+  });
+
+  it('binds the runtime store to the dedicated client, never the shared pool', async () => {
+    // Reaching through the driver is deliberate: WHICH client the store queries
+    // is the property that matters and nothing else observes it. Were this ever
+    // repointed at the `getOrgPg()` singleton, the close above would become a
+    // process-wide database outage instead of a local teardown.
+    await withGovernedProcessRuntime('ws-1', 'ns-1', async (deps) => {
+      const store = (deps.driver as unknown as { store: { sql: unknown } }).store;
+      expect(store).toBeInstanceOf(PgWorkItemAdmissionQueueStore);
+      expect(store.sql).toBe(built[0]!.sql);
+    });
+  });
+
+  it('keeps ONE client open across overlapping operations and closes it once', async () => {
+    // Falsifier: a naive per-operation close ends the pool underneath a sibling
+    // that is still running — that reports ends=2 here, and CONNECTION_ENDED in
+    // production, where the runners admit several groups concurrently.
+    let releaseFirst!: () => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const first = withGovernedProcessRuntime('ws-1', 'ns-1', async () => {
+      markStarted();
+      await new Promise<void>((done) => { releaseFirst = done; });
+    });
+    await started;
+
+    await withGovernedProcessRuntime('ws-1', 'ns-2', async () => {
+      expect(built).toHaveLength(1);
+      expect(built[0]!.ends).toBe(0);
+    });
+    expect(built[0]!.ends).toBe(0);
+
+    releaseFirst();
+    await first;
+    expect(built).toHaveLength(1);
+    expect(built[0]!.ends).toBe(1);
+  });
+
+  it('builds a FRESH client for an operation that starts after the close', async () => {
+    // Falsifier: keeping the cached runtime across a close hands the next
+    // operation a store bound to an ended pool — a "fix" that swaps the hang
+    // for a hard failure on the second test group.
+    await withGovernedProcessRuntime('ws-1', 'ns-1', async () => undefined);
+    await withGovernedProcessRuntime('ws-1', 'ns-1', async () => undefined);
+    expect(built).toHaveLength(2);
+    expect(built.map((client) => client.ends)).toEqual([1, 1]);
+    expect(built[0]!.sql).not.toBe(built[1]!.sql);
+  });
+
+  it('closes the client when the operation THROWS, and preserves the error', async () => {
+    // Falsifier: closing only on the success path leaves a FAILED run hung —
+    // the worst shape of this bug, because the runner already has bad news and
+    // now cannot exit to deliver it.
+    await expect(
+      withGovernedProcessRuntime('ws-1', 'ns-1', async () => {
+        throw new Error('operation exploded');
+      }),
+    ).rejects.toThrow(/operation exploded/);
+    expect(built[0]!.ends).toBe(1);
+  });
+
+  it('does not let a close failure replace the operation result', async () => {
+    setGovernedProcessClientFactoryForTests(() => fakeClient(async () => {
+      throw new Error('pool teardown failed');
+    }));
+    await expect(
+      withGovernedProcessRuntime('ws-1', 'ns-1', async () => 'real result'),
+    ).resolves.toBe('real result');
+    expect(built[0]!.ends).toBe(1);
+  });
+
+  it('routes runGovernedOperation onto the dedicated client when asked', async () => {
+    // The `dedicatedClient` flag is the only thing selecting this path, so the
+    // wiring is proven rather than assumed: admission fails on the throwing
+    // fake `sql`, and the dedicated client must still be built AND closed.
+    await expect(
+      runGovernedOperation(
+        {
+          workspaceId: 'ws-1',
+          namespace: 'ns-1',
+          owner: 'lifetime-test',
+          admissionClass: 'process',
+          dedicatedClient: true,
+        },
+        async () => 'unreachable',
+      ),
+    ).rejects.toThrow();
+    expect(built).toHaveLength(1);
+    expect(built[0]!.ends).toBe(1);
   });
 });

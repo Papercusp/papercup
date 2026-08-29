@@ -1,5 +1,6 @@
 /** Durable receipt-to-process lifecycle used by subsystem migrations. */
 import { randomUUID } from 'node:crypto';
+import { createDedicatedOrgPg } from '@papercusp/db-org';
 import {
   Governor,
   type AdmissionClass,
@@ -8,7 +9,12 @@ import {
   type AdmissionRequest,
   type ResourceDemand,
 } from './admission';
-import { PgWorkItemAdmissionQueueStore, WorkItemAdmissionQueueDriver, type AdmissionQueueLeaseClaim } from './queue';
+import {
+  PgWorkItemAdmissionQueueStore,
+  WorkItemAdmissionQueueDriver,
+  type AdmissionQueueLeaseClaim,
+  type SqlClient,
+} from './queue';
 
 export const GOVERNED_EXECUTION_LEASE_TTL_MS = 24 * 60 * 60_000;
 
@@ -124,6 +130,14 @@ export interface GovernedOperationInput<T = unknown> {
   readonly metadata?: Readonly<Record<string, AdmissionMetadataValue>>;
   readonly idempotencyKey?: string;
   readonly leaseTtlMs?: number;
+  /**
+   * WI-638180: run on a DEDICATED database client this module closes when the
+   * last in-flight governed operation settles, instead of the process-wide
+   * `getOrgPg()` pool. Set it in a one-shot process (the test-runner CLIs)
+   * whose whole point is to exit when its work is done; leave it off inside a
+   * long-lived host, where the shared pool is the right lifetime.
+   */
+  readonly dedicatedClient?: boolean;
   readonly settle?: (
     result: T,
     context: AdmissionContext,
@@ -138,21 +152,27 @@ export function runGovernedOperation<T>(
 ): Promise<T> {
   const namespace = input.namespace.trim();
   if (!namespace) throw new Error('governed operation namespace must be non-empty');
+  const request = {
+    idempotencyKey: input.idempotencyKey?.trim() || `${namespace}:${randomUUID()}`,
+    admissionClass: input.admissionClass,
+    demand: input.demand,
+    payloadRef: input.payloadRef,
+    parent: input.parent,
+    metadata: input.metadata,
+  };
+  const executionInput = {
+    owner: input.owner,
+    leaseTtlMs: input.leaseTtlMs,
+    ...(input.settle ? { settle: input.settle } : {}),
+    ...(input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}),
+  };
+  if (input.dedicatedClient) {
+    return withGovernedProcessRuntime(input.workspaceId, namespace, (deps) =>
+      withGovernedExecution(request, executionInput, deps, run));
+  }
   return withGovernedExecution(
-    {
-      idempotencyKey: input.idempotencyKey?.trim() || `${namespace}:${randomUUID()}`,
-      admissionClass: input.admissionClass,
-      demand: input.demand,
-      payloadRef: input.payloadRef,
-      parent: input.parent,
-      metadata: input.metadata,
-    },
-    {
-      owner: input.owner,
-      leaseTtlMs: input.leaseTtlMs,
-      ...(input.settle ? { settle: input.settle } : {}),
-      ...(input.measureActualDemand ? { measureActualDemand: input.measureActualDemand } : {}),
-    },
+    request,
+    executionInput,
     governedExecutionRuntime(input.workspaceId, namespace),
     run,
   );
@@ -268,8 +288,104 @@ export function governedExecutionRuntime(workspaceId: string, namespace = 'agent
   return runtime;
 }
 
+/**
+ * WI-638180 — the process-scoped half of the runtime above.
+ *
+ * `governedExecutionRuntime` builds its store on `getOrgPg()`, a PROCESS-WIDE
+ * singleton. That is correct inside the operator host, which owns that pool for
+ * its whole life. It is wrong for a one-shot CLI: the first top-level admission
+ * opens PgBouncer sockets that nothing may close (ending the singleton would
+ * sever an in-process host's database access), so the CLI finishes all of its
+ * work and then hangs on a non-empty event loop.
+ *
+ * A process-scoped operation therefore runs on a DEDICATED client this module
+ * owns and closes when its last in-flight operation settles. Refcounted, not
+ * closed-per-operation, so overlapping admissions share one pool; the close is
+ * awaited by the settling operation, so `await runGovernedOperation(...)` really
+ * does mean "the sockets are gone".
+ */
+export interface GovernedProcessClient {
+  readonly sql: SqlClient;
+  end(): Promise<void>;
+}
+
+function buildDefaultGovernedProcessClient(): GovernedProcessClient {
+  const { sql } = createDedicatedOrgPg('governed-process', { max: 2 });
+  return {
+    sql,
+    async end() {
+      await sql.end({ timeout: 5 });
+    },
+  };
+}
+
+let processClientFactory: () => GovernedProcessClient = buildDefaultGovernedProcessClient;
+let processClient: GovernedProcessClient | null = null;
+let processRuntimes = new Map<string, GovernedExecutionDeps>();
+let processInFlight = 0;
+
+/** Swap the dedicated-client factory so a unit test never opens a real pool. */
+export function setGovernedProcessClientFactoryForTests(
+  factory: (() => GovernedProcessClient) | null,
+): void {
+  processClientFactory = factory ?? buildDefaultGovernedProcessClient;
+}
+
+function governedProcessRuntime(workspaceId: string, namespace: string): GovernedExecutionDeps {
+  if (!processClient) {
+    processClient = processClientFactory();
+    // Runtimes hold a store bound to the retired client; they must never
+    // outlive it, or the next operation would query a closed pool.
+    processRuntimes = new Map();
+  }
+  const key = `${workspaceId}\0${namespace}`;
+  let runtime = processRuntimes.get(key);
+  if (!runtime) {
+    const driver = new WorkItemAdmissionQueueDriver(
+      new PgWorkItemAdmissionQueueStore({ workspaceId, sql: processClient.sql }),
+      { namespace, leaseIdFactory: () => randomUUID() },
+    );
+    runtime = { driver, governor: new Governor(driver) };
+    processRuntimes.set(key, runtime);
+  }
+  return runtime;
+}
+
+/**
+ * Run one operation on the process-scoped runtime. Exported so the client's
+ * LIFETIME is directly testable (and so a future process-scoped seam has a
+ * door), not only reachable through `runGovernedOperation`'s flag.
+ */
+export async function withGovernedProcessRuntime<T>(
+  workspaceId: string,
+  namespace: string,
+  run: (deps: GovernedExecutionDeps) => Promise<T>,
+): Promise<T> {
+  const deps = governedProcessRuntime(workspaceId, namespace);
+  processInFlight += 1;
+  try {
+    return await run(deps);
+  } finally {
+    processInFlight -= 1;
+    if (processInFlight === 0) {
+      // Detach BEFORE awaiting the close: an operation admitted while this
+      // close is in flight must build a fresh client rather than queue on a
+      // pool that is already draining.
+      const closing = processClient;
+      processClient = null;
+      processRuntimes = new Map();
+      // A close failure must not replace the operation's own result/error —
+      // the same fail-soft shape every other pool teardown in this repo uses.
+      if (closing) await closing.end().catch(() => undefined);
+    }
+  }
+}
+
 export function resetGovernedExecutionRuntimesForTests(): void {
   runtimes.clear();
+  processRuntimes = new Map();
+  processClient = null;
+  processInFlight = 0;
 }
 
 /** Decode the typed parent lineage propagated through a spawned process env. */

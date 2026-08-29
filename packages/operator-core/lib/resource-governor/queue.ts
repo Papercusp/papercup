@@ -39,7 +39,7 @@ export const WORK_ITEM_SIGNAL_ORIGINS = ['organic', 'drill', 'replay', 'shadow']
 /** Governor receipts are real, locally-originated rows — not a drill/replay/shadow. */
 export const RESOURCE_GOVERNOR_SIGNAL_ORIGIN: (typeof WORK_ITEM_SIGNAL_ORIGINS)[number] = 'organic';
 
-type SqlClient = ReturnType<typeof getOrgPg>['sql'];
+export type SqlClient = ReturnType<typeof getOrgPg>['sql'];
 type DecisionValue = string | number | boolean | null;
 
 export interface QueueDecision {
