@@ -67,16 +67,26 @@ afterEach(() => {
 });
 
 function runPcHeavy(command: string, label: string): RunResult {
-  // Strip every inherited PC_HEAVY_* var. This suite is routinely run BY
+  // Strip every inherited pc-heavy control var. This suite is routinely run BY
   // pc-heavy itself (`npm run test:file` / `test:affected` are both `bash
   // scripts/pc-heavy.sh ...`, and the green-checkpoint gate runs the
   // latter), and an inherited PC_HEAVY_SCRATCH_ROOT or PC_HEAVY_NO_SELF_COPY
   // would silently invalidate the whole measurement. Same defensive shape as
   // pc-heavy-retry-stdout-isolation.test.ts, found there by calibration, not
   // by reasoning.
+  //
+  // ⚠ The pattern must match the LEADING-UNDERSCORE spelling too. pc-heavy's
+  // self-copy latch is `_PC_HEAVY_SELF_COPIED` (pc-heavy.sh:358), which
+  // `startsWith('PC_HEAVY_')` does NOT match — so under a parent pc-heavy the
+  // latch was inherited, the self-copy block at pc-heavy.sh:355 was skipped
+  // entirely, and no `self.*` was ever minted. That silently broke the two
+  // tests below while the "at most one entry" test kept passing VACUOUSLY on
+  // zero mints — the exact vacuous pass its control exists to catch. Measured
+  // 2026-08-29: same invocation, clean env -> `pc-heavy/self.<pid>.<rand>.sh`;
+  // with `_PC_HEAVY_SELF_COPIED=1` inherited -> `pc-heavy/` empty.
   const cleanEnv: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!key.startsWith('PC_HEAVY_')) cleanEnv[key] = value;
+    if (!/^_?PC_HEAVY_/.test(key)) cleanEnv[key] = value;
   }
 
   const env = {
