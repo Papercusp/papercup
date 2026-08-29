@@ -390,6 +390,44 @@ describe('GCP image-family production adapter', () => {
     ).rejects.toThrow(/produced no output on either stream/);
   });
 
+  /**
+   * Recurrence guard for EI-21763610698235066.
+   *
+   * The builder was handed the fully-qualified `projects/<p>/global/images/<n>` reference, which
+   * googlecompute forwards as the Compute API `image` field — and that field takes a BARE NAME:
+   *   Error 400: Invalid value for field 'image': '...'. Must be a match of regex
+   *   '[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?|[1-9][0-9]{0,19}', invalid
+   *
+   * This guard is TEXTUAL by necessity, and that is the interesting part. It cannot be written as
+   * a behavioural test because nothing local can tell the two spellings apart: the release gate
+   * accepts the manifest either way (a fully-qualified immutable id is exactly what it demands),
+   * and `packer validate` — including the real-variable evaluation this file also guards — reports
+   * `The configuration is valid.` for BOTH, because either value is a legal string in a field
+   * typed as a string. The fault is an API contract, so it is only observable against the live
+   * API, after a builder VM exists. Pinning the template text is the only check that costs
+   * nothing.
+   *
+   * Both directions are asserted on purpose. The builder must NOT get the qualified reference,
+   * AND the variable must still REQUIRE it: "fix" the first by loosening the variable to a bare
+   * name and the build would work while silently discarding the immutable-base-image provenance
+   * that baseImage.reference exists to carry, with family aliases waved through.
+   */
+  it('gives the googlecompute builder a bare image name plus a separate project id, while still requiring a fully-qualified reference', async () => {
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL), 'utf8');
+    const blockStart = template.indexOf('source "googlecompute"');
+    expect(blockStart).toBeGreaterThan(-1);
+    const builderBlock = template.slice(blockStart, template.indexOf('\n}\n', blockStart));
+
+    // The exact defect: the qualified reference passed straight through to the builder.
+    expect(builderBlock).not.toMatch(/^\s*source_image\s*=\s*var\.source_image\s*$/m);
+    // Decomposed instead — name in source_image, project in its own field.
+    expect(builderBlock).toMatch(/^\s*source_image\s*=\s*split\(/m);
+    expect(builderBlock).toMatch(/^\s*source_image_project_id\s*=/m);
+
+    // …and the variable itself still refuses anything but an immutable, fully-qualified id.
+    expect(template).toMatch(/\^projects\/\[\^\/\]\+\/global\/images\/\[\^\/\]\+\$/);
+  });
+
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
     const compute = new ComputeFake();
     const adapter = new GoogleComputeGcpImageFamilyReleaseAdapter(

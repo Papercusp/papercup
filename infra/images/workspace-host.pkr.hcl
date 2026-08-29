@@ -203,6 +203,31 @@ variable "release_signing_key_sha256" {
 
 # ── Guest tools ──────────────────────────────────────────────────────────────────────────────
 
+variable "builder_network_tags" {
+  type        = list(string)
+  default     = ["papercusp-clean-room"]
+  description = <<-EOT
+    Network tags applied to the ephemeral builder VM. NOT cosmetic and NOT optional: the builder
+    runs with omit_external_ip and use_iap, so its ONLY route in is an IAP firewall rule, and the
+    IAP rules on the papercusp networks are TARGET-TAG SCOPED. A builder with no matching tag is
+    unreachable — and it fails in the worst possible way, because nothing rejects it: the instance
+    boots, sshd comes up and publishes host keys, and packer simply waits until `Timeout waiting
+    for SSH` seven minutes later, having said nothing about firewalls. Measured on P-046
+    2026-08-29T05:29Z, on a network whose only two IAP rules target
+    'pc-host-p046-canary-02-a810e759' and 'papercusp-clean-room' while the builder carried no tags
+    at all.
+
+    The default matches the rule the clean-room acceptance path already relies on for exactly this
+    purpose (IAP SSH to a papercusp-managed ephemeral VM). A project whose IAP rule targets a
+    different tag must pass its own value rather than discover this through a silent timeout.
+  EOT
+
+  validation {
+    condition     = length(var.builder_network_tags) > 0
+    error_message = "The builder_network_tags must not be empty; an untagged builder is unreachable over IAP."
+  }
+}
+
 variable "guest_tool_versions" {
   type        = map(string)
   description = <<-EOT
@@ -326,6 +351,10 @@ source "googlecompute" "workspace_host" {
   machine_type = var.machine_type
   disk_size    = var.disk_size_gb
   disk_type    = "pd-balanced"
+
+  # The tag is what makes the IAP rule match this VM — see variable "builder_network_tags".
+  # Without it the build has no route in and dies on an unexplained SSH timeout.
+  tags = var.builder_network_tags
 
   # No public address on the builder, and no project-wide SSH keys reaching it.
   omit_external_ip = var.omit_external_ip
