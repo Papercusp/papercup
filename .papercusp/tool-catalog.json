@@ -12351,7 +12351,7 @@
           "POST"
         ]
       },
-      "description": "WHY ARE MY AGENTS SLOW / QUEUED? — the live inference-gateway ADMISSION state, and the FIRST read when turns are stalling. Returns per-tier admission {tier, cap, inFlight, queued}, the reserved tier-1 (interactive/queen) floor, AIMD effective-vs-configured concurrency, and the account pool. THE TELL: any tier with queued > 0 while running < maxConcurrent - tier1Reserve means work is WAITING WHILE SLOTS SIT IDLE — an ADMISSION bug, never a capacity shortage, and no pool headroom will fix it (WI-4541: the whole fleet ran single-file through ONE slot with 9-10 of 12 idle, for hours, while everyone blamed a 'capacity crunch'). CHECK THIS BEFORE concluding the pool is exhausted. Also reads the pool config version + live account ids (confirming a gateway:reload landed).",
+      "description": "WHY ARE MY AGENTS SLOW / QUEUED? — the live inference-gateway ADMISSION state, and the FIRST read when turns are stalling. Admission is CAPLESS: each lane's window is an adaptive target with a floor and NO maximum, so a lane sitting AT its window is working as designed, not capped. THE TELL: queued > 0 while availableStarts > 0 means work is WAITING WHILE SLOTS SIT IDLE — an ADMISSION bug, never a capacity shortage, and no pool headroom will fix it (WI-4541: the fleet ran single-file through ONE slot with 9-10 of 12 idle, for hours, while everyone blamed a 'capacity crunch'). CHECK THIS BEFORE concluding the pool is exhausted.",
       "capabilities": [
         "harness:read"
       ],

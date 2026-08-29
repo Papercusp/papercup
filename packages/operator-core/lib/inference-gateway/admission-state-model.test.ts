@@ -20,6 +20,7 @@ import type { CaplessControllerDecision } from '../resource-governor/controller'
 import {
   BINDING_DISPOSITIONS,
   describeGatewayAdmissionState,
+  describeGatewayLiveAdmissionState,
   explainGatewayLaneBinding,
   GATEWAY_ADMISSION_STATE_SCHEMA_VERSION,
   GATEWAY_STATE_PROJECTIONS,
@@ -217,6 +218,56 @@ describe('describeGatewayAdmissionState (unit)', () => {
   });
 });
 
+describe('describeGatewayLiveAdmissionState (integration — the production path)', () => {
+  // This is the shape `/admin/config` builds from the gateway's own live writers:
+  // ProviderAdmissionLifecycle for windows, each lane's queue.snapshot() for the rest.
+  const live = describeGatewayLiveAdmissionState({
+    lanes: [
+      { lane: 'claude', window: 8, observedPeak: 12, minimumWindow: 2, inFlight: 8, queued: 3 },
+      { lane: 'codex', window: 6, observedPeak: 6, minimumWindow: 2, inFlight: 1, queued: 2 },
+    ],
+    generation: 7,
+    evaluatedAtMs: NOW - 1_000,
+    healthState: 'healthy',
+    nowMs: NOW,
+  });
+
+  it('attributes each number to the writer that actually produced it', () => {
+    const claude = live.lanes.find((l) => l.lane.provider === 'claude')!;
+    // Windows come from the lifecycle; in-flight/queued come from the lane queue.
+    // Collapsing these onto one writer would send a doubting reader to the wrong file.
+    expect(claude.effectiveWindow.writer.writer).toContain('provider-admission-lifecycle.ts#');
+    expect(claude.inFlight.writer.writer).toContain('queue.snapshot');
+    expect(claude.queue.depth.writer.writer).toContain('queue.snapshot');
+    expect(claude.availableStarts.writer.disposition).toBe('derived');
+  });
+
+  it('keeps desired and effective identical rather than inventing a gap', () => {
+    // The lifecycle keeps ONE adaptive window per lane. Splitting it to look richer
+    // would recreate the maxConcurrent-beside-effective confusion that cost a day.
+    for (const lane of live.lanes) {
+      expect(lane.desiredWindow.value).toBe(lane.effectiveWindow.value);
+    }
+  });
+
+  it('separates lanes by provider and computes available starts per lane', () => {
+    const claude = live.lanes.find((l) => l.lane.provider === 'claude')!;
+    const codex = live.lanes.find((l) => l.lane.provider === 'codex')!;
+    expect(claude.availableStarts.value).toBe(0); // 8 in flight against an 8 window
+    expect(codex.availableStarts.value).toBe(5); // 1 in flight against a 6 window
+    expect(claude.laneId).not.toBe(codex.laneId);
+  });
+
+  it('alerts on the lane that is genuinely stalled, not the one at its window', () => {
+    const alerts = projectAlerts(live);
+    // claude is AT its window with a queue — correct capless behaviour, no alert.
+    // codex has 2 queued with 5 starts free — a real admission defect.
+    expect(alerts.alerts.map((a) => a.laneId)).toEqual([
+      gatewayLaneId({ admissionClass: 'codex', provider: 'codex', accountId: null }),
+    ]);
+  });
+});
+
 describe('surfaces-agree (integration — the spec falsifier, executed)', () => {
   const snapshot = describeGatewayAdmissionState({
     decision: decision({
@@ -251,26 +302,58 @@ describe('surfaces-agree (integration — the spec falsifier, executed)', () => 
     }
   });
 
-  it('no two surfaces disagree about a lane\'s binding writer', () => {
-    // The "disagree" half of the falsifier. Every projection that reports a lane must
-    // report the SAME binding term and writer for it.
+  /** Returns the lanes on which the given surfaces disagree about binding. */
+  function disagreements(surfaces: readonly (readonly [string, unknown])[]): string[] {
     const byLane = new Map<string, { surface: string; term: unknown; writer: unknown }[]>();
-    for (const [surface, projected] of projections) {
-      const rows = 'lanes' in projected ? projected.lanes : projected.alerts;
-      for (const row of rows as { laneId: string; bindingTerm: unknown; bindingWriter: unknown }[]) {
+    for (const [surface, projected] of surfaces) {
+      const p = projected as { lanes?: unknown[]; alerts?: unknown[] };
+      const rows = (p.lanes ?? p.alerts ?? []) as {
+        laneId: string;
+        bindingTerm: unknown;
+        bindingWriter: unknown;
+      }[];
+      for (const row of rows) {
         const seen = byLane.get(row.laneId) ?? [];
         seen.push({ surface, term: row.bindingTerm, writer: row.bindingWriter });
         byLane.set(row.laneId, seen);
       }
     }
-
-    expect(byLane.size).toBeGreaterThan(0);
+    const bad: string[] = [];
     for (const [laneId, rows] of byLane) {
       const terms = new Set(rows.map((r) => JSON.stringify(r.term)));
       const writers = new Set(rows.map((r) => JSON.stringify(r.writer)));
-      expect(terms.size, `${laneId}: surfaces disagree on binding term — ${JSON.stringify(rows)}`).toBe(1);
-      expect(writers.size, `${laneId}: surfaces disagree on binding writer — ${JSON.stringify(rows)}`).toBe(1);
+      if (terms.size !== 1 || writers.size !== 1) bad.push(laneId);
     }
+    return bad;
+  }
+
+  it('no two surfaces disagree about a lane\'s binding writer', () => {
+    // The "disagree" half of the falsifier.
+    expect(projections.length).toBeGreaterThan(0);
+    expect(disagreements(projections)).toEqual([]);
+  });
+
+  it('CONTROL: the agreement check catches a surface that derives binding on its own', () => {
+    // A permanent deliberately-wrong implementation, kept here as a control so the
+    // assertion above can never pass vacuously. This is the repo-sanctioned way to
+    // prove a guard falsifiable for imported logic: mutating the real module in the
+    // shared tree risks git-sync committing the mutant mid-probe.
+    //
+    // `projectRogueSurface` is what a future surface looks like when someone
+    // re-derives binding locally instead of projecting the snapshot — the precise
+    // regression this architecture exists to prevent.
+    const projectRogueSurface = (snap: typeof snapshot) => ({
+      generation: snap.generation,
+      freshness: snap.freshness,
+      lanes: snap.lanes.map((lane) => ({
+        laneId: lane.laneId,
+        bindingTerm: 'effective-window' as const, // re-derived, ignoring the pause/physical terms
+        bindingWriter: 'some-other-module.ts#guess',
+      })),
+    });
+
+    const caught = disagreements([...projections, ['rogue', projectRogueSurface(snapshot)] as const]);
+    expect(caught.length, 'the agreement check failed to notice a rogue surface').toBeGreaterThan(0);
   });
 
   it('agrees on the shared capacity numbers the surfaces both publish', () => {

@@ -21,6 +21,7 @@
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import { describeAdmissionCeiling } from './admission-ceiling';
+import { describeGatewayLiveAdmissionState } from './admission-state-model';
 import {
   governorForBackend,
   snapshotGovernors,
@@ -6648,6 +6649,36 @@ export function createInferenceGateway(deps: GatewayDeps) {
           aimdEffective: s.aimd?.effective ?? s.admission.maxConcurrent,
           configuredCap: s.concurrencyCap,
           clamp: s.clamp,
+        }),
+        // P-013: the CANONICAL admission state. Every field above is a legacy
+        // per-provider read kept for compatibility; `admissionState` is the single
+        // model that `gateway:status`, `fleet:capacity`, health panels and alerts all
+        // project from, so those surfaces cannot disagree about which term binds a
+        // lane or omit the generation/freshness needed to interpret a number.
+        // Built here from the gateway's own live writers — the provider lifecycle for
+        // windows, each lane's queue snapshot for in-flight/queued.
+        admissionState: describeGatewayLiveAdmissionState({
+          lanes: providerAdmission.snapshot().lanes.map((lane) => {
+            const laneQueue = lane.lane === 'codex' ? codexQueue : queue;
+            const q = laneQueue?.snapshot?.() ?? { running: 0, queued: 0 };
+            return {
+              lane: lane.lane,
+              window: lane.window,
+              observedPeak: lane.observedPeak,
+              minimumWindow: lane.minimumWindow,
+              inFlight: q.running ?? 0,
+              queued: q.queued ?? 0,
+            };
+          }),
+          // The lifecycle has no generation counter of its own; the most recent lane
+          // change is the honest "when did this state last move" stamp, and 0 says
+          // "never moved" rather than implying a generation that does not exist.
+          generation: providerAdmission.snapshot().lanes.reduce(
+            (acc, l) => Math.max(acc, l.lastChangeAtMs ?? 0),
+            0,
+          ),
+          evaluatedAtMs: Date.now(),
+          healthState: s.aimd ? 'healthy' : 'unknown',
         }),
         upstreamBase,
       });
