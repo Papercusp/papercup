@@ -118,6 +118,110 @@ export interface AssetCoverageResult {
   stats: { testFilesScanned: number; parsed: number; sites: number; candidates: number };
 }
 
+/**
+ * Resolve identifiers the way the language does: innermost binding wins.
+ *
+ * A FLAT file-wide name->initializer map (what this used to be) conflates
+ * DISTINCT bindings that merely share a name, and the failure is silent and
+ * expensive. Measured on `setup-release-checkout-deps.test.ts`: an outer
+ * `let rel: string` assigned `mkdtempSync(join(tmpdir(), 'nm-rel-'))` in a
+ * `beforeEach`, and — in an unrelated `describe` 280 lines away — a block-local
+ * `const rel = 'packages/example/node_modules'`. Only the second is a
+ * VariableDeclaration WITH an initializer, so the flat map bound `rel` to that
+ * literal FILE-WIDE and reported three violations against paths that only ever
+ * exist under a temp dir. `derivesFromTemporaryFixture` could not rescue it:
+ * it follows the same map, so it never saw the `mkdtempSync` provenance.
+ *
+ * Two things are therefore required, and neither alone is enough:
+ *   1. SCOPE the bindings, so the sibling `describe`'s `rel` is not visible
+ *      from this one; and
+ *   2. record ASSIGNMENTS (`rel = mkdtempSync(...)`), attributing them to the
+ *      scope that DECLARED the name — a `let` declared without an initializer
+ *      and assigned in a `beforeEach` is the single most common fixture shape
+ *      in this repo, and it was previously invisible.
+ *
+ * `var` hoisting is deliberately not modelled: treating every declaration as
+ * block-scoped is strictly closer to the truth than one file-wide bucket, and
+ * the residual error direction is a name resolving to nothing (a missed
+ * candidate) rather than to some other binding's literal (a false red).
+ */
+function buildScopedConstResolver(sf: ts.SourceFile): (node: ts.Node) => Map<string, ts.Expression> {
+  const isScope = (n: ts.Node): boolean =>
+    ts.isSourceFile(n) ||
+    ts.isBlock(n) ||
+    ts.isCaseBlock(n) ||
+    ts.isForStatement(n) ||
+    ts.isForInStatement(n) ||
+    ts.isForOfStatement(n);
+
+  const scopeOf = (n: ts.Node): ts.Node => {
+    let cur: ts.Node | undefined = n.parent;
+    while (cur && !isScope(cur)) cur = cur.parent;
+    return cur ?? sf;
+  };
+
+  /** name -> initializer, per scope. First binding wins, as before. */
+  const bindings = new Map<ts.Node, Map<string, ts.Expression>>();
+  /** every name DECLARED in a scope, initializer or not — lets an assignment find its declarer. */
+  const declared = new Map<ts.Node, Set<string>>();
+
+  const bind = (scope: ts.Node, name: string, init: ts.Expression): void => {
+    let m = bindings.get(scope);
+    if (!m) bindings.set(scope, (m = new Map()));
+    if (!m.has(name)) m.set(name, init);
+  };
+
+  // Pass 1 — declarations. Record the name even without an initializer.
+  const collectDecls = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) {
+      const scope = scopeOf(n);
+      let names = declared.get(scope);
+      if (!names) declared.set(scope, (names = new Set()));
+      names.add(n.name.text);
+      if (n.initializer) bind(scope, n.name.text, n.initializer);
+    }
+    ts.forEachChild(n, collectDecls);
+  };
+  collectDecls(sf);
+
+  // Pass 2 — plain assignments, attributed to the scope that declared the name.
+  const collectAssignments = (n: ts.Node): void => {
+    if (
+      ts.isBinaryExpression(n) &&
+      n.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+      ts.isIdentifier(n.left)
+    ) {
+      const name = n.left.text;
+      let scope: ts.Node | undefined = scopeOf(n);
+      while (scope && !declared.get(scope)?.has(name)) {
+        scope = scope === sf ? undefined : scopeOf(scope);
+      }
+      bind(scope ?? scopeOf(n), name, n.right);
+    }
+    ts.forEachChild(n, collectAssignments);
+  };
+  collectAssignments(sf);
+
+  const cache = new Map<ts.Node, Map<string, ts.Expression>>();
+  return (node: ts.Node): Map<string, ts.Expression> => {
+    const scope = scopeOf(node);
+    const hit = cache.get(scope);
+    if (hit) return hit;
+    // Outermost first, so an inner binding OVERWRITES the outer one it shadows.
+    const chain: ts.Node[] = [];
+    for (let cur: ts.Node | undefined = scope; cur; cur = cur === sf ? undefined : scopeOf(cur)) {
+      chain.unshift(cur);
+    }
+    const merged = new Map<string, ts.Expression>();
+    for (const s of chain) {
+      const m = bindings.get(s);
+      if (m) for (const [k, v] of m) merged.set(k, v);
+    }
+    cache.set(scope, merged);
+    return merged;
+  };
+}
+
 /** Collect string literals reachable from a path expression, following local consts. */
 function literalsOf(
   node: ts.Node | undefined,
@@ -214,6 +318,7 @@ function toleratesAbsence(call: ts.CallExpression): boolean {
 function derivesFromTemporaryFixture(
   node: ts.Node | undefined,
   consts: Map<string, ts.Expression>,
+  fns: Map<string, ts.SignatureDeclaration> = new Map(),
   depth = 0,
   seen: Set<string> = new Set(),
 ): boolean {
@@ -225,16 +330,75 @@ function derivesFromTemporaryFixture(
     if (!init) return false;
     const next = new Set(seen);
     next.add(node.text);
-    return derivesFromTemporaryFixture(init, consts, depth + 1, next);
+    return derivesFromTemporaryFixture(init, consts, fns, depth + 1, next);
   }
 
-  if (ts.isCallExpression(node) && TEMP_ROOT_FNS.has(calleeName(node))) return true;
+  if (ts.isCallExpression(node)) {
+    if (TEMP_ROOT_FNS.has(calleeName(node))) return true;
+    // Follow a LOCAL fixture helper: `const root = fixture({...})` where
+    // `function fixture(): string { const root = mkdtempSync(...); ... return root; }`
+    // is the dominant fixture shape in this repo, and without this the helper's
+    // temp provenance is invisible — every repo-shaped path built under its
+    // return value reads as a real requirement. Only the RETURN expressions are
+    // inspected, never the whole body: a helper that merely mentions `tmpdir()`
+    // while returning a repo path must still be flagged.
+    const callee = calleeName(node);
+    if (callee && !seen.has(`fn:${callee}`)) {
+      const fn = fns.get(callee);
+      if (fn) {
+        const next = new Set(seen);
+        next.add(`fn:${callee}`);
+        return returnExpressionsOf(fn).some((r) =>
+          derivesFromTemporaryFixture(r, consts, fns, depth + 1, next),
+        );
+      }
+    }
+  }
 
   let found = false;
   ts.forEachChild(node, (child) => {
-    if (!found && derivesFromTemporaryFixture(child, consts, depth + 1, seen)) found = true;
+    if (!found && derivesFromTemporaryFixture(child, consts, fns, depth + 1, seen)) found = true;
   });
   return found;
+}
+
+/** Local named functions, so a call to one can be followed to what it returns. */
+function collectLocalFunctions(sf: ts.SourceFile): Map<string, ts.SignatureDeclaration> {
+  const out = new Map<string, ts.SignatureDeclaration>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isFunctionDeclaration(n) && n.name && !out.has(n.name.text)) {
+      out.set(n.name.text, n);
+    } else if (
+      ts.isVariableDeclaration(n) &&
+      ts.isIdentifier(n.name) &&
+      n.initializer &&
+      (ts.isArrowFunction(n.initializer) || ts.isFunctionExpression(n.initializer)) &&
+      !out.has(n.name.text)
+    ) {
+      out.set(n.name.text, n.initializer);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(sf);
+  return out;
+}
+
+/** Every expression a function can return, including a concise arrow body. */
+function returnExpressionsOf(fn: ts.SignatureDeclaration): ts.Expression[] {
+  const body = (fn as { body?: ts.Node }).body;
+  if (!body) return [];
+  if (!ts.isBlock(body)) return ts.isExpression(body as ts.Node) ? [body as ts.Expression] : [];
+  const out: ts.Expression[] = [];
+  const visit = (n: ts.Node): void => {
+    // Do not descend into nested functions — their returns are not this one's.
+    if (n !== body && (ts.isFunctionDeclaration(n) || ts.isArrowFunction(n) || ts.isFunctionExpression(n))) {
+      return;
+    }
+    if (ts.isReturnStatement(n) && n.expression) out.push(n.expression);
+    ts.forEachChild(n, visit);
+  };
+  visit(body);
+  return out;
 }
 
 /** Candidate repo-relative paths implied by one fs-require site. */
@@ -364,20 +528,15 @@ export function scanRequiredIgnoredAssets(opts: {
 
     const sf = ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
 
-    const consts = new Map<string, ts.Expression>();
-    const collectConsts = (n: ts.Node): void => {
-      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
-        if (!consts.has(n.name.text)) consts.set(n.name.text, n.initializer);
-      }
-      ts.forEachChild(n, collectConsts);
-    };
-    collectConsts(sf);
+    const constsAt = buildScopedConstResolver(sf);
+    const localFns = collectLocalFunctions(sf);
 
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n) && n.arguments.length > 0) {
         const fn = calleeName(n);
         if (FS_REQUIRE_FNS.has(fn) && !toleratesAbsence(n)) {
-          if (derivesFromTemporaryFixture(n.arguments[0], consts)) {
+          const consts = constsAt(n);
+          if (derivesFromTemporaryFixture(n.arguments[0], consts, localFns)) {
             ts.forEachChild(n, visit);
             return;
           }
