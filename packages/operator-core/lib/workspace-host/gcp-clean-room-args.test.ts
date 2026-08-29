@@ -75,4 +75,43 @@ describe('buildCleanRoomInstanceCreateArgs', () => {
       'pc-cleanroom-abc123',
     ]);
   });
+
+  /**
+   * Two different subjects share this argv — the post-build canary (boots the built image)
+   * and the pre-build bootstrap-acceptance run (boots stock Ubuntu). They are otherwise
+   * indistinguishable in the GCP console, which is exactly when the label matters: auditing
+   * a leaked instance to find out which run failed to tear itself down.
+   */
+  it('labels the run with its role, defaulting to clean-room for the canary', () => {
+    const labelsOf = (args: string[]): string =>
+      args.find((arg: string) => arg.startsWith('--labels=')) ?? '';
+
+    expect(labelsOf(buildCleanRoomInstanceCreateArgs(baseInput))).toContain(
+      'papercusp-role=clean-room',
+    );
+    expect(
+      labelsOf(buildCleanRoomInstanceCreateArgs({ ...baseInput, role: 'bootstrap-acceptance' })),
+    ).toContain('papercusp-role=bootstrap-acceptance');
+  });
+
+  it('sanitizes a role into a legal GCP label value', () => {
+    const args = buildCleanRoomInstanceCreateArgs({ ...baseInput, role: 'Bootstrap Acceptance!' });
+    const labels = args.find((arg: string) => arg.startsWith('--labels=')) as string;
+    const roleLabel = /papercusp-role=([^,]*)/.exec(labels)?.[1] ?? '';
+    expect(roleLabel).toBe('bootstrap-acceptance-');
+    expect(roleLabel).toMatch(/^[a-z0-9_-]*$/);
+  });
+
+  /**
+   * --no-address is what makes the instance private, and the gate's whole subject is that
+   * the host boots with no public INGRESS. A future edit that drops it would still pass
+   * every other assertion here while silently voiding the property being certified.
+   */
+  it('keeps the instance private and unprivileged', () => {
+    const args = buildCleanRoomInstanceCreateArgs(baseInput);
+    expect(args).toContain('--no-address');
+    expect(args).toContain('--no-service-account');
+    expect(args).toContain('--no-scopes');
+    expect(args).toContain('--metadata=enable-oslogin=TRUE');
+  });
 });

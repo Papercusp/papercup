@@ -34,6 +34,12 @@ function labelValue(value) {
  * This does NOT weaken the gate. The property the canary asserts is
  * `publicIpv4Assigned === false` — no public INGRESS. Cloud NAT is egress-only and leaves
  * that property exactly as it was.
+ *
+ * `role` labels WHICH private-VM run created the instance, because two different subjects
+ * share this argv: the post-build canary (`clean-room`, boots the built image) and the
+ * pre-build bootstrap acceptance run (`bootstrap-acceptance`, boots stock Ubuntu). They are
+ * indistinguishable in the GCP console otherwise, which matters precisely when auditing a
+ * leaked instance to find out which run failed to tear itself down.
  */
 export function buildCleanRoomInstanceCreateArgs({
   instanceName,
@@ -44,6 +50,7 @@ export function buildCleanRoomInstanceCreateArgs({
   subnetwork,
   fixtureId,
   machineType = DEFAULT_CLEAN_ROOM_MACHINE_TYPE,
+  role = 'clean-room',
 }) {
   if (typeof subnetwork !== 'string' || subnetwork.trim() === '') {
     throw new Error(
@@ -66,7 +73,7 @@ export function buildCleanRoomInstanceCreateArgs({
     '--no-service-account',
     '--no-scopes',
     '--metadata=enable-oslogin=TRUE',
-    `--labels=papercusp-artifact=workspace-host,papercusp-role=clean-room,papercusp-fixture=${labelValue(fixtureId)}`,
+    `--labels=papercusp-artifact=workspace-host,papercusp-role=${labelValue(role)},papercusp-fixture=${labelValue(fixtureId)}`,
     '--quiet',
   ];
 }

@@ -32,31 +32,19 @@
  * so a leaked VM can never be reported as a clean run.
  */
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 import {
-  ResourceLedger,
   describeImage,
-  ephemeralSuffix,
   fail,
-  gcloudJson,
   main,
   parseImmutableImageId,
   parseJsonObject,
   requireText,
-  run,
-  runOrThrow,
 } from './gcp-ephemeral.mjs';
-import {
-  DEFAULT_CLEAN_ROOM_MACHINE_TYPE,
-  buildCleanRoomInstanceCreateArgs,
-} from './gcp-clean-room-args.mjs';
+import { runScriptOnPrivateVm } from './gcp-private-vm-session.mjs';
 
 /** Must match WORKSPACE_HOST_BOOTSTRAP_ATTESTATION_PREFIX in the deployment driver. */
 const ATTESTATION_PREFIX = 'PAPERCUSP_WORKSPACE_HOST_ATTESTATION=';
-const MACHINE_TYPE = DEFAULT_CLEAN_ROOM_MACHINE_TYPE;
 const BOOT_BUDGET_MS = 12 * 60 * 1000;
 const BOOTSTRAP_BUDGET_MS = 20 * 60 * 1000;
 
@@ -85,73 +73,6 @@ function extractAttestation(stdout) {
   return parseJsonObject(decoded, 'bootstrap attestation');
 }
 
-/** Wait until the instance reports RUNNING, or throw. */
-async function awaitRunning(projectId, instance, zone, budgetMs) {
-  const deadline = Date.now() + budgetMs;
-  let lastStatus = 'UNKNOWN';
-  while (Date.now() < deadline) {
-    const described = await gcloudJson([
-      'compute',
-      'instances',
-      'describe',
-      instance,
-      `--project=${projectId}`,
-      `--zone=${zone}`,
-    ]).catch(() => null);
-    if (described?.status) {
-      lastStatus = described.status;
-      if (lastStatus === 'RUNNING') return described;
-      if (lastStatus === 'TERMINATED' || lastStatus === 'SUSPENDED') {
-        fail(`clean-room instance entered ${lastStatus} before it could be exercised`);
-      }
-    }
-    await new Promise((r) => setTimeout(r, 10_000));
-  }
-  fail(`clean-room instance did not reach RUNNING within ${budgetMs}ms (last status ${lastStatus})`);
-}
-
-/**
- * Read back whether GCP actually assigned a public IPv4. This is READ FROM THE API rather
- * than inferred from the --no-address flag we passed: the gate is about what exists, not
- * about what we asked for.
- */
-function hasPublicIpv4(instance) {
-  const interfaces = Array.isArray(instance?.networkInterfaces) ? instance.networkInterfaces : [];
-  return interfaces.some((nic) =>
-    (Array.isArray(nic?.accessConfigs) ? nic.accessConfigs : []).some(
-      (config) => typeof config?.natIP === 'string' && config.natIP.trim() !== '',
-    ),
-  );
-}
-
-/** Poll IAP SSH until it answers, proving OS Login is usable over the private path. */
-async function awaitOsLogin(projectId, instance, zone, budgetMs) {
-  const deadline = Date.now() + budgetMs;
-  let lastError = 'not-attempted';
-  while (Date.now() < deadline) {
-    const probe = await run(
-      'gcloud',
-      [
-        'compute',
-        'ssh',
-        instance,
-        `--project=${projectId}`,
-        `--zone=${zone}`,
-        '--tunnel-through-iap',
-        '--quiet',
-        '--command',
-        'echo papercusp-oslogin-ready',
-      ],
-      { timeoutMs: 3 * 60 * 1000 },
-    ).catch((error) => ({ exitCode: -1, stdout: '', stderr: String(error?.message ?? error) }));
-
-    if (probe.exitCode === 0 && probe.stdout.includes('papercusp-oslogin-ready')) return true;
-    lastError = probe.stderr.slice(-300);
-    await new Promise((r) => setTimeout(r, 15_000));
-  }
-  fail(`OS Login over IAP did not become ready within ${budgetMs}ms`, { lastError });
-}
-
 async function cleanRoom(input) {
   const requested = parseImmutableImageId(input.imageId, 'imageId');
   const projectId = requireText(input.projectId, 'projectId');
@@ -178,88 +99,25 @@ async function cleanRoom(input) {
   // The candidate must exist and be READY before we spend money booting it.
   await describeImage(projectId, requested.imageName);
 
-  const ledger = new ResourceLedger(projectId);
-  const suffix = ephemeralSuffix();
-  const instanceName = `pc-cleanroom-${suffix}`;
-  const observedAt = new Date().toISOString();
+  // Private-only instance booting the CANDIDATE image: no external address, IAP is the sole
+  // ingress. Creation, boot/OS-Login waits, and exhaustive teardown are the shared flow.
+  const session = await runScriptOnPrivateVm({
+    projectId,
+    zone,
+    subnetwork,
+    imageName: requested.imageName,
+    imageProject: projectId,
+    script: bootstrapScript,
+    fixtureId,
+    role: 'clean-room',
+    instancePrefix: 'pc-cleanroom',
+    bootBudgetMs: BOOT_BUDGET_MS,
+    scriptBudgetMs: BOOTSTRAP_BUDGET_MS,
+  });
 
-  let scriptDir;
-  let attestation;
-  let computeRunning = false;
-  let osLoginReady = false;
-  let publicIpv4Assigned = false;
-  let residualResourceIds = [];
-
-  try {
-    scriptDir = await mkdtemp(join(tmpdir(), 'pc-clean-room-'));
-    const scriptPath = join(scriptDir, 'bootstrap.sh');
-    await writeFile(scriptPath, bootstrapScript, { mode: 0o700 });
-
-    // Private-only instance: no external address, IAP is the sole ingress.
-    await runOrThrow(
-      'gcloud',
-      buildCleanRoomInstanceCreateArgs({
-        instanceName,
-        projectId,
-        zone,
-        imageName: requested.imageName,
-        imageProject: projectId,
-        subnetwork,
-        fixtureId,
-      }),
-      { timeoutMs: 8 * 60 * 1000 },
-    );
-    ledger.track('instance', instanceName, zone);
-
-    // Observed, not assumed.
-    const running = await awaitRunning(projectId, instanceName, zone, BOOT_BUDGET_MS);
-    computeRunning = running.status === 'RUNNING';
-    publicIpv4Assigned = hasPublicIpv4(running);
-    if (publicIpv4Assigned) {
-      fail('clean-room instance was assigned a public IPv4; the private-boot property does not hold');
-    }
-
-    osLoginReady = await awaitOsLogin(projectId, instanceName, zone, BOOT_BUDGET_MS);
-
-    // Run the fixture's exact script and capture the host's self-attestation.
-    await runOrThrow(
-      'gcloud',
-      [
-        'compute',
-        'scp',
-        scriptPath,
-        `${instanceName}:/tmp/papercusp-bootstrap.sh`,
-        `--project=${projectId}`,
-        `--zone=${zone}`,
-        '--tunnel-through-iap',
-        '--quiet',
-      ],
-      { timeoutMs: 5 * 60 * 1000 },
-    );
-
-    const bootstrapStdout = await runOrThrow(
-      'gcloud',
-      [
-        'compute',
-        'ssh',
-        instanceName,
-        `--project=${projectId}`,
-        `--zone=${zone}`,
-        '--tunnel-through-iap',
-        '--quiet',
-        '--command',
-        'sudo bash /tmp/papercusp-bootstrap.sh',
-      ],
-      { timeoutMs: BOOTSTRAP_BUDGET_MS },
-    );
-
-    attestation = extractAttestation(bootstrapStdout);
-  } finally {
-    // Teardown always runs, including on the failure paths above: a failed canary must
-    // not leave a billable instance behind.
-    residualResourceIds = await ledger.destroyAll();
-    if (scriptDir) await rm(scriptDir, { recursive: true, force: true }).catch(() => {});
-  }
+  const { instanceName, observedAt, computeRunning, osLoginReady, publicIpv4Assigned, residualResourceIds } =
+    session;
+  const attestation = extractAttestation(session.stdout);
 
   if (!attestation) fail('clean-room produced no attestation');
   if (attestation.status !== 'healthy') {

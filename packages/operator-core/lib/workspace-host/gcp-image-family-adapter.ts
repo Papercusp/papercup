@@ -260,7 +260,7 @@ function manifest(value: unknown, path: string): string {
   return result;
 }
 
-function safeExecutable(value: string | undefined, fallback: string, path: string): string {
+export function safeExecutable(value: string | undefined, fallback: string, path: string): string {
   const result = text(value ?? fallback, path);
   if (!SAFE_EXECUTABLE.test(result) || /\s/.test(result)) fail(`${path} must be a shell-free executable path`);
   return result;
@@ -295,7 +295,7 @@ function operationError(operation: GcpImageFamilyComputeOperation): string | und
   return codes.length > 0 ? `GCP image operation failed (${codes.join(', ')})` : 'GCP image operation failed';
 }
 
-function parseJsonObject(value: string, operation: string): Readonly<Record<string, unknown>> {
+export function parseJsonObject(value: string, operation: string): Readonly<Record<string, unknown>> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(value);
