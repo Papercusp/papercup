@@ -2507,19 +2507,41 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     );
 
     await writeFrozenCandidateRepairQueue(target, queue);
+    // P-013 / D-007: the queue write and the `gate_health.convergence` projection are ONE
+    // statement, so the stored shrink figures can never describe a previous round. That is why
+    // this asserts a 4-arg `jsonb_set(... || $3, '{gate_health}', ... || $4)` shape rather than
+    // the plain `metadata || $3` this test originally pinned — splitting them back into two
+    // writes would reintroduce exactly the lag window D-007 closed, and must fail here.
+    //
+    // `$4` embeds `observedAtMs: Date.now()`, so it is matched structurally rather than by
+    // exact string: the fields pinned below (candidate, repairHead, phase) are the ones that
+    // make the projection describe THIS cycle, and a projection carrying another candidate's
+    // identity is the failure the assertion exists to catch.
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       2,
       expect.stringMatching(
-        /metadata = COALESCE\(metadata, '\{\}'::jsonb\) \|\| \$3::jsonb[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+        /metadata = jsonb_set\(\s*COALESCE\(metadata, '\{\}'::jsonb\) \|\| \$3::jsonb,\s*'\{gate_health\}',\s*COALESCE\(metadata->'gate_health', '\{\}'::jsonb\) \|\| \$4::jsonb,\s*true\s*\)[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
       ),
-      ['ws-42', 'my-harness', JSON.stringify({ repair_queue: queue })],
+      [
+        'ws-42',
+        'my-harness',
+        JSON.stringify({ repair_queue: queue }),
+        expect.stringMatching(
+          /^\{"convergence":\{[\s\S]*"candidate":"a{40}","repairHead":"c{40}","phase":"ready-to-verify","observedAtMs":\d+\}\}$/,
+        ),
+      ],
     );
 
     await writeFrozenCandidateRepairQueue(target, null);
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       3,
+      // Retiring the cycle must ALSO clear the convergence projection (D-007). Leaving it
+      // behind strands shrink figures for a candidate that no longer exists next to a gate that
+      // has moved on, and every field stays individually plausible — so a reader cannot tell it
+      // describes a dead cycle. The `#- '{gate_health,convergence}'` leg is therefore pinned
+      // here, not merely allowed: dropping it is a silent false-baseline regression.
       expect.stringMatching(
-        /metadata = CASE[\s\S]+gate_health,inconclusive,status[\s\S]+repair-in-progress[\s\S]+repair-staging-mismatch[\s\S]+#- '\{gate_health,inconclusive\}'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
+        /metadata = \(CASE[\s\S]+gate_health,inconclusive,status[\s\S]+repair-in-progress[\s\S]+repair-staging-mismatch[\s\S]+#- '\{gate_health,inconclusive\}'[\s\S]+END\)\s*#- '\{gate_health,convergence\}'[\s\S]+WHERE workspace_id = \$1\s+AND install_slug = \$2\s+AND target_role = 'system:green-checkpoint'/,
       ),
       ['ws-42', 'my-harness'],
     );
