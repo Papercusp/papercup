@@ -629,10 +629,21 @@ export function buildWorkspaceHostBootstrap(
     'WantedBy=multi-user.target',
     'PAPERCUSP_SERVICE',
     'systemctl daemon-reload',
-    'systemctl enable --now "$SERVICE_NAME.service"',
+    // A failed unit start otherwise dies with systemd's generic "Job for ... failed because
+    // the control process exited with error code", which names the JOB and not the cause —
+    // and the clean-room VM tears itself down before anyone can read its journal. Emit the
+    // status and journal INTO the bootstrap's own output so the cause travels with the
+    // failure instead of dying with the instance.
+    'service_diagnostics() {',
+    '  echo "[workspace-host-bootstrap] --- systemctl status $SERVICE_NAME.service ---" >&2',
+    '  systemctl status "$SERVICE_NAME.service" --no-pager --full 2>&1 | tail -40 >&2 || true',
+    '  echo "[workspace-host-bootstrap] --- journalctl -xeu $SERVICE_NAME.service ---" >&2',
+    '  journalctl -xeu "$SERVICE_NAME.service" --no-pager --no-hostname -n 120 2>&1 | tail -120 >&2 || true',
+    '}',
+    'systemctl enable --now "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
     '',
     `phase '${WORKSPACE_HOST_BOOTSTRAP_PHASES[6]}'`,
-    'systemctl is-active --quiet "$SERVICE_NAME.service"',
+    'systemctl is-active --quiet "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service is not active after start"; }',
     '"$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT" --host 127.0.0.1 --port "$SERVICE_PORT"',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property User --value)" == "$SERVICE_USER" ]] || die "workspace service is not running under the dedicated service user"',
     '[[ "$(systemctl show "$SERVICE_NAME.service" --property Group --value)" == "$SERVICE_GROUP" ]] || die "workspace service is not running under the dedicated service group"',

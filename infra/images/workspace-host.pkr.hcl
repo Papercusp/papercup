@@ -95,7 +95,7 @@ variable "candidate_image_name" {
 
   validation {
     condition     = can(regex("^[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?$", var.candidate_image_name))
-    error_message = "candidate_image_name must be a GCP resource name."
+    error_message = "The candidate_image_name must be a GCP resource name."
   }
 }
 
@@ -105,7 +105,7 @@ variable "build_manifest_identity" {
 
   validation {
     condition     = can(regex("^sha256:[a-f0-9]{64}$", var.build_manifest_identity))
-    error_message = "build_manifest_identity must be sha256:<64 lowercase hex>."
+    error_message = "The build_manifest_identity must be sha256:<64 lowercase hex>."
   }
 }
 
@@ -117,7 +117,7 @@ variable "source_image" {
 
   validation {
     condition     = can(regex("^projects/[^/]+/global/images/[^/]+$", var.source_image))
-    error_message = "source_image must be an immutable projects/<project>/global/images/<name> reference; family aliases are forbidden."
+    error_message = "The source_image must be an immutable projects/<project>/global/images/<name> reference; family aliases are forbidden."
   }
 }
 
@@ -127,7 +127,7 @@ variable "base_image_sha256" {
 
   validation {
     condition     = can(regex("^[a-f0-9]{64}$", var.base_image_sha256))
-    error_message = "base_image_sha256 must be a lowercase 64-character SHA-256 hex digest."
+    error_message = "The base_image_sha256 must be a lowercase 64-character SHA-256 hex digest."
   }
 }
 
@@ -162,7 +162,7 @@ variable "release_bundle_url" {
 
   validation {
     condition     = can(regex("^https://", var.release_bundle_url))
-    error_message = "release_bundle_url must be an HTTPS URL."
+    error_message = "The release_bundle_url must be an HTTPS URL."
   }
 }
 
@@ -172,7 +172,7 @@ variable "release_bundle_sha256" {
 
   validation {
     condition     = can(regex("^[a-f0-9]{64}$", var.release_bundle_sha256))
-    error_message = "release_bundle_sha256 must be a lowercase 64-character SHA-256 hex digest."
+    error_message = "The release_bundle_sha256 must be a lowercase 64-character SHA-256 hex digest."
   }
 }
 
@@ -182,7 +182,7 @@ variable "release_signature_url" {
 
   validation {
     condition     = can(regex("\\.minisig$", var.release_signature_url))
-    error_message = "release_signature_url must end in .minisig."
+    error_message = "The release_signature_url must end in .minisig."
   }
 }
 
@@ -197,7 +197,7 @@ variable "release_signing_key_sha256" {
 
   validation {
     condition     = can(regex("^[a-f0-9]{64}$", var.release_signing_key_sha256))
-    error_message = "release_signing_key_sha256 must be a lowercase 64-character SHA-256 hex digest."
+    error_message = "The release_signing_key_sha256 must be a lowercase 64-character SHA-256 hex digest."
   }
 }
 
@@ -224,7 +224,7 @@ variable "guest_tool_versions" {
       "ufw",
       "unattended-upgrades",
     ], keys(var.guest_tool_versions))) == 0
-    error_message = "guest_tool_versions must pin every package in GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS."
+    error_message = "The guest_tool_versions must pin every package in GCP_IMAGE_FAMILY_REQUIRED_GUEST_TOOLS."
   }
 }
 
