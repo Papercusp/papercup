@@ -121,4 +121,36 @@ describe('release:repair-queue', () => {
     expect(result).toMatchObject({ ok: false, reason: 'exact_queue_identity_mismatch' });
     expect(mocks.retire).not.toHaveBeenCalled();
   });
+
+  it('rechecks replacement fixer liveness after a CAS miss before rendering its diagnostic', async () => {
+    const replacement = { ...queue, fixerSpawnId: 'fixer-2', updatedAtMs: 3 };
+    mocks.retire.mockResolvedValueOnce({ retired: false, current: replacement });
+    mocks.alive.mockResolvedValueOnce(false).mockResolvedValueOnce(false);
+
+    const result = body(
+      await tool.handler(
+        {
+          op: 'retire',
+          expectedCandidate: queue.candidate,
+          expectedRepairHead: queue.repairHead,
+          expectedUpdatedAtMs: queue.updatedAtMs,
+          reason: 'terminal incident cleanup',
+          confirm: true,
+        } as never,
+        { role: 'su' } as never,
+      ),
+    );
+
+    expect(mocks.alive).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({
+      ok: false,
+      casMiss: true,
+      current: {
+        fixerSpawnId: 'fixer-2',
+        fixerAlive: false,
+        retireAllowed: true,
+        retireRefusal: null,
+      },
+    });
+  });
 });

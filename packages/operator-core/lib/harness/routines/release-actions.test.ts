@@ -2556,9 +2556,9 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
     expect(fakeSql.unsafe).toHaveBeenNthCalledWith(
       1,
       expect.stringMatching(
-        /metadata->'repair_queue' = \$3::jsonb[\s\S]+RETURNING true AS retired/,
+        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)[\s\S]+RETURNING true AS retired/,
       ),
-      ['ws-42', 'my-harness', JSON.stringify(queue)],
+      ['ws-42', 'my-harness', queue.candidate, queue.repairHead, queue.updatedAtMs],
     );
 
     const replacement = { ...queue, updatedAtMs: 3, repairHead: 'd'.repeat(40) };
@@ -2569,6 +2569,26 @@ describe('WI-39944: the repair queue persists on the existing routine metadata r
       retired: false,
       current: { updatedAtMs: 3, repairHead: 'd'.repeat(40) },
     });
+  });
+
+  it('matches retirement on stable identity when the stored queue has additive fields', async () => {
+    const newerQueue = {
+      ...queue,
+      convergenceRounds: [{ round: 1, head: queue.repairHead, failingCount: 1, atMs: 3 }],
+      newerCheckpointField: { writtenBy: 'a-newer-build' },
+    } as FrozenCandidateRepairQueue & { newerCheckpointField: unknown };
+    fakeSql.unsafe.mockResolvedValueOnce([{ retired: true }] as never);
+
+    await expect(retireFrozenCandidateRepairQueue(target, newerQueue)).resolves.toEqual({
+      retired: true,
+      current: null,
+    });
+    expect(fakeSql.unsafe).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /metadata->'repair_queue'->>'candidate' = \$3::text[\s\S]+metadata->'repair_queue'->>'repairHead' = \$4::text[\s\S]+metadata->'repair_queue'->'updatedAtMs' = to_jsonb\(\$5::bigint\)/,
+      ),
+      ['ws-42', 'my-harness', queue.candidate, queue.repairHead, queue.updatedAtMs],
+    );
   });
 
   it('reserves an unassigned fixer with precedence-safe JSONB subtraction', async () => {

@@ -25,8 +25,14 @@ async function inspectQueue() {
   return {
     target: queueTarget,
     queue,
+    fixerAlive,
     diagnostic: diagnoseFrozenCandidateRepairQueue(queue, { nowMs: Date.now(), fixerAlive }),
   };
+}
+
+async function inspectFixerLiveness(queue: Awaited<ReturnType<typeof readFrozenCandidateRepairQueue>>) {
+  if (!queue?.fixerSpawnId) return null;
+  return releaseFixerSpawnAlive(getOrgPg().sql, queue.fixerSpawnId).catch(() => null);
 }
 
 async function recordAudit(
@@ -134,6 +140,7 @@ export default defineTool({
     }
 
     const result = await retireFrozenCandidateRepairQueue(inspected.target, inspected.queue);
+    const currentFixerAlive = await inspectFixerLiveness(result.current);
     const identity = readIdentity(ctx);
     const auditRecorded = await recordAudit(identity.ownerId, {
       reason: args.reason,
@@ -151,7 +158,10 @@ export default defineTool({
       target: inspected.target,
       auditRecorded,
       current: result.current
-        ? diagnoseFrozenCandidateRepairQueue(result.current, { nowMs: Date.now() })
+        ? diagnoseFrozenCandidateRepairQueue(result.current, {
+            nowMs: Date.now(),
+            fixerAlive: currentFixerAlive,
+          })
         : null,
     });
   },

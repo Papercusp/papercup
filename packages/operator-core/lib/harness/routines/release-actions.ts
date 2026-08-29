@@ -3482,9 +3482,11 @@ export async function writeFrozenCandidateRepairQueue(
 }
 
 /**
- * Retire only the exact queue an operator inspected. The full JSONB compare-and-swap prevents
- * a stale control call from clearing a replacement fixer, renewed reservation, or advanced
- * repair head. The caller owns liveness/phase policy; this function owns storage atomicity.
+ * Retire only the exact queue an operator inspected. The compare-and-swap uses the queue's
+ * stable identity fields rather than the full parsed JSONB object, so additive fields written
+ * by a newer checkpoint build cannot make an older release tool's otherwise-valid retirement
+ * request fail forever. The caller owns liveness/phase policy; this function owns storage
+ * atomicity.
  */
 export async function retireFrozenCandidateRepairQueue(
   target: GateVerdictTarget,
@@ -3508,9 +3510,20 @@ export async function retireFrozenCandidateRepairQueue(
       WHERE workspace_id = $1
         AND install_slug = $2
         AND target_role = 'system:green-checkpoint'
-        AND metadata->'repair_queue' = $3::jsonb
+        -- Match only the stable queue identity. Comparing the whole JSONB object makes an
+        -- additive field written by a newer checkpoint build a retroactive breaking change
+        -- for an older release tool that parsed the same row and then attempted retirement.
+        AND metadata->'repair_queue'->>'candidate' = $3::text
+        AND metadata->'repair_queue'->>'repairHead' = $4::text
+        AND metadata->'repair_queue'->'updatedAtMs' = to_jsonb($5::bigint)
       RETURNING true AS retired`,
-    [target.workspaceId, target.installSlug, JSON.stringify(expectedQueue)],
+    [
+      target.workspaceId,
+      target.installSlug,
+      expectedQueue.candidate,
+      expectedQueue.repairHead,
+      expectedQueue.updatedAtMs,
+    ],
   )) as Array<{ retired: boolean }>;
   if (rows[0]?.retired === true) return { retired: true, current: null };
   return { retired: false, current: await readFrozenCandidateRepairQueue(target) };
