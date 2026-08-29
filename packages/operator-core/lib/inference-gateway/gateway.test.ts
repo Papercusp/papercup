@@ -2135,24 +2135,42 @@ async function drainToZeroInFlight(deadlineMs = 8000): Promise<number> {
   return inFlight;
 }
 
-test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 200, upstream peak ≤ the cap, inFlight drains to 0', async () => {
-  // 120 simultaneous requests against a healthy upstream with the admission queue capped at 8. The
-  // gateway must (a) bound upstream concurrency to the cap (no thundering herd onto Anthropic),
+test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 200, upstream peak ≤ the LIVE admission window, inFlight drains to 0', async () => {
+  // 120 simultaneous requests against a healthy upstream, admission SEEDED at 8. The gateway must
+  // (a) pace upstream concurrency to the live admission window (no thundering herd onto Anthropic),
   // (b) settle ALL of them (none dropped/hung — a healthy burst is PACED, never shed), and (c) drain
   // every admission slot back to 0.
+  //
+  // ⚠ `concurrency: 8` is a SEED, NOT A CAP. Plan `capless-inference-gateway-2026-08-28` P-010 (done)
+  // retired the configured ceiling — gateway.ts:1637-1640 ("it no longer bounds anything: the lifecycle
+  // grows both lanes past it under clean traffic"), and P-010's own acceptance REQUIRES that stable
+  // clean demand grows beyond the former ceiling (provider-admission-lifecycle.ts #apply →
+  // queue.setMaxConcurrent). So a peak of 9/10 against a seed of 8 is the contract WORKING, and the old
+  // `peak <= 8` assertion asserted the retired invariant. What is still real, and is what this now
+  // asserts, is that upstream concurrency never exceeds the LIVE window and stays a small fraction of N.
+  const SEED = 8;
+  const INCREASE_EVERY = 8; // pinned below so the growth rate is not at the mercy of a host env var
   let cur = 0;
   let peak = 0;
+  let windowAtPeak = 0; // the live admission window sampled at each new upstream-concurrency high-water mark
   await boot(
     (_req, res) => {
       cur++;
-      peak = Math.max(peak, cur);
+      if (cur > peak) {
+        peak = cur;
+        windowAtPeak = Math.max(windowAtPeak, gw.stats().admission.maxConcurrent);
+      }
       setTimeout(() => {
         cur--;
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{"ok":true}');
       }, 6);
     },
-    { concurrency: 8, maxQueued: 0 /* unbounded queue → prove a healthy burst is paced, never shed */ },
+    {
+      concurrency: SEED,
+      maxQueued: 0 /* unbounded queue → prove a healthy burst is paced, never shed */,
+      aimd: { increaseEvery: INCREASE_EVERY },
+    },
   );
   const N = 120;
   const before = gw.stats().totalRequests;
@@ -2160,7 +2178,22 @@ test('[B-GW-2 chaos] extreme concurrency vs a HEALTHY upstream — all settle 20
     Array.from({ length: N }, () => post({ model: 'claude-opus-4', messages: [{ role: 'user', content: 'x' }] })),
   );
   assert.equal(rs.filter((r) => r.status === 200).length, N, 'every one of the 120 concurrent requests settled 200 (none dropped/shed/hung)');
-  assert.ok(peak <= 8, `upstream peak concurrency ${peak} stayed within the queue cap (8) — no thundering herd`);
+  // (1) Upstream concurrency never exceeded the window admission was actually enforcing.
+  const liveWindow = Math.max(windowAtPeak, gw.stats().admission.maxConcurrent);
+  assert.ok(
+    peak <= liveWindow,
+    `upstream peak concurrency ${peak} stayed within the LIVE admission window (${liveWindow}) — no thundering herd`,
+  );
+  // (2) The window is capless but GROWTH-RATE-BOUNDED (+1 per ${INCREASE_EVERY} clean samples from the
+  //     seed), so N clean requests cannot lift it past this. A herd would blow straight through it.
+  const growthCeiling = SEED + Math.floor(N / INCREASE_EVERY);
+  assert.ok(
+    peak <= growthCeiling,
+    `upstream peak concurrency ${peak} stayed within the capless window's growth ceiling (${growthCeiling} = seed ${SEED} + ${N}/${INCREASE_EVERY}) — growth is paced, not unbounded`,
+  );
+  // (3) The load-shape invariant the original assertion existed to protect: a 120-deep burst reaches
+  //     the upstream a few at a time, never as a herd.
+  assert.ok(peak < N / 3, `upstream peak concurrency ${peak} stayed far below the ${N}-deep burst — the burst was paced, not forwarded`);
   assert.equal(gw.stats().totalRequests - before, N, 'every request was counted (counters never froze)');
   const inFlight = await drainToZeroInFlight();
   assert.equal(inFlight, 0, 'all 120 admission slots drained back to 0 — no slot leak');
