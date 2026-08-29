@@ -537,9 +537,13 @@ function scanEvidence(
 ): GcpImageScanEvidence {
   let raw: unknown = value;
   if (raw && typeof raw === 'object' && !Array.isArray(raw) && 'exitCode' in raw) {
-    const command = raw as Partial<GcpImageFamilyCommandResult>;
-    if (command.exitCode !== 0) fail(`GCP image scanner failed with exit code ${String(command.exitCode)}`);
-    raw = parseJsonObject(typeof command.stdout === 'string' ? command.stdout : '', 'GCP image scanner');
+    // Route through assertSuccess rather than hand-rolling the exit check: it SPILLS the
+    // complete stdout+stderr and names the path first. The hand-rolled check this replaced
+    // reported exactly `GCP image scanner failed with exit code 1` and discarded both streams,
+    // so a scan failure — which costs a full billable image build to reach — arrived with its
+    // diagnosis already thrown away. Same defect, and same fix, as the packer path above.
+    const command = raw as GcpImageFamilyCommandResult;
+    raw = parseJsonObject(assertSuccess(command, 'GCP image scanner'), 'GCP image scanner');
   } else if (typeof raw === 'string') {
     raw = parseJsonObject(raw, 'GCP image scanner');
   }
@@ -1192,9 +1196,9 @@ export class GoogleComputeGcpImageFamilyReleaseAdapter implements GcpImageFamily
       'stdout' in value &&
       typeof (value as { stdout?: unknown }).stdout === 'string'
     ) {
-      const command = value as Partial<GcpImageFamilyCommandResult>;
-      if (command.exitCode !== 0) fail(`GCP clean-room runner failed with exit code ${String(command.exitCode)}`);
-      value = parseJsonObject(command.stdout ?? '', 'GCP clean-room runner');
+      // Same spill-before-excerpt contract as the packer and scanner paths — see assertSuccess.
+      const command = value as GcpImageFamilyCommandResult;
+      value = parseJsonObject(assertSuccess(command, 'GCP clean-room runner'), 'GCP clean-room runner');
     }
     return cleanProof(value, runInput);
   }
