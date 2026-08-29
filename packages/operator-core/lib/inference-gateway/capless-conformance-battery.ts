@@ -77,6 +77,19 @@ export type ConformancePinMode = (typeof CONFORMANCE_PIN_MODES)[number];
 export const CONFORMANCE_ADMISSION_CLASSES = ['inference', 'control'] as const;
 export type ConformanceAdmissionClass = (typeof CONFORMANCE_ADMISSION_CLASSES)[number];
 
+/**
+ * The non-inference request kinds P-014 names explicitly ("maintenance/control").
+ * They are separate KINDS that both resolve to the control CLASS, which is exactly
+ * why they are worth naming: a regression that starved one while sparing the other
+ * would be invisible at class granularity.
+ */
+export const CONFORMANCE_ADMISSION_KINDS = ['maintenance', 'control'] as const;
+export type ConformanceAdmissionKind = (typeof CONFORMANCE_ADMISSION_KINDS)[number];
+
+/** Platforms the gateway is supported on, named by P-014's matrix. */
+export const CONFORMANCE_PLATFORMS = ['linux', 'macos', 'windows'] as const;
+export type ConformancePlatform = (typeof CONFORMANCE_PLATFORMS)[number];
+
 // ── The six acceptance properties ────────────────────────────────────────────
 
 /**
@@ -168,6 +181,20 @@ export const CONFORMANCE_REQUIREMENTS: readonly ConformanceRequirement[] = Objec
       'D-007 forbids per-tier hard ceilings and permanently idle reserves; the violation is per class, not global.',
   },
   {
+    property: CONFORMANCE_PROPERTIES.workConserving,
+    dimension: 'admission-kind',
+    values: CONFORMANCE_ADMISSION_KINDS,
+    rationale:
+      'P-014 names maintenance and control separately. They share the control class, so only a per-KIND check catches a map change that silently reroutes one of them.',
+  },
+  {
+    property: CONFORMANCE_PROPERTIES.ceilingExpansion,
+    dimension: 'platform',
+    values: CONFORMANCE_PLATFORMS,
+    rationale:
+      'P-014 names supported platforms. Admission is platform-independent today, so these cells are vacated against a live scan rather than exercised on three machines this battery cannot reach.',
+  },
+  {
     property: CONFORMANCE_PROPERTIES.writerConsistency,
     dimension: 'lane',
     values: CONFORMANCE_LANES,
@@ -218,6 +245,11 @@ export interface ConformanceLedgerReport {
   readonly declared: number;
   readonly exercised: number;
   readonly vacuous: number;
+  /**
+   * The vacated cells by id, sorted. Callers pin this SET rather than the count:
+   * a count lets one cell quietly become vacuous as long as another stops being.
+   */
+  readonly vacuousCells: readonly string[];
   /** Declared cells no case dispositioned — a deleted or skipped case shows up here. */
   readonly missing: readonly string[];
   /** Dispositioned cells the matrix never declared — the ledger cannot be inflated. */
@@ -277,18 +309,19 @@ export class ConformanceLedger {
     const missing: string[] = [];
     for (const cell of this.#declared) if (!this.#dispositions.has(cell)) missing.push(cell);
     const undeclared: string[] = [];
+    const vacuousCells: string[] = [];
     let exercised = 0;
-    let vacuous = 0;
     for (const [cell, disposition] of this.#dispositions) {
       if (!this.#declared.has(cell)) undeclared.push(cell);
       if (disposition.kind === 'exercised') exercised += 1;
-      else vacuous += 1;
+      else vacuousCells.push(cell);
     }
     return Object.freeze({
       schemaVersion: CONFORMANCE_BATTERY_SCHEMA_VERSION,
       declared: this.#declared.size,
       exercised,
-      vacuous,
+      vacuous: vacuousCells.length,
+      vacuousCells: Object.freeze([...vacuousCells].sort()),
       missing: Object.freeze(missing.sort()),
       undeclared: Object.freeze(undeclared.sort()),
     });
@@ -426,6 +459,72 @@ export function measureGatewayDeploymentSurfaces(
     probe('packaged', packagedFiles, 'papercusp', root),
     probe('container', containerManifests, 'papercusp', root),
   ]);
+}
+
+// ── The platform dimension, also measured rather than assumed ────────────────
+
+/**
+ * The modules a request actually traverses to be admitted. Platform-independence
+ * is only a meaningful claim about THESE files; the gateway as a whole certainly
+ * touches the platform elsewhere (process spawning, path handling, credentials).
+ */
+export const ADMISSION_PATH_MODULES: readonly string[] = Object.freeze([
+  'packages/operator-core/lib/inference-gateway/admission-context.ts',
+  'packages/operator-core/lib/inference-gateway/capless-adapter.ts',
+  'packages/operator-core/lib/inference-gateway/durable-admission.ts',
+  'packages/operator-core/lib/inference-gateway/admission-state-model.ts',
+  'packages/operator-core/lib/inference-gateway/payload-spool.ts',
+  'packages/operator-core/lib/resource-governor/controller.ts',
+  'packages/operator-core/lib/resource-governor/admission.ts',
+  'packages/operator-core/lib/resource-governor/queue.ts',
+]);
+
+/**
+ * A file KNOWN to branch on the platform. Without it, "no admission module
+ * branches on platform" is indistinguishable from "the token I grep for is wrong".
+ */
+export const PLATFORM_BRANCH_POSITIVE_CONTROL =
+  'packages/operator-core/lib/inference-gateway/account-resolver.ts';
+
+const PLATFORM_BRANCH_TOKENS = ['process.platform', 'os.platform()', "'win32'", "'darwin'"] as const;
+
+export interface AdmissionPlatformProbe {
+  readonly scanned: readonly string[];
+  /** Admission modules that branch on the host platform. Expected: none. */
+  readonly branching: readonly string[];
+  readonly control: { readonly file: string; readonly hits: number };
+}
+
+/**
+ * Measure whether admission behaviour can differ by platform.
+ *
+ * P-014's matrix names supported platforms, but a battery running on one machine
+ * cannot honestly claim to have exercised three. What it CAN do is establish that
+ * there is nothing platform-specific to exercise: if no module on the admission
+ * path branches on the host platform, per-platform admission cells are vacuous for
+ * the same reason the packaged/container cells are. The instant someone adds a
+ * branch, this returns it and the battery demands real per-platform coverage
+ * instead of continuing to wave the dimension through.
+ */
+export function measureAdmissionPlatformBranching(
+  options: { readonly repoRoot?: string } = {},
+): AdmissionPlatformProbe {
+  const root = options.repoRoot ?? REPO_ROOT;
+  const scanned: string[] = [];
+  const branching: string[] = [];
+  for (const relative of ADMISSION_PATH_MODULES) {
+    const body = readIfFile(join(root, relative));
+    if (body === null) continue;
+    scanned.push(relative);
+    if (PLATFORM_BRANCH_TOKENS.some((token) => body.includes(token))) branching.push(relative);
+  }
+  const controlBody = readIfFile(join(root, PLATFORM_BRANCH_POSITIVE_CONTROL)) ?? '';
+  const controlHits = PLATFORM_BRANCH_TOKENS.filter((token) => controlBody.includes(token)).length;
+  return Object.freeze({
+    scanned: Object.freeze(scanned),
+    branching: Object.freeze(branching),
+    control: Object.freeze({ file: PLATFORM_BRANCH_POSITIVE_CONTROL, hits: controlHits }),
+  });
 }
 
 /** The deployment paths that genuinely run a gateway, per the live measurement. */
