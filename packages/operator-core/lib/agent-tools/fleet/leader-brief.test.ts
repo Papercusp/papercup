@@ -13,6 +13,7 @@ import {
   computeDarkFleetAlert,
   computeDormantAlert,
   computeFleetBlockVerdict,
+  computeFleetExecutionCollapseAlert,
   computeFleetHeadcountVsExecutableFrontierAlert,
   computeFloorStarvedFleetAlert,
   computeIdleWithClaimableAlert,
@@ -740,6 +741,56 @@ describe('computeDarkFleetAlert (WI-41172 / P-010)', () => {
 
     expect(out).toMatchObject({ alert: null, reason: expect.stringMatching(/UNKNOWN.*presence/i) });
     expect(out.falsifier).toBeUndefined();
+  });
+});
+
+describe('computeFleetExecutionCollapseAlert (WI-583276)', () => {
+  const roster = [
+    { agentId: 'su-a', claims: [{ active: true, status: 'wip' }] },
+    { agentId: 'su-b', claims: [{ active: true, status: 'wip' }] },
+    { agentId: 'su-c', claims: [] },
+  ];
+
+  it('fires only when held claims coexist with zero exact agent-origin members', () => {
+    const out = computeFleetExecutionCollapseAlert({
+      fleet: 'mute-fleet',
+      roster,
+      agentOriginOwnerIds: new Set(),
+    });
+    expect(out.alert).toBe(true);
+    expect(out.evidence).toMatchObject({
+      rosterMembers: 3,
+      agentOriginMembers: 0,
+      heldClaimMembers: 2,
+      heldClaims: 2,
+      silentHeldClaimMembers: 2,
+    });
+    expect(out.reason).toMatch(/ZERO registered members.*agent-origin/i);
+    expect(out.falsifier).toMatchObject({ tool: 'fleet:assignments' });
+  });
+
+  it('stays clean when the fleet is working or has no held claims', () => {
+    expect(
+      computeFleetExecutionCollapseAlert({ roster, agentOriginOwnerIds: new Set(['su-a']) }).alert,
+    ).toBe(false);
+    expect(
+      computeFleetExecutionCollapseAlert({
+        roster: roster.map(({ agentId }) => ({ agentId, claims: [] })),
+        agentOriginOwnerIds: new Set(),
+      }).alert,
+    ).toBe(false);
+  });
+
+  it('returns in-band unknown when exact telemetry or the canonical roster is degraded', () => {
+    const telemetry = computeFleetExecutionCollapseAlert({ roster, agentOriginOwnerIds: null });
+    expect(telemetry).toMatchObject({ alert: null, evidence: { agentOriginMembers: null } });
+    expect(telemetry.reason).toMatch(/UNKNOWN/i);
+    const presence = computeFleetExecutionCollapseAlert({
+      roster,
+      agentOriginOwnerIds: new Set(),
+      presenceDegraded: true,
+    });
+    expect(presence.alert).toBeNull();
   });
 });
 
