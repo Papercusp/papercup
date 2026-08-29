@@ -416,6 +416,41 @@ describe('plan shape at the SHIPPED embedded GUC profile', () => {
     expect(Object.keys(SHIPPED_TUNING)).not.toContain('randomPageCost');
   });
 
+  it('TEMP SWEEP', async () => {
+    const probes: Array<[string, string]> = [];
+    for (const mins of [1, 2, 5, 10, 20, 30, 60, 120, 180, 240, 300]) {
+      probes.push([
+        `range ${mins}m`,
+        `SELECT id FROM harness_shared.tool_invocations WHERE invoked_at > now() - interval '${mins} minutes'`,
+      ]);
+      probes.push([
+        `range+cols ${mins}m`,
+        `SELECT tool_name, status FROM harness_shared.tool_invocations WHERE invoked_at > now() - interval '${mins} minutes'`,
+      ]);
+    }
+    for (const n of [1, 5, 25, 60, 120, 200]) {
+      probes.push([
+        `turns sessions x${n}`,
+        `SELECT s.turn_idx FROM harness_shared.session_turns s WHERE s.session_id IN (${Array.from({ length: n }, (_, i) => `'probe-session-${String(i).padStart(4, '0')}'`).join(',')})`,
+      ]);
+    }
+    probes.push([
+      'nestloop join',
+      `SELECT t.id FROM harness_shared.session_turns s JOIN harness_shared.tool_invocations t ON t.spawn_id = s.session_id AND t.workspace_id = s.workspace_id WHERE s.session_id = 'probe-session-0007'`,
+    ]);
+    const out: string[] = [];
+    for (const [label, q] of probes) {
+      await applyProfile(sql, SHIPPED_TUNING);
+      const sp = await planFor(sql, q);
+      await applyProfile(sql, DEV_TUNING);
+      const dp = await planFor(sql, q);
+      const s = [...accessPaths(sp, 'tool_invocations'), ...accessPaths(sp, 'session_turns')].sort().join('+');
+      const d = [...accessPaths(dp, 'tool_invocations'), ...accessPaths(dp, 'session_turns')].sort().join('+');
+      out.push(`${s === d ? '   ' : '>>>'} ${label}: shipped=[${s}] dev=[${d}]`);
+    }
+    console.log('SWEEP\n' + out.join('\n'));
+  });
+
   for (const testCase of CASES) {
     it(`${testCase.name}`, async () => {
       await applyProfile(sql, SHIPPED_TUNING);

@@ -23,6 +23,7 @@ import {
   createInferenceGateway,
   ACCOUNT_HEADER,
   ACCOUNT_PIN_HEADER,
+  OWNER_HEADER,
   PIN_YIELDED_HEADER,
   ROUTED_ACCOUNT_HEADER,
   resolveCodexOAuthNonStreamTimeoutMs,
@@ -1084,5 +1085,162 @@ describe('proxyOpenAi — stream-stall guards (parity with the Claude proxy)', (
     if (res instanceof Response) {
       expect([502, 503]).toContain(res.status);
     }
+  });
+});
+
+/**
+ * CHARACTERIZATION GOLDENS — plan gateway-kernel-adoption-2026-08-29, P-001 (D-003).
+ *
+ * These pin the two behaviours the census (that plan's D-005) found UNPINNED before
+ * `proxyOpenAi` migrates onto `executeGatewayRequestKernel`. They are deliberately
+ * written against the CURRENT hand-rolled ladder and MUST pass unchanged after the
+ * migration — that is the whole point of a before/after golden. If a kernel migration
+ * makes one of these fail, the migration changed observable behaviour and is wrong,
+ * not the test.
+ */
+describe('proxyOpenAi — transport-failure failover (the untested route-around branch)', () => {
+  // A transport failure is NOT an HTTP error status: the upstream socket dies so the
+  // gateway's own fetch REJECTS. gateway.ts handles this in a dedicated catch that
+  // records `upstream_error` with detail 'bearer-transport', invalidates the account
+  // token, and then rotates rather than surfacing — the same "route around, don't
+  // surface" class the Claude path was hardened against. Nothing covered it.
+  const killSocketOnce = () => {
+    let hits = 0;
+    return {
+      hits: () => hits,
+      reply: (req: http.IncomingMessage, res: http.ServerResponse) => {
+        hits += 1;
+        if (hits === 1) {
+          req.socket.destroy();
+          return;
+        }
+        ok(req, res);
+      },
+    };
+  };
+
+  it('a dead upstream socket ROTATES to another codex account + retries — the bee gets the 200, not a 502', async () => {
+    const upstream = killSocketOnce();
+    await bootCodex(upstream.reply);
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
+    expect(upstream.hits()).toBe(2);
+  });
+
+  it('invalidates the failed account token so a stale bearer is never reused on the retry', async () => {
+    const invalidated: string[] = [];
+    const spyAcct = (id: string): ActiveAccount => ({
+      accountId: id,
+      token: async () => `${id}-tok`,
+      invalidateToken: () => {
+        invalidated.push(id);
+      },
+    });
+    const upstream = killSocketOnce();
+    await bootCodex(upstream.reply, [spyAcct('cdx-1'), spyAcct('cdx-2')]);
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' });
+
+    expect(res.status).toBe(200);
+    expect(invalidated).toEqual(['cdx-1']);
+  });
+
+  it('a SINGLE-account pool with a dead upstream returns the 502 gateway envelope (no rotate target → no hang/loop)', async () => {
+    await bootCodex((req) => req.socket.destroy(), [codexAcct('cdx-solo')]);
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' });
+
+    expect(res.status).toBe(502);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-solo');
+    const body = (await res.json()) as { gateway?: boolean; error?: { type?: string; message?: string } };
+    expect(body.gateway).toBe(true);
+    expect(body.error?.type).toBe('api_error');
+    expect(body.error?.message).toContain('Codex upstream failed');
+  });
+});
+
+describe('proxyOpenAi — owner-outcome taxonomy (pinned directly, not via response headers)', () => {
+  // `recordOwnerOutcome` early-returns when there is no owner id, which is exactly why
+  // this taxonomy went uncovered: every existing test posts without an owner header and
+  // asserts on response headers instead. The kernel re-routes all five outcomes through
+  // `classifyGatewayTelemetryOutcome`, so without these the taxonomy could shift silently.
+  interface OwnerLedger {
+    requests: number;
+    ok: number;
+    upstreamErrors: number;
+    upstream429: number;
+    pinYields: number;
+    lastAccount: string | null;
+    lastStatus: number | null;
+    recent: { kind: string; account: string | null; detail?: string }[];
+  }
+  const ledgerFor = async (owner: string): Promise<OwnerLedger> => {
+    const res = await ask(`/admin/owner-report?owner=${encodeURIComponent(owner)}`);
+    expect(res.status).toBe(200);
+    return ((await res.json()) as { ledger: OwnerLedger }).ledger;
+  };
+
+  it('a clean turn records one request + one ok, with the routed account and status', async () => {
+    await bootCodex(ok);
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' }, { [OWNER_HEADER]: 'bee-clean' });
+    expect(res.status).toBe(200);
+
+    const ledger = await ledgerFor('bee-clean');
+    expect(ledger.requests).toBe(1);
+    expect(ledger.ok).toBe(1);
+    expect(ledger.upstreamErrors).toBe(0);
+    expect(ledger.upstream429).toBe(0);
+    expect(ledger.lastAccount).toBe('cdx-1');
+    expect(ledger.lastStatus).toBe(200);
+  });
+
+  it('a dead upstream socket records upstream_error with detail bearer-transport, then ok on the rotated account', async () => {
+    let hits = 0;
+    await bootCodex((req, res) => {
+      hits += 1;
+      if (hits === 1) {
+        req.socket.destroy();
+        return;
+      }
+      ok(req, res);
+    });
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' }, { [OWNER_HEADER]: 'bee-transport' });
+    expect(res.status).toBe(200);
+
+    const ledger = await ledgerFor('bee-transport');
+    expect(ledger.requests).toBe(1);
+    expect(ledger.upstreamErrors).toBe(1);
+    expect(ledger.ok).toBe(1);
+    expect(ledger.recent.map((entry) => entry.kind)).toEqual(['upstream_error', 'ok']);
+    expect(ledger.recent[0].detail).toBe('bearer-transport');
+    expect(ledger.recent[0].account).toBe('cdx-1');
+    expect(ledger.recent[1].account).toBe('cdx-2');
+  });
+
+  it('a 429 records upstream_429 against the throttled account, then ok against the rotated one', async () => {
+    let hits = 0;
+    await bootCodex((req, res) => {
+      hits += 1;
+      if (hits === 1) {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '7' });
+        res.end(JSON.stringify({ error: 'slow down' }));
+        return;
+      }
+      ok(req, res);
+    });
+
+    const res = await postResponses({ model: 'gpt-5', input: 'hi' }, { [OWNER_HEADER]: 'bee-throttled' });
+    expect(res.status).toBe(200);
+
+    const ledger = await ledgerFor('bee-throttled');
+    expect(ledger.upstream429).toBe(1);
+    expect(ledger.ok).toBe(1);
+    expect(ledger.recent.map((entry) => entry.kind)).toEqual(['upstream_429', 'ok']);
+    expect(ledger.recent[0].account).toBe('cdx-1');
   });
 });
