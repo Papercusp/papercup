@@ -74,7 +74,7 @@ describe('killProcess — kind allowlist', () => {
     // reaches this path as `other`. Exact argv[0] classification makes the psu
     // orphan-thread recovery instruction executable without widening that read.
     withProcs(proc(1, 'run.sh'));
-    withProbeHit('other', '/home/marsh-office/.local/bin/codex --model gpt-5.6-sol');
+    withProbeHit('other', '/home/builduser/.local/bin/codex --model gpt-5.6-sol');
     const r = await killProcess({ pid: 82464, ...BASE });
     expect(r).toMatchObject({ ok: true, pid: 82464, kind: 'codex', signal: 'SIGTERM' });
     expect(probeProcessMock).toHaveBeenCalledWith(82464);

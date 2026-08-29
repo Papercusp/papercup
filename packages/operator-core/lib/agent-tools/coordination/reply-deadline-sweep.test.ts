@@ -256,7 +256,7 @@ describe('runReplyDeadlineSweepOnce', () => {
     // is keyed by the globally-generated msg_id, not by workspace_id.
     h.rows = [
       row({
-        workspace_id: '/home/marsh-office/papercupai-workspace/papercusp',
+        workspace_id: '/home/builduser/papercupai-workspace/papercusp',
         msg_id: 'mt427rhz-0000-bcb413b4152841d5bf13575dcaaf6f6b',
       }),
     ];

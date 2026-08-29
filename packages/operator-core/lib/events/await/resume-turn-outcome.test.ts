@@ -87,7 +87,7 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
         outputProtocol: 'codex-jsonl',
         exitCode: 1,
         stderrTail:
-          '2026-08-23T22:13:42.820382Z ERROR codex_rollout::list: state db returned stale rollout path for thread 01a02a0c-d02d-7023-a4f9-8303089f8092: /home/marsh-office/.papercusp/su-codex-homes/session-16773/\n',
+          '2026-08-23T22:13:42.820382Z ERROR codex_rollout::list: state db returned stale rollout path for thread 01a02a0c-d02d-7023-a4f9-8303089f8092: /home/builduser/.papercusp/su-codex-homes/session-16773/\n',
       }),
     );
     expect(out.ok).toBe(false);

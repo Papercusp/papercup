@@ -46,7 +46,7 @@ describe('committedCloseDowngradedForUnprovenContentIdentity (EI-215026356662609
             'apps/operator/lib/release/green-checkpoint-real-deps.test.ts',
           ],
           {
-            repositoryRoot: '/home/marsh-office/papercupai-workspace/papercusp',
+            repositoryRoot: '/home/builduser/papercupai-workspace/papercusp',
             headSha: '1e26e2d89e97c5aa6956213d462b0fc3cd31f7ad',
           },
         ),
