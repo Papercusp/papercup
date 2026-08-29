@@ -490,7 +490,12 @@ describe("system:blueprint-run fires through the routine dispatch path", () => {
         FROM harness_shared.harness_features_consolidated WHERE harness_slug='demo'`;
     expect(rows).toHaveLength(1);
     expect(rows[0].title).toBe('Nightly sweep');
-    expect(rows[0].status).toBe('todo');
+    // work-item-status-full-unify P-004/P-005 (EI-21460610464031791): createWorkItem's
+    // raw INSERT now deliberately writes the unified claimable token 'open', not 'todo' —
+    // a row born 'todo' here is permanently unclaimable (no alias fold at read time; see
+    // the comment on the INSERT in blueprint-run-action.ts). This expectation was left
+    // behind by that rename; the implementation is correct, so the test is updated to match.
+    expect(rows[0].status).toBe('open');
     expect(rows[0].item_kind).toBe('feature');
     expect(rows[0].workspace_id).toBe(WS);
     expect(rows[0].feature_id.startsWith('F-SCHED-')).toBe(true);
