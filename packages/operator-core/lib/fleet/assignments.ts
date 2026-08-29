@@ -821,9 +821,6 @@ export async function agentOriginToolCallOwnersSince(
   }
 }
 
-/** Compatibility-shaped alias for callers that need the existing top-1 naming. */
-export const lastAgentOriginToolCallAtByOwner = agentOriginToolCallOwnersSince;
-
 /**
  * EI-18763117665515043: does this work-item claim's LINKED plan item — resolved
  * via the SAME two-mechanism stamp `planItemLaneBlockReason` already uses for the

@@ -157,21 +157,6 @@ function compactDependencyBottlenecks(value: unknown, rowCap: number): unknown {
   );
   if (population) out.population = population;
 
-  const executionCollapse = pick(
-    source.fleetExecutionCollapse,
-    [
-      'status',
-      'rosterMembers',
-      'agentOriginMembers',
-      'heldClaimMembers',
-      'heldClaims',
-      'silentHeldClaimMembers',
-      'windowMs',
-    ],
-    150,
-  );
-  if (executionCollapse) out.fleetExecutionCollapse = executionCollapse;
-
   if (Array.isArray(source.findings)) {
     out.findings = source.findings.slice(0, rowCap).map((value) => {
       const row = asDict(value);
@@ -374,6 +359,23 @@ function compactSummary(value: unknown, ultra = false): unknown {
     120,
   );
   if (pool) out.pool_capacity = pool;
+
+  // WI-583276: keep the execution-collapse tri-state and bounded evidence
+  // alongside its alert decision in every normal monitor projection.
+  const executionCollapse = pick(
+    source.fleetExecutionCollapse,
+    [
+      'status',
+      'rosterMembers',
+      'agentOriginMembers',
+      'heldClaimMembers',
+      'heldClaims',
+      'silentHeldClaimMembers',
+      'windowMs',
+    ],
+    150,
+  );
+  if (executionCollapse) out.fleetExecutionCollapse = executionCollapse;
 
   if (!ultra && Array.isArray(source.degraded_roster_legs)) {
     out.degraded_roster_legs = source.degraded_roster_legs.slice(0, 3).map((entry) => clip(entry, 160) ?? entry);
