@@ -46,6 +46,7 @@
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Sql } from 'postgres';
+import type { RouteContext } from '@papercusp/agent-mcp';
 import type {
   SuSessionBackend,
   SuSessionCapabilities,
@@ -412,10 +413,20 @@ describe('deferred launch', () => {
 });
 
 describe('the route PUI actually attaches through', () => {
+  function routeContext(chatId: string): RouteContext {
+    return {
+      principal: null,
+      input: undefined,
+      params: { slug: HARNESS, chatId },
+      log: () => {},
+      signal: new AbortController().signal,
+    };
+  }
+
   async function snapshotResponse(chatId: string): Promise<Response> {
     return snapshotRoute.handler(
       new Request(`http://127.0.0.1/harness/${HARNESS}/agent-chats/${chatId}/su-session`),
-      { params: { slug: HARNESS, chatId } },
+      routeContext(chatId),
     ) as Promise<Response>;
   }
 
