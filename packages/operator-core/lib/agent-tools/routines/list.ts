@@ -247,13 +247,45 @@ export function deriveGitSyncFreshness(
   const cadenceMs = first && second ? second.getTime() - first.getTime() : null;
   const staleAfterMs = cadenceMs && cadenceMs > 0 ? cadenceMs * GIT_SYNC_FRESHNESS_INTERVALS : null;
   const ageMs = lastSyncedAtMs === null ? null : Math.max(0, nowMs - lastSyncedAtMs);
+
+  // EI-21807573331912223 — the IN-FLIGHT leg, which the completed-outcome clock above
+  // cannot see. `last_synced_at` only moves when a fire COMPLETES, so one fire wedged
+  // mid-run freezes it exactly like a run of skipped ticks does, and the age test alone
+  // reports the two as the same 'degraded'. They are not the same incident and they do
+  // not have the same remedy: skipped ticks mean the lock is held elsewhere or the
+  // engine is not firing, while a wedged fire means there is a live process to look at
+  // right now. Measured 2026-08-29: ONE fire held the git-sync lock from 16:24:33Z to
+  // 16:58:24Z (~34 min against a 63-second healthy baseline); every scheduled tick in
+  // that window skipped, 19 paths of finished work sat uncommitted, and the only field
+  // naming the actual fault — a fire that started half an hour ago and has not returned
+  // — was an epoch integer inside `git_sync_activity` that every reader had to subtract
+  // by hand. Decompose it here, once, rather than in each reader.
+  const activityRaw = metadata?.git_sync_activity;
+  const activity =
+    activityRaw && typeof activityRaw === 'object' ? (activityRaw as Record<string, unknown>) : null;
+  const inFlightActive = activity?.active === true;
+  const inFlightStartedAtMs = inFlightActive ? epochMs(activity?.started_at) : null;
+  const inFlightAgeMs = inFlightStartedAtMs === null ? null : Math.max(0, nowMs - inFlightStartedAtMs);
+  // Deliberately the SAME threshold as the completed-outcome clock: a fire still running
+  // after the window in which three ticks should have completed is over budget by the
+  // only yardstick this routine has, and inventing a second constant would let the two
+  // halves of one verdict drift apart.
+  const inFlightStuck = inFlightAgeMs !== null && staleAfterMs !== null && inFlightAgeMs > staleAfterMs;
+  const inFlightPhase = typeof activity?.phase === 'string' ? activity.phase : null;
+
   const status = !active
     ? 'inactive'
-    : ageMs === null || staleAfterMs === null
-      ? 'unknown'
-      : ageMs > staleAfterMs
-        ? 'degraded'
-        : 'fresh';
+    : // A wedged fire is degraded on its own evidence, including in the window where the
+      // last COMPLETED outcome is still recent enough to read fresh. Widening the existing
+      // verdict rather than adding a fourth enum value keeps every reader that already
+      // branches on 'degraded' correct for this case without being rewritten.
+      inFlightStuck
+      ? 'degraded'
+      : ageMs === null || staleAfterMs === null
+        ? 'unknown'
+        : ageMs > staleAfterMs
+          ? 'degraded'
+          : 'fresh';
 
   return {
     status,
@@ -264,11 +296,55 @@ export function deriveGitSyncFreshness(
     stale_after_ms: staleAfterMs,
     missed_intervals: ageMs !== null && cadenceMs && cadenceMs > 0 ? Math.floor(ageMs / cadenceMs) : null,
     raw_last_status: typeof metadata?.last_status === 'string' ? metadata.last_status : null,
+    in_flight: activity
+      ? {
+          active: inFlightActive,
+          phase: inFlightPhase,
+          started_at: isoAt(inFlightStartedAtMs),
+          age_ms: inFlightAgeMs,
+          stuck: inFlightStuck,
+        }
+      : null,
     warning:
-      status === 'degraded'
-        ? `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
-          'the raw last_status may describe an older successful tick.'
-        : null,
+      status !== 'degraded'
+        ? null
+        : inFlightStuck
+          ? `A git-sync fire has been in flight for ${Math.round(inFlightAgeMs! / 60_000)}m` +
+            `${inFlightPhase ? ` (phase '${inFlightPhase}')` : ''}; scheduled ticks skip while it holds ` +
+            'the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
+            'the tick before it.'
+          : `No completed git-sync outcome for more than ${GIT_SYNC_FRESHNESS_INTERVALS} scheduled intervals; ` +
+            'the raw last_status may describe an older successful tick.',
+  };
+}
+
+/**
+ * Let the derived verdict OVERRIDE the headline `last_status` (EI-21807573331912223).
+ *
+ * `last_status` is written by the last tick that produced an outcome, and a skipped tick
+ * deliberately does not overwrite it. That is correct as a writer contract and misleading
+ * as a headline: it is the first field an agent reads, it says `synced`, and it goes on
+ * saying `synced` for as long as the fault lasts. Filed after the routine reported success
+ * on every tick for ~35 minutes while committing nothing.
+ *
+ * A sibling field that disagrees does not fix this — `git_sync_freshness` already carried
+ * the correct `degraded` verdict during that incident and was simply not the field anyone
+ * read. So the headline itself is replaced, and the writer-backed value is preserved (and
+ * documented) at `git_sync_freshness.raw_last_status`: nothing is lost, and the value that
+ * remains cannot be mistaken for success.
+ *
+ * Scoped to this tool's response. The `harness_shared.routines.metadata.last_status` column
+ * is untouched, so the writer and every direct reader of the raw column are unaffected.
+ */
+export function applyDerivedGitSyncHeadline(
+  health: Record<string, unknown>,
+  freshness: Record<string, unknown>,
+): Record<string, unknown> {
+  if (freshness.status !== 'degraded') return health;
+  const raw = typeof health.last_status === 'string' ? health.last_status : null;
+  return {
+    ...health,
+    last_status: `degraded (derived — see git_sync_freshness${raw === null ? '' : `; raw: ${raw}`})`,
   };
 }
 
@@ -292,7 +368,9 @@ export default defineTool({
     returns: [
       'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
       '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
-      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at and the cron cadence: degraded means no completed outcome for more than three scheduled intervals even if raw last_status remains synced. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present. For git-sync, `health.git_sync_freshness` is the read-time verdict derived from last_synced_at, the in-flight fire and the cron cadence: degraded means either no completed outcome for more than three scheduled intervals, or one fire in flight longer than that same window. `health.git_sync_activity` is the writer-backed whole-fire marker: while `active:true`, `last_status` describes only the local stage; wait for `phase:"complete"` before treating the fire as terminal.',
+      '⚠ git-sync `health.last_status` is DERIVED-OVERRIDDEN, not raw (EI-21807573331912223). When git_sync_freshness is degraded it reads `degraded (derived — see git_sync_freshness; raw: <writer value>)`, because the writer-backed headline reported `synced` on every tick for ~35 minutes while committing nothing — a skipped tick deliberately does not overwrite the last real outcome. The writer value is preserved at `git_sync_freshness.raw_last_status`; the `harness_shared.routines.metadata.last_status` column is untouched.',
+      '`health.git_sync_freshness.in_flight` — the wedged-fire decomposition: { active, phase, started_at, age_ms, stuck }, null when the row carries no git_sync_activity. `stuck:true` means one fire has been running longer than three scheduled intervals, which is a DIFFERENT incident from ticks being skipped (there is a live process to look at) even though both read `degraded`.',
       '`health.gate_health.readAttestation` — read-time provenance for the cached verdict: snapshotObservedAt, snapshotAge/snapshotAgeMs, the judged candidate, candidateCommittedAt, candidateAgeAtObservationMs, and commitsBehindTip. The raw gate-health fields remain unchanged; null attestation fields mean the older writer did not provide that evidence.',
       '`health.gate_health.failingTestsAttestation` — candidate-bound provenance for the raw `failingTests` array: the terminal-verdict candidate, the live in-flight candidate (when the run published one), `staleAgainstInFlight`, and a warning when the arrays belong to a prior candidate. A null stale marker means the comparison was unavailable; never read it as false.',
       'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
@@ -536,28 +614,32 @@ export default defineTool({
        ORDER BY install_slug, name`;
     const home = operatorHomeHarnessSlug();
     const routines = rows.map((r) => {
+      const cron = (r.trigger_config as { cron?: string } | null)?.cron ?? null;
+      let health: Record<string, unknown> | null;
+      if (r.target_role === 'system:git-sync') {
+        const freshness = deriveGitSyncFreshness(r.metadata, cron, r.active);
+        // The derived verdict replaces the headline it contradicts, rather than sitting
+        // beside it hoping to be read (EI-21807573331912223). Raw value preserved at
+        // git_sync_freshness.raw_last_status.
+        health = applyDerivedGitSyncHeadline(
+          { ...(healthOf(r.metadata) ?? {}), git_sync_freshness: freshness },
+          freshness,
+        );
+      } else {
+        health = healthOf(r.metadata);
+      }
       const routine = {
         installSlug: r.install_slug,
         name: r.name,
         triggerKind: r.trigger_kind,
-        cron: (r.trigger_config as { cron?: string } | null)?.cron ?? null,
+        cron,
         targetRole: r.target_role,
         active: r.active,
         nextFireAt: iso(r.next_fire_at),
         lastFiredAt: iso(r.last_fired_at),
         group: r.group_slug,
         paused: pauseOf(r.metadata),
-        health:
-          r.target_role === 'system:git-sync'
-            ? {
-                ...(healthOf(r.metadata) ?? {}),
-                git_sync_freshness: deriveGitSyncFreshness(
-                  r.metadata,
-                  (r.trigger_config as { cron?: string } | null)?.cron ?? null,
-                  r.active,
-                ),
-              }
-            : healthOf(r.metadata),
+        health,
       };
       // Only the operator-home row backs the operator pipeline cells. Other installs
       // may use the same routine name but have independent gates; stamping them with

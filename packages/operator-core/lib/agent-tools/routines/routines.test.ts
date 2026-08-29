@@ -138,8 +138,101 @@ describe('routines:list', () => {
       stale_after_ms: 9 * 60_000,
       missed_intervals: 3,
       raw_last_status: 'synced',
+      in_flight: null,
       warning:
         'No completed git-sync outcome for more than 3 scheduled intervals; the raw last_status may describe an older successful tick.',
+    });
+  });
+
+  // EI-21807573331912223. The completed-outcome clock cannot see a fire that is STILL
+  // RUNNING: last_synced_at only moves on completion, so for the first three intervals of
+  // a wedged fire the row reads fresh AND green while every scheduled tick behind it is
+  // skipping and nothing is being committed. Measured 2026-08-29: one fire held the lock
+  // ~34 minutes against a 63-second healthy baseline.
+  it('reports a fire wedged past the stale window as degraded even while the last COMPLETED outcome is still recent', () => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    const verdict = deriveGitSyncFreshness(
+      {
+        last_status: 'synced',
+        // Fresh by the completed-outcome clock on its own — 2 minutes, well inside the
+        // 9-minute window. Only the in-flight leg can convict this row.
+        last_synced_at: now - 2 * 60_000,
+        git_sync_activity: { active: true, phase: 'local-sync', started_at: now - 34 * 60_000 },
+      },
+      '0 */3 * * * *',
+      true,
+      now,
+    );
+    expect(verdict).toMatchObject({
+      status: 'degraded',
+      age_ms: 2 * 60_000,
+      raw_last_status: 'synced',
+      in_flight: {
+        active: true,
+        phase: 'local-sync',
+        started_at: '2026-08-29T16:24:00.000Z',
+        age_ms: 34 * 60_000,
+        stuck: true,
+      },
+    });
+    expect(verdict.warning).toBe(
+      "A git-sync fire has been in flight for 34m (phase 'local-sync'); scheduled ticks skip while it " +
+        'holds the git-sync lock, so nothing is being committed and the raw last_status still describes ' +
+        'the tick before it.',
+    );
+  });
+
+  it('CONTROL: the same row WITHOUT the in-flight marker reads fresh — proving the check above convicts on the wedged fire, not on the clock', () => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    expect(
+      deriveGitSyncFreshness(
+        { last_status: 'synced', last_synced_at: now - 2 * 60_000 },
+        '0 */3 * * * *',
+        true,
+        now,
+      ),
+    ).toMatchObject({ status: 'fresh', in_flight: null, warning: null });
+  });
+
+  it('does not convict a fire that is in flight but still INSIDE the stale window, nor a completed one', () => {
+    const now = Date.parse('2026-08-29T16:58:00.000Z');
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    expect(
+      deriveGitSyncFreshness(
+        {
+          last_status: 'synced',
+          last_synced_at: now - 2 * 60_000,
+          git_sync_activity: { active: true, phase: 'local-sync', started_at: now - 4 * 60_000 },
+        },
+        '0 */3 * * * *',
+        true,
+        now,
+      ),
+    ).toMatchObject({ status: 'fresh', in_flight: { active: true, age_ms: 4 * 60_000, stuck: false } });
+
+    // A COMPLETED marker carries a started_at from long ago; age must not be computed off
+    // it, or every healthy row would convict itself the moment its last fire got old.
+    expect(
+      deriveGitSyncFreshness(
+        {
+          last_status: 'synced',
+          last_synced_at: now - 2 * 60_000,
+          git_sync_activity: {
+            active: false,
+            phase: 'complete',
+            started_at: now - 34 * 60_000,
+            completed_at: now - 2 * 60_000,
+          },
+        },
+        '0 */3 * * * *',
+        true,
+        now,
+      ),
+    ).toMatchObject({
+      status: 'fresh',
+      in_flight: { active: false, phase: 'complete', started_at: null, age_ms: null, stuck: false },
     });
   });
 
@@ -156,7 +249,11 @@ describe('routines:list', () => {
     });
   });
 
-  it('surfaces the derived freshness verdict beside a stale raw synced status', async () => {
+  // EI-21807573331912223. This test previously asserted `last_status: 'synced'` on a row
+  // the tool had ALREADY judged degraded — i.e. it pinned the bug in place. A sibling that
+  // disagrees is not a fix: git_sync_freshness carried the correct verdict throughout the
+  // 2026-08-29 incident and simply was not the field anyone read.
+  it('OVERRIDES the headline last_status with the derived verdict, preserving the writer value', async () => {
     const now = Date.now();
     cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
     sqlMock.mockResolvedValue([
@@ -178,7 +275,7 @@ describe('routines:list', () => {
       await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
     );
     expect(b.routines[0].health).toMatchObject({
-      last_status: 'synced',
+      last_status: 'degraded (derived — see git_sync_freshness; raw: synced)',
       consecutive_error_ticks: 0,
       git_sync_freshness: {
         status: 'degraded',
@@ -186,6 +283,57 @@ describe('routines:list', () => {
         missed_intervals: 3,
       },
     });
+    // The whole point of the override: the headline can no longer be read as success.
+    expect(b.routines[0].health.last_status).not.toBe('synced');
+  });
+
+  it('leaves the headline last_status untouched when the derived verdict is not degraded', async () => {
+    const now = Date.now();
+    cronM.mockImplementation((_cron, from) => new Date(from.getTime() + 3 * 60_000));
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'git-sync',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 */3 * * * *' },
+        target_role: 'system:git-sync',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 60_000),
+        group_slug: null,
+        metadata: { last_status: 'synced', last_synced_at: now - 60_000 },
+      },
+    ]);
+
+    const b = body(
+      await listTool.handler({ installSlug: 'home-harness', name: 'git-sync' } as never, { role: 'su' } as never),
+    );
+    expect(b.routines[0].health).toMatchObject({
+      last_status: 'synced',
+      git_sync_freshness: { status: 'fresh' },
+    });
+  });
+
+  it('does not touch last_status on a NON-git-sync routine — the override is scoped to the row that earned it', async () => {
+    const now = Date.now();
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'home-harness',
+        name: 'green-checkpoint',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 0 * * * *' },
+        target_role: 'system:green-checkpoint',
+        active: true,
+        next_fire_at: new Date(now + 60_000),
+        last_fired_at: new Date(now - 10 * 60 * 60_000),
+        group_slug: null,
+        metadata: { last_status: 'synced' },
+      },
+    ]);
+
+    const b = body(await listTool.handler({ installSlug: 'home-harness' } as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({ last_status: 'synced' });
+    expect(b.routines[0].health.git_sync_freshness).toBeUndefined();
   });
 
   it('maps rows (cron from trigger_config, iso timestamps)', async () => {
