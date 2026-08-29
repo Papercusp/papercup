@@ -7,6 +7,7 @@ import {
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
   WORKSPACE_HOST_REMOTE_INITIALIZER_ENTRYPOINT,
   WORKSPACE_HOST_SHARED_BUILDER_KIND,
+  WORKSPACE_HOST_SIDECAR_BUILDER_KIND,
   buildWorkspaceHostBuildManifest,
   deriveWorkspaceHostCanonicalArtifactUrls,
   buildWorkspaceHostCleanRoomInstallFixture,
@@ -26,7 +27,12 @@ const SIGNING_PUBLIC_KEY = 'untrusted comment: Papercusp workspace-host release 
 const SIGNING_KEY_DIGEST = createHash('sha256').update(SIGNING_PUBLIC_KEY, 'utf8').digest('hex');
 const SBOM_DIGEST = 'b'.repeat(64);
 
-function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
+type BuilderOverride = Partial<{
+  kind: typeof WORKSPACE_HOST_SHARED_BUILDER_KIND | typeof WORKSPACE_HOST_SIDECAR_BUILDER_KIND;
+  templatePath: string;
+}>;
+
+function artifact(version = '2026.8.22-1', builderOverride: BuilderOverride = {}): WorkspaceHostImageArtifact {
   const buildManifest = buildWorkspaceHostBuildManifest({
     contractVersion: WORKSPACE_HOST_BUILD_INPUT_CONTRACT_VERSION,
     distributionProfile: 'vm-release',
@@ -51,6 +57,7 @@ function artifact(version = '2026.8.22-1'): WorkspaceHostImageArtifact {
       version: '1.14.2',
       templatePath: 'infra/images/workspace-host.pkr.hcl',
       templateSha256: 'd'.repeat(64),
+      ...builderOverride,
     },
     materials: [
       {
@@ -217,6 +224,58 @@ describe('evaluateWorkspaceHostReleaseGate', () => {
       compatibility: { compatible: true, issues: [] },
       failures: [],
     });
+  });
+
+  // EI-21750653220169836: the published r8 workspace-host artifact declared the sidecar
+  // bundle builder and pinned papercusp-desktop/bin/build-desktop-sidecar.sh — a bash
+  // script — as its template. Every gate passed it, and the release died much later at
+  // `packer init`, whose error named Packer rather than the field that chose the file.
+  it('rejects a build manifest that declares the sidecar bundle builder', () => {
+    const candidate = artifact('2026.8.22-1', { kind: WORKSPACE_HOST_SIDECAR_BUILDER_KIND });
+    const verdict = evaluateWorkspaceHostReleaseGate({
+      artifact: candidate,
+      trustReport: trustReport(),
+      compatibilityRequest: compatibilityRequest(),
+      cleanRoomReport: cleanRoomReport(candidate),
+    });
+
+    expect(verdict.accepted).toBe(false);
+    const failure = verdict.failures.find((entry) => entry.code === 'unsupported-builder');
+    expect(failure).toBeDefined();
+    expect(failure?.message).toContain(WORKSPACE_HOST_SIDECAR_BUILDER_KIND);
+  });
+
+  it('rejects a builder template that is not a Packer template', () => {
+    const candidate = artifact('2026.8.22-1', {
+      templatePath: 'papercusp-desktop/bin/build-desktop-sidecar.sh',
+    });
+    const verdict = evaluateWorkspaceHostReleaseGate({
+      artifact: candidate,
+      trustReport: trustReport(),
+      compatibilityRequest: compatibilityRequest(),
+      cleanRoomReport: cleanRoomReport(candidate),
+    });
+
+    expect(verdict.accepted).toBe(false);
+    const failure = verdict.failures.find((entry) => entry.code === 'unsupported-builder');
+    expect(failure).toBeDefined();
+    expect(failure?.message).toContain('build-desktop-sidecar.sh');
+  });
+
+  it('accepts the Packer builder kind paired with a .pkr.hcl template', () => {
+    const candidate = artifact('2026.8.22-1', {
+      kind: WORKSPACE_HOST_SHARED_BUILDER_KIND,
+      templatePath: 'infra/images/workspace-host.pkr.hcl',
+    });
+    const verdict = evaluateWorkspaceHostReleaseGate({
+      artifact: candidate,
+      trustReport: trustReport(),
+      compatibilityRequest: compatibilityRequest(),
+      cleanRoomReport: cleanRoomReport(candidate),
+    });
+
+    expect(verdict.failures.filter((entry) => entry.code === 'unsupported-builder')).toEqual([]);
+    expect(verdict.accepted).toBe(true);
   });
 
   it('rejects a trust report for different release bytes', () => {

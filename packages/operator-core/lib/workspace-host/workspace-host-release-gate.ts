@@ -1,5 +1,6 @@
 import {
   WORKSPACE_HOST_IMAGE_ACCEPTANCE_CONTRACT_VERSION,
+  WORKSPACE_HOST_PACKER_BUILDER_KIND,
   evaluateWorkspaceHostImageCompatibility,
   validateWorkspaceHostImageArtifact,
   verifyWorkspaceHostBuildManifest,
@@ -24,6 +25,14 @@ const REQUIRED_CLEAN_ROOM_CHECKS = [
 
 const SHA256 = /^[a-f0-9]{64}$/;
 
+/**
+ * Every image-family release path (GCP, AWS, Azure) feeds
+ * `buildManifest.builder.templatePath` straight into `packer init` / `packer build`.
+ * A Packer template is `.pkr.hcl` or `.pkr.json`; anything else cannot be a template
+ * no matter what digest it carries.
+ */
+const PACKER_TEMPLATE_PATH = /\.pkr\.(hcl|json)$/;
+
 export type WorkspaceHostReleaseGateFailureCode =
   | 'clean-room-rejected'
   | 'clean-room-subject-mismatch'
@@ -31,6 +40,7 @@ export type WorkspaceHostReleaseGateFailureCode =
   | 'invalid-build-manifest'
   | 'invalid-image-artifact'
   | 'trust-subject-mismatch'
+  | 'unsupported-builder'
   | 'untrusted-release';
 
 export interface WorkspaceHostReleaseGateFailure {
@@ -89,6 +99,31 @@ export function evaluateWorkspaceHostReleaseGate(
         message: artifactErrors.join('; '),
       });
     }
+  }
+
+  // The builder block describes the VM-IMAGE builder, and every provider's release path
+  // packer-inits builder.templatePath before it does anything billable. Until this check
+  // existed the field was stored and never read, so a manifest naming the sidecar bundle
+  // builder — a bash script — passed every gate and died at `packer init` with an error
+  // that named Packer rather than the manifest field that chose the file
+  // (EI-21750653220169836; the r8 workspace-host artifact shipped exactly that way).
+  const builder = input.artifact.buildManifest.builder;
+  const builderErrors: string[] = [];
+  if (builder.kind !== WORKSPACE_HOST_PACKER_BUILDER_KIND) {
+    builderErrors.push(
+      `builder.kind must be '${WORKSPACE_HOST_PACKER_BUILDER_KIND}' for an image-family release, got '${builder.kind}'`,
+    );
+  }
+  if (!PACKER_TEMPLATE_PATH.test(builder.templatePath)) {
+    builderErrors.push(
+      `builder.templatePath '${builder.templatePath}' is not a Packer template (expected a .pkr.hcl or .pkr.json path)`,
+    );
+  }
+  if (builderErrors.length > 0) {
+    failures.push({
+      code: 'unsupported-builder',
+      message: builderErrors.join('; '),
+    });
   }
 
   if (!input.trustReport.trusted || input.trustReport.failures.length > 0) {
