@@ -50,6 +50,13 @@ export const DEFAULT_FROZEN_REPAIR_QUEUE_LIMITS = Object.freeze({
  */
 export const FROZEN_REPAIR_DISPATCH_RESERVATION_TTL_MS = 5 * 60 * 1_000;
 
+/**
+ * A freshly-created queue can legitimately spend a short interval at zero attempts while the
+ * checkpoint moves from the red verdict to dispatch. Past this bound, zero attempts means no
+ * fixer ever started — categorically different from a fixer that ran and failed.
+ */
+export const FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS = 15 * 60 * 1_000;
+
 const MAX_PERSISTED_FAILURES = 50;
 const MAX_PERSISTED_FAILURE_CHARS = 500;
 
@@ -163,6 +170,7 @@ export type FrozenRepairQueueDecision =
       runSuite: false;
       recordVerdict: false;
     }
+  | FrozenRepairDispatchInfeasibleDecision
   | {
       kind: 'recover-dead-fixer';
       fixerSpawnId: string;
@@ -253,10 +261,26 @@ export type FrozenRepairQueueDecision =
       recordVerdict: false;
     };
 
+export interface FrozenRepairDispatchInfeasibleDecision {
+  kind: 'recut-at-tip';
+  reason: 'dispatch-infeasible';
+  abandonedCandidate: string;
+  repairHead: string;
+  attempts: number;
+  ageMs: number;
+  zeroAttemptStalled: boolean;
+  zeroAttemptStallMs: number;
+  gateDisposition: 'recut';
+  runSuite: false;
+  recordVerdict: false;
+}
+
 export interface FrozenRepairQueueObservation {
   nowMs: number;
   /** `null` means the liveness read failed; fail closed against duplicate dispatch. */
   fixerAlive?: boolean | null;
+  /** `false` is a fresh, measured proof that no fixer can be dispatched right now. */
+  dispatchFeasible?: boolean | null;
   /** Required only after a repair verified green. `null` means not measured yet. */
   stagingContainsRepair?: boolean | null;
   /**
@@ -314,6 +338,9 @@ export interface FrozenRepairQueueDiagnostic {
   ageMs: number;
   maxAgeMs: number;
   ageExpired: boolean;
+  /** True only after an unassigned zero-attempt queue outlives the normal dispatch window. */
+  zeroAttemptStalled: boolean;
+  zeroAttemptStallMs: number;
   /** P-048 gate-health surface: escapes already spent, the ceiling, and whether an exhausted
    * pin would still be allowed to re-cut. `escapeAvailable:false` with `maxCandidateEscapes:0`
    * reads as "hatch disabled"; with a nonzero ceiling it reads as "budget spent". */
@@ -338,6 +365,40 @@ export interface FrozenRepairQueueDiagnostic {
    * signal can be trusted before anything is allowed to block on it.
    */
   sharedTreeCollision: FrozenRepairSharedTreeCollision;
+}
+
+/**
+ * Measured dispatch infeasibility is not a candidate verdict and must not hold an immutable pin.
+ * The caller retires the queue and falls through to the current staging tip. This policy is
+ * deliberately independent of `maxCandidateEscapes`: that budget bounds failed REPAIR attempts,
+ * while this branch proves no repair attempt can begin at all.
+ */
+export function decideFrozenRepairDispatchInfeasible(
+  queue: FrozenCandidateRepairQueue,
+  observation: { nowMs: number; zeroAttemptStallMs?: number },
+): FrozenRepairDispatchInfeasibleDecision {
+  assertTimestamp(observation.nowMs, 'nowMs');
+  const zeroAttemptStallMs = observation.zeroAttemptStallMs ?? FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
+  if (!Number.isFinite(zeroAttemptStallMs) || zeroAttemptStallMs <= 0) {
+    throw new Error('zeroAttemptStallMs must be a positive finite duration');
+  }
+  if (queue.phase !== 'awaiting-fixer' || queue.fixerSpawnId !== null || queue.dispatchReservation !== undefined) {
+    throw new Error('dispatch infeasibility requires an unassigned awaiting-fixer queue without a reservation');
+  }
+  const ageMs = Math.max(0, observation.nowMs - queue.openedAtMs);
+  return {
+    kind: 'recut-at-tip',
+    reason: 'dispatch-infeasible',
+    abandonedCandidate: queue.candidate,
+    repairHead: queue.repairHead,
+    attempts: queue.attempts,
+    ageMs,
+    zeroAttemptStalled: queue.attempts === 0 && ageMs >= zeroAttemptStallMs,
+    zeroAttemptStallMs,
+    gateDisposition: 'recut',
+    runSuite: false,
+    recordVerdict: false,
+  };
 }
 
 function nonBlank(value: unknown): value is string {
@@ -409,9 +470,7 @@ function parseConvergenceRounds(value: unknown): FrozenRepairConvergenceRound[] 
  * the baseline the shrink is measured against, so a long cycle would report `shrinkTotal:
  * null` exactly when the convergence question matters most.
  */
-function capConvergenceRounds(
-  rounds: readonly FrozenRepairConvergenceRound[],
-): FrozenRepairConvergenceRound[] {
+function capConvergenceRounds(rounds: readonly FrozenRepairConvergenceRound[]): FrozenRepairConvergenceRound[] {
   if (rounds.length <= FROZEN_REPAIR_CONVERGENCE_ROUND_CAP) return [...rounds];
   const first = rounds[0] as FrozenRepairConvergenceRound;
   return [first, ...rounds.slice(-(FROZEN_REPAIR_CONVERGENCE_ROUND_CAP - 1))];
@@ -470,14 +529,10 @@ export function createFrozenCandidateQueue(input: {
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: 'ready-to-test',
     candidate: input.candidate,
-    qualificationAttemptId: nonBlank(input.qualificationAttemptId)
-      ? input.qualificationAttemptId
-      : null,
+    qualificationAttemptId: nonBlank(input.qualificationAttemptId) ? input.qualificationAttemptId : null,
     base: input.base,
     repairHead: input.candidate,
-    affectedTestProofGroup: nonBlank(input.affectedTestProofGroup)
-      ? input.affectedTestProofGroup
-      : null,
+    affectedTestProofGroup: nonBlank(input.affectedTestProofGroup) ? input.affectedTestProofGroup : null,
     worktreePath: input.worktreePath,
     attempts: 0,
     openedAtMs: input.nowMs,
@@ -492,17 +547,22 @@ export function createFrozenCandidateQueue(input: {
 export function createFrozenCandidateRepairQueue(
   input: Parameters<typeof createFrozenCandidateQueue>[0],
 ): FrozenCandidateRepairQueue {
-  return markFrozenCandidateVerificationRed(
-    createFrozenCandidateQueue(input),
-    { failingTests: input.failingTests, nowMs: input.nowMs },
-  );
+  return markFrozenCandidateVerificationRed(createFrozenCandidateQueue(input), {
+    failingTests: input.failingTests,
+    nowMs: input.nowMs,
+  });
 }
 
 /** Parse a JSONB metadata value without letting a malformed queue steer the release gate. */
 export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidateRepairQueue | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;
-  if (row.schemaVersion !== 1 && row.schemaVersion !== 2 && row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION) return null;
+  if (
+    row.schemaVersion !== 1 &&
+    row.schemaVersion !== 2 &&
+    row.schemaVersion !== FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION
+  )
+    return null;
   if (
     row.phase !== 'ready-to-test' &&
     row.phase !== 'awaiting-fixer' &&
@@ -527,8 +587,7 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
   }
   if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && (row.attempts as number) < 1)
     return null;
-  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && !nonBlank(row.fixerSpawnId))
-    return null;
+  if ((row.phase === 'ready-to-verify' || row.phase === 'ready-to-promote') && !nonBlank(row.fixerSpawnId)) return null;
   /**
    * Rounds are OBSERVABILITY, not safety, so a malformed value is dropped rather than
    * failing the whole parse. The queue itself is the gate's safety state — refusing to
@@ -546,15 +605,11 @@ export function parseFrozenCandidateRepairQueue(value: unknown): FrozenCandidate
     schemaVersion: FROZEN_CANDIDATE_REPAIR_QUEUE_SCHEMA_VERSION,
     phase: row.phase,
     candidate: row.candidate,
-    qualificationAttemptId: nonBlank(row.qualificationAttemptId)
-      ? row.qualificationAttemptId
-      : null,
+    qualificationAttemptId: nonBlank(row.qualificationAttemptId) ? row.qualificationAttemptId : null,
     base: row.base as string | null,
     repairHead: row.repairHead,
     // v1/missing/malformed proof state keeps the queue valid but forces full execution.
-    affectedTestProofGroup: nonBlank(row.affectedTestProofGroup)
-      ? row.affectedTestProofGroup
-      : null,
+    affectedTestProofGroup: nonBlank(row.affectedTestProofGroup) ? row.affectedTestProofGroup : null,
     worktreePath: row.worktreePath,
     attempts: row.attempts as number,
     openedAtMs: row.openedAtMs,
@@ -650,11 +705,7 @@ export function decideFrozenCandidateRepairQueue(
   // its finished worktree or wedge the queue until expiry. The caller persists the recovered
   // state, then re-runs this policy so the normal age/attempt limits still decide whether a
   // replacement may launch.
-  if (
-    queue.phase === 'awaiting-fixer' &&
-    queue.fixerSpawnId &&
-    observation.fixerAlive === false
-  ) {
+  if (queue.phase === 'awaiting-fixer' && queue.fixerSpawnId && observation.fixerAlive === false) {
     return {
       kind: 'recover-dead-fixer',
       fixerSpawnId: queue.fixerSpawnId,
@@ -672,10 +723,19 @@ export function decideFrozenCandidateRepairQueue(
   }
 
   if (queue.phase === 'awaiting-fixer') {
+    // A measured provider wall with no fixer ever dispatched is a structural dead end, not an
+    // inconclusive repair. Retire this queue and let the caller re-triage the current tip. A
+    // queue with prior attempts remains on the ordinary bounded-repair path; those attempts are
+    // evidence that dispatch was feasible at least once and must not be silently discarded.
     if (
-      queue.dispatchReservation &&
-      queue.dispatchReservation.expiresAtMs > observation.nowMs
+      observation.dispatchFeasible === false &&
+      queue.attempts === 0 &&
+      queue.fixerSpawnId === null &&
+      !queue.dispatchReservation
     ) {
+      return decideFrozenRepairDispatchInfeasible(queue, observation);
+    }
+    if (queue.dispatchReservation && queue.dispatchReservation.expiresAtMs > observation.nowMs) {
       return {
         kind: 'wait-for-dispatch-reservation',
         reservationToken: queue.dispatchReservation.token,
@@ -790,20 +850,30 @@ export function detectFrozenRepairSharedTreeCollision(
   }
 
   if (!repairInFlight) {
-    return { measured: true, repairInFlight: false, collidingPaths: [], collisionCount: 0, truncated: false, detail: null };
+    return {
+      measured: true,
+      repairInFlight: false,
+      collidingPaths: [],
+      collisionCount: 0,
+      truncated: false,
+      detail: null,
+    };
   }
 
   const edited = new Set(editedPaths.map(normalizeRepoPath).filter((p) => p.length > 0));
   const colliding = [
-    ...new Set(
-      queue!.failingTests
-        .map(normalizeRepoPath)
-        .filter((p) => p.length > 0 && edited.has(p)),
-    ),
+    ...new Set(queue!.failingTests.map(normalizeRepoPath).filter((p) => p.length > 0 && edited.has(p))),
   ].sort();
 
   if (colliding.length === 0) {
-    return { measured: true, repairInFlight: true, collidingPaths: [], collisionCount: 0, truncated: false, detail: null };
+    return {
+      measured: true,
+      repairInFlight: true,
+      collidingPaths: [],
+      collisionCount: 0,
+      truncated: false,
+      detail: null,
+    };
   }
 
   const shown = colliding.slice(0, FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP);
@@ -822,7 +892,9 @@ export function detectFrozenRepairSharedTreeCollision(
       `edit that diverges from ${queue!.worktreePath} does not fail loudly — it silently withholds ` +
       `promotion and reads as "the repair did not work". Author the fix in that worktree; editing the ` +
       `shared checkout is NOT admission. Colliding: ${shown.join(', ')}` +
-      (truncated ? ` …and ${colliding.length - shown.length} more (list capped at ${FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP})` : ''),
+      (truncated
+        ? ` …and ${colliding.length - shown.length} more (list capped at ${FROZEN_REPAIR_COLLISION_PATH_DISPLAY_CAP})`
+        : ''),
   };
 }
 
@@ -842,6 +914,12 @@ export function diagnoseFrozenCandidateRepairQueue(
       }
     : null;
   const fixerAlive = queue.fixerSpawnId ? (observation.fixerAlive ?? null) : null;
+  const zeroAttemptStalled =
+    queue.phase === 'awaiting-fixer' &&
+    queue.attempts === 0 &&
+    queue.fixerSpawnId === null &&
+    !(reservation?.active ?? false) &&
+    ageMs >= FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS;
   const safePhase = queue.phase === 'awaiting-fixer' || queue.phase === 'blocked';
   const retireRefusal = !safePhase
     ? 'unsafe-phase'
@@ -866,10 +944,11 @@ export function diagnoseFrozenCandidateRepairQueue(
     ageMs,
     maxAgeMs: limits.maxAgeMs,
     ageExpired: ageMs >= limits.maxAgeMs,
+    zeroAttemptStalled,
+    zeroAttemptStallMs: FROZEN_REPAIR_ZERO_ATTEMPT_STALL_MS,
     escapesUsed,
     maxCandidateEscapes: limits.maxCandidateEscapes,
-    escapeAvailable:
-      limits.maxCandidateEscapes > 0 && escapesUsed < limits.maxCandidateEscapes,
+    escapeAvailable: limits.maxCandidateEscapes > 0 && escapesUsed < limits.maxCandidateEscapes,
     fixerSpawnId: queue.fixerSpawnId,
     fixerAlive,
     dispatchReservation: reservation,
@@ -1090,10 +1169,7 @@ export function summarizeFrozenRepairConvergence(
   const shrinkPerRound = rounds.map((entry, index) => ({
     round: entry.round,
     failingCount: entry.failingCount,
-    delta:
-      index === 0
-        ? null
-        : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
+    delta: index === 0 ? null : entry.failingCount - (rounds[index - 1] as FrozenRepairConvergenceRound).failingCount,
   }));
   const monotonic = shrinkPerRound.every((entry) => entry.delta === null || entry.delta <= 0);
   const shrinkTotal = failingFirst === null ? null : failingFirst - failingNow;
