@@ -737,6 +737,52 @@ describe('pc-heavy per-invocation variables are excluded from the cache identity
     expect(unstripped.length).toBeGreaterThan(0);
   });
 
+  // The SECOND structural defeater, found only by running the thing end to end. Removing the
+  // volatile environment variables above changed the miss reason from `environment-changed` to
+  // `gate-config-changed` — reuse was blocked twice over. gateConfig embeds `scheduler`, the host
+  // budget resolveTaskBudget derived from THIS box at launch (worker/fork allocation, concurrency,
+  // pid envelope), and SCHEDULER_WORKER_BUDGET comes from VITEST_MAX_WORKERS/FORKS/THREADS
+  // (affected-tests.mjs:456-462) — the very variables the environment clone already normalises
+  // out. So gateConfig silently re-admitted what the environment component had just excluded.
+  //
+  // Discriminated by single-variable experiment, not by reading: pinning AFFECTED_BASE alone
+  // still missed; pinning the memory budget too still missed; pinning the WORKER BUDGET produced
+  // `cross-run:identity-match` with zero task spawns.
+  it('neutralises the host worker/fork budget in the cache identity gateConfig', () => {
+    // Bound the assertion by the REAL brace structure of the spec object. A fixed-size slice
+    // silently stops covering the field it is meant to police as the surrounding code grows —
+    // a false green that appears exactly while this area is being edited.
+    const start = AFFECTED_TESTS_SRC.indexOf('const cacheIdentitySpec = {');
+    expect(start).toBeGreaterThan(-1);
+    let depth = 0;
+    let end = -1;
+    for (let i = AFFECTED_TESTS_SRC.indexOf('{', start); i < AFFECTED_TESTS_SRC.length; i += 1) {
+      const ch = AFFECTED_TESTS_SRC[i];
+      if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    expect(end).toBeGreaterThan(start);
+    const spec = AFFECTED_TESTS_SRC.slice(start, end + 1);
+    // The identity must not carry the resolved host budget.
+    expect(spec).toContain('scheduler: null');
+    // ...and the spec really is the block we think it is (guards against matching some other
+    // object should the source be restructured).
+    expect(spec).toContain('dependencyHash');
+    expect(spec).toContain('affectedBase');
+  });
+
+  // The REAL scheduler config must keep its scheduler — the exclusion above is identity-only and
+  // must never leak into what actually governs execution.
+  it('still hands the real run a populated scheduler config', () => {
+    expect(AFFECTED_TESTS_SRC).toContain('scheduler: SCHEDULER_CONFIG');
+  });
+
   // Belt and braces on the mechanism itself: prove the strip list is what does the work, by
   // checking each named variable really is absent from the hashed clone.
   it('removes every listed variable from the identity clone but not the real child env', () => {

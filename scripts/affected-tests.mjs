@@ -4148,6 +4148,24 @@ function runCapturedTask(
           },
           gateConfig: {
             ...taskVerdictGateConfig,
+            // `scheduler` is the RESOLVED HOST BUDGET (worker/fork allocation, concurrency, pid
+            // envelope) that resolveTaskBudget derived from this box AT LAUNCH. It describes how
+            // much machine the run was handed, never what the task exercises — and it moves with
+            // host load on every invocation, so hashing it makes cross-run reuse structurally
+            // unable to hit: the second of two identical local runs missed with
+            // `gate-config-changed` every time until this was neutralised.
+            //
+            // This is the SAME quantity the environment component already normalises out on
+            // purpose (VITEST_MAX_FORKS/WORKERS/THREADS — see the "ignores run group and fork
+            // allocation" test); SCHEDULER_WORKER_BUDGET is derived from those very variables
+            // (affected-tests.mjs:456-462), so gateConfig was silently re-admitting by another
+            // route what the environment clone had just excluded. Excluding it here therefore
+            // widens reuse by exactly NOTHING that was not already ratified as irrelevant.
+            //
+            // CACHE IDENTITY ONLY — the real scheduler config is untouched and still governs
+            // execution. Measured: with this neutralised, run 2 of an unchanged pair reports
+            // `cross-run:identity-match` and spawns zero tasks.
+            scheduler: null,
             // A local run may derive its base from the test-certified watermark rather than an
             // exported AFFECTED_BASE variable. Include the resolved selector explicitly so a
             // watermark/base transition cannot silently reuse an older proof.
