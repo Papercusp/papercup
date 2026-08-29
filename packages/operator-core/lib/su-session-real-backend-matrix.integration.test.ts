@@ -61,16 +61,25 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { setTimeout as delay } from 'node:timers/promises';
 import { readFile, readdir } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SuSessionBackend } from '@papercusp/chat-protocol';
+import {
+  SU_SESSION_PROTOCOL_VERSION,
+  SU_SESSION_SCHEMA,
+  type SuSessionBackend,
+  type SuSessionCommand,
+  type SuSessionCommandResultEvent,
+  type SuSessionEvent,
+  type SuSessionIdentity,
+} from '@papercusp/chat-protocol';
 import { openPuiSuSession, type PuiSuSessionBinding } from './launch-agent';
 import { getAdvSession, markAdvSessionLaunched, markAdvSessionEnded } from './adv-sessions';
 import { managedSpawn, type ManagedSpawnResult } from './task-manager/managed-spawn';
-import { resolveClaudeSuRuntime } from './su-session-claude-adapter';
-import { resolveCodexSuRuntime } from './su-session-codex-adapter';
-import { resolveOmpSuRuntime } from './su-session-omp-adapter';
+import { openClaudeSuSession, resolveClaudeSuRuntime } from './su-session-claude-adapter';
+import { openCodexSuSession, resolveCodexSuRuntime } from './su-session-codex-adapter';
+import { openOmpSuSession, resolveOmpSuRuntime } from './su-session-omp-adapter';
 
 // ── the gate ────────────────────────────────────────────────────────────────
 // Deliberately an explicit opt-in rather than a capability probe. A probe
@@ -103,6 +112,12 @@ const HARNESS = 'papercusp';
  *  bootstrap has to adopt the row before a native session exists. */
 const READY_TIMEOUT_MS = 240_000;
 const POLL_INTERVAL_MS = 2_000;
+
+/** A real turn is a real model call plus at least one real tool round-trip, on
+ *  a session whose system prompt is the full SU playbook. Budget for that, not
+ *  for a stubbed frame replay. */
+const TURN_TIMEOUT_MS = 300_000;
+const TURN_POLL_INTERVAL_MS = 5_000;
 
 const RESOLVE_RUNTIME: Record<MatrixBackend, (b: PuiSuSessionBinding) => Promise<unknown | null>> = {
   claude: resolveClaudeSuRuntime,
@@ -172,6 +187,151 @@ function pidAlive(pid: number | null | undefined): boolean {
   }
 }
 
+// ── attach + drive, as ONE shape over three genuinely different adapters ────
+// The three adapters are separate classes with backend-specific runtime types
+// and differently-named native readers (`consumeTranscriptSnapshot` for Claude
+// and OMP, `consumeRolloutSnapshot` for Codex, over `transcriptPath` vs
+// `rolloutPath`). There is no upstream union, and inventing one in production
+// code to make a test tidier would be the tail wagging the dog — so the union
+// is built here, explicitly, once per backend.
+type MatrixCommand =
+  | { type: 'owner_turn'; commandId: string; turnId: string; content: string }
+  | { type: 'interrupt'; commandId: string; reason?: string }
+  | { type: 'end'; commandId: string; reason?: string };
+
+interface AttachedLeg {
+  /** The owner identity PUI bound to this row — the key the runtime's control
+   *  socket is discovered under, so it is worth asserting rather than assuming. */
+  ownerId: string;
+  nativeSessionId: string;
+  /** Dispatch a REAL command through the host and await its terminal result. */
+  send(value: MatrixCommand): Promise<SuSessionCommandResultEvent<SuSessionBackend>>;
+  /** Re-resolve the native runtime and translate whatever it has written so far
+   *  into host events. A no-op until the backend has produced its first record,
+   *  which is exactly the window this matrix exists to wait through. */
+  pump(): Promise<void>;
+  events(): readonly SuSessionEvent[];
+  lifecycle(): string;
+}
+
+type AttachOutcome = { ok: true; leg: AttachedLeg } | { ok: false; code: string; error: string };
+
+function buildCommand<B extends SuSessionBackend>(
+  identity: SuSessionIdentity<B>,
+  value: MatrixCommand,
+): SuSessionCommand<B> {
+  return {
+    schema: SU_SESSION_SCHEMA,
+    protocolVersion: SU_SESSION_PROTOCOL_VERSION,
+    issuedAt: new Date().toISOString(),
+    target: identity,
+    ...value,
+  } as SuSessionCommand<B>;
+}
+
+const ATTACH: Record<MatrixBackend, (advSessionId: number, agentChatId: string) => Promise<AttachOutcome>> = {
+  claude: async (advSessionId, agentChatId) => {
+    const opened = await openClaudeSuSession(
+      { operation: 'attach', backend: 'claude', advSessionId, harnessSlug: HARNESS },
+      { agentChatId },
+    );
+    if (!opened.ok) return { ok: false, code: opened.code, error: opened.error };
+    const { adapter, binding } = opened;
+    return {
+      ok: true,
+      leg: {
+        ownerId: binding.ownerId ?? '',
+        nativeSessionId: adapter.host.descriptor().identity.nativeSessionId,
+        send: (value) => adapter.host.startCommand(buildCommand(adapter.host.descriptor().identity, value)).terminal,
+        pump: async () => {
+          const fresh = await resolveClaudeSuRuntime(binding);
+          if (!fresh?.transcriptPath) return;
+          // replaceRuntime resets the parser, so re-reading the whole transcript
+          // each pump is a clean re-translation rather than a double-ingest.
+          adapter.replaceRuntime(fresh, 'matrix native pump');
+          await adapter.consumeTranscriptSnapshot();
+        },
+        events: () => adapter.host.recent.map((entry) => entry.event),
+        lifecycle: () => adapter.host.descriptor().lifecycle,
+      },
+    };
+  },
+  codex: async (advSessionId, agentChatId) => {
+    const opened = await openCodexSuSession(
+      { operation: 'attach', backend: 'codex', advSessionId, harnessSlug: HARNESS },
+      { agentChatId },
+    );
+    if (!opened.ok) return { ok: false, code: opened.code, error: opened.error };
+    const { adapter, binding } = opened;
+    return {
+      ok: true,
+      leg: {
+        ownerId: binding.ownerId ?? '',
+        nativeSessionId: adapter.host.descriptor().identity.nativeSessionId,
+        send: (value) => adapter.host.startCommand(buildCommand(adapter.host.descriptor().identity, value)).terminal,
+        pump: async () => {
+          const fresh = await resolveCodexSuRuntime(binding);
+          if (!fresh?.rolloutPath) return;
+          adapter.replaceRuntime(fresh, 'matrix native pump');
+          await adapter.consumeRolloutSnapshot();
+        },
+        events: () => adapter.host.recent.map((entry) => entry.event),
+        lifecycle: () => adapter.host.descriptor().lifecycle,
+      },
+    };
+  },
+  omp: async (advSessionId, agentChatId) => {
+    const opened = await openOmpSuSession(
+      { operation: 'attach', backend: 'omp', advSessionId, harnessSlug: HARNESS },
+      { agentChatId },
+    );
+    if (!opened.ok) return { ok: false, code: opened.code, error: opened.error };
+    const { adapter, binding } = opened;
+    return {
+      ok: true,
+      leg: {
+        ownerId: binding.ownerId ?? '',
+        nativeSessionId: adapter.host.descriptor().identity.nativeSessionId,
+        send: (value) => adapter.host.startCommand(buildCommand(adapter.host.descriptor().identity, value)).terminal,
+        pump: async () => {
+          const fresh = await resolveOmpSuRuntime(binding);
+          if (!fresh?.transcriptPath) return;
+          adapter.replaceRuntime(fresh, 'matrix native pump');
+          await adapter.consumeTranscriptSnapshot();
+        },
+        events: () => adapter.host.recent.map((entry) => entry.event),
+        lifecycle: () => adapter.host.descriptor().lifecycle,
+      },
+    };
+  },
+};
+
+/** Text of every transcript delta for one role. The event ring is bounded
+ *  (1024) and a pump re-emits the whole native record set, so callers must fold
+ *  these into STICKY evidence rather than scanning once at the end. */
+function transcriptText(events: readonly SuSessionEvent[], role: 'owner' | 'assistant' | 'system'): string[] {
+  const out: string[] = [];
+  for (const event of events) {
+    if (event.type !== 'transcript' || event.phase !== 'delta') continue;
+    if (event.role !== role || !event.content) continue;
+    out.push(event.content);
+  }
+  return out;
+}
+
+function completedTools(events: readonly SuSessionEvent[]): { name: string; output: string; isError: boolean }[] {
+  const out: { name: string; output: string; isError: boolean }[] = [];
+  for (const event of events) {
+    if (event.type !== 'tool' || event.phase !== 'completed') continue;
+    out.push({
+      name: event.name,
+      output: typeof event.output === 'string' ? event.output : JSON.stringify(event.output ?? null),
+      isError: event.isError,
+    });
+  }
+  return out;
+}
+
 // ── per-leg bookkeeping, so teardown can never leak a real agent ────────────
 interface LiveLeg {
   backend: MatrixBackend;
@@ -232,6 +392,7 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
     let binding: PuiSuSessionBinding | null = null;
     let spawned: ManagedSpawnResult | null = null;
     let leg: LiveLeg;
+    let attached: AttachedLeg | null = null;
 
     it('CREATE: records exactly one deferred row carrying the pane argv, and spawns nothing', async () => {
       const opened = await openPuiSuSession({
@@ -411,5 +572,115 @@ describe.skipIf(!ENABLED)('SU-session real-backend acceptance matrix', () => {
         `the ${backend} pane process died after registering its session; child output:\n${captured}`,
       ).toBe(true);
     }, READY_TIMEOUT_MS + 60_000);
+
+    it('ATTACH: the canonical PUI attach entry resolves the live native runtime and builds a driveable adapter', async () => {
+      expect(advSessionId, 'SPAWN must have produced a row').toBeGreaterThan(0);
+
+      const outcome = await ATTACH[backend](advSessionId, `p012-matrix-${advSessionId}`);
+      expect(
+        outcome.ok,
+        outcome.ok
+          ? ''
+          : `attach on adv row ${advSessionId} refused with ${outcome.code}: ${outcome.error}. ` +
+            'A `native_session_not_ready` here would mean the pane never materialised a native session — ' +
+            'i.e. the SPAWN hop went green on something weaker than a running backend.',
+      ).toBe(true);
+      if (!outcome.ok) return;
+      attached = outcome.leg;
+
+      // The owner id PUI bound is the key the runtime's control socket is
+      // discovered under, and the owner turn below injects through exactly that
+      // key. Assert it here, where a missing identity is one line of output,
+      // rather than letting it resurface as an unexplained delivery refusal.
+      expect(attached.ownerId, 'attach produced no ownerId to address the runtime by').toBeTruthy();
+      expect(attached.nativeSessionId, 'attach produced no native session id').toBeTruthy();
+      expect(attached.lifecycle(), 'an attached adapter should present a ready session').toBe('ready');
+    }, 120_000);
+
+    it('OWNER TURN: a real turn reaches the agent, streams a response back, and produces a real tool invocation and result', async () => {
+      expect(attached, 'ATTACH must have produced a driveable session').toBeTruthy();
+      if (!attached) return;
+      const session = attached;
+
+      // THE NONCE IS THE POINT.
+      //
+      // A session that has just booted writes plenty to its transcript on its
+      // own, so "an assistant message exists" and "a tool ran" are both
+      // satisfiable by boot noise. Every assertion below is therefore scoped to
+      // a value that cannot have existed before this turn was composed — which
+      // is what separates "a tool ran" from "the tool WE asked for ran".
+      const nonce = `P012-${randomUUID().slice(0, 8).toUpperCase()}`;
+      const prompt =
+        `Acceptance probe ${nonce}. Do exactly two things and nothing else: ` +
+        `(1) run the shell command: echo ${nonce} ` +
+        '(2) then reply with only the word ACKNOWLEDGED. ' +
+        'Do not claim work items, do not declare intent, do not arm a loop.';
+
+      const result = await session.send({
+        type: 'owner_turn',
+        commandId: `owner-${nonce}`,
+        turnId: `p012-turn-${nonce}`,
+        content: prompt,
+      });
+      expect(
+        result.status,
+        `the ${backend} runtime refused the owner turn: ${JSON.stringify(result)}. ` +
+          'A refusal here is a delivery failure at the control socket — the model never saw the prompt.',
+      ).toBe('completed');
+
+      // Fold STICKY evidence. The host event ring is bounded and each pump
+      // re-emits the whole native record set, so a single scan at the end can
+      // legitimately miss an early record on a long transcript.
+      let sawOwnerEcho = false;
+      let sawNonceInToolResult = false;
+      let assistantText = '';
+      let toolsSeen: { name: string; output: string; isError: boolean }[] = [];
+
+      const deadline = Date.now() + TURN_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        await session.pump();
+        const events = session.events();
+        if (!sawOwnerEcho) sawOwnerEcho = transcriptText(events, 'owner').some((text) => text.includes(nonce));
+        const assistant = transcriptText(events, 'assistant').join('\n');
+        if (assistant.length > assistantText.length) assistantText = assistant;
+        const completed = completedTools(events);
+        if (completed.length > toolsSeen.length) toolsSeen = completed;
+        if (!sawNonceInToolResult) sawNonceInToolResult = completed.some((tool) => tool.output.includes(nonce));
+        if (sawOwnerEcho && assistantText && sawNonceInToolResult) break;
+        await delay(TURN_POLL_INTERVAL_MS);
+      }
+
+      const diagnostic =
+        `\n  tools observed: ${toolsSeen.map((t) => `${t.name}${t.isError ? '(error)' : ''}`).join(', ') || '(none)'}` +
+        `\n  assistant text (first 400): ${assistantText.slice(0, 400) || '(none)'}`;
+
+      // Four separate assertions, because these are four different defects and
+      // collapsing them is what produced the earlier false green: a delivered
+      // prompt that the agent never persisted, a persisted prompt with no
+      // answer, an answer with no tool use, and a tool that ran something other
+      // than what was asked, all fail differently and are fixed differently.
+      expect(
+        sawOwnerEcho,
+        `the owner turn was acked by the ${backend} control socket but never appeared in the native ` +
+          `transcript within ${TURN_TIMEOUT_MS}ms. The injection reached the pty and stopped there.${diagnostic}`,
+      ).toBe(true);
+
+      expect(
+        assistantText.length,
+        `the ${backend} agent persisted the prompt but streamed no assistant response back.${diagnostic}`,
+      ).toBeGreaterThan(0);
+
+      expect(
+        toolsSeen.length,
+        `the ${backend} agent answered without invoking any tool, so this turn proves nothing about ` +
+          `real tool invocation/result translation.${diagnostic}`,
+      ).toBeGreaterThan(0);
+
+      expect(
+        sawNonceInToolResult,
+        `no completed tool result carried ${nonce}, so a tool ran but not the one this turn asked for — ` +
+          `the tool-result translation is unproven for ${backend}.${diagnostic}`,
+      ).toBe(true);
+    }, TURN_TIMEOUT_MS + 60_000);
   });
 });
