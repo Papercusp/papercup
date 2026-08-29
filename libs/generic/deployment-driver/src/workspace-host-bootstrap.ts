@@ -637,8 +637,13 @@ export function buildWorkspaceHostBootstrap(
     'service_diagnostics() {',
     '  echo "[workspace-host-bootstrap] --- systemctl status $SERVICE_NAME.service ---" >&2',
     '  systemctl status "$SERVICE_NAME.service" --no-pager --full 2>&1 | tail -40 >&2 || true',
-    '  echo "[workspace-host-bootstrap] --- journalctl -xeu $SERVICE_NAME.service ---" >&2',
-    '  journalctl -xeu "$SERVICE_NAME.service" --no-pager --no-hostname -n 120 2>&1 | tail -120 >&2 || true',
+    // -o cat, and deliberately NOT -x: systemd's catalog prose ("Subject:/Defined-By:/Support:"
+    // blocks) is ~8 lines of boilerplate per event and crowded the SERVICE's own stderr out of
+    // the captured window entirely on the first run that had diagnostics at all. What is wanted
+    // here is the process's output explaining why ExecStart exited, not systemd's explanation
+    // of what a unit is.
+    '  echo "[workspace-host-bootstrap] --- journalctl -u $SERVICE_NAME.service (service output) ---" >&2',
+    '  journalctl -u "$SERVICE_NAME.service" --no-pager --no-hostname -o cat -n 200 2>&1 | tail -200 >&2 || true',
     '}',
     'systemctl enable --now "$SERVICE_NAME.service" || { service_diagnostics; die "workspace service failed to start"; }',
     '',
