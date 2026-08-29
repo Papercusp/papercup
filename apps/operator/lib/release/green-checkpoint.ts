@@ -7542,7 +7542,8 @@ export function parseTargetedReVerdictSelection(
       path.posix.normalize(file) === file &&
       file !== "." &&
       !file.split("/").some((part) => part === ".." || part === "");
-    if (!workspace || !uniqueWorkspaces.has(workspace) || !safeFile) return null;
+    if (!workspace || !uniqueWorkspaces.has(workspace) || !safeFile)
+      return null;
     const key = `${workspace}\0${file}`;
     if (fileKeys.has(key)) return null;
     fileKeys.add(key);
@@ -9241,29 +9242,29 @@ async function runGreenCheckpointInner(
         `candidate-fossil rescued by targeted re-verdict; continuing the normal green publication path at ${candidate.slice(0, 8)}`,
       );
     } else {
-    const ageHours =
-      Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
-    const fossilSummary =
-      `candidate-fossil: green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
-      `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
-      `(threshold ${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m). ` +
-      `No failing-test signature was published; the next run must re-judge a fresh tip.`;
-    deps.log(fossilSummary);
-    stampPromotion(false, "candidate-fossil");
-    return {
-      advanced: false,
-      candidate,
-      from: lastReady,
-      green: null,
-      candidateSource,
-      ...(diagnostic ? { diagnostic } : {}),
-      reason: "candidate-fossil",
-      summary: fossilSummary,
-      ...(deps.runId ? { runId: deps.runId } : {}),
-      ...(logPath ? { logPath } : {}),
-      ...(isolationNote ? { isolationNote } : {}),
-      ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
-    };
+      const ageHours =
+        Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
+      const fossilSummary =
+        `candidate-fossil: green-checkpoint withheld a red verdict for candidate ${candidate.slice(0, 8)}: ` +
+        `the candidate was already ${ageHours}h old when the suite result was ready to publish ` +
+        `(threshold ${Math.round(CANDIDATE_FOSSIL_AGE_MS / 60_000)}m). ` +
+        `No failing-test signature was published; the next run must re-judge a fresh tip.`;
+      deps.log(fossilSummary);
+      stampPromotion(false, "candidate-fossil");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: null,
+        candidateSource,
+        ...(diagnostic ? { diagnostic } : {}),
+        reason: "candidate-fossil",
+        summary: fossilSummary,
+        ...(deps.runId ? { runId: deps.runId } : {}),
+        ...(logPath ? { logPath } : {}),
+        ...(isolationNote ? { isolationNote } : {}),
+        ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
+      };
     }
   }
 

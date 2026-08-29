@@ -25,6 +25,7 @@ import {
   checkpointCandidateSourceFromCli,
   normalizeCheckpointMaterializationSelection,
   parseCheckpointMaterializationSelection,
+  parseTargetedReVerdictSelection,
   runCmd,
   quietCutSecFromEnv,
   extractFailingTests,
@@ -2539,6 +2540,46 @@ describe("P-007 pre-materialization related-test selection", () => {
     ).toBeNull();
   });
 
+  it("WI-871878: parses only complete, exact file-level targeted re-verdict evidence", () => {
+    const summary =
+      "RELATED_AFFECTED_FILES status=selected workspaces=1 files=1";
+    const exact = [
+      "RELATED_SELECTION ws=@papercusp/web selected=1 total=40 mode=related reason=ok",
+      "RELATED_MATERIALIZATION_SELECTION status=selected relatedSelections=1 affected=1 closure=1",
+      "RELATED_AFFECTED_WORKSPACE_DIR\tapps/operator",
+      "RELATED_DEPENDENCY_WORKSPACE_DIR\tapps/operator",
+      "AFFECTED_WS\t@papercusp/web",
+      summary,
+      "RELATED_AFFECTED_FILE\t@papercusp/web\tlib/fossil.test.ts",
+    ];
+
+    expect(parseTargetedReVerdictSelection(exact.join("\n"))).toEqual({
+      affectedWorkspaces: ["@papercusp/web"],
+      affectedFiles: [
+        { workspace: "@papercusp/web", file: "lib/fossil.test.ts" },
+      ],
+      summary,
+    });
+
+    expect(
+      parseTargetedReVerdictSelection(
+        exact
+          .filter((line) => !line.startsWith("RELATED_AFFECTED_FILE\t"))
+          .join("\n"),
+      ),
+    ).toBeNull();
+    expect(
+      parseTargetedReVerdictSelection(
+        [...exact, "AFFECTED_GUARD\tlint:identity-leak"].join("\n"),
+      ),
+    ).toBeNull();
+    expect(
+      parseTargetedReVerdictSelection(
+        exact.join("\n").replace("lib/fossil.test.ts", "../fossil.test.ts"),
+      ),
+    ).toBeNull();
+  });
+
   it("prepares exact source and selects its dependency closure before materialization", async () => {
     const ready = await commit("a", "1", "ready");
     await git(repo, ["branch", "ready", ready]);
@@ -3178,6 +3219,146 @@ describe("runGreenCheckpoint", () => {
       expect(calls).not.toContain("escalate");
       expect(calls).toContain("runGreen");
       expect(logs.some((line) => line.includes("candidate-fossil"))).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("WI-871878: upgrades a fossil red only after exact affected files and post-suite gates pass at one stable tip", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "broken", "fossil candidate");
+    const tip = await commit("b", "fixed", "current tip fix");
+    const logs: string[] = [];
+    const { deps, calls } = stubDeps(false, ["lib/fossil.test.ts"]);
+    deps.runGreen = async () => {
+      calls.push("runGreen");
+      return {
+        green: false,
+        summary: "1 failed",
+        failingTests: ["lib/fossil.test.ts"],
+        failingFiles: [
+          { workspace: "@papercusp/web", file: "lib/fossil.test.ts" },
+        ],
+      };
+    };
+    deps.log = (line) => logs.push(line);
+    deps.resolveTip = async () => tip;
+    deps.changedFilesForRange = async (from, to) => {
+      expect([from, to]).toEqual([candidate, tip]);
+      return ["b"];
+    };
+    deps.affectedTestsForRange = async (from, to) => {
+      expect([from, to]).toEqual([candidate, tip]);
+      return {
+        affectedWorkspaces: ["@papercusp/web"],
+        affectedFiles: [
+          { workspace: "@papercusp/web", file: "lib/affected.test.ts" },
+        ],
+        summary: "exact file radius",
+      };
+    };
+    deps.runTestsAtRef = async (ref, files) => {
+      calls.push(`targeted:${ref.slice(0, 7)}`);
+      expect(ref).toBe(tip);
+      expect(files).toEqual([
+        { workspace: "@papercusp/web", file: "lib/fossil.test.ts" },
+        { workspace: "@papercusp/web", file: "lib/affected.test.ts" },
+      ]);
+      return { pass: true, summary: "targeted files passed" };
+    };
+    deps.runPostSuiteAtRef = async (ref) => {
+      calls.push(`post-suite:${ref.slice(0, 7)}`);
+      expect(ref).toBe(tip);
+      return { pass: true, summary: "post-suite gates passed" };
+    };
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const priorSetup = deps.setupTree;
+      deps.setupTree = async (ref, options) => {
+        offsetMs = 121 * 60_000;
+        return priorSetup(ref, options);
+      };
+      const result = await runGreenCheckpoint(cfg(), deps, {
+        candidate,
+        noPush: true,
+      });
+      expect(result).toMatchObject({
+        advanced: true,
+        candidate: tip,
+        green: true,
+        reason: "advanced",
+      });
+      expect(result.summary).toContain("post-suite gates passed");
+      expect(await revParse(repo, "ready")).toBe(tip);
+      expect(calls).toContain(`targeted:${tip.slice(0, 7)}`);
+      expect(calls).toContain(`post-suite:${tip.slice(0, 7)}`);
+      expect(
+        logs.some((line) =>
+          line.includes("candidate-fossil rescued by targeted re-verdict"),
+        ),
+      ).toBe(true);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it("WI-871878: preserves the fossil hold when the exact affected-file radius is unavailable", async () => {
+    const ready = await commit("a", "1", "ready");
+    await git(repo, ["branch", "ready", ready]);
+    const candidate = await commit("b", "broken", "fossil candidate");
+    const tip = await commit("b", "fixed", "current tip fix");
+    const { deps, calls } = stubDeps(false, ["lib/fossil.test.ts"]);
+    deps.runGreen = async () => {
+      calls.push("runGreen");
+      return {
+        green: false,
+        summary: "1 failed",
+        failingTests: ["lib/fossil.test.ts"],
+        failingFiles: [
+          { workspace: "@papercusp/web", file: "lib/fossil.test.ts" },
+        ],
+      };
+    };
+    deps.resolveTip = async () => tip;
+    deps.changedFilesForRange = async () => ["b"];
+    deps.affectedTestsForRange = async () => null;
+    deps.runTestsAtRef = async () => {
+      calls.push("targeted");
+      return { pass: true, summary: "must not run" };
+    };
+    deps.runPostSuiteAtRef = async () => {
+      calls.push("post-suite");
+      return { pass: true, summary: "must not run" };
+    };
+    const realNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const nowSpy = vi
+      .spyOn(Date, "now")
+      .mockImplementation(() => realNow() + offsetMs);
+    try {
+      const priorSetup = deps.setupTree;
+      deps.setupTree = async (ref, options) => {
+        offsetMs = 121 * 60_000;
+        return priorSetup(ref, options);
+      };
+      const result = await runGreenCheckpoint(cfg(), deps, {
+        candidate,
+        noPush: true,
+      });
+      expect(result).toMatchObject({
+        advanced: false,
+        candidate,
+        green: null,
+        reason: "candidate-fossil",
+      });
+      expect(calls).not.toContain("targeted");
+      expect(calls).not.toContain("post-suite");
+      expect(await revParse(repo, "ready")).toBe(ready);
     } finally {
       nowSpy.mockRestore();
     }
