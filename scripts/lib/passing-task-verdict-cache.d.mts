@@ -42,6 +42,15 @@ export function passingTaskVerdictCrossRunIdentityEnvironment(
   environment: Record<string, unknown>;
   cacheGroup: string;
 };
+/**
+ * gateConfig analogue of `passingTaskVerdictCrossRunIdentityEnvironment`: drops the fields that
+ * describe how much machine/time a run was handed (`affectedBase`, and the duration-history-derived
+ * `batchTimeout.effectiveMs`/`.source`) while keeping the static timeout policy, so two runs over a
+ * byte-identical tree produce the same cross-run identity.
+ */
+export function passingTaskVerdictCrossRunGateConfig(
+  gateConfig: Record<string, unknown>,
+): Record<string, unknown>;
 export function formatPassingTaskVerdictSummary(
   decisions: Array<{ status?: string; reason?: string }>,
   options?: {
