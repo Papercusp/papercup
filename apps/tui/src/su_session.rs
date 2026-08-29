@@ -1161,6 +1161,30 @@ mod cutover_policy_tests {
     }
 
     #[test]
+    fn the_rust_labels_round_trip_through_the_persisted_values() {
+        // `as_str` is what a reader/logger renders and `parse` is what reads the
+        // column; if they ever disagree, a correctly-stamped row starts reading
+        // as UNCLASSIFIED and every classified conversation quietly loses its
+        // recorded home. Round-tripping pins them to each other.
+        for class in [PuiRuntimeClass::SuSession, PuiRuntimeClass::LegacyOwnedLoop] {
+            assert_eq!(PuiRuntimeClass::parse(Some(class.as_str())), class);
+        }
+        // The migration's CHECK constraint admits exactly these two strings, so
+        // they are pinned literally rather than only to each other.
+        assert_eq!(PuiRuntimeClass::SuSession.as_str(), "su-session");
+        assert_eq!(
+            PuiRuntimeClass::LegacyOwnedLoop.as_str(),
+            "legacy-owned-loop"
+        );
+        // `Unclassified` is a reading, not a storable value: it must never
+        // round-trip into a policy.
+        assert_eq!(
+            PuiRuntimeClass::parse(Some(PuiRuntimeClass::Unclassified.as_str())),
+            PuiRuntimeClass::Unclassified
+        );
+    }
+
+    #[test]
     fn a_pre_cutover_conversation_is_never_re_homed_even_with_the_cutover_on() {
         let d = decide_su_dispatch(SuDispatchInputs {
             loaded_class: Some(PuiRuntimeClass::LegacyOwnedLoop),

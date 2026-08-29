@@ -31,7 +31,7 @@
  * would prove only that the copy works.
  */
 import { readFileSync } from 'node:fs';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Sql } from 'postgres';
 import type { OrgTestDb } from '../test/_org-test-db';
 
@@ -105,8 +105,8 @@ describe('migration 1023 — PUI session runtime classification', () => {
     await insertUnstampedChat('chat-bound');
     await insertUnstampedChat('chat-unbound');
     await sql`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, su_agent_chat_id)
-      VALUES (${WORKSPACE}, 'chat-bound')`;
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, su_agent_chat_id)
+      VALUES (${WORKSPACE}, 'console', 'chat-bound')`;
 
     // Both start UNCLASSIFIED, so the assertions below cannot pass on rows that
     // were already stamped before the migration ran.
@@ -130,45 +130,116 @@ describe('migration 1023 — PUI session runtime classification', () => {
                  SET su_runtime_class = 'legacy-owned-loop'
                WHERE workspace_id = ${WORKSPACE} AND id = 'chat-rollback'`;
     await sql`
-      INSERT INTO harness_shared.adv_sessions (workspace_id, su_agent_chat_id)
-      VALUES (${WORKSPACE}, 'chat-rollback')`;
+      INSERT INTO harness_shared.adv_sessions (workspace_id, mode, su_agent_chat_id)
+      VALUES (${WORKSPACE}, 'console', 'chat-rollback')`;
 
     await sql.unsafe(MIGRATION);
 
     expect(await classOf('chat-rollback')).toBe('legacy-owned-loop');
   });
 
-  it('exposes the column through the per-harness view every reader goes through', async () => {
-    await insertUnstampedChat('chat-view');
-    await sql`UPDATE harness_shared.agent_chats_consolidated
-                 SET su_runtime_class = 'su-session'
-               WHERE workspace_id = ${WORKSPACE} AND id = 'chat-view'`;
-    const [row] = await sql<Array<{ su_runtime_class: string | null }>>`
-      SELECT su_runtime_class FROM harness_papercusp.agent_chats WHERE id = 'chat-view'`;
-    expect(row?.su_runtime_class).toBe('su-session');
-  });
+  describe('the per-harness view every reader goes through', () => {
+    // A view created BEFORE the column existed, exactly as migration 116 left it:
+    // an explicit, frozen column list (which is what `SELECT *` becomes once
+    // Postgres resolves it) plus the CHECK OPTION and the column DEFAULTs that
+    // make it writable. This is the object migration 1023 has to widen, and
+    // building it here is what keeps the assertion falsifiable — a view scaffolded
+    // fresh after the ALTER TABLE would already carry the column and would pass
+    // whether or not the migration replaced anything.
+    const SLUG = 'p011frozen';
+    const SCHEMA = `harness_${SLUG}`;
 
-  it('keeps the harness view writable with its CHECK OPTION and column defaults', async () => {
-    // The view is replaced to widen its column list, and a careless replacement
-    // silently drops the ALTER VIEW defaults (transcript/created_at/…) and the
-    // WITH CHECK OPTION. Both only show up on a WRITE, which is why this asserts
-    // an insert through the view rather than reading catalog metadata.
-    await sql`
-      INSERT INTO harness_papercusp.agent_chats (id, workspace_id, role)
-      VALUES ('chat-through-view', ${WORKSPACE}, 'operator')`;
-    const [row] = await sql<
-      Array<{ harness_slug: string; transcript: unknown; created_at: string }>
-    >`SELECT harness_slug, transcript, created_at
-        FROM harness_shared.agent_chats_consolidated WHERE id = 'chat-through-view'`;
-    expect(row?.harness_slug).toBe(HARNESS);
-    expect(row?.transcript).toEqual([]);
-    expect(Number(row?.created_at)).toBeGreaterThan(0);
+    beforeEach(async () => {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+      await sql.unsafe(`CREATE SCHEMA ${SCHEMA}`);
+      await sql.unsafe(`
+        CREATE VIEW ${SCHEMA}.agent_chats AS
+          SELECT workspace_id, harness_slug, id, role, feature_id, title, transcript,
+                 total_input_tokens, total_output_tokens, total_cost_usd_cents,
+                 created_at, updated_at, archived_at
+            FROM harness_shared.agent_chats_consolidated
+           WHERE harness_slug = '${SLUG}'
+          WITH CASCADED CHECK OPTION`);
+      await sql.unsafe(
+        `ALTER VIEW ${SCHEMA}.agent_chats ALTER COLUMN harness_slug SET DEFAULT '${SLUG}'`,
+      );
+      await sql.unsafe(
+        `ALTER VIEW ${SCHEMA}.agent_chats ALTER COLUMN transcript SET DEFAULT '[]'::jsonb`,
+      );
+      await sql.unsafe(
+        `ALTER VIEW ${SCHEMA}.agent_chats ALTER COLUMN created_at SET DEFAULT ` +
+          `(extract(epoch FROM now()) * 1000)::bigint`,
+      );
+      await sql.unsafe(
+        `ALTER VIEW ${SCHEMA}.agent_chats ALTER COLUMN updated_at SET DEFAULT ` +
+          `(extract(epoch FROM now()) * 1000)::bigint`,
+      );
+    });
 
-    // WITH CHECK OPTION: a row that would fall outside the view's own filter is
-    // refused rather than being written somewhere the view can never read back.
-    await expect(
-      sql`INSERT INTO harness_papercusp.agent_chats (id, workspace_id, harness_slug, role)
-          VALUES ('chat-wrong-harness', ${WORKSPACE}, 'some-other-harness', 'operator')`,
-    ).rejects.toThrow();
+    afterEach(async () => {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    });
+
+    async function viewHasClassColumn(): Promise<boolean> {
+      const [row] = await sql<Array<{ n: string }>>`
+        SELECT count(*)::text AS n FROM information_schema.columns
+         WHERE table_schema = ${SCHEMA} AND table_name = 'agent_chats'
+           AND column_name = 'su_runtime_class'`;
+      return row?.n === '1';
+    }
+
+    it('widens a frozen view so the column is actually readable through it', async () => {
+      // Positive control: the frozen view genuinely lacks the column, so the
+      // assertion after the migration is measuring the replacement and not a
+      // view that was already wide.
+      expect(await viewHasClassColumn()).toBe(false);
+
+      await sql.unsafe(MIGRATION);
+
+      expect(await viewHasClassColumn()).toBe(true);
+      await sql`
+        INSERT INTO harness_shared.agent_chats_consolidated
+          (workspace_id, harness_slug, id, role, transcript, created_at, updated_at,
+           su_runtime_class)
+        VALUES (${WORKSPACE}, ${SLUG}, 'chat-frozen-view', 'operator', '[]'::jsonb,
+                ${Date.now()}, ${Date.now()}, 'su-session')`;
+      const [row] = await sql.unsafe<Array<{ su_runtime_class: string | null }>>(
+        `SELECT su_runtime_class FROM ${SCHEMA}.agent_chats WHERE id = 'chat-frozen-view'`,
+      );
+      expect(row?.su_runtime_class).toBe('su-session');
+      await sql`DELETE FROM harness_shared.agent_chats_consolidated
+                 WHERE id = 'chat-frozen-view'`;
+    });
+
+    it('keeps the widened view writable, with its CHECK OPTION and column defaults', async () => {
+      // A careless replacement silently drops the ALTER VIEW defaults and the
+      // WITH CHECK OPTION. Both only show up on a WRITE, so this inserts through
+      // the view rather than reading catalog metadata.
+      await sql.unsafe(MIGRATION);
+
+      await sql.unsafe(
+        `INSERT INTO ${SCHEMA}.agent_chats (id, workspace_id, role)
+         VALUES ('chat-through-view', '${WORKSPACE}', 'operator')`,
+      );
+      const [row] = await sql<
+        Array<{ harness_slug: string; transcript: unknown; created_at: string }>
+      >`SELECT harness_slug, transcript, created_at
+          FROM harness_shared.agent_chats_consolidated WHERE id = 'chat-through-view'`;
+      expect(row?.harness_slug).toBe(SLUG);
+      expect(row?.transcript).toEqual([]);
+      expect(Number(row?.created_at)).toBeGreaterThan(0);
+
+      // CHECK OPTION: a row that would fall outside the view's own filter is
+      // refused rather than written somewhere the view can never read back.
+      await expect(
+        sql.unsafe(
+          `INSERT INTO ${SCHEMA}.agent_chats (id, workspace_id, harness_slug, role)
+           VALUES ('chat-wrong-harness', '${WORKSPACE}', 'some-other-harness', 'operator')`,
+        ),
+      ).rejects.toThrow();
+
+      await sql`DELETE FROM harness_shared.agent_chats_consolidated
+                 WHERE id = 'chat-through-view'`;
+    });
   });
 });

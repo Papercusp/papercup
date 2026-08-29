@@ -8646,7 +8646,18 @@ impl App {
                     // runtime took the turn instead of inferring it.
                     let decision = self.su_dispatch_decision();
                     self.su_last_dispatch = Some(decision);
-                    self.session_note = Some(format!("this turn → {}", decision.reason.note()));
+                    // Name the runtime AND, when a conversation is loaded, the
+                    // recorded class the decision was taken from — an owner
+                    // looking at a surprising target needs to see the input that
+                    // produced it, not just the verdict.
+                    self.session_note = Some(match self.pui_runtime_class {
+                        Some(class) => format!(
+                            "this turn → {} [conversation: {}]",
+                            decision.reason.note(),
+                            class.as_str()
+                        ),
+                        None => format!("this turn → {}", decision.reason.note()),
+                    });
                     match decision.target {
                         crate::su_session::SuDispatchTarget::AttachedSuSession => {
                             Action::SendSuSessionTurn(text)
@@ -14983,9 +14994,15 @@ mod tests {
     #[test]
     fn only_an_explicit_false_disables_the_cutover() {
         let mut a = App::new();
-        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, false)]));
+        a.set_flags(flags(&[(
+            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
+            false,
+        )]));
         assert!(!a.su_session_cutover_enabled());
-        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, true)]));
+        a.set_flags(flags(&[(
+            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
+            true,
+        )]));
         assert!(a.su_session_cutover_enabled());
         // An unrelated flag must not be mistaken for this one.
         a.set_flags(flags(&[("papercusp-something-else", false)]));
@@ -15011,7 +15028,10 @@ mod tests {
     #[test]
     fn enter_with_the_kill_switch_off_returns_to_the_owned_loop_and_says_so() {
         let mut a = composing("hello");
-        a.set_flags(flags(&[(crate::su_session::PUI_SU_SESSION_HOST_FLAG, false)]));
+        a.set_flags(flags(&[(
+            crate::su_session::PUI_SU_SESSION_HOST_FLAG,
+            false,
+        )]));
         let action = a.on_key(KeyCode::Enter, KeyModifiers::NONE);
         assert!(
             matches!(action, Action::SendChat(_)),
