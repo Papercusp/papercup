@@ -4330,7 +4330,6 @@ function runCapturedTask(
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
               __crossRunCacheIdentity: crossRunCacheIdentity,
-              __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
       };
@@ -4488,7 +4487,6 @@ function runCapturedTask(
               __cacheStatus: "miss",
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
-              __crossRunCacheIdentity: crossRunCacheIdentity,
               __crossRunCacheIdentity: crossRunCacheIdentity,
             }
           : {}),
@@ -4670,13 +4668,18 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
     // NEXT gate run can reach it. Folded into this one atomic replace rather than a second write:
     // two renames would let a reader observe a state where the task is proven for this run but
     // not the next, and the whole point is that those two facts are the same fact.
-    merged = value.__crossRunCacheIdentity
-      ? mergePassingTaskVerdictUpdates(
-          merged,
-          PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
-          { [key]: passingTaskVerdictEntry(value.__crossRunCacheIdentity) },
-        )
-      : perRunMerged;
+    // The else-branch must fall through to the per-run `merged` above. It once read
+    // `perRunMerged`, a binding this function no longer declares: because the whole body is
+    // wrapped in the try/catch below, that threw a ReferenceError which was swallowed and
+    // reported as `AFFECTED_TASK_CACHE_WRITE status=failed`, i.e. reuse silently degraded to
+    // "nothing is ever stored" instead of failing loudly. Keep this a plain identity fallback.
+    if (value.__crossRunCacheIdentity) {
+      merged = mergePassingTaskVerdictUpdates(
+        merged,
+        PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+        { [key]: passingTaskVerdictEntry(value.__crossRunCacheIdentity) },
+      );
+    }
     writePassingTaskVerdictCacheAtomic(
       TASK_VERDICT_CACHE_PATH,
       merged,
@@ -4687,6 +4690,19 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
         `path=${TASK_VERDICT_CACHE_PATH}`,
     );
   } catch (error) {
+    // This catch exists to tolerate ENVIRONMENTAL failure (a full disk, a racing rename, a
+    // read-only tmpdir): losing one proof is survivable, so the run continues without reuse.
+    // A ReferenceError/TypeError is NOT that — it is a defect in the code above, and swallowing
+    // it is what let the `perRunMerged` regression present as "reuse is on but nothing was ever
+    // reusable" instead of as a failure. The two are indistinguishable from the outside, which
+    // is precisely why the programmer-error class has to be loud. Re-throw it.
+    if (error instanceof ReferenceError || error instanceof TypeError) {
+      errSync(
+        `AFFECTED_TASK_CACHE_WRITE status=defect task=${JSON.stringify(key)} ` +
+          `reason=${error.message} (bug in persistCleanFirstPassTaskVerdict — failing loudly)`,
+      );
+      throw error;
+    }
     errSync(
       `AFFECTED_TASK_CACHE_WRITE status=failed task=${JSON.stringify(key)} ` +
         `reason=${error.message} (continuing without reuse)`,
@@ -4726,6 +4742,10 @@ if (TASK_VERDICT_CACHE_ENABLED) {
       {
         proofGroupApplied: TASK_VERDICT_PROOF_GROUP_APPLIED,
         cacheGroup: TASK_VERDICT_CACHE_GROUP,
+        // Without this the summary reports proofIdentity=current-run for an ordinary local
+        // `npm test`, which reads as "confined to this run" — the opposite of what a cross-run
+        // reuse run is doing. formatPassingTaskVerdictSummary already accepts cacheScope.
+        cacheScope: TASK_VERDICT_CACHE_SCOPE,
       },
     ),
   );

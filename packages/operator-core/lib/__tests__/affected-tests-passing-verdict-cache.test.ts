@@ -20,6 +20,7 @@ import {
   passingTaskVerdictIdentityEnvironment,
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
+  shouldStorePassingTaskVerdict,
   writePassingTaskVerdictCacheAtomic,
 } from '../../../../scripts/lib/passing-task-verdict-cache.mjs';
 
@@ -29,6 +30,10 @@ const AFFECTED_TESTS_SRC = readFileSync(resolve(REPO_ROOT, 'scripts/affected-tes
   "'",
 );
 const GREEN_CHECKPOINT_SRC = readFileSync(resolve(REPO_ROOT, 'apps/operator/lib/release/green-checkpoint.ts'), 'utf8');
+// D-007 pins which npm scripts opt into reuse, so the script table is part of the contract.
+const PACKAGE_JSON = JSON.parse(readFileSync(resolve(REPO_ROOT, 'package.json'), 'utf8')) as {
+  scripts?: Record<string, string>;
+};
 
 const identity = (overrides: Record<string, unknown> = {}) =>
   buildPassingTaskVerdictIdentity({
@@ -449,5 +454,126 @@ describe('cross-run passing-task verdict reuse', () => {
   it('keeps cross-run miss instrumentation instead of reporting only fallback hits', () => {
     expect(AFFECTED_TESTS_SRC).toContain('cacheDecision = namespacePassingTaskVerdictDecision(');
     expect(AFFECTED_TESTS_SRC).not.toContain('if (crossRunDecision.hit)');
+  });
+});
+
+// D-007 (plan gate-stop-chasing-the-tip-2026-08-19, WI-572013) — the owner selected behavior B:
+// the ROOT ordinary `npm test` reuses previously clean whole-task verdicts across local runs,
+// under the SAME complete identity contract the gate uses. Two properties are pinned here, and
+// the second is the load-bearing one: widening WHICH commands may reuse must not widen WHAT is
+// reusable. Every miss rule above still applies unchanged to a local run.
+describe('D-007 root `npm test` local cross-run reuse', () => {
+  it('opts the root test script into resumable execution', () => {
+    // The whole feature is inert without this: TASK_VERDICT_CACHE_ENABLED gates on
+    // GREEN_CHECKPOINT or AFFECTED_TASK_VERDICT_RESUME, and an ordinary local run sets neither.
+    expect(PACKAGE_JSON.scripts?.test).toContain('AFFECTED_TASK_VERDICT_RESUME=1');
+    expect(PACKAGE_JSON.scripts?.test).toContain('scripts/affected-tests.mjs');
+  });
+
+  it('keeps D-007 scope: related/all sweeps and direct file runs stay fresh', () => {
+    // D-007 scopes reuse to the root affected-tests command ONLY. These have different selection
+    // or execution semantics, so a proof taken under one is not a proof for another.
+    for (const name of ['test:related', 'test:all', 'test:all:integration', 'test:file']) {
+      expect(PACKAGE_JSON.scripts?.[name]).not.toContain('AFFECTED_TASK_VERDICT_RESUME=1');
+    }
+  });
+
+  it('routes a local run with no proof group to the stable cross-run group', () => {
+    // Root `npm test` sets no PC_HEAVY_RETRY_PREEMPTIONS, so pc-heavy returns before its
+    // proof-group export and the run legitimately has none. That is the local path.
+    expect(AFFECTED_TESTS_SRC).toContain('const TASK_VERDICT_LOCAL_CROSS_RUN_ONLY =');
+    expect(AFFECTED_TESTS_SRC).toContain('PASSING_TASK_VERDICT_CROSS_RUN_GROUP');
+    // It must reuse the EXISTING cross-run identity, never mint a shared child run group.
+    expect(AFFECTED_TESTS_SRC).toContain('passingTaskVerdictCrossRunIdentityEnvironment(childEnv)');
+  });
+
+  it('stays fail-closed: a green checkpoint never takes the local path', () => {
+    // D-007: "never while GREEN_CHECKPOINT is active (a gate without proof state must stay
+    // fail-closed)". The gate must keep its caller-supplied per-run boundary.
+    const local = AFFECTED_TESTS_SRC.indexOf('const TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED =');
+    expect(local).toBeGreaterThan(-1);
+    const clause = AFFECTED_TESTS_SRC.slice(local, local + 220);
+    expect(clause).toContain("process.env.AFFECTED_TASK_VERDICT_RESUME === '1'");
+    expect(clause).toContain("process.env.GREEN_CHECKPOINT !== '1'");
+  });
+
+  it('reports the local run as cross-run scope rather than current-run', () => {
+    // Without cacheScope the summary reads proofIdentity=current-run for a run whose whole
+    // purpose is reuse ACROSS runs — an observability lie that hides whether B is live.
+    expect(AFFECTED_TESTS_SRC).toContain('cacheScope: TASK_VERDICT_CACHE_SCOPE');
+    expect(formatPassingTaskVerdictSummary([{ status: 'hit', reason: 'cross-run:hit' }], {
+      proofGroupApplied: false,
+      cacheGroup: PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+      cacheScope: 'cross-run',
+    })).toContain('proofIdentity=cross-run');
+  });
+
+  // REGRESSION (WI-572013): the store path's else-branch referenced `perRunMerged`, a binding the
+  // function does not declare. Because the body is wrapped in a catch, the ReferenceError was
+  // swallowed and reported as `status=failed`, so reuse degraded to "nothing is ever stored" —
+  // outwardly identical to "reuse is on, nothing was reusable". Two guards: the dead binding is
+  // gone, and the catch now re-throws programmer errors so the class cannot be silent again.
+  it('does not reference an undeclared binding on the store path', () => {
+    const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
+    expect(persist).toBeGreaterThan(-1);
+    // Strip comments first: this guard is about CODE. Prose that merely NAMES the dead binding
+    // (including the regression note left at the fix site) must not trip it.
+    const body = AFFECTED_TESTS_SRC.slice(persist, persist + 3500)
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^[ \t]*\/\/.*$/gm, '');
+    const used = body.includes('perRunMerged');
+    const declared = /(?:const|let|var)\s+perRunMerged\b/.test(body);
+    // Either the binding is absent entirely, or it is genuinely declared before use.
+    expect(used && !declared).toBe(false);
+  });
+
+  it('fails loudly on a programmer error instead of degrading to silent no-reuse', () => {
+    const persist = AFFECTED_TESTS_SRC.indexOf('function persistCleanFirstPassTaskVerdict(');
+    const body = AFFECTED_TESTS_SRC.slice(persist, persist + 3500);
+    expect(body).toContain('error instanceof ReferenceError');
+    expect(body).toContain('error instanceof TypeError');
+    expect(body).toContain('throw error;');
+  });
+
+  // Widening the ENTRY POINT must not widen the ADMISSION RULE. These re-assert, against the
+  // real decision function, that a local-shaped run still misses on the things D-007 enumerates.
+  it('still misses on a dependency-closure change in a local run', () => {
+    const cache = mergePassingTaskVerdictUpdates(
+      emptyPassingTaskVerdictCache(),
+      PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+      { '@papercusp/web :: test': passingTaskVerdictEntry(identity({ dependencyHash: 'dep-a' })) },
+    );
+    const decide = (dependencyHash: string) =>
+      decidePassingTaskVerdict({
+        enabled: true,
+        cacheRead: { reason: 'cache-ready' },
+        entry: passingTaskVerdictCacheEntry(
+          cache,
+          PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
+          '@papercusp/web :: test',
+        ),
+        identity: identity({ dependencyHash }),
+      });
+    expect(decide('dep-a').hit).toBe(true);
+    // One byte anywhere in the closure changed => execute. This is the property B rests on.
+    expect(decide('dep-b').hit).toBe(false);
+  });
+
+  it('still refuses to store a failed or absorbed local task', () => {
+    const base = {
+      enabled: true,
+      cacheStatus: 'miss',
+      initialStatus: 0,
+      finalStatus: 0,
+      absorptionRan: false,
+      identity: identity(),
+    };
+    expect(shouldStorePassingTaskVerdict(base)).toBe(true);
+    expect(shouldStorePassingTaskVerdict({ ...base, initialStatus: 1 })).toBe(false);
+    expect(shouldStorePassingTaskVerdict({ ...base, finalStatus: 1 })).toBe(false);
+    expect(shouldStorePassingTaskVerdict({ ...base, absorptionRan: true })).toBe(false);
+    expect(shouldStorePassingTaskVerdict({ ...base, identity: null })).toBe(false);
+    // A cache HIT must never be re-stored: that would refresh a proof nothing re-verified.
+    expect(shouldStorePassingTaskVerdict({ ...base, cacheStatus: 'hit' })).toBe(false);
   });
 });
