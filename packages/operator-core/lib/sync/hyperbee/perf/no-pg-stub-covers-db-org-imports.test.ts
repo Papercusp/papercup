@@ -34,8 +34,6 @@ import { fileURLToPath } from 'node:url';
 
 import { describe, expect, it } from 'vitest';
 
-import * as stub from './no-pg-stub.mjs';
-
 const OPERATOR_CORE_LIB = fileURLToPath(new URL('../../../', import.meta.url));
 
 /** Every `{ … }` clause bound against '@papercusp/db-org', import or re-export. */
@@ -62,7 +60,14 @@ function importedName(clauseItem: string): string | null {
 }
 
 describe('no-pg-stub covers every @papercusp/db-org named import in the peer-child substrate', () => {
-  it('exports every name operator-core binds from @papercusp/db-org', () => {
+  it('exports every name operator-core binds from @papercusp/db-org', async () => {
+    // Imported through a NON-LITERAL specifier deliberately. A literal `import ... from
+    // './no-pg-stub.mjs'` needs a hand-written `.d.mts` sidecar enumerating all 61 names — which
+    // is a THIRD copy of the very list this guard exists to stop from drifting, and one nothing
+    // would check. The dynamic form still performs a real module link, so a stub that fails to
+    // parse or evaluate still fails here.
+    const stub = (await import(new URL('./no-pg-stub.mjs', import.meta.url).href)) as Record<string, unknown>;
+
     const required = new Map<string, string[]>();
 
     for (const file of tsFilesUnder(OPERATOR_CORE_LIB)) {
