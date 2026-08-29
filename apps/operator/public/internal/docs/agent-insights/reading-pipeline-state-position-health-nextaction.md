@@ -1,4 +1,4 @@
-# Reading pipeline state — position vs health vs nextAction (\"is my change live?\")
+# Reading pipeline state — position, health, and next action
 URL: /internal/docs/agent-insights/reading-pipeline-state-position-health-nextaction
 
 dev:pipeline_position answers position, health, and nextAction; this guide also explains candidate identity, what the gate-candidate cell returns and its source.authoritative provenance, sweep exposure, and the path-scoped state-plane handle that links release:trace target.sha back to the gate candidate cell.
@@ -111,13 +111,15 @@ ONE call, before you write any SQL. It returns:
   log, but on a CRON run it degrades to the checkpoint checkout's live HEAD — an *inference*
   that changes between two reads. A non-authoritative reading is also hoisted into the reply's
   `summary`, so you cannot miss it. **Do not fire a manual re-run off an inferred candidate.**
-* **`changeInCandidate.judgingContainsPath`** — the containment falsifier (*is the gate judging
+* **`changeInCandidate.judgingContainsPath`** — the independent containment evidence (*is the gate judging
   MY change*), with its own prose attached.
 * **`verdictUnknown`** — a hoist naming anything the cell could NOT determine.
 * **`resolver`** — what produced them.
 
 The cells and the doors read the SAME resolver (`gitPipelinePosition()`), so this is a re-read
 of the authority, never a second source of truth.
+
+The candidate cell also carries the shared assessment contract. Read `assessment.code`, `meaning`, `safeAction`, and its evidence before interpreting `judgingSha` or `judgingContainsPath`; the raw SHA/containment fields are measurements, not a verdict. If the assessment is `unavailable` or the read is `unknown`, do not infer a green or red state from a null/boolean field—re-read through the cell or the door's `fullRead` path. Pull and delivery-time reads use the same resolver and assessment renderer.
 
 **Everything else — the marker SQL, the log greps, the ancestry and blob archaeology — is the
 FALLBACK.** Reach for it when the cell answers `unknown`, when `source.authoritative` is false

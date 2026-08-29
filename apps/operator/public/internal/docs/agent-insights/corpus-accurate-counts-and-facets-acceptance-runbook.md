@@ -114,7 +114,7 @@ Use only the canonical isolated verifier against the current frozen bundle. Exis
 Set VERIFY\_TAURI\_AGENT\_TOOLS\_BIN to the explicit managed tauri-agent-tools executable, then run:
 
 ```bash
-VERIFY_TAURI_AGENT_TOOLS_BIN=/home/marsh-office/.local/node25/bin/tauri-agent-tools scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
+VERIFY_TAURI_AGENT_TOOLS_BIN="$HOME/.local/node25/bin/tauri-agent-tools" scripts/verify-tauri-headless.sh -- scripts/verify-count-surfaces-tauri.sh
 
 ```
 

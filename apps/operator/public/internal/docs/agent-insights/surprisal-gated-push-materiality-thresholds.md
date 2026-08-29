@@ -138,18 +138,25 @@ Every unanchored case degrades to the **loud** reading, never the quiet one:
   rule verbatim: a comparison that silently changes the question does not give a
   weaker answer, it gives a wrong one.
 
-### 2. A subscription never gets materiality applied silently
+### 2. A subscription never gets materiality—or assessment—applied silently
 
-`state:subscribe` takes `of: 'value' | 'material'`, defaulting to `value`, and
-**refuses** `of:'material'` on a cell that declares none rather than falling back.
+`state:subscribe` now takes `target: 'assessment' | 'measurement' | 'material'`.
+On an assessed cell, an operand-free subscription defaults to `assessment`: wake
+when the resolver-owned semantic code changes, even if the raw measurement did not.
+`target:'measurement'` explicitly watches the headline/raw value, and
+`target:'material'` explicitly watches the declared coarse lens. The retired `of`
+argument is refused rather than translated; `of:'value'` maps conceptually to
+`target:'measurement'`, never to assessment.
 
-Silently re-pointing a caller's condition at a coarser sibling path does not
-narrow it — it evaluates it against a **different domain**. Concretely:
-`on: {op:'ne', value:'4c871fdc'}`, the natural "wake me when the candidate
-moves", aimed at a boolean containment path is `ne` against a sha it can never
-equal — true on the first poll. The agent would be woken instantly and told it
-was a material change. A wake is an interrupt (D-044), and a spurious one is a
-false all-clear that resumes an agent on a condition never established.
+A valued predicate on an assessed cell must name its target. The tool refuses an
+ambiguous operand rather than guessing which domain it belongs to. It also refuses
+`target:'material'` when the cell declares no materiality path and
+`target:'assessment'` when it declares no assessment. Silently re-pointing a
+caller's condition at any sibling path does not narrow it—it evaluates it against a
+**different domain**. Concretely, `on:{op:'ne',value:'4c871fdc'}` aimed at a boolean
+containment or enum assessment path is true on the first poll, so the agent wakes on
+a condition never established. A wake is an interrupt (D-044); explicit targets keep
+the raw measurement, assessment meaning, and materiality threshold distinct.
 
 ## Where this sits relative to D-044
 
