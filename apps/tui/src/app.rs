@@ -368,9 +368,6 @@ pub enum Action {
     /// Fetch whole-fleet assignments for the default Swarm dossier
     /// (pui-dock-consolidation-2026-06-07 #2) → `Event::FleetAssignments`.
     FetchFleetAssignments,
-    /// Fetch the federated p2p roster for the Hives tab
-    /// (pui-hives-tab-2026-06-07) → `Event::Hives`.
-    FetchHives,
     /// Join every member harness of a discovered hive (p2p-hive-directory P-006):
     /// POST each `links` entry to `/api/harness/join-link`. `slug` is the hive id.
     JoinHive {
@@ -9183,9 +9180,13 @@ impl App {
         if tab == Tab::Fleet {
             return Action::FetchFleetAssignments;
         }
-        // Network owns the former Hives roster and discovery directory. Both
-        // streams are refreshed by the normal poller; the board fetch is the
-        // explicit entry action because it is the primary Network read model.
+        // Network owns the former Hives roster and discovery directory (D-005).
+        // `FetchNetworkBoard` is the entry action for ALL THREE read models —
+        // its handler fetches the board, the federated roster and the discovery
+        // directory together. (This comment previously claimed a "normal
+        // poller" refreshed the roster and directory; no such poller exists —
+        // their only fetch site was the emitter-less `Action::FetchHives`, so
+        // both rendered permanently empty until P-007 rewired them here.)
         if tab == Tab::Network {
             return Action::FetchNetworkBoard;
         }

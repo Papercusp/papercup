@@ -990,15 +990,6 @@ async fn run<B: Backend>(
                     }
                     terminal.draw(|f| ui::draw(f, &app))?;
                 }
-                Action::FetchHives => {
-                    // The federated p2p roster for the Hives tab — fetched off the
-                    // UI thread → Event::Hives (pui-hives-tab-2026-06-07). Also kick
-                    // the P2P directory fetch (p2p-hive-directory P-006) so entering
-                    // the tab populates both the live roster + the browseable hives.
-                    tokio::spawn(fetch_hives(tx.clone()));
-                    tokio::spawn(fetch_hive_directory(tx.clone()));
-                    terminal.draw(|f| ui::draw(f, &app))?;
-                }
                 Action::FetchContextProjection => {
                     if let Some(target) = app.context_projection_target.clone() {
                         tokio::spawn(fetch_context_projection(target, tx.clone()));
@@ -1051,6 +1042,19 @@ async fn run<B: Backend>(
                     // A pinned hive-pane also re-pulls its drill-in dossier
                     // (beacon history + ask log, P-014 item 2).
                     tokio::spawn(fetch_network_board(tx.clone()));
+                    // Network ABSORBED the retired Hives shell (audit plan
+                    // pui-tui-tab-audit-2026-08-27 D-005; D-003), so it owns
+                    // that destination's other two read models as well: the
+                    // federated roster (`Event::Hives` → `app.hives`, which
+                    // network.rs renders via `present_in_hive`) and the
+                    // browseable discovery directory (`Event::HiveDirectory`).
+                    // These used to hang off `Action::FetchHives`, which the
+                    // consolidation left with no emitter — so both streams were
+                    // never fetched and their Network subviews rendered
+                    // permanently empty. Fetching them here is what makes the
+                    // absorbed capability actually functional (P-007).
+                    tokio::spawn(fetch_hives(tx.clone()));
+                    tokio::spawn(fetch_hive_directory(tx.clone()));
                     if let Some(key) = &app.network_focus {
                         tokio::spawn(hive_dossier_fetch(key.clone(), tx.clone()));
                     }
