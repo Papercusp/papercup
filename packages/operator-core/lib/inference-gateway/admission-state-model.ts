@@ -283,9 +283,17 @@ export function describeGatewayAdmissionState(
       provider: input.provider ?? null,
       accountId: input.accountId ?? null,
     };
-    const lanePhysical = observations.filter(
-      (o) => !input.provider || !o.provider || o.provider === providerAlias(input.provider),
-    );
+    // Scope an observation to this lane by provider AND account. An observation
+    // that names neither is workspace-wide and belongs to every lane; one that
+    // names a DIFFERENT provider or account must not be attributed here, or a
+    // quota on one account would be reported as binding on another.
+    const lanePhysical = observations.filter((o) => {
+      const scopeProvider = o.scope?.provider;
+      const scopeAccountId = o.scope?.accountId;
+      if (input.provider && scopeProvider && scopeProvider !== providerAlias(input.provider)) return false;
+      if (input.accountId && scopeAccountId && scopeAccountId !== input.accountId) return false;
+      return true;
+    });
     const receipts = input.queued?.[klass.admissionClass] ?? [];
     // Only work that is genuinely still waiting counts as queue depth. Counting
     // completed/cancelled receipts would inflate the one number an operator uses to
