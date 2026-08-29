@@ -36,6 +36,238 @@ impl fmt::Display for HttpStatusError {
 
 impl std::error::Error for HttpStatusError {}
 
+// ─── R2: fail-loud rendezvous classification ────────────────────────────────
+//
+// An explicitly-selected operator that does not answer must produce an error
+// the user can ACT on. Four failures need four DIFFERENT actions, and a single
+// "connection failed" collapses all of them into a dead end:
+//
+//   unreachable       → wrong host/port, operator down, or firewalled
+//   tls               → we reached it, but the handshake never completed
+//   auth              → it answered and rejected this client's credential
+//   identity-mismatch → it answered, but it is not the backend we selected
+//
+// The classifier reads TYPED errors out of the chain — `IdentityMismatchError`,
+// `HttpStatusError`, `reqwest::Error` — rather than matching on prose, with one
+// deliberate and documented exception at `tls_marker_in_chain`.
+
+/// A backend that ANSWERED but is not the backend we selected or expect.
+/// Typed so the classifier never has to recognise it by its message text.
+#[derive(Debug, Clone)]
+pub struct IdentityMismatchError {
+    pub endpoint: String,
+    pub detail: String,
+}
+
+impl fmt::Display for IdentityMismatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "operator {} is not the selected backend: {}",
+            self.endpoint, self.detail
+        )
+    }
+}
+
+impl std::error::Error for IdentityMismatchError {}
+
+/// How a rendezvous with the selected operator failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RendezvousFailure {
+    /// No usable TCP conversation: refused, timed out, DNS failure, no route.
+    Unreachable,
+    /// Reached the host, but the TLS handshake failed.
+    Tls,
+    /// The operator answered and rejected this client's credential.
+    Auth,
+    /// The operator answered, but it is not the backend we selected.
+    IdentityMismatch,
+    /// Answered, but not in a way we can use (bad status, undecodable body).
+    Protocol,
+}
+
+impl RendezvousFailure {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unreachable => "unreachable",
+            Self::Tls => "tls",
+            Self::Auth => "auth",
+            Self::IdentityMismatch => "identity-mismatch",
+            Self::Protocol => "protocol",
+        }
+    }
+
+    /// Every variant, so a guard can assert the whole surface stays actionable
+    /// instead of only the variants a test author happened to remember.
+    pub const ALL: [RendezvousFailure; 5] = [
+        Self::Unreachable,
+        Self::Tls,
+        Self::Auth,
+        Self::IdentityMismatch,
+        Self::Protocol,
+    ];
+}
+
+/// A classified rendezvous failure: what kind, against which endpoint, and the
+/// concrete repair. Rendered by `pui doctor` and the launch path.
+#[derive(Debug, Clone)]
+pub struct RendezvousError {
+    pub kind: RendezvousFailure,
+    pub endpoint: String,
+    pub detail: String,
+}
+
+impl RendezvousError {
+    pub fn new(
+        kind: RendezvousFailure,
+        endpoint: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            endpoint: endpoint.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// The concrete next action — never "check your connection". Each names the
+    /// endpoint, because on a multi-operator box the FIRST question a user has
+    /// is which backend this message is even about.
+    pub fn repair(&self) -> String {
+        let e = &self.endpoint;
+        match self.kind {
+            RendezvousFailure::Unreachable => format!(
+                "nothing answered at {e}. Confirm an operator is running and reachable there \
+                 (`curl {e}/api/health`), or select a different one with \
+                 PUI_OPERATOR=staging|release|<url>. pui will NOT silently fall back to a local \
+                 operator — an explicit selection is honoured or it fails."
+            ),
+            RendezvousFailure::Tls => format!(
+                "reached {e} but the TLS handshake failed. Check the scheme first — an \
+                 http-only operator selected as https:// fails in exactly this way — then that \
+                 the certificate is valid and issued for that host name."
+            ),
+            RendezvousFailure::Auth => format!(
+                // Accurate in BOTH directions: in the common remote case pui
+                // sent no credential at all, so asserting that {e} "rejected
+                // yours" would describe a request that never carried one.
+                "{e} returned an authentication failure. If no credential is provisioned for \
+                 {e}, set {OPERATOR_TOKEN_ENV} — pui deliberately never sends the local \
+                 ~/.papercusp/operator.json bearer to a different operator, so an \
+                 unprovisioned remote produces exactly this. If {OPERATOR_TOKEN_ENV} IS set, \
+                 then {e} rejected it: check that the token was issued by that operator."
+            ),
+            RendezvousFailure::IdentityMismatch => format!(
+                "{e} answered, but it is not the backend this session is bound to — continuing \
+                 would read and write the WRONG store. Relaunch with PUI_OPERATOR pointed at the \
+                 intended operator, or close the bound session before switching."
+            ),
+            RendezvousFailure::Protocol => format!(
+                "{e} answered, but not with a usable operator response. Confirm {e} is a \
+                 papercusp operator (`curl {e}/api/tui/identity`) and that its build is \
+                 compatible with this pui."
+            ),
+        }
+    }
+
+    /// Classify a failed rendezvous against `endpoint`.
+    ///
+    /// Ordering is load-bearing: the typed identity and status errors are more
+    /// specific than any transport signal, and TLS must be tested BEFORE
+    /// `is_connect()` because a handshake failure is itself reported as a
+    /// connect error — testing connect first would swallow every TLS case.
+    pub fn classify(endpoint: &str, err: &anyhow::Error) -> Self {
+        if let Some(mismatch) = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<IdentityMismatchError>())
+        {
+            return Self::new(
+                RendezvousFailure::IdentityMismatch,
+                endpoint,
+                mismatch.detail.clone(),
+            );
+        }
+        if let Some(status) = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<HttpStatusError>())
+        {
+            let kind = match status.status {
+                401 | 403 => RendezvousFailure::Auth,
+                _ => RendezvousFailure::Protocol,
+            };
+            return Self::new(kind, endpoint, status.to_string());
+        }
+        if let Some(req) = err
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<reqwest::Error>())
+        {
+            if tls_marker_in_chain(req) {
+                return Self::new(RendezvousFailure::Tls, endpoint, describe_chain(req));
+            }
+            if req.is_connect() || req.is_timeout() {
+                return Self::new(RendezvousFailure::Unreachable, endpoint, describe_chain(req));
+            }
+        }
+        Self::new(RendezvousFailure::Protocol, endpoint, format!("{err:#}"))
+    }
+}
+
+impl fmt::Display for RendezvousError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} — operator {}: {}\n  repair: {}",
+            self.kind.label(),
+            self.endpoint,
+            self.detail,
+            self.repair()
+        )
+    }
+}
+
+impl std::error::Error for RendezvousError {}
+
+/// Flatten an error's source chain into one line of detail.
+fn describe_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut parts = vec![err.to_string()];
+    let mut source = err.source();
+    while let Some(cause) = source {
+        parts.push(cause.to_string());
+        source = cause.source();
+    }
+    parts.join(": ")
+}
+
+/// `reqwest` exposes `is_connect()` but no `is_tls()`, and a rustls handshake
+/// failure surfaces as a connect error, so the source chain's own text is the
+/// only available discriminator. This is the one place the classifier reads
+/// prose, and the markers below are validated by a test that drives a REAL
+/// rustls handshake failure rather than by assumption.
+///
+/// Scanning starts BELOW the reqwest error itself: only that top frame carries
+/// the request URL, so including it would classify every refusal against a host
+/// named e.g. `tls.example.com` as a TLS failure.
+fn tls_marker_in_chain(err: &reqwest::Error) -> bool {
+    const MARKERS: &[&str] = &[
+        "tls",
+        "ssl",
+        "certificate",
+        "handshake",
+        "corrupt message",
+        "unknownissuer",
+        "notvalidfor",
+    ];
+    let mut source = std::error::Error::source(err);
+    while let Some(cause) = source {
+        let text = cause.to_string().to_ascii_lowercase();
+        if MARKERS.iter().any(|marker| text.contains(marker)) {
+            return true;
+        }
+        source = cause.source();
+    }
+    false
+}
+
 pub struct HttpClient {
     base: String, // operator httpUrl, no trailing slash
     token: Option<String>,
@@ -226,11 +458,45 @@ fn discover_operator() -> Result<(String, Option<String>)> {
 /// cross-operator fallback even if the eventual request happens to reject it.
 pub fn discovered_token_for(base: &str) -> Option<String> {
     let (discovered_base, token) = discover_operator().ok()?;
-    let discovered_base = base_for_selection(&discovered_base).ok()?;
-    let selected_base = base_for_selection(base).ok()?;
-    (discovered_base == selected_base)
-        .then_some(token)
-        .flatten()
+    token_if_same_endpoint(&discovered_base, token, base)
+}
+
+/// The endpoint-scoping decision itself, lifted out of the disk read so it can
+/// be guarded with a POSITIVE control. Testing only "an unrelated operator gets
+/// no token" against the real `operator.json` is hollow: on a box without that
+/// file every lookup returns `None` and the guard passes while proving nothing.
+fn token_if_same_endpoint(
+    discovered_base: &str,
+    token: Option<String>,
+    selected: &str,
+) -> Option<String> {
+    let discovered = base_for_selection(discovered_base).ok()?;
+    let selected = base_for_selection(selected).ok()?;
+    (discovered == selected).then_some(token).flatten()
+}
+
+/// The env seam carrying a credential for an EXPLICITLY selected operator.
+/// Scoped by construction: it is supplied alongside `PUI_OPERATOR`, so it
+/// describes that endpoint and no other.
+pub const OPERATOR_TOKEN_ENV: &str = "PUI_OPERATOR_TOKEN";
+
+/// Resolve the bearer to send to `base`.
+///
+/// An explicitly supplied token wins, and is the ONLY way to authenticate to a
+/// remote operator: `discovered_token_for` is endpoint-scoped on purpose, so
+/// the local `~/.papercusp/operator.json` bearer is never borrowed for a
+/// different operator (R3). Without this seam that scoping is a dead end —
+/// every remote request goes out anonymous and can only ever 401.
+pub fn resolve_token_for(base: &str, explicit: Option<&str>) -> Option<String> {
+    if let Some(token) = explicit.map(str::trim).filter(|t| !t.is_empty()) {
+        return Some(token.to_string());
+    }
+    discovered_token_for(base)
+}
+
+/// `resolve_token_for` against the process environment.
+pub fn token_for_endpoint(base: &str) -> Option<String> {
+    resolve_token_for(base, std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref())
 }
 
 /// Map an explicit operator selection to a base URL (P-001 refit): the
@@ -321,6 +587,184 @@ mod tests {
         assert!(
             result.is_err(),
             "an unroutable operator must not report success"
+        );
+    }
+
+    /// R2: a closed port is UNREACHABLE, not a generic failure.
+    ///
+    /// Binds then DROPS the listener, so the connect is refused immediately by
+    /// the kernel — the classification is exercised without depending on this
+    /// host's routing policy or on any timeout elapsing.
+    #[tokio::test]
+    async fn closed_port_classifies_as_unreachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+
+        let client = HttpClient::new(addr.clone(), None);
+        let err = client
+            .sys_http("GET", "/api/health", None)
+            .await
+            .unwrap_err();
+        let failure = RendezvousError::classify(&addr, &err);
+        assert_eq!(
+            failure.kind,
+            RendezvousFailure::Unreachable,
+            "detail was: {}\nchain: {err:#}",
+            failure.detail
+        );
+    }
+
+    /// R2: a REAL rustls handshake failure must classify as `tls`, not as the
+    /// generic connect failure reqwest also reports it as.
+    ///
+    /// Drives an actual handshake against a plain-HTTP listener — no
+    /// certificates or fixtures needed, and it is precisely the mistake a user
+    /// makes (selecting an http-only operator as `https://`). This test is what
+    /// validates `tls_marker_in_chain`'s marker set against reality; the
+    /// assertion prints the observed chain so a miss names the real text.
+    #[tokio::test]
+    async fn plain_http_operator_selected_as_https_classifies_as_tls() {
+        let (addr, _r) = spawn_http("200 OK", "", "{}").await;
+        let https = addr.replacen("http://", "https://", 1);
+
+        let client = HttpClient::new(https.clone(), None);
+        let err = client
+            .sys_http("GET", "/api/health", None)
+            .await
+            .unwrap_err();
+        let failure = RendezvousError::classify(&https, &err);
+        assert_eq!(
+            failure.kind,
+            RendezvousFailure::Tls,
+            "a failed TLS handshake must classify as tls, not fall through to a \
+             generic connect failure.\nobserved detail: {}\nfull chain: {err:#}",
+            failure.detail
+        );
+    }
+
+    /// R2: a rejected credential is AUTH — distinct from unreachable, because
+    /// the repair (provision a token for this operator) is completely different.
+    #[tokio::test]
+    async fn rejected_credential_classifies_as_auth() {
+        for status_line in ["401 Unauthorized", "403 Forbidden"] {
+            let (addr, _r) = spawn_http(status_line, "", "denied").await;
+            let client = HttpClient::new(addr.clone(), Some("wrong-token".into()));
+            let err = client
+                .sys_http("GET", "/api/tui/identity", None)
+                .await
+                .unwrap_err();
+            let failure = RendezvousError::classify(&addr, &err);
+            assert_eq!(
+                failure.kind,
+                RendezvousFailure::Auth,
+                "{status_line} must classify as auth; detail was: {}",
+                failure.detail
+            );
+        }
+    }
+
+    /// The auth classification must stay NARROW: any other non-2xx is a
+    /// protocol failure, and calling it "auth" would send the user off
+    /// provisioning credentials for a backend that never asked for any.
+    #[tokio::test]
+    async fn other_non_2xx_classifies_as_protocol_not_auth() {
+        let (addr, _r) = spawn_http("404 Not Found", "", "nope").await;
+        let client = HttpClient::new(addr.clone(), None);
+        let err = client
+            .sys_http("GET", "/api/tui/identity", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            RendezvousError::classify(&addr, &err).kind,
+            RendezvousFailure::Protocol
+        );
+    }
+
+    /// R2: a backend that answers but is the WRONG backend is its own class,
+    /// recognised by a typed error rather than by matching on its message.
+    #[test]
+    fn identity_mismatch_classifies_from_its_typed_error() {
+        let err = anyhow::Error::new(IdentityMismatchError {
+            endpoint: "https://op.example:9443".into(),
+            detail: "store pg-b, but this session is bound to pg-a".into(),
+        })
+        .context("probe canonical PUI operator/store identity");
+
+        let failure = RendezvousError::classify("https://op.example:9443", &err);
+        assert_eq!(failure.kind, RendezvousFailure::IdentityMismatch);
+        assert!(
+            failure.detail.contains("pg-b") && failure.detail.contains("pg-a"),
+            "the mismatch detail must survive classification: {}",
+            failure.detail
+        );
+    }
+
+    /// The whole point of classifying is the repair text, so guard EVERY
+    /// variant — including ones added later — rather than the few a test author
+    /// happened to think of.
+    #[test]
+    fn every_failure_kind_repairs_by_naming_the_endpoint_and_an_action() {
+        for kind in RendezvousFailure::ALL {
+            let failure = RendezvousError::new(kind, "https://op.example:9443", "detail");
+            let repair = failure.repair();
+            assert!(
+                repair.contains("https://op.example:9443"),
+                "{kind:?} repair must name the endpoint it is about: {repair}"
+            );
+            assert!(
+                repair.len() > 60,
+                "{kind:?} repair is too thin to be actionable: {repair}"
+            );
+            let rendered = failure.to_string();
+            assert!(
+                rendered.contains(kind.label()) && rendered.contains("repair:"),
+                "{kind:?} must render as a labelled, repairable failure: {rendered}"
+            );
+        }
+    }
+
+    /// R3: the explicit token is what makes a REMOTE operator reachable at all,
+    /// and it must not be confused with the endpoint-scoped local discovery.
+    #[test]
+    fn explicit_operator_token_supplies_the_remote_credential() {
+        assert_eq!(
+            resolve_token_for("https://op.example:9443", Some("remote-token")),
+            Some("remote-token".to_string())
+        );
+        // Blank/whitespace is NOT a credential — treating it as one would send
+        // an empty bearer and turn a missing-token mistake into an opaque 401.
+        assert_eq!(resolve_token_for("https://op.example:9443", Some("   ")), None);
+        assert_eq!(
+            resolve_token_for("https://op.example:9443", Some("  padded  ")),
+            Some("padded".to_string())
+        );
+    }
+
+    /// R3: the local bearer reaches its OWN operator and no other. Both halves
+    /// are asserted — the positive control is what makes the negative half
+    /// meaningful, since a lookup that always returned `None` would satisfy the
+    /// leak check on its own.
+    #[test]
+    fn the_local_bearer_is_scoped_to_the_endpoint_that_issued_it() {
+        let issued = || Some("local-bearer".to_string());
+
+        // Same operator, written differently (localhost is normalized): yes.
+        assert_eq!(
+            token_if_same_endpoint("http://localhost:3070", issued(), "http://127.0.0.1:3070"),
+            Some("local-bearer".to_string()),
+            "the bearer must still reach the operator that issued it"
+        );
+        // A remote operator: never.
+        assert_eq!(
+            token_if_same_endpoint("http://127.0.0.1:3070", issued(), "https://op.example:9443"),
+            None
+        );
+        // A DIFFERENT local operator is just as much a leak: :3070 and :3170
+        // are separate backends with separate stores.
+        assert_eq!(
+            token_if_same_endpoint("http://127.0.0.1:3070", issued(), "http://127.0.0.1:3170"),
+            None
         );
     }
 

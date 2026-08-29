@@ -397,6 +397,116 @@ mod cli_help_tests {
     }
 }
 
+#[cfg(test)]
+mod doctor_tests {
+    use super::{operator_failure_lines, operator_failure_status_line};
+    use crate::http::IdentityMismatchError;
+
+    /// R1 (UI half): the status line must carry the SAME classification doctor
+    /// prints. It previously shipped the raw anyhow chain, which names no kind,
+    /// no endpoint and no action — leaving the status bar saying that something
+    /// went wrong and nothing about what to do.
+    #[test]
+    fn the_status_line_carries_the_classification_not_a_raw_error_chain() {
+        let error = anyhow::Error::new(IdentityMismatchError {
+            endpoint: "https://op.example:9443".into(),
+            detail: "serves pg-b".into(),
+        });
+
+        let line = operator_failure_status_line("https://op.example:9443", &error);
+        assert!(
+            line.starts_with("operator identity-mismatch"),
+            "the status line must LEAD with the failure kind: {line}"
+        );
+        assert!(
+            line.contains("https://op.example:9443"),
+            "the status line must name the operator it is about: {line}"
+        );
+        assert!(
+            !line.contains('\n'),
+            "the status bar renders a single line; a multi-line message would \
+             be silently clipped: {line}"
+        );
+    }
+
+    /// R1/R2: an unreachable or wrong backend must come out of doctor as a
+    /// NAMED failure carrying its endpoint and a repair — the three things that
+    /// make the output actionable.
+    #[test]
+    fn doctor_reports_a_classified_failure_with_an_endpoint_and_a_repair() {
+        let error = anyhow::Error::new(IdentityMismatchError {
+            endpoint: "https://op.example:9443".into(),
+            detail: "bound to store pg-a, but that operator serves pg-b".into(),
+        });
+
+        let lines = operator_failure_lines("https://op.example:9443", &error).join("\n");
+        assert!(
+            lines.contains("PUI operator identity: FAILED (identity-mismatch)"),
+            "doctor must name the failure KIND, not just report a problem: {lines}"
+        );
+        assert!(
+            lines.contains("https://op.example:9443"),
+            "doctor must name the endpoint the failure is about: {lines}"
+        );
+        assert!(
+            lines.contains("pg-b"),
+            "doctor must keep the underlying detail: {lines}"
+        );
+        assert!(
+            lines.contains("repair:"),
+            "doctor must print an action, not just a diagnosis: {lines}"
+        );
+    }
+
+    /// Recurrence guard for the defect this replaced: `run_doctor` used to do
+    /// `selected_backend_identity().await?`, so an unreachable operator aborted
+    /// the whole command and printed NOTHING — no local-install section, and
+    /// never the "operator identity" section at all. Doctor is the tool you run
+    /// when the backend is broken; it must not require the backend to work.
+    ///
+    /// Falsifiable by construction: restore the `?` and this fails.
+    #[test]
+    fn doctor_renders_the_backend_failure_instead_of_aborting_on_it() {
+        let src = include_str!("main.rs");
+
+        // The needles are ASSEMBLED, never written as literals: this test lives
+        // in the same file it searches, so a literal delimiter would appear in
+        // the source ahead of the function and `split_once` would happily match
+        // THIS TEST instead of `run_doctor` — the self-match trap, and it does
+        // not fail loudly, it silently measures the wrong region.
+        let open = format!("async fn run_{}() -> Result<()> {{", "doctor");
+        let close = format!("\nasync fn run_{}", "workbench");
+        let body = src
+            .split_once(open.as_str())
+            .expect("run_doctor not found — did it get renamed?")
+            .1
+            .split_once(close.as_str())
+            .expect("could not delimit run_doctor body")
+            .0;
+
+        // Positive control: prove the delimiters actually captured run_doctor.
+        // Without this, a drifted delimiter yields some unrelated slice and the
+        // "must not contain" assertion below passes vacuously — a broken
+        // instrument reading exactly like a satisfied guard.
+        assert!(
+            body.contains("PUI local install:"),
+            "delimiters did not capture run_doctor's body; this guard would \
+             otherwise pass without measuring anything:\n{body}"
+        );
+        let propagates = format!("selected_backend_identity().await{}", "?");
+        assert!(
+            !body.contains(propagates.as_str()),
+            "run_doctor must not propagate the rendezvous failure — doing so \
+             makes doctor print nothing in the exact case it exists to \
+             diagnose. Render it with operator_failure_lines instead.\n{body}"
+        );
+        assert!(
+            body.contains("operator_failure_lines("),
+            "run_doctor must render the classified rendezvous failure:\n{body}"
+        );
+    }
+}
+
 /// Materialise the workbench layout and hand off to zellij. Replaces this
 /// process's foreground with the zellij session; on exit we mirror its code.
 /// The session is app-managed with a STABLE name (`pui-wb`, P-001 refit): a
@@ -416,9 +526,44 @@ async fn selected_backend_identity() -> Result<(OperatorClient, client::BackendI
     Ok((client, identity))
 }
 
+/// The `pui doctor` operator-identity section for a FAILED rendezvous (R1/R2).
+/// Pure and separate from the printing so the guard below can assert doctor
+/// stays diagnostic exactly when the backend is not.
+fn operator_failure_lines(endpoint_label: &str, error: &anyhow::Error) -> Vec<String> {
+    let failure = http::RendezvousError::classify(endpoint_label, error);
+    vec![
+        format!("PUI operator identity: FAILED ({})", failure.kind.label()),
+        format!("endpoint:       {}", failure.endpoint),
+        format!("detail:         {}", failure.detail),
+        format!("repair:         {}", failure.repair()),
+    ]
+}
+
+/// The status-line form of the same classified failure (R1, UI half).
+///
+/// The status bar is ONE line and is the only place most users will ever see
+/// this, so it leads with the two things that orient them — what kind of
+/// failure, and against which operator — and carries the repair behind them.
+/// A wide terminal shows the whole thing; a narrow one still shows the part
+/// that says where to look, and `pui doctor` prints it in full.
+fn operator_failure_status_line(endpoint_label: &str, error: &anyhow::Error) -> String {
+    let failure = http::RendezvousError::classify(endpoint_label, error);
+    format!(
+        "operator {} · {} — {}",
+        failure.kind.label(),
+        failure.endpoint,
+        failure.repair()
+    )
+}
+
 async fn run_doctor() -> Result<()> {
     let local = install::inspect_local_install();
-    let (_client, identity) = selected_backend_identity().await?;
+    // NOT `?`. Doctor is the tool you reach for WHEN the backend is broken, so
+    // propagating here made it print nothing at all in exactly the case it
+    // exists to explain — and left the "operator identity: OK" line below
+    // unconditional, because the failing path could never reach it. The
+    // rendezvous failure is classified and RENDERED instead (R1/R2).
+    let selected = selected_backend_identity().await;
     let mut failures = 0usize;
 
     match &local {
@@ -461,28 +606,38 @@ async fn run_doctor() -> Result<()> {
         }
     }
 
-    println!("PUI operator identity: OK");
-    println!("endpoint:       {}", identity.endpoint);
-    println!("selection:      {}", identity.selection_source);
-    println!("transport:      {}", identity.transport);
-    println!("workspace:      {}", identity.workspace_id);
-    println!(
-        "store:          {} ({}, {})",
-        identity.store.id, identity.store.target, identity.store.source
-    );
-    println!(
-        "build:          v{} ({})",
-        identity.build.version,
-        identity.build.sha.as_deref().unwrap_or("sha unavailable")
-    );
-    println!(
-        "source compare: {}",
-        install::operator_source_relation(identity.build.sha.as_deref())
-    );
-    println!(
-        "agent chat:     {} via {}",
-        identity.agent_chat.scope, identity.agent_chat.route
-    );
+    match &selected {
+        Ok((_client, identity)) => {
+            println!("PUI operator identity: OK");
+            println!("endpoint:       {}", identity.endpoint);
+            println!("selection:      {}", identity.selection_source);
+            println!("transport:      {}", identity.transport);
+            println!("workspace:      {}", identity.workspace_id);
+            println!(
+                "store:          {} ({}, {})",
+                identity.store.id, identity.store.target, identity.store.source
+            );
+            println!(
+                "build:          v{} ({})",
+                identity.build.version,
+                identity.build.sha.as_deref().unwrap_or("sha unavailable")
+            );
+            println!(
+                "source compare: {}",
+                install::operator_source_relation(identity.build.sha.as_deref())
+            );
+            println!(
+                "agent chat:     {} via {}",
+                identity.agent_chat.scope, identity.agent_chat.route
+            );
+        }
+        Err(error) => {
+            failures += 1;
+            for line in operator_failure_lines(&client::selected_endpoint_label(), error) {
+                println!("{line}");
+            }
+        }
+    }
 
     if let Ok(check) = &local {
         let panes = install::stale_zellij_panes(Path::new(&check.manifest.binary_path));
@@ -498,8 +653,11 @@ async fn run_doctor() -> Result<()> {
     }
 
     if failures > 0 {
+        // Each problem printed its OWN repair line above; pointing at the local
+        // install command unconditionally would misdirect a backend failure,
+        // which no amount of reinstalling pui can fix.
         anyhow::bail!(
-            "pui doctor found {failures} issue(s); repair local artifacts with {} and relaunch only the reported stale pui pane/session",
+            "pui doctor found {failures} issue(s); act on the repair line printed for each (local artifacts: {})",
             install::INSTALL_COMMAND
         );
     }
@@ -1834,7 +1992,7 @@ async fn backend_identity_fetch(tx: UnboundedSender<Event>) {
     let result = selected_backend_identity()
         .await
         .map(|(_, identity)| identity)
-        .map_err(|error| format!("operator identity: {error:#}"));
+        .map_err(|error| operator_failure_status_line(&client::selected_endpoint_label(), &error));
     let _ = tx.send(Event::BackendIdentity(result));
 }
 

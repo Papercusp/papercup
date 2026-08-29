@@ -513,7 +513,9 @@ impl OperatorClient {
     }
 
     fn from_resolved_selection(selection: OperatorSelection) -> Result<Self> {
-        let token = crate::http::discovered_token_for(&selection.base);
+        // PUI_OPERATOR_TOKEN wins; otherwise the endpoint-scoped local bearer.
+        // Never an unscoped credential — see http::resolve_token_for (R3).
+        let token = crate::http::token_for_endpoint(&selection.base);
         Ok(Self {
             transport: Transport::Http(HttpClient::new(selection.base.clone(), token)),
             endpoint: selection.base,
@@ -2827,6 +2829,26 @@ struct OperatorSelection {
 /// only when they normalize to the same origin; neither may silently outrank
 /// the other. With no explicit selector the per-port IPC record and HTTP
 /// fallback are both bound to the same `PAPERCUSP_HONO_PORT` origin.
+/// The endpoint this process WOULD talk to, resolved from the same selectors as
+/// `from_discovery`. Exists for the FAILURE path: when the client cannot be
+/// built or the probe never lands, a diagnostic that cannot name the endpoint it
+/// was talking about is not actionable on a multi-operator box.
+pub fn selected_endpoint_label() -> String {
+    let pui = std::env::var("PUI_OPERATOR").ok();
+    let shared = std::env::var("PAPERCUSP_OPERATOR_URL").ok();
+    let hono = std::env::var("PAPERCUSP_HONO_PORT").ok();
+    match resolve_operator_selection(pui.as_deref(), shared.as_deref(), hono.as_deref()) {
+        Ok(selection) => selection.base,
+        // The SELECTION itself is what failed, so there is no canonical base to
+        // report — echo the raw selector, which is the thing the user actually
+        // set and the thing they have to fix.
+        Err(_) => pui
+            .or(shared)
+            .map(|raw| format!("(unresolved selector {raw:?})"))
+            .unwrap_or_else(|| "(no operator selected)".to_string()),
+    }
+}
+
 fn resolve_operator_selection(
     pui_operator: Option<&str>,
     papercusp_operator_url: Option<&str>,
@@ -3384,6 +3406,50 @@ mod tests {
         assert_eq!(turns[0].ts.as_deref(), Some("2026-08-26T10:00:00Z"));
         assert_eq!(turns[2].speaker, "unknown");
         assert_eq!(turns[2].text, "legacy");
+    }
+
+    /// R2's most consequential clause: "No code path substitutes a loopback
+    /// operator when a remote one was explicitly selected."
+    ///
+    /// This is the failure with no symptom — a silent loopback substitution
+    /// does not error, it just reads and writes the WRONG store while the user
+    /// believes they are on the remote. It is guarded at the source because the
+    /// property is an ORDERING one: `from_discovery` must return for an
+    /// explicit selection BEFORE it ever attempts the local IPC socket, and
+    /// moving one line would reintroduce the fallback with every test still
+    /// green.
+    ///
+    /// Falsifiable by construction: delete the explicit early-return, or move
+    /// it below the IPC attempt, and this fails.
+    #[test]
+    fn an_explicit_selection_never_falls_back_to_the_local_ipc_socket() {
+        let src = include_str!("client.rs");
+        // Assembled, not literal: this test lives in the file it searches, so a
+        // literal needle risks matching this test instead of the function.
+        let open = format!("pub async fn from_{}() -> Result<Self> {{", "discovery");
+        let body = src
+            .split_once(open.as_str())
+            .expect("from_discovery not found — did it get renamed?")
+            .1
+            .split_once("\n    /// Build the client for an explicit operator selection")
+            .expect("could not delimit from_discovery body")
+            .0;
+
+        let explicit_return = body
+            .find("if selection.explicit")
+            .expect("from_discovery must special-case an explicit selection; \
+                     without it an unreachable remote falls through to the local \
+                     IPC socket and silently serves the WRONG store");
+        let ipc_attempt = body
+            .find("IpcClient::connect_discovered")
+            .expect("positive control failed: the IPC attempt was not found in \
+                     from_discovery, so this guard is measuring the wrong region");
+
+        assert!(
+            explicit_return < ipc_attempt,
+            "an explicit operator selection must return BEFORE the local IPC \
+             attempt, or a remote selection silently degrades to loopback:\n{body}"
+        );
     }
 
     #[test]

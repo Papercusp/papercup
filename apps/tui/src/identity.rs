@@ -66,11 +66,18 @@ fn bind_at(path: &Path, session: &str, identity: &BackendIdentity, live: bool) -
             )
         })?;
         if prior.session != session || !prior.identity.same_rendezvous(identity) {
-            anyhow::bail!(
-                "refusing to attach to {session}: running session is bound to [{}], but this launch selected [{}]. Close it with `zellij kill-session {session}` or relaunch with matching PUI_OPERATOR/PAPERCUSP_OPERATOR_URL",
-                prior.identity.compact(),
-                identity.compact()
-            );
+            // Typed (R2): this is the canonical identity-mismatch — a backend
+            // that answers but is not the one this session is bound to. Carrying
+            // the type means `RendezvousError::classify` recognises it without
+            // matching on the message text below.
+            return Err(anyhow::Error::new(crate::http::IdentityMismatchError {
+                endpoint: identity.endpoint.clone(),
+                detail: format!(
+                    "refusing to attach to {session}: running session is bound to [{}], but this launch selected [{}]. Close it with `zellij kill-session {session}` or relaunch with matching PUI_OPERATOR/PAPERCUSP_OPERATOR_URL",
+                    prior.identity.compact(),
+                    identity.compact()
+                ),
+            }));
         }
         return Ok(());
     }
