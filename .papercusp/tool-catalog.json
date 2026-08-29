@@ -14051,7 +14051,7 @@
       "guidance": {
         "when": "As the resolver behind host.memoryPressure. Direct use is mainly for debugging the state-cell wiring.",
         "notWhen": "General service health, process forensics, or waiting for the condition to change. Use state:read/state:subscribe on host.memoryPressure.",
-        "chaining": "state:read { cell:\"host.memoryPressure\" } → branch on value + unknownHoist; state:subscribe waits for a band transition."
+        "chaining": "state:read { cell:\"host.memoryPressure\" } → branch on assessment.code and follow assessment.safeAction; inspect value/evidence for diagnosis. state:subscribe { cell:\"host.memoryPressure\" } waits for a semantic band transition."
       }
     },
     {
