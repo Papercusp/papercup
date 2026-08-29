@@ -31,7 +31,27 @@ both:
 | `pc-estate-backup.{service,timer}` | daily 03:30 UTC, `/etc/systemd/system/` |
 | `pc-restore-drill.sh` | the acceptance test — restores from the bucket and compares content hashes |
 | `pc-offgcp-restore-proof.sh` | restores an artifact **outside GCP** into stock `postgres:16-alpine` |
+| `pc-estate-mirror.sh` | **the off-GCP copy** (WI-645563) — `mirror` \| `verify` \| `health` |
+| `pc-mirror-restore-drill.sh` | the weekly proof that the off-GCP copy actually restores |
+| `pc-estate-mirror-alert.sh` | the alarm the three mirror units share |
+| `pc-estate-mirror{,-health}.{service,timer}`, `pc-mirror-restore-drill.{service,timer}`, `pc-estate-mirror-alert.service` | user units on the owner's box, symlinked to this directory |
 | `RESTORE-RUNBOOK.md` | how to actually restore, per engine |
+
+### Three drills, and why none of them replaces another
+
+They look similar and they answer genuinely different questions. Read the
+column that changes:
+
+| drill | artifact comes from | restored on | what it proves |
+|---|---|---|---|
+| `pc-restore-drill.sh` | the bucket | the live VM container | the dump is good |
+| `pc-offgcp-restore-proof.sh` | the bucket | a stock container off GCP | the *procedure* needs no GCP API |
+| `pc-mirror-restore-drill.sh` | the **local mirror** | a stock container off GCP | we can recover **with GCP gone** |
+
+The first two both reach into the bucket, so neither can run during the event
+they are insurance against. Only the third has no GCP participant at all — and
+it is the only one that is scheduled, because it is the only one whose premise
+(the mirror is current and intact) decays on its own.
 
 These are **also** stored in the backup bucket under `tools/`, deliberately:
 the recovery path must not depend on this repo, on a VM, or on any running
@@ -73,9 +93,46 @@ off-GCP Redis 138 keys into stock `redis:7.2-alpine`.
 past errors. And a row count is not evidence the payload survived. See
 `RESTORE-RUNBOOK.md` §0.
 
-## Known limit
+## Provider concentration — closed, and what is left
 
 The bucket is in the **same GCP project** as the VMs it protects, which
-reproduces the concentration P-024 exists to break. Format neutrality *is*
-achieved and proven (every artifact restores with stock open-source tools, no
-GCP API). Closing the rest is tracked as **WI-645563**.
+reproduces the concentration P-024 exists to break. Format neutrality was
+already achieved and proven. **WI-645563** closed the other half: the artifacts
+themselves now live off GCP as well.
+
+`pc-estate-mirror.sh` keeps a verified, immutable copy on the owner's own
+hardware at `/mnt/data/papercusp-estate-mirror`, daily. Every artifact is
+checked against its own `MANIFEST.json` sha256 **before** publication — a bad
+copy is quarantined rather than stored — and published snapshots are sealed
+`chattr +i`, so neither a stray `rm -rf` nor an agent holding `sudo` deletes one
+by accident. `RESTORE-RUNBOOK.md` §6 has the layout, the recovery path, and the
+unseal command.
+
+Three units, three failure modes, one alarm:
+
+```bash
+pc-estate-mirror.timer         # daily 05:15Z — copy, verify, seal, prune to 14/host
+pc-estate-mirror-health.timer  # 6-hourly    — assert FRESHNESS (a stopped timer looks healthy)
+pc-mirror-restore-drill.timer  # weekly      — re-verify every byte, then actually restore one
+```
+
+All three carry `OnFailure=pc-estate-mirror-alert.service`, which writes a
+marker file, journals, `notify-send`s, and broadcasts over `coord:send`. That is
+four channels because each can be down alone, and because EI-10733 is what a
+silently-rotting backup costs here: 30 days.
+
+**What is still open, stated plainly:**
+
+- **Not geographically offsite.** Fire or theft at the office destroys the
+  mirror. GCP still holds a copy, so no *single* event destroys both — two
+  failure domains, not three. The strictly stronger answer is S3 Object Lock in
+  the existing `papercusp-byoc` AWS account, which needs an owner decision: its
+  SSO token expired 2026-08-23, and an unattended daily job cannot use SSO at
+  all, so it needs a long-lived IAM key deliberately created for it.
+- **Not encrypted at rest.** Every agent here already holds `sudo -n` and read
+  access to the source bucket, so a key kept on this same box would add a way to
+  *lose* the backup without adding a boundary that matters. A key held elsewhere
+  is the real fix, and it belongs with the offsite work above.
+- **Both filesystems on this box run ~92% full.** The mirror refuses below a
+  40GB floor and alarms rather than skipping quietly, but headroom is the thing
+  most likely to break it first.

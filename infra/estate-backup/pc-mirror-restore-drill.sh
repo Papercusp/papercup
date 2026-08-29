@@ -2,12 +2,18 @@
 # ---------------------------------------------------------------------------
 # pc-mirror-restore-drill.sh — prove a restore FROM THE OFF-GCP COPY (WI-645563)
 #
-# THE POINT, and why it is not the same drill as pc-restore-drill.sh
-#   pc-restore-drill.sh proves the GCS bucket restores, and it does that by
-#   pulling from GCS and restoring into the LIVE estate container on the GCP VM.
-#   Every participant in that proof is inside the failure domain the backup is
-#   supposed to survive. It is a good drill for "did the dump work"; it is no
-#   evidence at all for "could we recover if the GCP account were suspended".
+# THE POINT — this is the THIRD drill here, and the other two cannot do its job
+#   pc-restore-drill.sh        bucket -> live VM container.  Proves the dump.
+#   pc-offgcp-restore-proof.sh bucket -> stock container off GCP.
+#                              Proves the PROCEDURE needs no GCP API.
+#   this one                   MIRROR -> stock container off GCP.
+#                              Proves we can recover WITH GCP GONE.
+#
+#   The distinction is one column wide and it is the whole point: the first two
+#   both reach into the bucket, so neither can run during the event they are
+#   insurance against. Only this one has no GCP participant at all. It is also
+#   the only one that is SCHEDULED, because it is the only one whose premise —
+#   that the local copy is current and intact — decays on its own.
 #
 #   This drill answers that second question, so it touches nothing Google owns:
 #     source  = the local mirror on this box
@@ -91,9 +97,20 @@ fi
 # The dump's own header names the server version that produced it; restoring a
 # newer archive with an older pg_restore fails with an opaque error, so pick
 # the image from the archive instead of guessing.
-SRCVER=$(strings "$DUMP" 2>/dev/null | grep -m1 -oP '(?<=Dumped from database version )[0-9]+' || true)
-PGIMG="postgres:${SRCVER:-16}"
-log "archive was dumped from Postgres ${SRCVER:-unknown}; using $PGIMG"
+# A pg custom archive records the producing server version as a bare "16.14"
+# string in its first few hundred bytes, right after the database name — so
+# this is a 512-byte read, not a `strings` pass over 715MB. Restoring a newer
+# archive with an older pg_restore fails with an opaque "unsupported version"
+# error, which is a miserable thing to debug from a weekly timer, so read the
+# version rather than guessing it.
+SRCVER=$(head -c 512 "$DUMP" 2>/dev/null | strings | grep -m1 -oE '^[0-9]+\.[0-9]+$' | cut -d. -f1)
+if [ -n "$SRCVER" ]; then
+  PGIMG="postgres:${SRCVER}"
+  log "archive was dumped from Postgres ${SRCVER}.x; using $PGIMG"
+else
+  PGIMG="postgres:16"
+  log "WARNING: could not read the producing Postgres version from the archive header; defaulting to $PGIMG"
+fi
 
 CID=$(docker run -d --rm -e POSTGRES_PASSWORD=drill -e POSTGRES_HOST_AUTH_METHOD=trust \
         --name "pc-mirror-drill-$$" "$PGIMG" 2>/dev/null)

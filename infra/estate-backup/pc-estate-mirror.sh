@@ -285,14 +285,25 @@ PY
   done <<<"$manifests"
 
   # --- the restore PROCEDURE travels with the data --------------------------
-  # tools/ is re-synced every run because the runbook is edited over time and
-  # the copy that matters is the one you can still read after GCP is gone.
-  local tnew="$ROOT/.tools.new"
+  # Data without the runbook is not a recovery, so tools/ is re-synced every
+  # run. SOURCE ORDER MATTERS: the repo is authoritative and always current,
+  # while the bucket's tools/ is a hand-uploaded copy with no automated sync —
+  # so it can be, and has been, months behind. Prefer the repo when it is here;
+  # fall back to the bucket when it is not. Either way the mirror records WHICH,
+  # so nobody has to guess how current their emergency runbook is.
+  local tnew="$ROOT/.tools.new" tsrc=""
   rm -rf "$tnew"; mkdir -p "$tnew"
-  if gcloud storage cp -r "$BUCKET/tools/*" "$tnew/" --quiet >>"$LOG" 2>&1; then
+  if [ -f "$SELF_DIR/RESTORE-RUNBOOK.md" ] && cp -a "$SELF_DIR"/. "$tnew/" 2>>"$LOG"; then
+    tsrc="repo:$SELF_DIR"
+  elif gcloud storage cp -r "$BUCKET/tools/*" "$tnew/" --quiet >>"$LOG" 2>&1; then
+    tsrc="bucket:$BUCKET/tools"
+  fi
+  if [ -n "$tsrc" ]; then
+    printf 'synced_at=%s\nsource=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$tsrc" >"$tnew/TOOLS-SOURCE.txt"
     [ -d "$ROOT/tools" ] && { unseal "$ROOT/tools"; rm -rf "$ROOT/tools"; }
     mv "$tnew" "$ROOT/tools"
     $sealed && seal "$ROOT/tools"
+    log "tools/ synced from $tsrc"
   else
     rm -rf "$tnew"
     errors+=("tools/ sync failed — the mirror has data but no runbook copy")
