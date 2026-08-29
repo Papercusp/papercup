@@ -135,9 +135,15 @@ import {
 } from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
+  closureDigestManifestPath,
   decidePassingTaskVerdict,
+  diffClosureDigests,
+  formatClosureDeltaLine,
   formatPassingTaskVerdictSummary,
   hashDependencyFileSet,
+  mergeClosureDigestManifest,
+  observedClosureDigests,
+  readClosureDigestManifest,
   mergePassingTaskVerdictUpdates,
   namespacePassingTaskVerdictDecision,
   passingTaskVerdictCacheEntry,
@@ -3928,11 +3934,24 @@ const taskVerdictGuardKeys = new Set(
   ),
 );
 
+// WI-595883: what THIS run observed, so the NEXT run's `dependency-closure-changed` miss can name
+// the moved path instead of reporting only that a hash differs. Read fails open — the sidecar can
+// only ever improve an error message, so a missing or corrupt one must never affect the suite.
+const TASK_VERDICT_CLOSURE_MANIFEST_PATH = closureDigestManifestPath(
+  TASK_VERDICT_CACHE_PATH,
+);
+const taskVerdictClosureManifestRead = TASK_VERDICT_CACHE_ENABLED
+  ? readClosureDigestManifest(TASK_VERDICT_CLOSURE_MANIFEST_PATH)
+  : null;
+/** taskKey -> { fileCount, listHash } for every closure this run resolved. */
+const taskVerdictClosureShapes = {};
+
 function dependencyProvenanceForTask(t) {
   if (!TASK_VERDICT_CACHE_ENABLED) return null;
-  return passingTaskVerdictDependencyProvenance({
+  const key = taskKey(t);
+  const provenance = passingTaskVerdictDependencyProvenance({
     root: ROOT,
-    taskKey: taskKey(t),
+    taskKey: key,
     script: t.script,
     workspaceName: t.ws.name,
     workspaces: wsByName,
@@ -3940,6 +3959,46 @@ function dependencyProvenanceForTask(t) {
     repoWideTaskKeys: taskVerdictGuardKeys,
     digestCache: taskVerdictDigestCache,
   });
+  if (provenance?.ok) {
+    taskVerdictClosureShapes[key] = {
+      fileCount: provenance.fileCount,
+      listHash: provenance.listHash,
+    };
+  }
+  return provenance;
+}
+
+/**
+ * Explain one `dependency-closure-changed` miss on the line the A/B harness already greps.
+ *
+ * Best-effort by construction: a diagnostic that can abort the run would be strictly worse than
+ * the unactionable string it replaces.
+ */
+function reportClosureDeltaForMiss(context, decision) {
+  try {
+    if (!TASK_VERDICT_CACHE_ENABLED) return;
+    if (decision?.hit) return;
+    if (!String(decision?.reason ?? "").endsWith("dependency-closure-changed")) return;
+    const provenance = context.cacheProvenance;
+    if (!provenance?.ok || !provenance.files) return;
+    const delta = diffClosureDigests({
+      prior: taskVerdictClosureManifestRead?.manifest,
+      observed: observedClosureDigests(ROOT, taskVerdictDigestCache),
+      files: provenance.files,
+      listHash: provenance.listHash,
+      taskKey: taskKey(context.t),
+    });
+    errSync(
+      formatClosureDeltaLine({
+        taskKey: taskKey(context.t),
+        reason: decision.reason,
+        delta,
+        manifestReason: taskVerdictClosureManifestRead?.reason ?? "manifest-disabled",
+      }),
+    );
+  } catch {
+    // Deliberately swallowed: see above.
+  }
 }
 
 const taskVerdictGateConfig = {
@@ -4243,6 +4302,7 @@ function runCapturedTask(
         reason: context.cacheProvenance?.reason ?? "provenance-incomplete",
       };
     }
+    reportClosureDeltaForMiss(context, cacheDecision);
     if (cacheDecision.hit) {
       return Promise.resolve({
         status: 0,
@@ -4789,6 +4849,25 @@ if (TASK_VERDICT_CACHE_ENABLED) {
       `AFFECTED_TASK_CACHE_DEFECTS count=${taskVerdictPersistDefects.length} ` +
         `(reuse is broken — suite results are unaffected) ` +
         `first=${JSON.stringify(taskVerdictPersistDefects[0])}`,
+    );
+  }
+  // WI-595883: record what this run saw, so the NEXT run's closure miss is explainable. Written
+  // once per run rather than per task — the digests are shared across every task in the run, and
+  // one 100KB sidecar is what keeps this affordable at all. Best-effort: a failure here costs a
+  // future diagnostic, never a verdict.
+  try {
+    writePassingTaskVerdictCacheAtomic(
+      TASK_VERDICT_CLOSURE_MANIFEST_PATH,
+      mergeClosureDigestManifest(
+        readClosureDigestManifest(TASK_VERDICT_CLOSURE_MANIFEST_PATH).manifest,
+        observedClosureDigests(ROOT, taskVerdictDigestCache),
+        taskVerdictClosureShapes,
+      ),
+      `${RUN_TOKEN}-closure-manifest`,
+    );
+  } catch (error) {
+    errSync(
+      `AFFECTED_TASK_CACHE_CLOSURE_MANIFEST status=failed reason=${JSON.stringify(String(error?.message ?? error))}`,
     );
   }
 }
