@@ -5046,7 +5046,8 @@
       ],
       "guidance": {
         "when": "You validated the consult (read the cited evidence) and your context genuinely does not cover it. Declining fast is the helpful move — never answer from guesswork.",
-        "notWhen": "You can partially help → consult:reply (clarifying_question / new_fact). You engaged and it is settled → consult:close."
+        "notWhen": "You can partially help → consult:reply (clarifying_question / new_fact). You engaged and it is settled → consult:close.",
+        "chaining": "conversations:get { id } reads the thread FIRST — there is NO consult:read, and a wrong-door read returns EMPTY, so \"no replies\" may mean you used the wrong door → decline only against what is actually there."
       }
     },
     {
@@ -5118,7 +5119,7 @@
       "guidance": {
         "when": "You were routed a consult (a 🧭 wake naming a conversation) and are answering/clarifying from your own transcript — or you are the requester following up.",
         "notWhen": "Your context does not cover the question → consult:decline (cheap, honest). The thread is settled → consult:close. A non-consult conversation → conversations:post.",
-        "chaining": "Validate relevance first (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }."
+        "chaining": "READ THE THREAD FIRST: conversations:get { id } — there is NO consult:read, and a wrong-door read returns EMPTY, which looks exactly like a thread with no replies (a reviewer answered without the requester's posts that way). → validate relevance (sessions:read the cited evidence) → consult:reply { kind } → when settled, consult:close { outcome }."
       }
     },
     {
