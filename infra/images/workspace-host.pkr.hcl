@@ -348,9 +348,9 @@ source "googlecompute" "workspace_host" {
   # The variable's own validation pins the exact 5-segment shape, so these indices cannot slip.
   source_image_project_id = [split("/", var.source_image)[1]]
   source_image            = split("/", var.source_image)[4]
-  machine_type = var.machine_type
-  disk_size    = var.disk_size_gb
-  disk_type    = "pd-balanced"
+  machine_type            = var.machine_type
+  disk_size               = var.disk_size_gb
+  disk_type               = "pd-balanced"
 
   # The tag is what makes the IAP rule match this VM — see variable "builder_network_tags".
   # Without it the build has no route in and dies on an unexplained SSH timeout.
@@ -452,6 +452,21 @@ build {
     inline = [
       "set -Eeuo pipefail",
       "apt-get update -qq",
+      # Patch the base image BEFORE installing the pinned tools. Measured on the 0.0.18 candidate
+      # (scan evidenceRef gcp-image-scan:…:5f9c040e34c0bed9b3afcfb1acfad4c3): 3939 grype matches,
+      # of which 247 Critical + 1567 High are at or above the ratified deny threshold and 3829
+      # carry an available fix. Those 3829 exist purely because this build never upgraded the
+      # base image's package versions — it only ever ran `update` and `install`.
+      #
+      # `unattended-upgrades` is installed later and does patch, but only AFTER first boot, while
+      # the release gate scans the image BEFORE it ever boots. So runtime patching cannot satisfy
+      # the gate, and only a build-time upgrade can.
+      #
+      # Ordering is load-bearing: this runs BEFORE the pinned install so that `install` still
+      # settles each pinned tool at its declared version and the assertion below stays meaningful.
+      # Upgrading afterwards could lift a pinned tool off its pin and turn a deliberate pin into a
+      # build failure.
+      "apt-get dist-upgrade -y --no-install-recommends",
       "apt-get install -y --no-install-recommends $PINNED_TOOLS",
       "for pin in $PINNED_TOOLS; do",
       "  name=\"$${pin%%=*}\"",
@@ -593,6 +608,19 @@ build {
       "rm -f /var/lib/dbus/machine-id",
       "find /var/log -type f -exec truncate -s 0 {} +",
       "rm -rf /root/.ssh /home/packer 2>/dev/null || true",
+      # SSH HOST KEYS ARE BUILD-SPECIFIC STATE, for exactly the reason stated above about
+      # machine-id: a host key baked into an image is shared by every host cut from it.
+      # This block removed /root/.ssh (client material) but left the server's own identity in
+      # place. MEASURED on the 0.0.18 candidate: the image scan reported `private-key` findings at
+      # /etc/ssh/ssh_host_rsa_key, ssh_host_ecdsa_key and ssh_host_ed25519_key — they really were
+      # baked in. Tracked as WI-662195.
+      #
+      # This matters beyond hygiene here because provisioning performs host-key enrolment
+      # (initialization-operations-resolver.ts, hostKeyEnrollmentQueues -> known_hosts TOFU): if
+      # every workspace presents an identical host identity, that enrolment distinguishes nothing.
+      # sshd regenerates any missing key on next start, and cloud-init (re-armed by the
+      # `cloud-init clean --seed` above) does the same, so removing them is safe and self-healing.
+      "rm -f /etc/ssh/ssh_host_*",
       "sync",
     ]
   }
