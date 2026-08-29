@@ -413,3 +413,98 @@ describe("green-gate schedule is single-sourced (WI-39841 follow-on)", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * THE SECOND COPY OF THE CRON DERIVATION — and why it is pinned here rather than imported.
+ *
+ * `greenCheckpointCronForInstall()` is reimplemented, deliberately, in
+ * `libs/papercusp/libs/db/sql/976-stagger-green-checkpoint-crons.sql`, so that the rows the
+ * migration already wrote and the rows a future re-seed writes converge on one schedule.
+ * The TS function says exactly that in its own comment.
+ *
+ * This file's header asks which of two things a new assertion is: a real decision no import
+ * can enforce, or two names for one number that should simply be an import. This is
+ * emphatically the first, and not by preference — the second implementation is SQL inside an
+ * applied-once migration. It cannot import the TypeScript, and it cannot be edited to follow
+ * it either, because it has already run. The coupling has no mechanical enforcement
+ * available to it except a test.
+ *
+ * WHY THE FAILURE IS WORTH GUARDING: it is silent and asymmetric. Migration 976 is frozen,
+ * so the rows it wrote never move. Edit the weighting or the modulus in the TS and nothing
+ * goes red — every FUTURE re-seed just lands on a different second of the hour than the
+ * existing rows, leaving two populations of installs on divergent schedules. That is
+ * precisely the staggering the migration existed to create, undone without a symptom.
+ *
+ * PROVENANCE OF THE VECTORS BELOW — the part that makes them worth anything. They are NOT
+ * read back from `harness_shared.routines`, because live rows are circular evidence: a row
+ * that had been re-seeded by the TypeScript would "confirm" the TypeScript against itself.
+ * They were produced by executing migration 976's OWN expression in Postgres as a read-only
+ * SELECT over a slug list, then compared against this function. Eleven of the twelve agreed
+ * exactly — including the multi-byte UTF-8 case and a 64-byte slug — and the twelfth is
+ * recorded below as a real divergence rather than smoothed over.
+ *
+ * One thing that agreement is not an accident of: the TS reduces with `% 3_600` applied at
+ * EVERY step, while the SQL applies `mod(sum(...), 3600)` once at the end. Those coincide
+ * only because every term is non-negative — worth knowing before anyone "simplifies" either
+ * side into the other's shape.
+ */
+describe("green-checkpoint cron derivation is pinned to migration 976 (EI-21810945709108727)", () => {
+  /** Repo root, from apps/operator/lib/release/<this file>. */
+  const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
+
+  const MIGRATION_976 =
+    "libs/papercusp/libs/db/sql/976-stagger-green-checkpoint-crons.sql";
+
+  /**
+   * install_slug → the cron migration 976's SQL derives for it, measured by executing that
+   * expression in Postgres (2026-08-29). The first six are the live fleet's own installs, so
+   * a regression here is simultaneously a statement about really-seeded rows.
+   */
+  const SQL_DERIVED: ReadonlyArray<readonly [string, string]> = [
+    ["papercusp", "37 22 * * * *"],
+    ["email", "10 26 * * * *"],
+    ["scout-runtime", "24 40 * * * *"],
+    ["readinglist", "8 59 * * * *"],
+    ["quartermaster", "43 45 * * * *"],
+    ["stonebrook-android-20260821", "8 45 * * * *"],
+    ["a", "37 1 * * * *"],
+    ["zz", "6 6 * * * *"],
+    ["cafe-pot", "5 0 * * * *"],
+    ["café-pot", "50 26 * * * *"],
+    ["A".repeat(64), "20 33 * * * *"],
+  ];
+
+  it("derives exactly what migration 976's SQL derives", () => {
+    for (const [slug, expected] of SQL_DERIVED) {
+      expect(
+        greenCheckpointCronForInstall(slug),
+        `install_slug ${JSON.stringify(slug)}`,
+      ).toBe(expected);
+    }
+  });
+
+  it("documents the one input where the two derivations genuinely disagree", () => {
+    // Empty slug: the SQL's generate_series spans zero rows, so sum() is NULL and the
+    // migration would write the malformed cron "  * * * *". The TypeScript reduces an empty
+    // byte array to its 0 seed and returns a well-formed top-of-the-hour cron. Unreachable
+    // in practice — a routine's install_slug is never empty — and asserted here so the next
+    // reader can see it was measured rather than missed.
+    expect(greenCheckpointCronForInstall("")).toBe("0 0 * * * *");
+  });
+
+  it("still mirrors the SQL's load-bearing arithmetic", () => {
+    // readFileSync, not a glob: a migration that has been renamed or deleted THROWS here
+    // rather than scanning nothing and reporting a clean pass — the false-absence shape the
+    // other source-scanning guard in this file calls out by name.
+    const sql = readFileSync(join(repoRoot, MIGRATION_976), "utf8").replace(
+      /\s+/g,
+      " ",
+    );
+
+    expect(sql).toContain("3600");
+    expect(sql).toContain("* (position + 1)");
+    expect(sql).toMatch(/get_byte\(\s*convert_to\(/);
+    expect(sql).toMatch(/mod\(\s*schedule\.second_of_hour,\s*60\s*\)/);
+    expect(sql).toMatch(/floor\(\s*schedule\.second_of_hour\s*\/\s*60\.0\s*\)/);
+  });
+});
