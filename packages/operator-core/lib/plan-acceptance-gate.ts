@@ -26,7 +26,12 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { activeWorkspaceId } from './workspace-registry';
 import { RUBRIC_TEMPLATE_NAME } from './agent-tools/plans/rubric-template';
-import { getAcceptanceRubricsForPlan, getRubric, getRubricPlanRevision, META_ACCEPTANCE_RUBRIC_ID } from './rubrics';
+import {
+  getAcceptanceRubricsForPlan,
+  getRubric,
+  META_ACCEPTANCE_RUBRIC_ID,
+  readRubricPlanRevision,
+} from './rubrics';
 import { listScorecards } from './scorecards';
 import { isAcceptanceAuthorIdentity } from './acceptance-author-identity';
 import {
@@ -51,6 +56,11 @@ export type PlanAcceptanceGateCode =
   | 'acceptance_rubric_ambiguous'
   // consult-min-max-and-rubric-vetting-2026-08-17 P-004 — the vetting check.
   | 'acceptance_rubric_unvetted'
+  // EI-21827040531672903 — the two ways the vetting check used to pass without
+  // having established anything: an unreadable revision (was: fail-open) and an
+  // attestation that post-dates the grading it was supposed to precede.
+  | 'acceptance_rubric_revision_unreadable'
+  | 'acceptance_rubric_vetted_after_grading'
   | 'acceptance_ungraded'
   | 'self_graded_only'
   | 'acceptance_not_recorded'
@@ -131,6 +141,18 @@ export interface PlanAcceptanceGateOpts {
  * the explicit implementer-verdict leg.
  */
 export const ACCEPTANCE_VERDICT_REQUIRED_AFTER = '2026-08-21T00:00:00.000Z';
+
+/**
+ * EI-21827040531672903's compatibility boundary, mirroring the constant above for the
+ * same reason: the vetting-BEFORE-grading ordering was documented as the flow's intent
+ * from the start (see the vetting block's header) but never enforced, so gradings
+ * already exist that were emitted before their rubric was vetted. Enforcing
+ * retroactively would refuse plans whose work is done and whose rubric IS now vetted —
+ * a paperwork-ordering refusal against already-graded work, with no way to comply
+ * except re-grading. A qualifying grading created before this boundary therefore
+ * satisfies the ordering leg; newer gradings must genuinely follow their attestation.
+ */
+export const VETTING_PRECEDES_GRADING_REQUIRED_AFTER = '2026-08-31T00:00:00.000Z';
 
 /**
  * Labels used when a plan records where the durable copy of a delivered report
@@ -517,6 +539,12 @@ export async function evaluatePlanAcceptanceGate(
   // EI-20821478338037350: carried out of the vetting block so the SATISFIED verdict can
   // report a no-critique waiver. Set only when the attesting card says so explicitly.
   let vettedUnderWaiver: { consultId: string; reason?: string } | undefined;
+  // EI-21827040531672903: the attesting card's timestamp, carried out of the vetting
+  // block so the grading checks below can enforce that vetting PRECEDED grading. Left
+  // undefined when the vetting gate did not run (flag off, criteria:[] investigation
+  // rubric, no registered meta-rubric) — the ordering leg then has nothing to order
+  // against and is correctly skipped rather than guessed at.
+  let vettingAttestedAt: string | undefined;
   // Exempt: a criteria:[] investigation rubric (D-009 — nothing to vet) and the
   // meta-rubric itself (kind:'standard' so it can never be a plan's acceptance rubric,
   // but the guard is cheap and the regress would be infinite).
@@ -527,7 +555,26 @@ export async function evaluatePlanAcceptanceGate(
     // deadlocking every ship on a missing prerequisite (recorded as a plan Decision).
     const metaRubric = await getRubric(META_ACCEPTANCE_RUBRIC_ID);
     if (metaRubric) {
-      const currentRevision = await getRubricPlanRevision(rubric.rubricId);
+      // EI-21827040531672903: a FAILED revision read must not be spelled the same way
+      // as "no revision". The old `currentRevision == null || …` short-circuited TRUE
+      // on the null a transient DB error produced, silently widening the check from
+      // "attested at the CURRENT revision" to "any vetted card that ever existed" and
+      // rendering no refusal, so nothing recorded the degradation. Refuse instead: an
+      // unreadable revision is a retryable infrastructure fault, not a pass.
+      const revisionRead = await readRubricPlanRevision(rubric.rubricId);
+      if (!revisionRead.ok) {
+        return {
+          satisfied: false,
+          code: 'acceptance_rubric_revision_unreadable',
+          rubricId: rubric.rubricId,
+          message:
+            `plan '${planSlug}' cannot be marked shipped right now: the current revision of acceptance rubric ` +
+            `'${rubric.rubricId}' could not be read, so the gate cannot confirm the vetting attestation covers ` +
+            `what ships. This is an infrastructure fault, not a missing step — nothing about the plan is wrong. ` +
+            `Retry the ship; if it persists, the rubric plan-row read is failing and that is the thing to fix.`,
+        };
+      }
+      const currentRevision = revisionRead.revision;
       const metaCards = (
         await listScorecards({ rubricRef: META_ACCEPTANCE_RUBRIC_ID, subjectRef: rubric.rubricId, limit: 50 })
       ).filter((s) => s.rubricResolved && s.missingKeys.length === 0 && !s.synthesized);
@@ -567,6 +614,7 @@ export async function evaluatePlanAcceptanceGate(
       // The unanswered waiver exists only on the consult channel (a work-item link
       // with no third-party comment is refused at emit, never waived), so a waived
       // stamp always carries its consultId.
+      vettingAttestedAt = current.createdAt;
       if (current.vetting?.unanswered && current.vetting.consultId) {
         vettedUnderWaiver = {
           consultId: current.vetting.consultId,
@@ -645,6 +693,36 @@ export async function evaluatePlanAcceptanceGate(
         `different agent or the owner must file the grading scorecard.`,
     };
   }
+  // ── vetting PRECEDED grading (EI-21827040531672903) ──
+  // The vetting block above established only that an attestation exists at the current
+  // revision — never that it came FIRST, which is the whole point of vetting: the
+  // critique is meant to improve the rubric BEFORE anyone grades work against it. A
+  // rubric vetted afterwards was, at grading time, unvetted, and an all-pass card
+  // emitted against it shipped clean. This mirrors the verdict-ordering comparison
+  // below rather than introducing new machinery, and is grandfathered on the grading's
+  // timestamp for the reason recorded on the constant.
+  const gradingPredatesOrderRule =
+    Date.parse(independent.createdAt) < Date.parse(VETTING_PRECEDES_GRADING_REQUIRED_AFTER);
+  if (
+    vettingAttestedAt &&
+    !gradingPredatesOrderRule &&
+    Date.parse(vettingAttestedAt) > Date.parse(independent.createdAt)
+  ) {
+    return {
+      satisfied: false,
+      code: 'acceptance_rubric_vetted_after_grading',
+      rubricId: rubric.rubricId,
+      gradedBy: independent.createdBy ?? null,
+      message:
+        `plan '${planSlug}' cannot be marked shipped: acceptance rubric '${rubric.rubricId}' was vetted at ` +
+        `${vettingAttestedAt}, AFTER the independent grading at ${independent.createdAt} — so the grading was ` +
+        `emitted against a rubric no one had critiqued yet, which is the step vetting exists to put first. The ` +
+        `attestation is not in doubt; its ORDER is. Have a non-implementer re-grade against the now-vetted ` +
+        `rubric: scorecards:emit { rubricRef:'${rubric.rubricId}', ratings:{ <every criterion key> } } with ` +
+        `concrete evidence per rating, then record the implementer's acceptance verdict on that newer grading.`,
+    };
+  }
+
   const explicitVerdicts = implementer ? complete.filter((s) => isImplementerScorecard(s) && s.acceptance) : [];
   // listScorecards is newest-first, but sort defensively because tests/injected
   // readers are not required to preserve the storage ordering contract.

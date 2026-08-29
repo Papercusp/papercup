@@ -637,14 +637,32 @@ export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubri
 export const META_ACCEPTANCE_RUBRIC_ID = 'meta-acceptance-rubric';
 
 /**
+ * The outcome of reading a rubric's revision, with "could not determine" kept
+ * DISTINCT from "there is no revision".
+ *
+ * EI-21827040531672903: the module-wide never-throw read convention is right for a
+ * caller that checks the value, and a security hole for a caller that writes
+ * `revision == null || <the real check>` — there, the null from a transient DB
+ * error short-circuits the guard to TRUE and silently degrades it to no guard at
+ * all, rendering no refusal so nothing records the skip. `ok:false` is the signal
+ * such a caller needs to refuse instead of fail open; `ok:true, revision:null` is
+ * the genuinely-unversioned rubric, which is not an error.
+ */
+export type RubricPlanRevisionRead = { ok: true; revision: number | null } | { ok: false; revision: null };
+
+/**
  * The rubric plan row's `version` — the revision spine the vetting attestation pins
  * (consult-min-max-and-rubric-vetting-2026-08-17 P-004). Bumps on EVERY propose
  * (typo and rewrite alike — deliberately strict: any content change after vetting
  * voids the attestation, because only re-reading the rubric can say whether the
- * change was material). Null when the row is missing or the read fails — reads
- * never throw, matching every other read in this module.
+ * change was material).
+ *
+ * Never throws, matching every other read in this module — but unlike the plain
+ * `getRubricPlanRevision` wrapper below, a FAILED read is reported as `ok:false`
+ * rather than flattened into the same null a missing/unversioned row produces.
+ * Prefer this whenever the null would otherwise be treated as "no constraint".
  */
-export async function getRubricPlanRevision(rubricId: string): Promise<number | null> {
+export async function readRubricPlanRevision(rubricId: string): Promise<RubricPlanRevisionRead> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<{ plan_slug: string; version: string | number | null }[]>`
@@ -658,12 +676,21 @@ export async function getRubricPlanRevision(rubricId: string): Promise<number | 
     // Client-side slug guard, mirroring getRubric: identical behavior under
     // mocked-sql fixtures that return the full row set for any query.
     const row = rows.find((r) => r.plan_slug === rubricId);
-    if (!row || row.version == null) return null;
+    if (!row || row.version == null) return { ok: true, revision: null };
     const version = Number(row.version); // bigint arrives as a string
-    return Number.isFinite(version) ? version : null;
+    return { ok: true, revision: Number.isFinite(version) ? version : null };
   } catch {
-    return null;
+    return { ok: false, revision: null };
   }
+}
+
+/**
+ * The revision as a bare value: null when the row is missing, unversioned, OR the
+ * read failed. Retained unchanged for the many callers that legitimately treat all
+ * three alike; a caller that must not fail open wants `readRubricPlanRevision`.
+ */
+export async function getRubricPlanRevision(rubricId: string): Promise<number | null> {
+  return (await readRubricPlanRevision(rubricId)).revision;
 }
 
 /** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
