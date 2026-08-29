@@ -211,6 +211,18 @@ describe('the committed corpus agrees with the committed manifest', () => {
       why: 'added the sudo-before-owner-wall privilege-exhaustion mandate post-load',
       blocksRemoved: -1,
     },
+    {
+      when: '2026-08-29',
+      plan: 'none — part authored directly into harness_doc_parts after the manifest snapshot',
+      // Commit 57c75351c0 moved corpus-parts 295 -> 296 and corpus-blocks 256 -> 257 while the
+      // frozen manifest remained at 253. Verified by walking the generated corpus banner across
+      // commits rather than assuming: every earlier commit reads 256, and 57c75351c0 is the first
+      // to read 257. The added block is the `pgrep -q` does-not-exist warning
+      // (EI-19446554284039165), projected into both CLAUDE.md and AGENTS.md in that same commit —
+      // a standalone new part, not a block that went missing elsewhere.
+      why: 'added the `pgrep -q` does-not-exist-on-this-box warning post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

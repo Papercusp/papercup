@@ -9,7 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { localLiveHeadroom, remoteLiveHeadroom } from './live-headroom';
 import type { GatewayHeadroom, LocalBackendsSnapshot } from '../inference-gateway/observability';
-import type { LocalBackendCandidate } from '../inference-gateway/local-backend-pool';
+import { ENGINE_CAPACITY_FRESH_FOR_MS, type LocalBackendCandidate } from '../inference-gateway/local-backend-pool';
 
 const CAP = 1_000_000; // $1 in usd-micros
 
@@ -25,10 +25,28 @@ const healthy = (over: Partial<GatewayHeadroom> = {}): GatewayHeadroom => ({
   ...over,
 });
 
-const candidate = (over: Partial<LocalBackendCandidate['backend']> = {}, rest: Partial<LocalBackendCandidate> = {}): LocalBackendCandidate => ({
+/**
+ * A pool candidate.
+ *
+ * `engineFree` is the MEASURED engine reading (llama-server `/props`), which is what `freeSlots()`
+ * — and therefore `localLiveHeadroom` — has counted since a525f934f0. Registry `maxConcurrent` is
+ * policy/diagnostic metadata and is deliberately NOT a physical ceiling, so it is set here only to
+ * prove it does not leak into the count. Pass `null` to model a backend with no fresh engine
+ * evidence: headroom must fail CLOSED and count it as 0, even though routing treats an unknown
+ * reading as unbounded.
+ */
+const candidate = (
+  over: Partial<LocalBackendCandidate['backend']> = {},
+  rest: Partial<LocalBackendCandidate> = {},
+  engineFree: number | null = 0,
+): LocalBackendCandidate => ({
   backend: { id: 'a', kind: 'llama-server', baseUrl: 'http://127.0.0.1:9001', models: ['m'], maxConcurrent: 4, enabled: true, ...over },
   inFlight: 0,
   healthy: true,
+  engineCapacity:
+    engineFree === null
+      ? null
+      : { freeSlots: engineFree, totalSlots: null, contextTokens: null, observedAtMs: Date.now(), source: 'test' },
   ...rest,
 });
 
@@ -129,25 +147,44 @@ describe('localLiveHeadroom', () => {
     expect(r.reason).toBe('pool_not_configured');
   });
 
-  it('sums free slots across eligible backends', () => {
-    const r = localLiveHeadroom(pool([candidate({ id: 'a', maxConcurrent: 4 }, { inFlight: 1 }), candidate({ id: 'b', maxConcurrent: 2 }, { inFlight: 0 })]));
-    expect(r.headroom).toBe(5); // (4-1) + (2-0)
+  it('sums MEASURED engine free slots across eligible backends', () => {
+    const r = localLiveHeadroom(pool([candidate({ id: 'a', maxConcurrent: 4 }, { inFlight: 1 }, 3), candidate({ id: 'b', maxConcurrent: 2 }, { inFlight: 0 }, 2)]));
+    expect(r.headroom).toBe(5); // 3 + 2, from the engine readings — NOT maxConcurrent − inFlight
     expect(r.reason).toBe('free_slots');
   });
 
   it('excludes disabled and unhealthy backends — capacity selection would refuse is not offerable', () => {
     const r = localLiveHeadroom(
       pool([
-        candidate({ id: 'a', maxConcurrent: 4, enabled: false }),
-        candidate({ id: 'b', maxConcurrent: 4 }, { healthy: false }),
-        candidate({ id: 'c', maxConcurrent: 1 }),
+        candidate({ id: 'a', maxConcurrent: 4, enabled: false }, {}, 4),
+        candidate({ id: 'b', maxConcurrent: 4 }, { healthy: false }, 4),
+        candidate({ id: 'c', maxConcurrent: 1 }, {}, 1),
       ]),
     );
+    // a and b each report 4 free slots and are still excluded: ineligible capacity is not offerable.
     expect(r.headroom).toBe(1);
   });
 
   it('is 0 when every eligible backend is saturated (and never negative on an over-count)', () => {
-    const r = localLiveHeadroom(pool([candidate({ id: 'a', maxConcurrent: 2 }, { inFlight: 2 }), candidate({ id: 'b', maxConcurrent: 1 }, { inFlight: 5 })]));
+    const r = localLiveHeadroom(pool([candidate({ id: 'a', maxConcurrent: 2 }, { inFlight: 2 }, 0), candidate({ id: 'b', maxConcurrent: 1 }, { inFlight: 5 }, 0)]));
     expect(r.headroom).toBe(0);
+  });
+
+  // a525f934f0 made the engine reading the ONLY source of free slots and demoted registry
+  // `maxConcurrent` to policy/diagnostic metadata. These two pin the fail-closed half of that
+  // change at the localLiveHeadroom level: an unknown or stale reading may never be counted as
+  // capacity, because this number gates FOREIGN CODE EXECUTION.
+  it('counts a backend with NO fresh engine reading as 0 — headroom fails closed where routing treats it as unbounded', () => {
+    const r = localLiveHeadroom(pool([candidate({ id: 'a', maxConcurrent: 4 }, { inFlight: 0 }, null), candidate({ id: 'b', maxConcurrent: 2 }, {}, 2)]));
+    expect(r.headroom).toBe(2); // only b's measured reading counts; a contributes 0, never its maxConcurrent of 4
+    expect(r.reason).toBe('free_slots');
+  });
+
+  it('counts a STALE engine reading as 0 (older than ENGINE_CAPACITY_FRESH_FOR_MS)', () => {
+    const stale = candidate(
+      { id: 'a', maxConcurrent: 4 },
+      { engineCapacity: { freeSlots: 4, totalSlots: 4, contextTokens: null, observedAtMs: Date.now() - 10 * ENGINE_CAPACITY_FRESH_FOR_MS, source: 'test' } },
+    );
+    expect(localLiveHeadroom(pool([stale])).headroom).toBe(0);
   });
 });

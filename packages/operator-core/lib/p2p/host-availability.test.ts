@@ -165,7 +165,14 @@ describe('hostAvailability PHYSICS layer (WI-3590)', () => {
       reachable: true,
       configured: true,
       candidates: [
-        { backend: { id: 'a', kind: 'llama-server', baseUrl: 'http://127.0.0.1:9001', models: ['m'], maxConcurrent: 4, enabled: true }, inFlight: 1, healthy: true },
+        {
+          backend: { id: 'a', kind: 'llama-server', baseUrl: 'http://127.0.0.1:9001', models: ['m'], maxConcurrent: 4, enabled: true },
+          inFlight: 1,
+          healthy: true,
+          // The MEASURED engine reading is the only source of free slots since a525f934f0;
+          // registry maxConcurrent is policy/diagnostic metadata, never a physical ceiling.
+          engineCapacity: { freeSlots: 3, totalSlots: 4, contextTokens: null, observedAtMs: Date.now(), source: 'test' },
+        },
       ],
     }),
     ...over,
