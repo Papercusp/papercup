@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   buildPassingTaskVerdictIdentity,
+  CAPABILITY_BASH_SEAM_IDENTITY_ENV,
   closureDigestManifestPath,
   decidePassingTaskVerdict,
   diffClosureDigests,
@@ -851,6 +852,185 @@ describe('shell-volatile variables are outside the cross-run identity', () => {
       expect(clone).not.toHaveProperty(name);
       expect(environment[name]).toBe('shell-state');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// EI-21762403020037943 — launcher-seam markers: the same defeater one level up
+// from the shell, and the guard that stops the NEXT launcher re-introducing it.
+// ---------------------------------------------------------------------------
+
+describe('capability:bash seam markers are outside the cross-run identity', () => {
+  const BASH_JOBS_SRC = readFileSync(
+    resolve(REPO_ROOT, 'packages/operator-core/lib/agent-tools/capability/bash-jobs.ts'),
+    'utf8',
+  );
+  const BASH_SRC = readFileSync(
+    resolve(REPO_ROOT, 'packages/operator-core/lib/agent-tools/capability/bash.ts'),
+    'utf8',
+  );
+
+  // ---- the DERIVED guard: the capability:bash seam owns these names, so read them ----
+  //
+  // `bash-jobs.ts` declares every env name this seam stamps into a child as an exported
+  // `*_ENV` constant bound to a string literal. Parse those rather than restating them, so a
+  // launcher key added tomorrow is compared against the strip list instead of silently
+  // defeating cross-run measurement the way the task id did.
+  const seamOwnedEnvNames = (): string[] =>
+    [...BASH_JOBS_SRC.matchAll(/^export const ([A-Za-z0-9_]+_ENV) = '([^']+)';/gm)]
+      .map((m) => m[2])
+      .sort();
+
+  // Every `*_ENV` identifier used as a computed key WRITE (`[X]: …` in a child-env object
+  // literal, or `childEnv[X] = …`). A `delete childEnv[X]` is deliberately not a stamp and does
+  // not match. This is the completeness half: the derivation above only sees names this seam
+  // DECLARES, so anything stamped from an imported constant would escape it.
+  const stampedEnvIdentifiers = (src: string): string[] =>
+    [...new Set([...src.matchAll(/\[([A-Za-z0-9_]+_ENV)\]\s*(?::|=[^=])/g)].map((m) => m[1]))].sort();
+
+  // Stamped, but deliberately NOT cache-identity names. The runner consumes and deletes both
+  // fields before spawning the workload (bash-jobs.ts:1451-1463), so they never reach a test
+  // task and cannot be a defeater. Listed rather than pattern-skipped so a third one has to be
+  // reasoned about here instead of slipping through.
+  const RUNNER_CONTROL_SEAM = ['SYSTEMD_RUNNER_OUTPUT_PATH_ENV', 'SYSTEMD_RUNNER_REDACTIONS_ENV'];
+
+  // CALIBRATION. Without this every guard below passes vacuously whenever a parser breaks or the
+  // seam is restructured — an empty derived set is a subset of anything and reads exactly like
+  // "nothing is stamped". Assert both instruments still find the marker that caused the bug.
+  it('the derivation actually finds the seam-owned env names (positive control)', () => {
+    const owned = seamOwnedEnvNames();
+    // The name that caused the bug: minted fresh per background job (bash-jobs.ts:1445).
+    expect(owned).toContain('PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID');
+    // The foreground seam's pair, stamped from bash.ts but DECLARED here — pins that the
+    // derivation reads declarations, not just the one file's own assignments.
+    expect(owned).toContain('PAPERCUSP_CAPABILITY_BASH_FOREGROUND');
+    expect(owned).toContain('PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS');
+    expect(owned.length).toBeGreaterThanOrEqual(4);
+
+    // ...and the stamp scanner really sees both shapes: the `Object.assign` object literal in
+    // bash-jobs.ts and the direct `childEnv[X] =` assignment beneath it.
+    const stamped = stampedEnvIdentifiers(BASH_JOBS_SRC);
+    expect(stamped).toContain('CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV');
+    expect(stamped).toContain('SYSTEMD_RUNNER_OUTPUT_PATH_ENV');
+    expect(stampedEnvIdentifiers(BASH_SRC)).toContain('CAPABILITY_BASH_FOREGROUND_ENV');
+  });
+
+  it('every env name the capability:bash seam owns is stripped from the cross-run identity', () => {
+    const unstripped = seamOwnedEnvNames().filter(
+      (name) => !CAPABILITY_BASH_SEAM_IDENTITY_ENV.includes(name),
+    );
+    expect(unstripped).toEqual([]);
+  });
+
+  // The hole the derivation alone cannot see: a future stamp whose name comes from an IMPORTED
+  // constant is never declared in bash-jobs.ts, so `seamOwnedEnvNames` would not know about it.
+  // Fail here instead, so the author has to decide whether it is a defeater or runner plumbing.
+  it('no child-env stamp escapes the derivation unaccounted for', () => {
+    const declared = new Set(
+      [...BASH_JOBS_SRC.matchAll(/^export const ([A-Za-z0-9_]+_ENV) = '([^']+)';/gm)].map((m) => m[1]),
+    );
+    const unaccounted = [...stampedEnvIdentifiers(BASH_JOBS_SRC), ...stampedEnvIdentifiers(BASH_SRC)]
+      .filter((ident) => !declared.has(ident) && !RUNNER_CONTROL_SEAM.includes(ident))
+      .sort();
+    expect(unaccounted).toEqual([]);
+  });
+
+  // FALSIFIABILITY CONTROL for the guard above, proven against a SYNTHETIC source rather than by
+  // mutating the shared tree (a probe that edits a tracked file can be committed by the git-sync
+  // sweep even when nothing goes wrong). `expect([]) passes` is equally consistent with a scanner
+  // that can never see anything; this replays the exact filter over a source that stamps a name
+  // imported from elsewhere — tomorrow's launcher key — and asserts it is reported.
+  it('the same filter reports a stamp imported from elsewhere (control)', () => {
+    const SYNTHETIC_SEAM = [
+      "import { FUTURE_LAUNCHER_ID_ENV } from '../../somewhere-else';",
+      'const childEnv = { ...base };',
+      'Object.assign(childEnv, {',
+      '  [CAPABILITY_BASH_BACKGROUND_TASK_ID_ENV]: enrolment.taskId,',
+      '  [FUTURE_LAUNCHER_ID_ENV]: mintUniqueId(),',
+      '});',
+    ].join('\n');
+    const declared = new Set(
+      [...BASH_JOBS_SRC.matchAll(/^export const ([A-Za-z0-9_]+_ENV) = '([^']+)';/gm)].map((m) => m[1]),
+    );
+    const unaccounted = stampedEnvIdentifiers(SYNTHETIC_SEAM).filter(
+      (ident) => !declared.has(ident) && !RUNNER_CONTROL_SEAM.includes(ident),
+    );
+    // The already-declared name is correctly accounted for; only the new import escapes.
+    expect(unaccounted).toEqual(['FUTURE_LAUNCHER_ID_ENV']);
+  });
+
+  // FALSIFIABILITY CONTROL, kept permanently rather than proven once by mutating the shared tree.
+  // The guard above is only worth having if it FAILS on an incomplete list, and "expect([]) passes"
+  // is equally consistent with a guard that can never fail. This replays the EXACT pre-fix
+  // cross-run strip set — shell-volatile names only — and asserts the same comparison rejects it.
+  it('the same comparison rejects the pre-fix strip set (control)', () => {
+    const PRE_FIX_STRIP: readonly string[] = SHELL_VOLATILE_IDENTITY_ENV;
+    const unstripped = seamOwnedEnvNames().filter((name) => !PRE_FIX_STRIP.includes(name));
+    expect(unstripped).toContain('PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID');
+    expect(unstripped.length).toBeGreaterThan(0);
+  });
+
+  // MEASURED, not assumed: a grader's two `capability:bash` jobs over an unchanged task missed
+  // with `cross-run:environment-changed`, ENV_DELTA `changed=1
+  // changedKeys=[PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID]`. This is that reproduction.
+  it('matches two runs that differ only in the launcher seam that started them', () => {
+    const base = { PATH: '/usr/bin', LANG: 'C.UTF-8' };
+    const backgroundJobOne = passingTaskVerdictCrossRunIdentityEnvironment({
+      ...base,
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'bash-job-aaaaaaaa',
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '',
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS: '',
+      PC_HEAVY_DURABLE_CALLER: '1',
+    }).environment;
+    const foregroundRunLater = passingTaskVerdictCrossRunIdentityEnvironment({
+      ...base,
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: '',
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND: '1',
+      PAPERCUSP_CAPABILITY_BASH_FOREGROUND_TIMEOUT_MS: '50000',
+      PC_HEAVY_DURABLE_CALLER: '',
+    }).environment;
+    expect(foregroundRunLater).toEqual(backgroundJobOne);
+    expect(Object.keys(backgroundJobOne).sort()).toEqual(['LANG', 'PATH']);
+  });
+
+  // CONTROL. Without the strip these very inputs differ, so the assertion above is load-bearing
+  // rather than vacuously true of any two environments. The PER-RUN identity keeps them on
+  // purpose — it is confined to one run, where the launching seam cannot drift.
+  it('control: the per-run identity still separates the same two inputs', () => {
+    const base = { PATH: '/usr/bin', LANG: 'C.UTF-8' };
+    const one = passingTaskVerdictIdentityEnvironment({
+      ...base,
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'bash-job-aaaaaaaa',
+    }).environment;
+    const two = passingTaskVerdictIdentityEnvironment({
+      ...base,
+      PAPERCUSP_CAPABILITY_BASH_BACKGROUND_TASK_ID: 'bash-job-bbbbbbbb',
+    }).environment;
+    expect(two).not.toEqual(one);
+  });
+
+  it('strips every listed name and never mutates the caller environment', () => {
+    const environment: Record<string, string> = {
+      PATH: '/usr/bin',
+      ...Object.fromEntries(CAPABILITY_BASH_SEAM_IDENTITY_ENV.map((name) => [name, 'seam-state'])),
+    };
+    const { environment: clone } = passingTaskVerdictCrossRunIdentityEnvironment(environment);
+    for (const name of CAPABILITY_BASH_SEAM_IDENTITY_ENV) {
+      expect(clone).not.toHaveProperty(name);
+      expect(environment[name]).toBe('seam-state');
+    }
+  });
+
+  // The strip must stay a LIST, not a prefix wipe. Blanket-stripping PAPERCUSP_CAPABILITY_BASH_*
+  // would pass every assertion above while discarding a future variable that DOES change what a
+  // task exercises — a false cache HIT, which is the failure direction that actually hurts.
+  it('does not blanket-strip the seam prefix: an unlisted neighbour still counts', () => {
+    const base = { PATH: '/usr/bin' };
+    const withFlag = passingTaskVerdictCrossRunIdentityEnvironment({
+      ...base,
+      PAPERCUSP_CAPABILITY_BASH_SANDBOX_DISABLED: '1',
+    }).environment;
+    expect(withFlag).toHaveProperty('PAPERCUSP_CAPABILITY_BASH_SANDBOX_DISABLED', '1');
   });
 });
 
