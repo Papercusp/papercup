@@ -608,6 +608,31 @@ export function buildWorkspaceHostBootstrap(
     'Environment=PAPERCUSP_PORT=$SERVICE_PORT',
     'Environment=PAPERCUSP_EMBEDDED_PG_ROOT=$STATE_ROOT/embedded-pg',
     'Environment=PAPERCUSP_WORKSPACE_ROOT=$WORKSPACE_ROOT',
+    // CONTENT ROOTS — pinned to the release, NOT to the working directory.
+    //
+    // WorkingDirectory above is the STATE root (it has to be: it is the only writable place
+    // the service owns), but every one of these content resolvers falls back to probing
+    // relative to cwd. So on a vm-release host they all probe under the state root, where
+    // none of them exists. `promptsDir()` (prompt-assembly.ts) tries
+    // cwd/apps/operator/prompts, then cwd/prompts, then a module walk-up for
+    // apps/operator/prompts; the bundle lays its content out at the RELEASE root as
+    // prompts/, spa/, internal-docs/, templates/, rubrics/ — so all three branches miss and
+    // the server dies at boot with "prompt-assembly: oracle.persona.md not found at
+    // <state root>/apps/operator/prompts/oracle.persona.md" (measured, P-046, 2026-08-29).
+    //
+    // Set HERE rather than only in the bundle's own entrypoint because the entrypoint ships
+    // INSIDE the signed artifact: fixing it there alone would require rebuilding and
+    // re-signing a 273MB bundle to correct four lines of environment. The entrypoint sets
+    // these too (install-workspace-host-entrypoints.sh) so future bundles are self-contained;
+    // its exports run later and win. Both layers agree, and neither depends on cwd.
+    //
+    // Prompts is only the first of these to THROW. The others degrade quietly — a server with
+    // no SPA or no docs root starts and serves nothing — which is the worse failure.
+    'Environment=PAPERCUSP_PROMPTS_DIR=$RUNTIME_ROOT/current/prompts',
+    'Environment=PAPERCUSP_SPA_DIST=$RUNTIME_ROOT/current/spa',
+    'Environment=PAPERCUSP_DOCS_ROOT=$RUNTIME_ROOT/current/internal-docs',
+    'Environment=PAPERCUSP_TEMPLATES_DIR=$RUNTIME_ROOT/current/templates',
+    'Environment=PAPERCUSP_RUBRICS_DIR=$RUNTIME_ROOT/current/rubrics',
     'ExecStart=$RUNTIME_ROOT/current/$OPERATOR_ENTRYPOINT',
     'ExecStartPost=$RUNTIME_ROOT/current/$HEALTH_ENTRYPOINT --host 127.0.0.1 --port $SERVICE_PORT',
     'Restart=on-failure',
