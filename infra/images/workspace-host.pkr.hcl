@@ -390,15 +390,36 @@ build {
 
   # 1. Do not race cloud-init: an apt run started underneath it deadlocks on the dpkg lock.
   #
-  # ⚠ execute_command is REQUIRED on every shell provisioner here, including this one, which
-  # needs no root. Without it packer runs the inline script through its default
-  # `inline_shebang` of `/bin/sh` — dash on Ubuntu — and the very first line dies with
-  #   /tmp/script_1326.sh: 2: set: Illegal option -o pipefail
-  # because `pipefail` is bash-only. This block was the ONLY one of the five missing it, which
-  # is exactly why it went unnoticed: the four siblings below set it, so the file reads as
-  # though one shell is in use throughout. Keep all five identical (P-046, 2026-08-29).
+  # ⚠ TWO separate settings are load-bearing on EVERY shell provisioner below, and each was
+  # learned the expensive way on P-046 (2026-08-29). Do not simplify either one away.
+  #
+  # (a) `inline_shebang = "/bin/bash -e"`. Every inline block opens with `set -Eeuo pipefail`,
+  #     which is bash-only, and packer WRITES ITS SHEBANG INTO THE SCRIPT FILE (default
+  #     `/bin/sh`, i.e. dash on Ubuntu). The shebang decides the interpreter, not the command
+  #     that launches the file, so wrapping it in bash does NOT help:
+  #       /tmp/script_9283.sh: 2: set: Illegal option -o pipefail
+  #
+  # (b) `{{ .Vars }}` must sit OUTSIDE any quoting — never nested inside a single-quoted
+  #     `bash -c '…'`. Packer renders .Vars pre-quoted, as `KEY='value' KEY2='value2' `, so
+  #     `bash -c '{{ .Vars }} {{ .Path }}'` splices those inner quotes into the outer pair and
+  #     the remote shell re-tokenises the result. That form is not merely fragile, it FAILS
+  #     SILENTLY for the only values that matter:
+  #       • a value containing a SPACE (PINNED_TOOLS) truncates the command at the first
+  #         unquoted space, so bash -c receives nothing but variable assignments, the script
+  #         NEVER RUNS, and packer sees exit 0 — a green build that installed nothing;
+  #       • a value containing a NEWLINE (SIGNING_PUBLIC_KEY, a two-line minisign key) turns
+  #         line 2 of the key into a command:
+  #           bash: line 2: RWREmQin1H06…: command not found   (exit 127)
+  #     Both reproduce exactly in a three-line local harness — see the recurrence guard in
+  #     gcp-image-family-adapter.test.ts, which asserts .Vars is never nested and pins the
+  #     `{{ .Vars }} sudo -E bash '{{ .Path }}'` form used here.
+  #
+  # The (b) bug is why the guest-tool pinning block appeared to pass on every build that
+  # reached it while doing absolutely nothing. Exit 0 from a script that never ran is
+  # indistinguishable from success unless something downstream checks the effect.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     inline = [
       "set -Eeuo pipefail",
       "cloud-init status --wait",
@@ -408,7 +429,8 @@ build {
   # 2. The host contract: Ubuntu 24.04 exactly. The bootstrap dies on anything else, so an image
   #    built on the wrong base must fail here rather than at a customer's first boot.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     inline = [
       "set -Eeuo pipefail",
       ". /etc/os-release",
@@ -421,7 +443,8 @@ build {
   #    what is actually installed, so a repository that served a different version than requested
   #    is caught here instead of being described inaccurately by the image provenance.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     environment_vars = [
       "DEBIAN_FRONTEND=noninteractive",
       "PINNED_TOOLS=${join(" ", [for tool in local.required_guest_tools : "${tool}=${var.guest_tool_versions[tool]}"])}",
@@ -444,7 +467,8 @@ build {
   #    itself inspectably v2. A pre-v2 host is recognised by exactly the absence of these: an
   #    empty /opt/papercusp and no papercusp-workspace account.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     inline = [
       "set -Eeuo pipefail",
       "umask 027",
@@ -469,7 +493,8 @@ build {
   #    the entrypoint assertion, which is the check that converts a silently incomplete bundle
   #    into a failed build.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     environment_vars = [
       "RELEASE_VERSION=${var.release_version}",
       "BUNDLE_URL=${var.release_bundle_url}",
@@ -514,7 +539,8 @@ build {
   # 6. Record the provenance inside the image as well as in its description, so a booted host can
   #    answer "which build am I?" without a Compute Engine API call.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     environment_vars = [
       "IMAGE_PROVENANCE=${base64encode(local.image_provenance)}",
     ]
@@ -530,7 +556,8 @@ build {
   # 7. Leave nothing build-specific behind. A machine-id baked into an image is shared by every
   #    host cut from it, and a stale apt cache is dead weight in every future boot disk.
   provisioner "shell" {
-    execute_command = "sudo -E bash -c '{{ .Vars }} {{ .Path }}'"
+    execute_command = "{{ .Vars }} sudo -E bash '{{ .Path }}'"
+    inline_shebang  = "/bin/bash -e"
     inline = [
       "set -Eeuo pipefail",
       "apt-get clean",

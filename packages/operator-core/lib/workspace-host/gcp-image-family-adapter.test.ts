@@ -12,6 +12,21 @@ import { describe, expect, it, vi } from 'vitest';
 const REPO_ROOT_URL = new URL('../../../../', import.meta.url);
 const REPO_ROOT = fileURLToPath(REPO_ROOT_URL);
 
+/**
+ * True when a packer `execute_command` expands `{{ .Vars }}` inside a single-quoted region.
+ *
+ * Packer renders .Vars ALREADY QUOTED (`KEY='value' KEY2='value2' `), so an outer `'…'` wrapper
+ * splices those inner quotes into its own pair and the remote shell re-tokenises the result.
+ * Counting quotes rather than matching a known-bad literal keeps the check true for any
+ * rewording of the command. See the guard test below for the two failure modes it prevents.
+ */
+function varsIsNested(executeCommand: string): boolean {
+  const varsAt = executeCommand.indexOf('{{ .Vars }}');
+  if (varsAt < 0) return false;
+  const quotesBefore = (executeCommand.slice(0, varsAt).match(/'/g) ?? []).length;
+  return quotesBefore % 2 === 1;
+}
+
 import {
   WORKSPACE_HOST_BOOTSTRAP_CONTRACT_VERSION,
   WORKSPACE_HOST_BOOTSTRAP_UBUNTU_VERSION,
@@ -460,6 +475,59 @@ describe('GCP image-family production adapter', () => {
           'so packer will run it under /bin/sh (dash) and it will die on `set -o pipefail`',
       ).toBe(true);
     }
+  });
+
+  /**
+   * Recurrence guard for the silent env-var truncation (P-046, 2026-08-29).
+   *
+   * Packer renders `{{ .Vars }}` ALREADY QUOTED — literally `KEY='value' KEY2='value2' `. So
+   * nesting it inside another single-quoted string, as `sudo -E bash -c '{{ .Vars }} {{ .Path }}'`
+   * does, splices those inner quotes into the outer pair and lets the remote shell re-tokenise
+   * the result. What makes this worth a permanent guard is HOW it fails:
+   *
+   *   - a value containing a SPACE truncates the command at the first unquoted space, so
+   *     `bash -c` receives only variable assignments. The script never runs and the exit code
+   *     is 0. The build goes green having installed nothing.
+   *   - a value containing a NEWLINE feeds line 2 to the shell as a command (exit 127).
+   *
+   * The first is the dangerous one: six builds died before ever reaching that provisioner, and
+   * when one finally did, its success was indistinguishable from a real one. An image would
+   * have shipped without its pinned guest tools AND without the version assertion that exists
+   * to catch exactly that — while its provenance claimed both.
+   *
+   * The check counts quotes rather than pattern-matching a known-bad string, so it holds for
+   * any rewording of the command; the correct shape puts `{{ .Vars }}` outside all quoting.
+   */
+  it('never nests packer-quoted {{ .Vars }} inside a quoted execute_command', async () => {
+    // Controls first: a predicate that has never rejected anything is not known to reject the
+    // real defect either, and this one is cheap to falsify permanently rather than by a one-off
+    // probe against a mutated tree.
+    expect(varsIsNested(`sudo -E bash -c '{{ .Vars }} {{ .Path }}'`), 'the exact P-046 defect').toBe(true);
+    expect(varsIsNested(`sudo -E sh -c '{{ .Vars }} {{ .Path }}'`), 'the defect, reworded').toBe(true);
+    expect(varsIsNested(`{{ .Vars }} sudo -E bash '{{ .Path }}'`), 'the corrected form').toBe(false);
+    expect(varsIsNested(`chmod +x {{ .Path }}; {{ .Vars }} {{ .Path }}`), "packer's own default").toBe(false);
+
+    const template = await readFile(new URL('infra/images/workspace-host.pkr.hcl', REPO_ROOT_URL), 'utf8');
+    const blocks = template.split(/provisioner\s+"shell"\s*\{/).slice(1);
+    expect(blocks.length).toBeGreaterThan(0);
+
+    let checked = 0;
+    for (const [index, rest] of blocks.entries()) {
+      const block = rest.split(/\n\s{0,2}provisioner\s+"/)[0] ?? '';
+      const command = /execute_command\s*=\s*"((?:[^"\\]|\\.)*)"/.exec(block)?.[1];
+      if (command === undefined || !command.includes('{{ .Vars }}')) continue;
+      checked += 1;
+
+      expect(
+        varsIsNested(command),
+        `shell provisioner #${String(index + 1)} expands {{ .Vars }} inside a single-quoted region ` +
+          `(execute_command = "${command}"). Packer emits .Vars pre-quoted, so nesting it truncates ` +
+          'any value containing a space — the script then never runs and still exits 0.',
+      ).toBe(false);
+    }
+
+    // A guard that silently checked nothing is the exact failure mode this test is about.
+    expect(checked, 'no execute_command referenced {{ .Vars }} — the guard measured nothing').toBeGreaterThan(0);
   });
 
   it('fails closed when scanner or clean-room evidence is missing or mismatched', async () => {
