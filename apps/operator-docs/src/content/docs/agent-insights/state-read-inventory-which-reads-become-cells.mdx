@@ -5,17 +5,23 @@
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "The state-read inventory — which reads become cells, which delegate, which stay bespoke"
-description: "P-020's verdict on all 38 grandfathered bespoke state reads. The finding is that they collapse into ~8 QUESTIONS, so 'which tool do I call' is a one-question-many-doors problem, not a catalog-size problem. The verdicts live in the gate script itself (VERDICTS, keyed to BASELINE, CI-checked for completeness) rather than in this page, because a doc drifts from the set it describes and drift is the failure the plan exists to fix. Also records the discipline that stops the registry becoming surface #29: a single-door read stays bespoke even when it IS live state, and a read with 0 calls is never promoted."
+description: "P-020 inventory of bespoke state reads, updated for the assessment-first cell contract: measurements remain stable, resolver-owned assessments carry explicit meaning and safe action, and pull/push/subscription consumers share one rereadable plane."
+type: Insight
 discovered: 2026-07-27
-tags: [state-plane, cells, cell-registry, agent-surface, tool-sprawl, no-bespoke-state-read, D-010, D-038, P-020, lint, inventory]
+tags: ["state-plane", "cells", "cell-registry", "agent-surface", "tool-sprawl", "no-bespoke-state-read", "assessment", "D-006", "D-014", "D-016", "P-007", "P-020"]
 status: active
 documents:
-  - scripts/check-no-bespoke-state-read.mjs
-  - packages/operator-core/lib/cell-registrations.ts
-  - packages/operator-core/lib/cell-registry.ts
-  - packages/operator-core/lib/cell-read.ts
-  - packages/operator-core/lib/no-bespoke-state-read-guard.test.ts
-type: Insight
+  - "scripts/check-no-bespoke-state-read.mjs"
+  - "packages/operator-core/lib/cell-registrations.ts"
+  - "packages/operator-core/lib/cell-registry.ts"
+  - "packages/operator-core/lib/cell-read.ts"
+  - "packages/operator-core/lib/agent-tools/state/read.ts"
+  - "packages/operator-core/lib/agent-tools/state/subscribe.ts"
+  - "packages/operator-core/lib/state-plane-stamp.ts"
+plans:
+  - "cell-assessment-schema-and-falsifier-removal-2026-08-21"
+  - "unified-agent-state-plane-2026-07-27"
+  - "state-plane-interest-and-hardening-2026-08-21"
 generated:
   by: agent
   at: 2026-07-27
@@ -31,6 +37,31 @@ stay bespoke**. The verdicts are not in this page; they are in
 `scripts/check-no-bespoke-state-read.mjs` as a `VERDICTS` map keyed to the same `BASELINE`
 the gate enforces, so "every grandfathered tool has a verdict" is a CI-checked property
 rather than a claim. This page is the argument behind them.
+
+## Current authority: measurement plus explicit assessment
+
+The inventory still answers which doors collapse into shared cells, but the consumer contract has changed. A readable poll cell exposes two separate properties from one resolver payload:
+
+- **Measurement** is the existing headline/raw value. It keeps its stable type for thresholds, predicates, auditing, dependency digests, and debugging.
+- **Assessment** is the resolver-owned, closed enum at `assessment.path`. Each code declares its meaning, safe action, and same-payload evidence. It is the first decision surface; callers do not reconstruct a conclusion by negating a warning or by guessing from the measurement.
+
+The registry validates and transports that declaration; it does not derive domain meaning. A resolved `state:read { cell }` therefore returns the raw measurement and its explicit assessment together. If assessment evidence is missing, a code is unknown, or the resolver is not measurable, the read is explicitly `unknown`/`unavailable` with a reread lever. Unknown is not false, zero, or healthy.
+
+Use the shared doors at the moment of action:
+
+```text
+state:read { cell: "git.pipelinePosition", as: "<path when required>" }
+state:subscribe { cell: "git.pipelinePosition" }  // semantic change by default
+state:subscribe { cell: "git.pipelinePosition", target: "measurement", on: { op: "changed" } }
+```
+
+`state:subscribe` without `on` means “wake when the meaning moves” for an assessed cell. A valued predicate must name `target: "assessment"` or `target: "measurement"`; the tool refuses an ambiguous operand rather than comparing it against a guessed path. `target: "material"` remains an explicit opt-in where the cell declares a materiality lens. Event-signalled cells have no resolver to poll and redirect to their declared `events:await` key.
+
+Delivery-time payloads use the same contract. A `state-plane` stamp names a cell and emits a `state:read` reread handle for the exact subject; it does not copy the value, invent an assessment, or provide a second subscription mechanism. Re-read immediately before acting or quoting the value, preserving `as` for caller-relative cells.
+
+### Supersession boundary (P-007 / D-006)
+
+The assessment contract supersedes only the axis-one falsifier clauses and their registration refinement in `unified-agent-state-plane-2026-07-27`, plus the delivery-time push-falsifier requirement in `state-plane-interest-and-hardening-2026-08-21`. Those historical decisions remain readable as history. All other axes remain effective: in-band unknowns and hoists, caller relativity, provenance, one derivation with many lenses, access/federation, materiality, ordered stages, and delivery-time reread discipline. The positive assessment/evidence contract is now authoritative on pull, push, and subscription paths.
 
 ## Why the verdicts are not written down here
 
