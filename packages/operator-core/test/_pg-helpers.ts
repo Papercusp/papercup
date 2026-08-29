@@ -48,6 +48,39 @@ export const AGENT_ACTIVITY_DDL = `
   )`;
 
 /**
+ * Minimal projection of `harness_shared.routines` for fixtures that exercise a
+ * `liveHolderFragment`-backed reader.
+ *
+ * EI-21431501901242395 added an armed-loop UNION leg to `liveHolderFragment`
+ * (`work-items-stale-claims.ts`) that reads this table. Every hand-rolled
+ * fixture calling a reader built on that fragment — the stuck-item / dead-held
+ * metrics, hold-open, the lease reaper, claim-lease cleanup — must now create
+ * it, and one that does not fails with `relation "harness_shared.routines" does
+ * not exist` on EVERY test in the file, which reads like a broken suite rather
+ * than a stale fixture.
+ *
+ * Measured 2026-08-29: FOUR private hand-rolled copies of this DDL already
+ * exist (work-items-hold-open, work-item-claim-lease-issue-cleanup,
+ * work-item-lock-reclaim, work-items-stale-claims — each a `const ROUTINES_DDL`
+ * local to its own file) and there was NO shared export. Four independent
+ * copies of a projection of someone else's table is a drift generator: the next
+ * column `liveHolderFragment` starts reading has to be added in four places, and
+ * whichever one is missed fails as an entire red suite. Import this instead of
+ * adding a fifth.
+ *
+ * Keep only the columns the fragment reads (`target_owner_id`, `active`,
+ * `reschedule_interval_sec`); a fixture that needs the real routines write path
+ * should apply the migration instead.
+ */
+export const LIVE_HOLDER_ROUTINES_DDL = `
+  CREATE TABLE IF NOT EXISTS harness_shared.routines (
+    id text PRIMARY KEY,
+    target_owner_id text,
+    reschedule_interval_sec integer,
+    active boolean NOT NULL DEFAULT true
+  )`;
+
+/**
  * EI-6887 — apply ONE real migration SQL file to a hand-provisioned test DB
  * (e.g. `createFreshPgDb` above) via `sql.unsafe`, which speaks SQL, not psql.
  * Newer migrations (461/462/464/465+) carry `\set ON_ERROR_STOP on` psql

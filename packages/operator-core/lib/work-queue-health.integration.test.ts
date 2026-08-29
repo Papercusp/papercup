@@ -4,7 +4,12 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type postgres from 'postgres';
-import { AGENT_ACTIVITY_DDL, createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import {
+  AGENT_ACTIVITY_DDL,
+  LIVE_HOLDER_ROUTINES_DDL,
+  createFreshPgDb,
+  type FreshPgDb,
+} from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL } from '../test/_work-items-schema';
 import {
   readWorkQueueHealth,
@@ -56,6 +61,11 @@ beforeAll(async () => {
   await sql.unsafe(PRESENCE_DDL);
   await sql.unsafe(SPAWNED_DDL);
   await sql.unsafe(AGENT_ACTIVITY_DDL);
+  // EI-21431501901242395: liveHolderFragment folds in an armed-loop UNION leg
+  // reading harness_shared.routines. Both readers under test go through that
+  // fragment, so without this table EVERY test here dies on
+  // `relation "harness_shared.routines" does not exist`.
+  await sql.unsafe(LIVE_HOLDER_ROUTINES_DDL);
   await sql.unsafe(ENGINEER_ISSUES_DDL);
   await sql.unsafe(SWEEP_RUNS_DDL);
   await sql.unsafe(PLAN_ASSIGNMENTS_DDL);
@@ -65,7 +75,7 @@ beforeAll(async () => {
 afterAll(async () => { await db?.cleanup(); });
 
 beforeEach(async () => {
-  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.periodic_sweep_runs, harness_shared.plan_item_assignments, harness_shared.agent_name_sessions `;
+  await sql`TRUNCATE harness_shared.work_items, harness_shared.coord_presence, harness_shared.spawned_agents, harness_shared.agent_activity, harness_shared.periodic_sweep_runs, harness_shared.plan_item_assignments, harness_shared.agent_name_sessions, harness_shared.routines `;
 });
 
 async function seedFeature(id: string, status: string, takenBy: string | null, takenAgoMin: number, harness = H): Promise<void> {
