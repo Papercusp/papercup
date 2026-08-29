@@ -58,12 +58,9 @@ function naiveUpgrade(results: readonly TargetedReVerdictRunResult[]): boolean {
   return results.every((r) => r.passed);
 }
 
-describe("targeted-reverdict: the module ships inert", () => {
-  it("keeps its activation switch off", () => {
-    // P-009's siblings (P-005/P-006/P-007/P-008) are all built and unwired for the same
-    // reason: green-checkpoint runs live from staging with no deploy hop. If this ever flips
-    // to true it must be a deliberate, decision-backed change, not a drive-by edit.
-    expect(TARGETED_REVERDICT_ENABLED).toBe(false);
+describe("targeted-reverdict: activation", () => {
+  it("ships enabled behind fail-closed admission and assessment", () => {
+    expect(TARGETED_REVERDICT_ENABLED).toBe(true);
   });
 });
 

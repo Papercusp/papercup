@@ -65,13 +65,11 @@
  * `plan.verdictSha` even when the tip has moved on again since (`tipMovedDuringRun`). A
  * verdict may only ever name a sha whose content was measured.
  *
- * ## Status: INERT
+ * ## Status
  *
- * {@link TARGETED_REVERDICT_ENABLED} is `false` and nothing imports this module into the gate
- * path. That is deliberate and matches its four siblings: green-checkpoint.ts runs live from
- * `staging` with no deploy hop, so wiring a promotion path changes promotion for every
- * co-hosted install the moment it lands — and the gate is currently paused with a peer-owned
- * red streak under repair. Wiring requires its own recorded decision.
+ * The decision/assessment pair is now consumed by green-checkpoint's candidate-fossil rescue.
+ * The call site remains fail-closed: unavailable diff/radius/file evidence, incomplete runner
+ * results, or any exception preserve the legacy red verdict.
  */
 
 import {
@@ -79,12 +77,8 @@ import {
   GATE_FIRE_INTERVAL_MS,
 } from "./gate-verdict-freshness.js";
 
-/**
- * INERT. Flipping this to `true` is not sufficient to activate the mechanism — nothing calls
- * into this module yet. It exists so the eventual wiring has one named switch to gate, and so
- * a reader can tell "built but not live" from "live" without tracing call sites.
- */
-export const TARGETED_REVERDICT_ENABLED = false;
+/** The production call site is enabled; refusals remain explicit and fail-closed. */
+export const TARGETED_REVERDICT_ENABLED = true;
 
 /** A test file, qualified by the workspace whose runner owns it. Mirrors the shape
  *  green-checkpoint's isolation primitives already use (`{ workspace, file }`), so the

@@ -9,6 +9,7 @@ describe('work-item admission daily digest system action', () => {
       sourceBulkStageRunId: 'bulk-1',
       sourceCensusRunId: 'census-1',
       corpusSize: 42,
+      coverage: { live: 44, covered: 42, uncovered: 2, ratio: 42 / 44 },
       modelCalled: true,
       tokensIn: 1200,
       tokensOut: 250,
@@ -36,6 +37,8 @@ describe('work-item admission daily digest system action', () => {
       sourceBulkStageRunId: null,
       sourceCensusRunId: null,
       corpusSize: 0,
+      // blocked before a census resolved, so no coverage was measurable
+      coverage: null,
       modelCalled: false,
       tokensIn: 0,
       tokensOut: 0,

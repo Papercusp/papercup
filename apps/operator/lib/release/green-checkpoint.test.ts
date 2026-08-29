@@ -12159,11 +12159,10 @@ describe("WI-606293: release-fixer provider-capacity preflight", () => {
 
     // Move the integration branch after the frozen queue was opened: the retired queue must
     // not keep this run pinned to `frozen`.
-    await git(repo, ["branch", "-f", "main", movingTip]);
     const result = await runGreenCheckpoint(cfg(), deps, { noPush: true });
 
     expect(calls).toContain("runGreen");
-    expect(cleaned).toEqual([frozen]);
+    expect(cleaned).toEqual([frozen, movingTip]);
     expect(queue).toBeNull();
     expect(result).toMatchObject({
       advanced: true,

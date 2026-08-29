@@ -3383,6 +3383,7 @@ function tsconfigAliasesFor(wsRoot) {
 // other outcome leaves it undefined and therefore runs the FULL suite, which is the
 // safe direction: over-running costs minutes, under-running certifies nothing.
 let checkpointMaterializationSelection = null;
+let checkpointTargetedReVerdictSelection = null;
 if (relatedOnly) {
   const changedAbs = invariantGuardChangedPaths().map((f) => join(ROOT, f));
   // The unit suite is narrowable whether it is one `test` script or a lane split.
@@ -3505,6 +3506,29 @@ if (relatedOnly) {
         affectedWorkspaceDirs: selectedWorkspaces.map((ws) => ws.dir),
         workspaceDirs: closure.map((ws) => ws.dir),
       };
+      const affectedFiles = [...byWorkspace.entries()]
+        .flatMap(([workspace, { result, wsRoot }]) =>
+          result.selected.map((file) => ({
+            workspace,
+            file: relative(wsRoot, file).replaceAll("\\", "/"),
+          })),
+        )
+        .sort((a, b) =>
+          `${a.workspace}\0${a.file}`.localeCompare(`${b.workspace}\0${b.file}`),
+        );
+      const everyTaskIsCoveredByTheExactFileRunner = tasks.every((task) =>
+        narrowable(task.script),
+      );
+      if (
+        everyTaskIsCoveredByTheExactFileRunner &&
+        selectedInvariantGuards.length === 0 &&
+        affectedFiles.length > 0
+      ) {
+        checkpointTargetedReVerdictSelection = {
+          affectedWorkspaces: [...new Set(affected.map((ws) => ws.name))].sort(),
+          affectedFiles,
+        };
+      }
     }
   }
 }
@@ -3587,6 +3611,19 @@ if (printAffected) {
     } else {
       outSync(
         "RELATED_MATERIALIZATION_SELECTION status=full reason=no-safe-positive-related-selection",
+      );
+    }
+    if (checkpointTargetedReVerdictSelection) {
+      const selection = checkpointTargetedReVerdictSelection;
+      outSync(
+        `RELATED_AFFECTED_FILES status=selected workspaces=${selection.affectedWorkspaces.length} files=${selection.affectedFiles.length}`,
+      );
+      for (const selected of selection.affectedFiles) {
+        outSync(`RELATED_AFFECTED_FILE\t${selected.workspace}\t${selected.file}`);
+      }
+    } else {
+      outSync(
+        "RELATED_AFFECTED_FILES status=full reason=no-complete-exact-file-radius",
       );
     }
   }

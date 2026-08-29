@@ -52,6 +52,13 @@ import {
 } from "./git-ops";
 import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 import { CANDIDATE_FOSSIL_AGE_MS } from "@papercusp/operator-core/lib/release/gate-verdict-freshness";
+import {
+  TARGETED_REVERDICT_ENABLED,
+  assessTargetedReVerdict,
+  planTargetedReVerdict,
+  type TargetedReVerdictFile,
+  type TargetedReVerdictRunResult,
+} from "@papercusp/operator-core/lib/release/targeted-reverdict";
 // WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
 // prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
 import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/release/in-flight-retriage";
@@ -180,6 +187,13 @@ export interface CheckpointMaterializationSelection {
   workspaceDirs: string[];
   /** Number of real related-test selector decisions observed in the probe. */
   relatedSelections: number;
+  summary: string;
+}
+
+/** Exact, fail-closed related-test radius for a candidate..tip targeted re-verdict. */
+export interface TargetedReVerdictSelection {
+  affectedWorkspaces: string[];
+  affectedFiles: TargetedReVerdictFile[];
   summary: string;
 }
 
@@ -462,6 +476,8 @@ export interface CheckpointDeps {
     ref: string,
     gateIds: string[],
   ): Promise<{ pass: boolean; summary: string }>;
+  /** Run the standard post-suite gate legs at an already-materialized targeted tip. */
+  runPostSuiteAtRef?(ref: string): Promise<{ pass: boolean; summary: string }>;
   /** P-005 / D-008: the root package.json `scripts` map, supplied rather than read, so the
    *  hygiene classifier stays pure and its `gen:X:check` ⇄ `gen:X` pair derivation is testable
    *  against synthetic script sets. Optional: ABSENT ⇒ no hygiene split is computed at all and
@@ -703,6 +719,11 @@ export interface CheckpointDeps {
    *  the workspace resolver (a git diff, not a node graph walk). Optional + injected, so
    *  a stub that omits it keeps the old workspace behaviour exactly. */
   changedFilesForRange?(from: string, to: string): Promise<string[] | null>;
+  /** Exact related-test radius for `from..to`; null means the selector widened or lacked proof. */
+  affectedTestsForRange?(
+    from: string,
+    to: string,
+  ): Promise<TargetedReVerdictSelection | null>;
   /** WI-38422: run the candidate-scoped operator-core typecheck BEFORE the expensive
    *  affected-test sweep. The caller passes the exact committed diff from the last
    *  green pin to the candidate; the real dep invokes the existing `lint:tsc --files`
@@ -7483,6 +7504,67 @@ export function parseCheckpointMaterializationSelection(
   });
 }
 
+/** Parse the selector's exact file radius. Any count/path/coverage mismatch refuses it. */
+export function parseTargetedReVerdictSelection(
+  output: string,
+): TargetedReVerdictSelection | null {
+  const lines = output.split(/\r?\n/).filter(Boolean);
+  if (!parseCheckpointMaterializationSelection(output)) return null;
+  if (lines.some((line) => line.startsWith("AFFECTED_GUARD\t"))) return null;
+
+  const summaries = lines.filter((line) =>
+    line.startsWith("RELATED_AFFECTED_FILES status=selected "),
+  );
+  if (summaries.length !== 1) return null;
+  const summaryMatch = summaries[0].match(
+    /^RELATED_AFFECTED_FILES status=selected workspaces=(\d+) files=(\d+)$/,
+  );
+  if (!summaryMatch) return null;
+
+  const affectedWorkspaces = lines
+    .filter((line) => line.startsWith("AFFECTED_WS\t"))
+    .map((line) => line.slice("AFFECTED_WS\t".length).trim());
+  const uniqueWorkspaces = new Set(affectedWorkspaces);
+  const fileLines = lines.filter((line) =>
+    line.startsWith("RELATED_AFFECTED_FILE\t"),
+  );
+  const affectedFiles: TargetedReVerdictFile[] = [];
+  const fileKeys = new Set<string>();
+  for (const line of fileLines) {
+    const fields = line.split("\t");
+    if (fields.length !== 3) return null;
+    const workspace = fields[1]!;
+    const file = fields[2]!;
+    const safeFile =
+      file.length > 0 &&
+      file.length <= 1024 &&
+      !path.posix.isAbsolute(file) &&
+      path.posix.normalize(file) === file &&
+      file !== "." &&
+      !file.split("/").some((part) => part === ".." || part === "");
+    if (!workspace || !uniqueWorkspaces.has(workspace) || !safeFile) return null;
+    const key = `${workspace}\0${file}`;
+    if (fileKeys.has(key)) return null;
+    fileKeys.add(key);
+    affectedFiles.push({ workspace, file });
+  }
+  if (
+    uniqueWorkspaces.size !== affectedWorkspaces.length ||
+    uniqueWorkspaces.size !== Number(summaryMatch[1]) ||
+    affectedFiles.length !== Number(summaryMatch[2]) ||
+    affectedFiles.length < 1
+  ) {
+    return null;
+  }
+  return {
+    affectedWorkspaces: [...uniqueWorkspaces].sort(),
+    affectedFiles: affectedFiles.sort((a, b) =>
+      `${a.workspace}\0${a.file}`.localeCompare(`${b.workspace}\0${b.file}`),
+    ),
+    summary: summaries[0],
+  };
+}
+
 async function runGreenCheckpointInner(
   cfg: ReleaseConfig,
   deps: CheckpointDeps,
@@ -9010,7 +9092,7 @@ async function runGreenCheckpointInner(
   const candidateSuiteDurationMs = earlyPreflightFailure
     ? Math.max(1, Date.now() - runStartedAtMs)
     : Math.max(1, Date.now() - candidateSuiteStartedAtMs);
-  const {
+  let {
     green,
     summary,
     failingTests,
@@ -9035,7 +9117,7 @@ async function runGreenCheckpointInner(
           .join(", ") +
         ". Verify both halves at tip before fixing or quarantining the reported test."
       : "";
-  const verdictSummary = `${summary}${splitPairNote}`;
+  let verdictSummary = `${summary}${splitPairNote}`;
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
@@ -9083,6 +9165,82 @@ async function runGreenCheckpointInner(
     candidateAgeAtVerdictMs != null &&
     candidateAgeAtVerdictMs > CANDIDATE_FOSSIL_AGE_MS
   ) {
+    let targetedUpgradeSummary = "";
+    if (
+      TARGETED_REVERDICT_ENABLED &&
+      deps.resolveTip &&
+      deps.changedFilesForRange &&
+      deps.affectedTestsForRange &&
+      deps.runTestsAtRef &&
+      deps.runPostSuiteAtRef &&
+      failingFiles.length > 0 &&
+      (failingTests?.length ?? 0) > 0 &&
+      (failingTests ?? []).every((entry) =>
+        fileRescueCovers(entry, failingFiles),
+      )
+    ) {
+      try {
+        const tip = await deps.resolveTip();
+        if (tip && tip !== candidate) {
+          const [changedPathsSinceCandidate, affected] = await Promise.all([
+            deps.changedFilesForRange(candidate, tip),
+            deps.affectedTestsForRange(candidate, tip),
+          ]);
+          const plan = planTargetedReVerdict({
+            candidate,
+            tip,
+            candidateGreen: false,
+            candidateCoverage: "full-suite",
+            candidateFailingFiles: failingFiles,
+            changedPathsSinceCandidate,
+            affectedWorkspaces: affected?.affectedWorkspaces ?? null,
+            affectedFiles: affected?.affectedFiles,
+            incrementalChainDepth: 0,
+            msSinceLastFullSuiteVerdict: 0,
+          });
+          deps.log(plan.summary);
+          if (plan.admitted) {
+            const targetedRun = await deps.runTestsAtRef(
+              plan.verdictSha,
+              plan.reRunFiles,
+            );
+            const postSuite = targetedRun.pass
+              ? await deps.runPostSuiteAtRef(plan.verdictSha)
+              : { pass: false, summary: "targeted test set did not pass" };
+            const results: TargetedReVerdictRunResult[] = plan.reRunFiles.map(
+              (file) => ({
+                ...file,
+                passed: targetedRun.pass && postSuite.pass,
+              }),
+            );
+            const tipAtCompletion = await deps.resolveTip().catch(() => null);
+            const outcome = assessTargetedReVerdict({
+              plan,
+              results,
+              tipAtCompletion,
+            });
+            deps.log(`${outcome.summary} Post-suite: ${postSuite.summary}`);
+            if (outcome.upgraded) {
+              candidate = outcome.verdictSha;
+              green = true;
+              summary = `${outcome.summary}\n\n${postSuite.summary}`;
+              verdictSummary = summary;
+              targetedUpgradeSummary = outcome.summary;
+              postSuiteLegs = undefined;
+            }
+          }
+        }
+      } catch (e) {
+        deps.log(
+          `targeted-reverdict: execution unavailable (${e instanceof Error ? e.message : e}) — preserving candidate-fossil hold`,
+        );
+      }
+    }
+    if (green && targetedUpgradeSummary) {
+      deps.log(
+        `candidate-fossil rescued by targeted re-verdict; continuing the normal green publication path at ${candidate.slice(0, 8)}`,
+      );
+    } else {
     const ageHours =
       Math.round((candidateAgeAtVerdictMs / 3_600_000) * 10) / 10;
     const fossilSummary =
@@ -9106,6 +9264,7 @@ async function runGreenCheckpointInner(
       ...(isolationNote ? { isolationNote } : {}),
       ...(postSuiteLegs?.length ? { postSuiteLegs } : {}),
     };
+    }
   }
 
   if (diagnosticOnly) {
@@ -14774,6 +14933,32 @@ export function realCheckpointDeps(
       }
       return { pass: true, summary: summaries.join("; ") };
     },
+    async runPostSuiteAtRef(ref) {
+      const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD");
+      if (verifiedHead !== ref) {
+        throw new Error(
+          `targeted post-suite checkout mismatch: expected ${ref}, got ${verifiedHead}`,
+        );
+      }
+      const env = buildGreenCheckpointEnv(
+        null,
+        process.env,
+        undefined,
+        cfg.greenCheckpointCapacityMode,
+      );
+      const legs = await runPostSuiteLegs(
+        cfg.checkpointRoot,
+        env,
+        exec,
+        cfg.spaBuildWorkspace,
+      );
+      return {
+        pass: legs.ok,
+        summary: legs.ok
+          ? `targeted post-suite gates passed (${legs.ran.join(", ") || "none"})`
+          : `targeted post-suite gates failed (${legs.failingSignatures.join(", ")})`,
+      };
+    },
     // EI-18759362119598634: the LINT/TYPECHECK sibling of runTestsAtRef above — re-run
     // EXACTLY the named non-test GATE script(s) (see NON_TEST_GATE_SCRIPTS) at `ref`, in
     // the same checkpoint tree / setupTree contract runTestsAtRef relies on. A gate red
@@ -14928,6 +15113,33 @@ export function realCheckpointDeps(
       } catch {
         return null;
       }
+    },
+    async affectedTestsForRange(from, to) {
+      const script = path.join(
+        cfg.integrationRoot,
+        "scripts/affected-tests.mjs",
+      );
+      const probe = await exec(
+        process.execPath,
+        [
+          script,
+          "--range-from",
+          from,
+          "--range-to",
+          to,
+          "--related",
+          "--print-affected",
+        ],
+        {
+          cwd: cfg.integrationRoot,
+          allowNonZero: true,
+          timeoutMs: SETUP_TREE_TIMEOUT_MS,
+          killProcessGroupOnTimeout: true,
+        },
+      );
+      return probe.code === 0
+        ? parseTargetedReVerdictSelection(probe.stdout)
+        : null;
     },
     async detectSplitSourceTestPairs(input) {
       return detectSplitSourceTestPairs({

@@ -369,6 +369,11 @@ export const INFRA_SIGNAL_SOURCES: readonly string[] = [
   // it just hasn't reached this process). Same class as migration-drift above, opposite
   // direction.
   'schema-ahead-of-code',
+  // WI-918476. INFRA, and deliberately so: one of the two remedies is DROP INDEX
+  // against the shared live database, and choosing between "add a migration" and
+  // "drop the object" needs judgment about which side is wrong. Neither is a call
+  // an auto-implement worker should make unsupervised.
+  'schema-object-drift',
   // EI-5994: a dead-owner engine loop (loop:arm) parked with no completion signal is an
   // environment/session-liveness fact (the owner's process/wake-channel died), not a
   // product idea a worker can code-fix — misrouting it to ideaType:product/triageDecision:place

@@ -141,6 +141,12 @@ describe('locks:acquire — outcome branches', () => {
     expect(tool.args.shape).not.toHaveProperty('workspace');
   });
 
+  it('does not expose the named-resource `mode` argument', () => {
+    // `mode` belongs to locks:acquire_resource; accepting it here would let a
+    // caller mistake a file-lock request for a named-resource lock request.
+    expect(tool.args.shape).not.toHaveProperty('mode');
+  });
+
   it('guidance omits published_sha for uncommitted edits and reserves it for a published SHA', () => {
     expect(tool.guidance?.chaining).toMatch(/still uncommitted, omit published_sha/);
     expect(tool.guidance?.chaining).toMatch(/actually published a lowercase 40–64-character hexadecimal commit SHA/);

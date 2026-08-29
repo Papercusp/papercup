@@ -75,6 +75,9 @@ export const DEFECT_SOURCES: readonly string[] = [
   'smoke-fail',
   'migration-drift',
   'schema-ahead-of-code',
+  // WI-918476. A concrete, patchable divergence: either a migration is missing
+  // (add one) or the live database carries an object nothing ships (drop it).
+  'schema-object-drift',
   'repeated-tool-error',
   'insight-staleness',
   'service-down',

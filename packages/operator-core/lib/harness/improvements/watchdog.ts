@@ -2154,6 +2154,16 @@ export async function collectSchemaAheadSignals(
  * Severity `major`, not `critical`. Nothing is broken right now — the live schema
  * is a superset — so this is a fidelity finding, and paging it as an outage would
  * teach the reader to discount the source.
+ *
+ * Deliberately NOT in `auto-close-sources.ts`, and do not add it. Auto-close reads
+ * a quiet tick as "the condition cleared", which is only sound for a collector that
+ * degrades LOUD (see the `migration-drift` entry there, which qualifies precisely
+ * because an unreachable tracker still FIRES). This one degrades QUIET: a failed
+ * live census returns no signals, so its silence means "could not look" just as
+ * often as "nothing to find". A stale open finding is the cheaper mistake than
+ * auto-closing a real divergence nobody fixed. It IS in `INFRA_SIGNAL_SOURCES`,
+ * because one of the two remedies is a DROP INDEX against the shared live database
+ * and that is not a call to hand an auto-implement worker.
  */
 export async function collectSchemaObjectDriftSignals(
   check: () => Promise<SchemaObjectDriftResult> = checkSchemaObjectDrift,
