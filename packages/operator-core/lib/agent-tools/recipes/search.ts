@@ -53,7 +53,7 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     query: z.string().min(1).max(500).describe('What you want to do — title/description text, free-form.'),
-    limit: z.number().int().min(1).max(20).optional().describe('Top-N to return (default 5).'),
+    limit: z.number().int().min(1).max(50).optional().describe('Top-N to return (default 5).'),
     context: z
       .object({
         fleet: z.string().min(1).optional(),
