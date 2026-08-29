@@ -3863,20 +3863,44 @@ function spawnSpecFor(t, extraArgs) {
 // ── P-003/D-003: conservative passing-task reuse across candidate refires ───
 // setupTree() rebuilds the checkpoint checkout for every newer candidate. The cache therefore
 // lives outside ROOT, but its filename is scoped to this checkout root so another pipeline/tree
-// can never consume it accidentally. It is enabled for the real green checkpoint and for the
-// explicit `test:affected` bounded-resume wrapper; other local affected runs remain fresh
-// feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env hash below, which normally
-// confines reuse to one gate run. A frozen-repair verifier or pc-heavy retry series receives
-// AFFECTED_TASK_VERDICT_PROOF_GROUP; only the CACHE identity substitutes that initial group while
-// the real child keeps this process's own run group.
+// can never consume it accidentally. It is enabled for the real green checkpoint, the explicit
+// `test:affected` bounded-resume wrapper, and the root ordinary `npm test` wrapper (which opts
+// into the stable cross-run group below). `test:related`/`test:all*` and direct workspace runs
+// remain fresh feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env hash below,
+// which normally confines reuse to one gate run. A frozen-repair verifier or pc-heavy retry
+// series receives AFFECTED_TASK_VERDICT_PROOF_GROUP; only the CACHE identity substitutes that
+// initial group while the real child keeps this process's own run group.
 const TASK_VERDICT_CACHE_ENABLED =
   process.env.GREEN_CHECKPOINT === "1" ||
   process.env.AFFECTED_TASK_VERDICT_RESUME === "1";
+// Ordinary local `npm test` has no gate-supplied proof group. It may use the existing stable
+// cross-run proof only when the caller explicitly opted into resumable execution, and never
+// while GREEN_CHECKPOINT is active (a gate without proof state must stay fail-closed).
+const TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED =
+  process.env.AFFECTED_TASK_VERDICT_RESUME === "1" &&
+  process.env.GREEN_CHECKPOINT !== "1";
 const TASK_VERDICT_PROOF_GROUP_APPLIED =
   typeof process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP === "string" &&
   process.env.AFFECTED_TASK_VERDICT_PROOF_GROUP.trim() !== "";
-const { cacheGroup: TASK_VERDICT_CACHE_GROUP } =
+const { cacheGroup: TASK_VERDICT_PROCESS_CACHE_GROUP } =
   passingTaskVerdictIdentityEnvironment(process.env);
+const TASK_VERDICT_LOCAL_CROSS_RUN_ONLY =
+  TASK_VERDICT_LOCAL_CROSS_RUN_ENABLED &&
+  !TASK_VERDICT_PROCESS_CACHE_GROUP;
+// A local resumable run has no per-run proof group, so its sole lookup namespace is the stable
+// cross-run group. Gate runs retain their caller-supplied per-run group and the fallback below.
+const TASK_VERDICT_CACHE_GROUP =
+  TASK_VERDICT_PROCESS_CACHE_GROUP ??
+  (TASK_VERDICT_LOCAL_CROSS_RUN_ONLY
+    ? PASSING_TASK_VERDICT_CROSS_RUN_GROUP
+    : null);
+const TASK_VERDICT_CACHE_SCOPE = TASK_VERDICT_LOCAL_CROSS_RUN_ONLY
+  ? "cross-run"
+  : TASK_VERDICT_PROCESS_CACHE_GROUP
+    ? TASK_VERDICT_PROOF_GROUP_APPLIED
+      ? "proof"
+      : "current-run"
+    : "missing";
 const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash("sha256")
   .update(ROOT)
   .digest("hex")
@@ -4090,9 +4114,18 @@ function runCapturedTask(
   ) {
     if (context.cacheProvenance?.ok) {
       const {
-        environment: cacheIdentityEnvironment,
-        cacheGroup: childCacheGroup,
+        environment: perRunCacheIdentityEnvironment,
+        cacheGroup: perRunCacheGroup,
       } = passingTaskVerdictIdentityEnvironment(childEnv);
+      let cacheIdentityEnvironment = perRunCacheIdentityEnvironment;
+      let childCacheGroup = perRunCacheGroup;
+      if (TASK_VERDICT_LOCAL_CROSS_RUN_ONLY && !perRunCacheGroup) {
+        // No gate proof exists for ordinary local `npm test`; use the already-defined stable
+        // cross-run identity instead of inventing a shared child PAPERCUSP_TEST_RUN_GROUP.
+        const localCrossRun = passingTaskVerdictCrossRunIdentityEnvironment(childEnv);
+        cacheIdentityEnvironment = localCrossRun.environment;
+        childCacheGroup = localCrossRun.cacheGroup;
+      }
       if (!childCacheGroup) {
         cacheDecision = { hit: false, reason: "proof-group-missing" };
       } else if (childCacheGroup !== TASK_VERDICT_CACHE_GROUP) {
@@ -4111,6 +4144,10 @@ function runCapturedTask(
           },
           gateConfig: {
             ...taskVerdictGateConfig,
+            // A local run may derive its base from the test-certified watermark rather than an
+            // exported AFFECTED_BASE variable. Include the resolved selector explicitly so a
+            // watermark/base transition cannot silently reuse an older proof.
+            affectedBase: base,
             batchTimeout: {
               ...taskVerdictGateConfig.batchTimeout,
               effectiveMs: taskTimeoutMs,
@@ -4136,6 +4173,12 @@ function runCapturedTask(
           ),
           identity: cacheIdentity,
         });
+        if (TASK_VERDICT_LOCAL_CROSS_RUN_ONLY) {
+          cacheDecision = namespacePassingTaskVerdictDecision(
+            cacheDecision,
+            "cross-run",
+          );
+        }
         // EI-21577710345620735 — CROSS-RUN reuse. The lookup above is confined to THIS run's
         // group, which is why a red gate re-tests the ~100 tasks that already passed: their
         // proof exists, under last run's group, and is unreachable. On a per-run miss, retry
@@ -4615,18 +4658,21 @@ function persistCleanFirstPassTaskVerdict({ task: context, value }) {
     // is retained. Node runs this synchronous critical section without interleaving callbacks;
     // same-directory rename keeps readers on either the old or new complete document.
     const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
-    const perRunMerged = mergePassingTaskVerdictUpdates(
-      latest.cache,
-      TASK_VERDICT_CACHE_GROUP,
-      { [key]: passingTaskVerdictEntry(value.__cacheIdentity) },
-    );
+    let merged = latest.cache;
+    if (!TASK_VERDICT_LOCAL_CROSS_RUN_ONLY && TASK_VERDICT_CACHE_GROUP) {
+      merged = mergePassingTaskVerdictUpdates(
+        merged,
+        TASK_VERDICT_CACHE_GROUP,
+        { [key]: passingTaskVerdictEntry(value.__cacheIdentity) },
+      );
+    }
     // EI-21577710345620735 — the same proof, also filed under the stable cross-run group so the
     // NEXT gate run can reach it. Folded into this one atomic replace rather than a second write:
     // two renames would let a reader observe a state where the task is proven for this run but
     // not the next, and the whole point is that those two facts are the same fact.
-    const merged = value.__crossRunCacheIdentity
+    merged = value.__crossRunCacheIdentity
       ? mergePassingTaskVerdictUpdates(
-          perRunMerged,
+          merged,
           PASSING_TASK_VERDICT_CROSS_RUN_GROUP,
           { [key]: passingTaskVerdictEntry(value.__crossRunCacheIdentity) },
         )
