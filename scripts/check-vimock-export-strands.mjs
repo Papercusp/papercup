@@ -472,6 +472,22 @@ function main() {
     process.exit(EXIT_NOT_CHECKED);
   }
 
+  // EI-20204650589104743: a broad historical `--base` can enumerate thousands of files, and
+  // the work is PROPORTIONAL to that count — one `git show` plus a parse of BOTH versions per
+  // candidate. That cost is inherent to comparing two trees, not a stall. But the walk prints
+  // nothing until it finishes, so a wide run is indistinguishable from a hang: it gets killed,
+  // and the check silently never happens. (Measured: `--base b0af215fe0^` enumerates 6,411
+  // files here, ~12.8k parses.) State the scale up front so the wait is an informed choice.
+  const WIDE_SCAN_NOTICE_THRESHOLD = 500;
+  if (candidates.length >= WIDE_SCAN_NOTICE_THRESHOLD) {
+    console.error(
+      `check-vimock-export-strands: comparing ${candidates.length} changed TypeScript file(s) against '${base}'.\n` +
+        `  Cost scales with that count (a git show + a parse of both versions each), so a broad\n` +
+        `  historical base can run for several minutes. This is work, not a stall — let it finish,\n` +
+        `  or narrow the run with --files=<your,files>.`,
+    );
+  }
+
   const examinedFiles = [];
   const identicalFiles = [];
   const changed = [];
