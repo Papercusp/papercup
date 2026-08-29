@@ -794,6 +794,26 @@ export interface CheckpointDeps {
    * filesystem cannot safely absorb a full verdict. Real wiring reuses the
    * standing disk alarm's statfs sampling and critical thresholds. */
   checkDiskHeadroom?(): Promise<{ ok: boolean; summary: string }>;
+  /**
+   * WI-606293: is there any provider capacity for the release-fixer to run on?
+   *
+   * A fixer dispatched into an exhausted pool burns a repair-queue attempt on a
+   * guaranteed failure. Measured 2026-08-29: spawn s-1787978221257 reached
+   * `turn.started` and died on "You've hit your usage limit ... try again at
+   * Sep 3rd, 2026 12:24 PM" — the whole codex pool sat at utilization7d = 1.0,
+   * a fact readable before the dispatch.
+   *
+   * `ok:false` means EVERY account the fixer could use is usage-walled, so the
+   * dispatch is futile until `retryAtMs`. Read utilization/window quantities,
+   * never a cached `available` boolean, and never report a STALE reading as a
+   * measured wall — an unknown must come back `ok:true` (see the fail-open note
+   * at the call site).
+   */
+  checkFixerProviderCapacity?(): Promise<{
+    ok: boolean;
+    summary: string;
+    retryAtMs?: number | null;
+  }>;
   /** D-001 / WI-39944: the one serialized frozen-candidate repair queue. These hooks
    * live on the existing gate dependency seam so test stubs and non-recording CLI runs
    * keep the old behavior when the routine metadata target is unavailable. */
@@ -7527,7 +7547,46 @@ async function runGreenCheckpointInner(
     queue: FrozenCandidateRepairQueue | null;
     fired: FrozenRepairDispatchResult | null;
     reservationBlocked: boolean;
+    /** WI-606293: set when the dispatch was withheld because the provider pool is
+     *  usage-walled. Distinct from `reservationBlocked` on purpose — that one means
+     *  "another checkpoint owns the window", and reporting a capacity wall under it
+     *  would log a confidently wrong cause. */
+    capacityHold: { summary: string; retryAtMs: number | null } | null;
   }> => {
+    // WI-606293: refuse BEFORE reserving the dispatch window, so a walled pool costs
+    // neither a repair attempt nor a reservation other checkpoints are queued behind.
+    //
+    // This deliberately fails OPEN, unlike the disk-headroom preflight, and the
+    // asymmetry is the point: an unmeasurable disk risks false REDS (a suite that
+    // ENOSPCs mid-run), so refusing is the safe side there; an unmeasurable pool risks
+    // a permanently dead repair arm, while guessing wrong costs exactly one attempt.
+    // A broken probe must never become a silent freeze.
+    if (deps.checkFixerProviderCapacity) {
+      let capacity: { ok: boolean; summary: string; retryAtMs?: number | null };
+      try {
+        capacity = await deps.checkFixerProviderCapacity();
+      } catch (error) {
+        capacity = {
+          ok: true,
+          summary: `provider-capacity probe threw (${
+            error instanceof Error ? error.message : error
+          }); dispatching anyway rather than withholding on an unknown`,
+        };
+      }
+      deps.log(`frozen repair provider-capacity preflight: ${capacity.summary}`);
+      if (!capacity.ok) {
+        return {
+          queue: null,
+          fired: null,
+          reservationBlocked: false,
+          capacityHold: {
+            summary: capacity.summary,
+            retryAtMs: capacity.retryAtMs ?? null,
+          },
+        };
+      }
+    }
+
     let dispatchQueue = queue;
     if (hasFrozenRepairDispatchReservation) {
       let reserved: FrozenCandidateRepairQueue | null = null;
@@ -7543,7 +7602,12 @@ async function runGreenCheckpointInner(
         );
       }
       if (!reserved) {
-        return { queue: null, fired: null, reservationBlocked: true };
+        return {
+          queue: null,
+          fired: null,
+          reservationBlocked: true,
+          capacityHold: null,
+        };
       }
       dispatchQueue = reserved;
     }
@@ -7612,7 +7676,12 @@ async function runGreenCheckpointInner(
             : ""
         }`,
       );
-      return { queue: null, fired: null, reservationBlocked: true };
+      return {
+        queue: null,
+        fired: null,
+        reservationBlocked: true,
+        capacityHold: null,
+      };
     }
 
     if (hasFrozenRepairDispatchReservation) {
@@ -7640,7 +7709,12 @@ async function runGreenCheckpointInner(
     }
 
     if (dispatchError) throw dispatchError;
-    return { queue: dispatchQueue, fired, reservationBlocked: false };
+    return {
+      queue: dispatchQueue,
+      fired,
+      reservationBlocked: false,
+      capacityHold: null,
+    };
   };
 
   const repairReservationHold = async (
@@ -8003,6 +8077,26 @@ async function runGreenCheckpointInner(
       initialCandidateVerification = true;
     } else if (decision.kind === "dispatch-fixer") {
       const dispatch = await dispatchFrozenRepair(repairQueue, false);
+      if (dispatch.capacityHold) {
+        // WI-606293: the pool is walled, so a launch would spend an attempt to reach
+        // `turn.failed`. Hold instead. `green: null` + `repair-in-progress` keeps this in
+        // the existing inconclusive class — a walled provider is not evidence about the
+        // candidate, and must not inflate the red streak.
+        const summary = frozenRepairCapacityHoldSummary(
+          repairQueue.repairHead,
+          dispatch.capacityHold,
+        );
+        deps.log(summary);
+        return {
+          advanced: false,
+          candidate: repairQueue.repairHead,
+          from: lastReady,
+          green: null,
+          reason: "repair-in-progress",
+          summary,
+          repairQueue,
+        };
+      }
       if (dispatch.reservationBlocked) {
         // A competing checkpoint owns the launch window. Re-read the durable row so this
         // process returns the live reservation (rather than a stale unassigned snapshot),
@@ -9188,7 +9282,16 @@ async function runGreenCheckpointInner(
           // is normally already present from the pre-suite write; allowCreateIfAbsent keeps the
           // compatibility first-red path atomic for callers that learned about C only here.
           const dispatch = await dispatchFrozenRepair(repairQueue, true);
-          if (dispatch.reservationBlocked) {
+          if (dispatch.capacityHold) {
+            // WI-606293: the queue row is written and the red still stands — we simply do
+            // not launch into an exhausted pool. No attempt is spent; the next tick retries.
+            deps.log(
+              frozenRepairCapacityHoldSummary(
+                repairQueue.candidate,
+                dispatch.capacityHold,
+              ),
+            );
+          } else if (dispatch.reservationBlocked) {
             repairQueue =
               (await repairReservationHold(repairQueue, "new queue")) ??
               repairQueue;
