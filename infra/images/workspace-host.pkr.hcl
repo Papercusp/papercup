@@ -311,7 +311,18 @@ source "googlecompute" "workspace_host" {
   service_account_email = var.service_account_email
   scopes                = ["https://www.googleapis.com/auth/cloud-platform"]
 
-  source_image = var.source_image
+  # ⚠ googlecompute wants the image NAME and its project as SEPARATE fields. Passing the
+  # fully-qualified `projects/<p>/global/images/<n>` reference to `source_image` reaches the
+  # Compute API as the `image` field and is rejected there:
+  #   Error 400: Invalid value for field 'image': '...'. Must be a match of regex
+  #   '[a-z](?:[-a-z0-9]{0,61}[a-z0-9])?|[1-9][0-9]{0,19}'
+  # That is an API-contract failure, so it survives BOTH `packer validate` and the release
+  # gate and only appears once a build is running. var.source_image stays fully qualified —
+  # it is the provenance contract (baseImage.reference, immutable, no family aliases) and is
+  # used as such at the manifest reference below; only the BUILDER needs it decomposed.
+  # The variable's own validation pins the exact 5-segment shape, so these indices cannot slip.
+  source_image_project_id = [split("/", var.source_image)[1]]
+  source_image            = split("/", var.source_image)[4]
   machine_type = var.machine_type
   disk_size    = var.disk_size_gb
   disk_type    = "pd-balanced"
