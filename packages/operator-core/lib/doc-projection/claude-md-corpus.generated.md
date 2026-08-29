@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 295
-  corpus-blocks: 256
+  corpus-parts: 296
+  corpus-blocks: 257
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -1916,6 +1916,16 @@ For "files modified since T", use `git status --porcelain` or `TZ=UTC stat -c '%
 or an ISO-8601-like timestamp with `Z`/a numeric offset, keep stderr visible, and
 corroborate the result with a positive control.
 
+
+
+⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
+fails via the EXIT CODE rather than a spurious match, so bracketing cannot help.
+`pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage error — a
+well-formed answer to the question you asked, while the process is very much alive
+(measured: it printed `gone` while `pgrep -cf` returned **13**). The natural next
+action is to conclude the job died and re-run it. Use `proc-guard` above, `pgrep -cf`
+(count), `pgrep -x <name>` (matches the process NAME, so argv cannot fool it at all),
+or `kill -0 <pid>` (EI-19446554284039165).
 The natural next action is to conclude a job died and re-run it. Use
 `proc-guard` above, `pgrep -cf` (count), `pgrep -x <name>` (matches the process
 NAME, so argv cannot fool it at all), or `kill -0 <pid>`

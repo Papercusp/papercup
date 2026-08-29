@@ -753,6 +753,16 @@ corroborate the result with a positive control.
 
 
 
+⚠⚠ **`pgrep -q` DOES NOT EXIST on this box** (procps here has no `-q`), and this one
+fails via the EXIT CODE rather than a spurious match, so bracketing cannot help.
+`pgrep -qf X && echo ALIVE || echo gone` prints **`gone`** on the usage error — a
+well-formed answer to the question you asked, while the process is very much alive
+(measured: it printed `gone` while `pgrep -cf` returned **13**). The natural next
+action is to conclude the job died and re-run it. Use `proc-guard` above, `pgrep -cf`
+(count), `pgrep -x <name>` (matches the process NAME, so argv cannot fool it at all),
+or `kill -0 <pid>` (EI-19446554284039165).
+
+
 > ⚠ `pgrep -x` matches `/proc/<pid>/comm`, which the kernel truncates to **15
 > chars**, so a longer binary name never matches. 
 
