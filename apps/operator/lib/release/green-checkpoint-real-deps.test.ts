@@ -3621,3 +3621,185 @@ describe("clearEscalation — sweeps the release-not-green CLASS, not the whole 
     openEscalationRows = [];
   });
 });
+
+describe("P-005 / D-033: the frozen-repair materializer narrows to the same correctness boundary", () => {
+  // The whole-box `--exclusive-all-slots` barrier is a correctness requirement only when
+  // the selector had to PUBLISH a fresh dependency generation this run. D-033 (WI-42329)
+  // established that on `setupTree`, but `prepareFrozenRepairWorktree` — structurally
+  // identical: same selector, same `--node-modules-generation required` pinning, and a
+  // MORE private destination (a per-queue worktree rather than the shared checkpoint
+  // root) — kept holding it unconditionally.
+  //
+  // That omission is strictly worse here than the one D-033 fixed: this path runs ONLY
+  // while the gate is already red, so a host-wide hold serialized every pot's hourly gate
+  // at the moment throughput matters most (D-033 measured 3 acquired / 16
+  // starved-after-900s over 40 runs, with `main` frozen 6 days).
+  //
+  // Falsifiability: restore the unconditional `"--exclusive-all-slots"` literal in
+  // prepareFrozenRepairWorktree and the first case below fails.
+  const repairHead = "e".repeat(40);
+  const generationResult = (reusedClause: string) =>
+    `DEPENDENCY_GENERATION_RESULT schema=1 ` +
+    `identity=${FIXTURE_DEPENDENCY_GENERATION_ID} source=fixture scope=full ` +
+    `${reusedClause} token=${FIXTURE_DEPENDENCY_GENERATION_TOKEN} ` +
+    `path=/fixture/${FIXTURE_DEPENDENCY_GENERATION_ID}`;
+
+  /** Drive the real prepareFrozenRepairWorktree and return its pc-heavy materialization call. */
+  const materializationCallFor = async (generationStdout: string) => {
+    const root = mkdtempSync(join(tmpdir(), "green-cp-repair-narrow-"));
+    const calls: Array<{ cmd: string; args: string[] }> = [];
+    const exec: CheckpointExec = async (cmd, args) => {
+      calls.push({ cmd, args });
+      // The selector reads inputs from the worktree; every other shelled step here
+      // (worktree add, submodule init) only needs to succeed.
+      if (args.includes("--select-inputs-from")) {
+        return { code: 0, stdout: generationStdout, stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    // The whole frozen-repair method group is spread in only when
+    // gateVerdictTargetFromEnv() resolves a target, so without these the optional-call
+    // below is a silent no-op. The positive control at the end of this helper is what
+    // turned that into a named failure instead of three vacuous passes.
+    const priorWorkspace = process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+    const priorHarness = process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+    process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = "fixture-workspace";
+    process.env.PAPERCUSP_GATE_VERDICT_HARNESS = "fixture-harness";
+    try {
+      await realCheckpointDeps(cfg, exec).prepareFrozenRepairWorktree?.({
+        schemaVersion: 3,
+        phase: "awaiting-fixer",
+        candidate: repairHead,
+        base: "f".repeat(40),
+        repairHead,
+        // Must not already exist: the subject returns early when the worktree is present.
+        worktreePath: join(root, "repair-worktree"),
+        attempts: 1,
+        openedAtMs: Date.now() - 1_000,
+        updatedAtMs: Date.now(),
+        fixerSpawnId: "fixture-fixer",
+        failingTests: ["lint:tsc"],
+      });
+    } finally {
+      if (priorWorkspace === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE;
+      else process.env.PAPERCUSP_GATE_VERDICT_WORKSPACE = priorWorkspace;
+      if (priorHarness === undefined)
+        delete process.env.PAPERCUSP_GATE_VERDICT_HARNESS;
+      else process.env.PAPERCUSP_GATE_VERDICT_HARNESS = priorHarness;
+      rmSync(root, { recursive: true, force: true });
+    }
+    const materialize = calls.find((call) =>
+      call.args.some((arg) => arg.endsWith("scripts/pc-heavy.sh")),
+    );
+    // Positive control: without this, a subject that stopped materializing altogether
+    // would satisfy every `not.toContain` assertion below vacuously.
+    expect(
+      materialize,
+      "no pc-heavy materialization call was recorded — the assertions below would be vacuous",
+    ).toBeDefined();
+    return materialize!;
+  };
+
+  /** The property under test, factored out so the control below can be fed a known-bad argv. */
+  const expectSharedSlotMaterialization = (args: readonly string[]) => {
+    expect(args).not.toContain("--exclusive-all-slots");
+    // The narrowing must not weaken the pinning it travels with: the copy is still bound
+    // to that exact immutable generation, which is precisely WHY it is parallel-safe.
+    expect(args).toEqual(
+      expect.arrayContaining([
+        "--node-modules-generation",
+        "required",
+        "--node-modules-generation-id",
+        FIXTURE_DEPENDENCY_GENERATION_ID,
+        "--node-modules-generation-token",
+        FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      ]),
+    );
+  };
+
+  it("materializes a REUSED immutable generation on a shared slot — no whole-box barrier", async () => {
+    const materialize = await materializationCallFor(
+      generationResult("reused=true"),
+    );
+    expectSharedSlotMaterialization(materialize.args);
+  });
+
+  it("CONTROL: the pre-fix argv shape is REJECTED by that assertion", () => {
+    // Falsifiability, proven permanently instead of by a one-shot in-tree mutation (the
+    // repo's preferred tier for an imported-module subject): feed the assertion the exact
+    // argv the subject built BEFORE this fix — the barrier spliced in unconditionally,
+    // with the generation pinning otherwise identical — and require it to fail.
+    //
+    // This is what makes the sibling test above meaningful. Without it, weakening the
+    // assertion (dropping the `not.toContain`, or asserting on the wrong call) would leave
+    // a green suite that proves nothing; with it, that weakening turns THIS test red.
+    const preFixArgs = [
+      "/repo/scripts/pc-heavy.sh",
+      "--exclusive-all-slots",
+      "--",
+      "bash",
+      "/repo/apps/operator/bin/release/setup-release-checkout.sh",
+      "--node-modules-generation",
+      "required",
+      "--node-modules-generation-id",
+      FIXTURE_DEPENDENCY_GENERATION_ID,
+      "--node-modules-generation-token",
+      FIXTURE_DEPENDENCY_GENERATION_TOKEN,
+      "--prepare-existing",
+    ];
+    expect(() => expectSharedSlotMaterialization(preFixArgs)).toThrow();
+    // Calibration: the SAME argv minus the barrier must pass, so the control above cannot
+    // be satisfied by an assertion that rejects everything.
+    expect(() =>
+      expectSharedSlotMaterialization(
+        preFixArgs.filter((arg) => arg !== "--exclusive-all-slots"),
+      ),
+    ).not.toThrow();
+  });
+
+  it("keeps the exclusive barrier when the selector PUBLISHED a fresh generation", async () => {
+    const materialize = await materializationCallFor(
+      generationResult("reused=false"),
+    );
+    expect(materialize.args).toContain("--exclusive-all-slots");
+  });
+
+  it("RECURRENCE GUARD: no materializer call site splices the barrier unconditionally", () => {
+    // The CLASS this fix belongs to is "a pc-heavy materializer argv that hardcodes
+    // --exclusive-all-slots", not merely the one site that had it. D-033 landed on
+    // setupTree and a structurally identical sibling kept the unconditional literal for
+    // months precisely because nothing failed when it did. A third call site added later
+    // must derive exclusivity from the selector's `reused` verdict the same way, so the
+    // absence is asserted over the whole file rather than per known site.
+    const source = readFileSync(join(__dirname, "green-checkpoint.ts"), "utf8");
+    const unconditional = source
+      .split("\n")
+      .map((text, index) => ({ text: text.trim(), line: index + 1 }))
+      // Only an ARGV ELEMENT (the literal alone on its line). Prose and the exit-75
+      // detail matcher elsewhere in the file mention the flag legitimately.
+      .filter(({ text }) => /^"--exclusive-all-slots",?$/.test(text));
+    expect(
+      unconditional,
+      'a materializer argv element must be spread conditionally — ' +
+        '`...(exclusiveMaterialization ? ["--exclusive-all-slots"] : [])` — never hardcoded',
+    ).toEqual([]);
+    // Calibration: the guard must still SEE the conditional sites. Without this it would
+    // also pass on a file that stopped materializing altogether, or after a rename that
+    // put the flag beyond its regex — the two ways a source-scanning guard goes vacuous.
+    // Deliberately a floor, not a pinned count: a legitimate new site should raise it.
+    expect(
+      source.match(
+        /\.\.\.\(exclusiveMaterialization \? \["--exclusive-all-slots"\] : \[\]\)/g,
+      )?.length ?? 0,
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps the exclusive barrier when the selector's reused verdict is unreadable", async () => {
+    // `reused` is advisory. An absent/unparseable verdict must degrade to the
+    // CONSERVATIVE hold — never to the shared slot, which would silently drop
+    // exclusivity on exactly the runs whose state we could not establish.
+    const materialize = await materializationCallFor(generationResult(""));
+    expect(materialize.args).toContain("--exclusive-all-slots");
+  });
+});

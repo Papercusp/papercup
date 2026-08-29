@@ -13203,11 +13203,35 @@ export function realCheckpointDeps(
                 queue.repairHead,
                 queue.worktreePath,
               );
+            // D-033 / WI-42329 governs THIS site too — the ruling landed on `setupTree`
+            // below and this structurally identical call was missed. The correctness
+            // boundary is the same: the whole-box barrier is required only when the
+            // selector had to PUBLISH a fresh generation this run. A REUSED generation is
+            // immutable and content-addressed, and materialization only copies it into
+            // `queue.worktreePath` — a private, per-queue worktree, so it is parallel-safe
+            // across pots for exactly the reason the checkpoint root is.
+            //
+            // Holding it unconditionally is strictly worse HERE than it was on setupTree:
+            // this path runs only while the gate is ALREADY red, so a host-wide hold
+            // serialized every pot's hourly gate at the moment throughput matters most —
+            // the same shape D-033 measured (3 acquired / 16 starved-after-900s over 40
+            // runs, `main` frozen 6 days).
+            //
+            // `reused` is advisory and degrades to false, so an unparseable selector answer
+            // keeps the conservative exclusive hold.
+            const exclusiveMaterialization = !selectedDependencyGeneration.reused;
+            log(
+              `frozen repair dependency generation ${selectedDependencyGeneration.identity} ` +
+                `reused=${selectedDependencyGeneration.reused} — ` +
+                (exclusiveMaterialization
+                  ? "EXCLUSIVE materialization (fresh publish this run)"
+                  : "shared-slot materialization (D-033: reuse needs no whole-box hold)"),
+            );
             const dependencies = await exec(
               "bash",
               [
                 path.join(toolingRoot(), "scripts/pc-heavy.sh"),
-                "--exclusive-all-slots",
+                ...(exclusiveMaterialization ? ["--exclusive-all-slots"] : []),
                 "--",
                 "bash",
                 path.join(
